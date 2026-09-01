@@ -275,6 +275,10 @@ export function createDependencyPlacementPlan(
       resolvedScope = 'user';
       assignmentSource = 'platformRequirement';
     }
+    if (!locked && allowedScopes.length === 1) {
+      locked = true;
+      lockReason = 'platformRequirement';
+    }
     if (!allowedScopes.includes(resolvedScope)) {
       placementErrorCode = root
         ? 'dependencyRootScopeUnsupported'
@@ -321,6 +325,16 @@ export function createDependencyPlacementPlan(
       dependency.resolvedScope = dependency.minimumScope;
       dependency.assignmentSource = 'consumerPromotion';
       changed = true;
+    }
+  }
+
+  for (const placement of placements.values()) {
+    if (placement.locked) continue;
+    const selectableScopes = placement.node.allowedScopes.filter((scope) =>
+      SCOPE_RANK[scope] >= SCOPE_RANK[placement.minimumScope]);
+    if (selectableScopes.length === 1) {
+      placement.locked = true;
+      placement.lockReason = 'minimumScopeRequirement';
     }
   }
 

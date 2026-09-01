@@ -29,6 +29,7 @@ import type {
 } from '../commands/dependency-operation-plan.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { DependencyScopeOverride } from '../types.js';
+import { buildAllowedLifecycleActions } from '../commands/operation-planner.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 import {
   safeDiagnosticCode,
@@ -92,8 +93,8 @@ export type PluginMenuAction =
       description: string;
     }
   | { id: 'platform' | 'scopeConflict'; platform: PlatformName }
-  | { id: 'upgrade'; platform: PlatformName; scope: Scope; availableVersion: string }
-  | { id: 'reinstall' | 'remove'; platform: PlatformName; scope: Scope };
+  | { id: 'refreshAndSync'; platform: PlatformName; scope: Scope; availableVersion: string }
+  | { id: 'reinstall' | 'remove' | 'cleanup'; platform: PlatformName; scope: Scope };
 
 export interface PluginListItemViewModel {
   pluginId: string;
@@ -338,7 +339,7 @@ export interface UserIssueActionViewModel {
   platform?: PlatformName;
   scope?: Scope;
   project?: 'current' | 'other' | null;
-  writeAction?: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
+  writeAction?: 'install' | 'reinstall' | 'uninstall' | 'cleanup';
 }
 
 export type TargetIssueRootCode =
@@ -539,18 +540,11 @@ export function dependencyPlacementTargets(
     pluginId: target.pluginId,
     displayName: target.pluginName,
     platform: target.platform,
-    relation: plan.dependencyEdges.some((edge) =>
-      plan.requestedPluginIds.includes(edge.from)
-      && edge.to === target.pluginId
-      && edge.platform === target.platform)
-      ? 'direct'
-      : 'transitive',
+    relation: target.depth === 1 ? 'direct' : 'transitive',
     scope: target.resolvedScope,
     minimumScope: target.minimumScope,
     allowedScopes: [...target.allowedScopes],
-    locked: (target.locked && target.lockReason !== 'dependencyScopeOverride')
-      || target.allowedScopes.filter((scope) =>
-        target.minimumScope === 'project' || scope === 'user').length < 2,
+    locked: target.locked && target.lockReason !== 'dependencyScopeOverride',
     requiredBy: [...target.requiredBy],
     assignmentSource: target.assignmentSource,
     explanation: dependencyAssignmentExplanation(target.assignmentSource, target.requiredBy),
@@ -813,37 +807,35 @@ export function buildPlatformActions(
       { id: 'technical' },
     ];
   }
-  if (placement.health === 'error') return [{ id: 'technical' }, { id: 'back' }];
-  if (placement.health === 'incomplete') {
-    if (platform === 'codex'
-      && (placement.actualState === 'needsSync'
-        || placement.recovery?.some((action) => action.command === 'sync'))) {
-      return [
-        { id: 'sync' },
-        { id: 'technical' },
-        { id: 'remove', platform, scope: placement.scope },
-      ];
-    }
-    return [
-      { id: 'reinstall', platform, scope: placement.scope },
-      { id: 'technical' },
-      { id: 'remove', platform, scope: placement.scope },
-    ];
+  const lifecycleActions = buildAllowedLifecycleActions({
+    pluginId: plugin.pluginId,
+    platform,
+    scope: placement.scope,
+    state: placement.actualState ?? (placement.health === 'ready'
+      ? 'ready' : placement.health === 'incomplete' ? 'needsSync' : 'blocked'),
+    recoveryActions: placement.recovery ?? [],
+    revision: placement.revision,
+  }).flatMap((action): PluginMenuAction[] => {
+    if (action.id === 'install') return [{ id: 'add' }];
+    if (action.id === 'refreshAndSync') return [{
+      id: 'refreshAndSync',
+      platform: action.platform,
+      scope: action.scope,
+      availableVersion: action.availableVersion!,
+    }];
+    if (action.id === 'sync') return [{ id: 'sync' }];
+    if (action.id === 'reinstall') return [{ id: 'reinstall', platform: action.platform, scope: action.scope }];
+    if (action.id === 'uninstall') return [{ id: 'remove', platform: action.platform, scope: action.scope }];
+    return [{ id: 'cleanup', platform: action.platform, scope: action.scope }];
+  });
+  if (placement.health !== 'ready') {
+    return [...lifecycleActions, { id: 'technical' }, ...(lifecycleActions.length === 0 ? [{ id: 'back' as const }] : [])];
   }
   return [
     ...missingPureNativeScopes(plugin, placement).map((scope): PluginMenuAction => ({
       id: 'addScope', platform, scope,
     })),
-    ...(placement.revision.state === 'upgradeAvailable'
-      ? [{
-          id: 'upgrade' as const,
-          platform,
-          scope: placement.scope,
-          availableVersion: placement.revision.availableVersion,
-        }]
-      : []),
-    { id: 'reinstall', platform, scope: placement.scope },
-    { id: 'remove', platform, scope: placement.scope },
+    ...lifecycleActions,
     { id: 'technical' },
   ];
 }
@@ -1035,20 +1027,29 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
       const dependencyPluginId = root.dependencyPluginId
         ?? rootError?.dependencyPluginId
         ?? (rootError ? dependencyPluginIdFromMessage(rootError.message) : undefined);
+      const dependencyPlatform = rootError?.dependencyPlatform;
+      const dependencyScope = rootError?.dependencyScope;
+      const dependencyProject = rootError?.dependencyProject;
       const dependencyCategory = root.category.startsWith('dependency');
       const actions: UserIssueActionViewModel[] = root.category === 'dependencyMissing'
         ? [
-            ...(dependencyPluginId ? [{ id: 'installDependency' as const, label: '补齐依赖插件',
-              pluginId: dependencyPluginId, writeAction: 'install' as const }] : []),
+            ...(dependencyPluginId && dependencyPlatform && dependencyScope
+              ? [{ id: 'installDependency' as const, label: '补齐依赖插件',
+                  pluginId: dependencyPluginId, platform: dependencyPlatform,
+                  scope: dependencyScope, project: dependencyProject,
+                  writeAction: 'install' as const }]
+              : []),
             { id: 'viewDependencies', label: '查看依赖关系' },
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'dependencyNotReady'
           ? [
-              ...(dependencyPluginId ? [
+              ...(dependencyPluginId && dependencyPlatform && dependencyScope ? [
                 { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
                 { id: 'reinstallDependency' as const, label: '重新安装依赖插件',
-                  pluginId: dependencyPluginId, writeAction: 'reinstall' as const },
+                  pluginId: dependencyPluginId, platform: dependencyPlatform,
+                  scope: dependencyScope, project: dependencyProject,
+                  writeAction: 'reinstall' as const },
               ] : []),
               { id: 'viewDependencies', label: '查看依赖关系' },
               { id: 'viewTechnical', label: '技术详情' },
@@ -1153,6 +1154,9 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
         entity: { kind: 'plugin', id: target.pluginId },
         pluginId: target.pluginId,
         ...(dependencyPluginId ? { dependencyPluginId } : {}),
+        ...(dependencyPlatform ? { dependencyPlatform } : {}),
+        ...(dependencyScope ? { dependencyScope } : {}),
+        ...(dependencyProject !== undefined ? { dependencyProject } : {}),
         platform: target.platform,
         scope: target.scope,
         sourceId: target.sourceId,
@@ -1341,58 +1345,6 @@ function dependencyOverviewIssues(
       technicalDetails: [{ code: blocker.code, message: blocker.explanation }],
     }];
   }));
-}
-
-function enrichDependencyIssuePlacements(
-  issues: UserIssueDraft[],
-  overviews: PluginDependencyOverviewViewModel[],
-): UserIssueDraft[] {
-  const overviewById = new Map(overviews.map((overview) => [overview.pluginId, overview]));
-  return issues.map((issue) => {
-    if ((issue.category !== 'dependencyMissing' && issue.category !== 'dependencyNotReady')
-      || !issue.pluginId || !issue.dependencyPluginId || !issue.platform || !issue.scope) return issue;
-    const dependency = overviewById.get(issue.pluginId)?.dependencies.find((candidate) =>
-      candidate.pluginId === issue.dependencyPluginId);
-    const references = (dependency?.placementReferences ?? []).filter((reference) =>
-      reference.consumer.pluginId === issue.pluginId
-      && reference.consumer.platform === issue.platform
-      && reference.consumer.scope === issue.scope
-      && (issue.scope === 'user' || reference.consumer.project === 'current'))
-      .sort((left, right) => [
-        left.dependency.pluginId,
-        left.dependency.platform,
-        left.dependency.scope,
-        left.dependency.project ?? '',
-      ].join('\0').localeCompare([
-        right.dependency.pluginId,
-        right.dependency.platform,
-        right.dependency.scope,
-        right.dependency.project ?? '',
-      ].join('\0'), 'en'));
-    const target = references[0]?.dependency;
-    if (!target) {
-      return {
-        ...issue,
-        actions: issue.actions.filter((action) =>
-          action.id !== 'installDependency' && action.id !== 'reinstallDependency'),
-      };
-    }
-    return {
-      ...issue,
-      dependencyPlatform: target.platform,
-      dependencyScope: target.scope,
-      dependencyProject: target.project,
-      actions: issue.actions.map((action) =>
-        action.id === 'installDependency' || action.id === 'reinstallDependency'
-          ? {
-              ...action,
-              platform: target.platform,
-              scope: target.scope,
-              project: target.project,
-            }
-          : action),
-    };
-  });
 }
 
 function issueDiagnostic(
@@ -1691,7 +1643,7 @@ export function buildTuiViewModel(options: {
     targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
   }
   const sourceDetails = new Map((options.sourceDetails ?? []).map((detail) => [detail.id, detail]));
-  const issueDrafts = enrichDependencyIssuePlacements([
+  const issueDrafts = [
     ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),
@@ -1703,7 +1655,7 @@ export function buildTuiViewModel(options: {
     ),
     ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
       sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
-  ], options.dependencyOverviews ?? []);
+  ];
   const stableIssueDrafts = collapseRootIssues(issueDrafts).sort((left, right) =>
     issueGroupOrder[issueGroup(left)] - issueGroupOrder[issueGroup(right)]
     || issueReasonPriority(left) - issueReasonPriority(right)

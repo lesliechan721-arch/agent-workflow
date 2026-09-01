@@ -49,6 +49,7 @@ describe('dependency placement plan v2', () => {
     });
     expect(target(plan, 'team/leaf', 'codex')).toMatchObject({
       resolvedScope: 'user', minimumScope: 'user', assignmentSource: 'consumerPromotion',
+      locked: true, lockReason: 'minimumScopeRequirement',
     });
     expect(target(plan, 'team/middle', 'claude').resolvedScope).toBe('project');
     expect(target(plan, 'team/leaf', 'claude').resolvedScope).toBe('project');
@@ -72,6 +73,21 @@ describe('dependency placement plan v2', () => {
       resolvedScope: 'user', assignmentSource: 'consumerPromotion',
     });
     expect(plan.requestedPluginIds).toEqual(['team/root']);
+  });
+
+  it('marks a platform-required dependency placement as locked planner data', () => {
+    const input = graph();
+    input.nodes = input.nodes.filter((node) => node.platform === 'codex').map((node) =>
+      node.pluginId === 'team/middle' ? { ...node, allowedScopes: ['user'] } : node);
+    input.roots = input.roots.filter((root) => root.platform === 'codex');
+    input.dependencyEdges = input.dependencyEdges.filter((edge) => edge.platform === 'codex');
+    input.scopeOverrides = [];
+
+    expect(target(createDependencyPlacementPlan(input), 'team/middle', 'codex')).toMatchObject({
+      resolvedScope: 'user',
+      locked: true,
+      lockReason: 'platformRequirement',
+    });
   });
 
   it('widens every dependency of a user root and rejects a too-narrow explicit override', () => {

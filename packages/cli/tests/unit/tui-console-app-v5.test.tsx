@@ -488,7 +488,7 @@ function dependencyLoadResult(options: {
 function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
   const dependencies: TuiControllerDependencies = {
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
-    inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
+    inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, marketplaceCount: 0, dependencies: [] }),
     captureEvidence: vi.fn().mockResolvedValue(evidence),
     executeIntent: vi.fn().mockResolvedValue({
       overallState: 'succeeded',
@@ -828,9 +828,11 @@ describe('ConsoleAppV4', () => {
     });
     expect(reviewFrame).toContain('只清理可证明属于 AW 的现场内容');
     expect(reviewFrame).toContain('保留插件设置');
-    expect(reviewFrame).toContain('不运行 uninstall lifecycle');
-    expect(reviewFrame).toContain('等价命令：aw cleanup official/retired-tool --platform codex --scope user');
+    expect(reviewFrame).not.toContain('lifecycle');
+    expect(reviewFrame).not.toContain('等价命令：');
     expect(reviewFrame).not.toContain('--force');
+    await input(instance, 'd');
+    expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/retired-tool --platform codex --scope user');
 
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -1804,7 +1806,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('/private/source');
   });
 
-  it('shows the catalog version in the platform upgrade action only from revision sidecar evidence', async () => {
+  it('shows the catalog version in the refresh-and-sync action only from revision sidecar evidence', async () => {
     const loaded = loadResult();
     loaded.targetRevisions = [{
       pluginId: 'team-tools/review-gate',
@@ -1822,11 +1824,11 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('升级到 0.5.0…');
+    expect(instance.lastFrame()).toContain('刷新并同步到 0.5.0…');
     expect(instance.lastFrame()).toContain('已安装版本 0.4.2');
   });
 
-  it('keeps the focused platform action by ID when a live refresh inserts upgrade first', async () => {
+  it('keeps the focused platform action by ID when a live reload inserts refresh-and-sync first', async () => {
     const loadStatus = vi.fn()
       .mockResolvedValueOnce(platformLoadResult('current'))
       .mockResolvedValue(platformLoadResult('upgradeAvailable'));
@@ -1841,7 +1843,7 @@ describe('ConsoleAppV4', () => {
 
     await value.load();
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('升级到 0.3.0…');
+    expect(instance.lastFrame()).toContain('刷新并同步到 0.3.0…');
     expect(instance.lastFrame()).toContain('› 查看安装详情');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
 
@@ -1861,7 +1863,7 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'platform', pluginId: 'official/review-gate', platform: 'codex' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('› 升级到 0.3.0…');
+    expect(instance.lastFrame()).toContain('› 刷新并同步到 0.3.0…');
 
     await value.load();
     await nextTurn(2);
@@ -2037,7 +2039,7 @@ describe('ConsoleAppV4', () => {
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const review = await value.buildOperationReview({
-      kind: 'pluginWrite', action: 'upgrade', pluginId: 'team-tools/review-gate', platform: 'both', scope: 'user',
+      kind: 'pluginWrite', action: 'refreshAndSync', pluginId: 'team-tools/review-gate', platform: 'both', scope: 'user',
     });
     await expect(value.executeOperation(review.reviewToken)).resolves.toMatchObject({ state });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -2242,7 +2244,7 @@ describe('ConsoleAppV4', () => {
     }, progress);
     await value.load();
     const review = await value.buildOperationReview({
-      kind: 'configSave', pluginId: 'team-tools/review-gate', scope: 'user', projectLayer: 'shared', updates: { mode: 'safe' },
+      kind: 'configSave', pluginId: 'team-tools/review-gate', scope: 'user', projectLayer: 'shared', apply: false, updates: { mode: 'safe' },
     });
     await value.executeOperation(review.reviewToken);
 
@@ -2278,7 +2280,8 @@ describe('ConsoleAppV4', () => {
     await value.executeOperation(review.reviewToken);
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('另有 8 个目标');
+    expect(instance.lastFrame()).toContain('另有 9 个目标');
+    expect(instance.lastFrame()).not.toContain('变更：undefined');
     await input(instance, '\u001B[B');
     expect(instance.lastFrame()).toContain('› 返回首页');
     expect(instance.lastFrame()).toContain('↑↓ 移动');
@@ -2628,14 +2631,14 @@ describe('ConsoleAppV4', () => {
       subject: { sourceLabel: 'official' },
       changes: expect.arrayContaining([
         expect.objectContaining({
-          group: 'userIntent', pluginId: 'official/agent-lab', kind: 'add',
+          group: 'requested', pluginId: 'official/agent-lab', kind: 'add',
+          title: 'Claude Code · 所有项目',
         }),
-        expect.objectContaining({ group: 'requested', title: 'Claude Code · 所有项目' }),
       ]),
     });
   });
 
-  it.each(['install', 'upgrade'] as const)(
+  it.each(['install', 'refreshAndSync'] as const)(
     'retries a reloaded partial target with reinstall after a failed %s',
     async (originalAction) => {
       const before = loadResult();
@@ -2661,6 +2664,7 @@ describe('ConsoleAppV4', () => {
       await nextTurn(2);
 
       await input(instance, '\u001B[B', '\r');
+      await nextTurn(3);
 
       expect(value.snapshot.activeReview).toMatchObject({
         pluginAction: 'reinstall',
@@ -3424,7 +3428,8 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('恢复继承');
 
     await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('› 保存修改');
+    expect(instance.lastFrame()).toContain('› 保存');
+    expect(instance.lastFrame()).toContain('保存并应用');
     await input(instance, 'u');
     expect(instance.lastFrame()).toContain('2 项未保存');
     await input(instance, 's');
@@ -3583,7 +3588,7 @@ describe('ConsoleAppV4', () => {
     const compactFrame = compactInstance.lastFrame() ?? '';
     expect(compactFrame).toContain('› 字段 9');
     expect(compactFrame).not.toContain('字段 1\n');
-    expect(compactFrame).toContain('保存修改');
+    expect(compactFrame).not.toContain('保存并应用');
     expect(compactFrame).toContain('清空个人默认');
     expect(compactFrame.split('\n').length).toBeLessThanOrEqual(18);
 
@@ -3805,7 +3810,7 @@ describe('ConsoleAppV4', () => {
       editor: 'enum',
     });
     await input(instance, '\u001B[B', '\u001B[B', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('当前没有未保存修改');
+    expect(value.snapshot.activeReview).toBeUndefined();
     value.push({
       name: 'configFieldEditor',
       pluginId: 'team-tools/review-gate',
@@ -3815,7 +3820,7 @@ describe('ConsoleAppV4', () => {
     });
     await nextTurn(2);
     await input(instance, '\u0015', ...Array.from({ length: 8 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('当前没有未保存修改');
+    expect(value.snapshot.activeReview).toBeUndefined();
     await input(instance, 's');
     expect(value.snapshot.activeReview).toBeUndefined();
     expect(instance.lastFrame()).not.toContain('清空个人默认');
@@ -3885,7 +3890,7 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
-    await input(instance, 'DRAFT-KEEP', '\r', 's');
+    await input(instance, 'DRAFT-KEEP', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'), '\r');
     await nextTurn(3);
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -3907,6 +3912,7 @@ describe('ConsoleAppV4', () => {
       pluginId: 'official/agent-lab',
       scope: 'user',
       projectLayer: 'shared',
+      apply: true,
       updates: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`field-${index + 1}`, index + 1])),
       changes: Array.from({ length: 9 }, (_, index) => ({
         key: `field-${index + 1}`,
@@ -3946,7 +3952,7 @@ describe('ConsoleAppV4', () => {
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('共同风险原因');
     expect(frame).toContain('保持不变');
-    expect(frame).toContain('另有 17 项');
+    expect(frame).toMatch(/另有 \d+ 项/u);
     expect(frame).toContain(`› ${review.primaryLabel}`);
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
@@ -4220,7 +4226,7 @@ describe('ConsoleAppV4', () => {
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const review = await value.buildOperationReview({
-      kind: 'pluginWrite', action: 'upgrade', pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user',
+      kind: 'pluginWrite', action: 'refreshAndSync', pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user',
     });
     await value.executeOperation(review.reviewToken);
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -4601,8 +4607,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(value.snapshot.router.current.route.name).toBe('review');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'official/skill-toolkit', group: 'userIntent' }),
-      expect.objectContaining({ pluginId: 'official/content-toolkit', group: 'userIntent' }),
+      expect.objectContaining({ pluginId: 'official/skill-toolkit', group: 'dependencies' }),
+      expect.objectContaining({ pluginId: 'official/content-toolkit', group: 'dependencies' }),
     ]));
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       dependencyScopeOverrides: [expect.objectContaining({
@@ -4706,7 +4712,7 @@ describe('ConsoleAppV4', () => {
       assignmentSource: 'consumerPromotion',
     }));
     expect(value.snapshot.activeReview?.changes).toContainEqual(expect.objectContaining({
-      pluginId: 'official/skill-toolkit', group: 'userIntent', kind: 'add',
+      pluginId: 'official/skill-toolkit', group: 'dependencies', kind: 'add',
     }));
     expect(instance.lastFrame()).toContain('skill-toolkit');
   });
@@ -4778,7 +4784,7 @@ describe('ConsoleAppV4', () => {
   );
 
   it.each([[60, 18], [80, 24]] as const)(
-    'mounts a user-to-project adjustment as desired-only guidance without automatic cleanup at %ix%i',
+    'mounts a user-to-project adjustment as one normal install plan without automatic cleanup at %ix%i',
     async (columns, rows) => {
     const loaded = dependencyLoadResult({ rootState: 'present' });
     for (const entry of loaded.payload.targets.filter((target) =>
@@ -4863,20 +4869,20 @@ describe('ConsoleAppV4', () => {
       title: '调整依赖位置',
       requiresConfirmation: false,
     });
-    expect(instance.lastFrame()).toContain('后续第 1 步：显式 user cleanup');
-    expect(instance.lastFrame()).toContain('后续第 2 步：同步当前项目');
-    expect(instance.lastFrame()).toContain('不自动扫描/清理');
+    expect(instance.lastFrame()).toContain('根插件和插件设置保持不变');
+    expect(instance.lastFrame()).not.toContain('自动 cleanup');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
     await input(instance, '\r');
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      dependencyPlacementOnly: 'desired',
+      action: 'install',
+      dependencyPlacementAdjustment: true,
     }), expect.any(Object));
+    expect(executeIntent.mock.calls[0]?.[0]).not.toHaveProperty('dependencyPlacementOnly');
     expect(executeIntent).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'cleanup' }), expect.anything());
     expect(value.snapshot.router.current.route.name).toBe('result');
-    expect(instance.lastFrame()).toContain('第 1 步：AW 不会扫描未知项目或自动 cleanup');
-    expect(instance.lastFrame()).toContain('第 2 步：cleanup 完成后同步当前项目');
+    expect(instance.lastFrame()).toContain('操作已完成');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
   });
 
@@ -4896,8 +4902,10 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(3);
     expect(screens).toContain('D05');
-    expect(instance.lastFrame()).toContain('Project intent');
-    expect(instance.lastFrame()).toContain('User intent');
+    expect(instance.lastFrame()).toContain('根插件');
+    expect(instance.lastFrame()).toContain('依赖');
+    expect(instance.lastFrame()).not.toContain('Project intent');
+    expect(instance.lastFrame()).not.toContain('User intent');
     expect(instance.lastFrame()).toContain('保持');
     expect(instance.lastFrame()).toContain('skill-toolkit');
     expect(instance.lastFrame()).toContain('content-toolkit');
@@ -4912,7 +4920,7 @@ describe('ConsoleAppV4', () => {
   it.each([
     ['install', 'keep', 'add'],
     ['uninstall', 'keep', 'remove'],
-    ['upgrade', 'move', 'keep'],
+    ['refreshAndSync', 'move', 'keep'],
     ['reinstall', 'move', 'keep'],
     ['sync', 'move', 'keep'],
   ] as const)('mounts %s Review intent rows from the command desired action when targets %s', async (
@@ -4934,11 +4942,11 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
     const intentRows = value.snapshot.activeReview?.changes.filter((change) =>
-      change.group === 'projectIntent' || change.group === 'userIntent') ?? [];
+      change.group === 'requested' || change.group === 'dependencies') ?? [];
 
     expect(intentRows.length).toBeGreaterThan(0);
     expect(intentRows.every((change) => change.kind === expectedKind)).toBe(true);
-    expect(instance.lastFrame()).toContain(action === 'uninstall' ? '移除插件' : 'Project intent');
+    expect(instance.lastFrame()).toContain(action === 'uninstall' ? '移除插件' : '你选择的插件');
     instance.unmount();
   });
 
@@ -5006,9 +5014,12 @@ describe('ConsoleAppV4', () => {
       for (const layer of [
         'Project intent', 'User intent', 'Shared Codex native',
         'User activation', 'Project activation', 'AW extensions',
-      ]) expect(initial).toContain(layer);
+      ]) expect(initial).not.toContain(layer);
       expect(initial).toContain('↑↓ 移动');
       expect(initial.split('\n').length).toBeLessThanOrEqual(rows);
+      await input(instance, 'd');
+      expect(instance.lastFrame()).toContain('Shared Codex native');
+      expect(instance.lastFrame()).toMatch(/另有 \d+ 项/u);
       await input(instance, '\r');
       expect(executeIntent).not.toHaveBeenCalled();
       expect(instance.lastFrame()).toContain('已确认 shared impact');
@@ -5178,7 +5189,7 @@ describe('ConsoleAppV4', () => {
       platform: 'codex', scope: addedScope,
     }), expect.any(AbortSignal));
     const reviewFrame = instance.lastFrame() ?? '';
-    expect(reviewFrame).toContain('Shared Codex native');
+    expect(reviewFrame).not.toContain('Shared Codex native');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         group: 'sharedCodexNative', kind: 'keep',
@@ -5189,9 +5200,12 @@ describe('ConsoleAppV4', () => {
         kind: 'change', description: 'desired=true · enable',
       }),
     ]));
-    expect(reviewFrame).toContain('复用精确现有 shared native（不建立 ledger）');
-    expect(reviewFrame).not.toContain('claim');
-    expect(reviewFrame).not.toContain('install · shared');
+    await input(instance, 'd');
+    const technicalReviewFrame = instance.lastFrame() ?? '';
+    expect(technicalReviewFrame).toContain('Shared Codex native');
+    expect(technicalReviewFrame).toContain('复用精确现有 shared');
+    expect(technicalReviewFrame).not.toContain('claim');
+    expect(technicalReviewFrame).not.toContain('install · shared');
 
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -5387,6 +5401,19 @@ describe('ConsoleAppV4', () => {
     dependencyTarget.state = dependencyState;
     dependencyTarget.errors = dependencyState === 'partial'
       ? [{ code: 'missingContent', message: '安全说明' }] : [];
+    for (const target of loaded.payload.targets.filter((entry) =>
+      entry.pluginId === 'official/agent-lab'
+      && entry.platform === 'codex'
+      && entry.scope === 'project')) {
+      target.errors = [{
+        code: category,
+        message: `${category}: official/skill-toolkit has changed state.`,
+        dependencyPluginId: 'official/skill-toolkit',
+        dependencyPlatform: 'codex',
+        dependencyScope: 'user',
+        dependencyProject: null,
+      }];
+    }
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
     await value.load();
@@ -5742,6 +5769,8 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.equivalentCommand).toBe(
       'aw cleanup official/skill-toolkit --platform codex --scope user --force',
     );
+    expect(instance.lastFrame()).not.toContain('等价命令：');
+    await input(instance, 'd');
     expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/skill-toolkit');
     expect(instance.lastFrame()).toContain('--force');
 

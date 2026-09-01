@@ -69,7 +69,6 @@ describe('command wizard', () => {
       selection,
     )).toEqual({ selectable: false, reason: 'live status 不允许 install' });
     for (const [command, state] of [
-      ['upgrade', 'present'],
       ['reinstall', 'partial'],
     ] as const) {
       expect(writeCandidateEligibility(

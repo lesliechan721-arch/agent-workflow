@@ -2,10 +2,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution, PlatformName, Scope } from '../types.js';
+import type { CatalogSourceResolution } from '../types.js';
 import {
-  statusTargetActivation,
-  statusTargetIntent,
   statusTargetOwnershipState,
   statusCommandV7,
   type StatusTargetRevision,
@@ -67,19 +65,15 @@ import {
 import {
   buildConfigGroups,
   buildConfigPage,
-  isPureNativeCodexTarget,
   projectPlatformPlacement,
   type DependencyPlacementReferenceViewModel,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
 } from './model.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
-import {
-  targetCanBeUninstalled,
-  targetHasArtifactCollision,
-} from '../utils/target-eligibility.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
+import { syncCatalogSourceGeneration } from '../utils/catalog-generation-service.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   resolveCatalogOperationContext,
@@ -98,12 +92,6 @@ import {
   MANAGED_CODEX_PACKAGE_NAME,
   MANAGED_CODEX_VERSION,
 } from '../utils/codex-manager.js';
-import {
-  calculatePluginIntentDigest,
-  canonicalizePluginIntentState,
-  readPluginIntentState,
-  writePluginIntentState,
-} from '../utils/plugin-intent-state.js';
 
 async function loadPortablePluginIds(options: {
   context: CliExecutionContext;
@@ -216,6 +204,7 @@ function sourceEvidenceForPlugin(
     manifestDigest: source.manifestDigest,
     snapshotDigest: source.snapshotDigest,
     contentDigest: entry.contentDigest,
+    pluginVersion: entry.version,
     catalogVersion: source.manifest.catalogVersion,
     channel: source.manifest.channel,
   };
@@ -242,7 +231,8 @@ function throwIfWriteReviewStale(result: {
   targetResults: Array<{ errorCode?: string }>;
 }): void {
   const stale = result.targetResults.find((target) =>
-    target.errorCode === 'operationReviewStale');
+    target.errorCode === 'operationReviewStale'
+    || target.errorCode === 'operationPlanStale');
   if (stale) {
     throw operationReviewStale('确认后实际写入计划发生变化。');
   }
@@ -254,165 +244,6 @@ const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], str
 
 function pluginIntent(intent: OperationIntent): intent is Extract<OperationIntent, { pluginId: string }> {
   return 'pluginId' in intent;
-}
-
-function assertIntentIsLegal(
-  intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV7>>['payload']['targets'],
-  revisions: StatusTargetRevision[] = [],
-): void {
-  const platforms: PlatformName[] = intent.platform === 'both'
-    ? ['codex', 'claude']
-    : [intent.platform];
-  for (const platform of platforms) {
-    const platformTargets = targets.filter((target) => target.pluginId === intent.pluginId
-      && target.platform === platform);
-    const selected = platformTargets.find((target) => target.scope === intent.scope)
-      ?? (platform === 'codex' ? platformTargets[0] : undefined);
-    if (!selected || selected.reasons.some((reason) => reason.code === 'unsupportedTarget')) {
-      throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
-    }
-    if (intent.action === 'sync' && platform !== 'codex') {
-      throw new TuiOperationBlockedError('syncPlatformUnsupported', 'sync 只支持 Codex。');
-    }
-    if (intent.dependencyPlacementOnly === 'desired') continue;
-    const otherScope = intent.scope === 'user' ? 'project' : 'user';
-    const otherScopeInstalled = platform === 'codex'
-      ? platformTargets.some((target) =>
-          statusTargetIntent(target).scopes.includes(otherScope)
-          || statusTargetActivation(target)?.[otherScope] === true)
-      : targets.some((target) =>
-          target.platform === platform
-          && target.scope !== intent.scope
-          && (statusTargetOwnershipState(target) === 'present'
-            || statusTargetOwnershipState(target) === 'partial'));
-    const pureNativeCodex = isPureNativeCodexTarget(selected);
-    if (intent.action === 'install' && otherScopeInstalled && !pureNativeCodex
-      && !intent.dependencyPlacementAdjustment) {
-      throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
-    }
-    if ((intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')
-      && targetHasArtifactCollision(selected)) {
-      throw new TuiOperationBlockedError(
-        'artifactCollision',
-        '所选位置存在输出冲突。请先移除或迁移冲突内容。',
-      );
-    }
-    const selectedScopeInstalled = platform === 'codex'
-      ? statusTargetIntent(selected).scopes.includes(intent.scope)
-        || statusTargetActivation(selected)?.[intent.scope] === true
-      : selected.state !== 'absent';
-    if (intent.action === 'install' && selectedScopeInstalled
-      && !intent.dependencyPlacementAdjustment) {
-      throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
-    }
-    if (intent.action === 'sync'
-      && selected.state !== 'needsSync'
-      && !selected.recoveryActions.some((action) => action.command === 'sync')) {
-      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不需要同步。');
-    }
-    const revision = revisions.find((entry) => entry.pluginId === intent.pluginId
-      && entry.platform === platform && entry.scope === intent.scope)?.revision;
-    if (intent.action === 'upgrade'
-      && (selected.state !== 'ready' || revision?.state !== 'upgradeAvailable')) {
-      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
-    }
-    if (intent.action === 'uninstall' && !targetCanBeUninstalled(selected)) {
-      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
-    }
-    if ((intent.action === 'reinstall' || intent.action === 'cleanup') && selected.state === 'absent') {
-      throw new TuiOperationBlockedError('targetAbsent', '所选位置没有可处理的 AW 安装。');
-    }
-  }
-}
-
-async function assertTypedIssueOrigin(
-  intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
-  targets: Awaited<ReturnType<typeof statusCommandV7>>['payload']['targets'],
-): Promise<void> {
-  if (!intent.originIssue) return;
-  const stale = (message: string): never => {
-    throw new TuiOperationBlockedError('operationReviewStale', `operationReviewStale: ${message}`);
-  };
-  const selected = targets.find((target) =>
-    target.pluginId === intent.pluginId
-    && target.platform === intent.platform
-    && target.scope === intent.scope)
-    ?? targets.find((target) => target.pluginId === intent.pluginId
-      && target.platform === 'codex');
-  if (intent.originIssue.category === 'dependencyMissing') {
-    if (intent.originIssue.actionId !== 'installDependency'
-      || intent.action !== 'install' || !selected || selected.state !== 'absent') {
-      stale('原缺失依赖问题已变化。');
-    }
-  }
-  else if (intent.originIssue.category === 'dependencyNotReady') {
-    if (intent.originIssue.actionId !== 'reinstallDependency'
-      || intent.action !== 'reinstall' || !selected
-      || (selected.state !== 'needsSync' && selected.state !== 'blocked')) {
-      stale('原依赖安装问题已变化。');
-    }
-  }
-  else if (intent.originIssue.category === 'incompleteInstallation') {
-    if (!selected || !targetCanBeUninstalled(selected) || selected.state !== 'needsSync'
-      || !((intent.originIssue.actionId === 'reinstall' && intent.action === 'reinstall')
-        || (intent.originIssue.actionId === 'remove' && intent.action === 'uninstall'))) {
-      stale('原安装问题已变化。');
-    }
-    return;
-  }
-  else if (intent.originIssue.category === 'sourceUnavailable') {
-    if (intent.originIssue.actionId !== 'cleanup' || intent.action !== 'cleanup'
-      || !selected || !selected.reasons.some((reason) => reason.code === 'bundleUnavailable')) {
-      stale('原 Catalog 缺失插件问题已变化。');
-    }
-    return;
-  }
-  else if (intent.originIssue.category === 'sourceMissing') {
-    if (intent.originIssue.actionId !== 'cleanup' || intent.action !== 'cleanup'
-      || !selected || !selected.reasons.some((reason) => reason.code === 'sourceMissing')) {
-      stale('原来源缺失问题已变化。');
-    }
-    return;
-  }
-  else if (intent.originIssue.category === 'scopeConflict') {
-    const installedScopes = new Set<Scope>();
-    for (const target of targets.filter((candidate) =>
-      candidate.pluginId === intent.pluginId && candidate.platform === intent.platform)) {
-      const intentState = statusTargetIntent(target);
-      const activation = statusTargetActivation(target);
-      if (statusTargetOwnershipState(target) === 'present'
-        || statusTargetOwnershipState(target) === 'partial') installedScopes.add(target.scope);
-      for (const scope of intentState.scopes) installedScopes.add(scope);
-      if (activation?.user === true) installedScopes.add('user');
-      if (activation?.project === true) installedScopes.add('project');
-    }
-    const correctBranch = intent.action === 'uninstall'
-      && ((intent.originIssue.actionId === 'keepUserScope' && intent.scope === 'project')
-        || (intent.originIssue.actionId === 'keepProjectScope' && intent.scope === 'user'));
-    if (!correctBranch || !installedScopes.has('user') || !installedScopes.has('project')) {
-      stale('原位置冲突已变化。');
-    }
-    return;
-  }
-  else stale('这个问题没有安全的自动写入动作。');
-
-  const origin = intent.originIssue;
-  if (!origin.consumerPluginId || !origin.consumerSourceIdentity || !origin.consumerPlatform
-    || !origin.consumerScope || !origin.dependencyPluginId || !origin.dependencyPlatform
-    || !origin.dependencyScope || origin.dependencyProject === undefined
-    || origin.dependencyPluginId !== intent.pluginId
-    || origin.dependencyPlatform !== intent.platform || origin.dependencyScope !== intent.scope) {
-    stale('依赖问题来源缺少稳定目标证据。');
-  }
-  const consumer = targets.find((target) =>
-    target.pluginId === origin.consumerPluginId
-    && target.sourceIdentity === origin.consumerSourceIdentity
-    && target.platform === origin.consumerPlatform
-    && target.scope === origin.consumerScope);
-  const consumerError = consumer?.reasons.some((reason) =>
-    reason.code === origin.category && reason.message.includes(origin.dependencyPluginId!));
-  if (!consumer || !consumerError) stale('原 consumer 依赖问题已消失或变化。');
 }
 
 interface DependencyCatalogNode {
@@ -1026,12 +857,6 @@ export function createTuiControllerDependencies(
       throw operationReviewStale('准备确认信息期间来源配置发生变化。');
     }
     if (catalogOperationError) throw catalogOperationError;
-    if (intent.kind === 'pluginWrite') {
-      await assertTypedIssueOrigin(intent, status.payload.targets);
-      if (preparation?.validateIntent) {
-        assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
-      }
-    }
     if (!offlineCleanupReason && !catalogOperation) {
       catalogOperation = await resolveCatalogOperationContext({
         sourceIds: [parsePluginId(intent.pluginId).sourceId!],
@@ -1122,7 +947,7 @@ export function createTuiControllerDependencies(
     if (intent.kind === 'pluginWrite') {
       const command = {
         install: installWriteCommand,
-        upgrade: syncWriteCommand,
+        refreshAndSync: syncWriteCommand,
         reinstall: reinstallWriteCommand,
         uninstall: uninstallWriteCommand,
         cleanup: cleanupWriteCommand,
@@ -1151,15 +976,11 @@ export function createTuiControllerDependencies(
         } : {}),
       });
       signal?.throwIfAborted();
-      codexReconcilePlans = intent.dependencyPlacementOnly === 'desired'
-        ? undefined
-        : preview?.codexReconcilePlans;
-      operationPlan = intent.dependencyPlacementOnly === 'desired'
-        ? undefined
-        : preview?.operationPlan;
+      codexReconcilePlans = preview?.codexReconcilePlans;
+      operationPlan = preview?.operationPlan;
       if (hasDeclaredDependencies
         && (intent.action === 'install'
-          || intent.action === 'upgrade'
+          || intent.action === 'refreshAndSync'
           || intent.action === 'reinstall'
           || intent.action === 'sync')) {
         dependencyPlan = preview.dependencyPlan;
@@ -1175,7 +996,7 @@ export function createTuiControllerDependencies(
         }
       }
       const managerPreview = preview?.codexManagerPreview;
-      if (managerPreview?.state === 'blocked' && intent.dependencyPlacementOnly !== 'desired') {
+      if (managerPreview?.state === 'blocked') {
         const message = managerPreview.code === 'codexSystemCliUnsupported'
           ? '系统 Codex CLI 版本不受支持。请升级官方 Codex CLI 后重试。'
           : 'AW-managed Codex runtime 当前不可用。请重试、升级 AW，或安装官方 Codex CLI。';
@@ -1184,8 +1005,7 @@ export function createTuiControllerDependencies(
           `${managerPreview.code}: ${message}`,
         );
       }
-      if (managerPreview && managerPreview.state !== 'blocked'
-        && intent.dependencyPlacementOnly !== 'desired') {
+      if (managerPreview) {
         codexManager = {
           state: managerPreview.state,
           packageName: MANAGED_CODEX_PACKAGE_NAME,
@@ -1197,21 +1017,6 @@ export function createTuiControllerDependencies(
     }
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
-    let projectIntentDigest: string | undefined;
-    if (intent.kind === 'pluginWrite' && intent.dependencyPlacementOnly === 'desired') {
-      if (intent.scope !== 'project') {
-        throw new TuiOperationBlockedError(
-          'dependencyPlacementScopeInvalid',
-          '缩小依赖位置只能更新当前项目 desired intent。',
-        );
-      }
-      projectIntentDigest = calculatePluginIntentDigest(await readPluginIntentState({
-        scope: 'project',
-        cwd: context.cwd,
-        env: context.env,
-      }));
-      signal?.throwIfAborted();
-    }
     const evidenceTargets = intent.kind === 'configSave' || intent.kind === 'configReset'
       ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
       : status.payload.targets;
@@ -1232,7 +1037,6 @@ export function createTuiControllerDependencies(
       source: selected.source,
       ...(offlineCleanup ? { offlineCleanup } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
-      ...(projectIntentDigest ? { projectIntentDigest } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(operationPlan ? { operationPlan } : {}),
       ...(codexManager ? { codexManager } : {}),
@@ -1280,7 +1084,6 @@ export function createTuiControllerDependencies(
         inventoryComplete: true,
         installationCount: 0,
         configCount: 0,
-        lifecycleCount: 0,
         marketplaceCount: 0,
         dependencies: [],
       };
@@ -1292,10 +1095,36 @@ export function createTuiControllerDependencies(
         now: options.now ?? Date.now,
       });
       try {
-        return await captureEvidence(intent, signal, {
+        const preparationWarnings: string[] = [];
+        if (intent.kind === 'pluginWrite' && intent.action === 'refreshAndSync') {
+          await reporter.emit('refresh');
+          const packageInfo = await readCliPackageInfo();
+          const sourceId = parsePluginId(intent.pluginId).sourceId!;
+          await withAwHomeMutationLock({
+            env: context.env,
+            action: async () => syncCatalogSourceGeneration({
+              sourceId,
+              cliVersion: packageInfo.version,
+              env: context.env,
+              signal,
+            }),
+          }).catch((error) => {
+            preparationWarnings.push(
+              `catalogSourceRefreshFailed: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+          sessionCatalogOperationContext = undefined;
+          sessionStatusResult = undefined;
+          validatedStoreEntries.clear();
+          validatingStoreEntries.clear();
+        }
+        const evidence = await captureEvidence(intent, signal, {
           reporter,
           validateIntent: true,
-        });
+        }, createOperationInventoryReader(), intent.kind === 'pluginWrite'
+          && intent.action === 'refreshAndSync');
+        if (preparationWarnings.length > 0) evidence.preparationWarnings = preparationWarnings;
+        return evidence;
       } finally {
         await reporter.finish();
       }
@@ -1342,54 +1171,10 @@ export function createTuiControllerDependencies(
       }
       if (intent.kind !== 'pluginWrite') return;
       signal.throwIfAborted();
-      const packageInfo = await readCliPackageInfo();
-      const pluginIds = [...new Set([intent.pluginId,
-        ...(intent.originIssue?.consumerPluginId ? [intent.originIssue.consumerPluginId] : [])])];
-      const offlineCleanup = intent.action === 'cleanup'
-        && intent.originIssue?.actionId === 'cleanup'
-        && (intent.originIssue.category === 'sourceMissing'
-          || intent.originIssue.category === 'sourceUnavailable');
-      const sourceIds = pluginIds.map((pluginId) => parsePluginId(pluginId).sourceId!);
-      let catalogOperation = offlineCleanup
-        ? undefined
-        : sessionCatalogOperationContext
-          ? selectCatalogOperationContext(sessionCatalogOperationContext, sourceIds)
-          : undefined;
-      const statusOptions = {
-        plugins: pluginIds,
-        platform: intent.platform,
-        cwd: context.cwd,
-        env: context.env,
-        cliVersion: packageInfo.version,
-        inventoryCatalogSourceReferences: readInventory,
-      };
-      let status = await statusCommandV7({
-        ...statusOptions,
-        ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
-      });
-      const platforms: PlatformName[] = intent.platform === 'both'
-        ? ['codex', 'claude']
-        : [intent.platform];
-      const missingSelectedTarget = platforms.some((platform) =>
-        !status.payload.targets.some((target) => target.pluginId === intent.pluginId
-          && target.platform === platform
-          && (platform === 'codex' || target.scope === intent.scope)));
-      if (!offlineCleanup && !catalogOperation && missingSelectedTarget) {
-        catalogOperation = await resolveCatalogOperationContext({
-          sourceIds,
-          env: context.env,
-          validatedStoreEntries,
-          validatingStoreEntries,
-          signal,
-        });
-        status = await statusCommandV7({
-          ...statusOptions,
-          catalogOperationContext: catalogOperation,
-        });
+      const parsed = parsePluginId(intent.pluginId);
+      if (!parsed.sourceId || !parsed.pluginName) {
+        throw new TuiOperationBlockedError('invalidPluginId', '操作必须使用 canonical pluginId。');
       }
-      signal.throwIfAborted();
-      await assertTypedIssueOrigin(intent, status.payload.targets);
-      assertIntentIsLegal(intent, status.payload.targets, status.targetRevisions);
     },
     captureEvidence,
     logError(_error, code, logContext) {
@@ -1607,7 +1392,8 @@ export function createTuiControllerDependencies(
             operationInventory,
             true,
           );
-          if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
+          if (intent.kind !== 'pluginWrite'
+            && operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
           const catalogOperation = catalogOperationByEvidence.get(currentEvidence);
@@ -1617,29 +1403,6 @@ export function createTuiControllerDependencies(
           }
           await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
           if (intent.kind === 'pluginWrite') {
-            if (intent.dependencyPlacementOnly === 'desired') {
-              const plan = currentEvidence.dependencyPlan;
-              if (!plan || !expectedEvidence.projectIntentDigest) {
-                throw operationReviewStale('确认信息缺少依赖位置或 project intent 证据。');
-              }
-              const location = { scope: 'project' as const, cwd: context.cwd, env: context.env };
-              const currentIntent = await readPluginIntentState(location);
-              if (calculatePluginIntentDigest(currentIntent) !== expectedEvidence.projectIntentDigest) {
-                throw operationReviewStale('确认后 project desired intent 发生变化。');
-              }
-              const plannedKeys = new Set(plan.targets.map((target) =>
-                `${target.pluginId}\0${target.platform}`));
-              const nextIntent = canonicalizePluginIntentState({
-                ...currentIntent,
-                dependencyScopeOverrides: [
-                  ...currentIntent.dependencyScopeOverrides.filter((override) =>
-                    !plannedKeys.has(`${override.pluginId}\0${override.platform}`)),
-                  ...plan.scopeOverrides,
-                ],
-              });
-              await writePluginIntentState(location, nextIntent);
-              return { dependencyPlan: plan, desiredPlacementUpdated: true };
-            }
             const options = {
               cwd: context.cwd,
               platform: intent.platform,
@@ -1654,7 +1417,7 @@ export function createTuiControllerDependencies(
             };
             const command = {
               install: installWriteCommand,
-              upgrade: syncWriteCommand,
+              refreshAndSync: syncWriteCommand,
               reinstall: reinstallWriteCommand,
               uninstall: uninstallWriteCommand,
               cleanup: cleanupWriteCommand,
@@ -1669,8 +1432,8 @@ export function createTuiControllerDependencies(
               ...context,
               awHomeMutationToken,
               inventoryCatalogSourceReferences: operationInventory,
-              ...(currentEvidence.operationPlan
-                ? { expectedPlanFingerprint: currentEvidence.operationPlan.planFingerprint }
+              ...(expectedEvidence.operationPlan
+                ? { expectedPlanFingerprint: expectedEvidence.operationPlan.planFingerprint }
                 : {}),
               expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
               ...(catalogOperation ? {
@@ -1704,11 +1467,13 @@ export function createTuiControllerDependencies(
                   currentSource,
                   sourceEvidenceForPlugin(source, plugin.manifest.name),
                 );
-                const applyTargets = currentEvidence.config?.affectedTargets.map((target) => ({
-                  pluginName: plugin.manifest.name,
-                  platform: target.platform,
-                  scope: target.scope,
-                })) ?? [];
+                const applyTargets = intent.kind === 'configSave' && intent.apply
+                  ? currentEvidence.config?.affectedTargets.map((target) => ({
+                      pluginName: plugin.manifest.name,
+                      platform: target.platform,
+                      scope: target.scope,
+                    })) ?? []
+                  : [];
                 const result = intent.kind === 'configSave'
                   ? await applyPluginConfigWrite({
                       plugin,
@@ -1748,6 +1513,7 @@ export function createTuiControllerDependencies(
                       },
                       awHomeMutationToken,
                       applyTargets,
+                      apply: false,
                     });
                 return result;
               },

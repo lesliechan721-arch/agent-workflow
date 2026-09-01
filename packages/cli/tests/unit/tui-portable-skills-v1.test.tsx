@@ -597,7 +597,7 @@ describe('Portable Skills TUI V1', () => {
     });
     value.replace({ name: 'configLayer', pluginId: 'official/toolkit' });
     const operation = await value.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared',
+      kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared', apply: true,
       updates: { token: 'private' }, privateKeys: ['token'],
     });
 

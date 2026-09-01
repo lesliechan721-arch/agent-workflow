@@ -39,7 +39,6 @@ export function writeCandidateEligibility(
     install: target.state === 'absent' && !targetHasArtifactCollision(target),
     reinstall: target.state === 'needsSync'
       && !targetHasArtifactCollision(target),
-    upgrade: target.state === 'ready' && !targetHasArtifactCollision(target),
     uninstall: targetCanBeUninstalled(target),
     cleanup: target.state !== 'absent',
     'config:list': false,

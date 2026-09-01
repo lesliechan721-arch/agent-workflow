@@ -125,6 +125,9 @@ export type StatusV7DependencyReadinessState =
 
 interface StatusV7DependencyReadiness {
   dependencyPluginId: string;
+  dependencyPlatform: PlatformName;
+  dependencyScope: Scope;
+  dependencyProject: 'current' | null;
   state: StatusV7DependencyReadinessState;
   rootIssueId?: string;
   rootIssueCode?: string;
@@ -143,6 +146,9 @@ export interface StatusV7Reason {
   severity: 'warning' | 'blocking';
   collision?: ArtifactCollisionEvidence;
   dependencyPluginId?: string;
+  dependencyPlatform?: PlatformName;
+  dependencyScope?: Scope;
+  dependencyProject?: 'current' | null;
   rootIssueId?: string;
   rootIssueCode?: string;
 }
@@ -1438,6 +1444,9 @@ export async function statusCommandV7(options: {
                           const rootIssueId = `dependencyMissing:${dependencyId}:${platform}:${scope}`;
                           dependencyReadiness.push({
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope: scope,
+                            dependencyProject: scope === 'project' ? 'current' : null,
                             state: 'absent',
                             rootIssueId,
                             rootIssueCode: 'dependencyMissing',
@@ -1446,6 +1455,9 @@ export async function statusCommandV7(options: {
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is not available in the current source snapshot.`,
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope: scope,
+                            dependencyProject: scope === 'project' ? 'current' : null,
                             rootIssueId,
                             rootIssueCode: 'dependencyMissing',
                           }, 'partial'));
@@ -1459,6 +1471,9 @@ export async function statusCommandV7(options: {
                           const rootIssueId = `awCapabilityUnsupported:${dependencyId}`;
                           dependencyReadiness.push({
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope: scope,
+                            dependencyProject: scope === 'project' ? 'current' : null,
                             state: 'error',
                             rootIssueId,
                             rootIssueCode: 'awCapabilityUnsupported',
@@ -1467,6 +1482,9 @@ export async function statusCommandV7(options: {
                             code: 'awCapabilityUnsupported',
                             message: `awCapabilityUnsupported: ${dependencyId} requires unsupported AW capabilities: ${dependencySupport.missing.join(', ')}.`,
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope: scope,
+                            dependencyProject: scope === 'project' ? 'current' : null,
                             rootIssueId,
                             rootIssueCode: 'awCapabilityUnsupported',
                           }, 'partial'));
@@ -1489,6 +1507,7 @@ export async function statusCommandV7(options: {
                         const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
                         let dependencyResult: {
                           state: StatusV7DependencyReadinessState;
+                          dependencyScope?: Scope;
                           rootIssueId?: string;
                           rootIssueCode?: string;
                         } = {
@@ -1552,6 +1571,7 @@ export async function statusCommandV7(options: {
                               if (collision) {
                                 return {
                                   state: 'blockedByCollision' as const,
+                                  dependencyScope,
                                   rootIssueId: collisionRootIssueId({
                                     pluginId: dependencyId,
                                     platform,
@@ -1566,6 +1586,7 @@ export async function statusCommandV7(options: {
                                   : dependencyLiveState === 'absent' ? 'absent' as const
                                     : dependencyLiveState === 'partial' ? 'incomplete' as const
                                       : 'error' as const,
+                                dependencyScope,
                                 ...(dependencyLiveState === 'partial'
                                   ? {
                                       rootIssueId: `incompleteInstallation:${dependencyId}:${platform}:${dependencyScope}`,
@@ -1580,6 +1601,7 @@ export async function statusCommandV7(options: {
                               };
                             }).catch(() => ({
                               state: 'error' as const,
+                              dependencyScope,
                               rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
                               rootIssueCode: 'diagnostic',
                             }));
@@ -1602,14 +1624,20 @@ export async function statusCommandV7(options: {
                           }
                         }
                         if (dependencyResult.state === 'absent') {
+                          const dependencyScope = dependencyResult.dependencyScope ?? placements[0]!;
                           dependencyResult = {
                             state: 'absent',
-                            rootIssueId: `dependencyMissing:${dependencyId}:${platform}:${scope}`,
+                            dependencyScope,
+                            rootIssueId: `dependencyMissing:${dependencyId}:${platform}:${dependencyScope}`,
                             rootIssueCode: 'dependencyMissing',
                           };
                         }
+                        const dependencyScope = dependencyResult.dependencyScope ?? placements[0]!;
                         dependencyReadiness.push({
                           dependencyPluginId: dependencyId,
+                          dependencyPlatform: platform,
+                          dependencyScope,
+                          dependencyProject: dependencyScope === 'project' ? 'current' : null,
                           ...dependencyResult,
                         });
                         if (dependencyResult.state === 'absent') {
@@ -1617,6 +1645,9 @@ export async function statusCommandV7(options: {
                             code: 'dependencyMissing',
                             message: `dependencyMissing: ${dependencyId} is absent from its required live placement.`,
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope,
+                            dependencyProject: dependencyScope === 'project' ? 'current' : null,
                             rootIssueId: dependencyResult.rootIssueId,
                             rootIssueCode: dependencyResult.rootIssueCode,
                           }, 'partial'));
@@ -1625,6 +1656,9 @@ export async function statusCommandV7(options: {
                             code: 'dependencyNotReady',
                             message: `dependencyNotReady: ${dependencyId} is not ready at its required live placement.`,
                             dependencyPluginId: dependencyId,
+                            dependencyPlatform: platform,
+                            dependencyScope,
+                            dependencyProject: dependencyScope === 'project' ? 'current' : null,
                             ...(dependencyResult.rootIssueId
                               ? { rootIssueId: dependencyResult.rootIssueId }
                               : {}),
@@ -2443,6 +2477,9 @@ export async function statusCommandV7(options: {
         key: dependency.dependencyPluginId,
         state: dependency.state,
         metadata: {
+          platform: dependency.dependencyPlatform,
+          scope: dependency.dependencyScope,
+          project: dependency.dependencyProject ?? 'none',
           ...(dependency.rootIssueId ? { rootIssueId: dependency.rootIssueId } : {}),
           ...(dependency.rootIssueCode ? { rootIssueCode: dependency.rootIssueCode } : {}),
         },

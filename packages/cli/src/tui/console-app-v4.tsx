@@ -12,6 +12,10 @@ import {
 import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
 import { canonicalizeCatalogGitUrl } from '../utils/catalog-source-identity.js';
 import { normalizePortableAgents } from '../portable/commands.js';
+import {
+  buildAllowedConfigActions,
+  selectLifecycleRetryAction,
+} from '../commands/operation-planner.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   ActionRow,
@@ -204,25 +208,6 @@ function configPageMatches(
 
 function platformLabel(platform: PlatformName): string {
   return platform === 'codex' ? 'Codex' : 'Claude Code';
-}
-
-function partialRetryAction(
-  operationKind: OperationIntent['kind'] | undefined,
-  originalAction: Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined,
-  targetState: 'absent' | 'ready' | 'needsSync' | 'orphaned' | 'blocked' | undefined,
-): Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined {
-  if (!targetState) return undefined;
-  if (operationKind === 'configSave' || operationKind === 'configReset') {
-    return targetState === 'absent' ? undefined : 'reinstall';
-  }
-  if (originalAction === 'uninstall') {
-    return targetState !== 'absent' && targetState !== 'blocked' ? 'uninstall' : undefined;
-  }
-  if (originalAction === 'cleanup') return targetState === 'absent' ? undefined : 'cleanup';
-  if (targetState === 'absent') return 'install';
-  if (targetState === 'needsSync') return 'reinstall';
-  if (targetState === 'blocked') return undefined;
-  return originalAction === 'upgrade' ? 'upgrade' : 'reinstall';
 }
 
 function scopeLabel(scope: Scope): string {
@@ -901,7 +886,8 @@ export function resolveConsoleV4ScreenId(
       ? snapshot.result.summary.targets
       : snapshot.result.state === 'blocked' && snapshot.result.code === 'operationFailed'
         ? snapshot.result.summary?.targets : undefined;
-    if (dependencyTargets?.some((target) => target.relation)) {
+    if (dependencyTargets?.some((target) =>
+      target.relation !== undefined && target.relation !== 'requested')) {
       return snapshot.result.state === 'succeeded' ? 'D07' : 'D08';
     }
   }
@@ -923,7 +909,7 @@ export function resolveConsoleV4ScreenId(
     : snapshot.activeReview?.operationKind === 'configReset'
       ? 'C16'
       : snapshot.activeReview?.operationKind === 'pluginWrite'
-        && (snapshot.activeReview.pluginAction === 'upgrade' || snapshot.activeReview.pluginAction === 'reinstall')
+        && (snapshot.activeReview.pluginAction === 'refreshAndSync' || snapshot.activeReview.pluginAction === 'reinstall')
         ? 'P18'
         : snapshot.activeReview?.operationKind === 'pluginWrite'
           && (snapshot.activeReview.pluginAction === 'uninstall' || snapshot.activeReview.pluginAction === 'cleanup')
@@ -1742,7 +1728,7 @@ export function ConsoleAppV4(props: {
         };
       });
   };
-  const beginConfigSave = async (): Promise<void> => {
+  const beginConfigSave = async (apply: boolean): Promise<void> => {
     if (!configRoute || configRoute.layer.scope === 'effective' || !currentConfigPage || !dirty) return;
     const fields = currentConfigPage.groups.flatMap((group) => group.fields);
     try {
@@ -1751,6 +1737,7 @@ export function ConsoleAppV4(props: {
         pluginId: configRoute.pluginId,
         scope: configRoute.layer.scope,
         projectLayer: configRoute.layer.projectLayer,
+        apply,
         updates: draftUpdates,
         removeKeys: draftRemoves,
         sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
@@ -2618,8 +2605,7 @@ export function ConsoleAppV4(props: {
     title = `设置 ${target?.displayName ?? route.dependencyPluginId} 的位置`;
     description = target?.explanation ?? '依赖位置已变化。请返回重新检查。';
     actions = (['project', 'user'] as const).map((candidateScope): ActionItem => {
-      const unavailable = !target?.allowedScopes.includes(candidateScope)
-        || target.minimumScope === 'user' && candidateScope === 'project';
+      const unavailable = !target?.allowedScopes.includes(candidateScope);
       return {
         label: scopeLabel(candidateScope),
         selected: target?.scope === candidateScope,
@@ -2769,7 +2755,7 @@ export function ConsoleAppV4(props: {
         status: 'error',
         run: () => beginScopeConflictRecovery(action),
       };
-      if (action.id === 'upgrade') return { label: `升级到 ${action.availableVersion}…`, description: '使用当前来源中的版本重建', run: () => beginReview({ kind: 'pluginWrite', action: 'upgrade', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'refreshAndSync') return { label: `刷新并同步到 ${action.availableVersion}…`, description: '先刷新相关来源，再对新 Active 内容进行 Review', run: () => beginReview({ kind: 'pluginWrite', action: 'refreshAndSync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'sync') return {
         label: '同步 desired intent…',
         description: placement?.state === 'installed'
@@ -2782,6 +2768,7 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'reinstall') return { label: placement?.state === 'installed' && placement.health === 'incomplete' ? '重新连接缺失内容…' : '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
+      if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容…`, description: '只清理这个插件目标的 AW-owned 内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'technical') return typedIssue
         ? { label: '查看对应问题', description: typedIssue.explanation, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }
         : { label: placement?.state === 'installed' && placement.health === 'error' ? '查看安全技术详情' : placement?.state === 'installed' && placement.health === 'incomplete' ? '查看影响' : '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) };
@@ -2955,7 +2942,11 @@ export function ConsoleAppV4(props: {
                 }),
           }));
       const operationActions: ActionItem[] = readonly ? [] : [
-        { label: '保存修改', description: dirty ? '查看安全变更汇总' : '当前没有未保存修改', disabled: dirty ? undefined : '当前没有未保存修改', run: beginConfigSave },
+        ...buildAllowedConfigActions(dirty).map((action): ActionItem => ({
+          label: action.label,
+          description: action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
+          run: () => beginConfigSave(action.apply),
+        })),
         ...(currentConfigPage.storedCount > 0 ? [{
           label: route.layer.scope === 'user'
             ? '清空个人默认…'
@@ -3259,7 +3250,7 @@ export function ConsoleAppV4(props: {
     description = sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整，不能把未知引用当作零。' : '仍有内容依赖这个来源。';
     actions = [{ label: sourceDependenciesExpanded ? '收起依赖内容' : '查看依赖内容', description: '只显示插件、来源、平台、位置和类别聚合', run: () => setSourceDependenciesExpanded((value) => !value) }, { label: '返回来源详情', run: back }];
     const countLabel = (value: number | undefined, unit: string): string => value === undefined ? '未知' : `${value} ${unit}`;
-    content = <Box flexDirection="column"><Callout status="error" title={sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'} /><SectionCard title="引用汇总"><StaticRow title="安装位置" meta={countLabel(sourceReferenceSummary?.installationCount, '个')} /><StaticRow title="插件设置" meta={countLabel(sourceReferenceSummary?.configCount, '份')} /><StaticRow title="生命周期状态" meta={countLabel(sourceReferenceSummary?.lifecycleCount, '个')} /><StaticRow title="Marketplace" meta={countLabel(sourceReferenceSummary?.marketplaceCount, '个')} />{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, Math.max(1, pageActionBudget(10))).map((dependency, index) => <StaticRow key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} title={`${dependency.category} · ${dependency.pluginId ?? dependency.sourceId ?? '身份未知'}`} meta={`${dependency.platform ? platformLabel(dependency.platform) : ''}${dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}`} />) : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><Callout status="error" title={sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'} /><SectionCard title="引用汇总"><StaticRow title="安装位置" meta={countLabel(sourceReferenceSummary?.installationCount, '个')} /><StaticRow title="插件设置" meta={countLabel(sourceReferenceSummary?.configCount, '份')} /><StaticRow title="Marketplace" meta={countLabel(sourceReferenceSummary?.marketplaceCount, '个')} />{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, Math.max(1, pageActionBudget(10))).map((dependency, index) => <StaticRow key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} title={`${dependency.category} · ${dependency.pluginId ?? dependency.sourceId ?? '身份未知'}`} meta={`${dependency.platform ? platformLabel(dependency.platform) : ''}${dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}`} />) : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'issueList') {
     const issues = props.controller.listUserIssues();
     breadcrumb = '需要处理';
@@ -3475,9 +3466,13 @@ export function ConsoleAppV4(props: {
     breadcrumb = `${labels[0]} / 准备确认`;
     context = '只读';
     title = preparation.state === 'failed' ? '无法准备确认信息' : labels[1]!;
+    const refreshPreparation = preparation.intent.kind === 'pluginWrite'
+      && preparation.intent.action === 'refreshAndSync';
     description = preparation.state === 'failed'
       ? preparation.message ?? '无法准备确认信息。请返回检查选择，或重试。'
-      : '这个阶段只读取和验证状态，不会修改任何安装或设置。';
+      : refreshPreparation
+        ? '先刷新相关来源的弱 Active 状态，再读取并验证新的同步计划；不会修改插件安装或设置。'
+        : '这个阶段只读取和验证状态，不会修改任何安装或设置。';
     help = preparation.state === 'running'
       ? 'Esc 取消 · Ctrl-C 完成后退出'
       : '↑↓ 移动 · Enter 选择 · Esc 返回';
@@ -3577,7 +3572,12 @@ export function ConsoleAppV4(props: {
           { key: 'kept', label: '保持不变', protectedCount: true, changes: review.changes.filter((change) => change.kind === 'keep') },
           { key: 'changes', label: undefined, protectedCount: false, changes: review.changes.filter((change) => change.kind !== 'warning' && change.kind !== 'keep') },
         ];
-    const visibleSpecs = groupedSpecs.filter((group) => group.changes.length > 0);
+    const technicalGroups = new Set([
+      'projectIntent', 'userIntent', 'sharedCodexNative',
+      'userActivation', 'projectActivation', 'awExtensions', 'runtime',
+    ]);
+    const visibleSpecs = groupedSpecs.filter((group) => group.changes.length > 0
+      && !technicalGroups.has(group.key));
     const headingLines = compressedReview ? 0 : visibleSpecs.filter((group) => group.label).length;
     const staticRowBudget = Math.max(visibleSpecs.length, responsiveBudget(7, 12) - headingLines);
     const allocations = new Map<string, number>(visibleSpecs.map((group) => [group.key, 1]));
@@ -3629,8 +3629,13 @@ export function ConsoleAppV4(props: {
       size.rows - 6 - 3 - (review.equivalentCommand ? 1 : 0) - actions.length - technicalCardRows);
     const prioritizedTechnicalChanges = [
       ...review.changes.filter((change) => change.kind === 'warning'),
-      ...review.changes.filter((change) => change.group === 'portableTarget'),
-      ...review.changes.filter((change) => change.kind !== 'warning' && change.group !== 'portableTarget'),
+      ...review.changes.filter((change) => change.kind !== 'warning'
+        && change.group !== undefined && technicalGroups.has(change.group)),
+      ...review.changes.filter((change) => change.kind !== 'warning'
+        && change.group === 'portableTarget'),
+      ...review.changes.filter((change) => change.kind !== 'warning'
+        && change.group !== 'portableTarget'
+        && (change.group === undefined || !technicalGroups.has(change.group))),
     ];
     const visibleTechnicalChanges = prioritizedTechnicalChanges.slice(0, technicalChangeBudget);
     const hiddenTechnicalChanges = review.changes.length - visibleTechnicalChanges.length;
@@ -3645,9 +3650,8 @@ export function ConsoleAppV4(props: {
         compact
       />;
     });
-    const showEquivalentCommand = Boolean(review.equivalentCommand
-      && (!review.requiresConfirmation || showTechnical));
-    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! Shared impact 需要显式确认" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+    const showEquivalentCommand = Boolean(review.equivalentCommand && showTechnical);
+    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! Shared impact 需要显式确认" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
@@ -3655,8 +3659,10 @@ export function ConsoleAppV4(props: {
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation';
     const issueOperation = snapshot.activeReview?.originIssue;
     breadcrumb = portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    title = portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题' : sourceOperation ? '正在保存来源配置' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
-    description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '只原子保存来源配置，不访问网络。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
+    const configApply = snapshot.activeReview?.operationKind === 'configSave'
+      && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
+    title = portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题' : sourceOperation ? '正在保存来源配置' : configOperation ? configApply ? '正在保存并应用设置' : '正在保存设置' : '正在执行插件操作';
+    description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '只原子保存来源配置，不访问网络。' : configOperation ? configApply ? '先保存所选层，再重新应用当前可见安装位置。' : '只保存所选设置层。' : '请勿关闭当前终端。';
     help = 'Ctrl-C 完成后退出';
     const progress = snapshot.progress;
     const elapsedSeconds = Math.max(0, Math.floor(((progress.elapsedMs
@@ -3801,7 +3807,7 @@ export function ConsoleAppV4(props: {
     const issueOperation = result.originIssue;
     const completedTitle = {
       install: '✓ 插件添加完成',
-      upgrade: '✓ 插件升级完成',
+      refreshAndSync: '✓ 刷新并同步完成',
       reinstall: '✓ 插件重新安装完成',
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
@@ -3819,7 +3825,8 @@ export function ConsoleAppV4(props: {
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
-        : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
+        : partial ? '! 设置已保存，但部分应用失败'
+          : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
           : completedTitle;
@@ -3856,7 +3863,8 @@ export function ConsoleAppV4(props: {
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
-    const dependencyTargets = resultSummary?.targets?.some((target) => target.relation) ?? false;
+    const dependencyTargets = resultSummary?.targets?.some((target) =>
+      target.relation !== undefined && target.relation !== 'requested') ?? false;
     const blockedDependencyFailure = blocked && result.code === 'operationFailed' && dependencyTargets;
     const dependencyRecovery = (partial && dependencyTargets) || blockedDependencyFailure;
     if (blockedDependencyFailure) {
@@ -3888,7 +3896,25 @@ export function ConsoleAppV4(props: {
     const failedTargetState = failedPluginId && failedTarget
       ? props.controller.getTargetState(failedPluginId, failedTarget.platform, failedTarget.scope)
       : undefined;
-    const retryAction = partialRetryAction(operationKind, action, failedTargetState);
+    const failedPlacement = failedPluginId && failedTarget
+      ? props.controller.getPlatformPlacement(failedPluginId, failedTarget.platform)
+      : undefined;
+    const retryAction = failedPluginId && failedTarget && failedTargetState
+      ? selectLifecycleRetryAction({
+          operationKind,
+          originalAction: action,
+          target: {
+            pluginId: failedPluginId,
+            platform: failedTarget.platform,
+            scope: failedTarget.scope,
+            state: failedTargetState,
+            recoveryActions: failedPlacement?.state === 'installed'
+              ? failedPlacement.recovery ?? [] : [],
+            revision: failedPlacement?.state === 'installed'
+              ? failedPlacement.revision : undefined,
+          },
+        })?.id
+      : undefined;
     const retryIssueAction = retryAction
       ? failedIssue?.actions.find((candidate) => (candidate.writeAction === retryAction || candidate.id === retryAction)
         && (candidate.pluginId ?? failedIssue.pluginId) === failedPluginId
@@ -4006,6 +4032,7 @@ export function ConsoleAppV4(props: {
       },
     }] : []), { label: '返回首页', run: () => leaveResult({ name: 'home' }) }];
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
+    const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
     const resultTargetName = (target: NonNullable<OperationResultSummary['targets']>[number]): string =>
       target.pluginId
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
@@ -4023,6 +4050,7 @@ export function ConsoleAppV4(props: {
     const resultActionViewport = actionViewport(actions, true, focus, scrollOffset, pageActionBudget(8));
     const resultExtraRows = (resultSummary?.elapsedMs !== undefined ? 1 : 0)
       + visibleMessages.length
+      + visibleChanges.length
       + (partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? 1 : 0);
     const resultTargetLimit = prefixRowLimit(
       prioritizedTargets.map(() => policy.mode === 'compact' ? 1 : 2),
@@ -4090,7 +4118,7 @@ export function ConsoleAppV4(props: {
       </ResultCard>
       </>}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? `${result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · ${result.code}` : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title={`另有 ${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? `${result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · ${result.code}` : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title={`另有 ${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{visibleChanges.map((change) => <StaticRow key={change} title={`变更：${change}`} status="success" compact />)}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} status="muted" compact />)}{showTechnical && resultSummary?.planFingerprint ? <TechnicalDetails><StaticRow title="plan fingerprint" meta={resultSummary.planFingerprint} compact /></TechnicalDetails> : null}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -4454,7 +4482,7 @@ export function ConsoleAppV4(props: {
       setFocus(retained >= 0 ? retained : 0);
       setScrollOffset(0);
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 's') {
-      if (dirty) void beginConfigSave();
+      if (dirty) void beginConfigSave(false);
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
       if (key) removeDraft(key);

@@ -305,12 +305,18 @@ describe('status v7 current behavior', () => {
     expect(target.scope).toBe('project');
     expect(reason).toMatchObject({
       dependencyPluginId: 'local/leaf',
+      dependencyPlatform: 'codex',
+      dependencyScope: 'project',
+      dependencyProject: 'current',
       rootIssueId: 'dependencyMissing:local/leaf:codex:project',
       rootIssueCode: 'dependencyMissing',
     });
     expect(component).toMatchObject({
       state: 'absent',
       metadata: {
+        platform: 'codex',
+        scope: 'project',
+        project: 'current',
         rootIssueId: reason?.rootIssueId,
         rootIssueCode: reason?.rootIssueCode,
       },

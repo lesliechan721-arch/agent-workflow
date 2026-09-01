@@ -2552,7 +2552,7 @@ describe('five namespaced write commands', () => {
     expect(inventoryReads).toEqual([true]);
   });
 
-  it('keeps a present user dependency when installing its project consumer', async () => {
+  it('keeps a present user transitive dependency when installing its project consumer', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-dependency-keep-source');
     const configurePostApply = (manifest: PluginMeta['manifest']) => {
@@ -2563,7 +2563,8 @@ describe('five namespaced write commands', () => {
     };
     const plugins = [
       { name: 'leaf', configureManifest: configurePostApply },
-      { name: 'root', dependencies: ['leaf'], configureManifest: (manifest: PluginMeta['manifest']) => {
+      { name: 'middle', dependencies: ['leaf'], configureManifest: configurePostApply },
+      { name: 'root', dependencies: ['middle'], configureManifest: (manifest: PluginMeta['manifest']) => {
         configurePostApply(manifest);
       } },
     ];
@@ -2576,6 +2577,7 @@ describe('five namespaced write commands', () => {
       'await writeFile(counter, String(previous + 1));',
     ].join('\n');
     await fs.outputFile(path.join(sourceRoot, 'plugins', 'leaf', 'scripts', 'postApply.mjs'), postApplyScript);
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'middle', 'scripts', 'postApply.mjs'), postApplyScript);
     await fs.outputFile(path.join(sourceRoot, 'plugins', 'root', 'scripts', 'postApply.mjs'), postApplyScript);
     await createDependencyCatalogSnapshotFixture(sourceRoot, plugins);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -2605,6 +2607,7 @@ describe('five namespaced write commands', () => {
 
     expect(installed.dependencyPlan?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'team/leaf', resolvedScope: 'user', action: 'keep' }),
+      expect.objectContaining({ pluginId: 'team/middle', resolvedScope: 'project' }),
     ]));
     expect(installed.rebuildResults.find((result) => result.target.pluginId === 'team/leaf')?.actions)
       .toContainEqual({ name: 'postApply', status: 'succeeded' });
@@ -2622,6 +2625,8 @@ describe('five namespaced write commands', () => {
       target.pluginId === 'team/leaf');
     const rootTarget = installedStatus.payload.targets.find((target) =>
       target.pluginId === 'team/root');
+    const middleTarget = installedStatus.payload.targets.find((target) =>
+      target.pluginId === 'team/middle');
     expect(leafTarget).toMatchObject({
       scope: 'user',
       state: 'ready',
@@ -2629,10 +2634,14 @@ describe('five namespaced write commands', () => {
     expect(statusTargetIntent(leafTarget!)).toEqual({
       enabled: true, scopes: ['user'], relation: 'root',
     });
+    expect(leafTarget?.components).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'activation', key: 'project', state: 'enabled' }),
+    ]));
     expect(leafTarget?.reasons).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'codexActivationDrift' }),
     ]));
     expect(rootTarget).toMatchObject({ scope: 'project' });
+    expect(middleTarget).toMatchObject({ scope: 'project', state: 'ready' });
     expect(installedStatus.payload.targets.flatMap((target) => target.reasons)).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'dependencyMissing' })]),
     );
@@ -2662,6 +2671,8 @@ describe('five namespaced write commands', () => {
     expect(repeated.overallState, JSON.stringify(repeated.rebuildResults)).toBe('succeeded');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'post-apply-count-leaf.txt'), 'utf8'))
       .resolves.toBe('3');
+    await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'post-apply-count-middle.txt'), 'utf8'))
+      .resolves.toBe('2');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'post-apply-count-root.txt'), 'utf8'))
       .resolves.toBe('2');
   });
@@ -5882,8 +5893,11 @@ describe('five namespaced write commands', () => {
 
     const result = await controller.executeOperation(review.reviewToken);
 
-    expect(result).toMatchObject({ state: 'blocked', code: 'scopeConflict' });
-    expect(controller.snapshot.router.current.route).toEqual({ name: 'result', operationId: review.operationId });
+    expect(result).toMatchObject({
+      state: 'stale',
+      review: { pluginAction: 'install' },
+    });
+    expect(controller.snapshot.router.current.route).toMatchObject({ name: 'review' });
     controller.dispose();
   });
 

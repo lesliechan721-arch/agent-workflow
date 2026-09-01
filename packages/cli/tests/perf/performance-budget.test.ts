@@ -366,6 +366,7 @@ describe('multi-source performance budgets', () => {
         expect(controller.snapshot.phase).toBe('ready');
         await controller.buildOperationReview({
           kind: 'configSave',
+          apply: false,
           pluginId: 'path-a/config-target',
           scope: 'project',
           projectLayer: 'shared',

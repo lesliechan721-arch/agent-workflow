@@ -452,7 +452,7 @@ describe('TUI foundation', () => {
     })).resolves.toEqual({ action: 'exit', cancelled: false });
   });
 
-  it('keeps the platform, scope, plugin, upgrade, and config convenience contracts', async () => {
+  it('keeps the platform, scope, plugin, and config convenience contracts', async () => {
     await expect(createPrompt([['\r']]).prompt.selectPlatform!({
       available: ['codex', 'claude', 'both'],
       defaultValue: 'both',
@@ -469,11 +469,6 @@ describe('TUI foundation', () => {
       defaultValues: ['a'],
       allowMultiple: true,
     })).resolves.toEqual(['a', 'b']);
-    await expect(createPrompt([['\r']]).prompt.selectUpgradeMode!({
-      canUpgradeAll: false,
-      candidates: [],
-    })).resolves.toBe('select');
-
     const config = createPrompt([['secret-value', '\r']]);
     await expect(config.prompt.configurePlugin!({
       pluginName: 'secure',

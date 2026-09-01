@@ -12,7 +12,6 @@ import {
 
 export type CommandWizardCommand =
   | 'install'
-  | 'upgrade'
   | 'reinstall'
   | 'uninstall'
   | 'cleanup'
