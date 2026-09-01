@@ -78,7 +78,7 @@ export async function doctorEvalProviders(
   const runtime = await resolveCodexEvalRuntimeConfig({
     inheritUserConfig: true,
     sourceEnv,
-    modelOverride: options.model,
+    modelOverride: options.model ?? sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
   })
   const resolvedExecutable = await resolveExecutable({
     executable: requestedExecutable,

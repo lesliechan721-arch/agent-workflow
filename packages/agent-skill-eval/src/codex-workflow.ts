@@ -575,7 +575,7 @@ function parseSerialized(value: unknown): unknown {
 }
 
 type V1SpawnArguments = {
-  agent_type: string
+  agent_type?: string
   message: string
   fork_context: boolean
   model?: string
@@ -756,7 +756,9 @@ function canonicalV1SpawnArguments(value: unknown): V1SpawnArguments {
   const allowed = new Set(['agent_type', 'message', 'fork_context', 'model', 'reasoning_effort'])
   const unknown = Object.keys(value).find((key) => !allowed.has(key))
   if (unknown) throw new Error(`Codex V1 spawn arguments have unknown field ${unknown}.`)
-  const agentType = boundedString(value.agent_type, 'Codex V1 spawn agent_type', 256)
+  const agentType = Object.hasOwn(value, 'agent_type')
+    ? boundedString(value.agent_type, 'Codex V1 spawn agent_type', 256)
+    : undefined
   const message = boundedString(value.message, 'Codex V1 spawn message', MAX_REQUEST_TEXT_BYTES)
   if (typeof value.fork_context !== 'boolean') {
     throw new Error('Codex V1 spawn fork_context evidence must be boolean.')
@@ -768,7 +770,7 @@ function canonicalV1SpawnArguments(value: unknown): V1SpawnArguments {
     ? undefined
     : boundedString(value.reasoning_effort, 'Codex V1 spawn reasoning_effort', 256)
   return {
-    agent_type: agentType,
+    ...(agentType === undefined ? {} : { agent_type: agentType }),
     message,
     ...(model === undefined ? {} : { model }),
     ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }),
@@ -1251,7 +1253,8 @@ function appServerCollaborationCalls(
         throw new Error('Codex V1 spawn prompt does not match the linked child thread.')
       }
       if (
-        spawnArguments.agent_type !== receiver.agentRole
+        spawnArguments.agent_type !== undefined
+        && spawnArguments.agent_type !== receiver.agentRole
       ) throw new Error('Codex V1 spawn role does not match the linked child thread.')
       if (
         spawnArguments.message !== receiver.initialUserMessage

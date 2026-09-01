@@ -642,6 +642,37 @@ describe('codex-workflow raw rollout normalization', () => {
     }))
   })
 
+  it('normalizes a full-history V1 spawn without agent_type and keeps runtime evidence separate', async () => {
+    const message = 'full-history child prompt'
+    const input = [
+      'const result = await tools.multi_agent_v1__spawn_agent({',
+      `  message: ${JSON.stringify(message)},`,
+      '  model: "explicit-model",',
+      '  reasoning_effort: "xhigh",',
+      '  fork_context: true,',
+      '});',
+      'text(result);',
+    ].join('\n')
+    const normalized = await normalizeV1CodeModeInput(
+      'full-history-no-role',
+      input,
+      message,
+      { terminalRuntime: { model: 'effective-model', reasoningEffort: 'high' } },
+    )
+
+    expect(normalized.collaborationCalls[0]).toEqual(expect.objectContaining({
+      arguments: {
+        message,
+        model: 'explicit-model',
+        reasoning_effort: 'xhigh',
+        fork_context: true,
+      },
+      effectiveRuntime: { model: 'effective-model', reasoningEffort: 'high' },
+    }))
+    expect(normalized.collaborationCalls[0]?.arguments).not.toHaveProperty('agent_type')
+    expect(normalized.collaborationCalls[0]?.arguments).not.toHaveProperty('effectiveRuntime')
+  })
+
   it('rejects near-match unawaited V1 wrappers', async () => {
     const message = 'child prompt'
     const argumentsSource = `{ agent_type: "explorer", message: ${JSON.stringify(message)}, fork_context: false }`
@@ -1250,7 +1281,7 @@ describe('codex-workflow raw rollout normalization', () => {
     expect(JSON.stringify(normalized.trace)).toContain('child prompt')
   })
 
-  it('links V2 opaque child input by hash and never writes ciphertext to normalized evidence or trace', async () => {
+  it('normalizes the formal full-history V2 shape without agent_type and redacts its message', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'codex-workflow-rollout-v2-'))
     roots.push(root)
     const ciphertext = 'opaque-ciphertext-must-not-be-public'
@@ -1261,7 +1292,12 @@ describe('codex-workflow raw rollout normalization', () => {
         type: 'response_item',
         payload: {
           type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-v2',
-          arguments: JSON.stringify({ agent_type: 'explorer', message: ciphertext }),
+          arguments: JSON.stringify({
+            message: ciphertext,
+            model: 'explicit-model',
+            reasoning_effort: 'xhigh',
+            fork_turns: 'all',
+          }),
         },
       },
       {
@@ -1299,6 +1335,13 @@ describe('codex-workflow raw rollout normalization', () => {
         }),
       }),
     ]))
+    expect(normalized.collaborationCalls[0]?.arguments).toEqual({
+      message: expect.objectContaining({ kind: 'opaque', sha256: expect.stringMatching(/^sha256:/u) }),
+      model: 'explicit-model',
+      reasoning_effort: 'xhigh',
+      fork_turns: 'all',
+    })
+    expect(normalized.collaborationCalls[0]?.arguments).not.toHaveProperty('agent_type')
     const serialized = JSON.stringify(normalized)
     expect(serialized).not.toContain(ciphertext)
     expect(serialized).not.toContain('child developer full text')

@@ -1654,6 +1654,38 @@ describe('provider doctor', () => {
     expect(JSON.stringify(result)).not.toContain(secret)
   })
 
+  it('uses eval-run model resolution precedence for source environment and explicit options', async () => {
+    const { root } = await runRoot()
+    const sourceEnv = {
+      CODEX_HOME: root,
+      AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+    }
+    const [runRuntime, environmentResult, explicitResult] = await Promise.all([
+      resolveCodexEvalRuntimeConfig({
+        sourceEnv,
+        inheritUserConfig: true,
+        modelOverride: sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        model: 'explicit-model',
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+    ])
+
+    expect(environmentResult.codex.runtimeConfig.model).toBe(runRuntime.model)
+    expect(environmentResult.codex.runtimeConfig.model).toBe('environment-model')
+    expect(explicitResult.codex.runtimeConfig.model).toBe('explicit-model')
+  })
+
   it('reports custom provider environment presence without its value', async () => {
     const { root } = await runRoot()
     const secret = 'custom-environment-secret'
