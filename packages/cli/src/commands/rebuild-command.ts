@@ -1220,20 +1220,6 @@ export async function runRebuildCommand(options: {
       () => readInventory({
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
-        ...(options.command === 'cleanup' && options.all
-          ? { includeOrphanedCodexNativeResidue: true }
-          : {}),
-        ...(options.command === 'cleanup' && !options.all
-          ? {
-              codexNativeResidueTargets: options.pluginNames.map((selector) => {
-                const parsed = parsePluginId(selector);
-                return {
-                  pluginName: parsed.pluginName,
-                  ...(parsed.sourceId ? { sourceId: parsed.sourceId } : {}),
-                };
-              }),
-            }
-          : {}),
       }),
     );
     return ordinaryInventory;
@@ -2298,7 +2284,7 @@ export async function runRebuildCommand(options: {
               })
             : undefined;
           const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
-            ?? { state: 'absent', nativeAction: 'install' };
+            ?? { state: 'missing' };
           const projectionEntries: Array<{
             scope: Scope;
             artifactKey: string;
@@ -2364,7 +2350,6 @@ export async function runRebuildCommand(options: {
             ...(sharedInspection?.payloadPath
               ? { sharedNativePayloadPath: sharedInspection.payloadPath }
               : {}),
-            ...(sharedNative.state === 'corrupt' ? { repairableSharedNative: true } : {}),
             activations: {
               user: sharedInspection?.activations.user
                 ?? userConfig?.snapshot.plugins[codexPluginId]?.enabled,
@@ -2834,7 +2819,6 @@ export async function runRebuildCommand(options: {
           const removalStateInventory = await readInventory({
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
-            includeHistoricalProjects: true,
           });
           if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(removalStateInventory);
           const inspectConsumer = async (options_: {

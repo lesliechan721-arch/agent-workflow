@@ -327,12 +327,14 @@ describe('public Codex sync command', () => {
         })),
         targetResults: targets.map((target) => ({
           target: {
+            pluginName: target.pluginName,
             pluginId: target.pluginId,
+            sourceId,
             platform,
             scope: target.resolvedScope,
           },
           action: target.action,
-          state: 'succeeded' as const,
+          state: 'completed' as const,
           message: 'done',
         })),
         overallState: 'succeeded' as const,
@@ -383,18 +385,22 @@ describe('public Codex sync command', () => {
       ]),
     });
     expect(receipt).toMatchObject({
+      receiptSchemaVersion: 6,
+      overallState: 'succeeded',
       requestedPluginIds: ['first/root', 'second/root'],
       resolvedPluginIds: ['first/leaf', 'first/root', 'second/leaf', 'second/root'],
       dependencyEdges: [
         { from: 'second/root', to: 'second/leaf', platform: 'claude' },
         { from: 'first/root', to: 'first/leaf', platform: 'codex' },
       ],
-      targets: expect.arrayContaining([
+      targetResults: expect.arrayContaining([
         expect.objectContaining({
-          pluginId: 'first/leaf', relation: 'dependency', requiredBy: ['first/root'],
+          target: expect.objectContaining({ pluginId: 'first/leaf' }),
+          relation: 'dependency', requiredBy: ['first/root'],
         }),
         expect.objectContaining({
-          pluginId: 'second/leaf', relation: 'dependency', requiredBy: ['second/root'],
+          target: expect.objectContaining({ pluginId: 'second/leaf' }),
+          relation: 'dependency', requiredBy: ['second/root'],
         }),
       ]),
     });

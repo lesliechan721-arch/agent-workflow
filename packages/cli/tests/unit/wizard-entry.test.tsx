@@ -62,13 +62,20 @@ describe('write command runtime entry', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 5,
+    const receipt = JSON.parse(captured.readStdout());
+    expect(receipt).toMatchObject({
+      receiptSchemaVersion: 6,
       command,
       ok: true,
       overallState: 'succeeded',
+      changes: [],
+      targetResults: [],
+      recoveryActions: [],
+      warnings: [],
       errors: [],
     });
+    expect(receipt).not.toHaveProperty('layers');
+    expect(receipt).not.toHaveProperty('targets');
     expect(launch).not.toHaveBeenCalled();
     expect(helper).toHaveBeenCalledOnce();
     if (command === 'cleanup') {

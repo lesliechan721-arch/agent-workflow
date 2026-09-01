@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import {
   createDependencyPlacementPlan,
   type DependencyOperationPlan,
@@ -54,8 +54,13 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV6Payload['targets'][number] {
+}): StatusV7Payload['targets'][number] {
   const sourceId = options.sourceId ?? 'official';
+  const state = options.state === 'present'
+    ? 'ready' as const
+    : options.state === 'partial'
+      ? 'needsSync' as const
+      : options.state === 'error' ? 'blocked' as const : 'absent' as const;
   return {
     pluginName: options.pluginName,
     pluginId: `${sourceId}/${options.pluginName}`,
@@ -65,18 +70,133 @@ function target(options: {
     platform: options.platform,
     scope: options.scope,
     cwd: '/workspace',
-    state: options.state,
-    components: [],
-    errors: options.state === 'partial'
+    state,
+    components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
+    reasons: options.state === 'partial'
       ? [{ code: 'missingContent', message: '安全说明', severity: 'warning' }]
       : options.state === 'error'
         ? [{ code: options.errorCode ?? 'targetError', message: '安全说明', severity: 'blocking' }]
         : [],
+    recoveryActions: [],
   };
 }
 
+type LegacyStatusTargetFixture = StatusV7Payload['targets'][number] & {
+  desired?: {
+    enabled: boolean;
+    scopes: Array<'user' | 'project'>;
+    relation: 'root' | 'dependency' | 'managed' | 'none';
+  };
+  actual?: { state: string };
+  errors?: Array<StatusV7Payload['targets'][number]['reasons'][number] & { severity?: 'warning' | 'blocking' }>;
+  recovery?: StatusV7Payload['targets'][number]['recoveryActions'];
+  sharedNative?: {
+    pluginId: string;
+    state: string;
+    shared?: boolean;
+    reason?: string;
+    version?: string;
+    desiredVersion?: string;
+    diagnostic?: string;
+    claimable?: boolean;
+    staleCacheObserved?: boolean;
+  };
+  activation?: {
+    user?: boolean;
+    project?: boolean;
+    effective?: boolean;
+    evidence: 'observed' | 'assumed' | 'unobserved';
+  };
+  extensions?: { state: string; kinds: string[] };
+};
+
+function bridgeStatusV7Fixtures(result: TuiStatusLoadResult): TuiStatusLoadResult {
+  for (const rawTarget of result.payload.targets) {
+    const legacy = rawTarget as LegacyStatusTargetFixture;
+    const legacyState = legacy.state as string;
+    const actualState = legacy.actual?.state;
+    const state = actualState === 'ready' ? 'ready'
+      : actualState === 'needsSync' ? 'needsSync'
+        : actualState === 'conflict' ? 'blocked'
+          : legacyState === 'present' ? 'ready'
+            : legacyState === 'partial' ? 'needsSync'
+              : legacyState === 'error' ? 'blocked' : legacy.state;
+    legacy.state = state;
+
+    if (legacy.errors !== undefined) {
+      legacy.reasons = legacy.errors.map((reason) => ({
+        ...reason,
+        severity: reason.severity ?? (state === 'needsSync' ? 'warning' : 'blocking'),
+      }));
+    }
+    if (legacy.recovery !== undefined) legacy.recoveryActions = [...legacy.recovery];
+
+    const ownershipState = legacyState === 'present'
+      || legacyState === 'partial'
+      || legacyState === 'error'
+      || legacyState === 'absent'
+      ? legacyState
+      : undefined;
+    legacy.components = legacy.components.map((component) => ({
+      ...component,
+      kind: component.kind ?? 'ownership',
+      ...(ownershipState && (component.kind === undefined || component.kind === 'ownership')
+        ? { state: ownershipState }
+        : {}),
+      ...(!component.kind && 'error' in component && component.error
+        ? { metadata: { errorCode: component.error.code } }
+        : {}),
+    }));
+    if (legacy.desired) {
+      legacy.components.push({
+        kind: 'intent',
+        key: 'desired',
+        state: legacy.desired.enabled ? 'enabled' : 'disabled',
+        metadata: {
+          enabled: legacy.desired.enabled,
+          scopes: legacy.desired.scopes,
+          relation: legacy.desired.relation,
+        },
+      });
+    }
+    if (legacy.sharedNative) {
+      const { pluginId, state: sharedState, shared: _shared, ...metadata } = legacy.sharedNative;
+      legacy.components.push({
+        kind: 'sharedNative',
+        key: pluginId,
+        state: sharedState === 'present' ? 'usable' : sharedState,
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+      });
+    }
+    if (legacy.activation) {
+      for (const scope of ['user', 'project'] as const) {
+        const enabled = legacy.activation[scope];
+        if (enabled === undefined) continue;
+        legacy.components.push({
+          kind: 'activation',
+          key: scope,
+          state: enabled ? 'enabled' : 'disabled',
+          metadata: {
+            effective: legacy.activation.effective ?? false,
+            evidence: legacy.activation.evidence,
+          },
+        });
+      }
+    }
+    if (legacy.extensions) {
+      legacy.components.push({
+        kind: 'extension',
+        key: 'aw',
+        state: legacy.extensions.state,
+        metadata: { kinds: legacy.extensions.kinds },
+      });
+    }
+  }
+  return result;
+}
+
 function loadResult(): TuiStatusLoadResult {
-  const summaries: StatusV6PluginSummary[] = [
+  const summaries: StatusV7PluginSummary[] = [
     {
       pluginName: 'agent-lab',
       pluginId: 'official/agent-lab',
@@ -119,8 +239,8 @@ function loadResult(): TuiStatusLoadResult {
           : 'absent',
       }))),
   );
-  const payload: StatusV6Payload = {
-      schemaVersion: 6,
+  const payload: StatusV7Payload = {
+      schemaVersion: 7,
       catalog: {
         primarySourceId: 'official',
         configDigest: 'sha256:config',
@@ -180,6 +300,28 @@ function loadResult(): TuiStatusLoadResult {
       configDigest: 'sha256:config',
     })),
   };
+}
+
+function capabilityUnsupportedLoadResult(): TuiStatusLoadResult {
+  const loaded = loadResult();
+  const unsupported = target({
+    pluginName: 'review-gate',
+    platform: 'codex',
+    scope: 'user',
+    state: 'error',
+    errorCode: 'awCapabilityUnsupported',
+  });
+  unsupported.recoveryActions = [{
+    command: 'manual',
+    description: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
+  }];
+  loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+  loaded.payload.targets = [unsupported];
+  loaded.pluginSummaries = [{
+    ...loaded.pluginSummaries.find((summary) => summary.pluginId === 'official/review-gate')!,
+    missingCapabilities: ['aw.future-feature.v1'],
+  }];
+  return loaded;
 }
 
 function orphanLoadResult(): TuiStatusLoadResult {
@@ -344,7 +486,7 @@ function dependencyLoadResult(options: {
 }
 
 function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
-  return new TuiController({
+  const dependencies: TuiControllerDependencies = {
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
     inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
     captureEvidence: vi.fn().mockResolvedValue(evidence),
@@ -358,7 +500,10 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
     now: () => 1_000,
     reviewTtlMs: 10_000,
     ...overrides,
-  });
+  };
+  const loadStatus = dependencies.loadStatus;
+  dependencies.loadStatus = async (...args) => bridgeStatusV7Fixtures(await loadStatus(...args));
+  return new TuiController(dependencies);
 }
 
 function platformLoadResult(
@@ -1568,6 +1713,34 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r', '\r');
     expect(screens).toContain('P17');
     expect(instance.lastFrame()).toContain('来源不可用');
+  });
+
+  it('shows AW CLI capability recovery without routing a healthy source to a missing source issue', async () => {
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(capabilityUnsupportedLoadResult()),
+    });
+    value.push({ name: 'platform', pluginId: 'official/review-gate', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('需要升级 AW CLI 才能管理 Codex');
+    expect(frame).toContain('升级 AW CLI');
+    expect(frame).toContain('查看 capability 技术详情');
+    expect(frame).toContain('升级 AW CLI 到支持插件所需 capability 的版本后重试。');
+    expect(frame).not.toContain('查看来源问题');
+    expect(frame).not.toContain('重新加载状态');
+    expect(frame).not.toContain('来源不可用');
+
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginTechnical', pluginId: 'official/review-gate',
+    });
+    expect(instance.lastFrame()).toContain('Capability 技术详情');
+    expect(instance.lastFrame()).toContain('aw.future-feature.v1');
+    expect(instance.lastFrame()).toContain('awCapabilityUnsupported');
+    expect(value.snapshot.router.current.route.name).not.toBe('sourceDetail');
+    expect(value.snapshot.router.current.route.name).not.toBe('issueDetail');
   });
 
   it('counts source tabs from the active browse or installed list mode', async () => {
@@ -4092,7 +4265,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('结果未确认 · operationFailed');
     expect(instance.lastFrame()).toContain('写入可能已完成，当前无法确认');
     expect(instance.lastFrame()).toContain('查看插件');
-    expect(value.getTargetState('team-tools/review-gate', 'codex', 'user')).toBe('partial');
+    expect(value.getTargetState('team-tools/review-gate', 'codex', 'user')).toBe('needsSync');
   });
 
   it('does not claim a source list was unchanged after a source write reload fails', async () => {
@@ -5042,7 +5215,7 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
     loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    const conflictTarget: StatusV6Payload['targets'][number] = {
+    const conflictTarget: StatusV7Payload['targets'][number] = {
       pluginName: 'agent-lab', pluginId: 'official/agent-lab', sourceId: 'official',
       sourceIdentity: 'identity:official', version: '0.4.2', platform: 'codex',
       scope: 'user', cwd: '/workspace',

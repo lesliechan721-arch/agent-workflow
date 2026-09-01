@@ -319,7 +319,6 @@ describe('TUI v4 real catalog source boundary', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
     expect(inventory.references).toContainEqual(expect.objectContaining({
       kind: 'namespacedConfig', sourceId: 'team', pluginName: 'two',

@@ -1,8 +1,15 @@
-import type { PlatformName, ReceiptOverallState, Scope } from '../types.js';
 import type { InitCommandResult } from '../commands/init.js';
+import type { OperationPlan } from '../commands/operation-plan.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
-import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
+import type {
+  PlatformName,
+  RebuildReceiptOverallState,
+  ReceiptOverallState,
+  ReceiptTargetIdentity,
+  ReceiptTargetResult,
+  Scope,
+} from '../types.js';
 
 export interface CliCommandResult {
   platforms: string[];
@@ -19,94 +26,39 @@ export interface CliCommandResult {
   }>;
   overallState?: ReceiptOverallState;
   dependencyPlan?: ReconcileOperationPlan;
-  codexReconcilePlans?: CodexReconcilePlan[];
-  targetResults?: Array<{
-    target: { pluginId?: string; platform: PlatformName; scope: Scope };
-    action: string;
-  }>;
+  operationPlan?: OperationPlan;
+  targetResults?: ReceiptTargetResult[];
+}
+
+export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
+  relation: 'requested' | 'dependency';
+  requiredBy: string[];
+  changes: string[];
+  recoveryActions: string[];
+  cleanupAttempted: boolean;
+  actions: RebuildResult['actions'];
+  removed: string[];
+  absent: string[];
+  residual: string[];
+  quarantined: string[];
+  failures: RebuildResult['failures'];
 }
 
 export interface RebuildReceiptJson {
   ok: boolean;
   command: 'install' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
-  receiptSchemaVersion: 5;
+  receiptSchemaVersion: 6;
   dependencyPlanSchemaVersion?: number;
   requestedPluginIds?: string[];
   resolvedPluginIds?: string[];
-  dependencyEdges?: Array<{ from: string; to: string }>;
-  overallState: ReceiptOverallState;
+  dependencyEdges?: ReconcileOperationPlan['dependencyEdges'];
+  overallState: RebuildReceiptOverallState;
+  changes: string[];
+  targetResults: RebuildReceiptTargetResult[];
   warnings: string[];
+  recoveryActions: string[];
+  planFingerprint?: string;
   errors: Array<{ code: string; message: string }>;
-  layers: {
-    projectIntent: RebuildReceiptIntentEntry[];
-    userIntent: RebuildReceiptIntentEntry[];
-    sharedCodexNative: RebuildReceiptSharedNativeEntry[];
-    userActivation: RebuildReceiptActivationEntry[];
-    projectActivation: RebuildReceiptActivationEntry[];
-    awExtensions: RebuildReceiptExtensionEntry[];
-  };
-  targets: Array<{
-    pluginName: string;
-    pluginId?: string;
-    sourceId?: string;
-    sourceIdentity?: string;
-    version?: string;
-    platform: RebuildResult['target']['platform'];
-    scope: RebuildResult['target']['scope'];
-    status: RebuildResult['status'];
-    cleanupAttempted: boolean;
-    actions: RebuildResult['actions'];
-    removed: string[];
-    absent: string[];
-    residual: string[];
-    quarantined: string[];
-    failures: RebuildResult['failures'];
-    errorCode?: string;
-    relation?: 'requested' | 'dependency';
-    requiredBy?: string[];
-    dependencyState?: 'completed' | 'kept' | 'failed' | 'skipped';
-    desired: {
-      scope: Scope;
-      relation: 'requested' | 'dependency';
-    };
-    recovery: string[];
-  }>;
-}
-
-export interface RebuildReceiptIntentEntry {
-  pluginId: string;
-  platform: PlatformName;
-  scope: Scope;
-  relation: 'requested' | 'dependency';
-  action: string;
-  requiredBy: string[];
-}
-
-export interface RebuildReceiptSharedNativeEntry {
-  pluginId: string;
-  codexPluginId: string;
-  action: string;
-  desiredVersion: string;
-  shared: true;
-  sharedImpact: boolean;
-  reusedExistingExactNative?: true;
-  ownershipLedgerCreated?: false;
-  warning?: string;
-}
-
-export interface RebuildReceiptActivationEntry {
-  pluginId: string;
-  codexPluginId: string;
-  desired: boolean;
-  action: string;
-}
-
-export interface RebuildReceiptExtensionEntry {
-  pluginId: string;
-  componentKey: string;
-  kind: string;
-  scope: Scope;
-  action: 'write' | 'remove';
 }
 
 export function requestedIntentAction(
@@ -117,78 +69,12 @@ export function requestedIntentAction(
   return 'keep';
 }
 
-function receiptLayers(
-  command: RebuildReceiptJson['command'],
-  result: CliCommandResult,
-): RebuildReceiptJson['layers'] {
-  const planTargets = result.dependencyPlan?.targets ?? [];
-  const directTargets = result.receiptTargets ?? (result.rebuildResults ?? []).map((entry) => {
-    const identity = entry.target as typeof entry.target & { pluginId?: string };
-    return {
-      pluginName: identity.pluginName,
-      ...(identity.pluginId ? { pluginId: identity.pluginId } : {}),
-      platform: identity.platform,
-      scope: identity.scope,
-    };
-  });
-  const intentEntries = planTargets.length > 0
-    ? planTargets.map((target): RebuildReceiptIntentEntry => ({
-        pluginId: target.pluginId,
-        platform: target.platform,
-        scope: target.resolvedScope,
-        relation: target.relation,
-        action: requestedIntentAction(command),
-        requiredBy: target.requiredBy,
-      }))
-    : directTargets.map((target): RebuildReceiptIntentEntry => ({
-        pluginId: target.pluginId ?? target.pluginName,
-        platform: target.platform,
-        scope: target.scope,
-        relation: 'requested',
-        action: requestedIntentAction(command),
-        requiredBy: [],
-      }));
-  const codexPlans = result.codexReconcilePlans ?? [];
-  return {
-    projectIntent: intentEntries.filter((entry) => entry.scope === 'project'),
-    userIntent: intentEntries.filter((entry) => entry.scope === 'user'),
-    sharedCodexNative: codexPlans.flatMap((plan) => plan.sharedNativeActions.map((entry) => ({
-      pluginId: entry.pluginId,
-      codexPluginId: entry.codexPluginId,
-      action: entry.action === 'claim' ? 'reuse' : entry.action,
-      desiredVersion: entry.desiredVersion,
-      shared: true as const,
-      sharedImpact: entry.affectsOtherScopes,
-      ...(entry.action === 'claim' ? {
-        reusedExistingExactNative: true as const,
-        ownershipLedgerCreated: false as const,
-      } : {}),
-      ...(entry.affectsOtherScopes ? {
-        warning: plan.review.sharedImpact.warning
-          ?? 'This shared Codex native action can affect other projects.',
-      } : {}),
-    }))),
-    userActivation: codexPlans.flatMap((plan) => plan.activationActions.user.map((entry) => ({
-      pluginId: entry.pluginId,
-      codexPluginId: entry.codexPluginId,
-      desired: entry.desired,
-      action: entry.action,
-    }))),
-    projectActivation: codexPlans.flatMap((plan) => plan.activationActions.project.map((entry) => ({
-      pluginId: entry.pluginId,
-      codexPluginId: entry.codexPluginId,
-      desired: entry.desired,
-      action: entry.action,
-    }))),
-    awExtensions: codexPlans.flatMap((plan) => [
-      ...plan.extensionWrites,
-      ...plan.extensionRemovals,
-    ]),
-  };
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
-function recoveryForTarget(status: RebuildResult['status'], errorCode?: string): string[] {
-  if (status === 'succeeded') return [];
+function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode?: string): string[] {
+  if (state === 'completed') return [];
   if (errorCode === 'codexProjectPluginVersionTooLow'
     || errorCode === 'codexProjectPluginUnsupported'
     || errorCode === 'codexSystemCliUnsupported') {
@@ -243,104 +129,213 @@ function earlyFailureRecovery(command: RebuildReceiptJson['command'], errorCode?
   return [`correct the ${command} request and retry`];
 }
 
+function sameTarget(
+  left: Pick<ReceiptTargetIdentity, 'pluginName' | 'pluginId' | 'platform' | 'scope'>,
+  right: Pick<ReceiptTargetIdentity, 'pluginName' | 'pluginId' | 'platform' | 'scope'>,
+): boolean {
+  return left.platform === right.platform
+    && left.scope === right.scope
+    && (left.pluginId !== undefined && right.pluginId !== undefined
+      ? left.pluginId === right.pluginId
+      : left.pluginName === right.pluginName);
+}
+
+function receiptTargetFromRebuild(result: RebuildResult): ReceiptTargetIdentity {
+  return {
+    pluginName: result.target.pluginName,
+    ...(result.target.pluginId ? { pluginId: result.target.pluginId } : {}),
+    ...(result.target.marketplaceName ? { marketplaceName: result.target.marketplaceName } : {}),
+    ...(result.target.sourceId ? { sourceId: result.target.sourceId } : {}),
+    ...(result.target.sourceIdentity ? { sourceIdentity: result.target.sourceIdentity } : {}),
+    platform: result.target.platform,
+    scope: result.target.scope,
+  };
+}
+
+function sourceTargetResults(
+  command: RebuildReceiptJson['command'],
+  result: CliCommandResult,
+  errors: RebuildReceiptJson['errors'],
+): ReceiptTargetResult[] {
+  const targetResults = [...(result.targetResults ?? [])];
+  for (const rebuild of result.rebuildResults ?? []) {
+    const target = receiptTargetFromRebuild(rebuild);
+    if (targetResults.some((candidate) => sameTarget(candidate.target, target))) continue;
+    targetResults.push({
+      target,
+      action: rebuild.command,
+      state: rebuild.status === 'succeeded' ? 'completed' : 'failed',
+      ...(rebuild.status === 'failed' ? {
+        message: rebuild.error.message,
+        errorCode: rebuildErrorCode(rebuild.error.message),
+      } : {}),
+    });
+  }
+  if (targetResults.length > 0) return targetResults;
+
+  const earlyError = errors[0];
+  return (result.receiptTargets ?? []).map((target) => ({
+    target,
+    action: command,
+    state: result.overallState === 'succeeded' ? 'completed' : 'failed',
+    ...(result.overallState === 'succeeded' ? {} : {
+      message: earlyError?.message ?? 'The write command did not run.',
+      errorCode: earlyError?.code ?? 'writeCommandFailed',
+    }),
+  }));
+}
+
+function findRebuildResult(
+  target: ReceiptTargetIdentity,
+  rebuildResults: readonly RebuildResult[],
+): RebuildResult | undefined {
+  return rebuildResults.find((candidate) => sameTarget(target, receiptTargetFromRebuild(candidate)));
+}
+
+function plannedTargetChanges(
+  target: ReceiptTargetIdentity,
+  operationPlan?: OperationPlan,
+): string[] {
+  if (!operationPlan || !target.pluginId) return [];
+  const exactPrefix = `${target.pluginId}:${target.platform}:${target.scope}:`;
+  const exact = operationPlan.changes.filter((change) => change.startsWith(exactPrefix));
+  if (exact.length > 0) return exact;
+  const hasTargetAction = operationPlan.actions.some((action) =>
+    action.pluginId === target.pluginId
+    && action.platform === target.platform
+    && action.scope === target.scope);
+  return hasTargetAction
+    ? operationPlan.changes.filter((change) => change.startsWith(`${target.pluginId}:`))
+    : [];
+}
+
+const MUTATING_REBUILD_ACTIONS = new Set([
+  'stale.cleanup',
+  'native.write',
+  'artifacts.write',
+  'marketplace.commit',
+  'marketplace.rollback',
+  'recovery.cleanup',
+  'cleanup.owned',
+]);
+
+function observableTargetChanges(
+  targetResult: ReceiptTargetResult,
+  rebuildResult?: RebuildResult,
+): string[] {
+  const changes: string[] = rebuildResult?.actions
+    .filter((action) => action.status === 'succeeded' && MUTATING_REBUILD_ACTIONS.has(action.name))
+    .map((action) => action.name) ?? [];
+  changes.push(...(rebuildResult?.removed ?? []).map((entry) => `removed:${entry}`));
+  if (changes.length === 0
+    && targetResult.state === 'completed'
+    && targetResult.action !== 'keep'
+    && targetResult.action !== 'skipped') {
+    changes.push(targetResult.action);
+  }
+  return unique(changes);
+}
+
+function receiptTargetResult(
+  targetResult: ReceiptTargetResult,
+  result: CliCommandResult,
+): RebuildReceiptTargetResult {
+  const rebuild = findRebuildResult(targetResult.target, result.rebuildResults ?? []);
+  const target = rebuild
+    ? { ...receiptTargetFromRebuild(rebuild), ...targetResult.target }
+    : targetResult.target;
+  const planned = result.dependencyPlan?.targets.find((candidate) =>
+    candidate.pluginId === target.pluginId
+    && candidate.platform === target.platform
+    && candidate.resolvedScope === target.scope);
+  const message = targetResult.message
+    ?? (rebuild?.status === 'failed' ? rebuild.error.message : undefined);
+  const errorCode = targetResult.errorCode
+    ?? (message && (targetResult.state === 'failed' || targetResult.action === 'skipped')
+      ? rebuildErrorCode(message)
+      : undefined);
+  const planChanges = plannedTargetChanges(target, result.operationPlan);
+  const changes = planChanges.length > 0
+    ? planChanges
+    : observableTargetChanges(targetResult, rebuild);
+  const recoveryActions = recoveryForTarget(
+    targetResult.action === 'skipped' ? 'failed' : targetResult.state,
+    errorCode,
+  );
+  return {
+    target,
+    action: targetResult.action,
+    state: targetResult.state,
+    ...(message ? { message } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    relation: planned?.relation ?? 'requested',
+    requiredBy: planned?.requiredBy ?? [],
+    changes,
+    recoveryActions,
+    cleanupAttempted: rebuild?.cleanupAttempted ?? false,
+    actions: rebuild?.actions ?? [],
+    removed: rebuild?.removed ?? [],
+    absent: rebuild?.absent ?? [],
+    residual: rebuild?.residual ?? [],
+    quarantined: rebuild?.quarantined ?? [],
+    failures: rebuild?.failures ?? [],
+  };
+}
+
+function overallState(
+  targetResults: readonly RebuildReceiptTargetResult[],
+  fallback: ReceiptOverallState | undefined,
+): RebuildReceiptOverallState {
+  if (targetResults.length === 0) return fallback ?? 'succeeded';
+  const successful = targetResults.filter((target) =>
+    target.state === 'completed' && target.action !== 'skipped').length;
+  if (successful === targetResults.length) return 'succeeded';
+  return successful === 0 ? 'failed' : 'partial';
+}
+
 export function buildRebuildReceiptJson(
   command: RebuildReceiptJson['command'],
   result: CliCommandResult,
 ): RebuildReceiptJson {
-  const rebuildResults = result.rebuildResults ?? [];
-  const overallState = result.overallState
-    ?? (rebuildResults.every((entry) => entry.status === 'succeeded') ? 'succeeded' : 'failed');
+  const hasCoreEvidence = (result.targetResults?.length ?? 0) > 0
+    || (result.rebuildResults?.length ?? 0) > 0
+    || (result.receiptTargets?.length ?? 0) > 0;
+  const errors = result.errors ?? (!hasCoreEvidence && result.overallState !== 'succeeded'
+    ? [{
+        code: result.warnings[0]?.split(':', 1)[0] || 'writeCommandFailed',
+        message: result.warnings[0] ?? 'The write command did not run.',
+      }]
+    : []);
+  const targetResults = sourceTargetResults(command, result, errors)
+    .map((target) => receiptTargetResult(target, result));
+  const state = overallState(targetResults, result.overallState);
+  const changes = result.operationPlan?.changes ?? unique(
+    targetResults.flatMap((target) => target.changes),
+  );
+  const recoveryActions = unique(targetResults.flatMap((target) => target.recoveryActions));
+  if (state !== 'succeeded' && targetResults.length === 0) {
+    recoveryActions.push(...earlyFailureRecovery(command, errors[0]?.code));
+  }
   return {
-    ok: overallState === 'succeeded',
+    ok: state === 'succeeded',
     command,
-    receiptSchemaVersion: 5,
+    receiptSchemaVersion: 6,
     ...(result.dependencyPlan ? {
       dependencyPlanSchemaVersion: 2,
       requestedPluginIds: result.dependencyPlan.requestedPluginIds,
       resolvedPluginIds: result.dependencyPlan.resolvedPluginIds,
       dependencyEdges: result.dependencyPlan.dependencyEdges,
     } : {}),
-    overallState,
-    warnings: result.warnings,
-    errors: result.errors ?? (overallState === 'failed' && rebuildResults.length === 0
-      ? [{
-          code: result.warnings[0]?.split(':', 1)[0] || 'writeCommandFailed',
-          message: result.warnings[0] ?? 'The write command did not run.',
-        }]
-      : []),
-    layers: receiptLayers(command, result),
-    targets: rebuildResults.length > 0 ? rebuildResults.map((entry) => {
-      const identity = entry.target as typeof entry.target & {
-        pluginId?: string;
-        sourceId?: string;
-        sourceIdentity?: string;
-      };
-      const planned = result.dependencyPlan?.targets.find((target) =>
-        target.pluginId === identity.pluginId
-        && target.platform === entry.target.platform
-        && target.resolvedScope === entry.target.scope);
-      const targetResult = result.targetResults?.find((candidate) =>
-        candidate.target.pluginId === identity.pluginId
-        && candidate.target.platform === entry.target.platform
-        && candidate.target.scope === entry.target.scope);
-      const errorCode = entry.status === 'failed'
-        ? rebuildErrorCode(entry.error.message)
-        : undefined;
-      return {
-        pluginName: identity.pluginName,
-        ...(identity.pluginId ? { pluginId: identity.pluginId } : {}),
-        ...(identity.sourceId ? { sourceId: identity.sourceId } : {}),
-        ...(identity.sourceIdentity ? { sourceIdentity: identity.sourceIdentity } : {}),
-        version: entry.target.pluginVersion,
-        platform: entry.target.platform,
-        scope: entry.target.scope,
-        status: entry.status,
-        cleanupAttempted: entry.cleanupAttempted,
-        actions: entry.actions,
-        removed: entry.removed,
-        absent: entry.absent,
-        residual: entry.residual,
-        quarantined: entry.quarantined,
-        failures: entry.failures,
-        ...(planned ? {
-          relation: planned.relation,
-          requiredBy: planned.requiredBy,
-          dependencyState: planned.action === 'keep'
-            ? 'kept' as const
-            : targetResult?.action === 'skipped'
-              ? 'skipped' as const
-            : entry.status === 'succeeded'
-              ? 'completed' as const
-              : entry.error.message.includes('dependencyInstallFailed')
-                ? 'skipped' as const
-                : 'failed' as const,
-        } : {}),
-        desired: {
-          scope: planned?.resolvedScope ?? entry.target.scope,
-          relation: planned?.relation ?? 'requested',
-        },
-        recovery: recoveryForTarget(entry.status, errorCode),
-        ...(errorCode ? { errorCode } : {}),
-      };
-    }) : (result.receiptTargets ?? []).map((target) => ({
-      pluginName: target.pluginName,
-      ...(target.pluginId ? { pluginId: target.pluginId } : {}),
-      ...(target.sourceId ? { sourceId: target.sourceId } : {}),
-      platform: target.platform,
-      scope: target.scope,
-      status: overallState === 'succeeded' ? 'succeeded' : 'failed',
-      cleanupAttempted: false,
-      actions: [],
-      removed: [],
-      absent: [],
-      residual: [],
-      quarantined: [],
-      failures: [],
-      desired: { scope: target.scope, relation: 'requested' as const },
-      recovery: overallState === 'succeeded'
-        ? []
-        : earlyFailureRecovery(command, result.errors?.[0]?.code),
-    })),
+    overallState: state,
+    changes,
+    targetResults,
+    warnings: unique([
+      ...result.warnings,
+      ...(result.operationPlan?.warnings ?? []),
+    ]),
+    recoveryActions: unique(recoveryActions),
+    ...(result.operationPlan ? { planFingerprint: result.operationPlan.planFingerprint } : {}),
+    errors,
   };
 }
 
@@ -349,26 +344,27 @@ export function renderRebuildReceipt(
   result: CliCommandResult,
 ): string[] {
   const receipt = buildRebuildReceiptJson(command, result);
+  const stateLabel: Record<RebuildReceiptOverallState, string> = {
+    succeeded: '完成',
+    partial: '部分完成',
+    failed: '失败',
+  };
   return [
-    `${command} ${receipt.overallState === 'succeeded' ? '完成' : '失败'}：${receipt.targets.length} 个目标。`,
-    `Project intent：${receipt.layers.projectIntent.length} 项。`,
-    `User intent：${receipt.layers.userIntent.length} 项。`,
-    `Shared Codex native：${receipt.layers.sharedCodexNative.length} 项。`,
-    `User activation：${receipt.layers.userActivation.length} 项。`,
-    `Project activation：${receipt.layers.projectActivation.length} 项。`,
-    `AW extensions：${receipt.layers.awExtensions.length} 项。`,
-    ...receipt.layers.sharedCodexNative.flatMap((entry) => entry.reusedExistingExactNative
-      ? [`${entry.codexPluginId}：复用已存在的精确 shared native；不建立 ownership ledger。`]
-      : []),
-    ...receipt.layers.sharedCodexNative.flatMap((entry) => entry.warning
-      ? [`警告：${entry.codexPluginId}：${entry.warning}`]
-      : []),
+    `${command} ${stateLabel[receipt.overallState]}：${receipt.targetResults.length} 个目标。`,
+    ...receipt.changes.map((change) => `变更：${change}`),
+    ...receipt.warnings.map((warning) => `警告：${warning}`),
     ...receipt.errors.map((error) => error.message),
-    ...receipt.targets.flatMap((target) => [
-      `- ${target.pluginName} / ${target.platform} / ${target.scope}: ${target.status}`,
-      ...target.failures.map((failure) => `  ${failure.phase}: ${failure.message}`),
-      ...target.recovery.map((recovery) => `  恢复：${recovery}`),
-    ]),
+    ...receipt.targetResults.flatMap((target) => {
+      const pluginId = target.target.pluginId ?? target.target.pluginName;
+      return [
+        `- ${pluginId} / ${target.target.platform} / ${target.target.scope}: ${target.state}`,
+        ...(target.message ? [`  ${target.message}`] : []),
+        ...target.failures
+          .filter((failure) => failure.message !== target.message)
+          .map((failure) => `  ${failure.phase}: ${failure.message}`),
+      ];
+    }),
+    ...receipt.recoveryActions.map((recovery) => `恢复：${recovery}`),
   ];
 }
 

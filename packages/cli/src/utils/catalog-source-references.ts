@@ -102,7 +102,6 @@ function claudeConsumersFromInstalled(
   value: Record<string, unknown> | null,
   marketplaceName: string,
   currentProject: string,
-  includeHistoricalProjects: boolean,
 ): NativeMarketplaceConsumer[] {
   const output: NativeMarketplaceConsumer[] = [];
   if (value !== null && !isRecord(value)) {
@@ -144,7 +143,7 @@ function claudeConsumersFromInstalled(
           ? canonicalizePathThroughExistingAncestorSync(item.projectPath)
           : null
         : undefined;
-      if (!includeHistoricalProjects && scope === 'project' && projectKey !== currentProject) continue;
+      if (scope === 'project' && projectKey !== currentProject) continue;
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
@@ -1009,7 +1008,6 @@ async function oldMarketplaceReferences(
         installed,
         'aw',
         path.normalize(canonicalProjectRoot),
-        false,
       )) {
         output.push({ kind: 'legacyMarketplace', location: claudeInstalledPath, ...consumer });
       }
@@ -1084,12 +1082,6 @@ function registeredMarketplaceRoots(
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  includeHistoricalProjects?: boolean;
-  includeOrphanedCodexNativeResidue?: boolean;
-  codexNativeResidueTargets?: ReadonlyArray<{
-    sourceId?: string;
-    pluginName: string;
-  }>;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -1355,7 +1347,6 @@ export async function inventoryCatalogSourceReferences(options: {
           claudeInstalled,
           marketplaceName,
           path.normalize(canonicalProjectRoot),
-          options.includeHistoricalProjects === true,
         ));
       } catch (error) {
         errors.push(inventoryError(

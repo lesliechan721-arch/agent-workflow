@@ -41,7 +41,7 @@ function evidence(
 }
 
 describe('codex-shared-native', () => {
-  it('classifies the six live native states without adding a scope identity', () => {
+  it('uses only the four shared-native states and keeps detail beside the state', () => {
     const cases = [
       [
         evidence({
@@ -50,15 +50,15 @@ describe('codex-shared-native', () => {
           manifest: { state: 'absent' },
           managedByCurrentIntent: false,
         }),
-        { state: 'absent', nativeAction: 'install' },
+        { state: 'missing' },
       ],
       [
         evidence({ managedByCurrentIntent: false }),
-        { state: 'claimable', version: '2.0.0', nativeAction: 'none' },
+        { state: 'usable', version: '2.0.0', claimable: true },
       ],
       [
         evidence(),
-        { state: 'present', version: '2.0.0', nativeAction: 'none' },
+        { state: 'usable', version: '2.0.0', claimable: false },
       ],
       [
         evidence({
@@ -73,10 +73,10 @@ describe('codex-shared-native', () => {
           },
         }),
         {
-          state: 'outdated',
+          state: 'replaceable',
+          reason: 'outdated',
           version: '1.0.0',
           desiredVersion: '2.0.0',
-          nativeAction: 'replace',
         },
       ],
       [
@@ -90,7 +90,7 @@ describe('codex-shared-native', () => {
             pathSafe: true,
           },
         }),
-        { state: 'corrupt', diagnostic: 'payloadDigestMismatch', nativeAction: 'blocked' },
+        { state: 'replaceable', reason: 'damaged', diagnostic: 'payloadDigestMismatch' },
       ],
       [
         evidence({
@@ -102,9 +102,9 @@ describe('codex-shared-native', () => {
           },
         }),
         {
-          state: 'foreign',
+          state: 'blocked',
+          reason: 'foreign',
           diagnostic: 'marketplaceRegistrationForeign',
-          nativeAction: 'blocked',
         },
       ],
     ] as const;
@@ -118,9 +118,9 @@ describe('codex-shared-native', () => {
 
   it('classifies an exact canonical existing plugin as a zero-write claim', () => {
     expect(inspectCodexSharedNative(evidence({ managedByCurrentIntent: false }))).toEqual({
-      state: 'claimable',
+      state: 'usable',
       version: '2.0.0',
-      nativeAction: 'none',
+      claimable: true,
     });
   });
 
@@ -134,18 +134,18 @@ describe('codex-shared-native', () => {
         payloadPath: '/foreign/demo',
         pathSafe: false,
       },
-    }))).toMatchObject({ state: 'foreign', diagnostic: 'payloadPathUnsafe' });
+    }))).toMatchObject({ state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe' });
 
     expect(inspectCodexSharedNative(evidence({
       pluginListEntries: [{ pluginId: 'demo@foreign', version: '2.0.0', enabled: true }],
-    }))).toMatchObject({ state: 'absent', diagnostic: 'staleCacheObserved' });
+    }))).toMatchObject({ state: 'missing', staleCacheObserved: true });
   });
 
   it('requires exact plugin-list, manifest identity, version, and digest evidence', () => {
     expect(inspectCodexSharedNative(evidence({ pluginListEntries: null })))
-      .toMatchObject({ state: 'corrupt', diagnostic: 'pluginListUnavailable' });
+      .toMatchObject({ state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable' });
     expect(inspectCodexSharedNative(evidence({ manifest: { state: 'absent' } })))
-      .toMatchObject({ state: 'corrupt', diagnostic: 'manifestMissing' });
+      .toMatchObject({ state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing' });
     expect(inspectCodexSharedNative(evidence({
       manifest: {
         state: 'present',
@@ -155,7 +155,7 @@ describe('codex-shared-native', () => {
         payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
         pathSafe: true,
       },
-    }))).toMatchObject({ state: 'foreign', diagnostic: 'manifestIdentityMismatch' });
+    }))).toMatchObject({ state: 'blocked', reason: 'foreign', diagnostic: 'manifestIdentityMismatch' });
   });
 
   it('treats cache as secondary evidence behind the official plugin list', () => {
@@ -164,24 +164,23 @@ describe('codex-shared-native', () => {
       pluginListEntries: [],
       manifest: { state: 'absent' },
       managedByCurrentIntent: false,
-    }))).toEqual({ state: 'absent', nativeAction: 'install' });
+    }))).toEqual({ state: 'missing' });
     expect(inspectCodexSharedNative(evidence({
       pluginListEntries: [],
       managedByCurrentIntent: false,
     }))).toEqual({
-      state: 'absent',
-      nativeAction: 'install',
-      diagnostic: 'staleCacheObserved',
+      state: 'missing',
+      staleCacheObserved: true,
     });
     expect(inspectCodexSharedNative(evidence({
       pluginListEntries: [{
         pluginId: 'demo@aw-team', version: '1.0.0', enabled: true,
       }],
     }))).toEqual({
-      state: 'outdated',
+      state: 'replaceable',
+      reason: 'outdated',
       version: '1.0.0',
       desiredVersion: '2.0.0',
-      nativeAction: 'replace',
     });
   });
 });

@@ -3,7 +3,7 @@ import { createElement } from 'react';
 import type { PlatformSelection, PluginConfigSchemaField, Scope } from '../types.js';
 import { createRebuildProgressFeed } from '../output/rebuild-progress.js';
 import { CommandWizard } from '../tui/wizard.js';
-import type { LiveConsoleItem, StatusV6Target } from './status-v6.js';
+import type { LiveConsoleItem, StatusV7Target } from './status-v6.js';
 import {
   type CliExecutionContext,
   type CommandReporter,
@@ -37,7 +37,7 @@ export interface CommandWizardPluginCandidate {
   sourceId?: string;
   sourceIdentity?: string;
   description?: string;
-  targets: StatusV6Target[];
+  targets: StatusV7Target[];
   configSchema?: Record<string, PluginConfigSchemaField>;
   configKeys?: string[];
 }

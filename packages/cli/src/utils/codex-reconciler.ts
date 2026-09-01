@@ -1,5 +1,5 @@
 import { getCodexOperationRequirement } from './agent-version.js';
-import type { CodexSharedNativeState } from './codex-shared-native.js';
+import type { CodexSharedNativeInspection } from './codex-shared-native.js';
 import type {
   CodexSurfaceAnalysis,
   CodexSurfaceComponent,
@@ -41,10 +41,9 @@ export type CodexLiveExtensionState = 'absent' | 'present' | 'drifted' | 'foreig
 
 export interface CodexReconcilerLiveEvidence {
   codexPluginId: string;
-  sharedNative: CodexSharedNativeState;
+  sharedNative: CodexSharedNativeInspection;
   sharedNativePayloadDigest?: string;
   sharedNativePayloadPath?: string;
-  repairableSharedNative?: boolean;
   activations: {
     user?: boolean;
     project?: boolean;
@@ -206,25 +205,20 @@ function nativeAction(options: {
     && desiredScopes(target).length > 0;
   if (!requiresNative || operation === 'uninstall') return 'none';
   const state = evidence.sharedNative;
-  if (state.state === 'foreign') {
+  if (state.state === 'blocked') {
     throw new CodexReconcilePlanError(
-      'codexSharedNativeForeign',
-      `${target.codexPluginId} collides with foreign native state.`,
-    );
-  }
-  if (state.state === 'corrupt') {
-    if (evidence.repairableSharedNative) return 'repair';
-    throw new CodexReconcilePlanError(
-      'codexSharedNativeCorrupt',
-      `${target.codexPluginId} is corrupt and is not safely repairable.`,
+      state.reason === 'foreign' ? 'codexSharedNativeForeign' : 'codexSharedNativeCorrupt',
+      `${target.codexPluginId} shared native state is ${state.reason}.`,
     );
   }
   if (operation === 'reinstall') {
-    return state.state === 'absent' ? 'install' : 'replace';
+    return state.state === 'missing' ? 'install' : 'replace';
   }
-  if (state.state === 'absent') return 'install';
-  if (state.state === 'outdated') return 'replace';
-  if (state.state === 'claimable') return 'claim';
+  if (state.state === 'missing') return 'install';
+  if (state.state === 'replaceable') {
+    return state.reason === 'damaged' ? 'repair' : 'replace';
+  }
+  if (state.claimable) return 'claim';
   return 'reuse';
 }
 

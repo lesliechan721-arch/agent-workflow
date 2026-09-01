@@ -209,19 +209,19 @@ function platformLabel(platform: PlatformName): string {
 function partialRetryAction(
   operationKind: OperationIntent['kind'] | undefined,
   originalAction: Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined,
-  targetState: 'present' | 'absent' | 'partial' | 'error' | undefined,
+  targetState: 'absent' | 'ready' | 'needsSync' | 'orphaned' | 'blocked' | undefined,
 ): Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined {
   if (!targetState) return undefined;
   if (operationKind === 'configSave' || operationKind === 'configReset') {
     return targetState === 'absent' ? undefined : 'reinstall';
   }
   if (originalAction === 'uninstall') {
-    return targetState === 'present' || targetState === 'partial' ? 'uninstall' : undefined;
+    return targetState !== 'absent' && targetState !== 'blocked' ? 'uninstall' : undefined;
   }
   if (originalAction === 'cleanup') return targetState === 'absent' ? undefined : 'cleanup';
   if (targetState === 'absent') return 'install';
-  if (targetState === 'partial') return 'reinstall';
-  if (targetState === 'error') return undefined;
+  if (targetState === 'needsSync') return 'reinstall';
+  if (targetState === 'blocked') return undefined;
   return originalAction === 'upgrade' ? 'upgrade' : 'reinstall';
 }
 
@@ -234,7 +234,9 @@ function statusText(plugin: PluginListItemViewModel): string {
     available: '未添加',
     installed: '可用',
     needsAttention: '需要处理',
-    unavailable: '来源不可用',
+    unavailable: plugin.capabilityUnsupported && !plugin.sourceUnavailable
+      ? '需要升级 AW CLI'
+      : '来源不可用',
   }[plugin.aggregateStatus];
 }
 
@@ -249,8 +251,7 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
       return `${label} · ${scopeLabel(placement.scope)} · 输出冲突`;
     }
     const health = placement.actualState === 'needsSync' ? '需要同步'
-      : placement.actualState === 'drifted' ? '已漂移'
-        : placement.actualState === 'conflict' ? '位置冲突'
+      : placement.actualState === 'blocked' ? '已阻断'
           : placement.health === 'ready' ? '可用'
             : placement.health === 'incomplete' ? '需要处理' : '不可用';
     const desired = placement.desiredScopes?.length
@@ -525,6 +526,32 @@ function sourceDiagnostic(
   };
 }
 
+function capabilityDiagnostic(plugin: PluginListItemViewModel): DiagnosticSummaryViewModel {
+  const missingCapabilities = plugin.missingCapabilities?.join('、')
+    ?? 'Status 未提供具体 capability';
+  const recovery = plugin.capabilityRecovery
+    ?? '升级 AW CLI 到支持插件所需 capability 的版本后重试。';
+  return {
+    severity: 'error',
+    title: 'AW CLI 不支持所需 capability',
+    userMessage: '当前 AW CLI 不能安装或重新安装这个插件。来源保持可用。',
+    impact: [
+      { state: 'blocked', message: '安装和重新安装会保持阻断，直到 AW CLI 升级。' },
+      { state: 'preserved', message: '已安装插件和已保存设置不会被删除。' },
+    ],
+    nextStep: recovery,
+    technical: {
+      code: 'awCapabilityUnsupported',
+      stage: 'check-capability',
+      context: [{ key: 'pluginId', value: plugin.pluginId }],
+      checks: [
+        `确认插件需要的 capability：${missingCapabilities}。`,
+        '升级 AW CLI 后重新检查当前状态。',
+      ],
+    },
+  };
+}
+
 function terminalTextWidth(value: string): number {
   return [...value].reduce((width, character) => width + (character.codePointAt(0)! > 0xff ? 2 : 1), 0);
 }
@@ -718,11 +745,10 @@ function placementStatus(placement: PlatformPlacementSummary): {
     return { value: '输出冲突', status: 'error', description: '只允许查看或安全移除受管内容' };
   }
   return {
-    value: `${placement.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(placement.scope)} · ${placement.actualState === 'needsSync' ? '需要同步' : placement.actualState === 'drifted' ? '已漂移' : placement.actualState === 'conflict' ? '位置冲突' : placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
-    status: placement.actualState === 'conflict' ? 'error' : placement.health === 'ready' ? 'success' : placement.health === 'incomplete' ? 'warning' : 'error',
+    value: `${placement.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(placement.scope)} · ${placement.actualState === 'needsSync' ? '需要同步' : placement.actualState === 'blocked' ? '已阻断' : placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
+    status: placement.actualState === 'blocked' ? 'error' : placement.health === 'ready' ? 'success' : placement.health === 'incomplete' ? 'warning' : 'error',
     description: placement.actualState === 'needsSync' ? 'desired intent 与现场不同；可安全同步'
-      : placement.actualState === 'drifted' ? '现场已漂移；查看同步计划'
-        : placement.actualState === 'conflict' ? 'mixed 或 AW-only 重叠；查看恢复路径'
+      : placement.actualState === 'blocked' ? '当前有安全阻断；查看恢复路径'
           : placement.health === 'ready' ? '当前检查正常' : '查看影响和建议操作',
   };
 }
@@ -752,8 +778,7 @@ function dependencyPlacementLabel(item: PluginDependencyItemViewModel): string {
       ];
       const actual = actualScopes.join('+') || scopeLabel(entry.scope);
       const state = entry.actualState === 'needsSync' ? '需同步'
-        : entry.actualState === 'drifted' ? '已漂移'
-          : entry.actualState === 'conflict' ? '冲突'
+        : entry.actualState === 'blocked' ? '已阻断'
             : entry.actualState === 'ready' ? '可用' : aggregate.value;
       return `${platformLabel(entry.platform)} · desired ${desired} · actual ${actual} · ${state}`;
     }).join(' | ');
@@ -1932,6 +1957,17 @@ export function ConsoleAppV4(props: {
         run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
       };
       if (action.id === 'settings') return { label: '查看插件设置', description: `${plugin.configFieldCount} 个配置字段及当前来源`, run: () => beginConfigFlow(plugin.pluginId) };
+      if (action.id === 'upgradeAwCli') return {
+        label: '升级 AW CLI',
+        description: plugin.capabilityRecovery ?? '升级到支持所需 capability 的 AW CLI 版本后重试',
+        status: 'warning',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
+      if (action.id === 'capabilityTechnical') return {
+        label: '查看 capability 技术详情',
+        description: '查看缺少的 capability 和安全恢复方向',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       if (action.id === 'outputCollision') {
         const collision = props.controller.listUserIssues().find((issue) =>
@@ -2649,6 +2685,17 @@ export function ConsoleAppV4(props: {
         run: () => beginPortable(plugin.pluginId),
       };
       if (action.id === 'settings') return { label: '设置', description: '查看当前实际生效的配置和值来源', meta: `${plugin.configFieldCount} 项配置`, run: () => beginConfigFlow(plugin.pluginId) };
+      if (action.id === 'upgradeAwCli') return {
+        label: '升级 AW CLI',
+        description: plugin.capabilityRecovery ?? '升级到支持所需 capability 的 AW CLI 版本后重试',
+        status: 'warning',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
+      if (action.id === 'capabilityTechnical') return {
+        label: '查看 capability 技术详情',
+        description: '查看缺少的 capability 和安全恢复方向',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       return { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
     });
@@ -2670,11 +2717,23 @@ export function ConsoleAppV4(props: {
           && candidate.platform === route.platform
           && candidate.category === 'artifactCollision')
       : undefined;
-    const sourceIssue = plugin.aggregateStatus === 'unavailable'
+    const capabilityUnavailable = plugin.capabilityUnsupported && !plugin.sourceUnavailable;
+    const sourceIssue = plugin.aggregateStatus === 'unavailable' && !capabilityUnavailable
       ? props.controller.listUserIssues().find((candidate) =>
           candidate.entity.kind === 'source' && candidate.sourceId === plugin.sourceId)
       : undefined;
     const platformAction = (action: PluginMenuAction): ActionItem => {
+      if (action.id === 'upgradeAwCli') return {
+        label: '升级 AW CLI',
+        description: plugin.capabilityRecovery ?? '升级到支持所需 capability 的 AW CLI 版本后重试',
+        status: 'warning',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
+      if (action.id === 'capabilityTechnical') return {
+        label: '查看 capability 技术详情',
+        description: '查看缺少的 capability 和安全恢复方向',
+        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+      };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 当前不可用`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
       if (action.id === 'refreshSource') return { label: '重新加载状态', description: `如需同步，先在终端运行 aw catalog source sync ${plugin.sourceId}`, run: async () => { await props.controller.reloadCatalog({ sourceId: plugin.sourceId }); } };
       if (action.id === 'add') return { label: `添加到 ${platformLabel(route.platform)}…`, description: '选择使用位置', run: () => {
@@ -2731,19 +2790,23 @@ export function ConsoleAppV4(props: {
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
     const installedPlacementRows = placement?.state === 'installed' ? <>
       <StaticRow title="Desired placement" meta={placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope)} compact />
-      <StaticRow title="Actual scope 状态" meta={placement.actualState ?? placement.health} status={placement.actualState === 'ready' ? 'success' : placement.actualState === 'conflict' ? 'error' : 'warning'} compact />
-      {placement.sharedNative ? <StaticRow title="Shared native" meta={placement.sharedNative.state} status={placement.sharedNative.state === 'present' ? 'success' : 'warning'} compact /> : null}
+      <StaticRow title="Actual scope 状态" meta={placement.actualState ?? placement.health} status={placement.actualState === 'ready' ? 'success' : placement.actualState === 'blocked' ? 'error' : 'warning'} compact />
+      {placement.sharedNative ? <StaticRow title="Shared native" meta={placement.sharedNative.state} status={placement.sharedNative.state === 'usable' ? 'success' : placement.sharedNative.state === 'blocked' ? 'error' : 'warning'} compact /> : null}
       {placement.activation ? <StaticRow title="Activation" meta={`user ${placement.activation.user ? 'on' : 'off'} · project ${placement.activation.project ? 'on' : 'off'}`} compact /> : null}
       {placement.extensions ? <StaticRow title="AW-only extensions" meta={`${placement.extensions.state} · ${placement.extensions.kinds.join('、') || '无'}`} status={placement.extensions.state === 'ready' ? 'success' : placement.extensions.state === 'conflict' ? 'error' : 'warning'} compact /> : null}
     </> : null;
     if (plugin.aggregateStatus === 'unavailable') {
-      const sourceOverview = props.controller.getSourceOverview(plugin.sourceId);
-      const diagnostic = sourceIssue?.diagnostic ?? sourceDiagnostic(
-        plugin.sourceId,
-        sourceOverview.health?.state ?? sourceOverview.source?.state,
-        sourceOverview.detail,
-      );
-      title = `暂时无法管理 ${platformLabel(route.platform)}`;
+      const sourceOverview = capabilityUnavailable ? undefined : props.controller.getSourceOverview(plugin.sourceId);
+      const diagnostic = capabilityUnavailable
+        ? capabilityDiagnostic(plugin)
+        : sourceIssue?.diagnostic ?? sourceDiagnostic(
+          plugin.sourceId,
+          sourceOverview?.health?.state ?? sourceOverview?.source?.state,
+          sourceOverview?.detail,
+        );
+      title = capabilityUnavailable
+        ? `需要升级 AW CLI 才能管理 ${platformLabel(route.platform)}`
+        : `暂时无法管理 ${platformLabel(route.platform)}`;
       description = '';
       actions = platformMenu.map(platformAction);
       content = <Box flexDirection="column">{diagnostic
@@ -2796,9 +2859,8 @@ export function ConsoleAppV4(props: {
       description = '缺少一项必要内容，插件可能无法稳定启动。';
       actions = platformMenu.map(platformAction);
       const actualTitle = placement.actualState === 'needsSync' ? '需要同步'
-        : placement.actualState === 'drifted' ? '现场已漂移'
-          : placement.actualState === 'conflict' ? '位置与扩展冲突' : '需要处理';
-      content = <Box flexDirection="column"><StatusCard status={placement.actualState === 'conflict' ? 'error' : 'warning'} title={actualTitle} description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+        : placement.actualState === 'blocked' ? '当前有安全阻断' : '需要处理';
+      content = <Box flexDirection="column"><StatusCard status={placement.actualState === 'blocked' ? 'error' : 'warning'} title={actualTitle} description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
       title = `已安装到${scopeLabel(placement.scope)}`;
       const installedVersion = placement.revision.installedVersion;
@@ -4038,8 +4100,10 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'pluginTechnical' && plugin) {
     breadcrumb = `${plugin.displayName} / 技术详情`;
     context = '只读';
-    title = '安装与身份详情';
-    description = '默认页面不会展示这些内部信息。';
+    title = plugin.capabilityUnsupported ? 'Capability 技术详情' : '安装与身份详情';
+    description = plugin.capabilityUnsupported
+      ? '当前 AW CLI 不支持此插件所需 capability。'
+      : '默认页面不会展示这些内部信息。';
     actions = [{ label: '返回插件', run: back }];
     const prioritizedComponents = [...plugin.technicalComponents].sort((left, right) => {
       const priority = (state: typeof left.state): number => state === 'error' ? 0
@@ -4047,14 +4111,15 @@ export function ConsoleAppV4(props: {
       return priority(left.state) - priority(right.state);
     });
     const detailRowBudget = responsiveBudget(9, 15);
+    const capabilityRowCount = plugin.capabilityUnsupported ? 4 : 0;
     const componentRowBudget = Math.max(1,
-      detailRowBudget - 2 - plugin.installedPlacements.length);
+      detailRowBudget - 2 - plugin.installedPlacements.length - capabilityRowCount);
     const componentLimit = prioritizedComponents.length > componentRowBudget
       ? Math.max(1, componentRowBudget - 1)
       : componentRowBudget;
     const visibleComponents = prioritizedComponents.slice(0, componentLimit);
     const hiddenComponents = prioritizedComponents.length - visibleComponents.length;
-    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${scopeLabel(component.scope)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`另有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.capabilityUnsupported ? <><StaticRow title="failure code" meta="awCapabilityUnsupported" /><StaticRow title="capability 状态" meta="当前 AW CLI 不支持" status="error" /><StaticRow title="缺少 capability" meta={plugin.missingCapabilities?.join('、') ?? 'Status 未提供具体 capability'} /><StaticRow title="恢复方向" meta={plugin.capabilityRecovery ?? '升级 AW CLI 到支持所需 capability 的版本后重试。'} /></> : null}{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${scopeLabel(component.scope)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`另有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else {
     breadcrumb = '后续阶段';
     title = '此业务页将在后续阶段接入';

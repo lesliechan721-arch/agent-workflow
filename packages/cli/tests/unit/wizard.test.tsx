@@ -53,9 +53,11 @@ describe('command wizard', () => {
       targets: [{
         pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
         pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture',
-        state,
-        components: [],
-        errors,
+        state: state === 'present' ? 'ready' as const
+          : state === 'partial' ? 'needsSync' as const : 'absent' as const,
+        components: [{ kind: 'ownership' as const, key: 'fixture', state }],
+        reasons: errors,
+        recoveryActions: [],
       }],
     });
     const selection = { plugins: [], platform: 'codex' as const, scope: 'user' as const };
@@ -103,9 +105,10 @@ describe('command wizard', () => {
         platform: 'codex' as const,
         scope: 'user' as const,
         cwd: '/fixture',
-        state,
-        components: [],
-        errors: [],
+        state: state === 'partial' ? 'needsSync' as const : 'blocked' as const,
+        components: [{ kind: 'ownership' as const, key: 'fixture', state }],
+        reasons: [],
+        recoveryActions: [],
       }],
     };
     const instance = render(<CommandWizard

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
@@ -24,7 +24,7 @@ import { TuiRouter } from '../../src/tui/router.js';
 function source(
   id: string,
   options: { primary?: boolean; error?: string; type?: 'git' | 'path' } = {},
-): StatusV6Payload['catalog']['sources'][number] {
+): StatusV7Payload['catalog']['sources'][number] {
   return {
     id,
     identity: `identity:${id}`,
@@ -37,12 +37,12 @@ function source(
 }
 
 function status(options: {
-  sources?: StatusV6Payload['catalog']['sources'];
-  targets?: StatusV6Payload['targets'];
-  errors?: StatusV6Payload['errors'];
-} = {}): StatusV6Payload {
+  sources?: StatusV7Payload['catalog']['sources'];
+  targets?: StatusV7Payload['targets'];
+  errors?: StatusV7Payload['errors'];
+} = {}): StatusV7Payload {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     catalog: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
@@ -62,10 +62,15 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-  errors?: StatusV6Payload['targets'][number]['errors'];
-}): StatusV6Payload['targets'][number] {
+  errors?: StatusV7Payload['targets'][number]['errors'];
+}): StatusV7Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
+  const state = options.state === 'present'
+    ? 'ready' as const
+    : options.state === 'partial'
+      ? 'needsSync' as const
+      : options.state === 'error' ? 'blocked' as const : 'absent' as const;
   return {
     pluginName,
     sourceId,
@@ -75,14 +80,15 @@ function target(options: {
     platform: options.platform ?? 'codex',
     scope: options.scope,
     cwd: '/workspace',
-    state: options.state,
-    components: [],
-    errors: options.errors
+    state,
+    components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
+    reasons: options.errors
       ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure', severity: 'blocking' }] : []),
+    recoveryActions: [],
   };
 }
 
-function summaries(...entries: Array<[string, string]>): StatusV6PluginSummary[] {
+function summaries(...entries: Array<[string, string]>): StatusV7PluginSummary[] {
   return entries.map(([sourceId, pluginName]) => ({
     pluginName,
     pluginId: `${sourceId}/${pluginName}`,
@@ -359,6 +365,51 @@ describe('TUI v4 router and ViewModel', () => {
     ]);
   });
 
+  it('keeps capability blockers unavailable without turning a healthy source into a source problem', () => {
+    const unsupported = target({
+      pluginName: 'modern',
+      scope: 'user',
+      state: 'error',
+      errors: [{
+        code: 'awCapabilityUnsupported',
+        message: 'safe capability failure',
+        severity: 'blocking',
+      }],
+    });
+    unsupported.recoveryActions = [{
+      command: 'manual',
+      description: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
+    }];
+    const view = buildTuiViewModel({
+      status: status({ targets: [unsupported] }),
+      pluginSummaries: [{
+        ...summaries(['official', 'modern'])[0]!,
+        missingCapabilities: ['aw.future-feature.v1'],
+      }],
+    });
+    const plugin = view.plugins[0]!;
+
+    expect(plugin).toMatchObject({
+      aggregateStatus: 'unavailable',
+      capabilityUnsupported: true,
+      capabilityRecovery: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
+      missingCapabilities: ['aw.future-feature.v1'],
+    });
+    expect(view.sourceTabs).toEqual([expect.objectContaining({ id: 'official', state: 'ready' })]);
+    expect(view.issues.some((issue) => issue.category === 'sourceUnavailable')).toBe(false);
+    for (const actions of [
+      buildPluginPreviewActions(plugin),
+      buildPluginDetailActions(plugin),
+      buildPlatformActions(plugin, 'codex'),
+    ]) {
+      expect(actions.map((action) => action.id)).toEqual(expect.arrayContaining([
+        'upgradeAwCli', 'capabilityTechnical',
+      ]));
+      expect(actions.map((action) => action.id)).not.toContain('sourceProblem');
+      expect(actions.map((action) => action.id)).not.toContain('refreshSource');
+    }
+  });
+
   it('uses add for absent and reinstall for incomplete platform placement', () => {
     expect(buildPlatformActions(menuPlugin(), 'codex')[0]?.id).toBe('add');
     expect(buildPlatformActions(menuPlugin({
@@ -371,14 +422,16 @@ describe('TUI v4 router and ViewModel', () => {
   });
 
   it('keeps pure-native scope overlap legal and consumes real scoped uninstall recovery for mixed conflict', () => {
-    const pureNative = {
-      ...target({ scope: 'project', state: 'present' }),
-      desired: { enabled: true, scopes: ['project', 'user'] as const, relation: 'root' as const },
-      actual: { state: 'ready' as const },
-      recovery: [],
-      sharedNative: { pluginId: 'demo@aw-official', state: 'present' as const, shared: true as const },
-      activation: { user: true, project: true, effective: true, evidence: 'observed' as const },
-    };
+    const pureNative = target({ scope: 'project', state: 'present' });
+    pureNative.components.push(
+      {
+        kind: 'intent', key: 'desired', state: 'desired',
+        metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+      },
+      { kind: 'sharedNative', key: 'demo@aw-official', state: 'usable', metadata: { shared: true } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+    );
     const purePlugin = buildTuiViewModel({
       status: status({ targets: [pureNative] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -393,8 +446,11 @@ describe('TUI v4 router and ViewModel', () => {
     const pureSingleScope = buildTuiViewModel({
       status: status({ targets: [{
         ...pureNative,
-        desired: { enabled: true, scopes: ['user'], relation: 'root' },
-        activation: { user: true, project: false, effective: true, evidence: 'observed' },
+        components: pureNative.components.map((component) => component.kind === 'intent'
+          ? { ...component, metadata: { enabled: true, scopes: ['user'], relation: 'root' } }
+          : component.kind === 'activation' && component.key === 'project'
+            ? { ...component, state: 'disabled' }
+            : component),
       }] }),
       pluginSummaries: [{
         ...summaries(['official', 'demo'])[0]!,
@@ -407,9 +463,13 @@ describe('TUI v4 router and ViewModel', () => {
 
     const mixed = {
       ...pureNative,
-      actual: { state: 'conflict' as const },
-      extensions: { state: 'conflict' as const, kinds: ['instruction'] as const },
-      recovery: [
+      state: 'blocked' as const,
+      components: [
+        ...pureNative.components,
+        { kind: 'extension' as const, key: 'aw', state: 'conflict', metadata: { kinds: ['instruction'] } },
+      ],
+      reasons: [{ code: 'codexExtensionScopeConflict', message: 'safe conflict', severity: 'blocking' as const }],
+      recoveryActions: [
         {
           command: 'uninstall' as const,
           scope: 'user' as const,
@@ -427,7 +487,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: summaries(['official', 'demo']),
     }).plugins[0]!;
     expect(mixedPlugin.installedPlacements[0]).toMatchObject({
-      state: 'installed', health: 'incomplete', actualState: 'conflict',
+      state: 'installed', health: 'error', actualState: 'blocked',
       extensions: { state: 'conflict' },
       recovery: expect.arrayContaining([
         expect.objectContaining({ command: 'uninstall', scope: 'user' }),
@@ -455,9 +515,12 @@ describe('TUI v4 router and ViewModel', () => {
     const foreign = buildTuiViewModel({
       status: status({ targets: [{
         ...pureNative,
-        actual: { state: 'conflict' },
-        sharedNative: { ...pureNative.sharedNative, state: 'foreign' },
-        recovery: [{
+        state: 'blocked',
+        components: pureNative.components.map((component) => component.kind === 'sharedNative'
+          ? { ...component, state: 'blocked', metadata: { shared: true, reason: 'foreign' } }
+          : component),
+        reasons: [{ code: 'codexSharedNativeForeign', message: 'safe foreign', severity: 'blocking' }],
+        recoveryActions: [{
           command: 'sync',
           description: '先移除或重命名 foreign shared native；cleanup 会保留 foreign 内容。',
         }],
@@ -465,7 +528,7 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: summaries(['official', 'demo']),
     }).plugins[0]!;
     expect(buildPlatformActions(foreign, 'codex').map((action) => action.id)).toEqual([
-      'sync', 'technical', 'remove',
+      'technical', 'back',
     ]);
 
     const needsSync = menuPlugin({
@@ -915,7 +978,7 @@ describe('TUI v4 router and ViewModel', () => {
 
   it('projects typed dependency issue actions to the canonical dependency target', () => {
     const missing = target({ pluginName: 'root', scope: 'project', state: 'partial' });
-    missing.errors = [{
+    missing.reasons = [{
       code: 'dependencyMissing',
       message: 'dependencyMissing: official/toolkit is absent at its recorded target.',
       severity: 'warning',
@@ -1001,13 +1064,13 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: summaries(['official', 'demo']),
     });
 
-    expect(view.plugins[0]?.installedPlacements).toEqual([{
+    expect(view.plugins[0]?.installedPlacements).toEqual([expect.objectContaining({
       platform: 'codex',
       state: 'installed',
       scope: userState === 'present' ? 'user' : 'project',
       health: 'ready',
       revision: { state: 'unknown', availableVersion: '1.0.0' },
-    }]);
+    })]);
     expect(view.issues.some((issue) => issue.category === 'scopeConflict')).toBe(false);
     expect(view.issues.some((issue) => issue.category === 'diagnostic')).toBe(true);
   });
@@ -1079,8 +1142,8 @@ describe('TUI v4 router and ViewModel', () => {
     expect(Object.fromEntries(view.issues.map((issue) => [issue.issueId, issue.category]))).toMatchObject({
       'incompleteInstallation:official/partial:codex:user': 'incompleteInstallation',
       'target:official/collision:codex:user:absent': 'artifactCollision',
-      'target:official/missing:codex:user:error': 'sourceMissing',
-      'target:official/changed:codex:user:error': 'sourceIdentityChanged',
+      'target:official/missing:codex:user:blocked': 'sourceMissing',
+      'target:official/changed:codex:user:blocked': 'sourceIdentityChanged',
       'config:official/required:required': 'requiredConfigMissing',
       'status:legacyStateUnsupported': 'legacyState',
       'source:official:unavailable': 'sourceUnavailable',
@@ -1231,7 +1294,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV6Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV7Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -1292,7 +1355,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV6Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV7Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -1338,7 +1401,7 @@ describe('TUI v4 router and ViewModel', () => {
     const unavailableTarget = target({
       pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
     });
-    unavailableTarget.errors.push({ code: 'bundleUnavailable', message: 'bundle missing' });
+    unavailableTarget.reasons.push({ code: 'bundleUnavailable', message: 'bundle missing' });
     const view = buildTuiViewModel({
       status: status({ targets: [unavailableTarget] }),
       pluginSummaries: [],
@@ -1850,20 +1913,26 @@ describe('TUI v4 Review safety', () => {
       dependencyPlan: plan(intent as Extract<typeof intent, { kind: 'pluginWrite' }>),
     }));
     const executeIntent = vi.fn().mockResolvedValue({ desiredPlacementUpdated: desiredOnly });
+    const existingDependencyTarget = target({
+      pluginName: 'toolkit', scope: resolvedScope === 'project' ? 'user' : 'project', state: 'present',
+    });
+    existingDependencyTarget.components.push(
+      {
+        kind: 'intent', key: 'desired', state: 'enabled',
+        metadata: {
+          enabled: true,
+          scopes: [resolvedScope === 'project' ? 'user' : 'project'],
+          relation: 'dependency',
+        },
+      },
+      { kind: 'sharedNative', key: 'toolkit@aw-official', state: 'usable' },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+    );
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
         payload: status({
-          targets: [{
-            ...target({ pluginName: 'toolkit', scope: resolvedScope === 'project' ? 'user' : 'project', state: 'present' }),
-            desired: {
-              enabled: true,
-              scopes: [resolvedScope === 'project' ? 'user' : 'project'],
-              relation: 'dependency',
-            },
-            actual: { state: 'ready' },
-            sharedNative: { pluginId: 'toolkit@aw-official', state: 'present', shared: true },
-            activation: { user: true, project: true, effective: true, evidence: 'observed' },
-          }],
+          targets: [existingDependencyTarget],
         }),
         pluginSummaries: summaries(['official', 'demo'], ['official', 'toolkit']),
       }),
@@ -2276,7 +2345,7 @@ describe('TUI v4 Review safety', () => {
     });
     expect(result).not.toHaveProperty('summary');
     expect(loadStatus).toHaveBeenCalledTimes(2);
-    expect(controller.getTargetState('official/demo', 'codex', 'user')).toBe('partial');
+    expect(controller.getTargetState('official/demo', 'codex', 'user')).toBe('needsSync');
   });
 
   it('blocks a forged issue origin before evidence capture and performs zero writes', async () => {
@@ -2297,9 +2366,10 @@ describe('TUI v4 Review safety', () => {
 
   it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
-    consumer.errors = [{
+    consumer.reasons = [{
       code: 'dependencyMissing',
-      message: 'dependencyMissing: official/toolkit is absent.',
+      message: 'safe dependency evidence',
+      dependencyPluginId: 'official/toolkit',
       severity: 'warning',
     }];
     const loaded: TuiStatusLoadResult = {

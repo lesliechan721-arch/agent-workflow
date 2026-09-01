@@ -80,6 +80,7 @@ export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
+export type RebuildReceiptOverallState = ReceiptOverallState | 'partial';
 
 export type CatalogGitRefPolicy =
   | { type: 'explicit'; ref: string }

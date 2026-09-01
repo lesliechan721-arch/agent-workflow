@@ -1,14 +1,14 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV6Payload } from '../../src/commands/status-v6.js';
+import type { StatusV7Payload } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { TuiController, type TuiControllerDependencies } from '../../src/tui/controller.js';
 
 afterEach(() => cleanup());
 
-const payload: StatusV6Payload = {
-  schemaVersion: 6,
+const payload: StatusV7Payload = {
+  schemaVersion: 7,
   catalog: {
     primarySourceId: 'official',
     configDigest: `sha256:${'a'.repeat(64)}`,

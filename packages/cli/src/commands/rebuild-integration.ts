@@ -54,7 +54,6 @@ import {
 import {
   buildCodexMarketplaceAddInvocation,
   buildCodexMarketplaceListInvocation,
-  buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
   buildCodexPluginListInvocation,
   buildCodexPluginListJsonInvocation,
@@ -110,17 +109,14 @@ import {
   projectMarketplaceManifestForPlatform,
   replayNamespacedCodexSkillOverlays,
 } from '../utils/local-marketplace.js';
-import {
-  cleanupOrphanNamespacedMarketplaceRoot,
-  commitMarketplaceGenerationBackup,
-} from '../utils/orphan-marketplace-cleanup.js';
+import { commitMarketplaceGenerationBackup } from '../utils/orphan-marketplace-cleanup.js';
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import {
   inspectCodexSharedNative,
+  type CodexSharedNativeInspection,
   type CodexSharedNativeManifestEvidence,
-  type CodexSharedNativeState,
 } from '../utils/codex-shared-native.js';
 import { calculateCodexSharedNativePayloadDigest } from '../utils/catalog-digests.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
@@ -172,6 +168,7 @@ export interface RebuildIntegration {
     command: 'install' | 'sync' | 'reinstall' | 'cleanup' | 'uninstall';
     catalog: CatalogResolution;
     readOnlyInspectionPlan?: boolean;
+    readOnlyShallowInspectionPlan?: boolean;
     includeNativeCleanupCandidate?: boolean;
     codexActivationCleanup?: Array<{
       codexPluginId: string;
@@ -1293,6 +1290,7 @@ async function buildBundledCodexSkillWrites(options: {
   env: NodeJS.ProcessEnv;
   marketplaceRoot?: string;
   marketplaceName?: string;
+  shallow?: boolean;
 }): Promise<PlannedWrite[]> {
   const relativeRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
   const sourceRoot = path.join(options.plugin.rootDir, ...relativeRoot.split('/'));
@@ -1316,6 +1314,30 @@ async function buildBundledCodexSkillWrites(options: {
     if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
     const skillSource = path.join(sourceRoot, entry.name);
     if (!await fs.pathExists(path.join(skillSource, 'SKILL.md'))) continue;
+    const skillPath = path.join(targetRoot, entry.name);
+    const identity = ownerIdentity(
+      options.plugin.manifest.name,
+      entry.name,
+      'codex',
+      'user',
+    );
+    if (options.shallow) {
+      writes.push({
+        artifact: {
+          path: skillPath,
+          kind: 'skill',
+          platform: 'codex',
+          artifactKey: entry.name,
+        },
+        component: pathComponent({
+          kind: 'skill-directory',
+          path: skillPath,
+          allowedRoot: targetRoot,
+          identity,
+        }),
+      });
+      continue;
+    }
     const tree = await createCodexSkillExpectedTree({
       artifact: {
         target: 'codex.skill',
@@ -1326,15 +1348,8 @@ async function buildBundledCodexSkillWrites(options: {
       sourceDirs: [skillSource],
       sourceRequirementsReceiptPolicy: 'allow',
     });
-    const skillPath = path.join(targetRoot, entry.name);
     const canRecoverPristine = await canonicalizePathThroughExistingAncestor(skillSource)
       !== path.resolve(skillPath);
-    const identity = ownerIdentity(
-      options.plugin.manifest.name,
-      entry.name,
-      'codex',
-      'user',
-    );
     const component = pathComponent({
       kind: 'skill-directory',
       path: skillPath,
@@ -1756,6 +1771,7 @@ async function buildInspectionWrites(options: {
   marketplaceRoot?: string;
   marketplaceName?: string;
   userActivationDesired?: ReadonlySet<string>;
+  shallow?: boolean;
 }): Promise<PlannedWrite[]> {
   const writes: PlannedWrite[] = [];
   if (options.platform === 'claude') {
@@ -1830,6 +1846,7 @@ async function buildInspectionWrites(options: {
       plugin: options.plugin,
       env: options.env,
       marketplaceRoot: options.marketplaceRoot,
+      shallow: options.shallow,
     }));
   }
   const instructions = resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex');
@@ -2278,7 +2295,7 @@ async function codexPayloadPathSafe(payloadRoot: string): Promise<boolean> {
 }
 
 export interface CodexSharedNativeLiveInspection {
-  sharedNative: CodexSharedNativeState;
+  sharedNative: CodexSharedNativeInspection;
   actualPayloadDigest?: string;
   payloadPath?: string;
   staleCacheObserved?: true;
@@ -2294,6 +2311,7 @@ export interface CodexSharedNativeLiveInspection {
 
 export interface CodexPluginRegistrationLiveInspection {
   entries: CodexPluginListEntry[];
+  readable?: boolean;
   observations: {
     user: boolean;
     project: boolean;
@@ -2314,6 +2332,7 @@ export async function inspectCodexPluginRegistrationLive(options: {
   if (!options.nativeCliRunner) {
     return {
       entries: [],
+      readable: false,
       observations: { user: false, project: false },
       activations: {},
     };
@@ -2335,11 +2354,12 @@ export async function inspectCodexPluginRegistrationLive(options: {
     readEntries(options.cwd),
     readEntries(os.tmpdir()),
   ]);
-  const entries = neutralEntries ?? exactEntries ?? [];
+  const entries = neutralEntries ?? exactEntries;
   const enabled = (values: readonly CodexPluginListEntry[] | undefined): boolean | undefined =>
     values?.find((entry) => entry.pluginId === options.pluginId)?.enabled;
   return {
-    entries,
+    entries: entries ?? [],
+    readable: entries !== undefined,
     observations: {
       user: neutralEntries !== undefined,
       project: exactEntries !== undefined,
@@ -2358,7 +2378,8 @@ export async function inspectCodexPluginRegistrationLive(options: {
 export async function inspectCodexSharedNativeLive(options: {
   pluginName: string;
   desiredVersion: string;
-  expectedPayloadDigest: string;
+  expectedPayloadDigest?: string;
+  inspectionMode?: 'shallow' | 'payload';
   cwd: string;
   env: NodeJS.ProcessEnv;
   managedByCurrentIntent: boolean;
@@ -2368,6 +2389,10 @@ export async function inspectCodexSharedNativeLive(options: {
   manager?: CodexManager;
   pluginRegistration?: CodexPluginRegistrationLiveInspection;
 }): Promise<CodexSharedNativeLiveInspection> {
+  const inspectionMode = options.inspectionMode ?? 'payload';
+  if (inspectionMode === 'payload' && options.expectedPayloadDigest === undefined) {
+    throw new Error('Payload inspection requires the expected shared native digest.');
+  }
   const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
   const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
   const pluginId = `${options.pluginName}@${marketplaceName}`;
@@ -2434,9 +2459,11 @@ export async function inspectCodexSharedNativeLive(options: {
         candidates.push({ version: entry.name, manifest: { state: 'unreadable' }, payloadPath });
         continue;
       }
-      const pathSafe = await codexPayloadPathSafe(payloadPath);
-      let payloadDigest = options.expectedPayloadDigest;
-      if (pathSafe) {
+      const pathSafe = inspectionMode === 'shallow'
+        ? true
+        : await codexPayloadPathSafe(payloadPath);
+      let payloadDigest: string | undefined;
+      if (pathSafe && inspectionMode === 'payload') {
         try {
           payloadDigest = await calculateCodexSharedNativePayloadDigest(payloadPath);
         } catch {
@@ -2485,7 +2512,7 @@ export async function inspectCodexSharedNativeLive(options: {
         state: 'present',
         identity: pluginId,
         version: options.desiredVersion,
-        payloadDigest: options.expectedPayloadDigest,
+        ...(options.expectedPayloadDigest ? { payloadDigest: options.expectedPayloadDigest } : {}),
         payloadPath: cacheRoot,
         pathSafe: false,
       }
@@ -2499,7 +2526,7 @@ export async function inspectCodexSharedNativeLive(options: {
     expectedPayloadDigest: options.expectedPayloadDigest,
     marketplaceRegistration: config.snapshot.marketplaces[marketplaceName],
     marketplacePathSafe: true,
-    pluginListEntries: pluginList.entries,
+    pluginListEntries: pluginList.readable === false ? null : pluginList.entries,
     manifest,
     managedByCurrentIntent: options.managedByCurrentIntent && manifest.state === 'present',
   });
@@ -2507,11 +2534,11 @@ export async function inspectCodexSharedNativeLive(options: {
     sharedNative,
     activationObservations: pluginList.observations,
     activations: pluginList.activations,
-    ...(sharedNative.state === 'absent' && sharedNative.diagnostic === 'staleCacheObserved'
+    ...(sharedNative.state === 'missing' && sharedNative.staleCacheObserved
       ? { staleCacheObserved: true as const }
       : {}),
     ...(manifest.state === 'present' ? {
-      actualPayloadDigest: manifest.payloadDigest,
+      ...(manifest.payloadDigest ? { actualPayloadDigest: manifest.payloadDigest } : {}),
       payloadPath: manifest.payloadPath,
     } : {}),
   };
@@ -3737,65 +3764,9 @@ function createNativeDriver(options: {
             }) ? { removeAgentRegistrations: [locator.roleKey] } : null);
           return;
         case 'codex-marketplace': {
-          const target = findTarget(component);
-          const currentResidue = await inspectCodexNativeResidue({
-            pluginName: component.identity.plugin,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            marketplaceName: locator.marketplaceName,
-            marketplaceRoot: locator.marketplaceRoot,
-          });
-          if (currentResidue.state === 'foreign') {
-            throw new Error(`Codex native owner 为 foreign，拒绝移除 marketplace：${currentResidue.labels.join('，')}`);
-          }
-          const remaining = await discoverCodexNativeResidueNames({
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            marketplaceName: locator.marketplaceName,
-            marketplaceRoot: locator.marketplaceRoot,
-          });
-          if (await inspectCodexMarketplace(component) !== 'present'
-            || currentResidue.state === 'present'
-            || remaining.some((name) => name !== component.identity.plugin)) return;
-          try {
-            await runNativeCliChecked(buildCodexMarketplaceRemoveInvocation(
-              requireCodexManager(currentCodexManager()),
-              locator.marketplaceName,
-              target.identity.cwd,
-              options.context.env,
-            ), runner);
-            await runNativeCliChecked(buildCodexMarketplaceListInvocation(
-              requireCodexManager(currentCodexManager()),
-              target.identity.cwd,
-              options.context.env,
-            ), runner);
-          } catch {
-            throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
-          }
           return;
         }
         case 'claude-marketplace': {
-          if (await inspectClaudeMarketplace(component) !== 'present') return;
-          const target = findTarget(component);
-          const nativeOptions = {
-            pluginName: component.identity.plugin,
-            scope: component.identity.scope,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            marketplaceName: locator.marketplaceName,
-            marketplaceRoot: locator.marketplaceRoot,
-          };
-          const before = await readClaudeNativeState(nativeOptions);
-          if (before.pluginState !== 'absent' || before.marketplaceConsumers.length > 0) return;
-          await runNativeCliChecked({
-            command: 'claude',
-            args: ['plugin', 'marketplace', 'remove', locator.marketplaceName],
-            cwd: target.identity.cwd,
-            env: options.context.env,
-          }, runner);
-          if ((await readClaudeNativeState(nativeOptions)).marketplaceState !== 'absent') {
-            throw new Error('Claude marketplace remove 后 canonical aw source 仍存在。');
-          }
           return;
         }
         case 'corrupted':
@@ -3839,18 +3810,6 @@ function createNativeDriver(options: {
       }
       return seen.size === expectedFiles.size;
     },
-  };
-  const finalizeNamespacedCleanup = async (target: DesiredTarget): Promise<void> => {
-    if (target.identity.platform === 'codex') return;
-    const { sourceId, sourceIdentity, marketplaceRoot, marketplaceName } = target.identity;
-    if (!sourceId || !sourceIdentity || !marketplaceRoot) return;
-    await cleanupOrphanNamespacedMarketplaceRoot({
-      sourceId,
-      sourceIdentity,
-      ...(marketplaceName ? { marketplaceName } : {}),
-      cwd: target.identity.cwd,
-      env: options.context.env,
-    });
   };
   return {
     ownership,
@@ -3898,7 +3857,7 @@ function createNativeDriver(options: {
       await transaction.rollback();
       mirrorTransactions.delete(target);
     },
-    finalizeCleanup: finalizeNamespacedCleanup,
+    finalizeCleanup: async () => undefined,
     probeNative: async (component) => {
       const target = findTarget(component);
       if (!target) throw new Error('Native ownership probe cannot resolve its desired target.');
@@ -4324,6 +4283,7 @@ export function createRebuildIntegration(options: {
             marketplaceRoot: input.marketplaceRoot,
             marketplaceName: input.marketplaceName,
             userActivationDesired: options.context.codexUserActivationDesired,
+            shallow: input.readOnlyShallowInspectionPlan,
           });
         } else if (input.platform === 'codex') {
           writes = await buildCodexWrites({
@@ -4506,7 +4466,10 @@ export function createRebuildIntegration(options: {
       const marketplaceDesired = nativeRequired
         && input.command !== 'cleanup'
         && input.command !== 'uninstall';
-      const marketplace = input.platform === 'codex' && input.scope === 'user' && nativeDesired
+      const marketplace = input.platform === 'codex'
+        && input.scope === 'user'
+        && nativeDesired
+        && input.readOnlyShallowInspectionPlan !== true
         ? [createCodexMarketplaceComponent({
             pluginName: input.plugin.manifest.name,
             codexManager: options.context.codexManager,
@@ -4517,7 +4480,7 @@ export function createRebuildIntegration(options: {
             marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
             desired: marketplaceDesired,
           })]
-        : input.platform === 'claude'
+        : input.platform === 'claude' && marketplaceDesired
           ? [createClaudeMarketplaceComponent({
               pluginName: input.plugin.manifest.name,
               scope: input.scope,
@@ -4661,6 +4624,7 @@ export async function inspectRebuildTarget(options: {
   context: RebuildExecutionContext;
   userActivationDesired?: ReadonlySet<string>;
   nativeProbe?: NativeOwnershipProbe;
+  shallow?: boolean;
 }): Promise<{
   target: DesiredTarget;
   inspection: OwnershipInspection;
@@ -4688,6 +4652,7 @@ export async function inspectRebuildTarget(options: {
     command: 'install',
     catalog: options.catalog,
     readOnlyInspectionPlan: true,
+    readOnlyShallowInspectionPlan: options.shallow,
   });
   const inspection = await inspectOwnedComponents({
     components: target.ownedComponents,

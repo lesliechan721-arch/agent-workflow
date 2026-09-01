@@ -21,6 +21,7 @@ import {
   type OwnerIdentity,
 } from '../../src/utils/ownership.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { readCodexConfigFile } from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   listNamespacedPluginConfigStores,
@@ -248,7 +249,6 @@ describe('phase 3B namespaced runtime stores', () => {
     const ordinary = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      codexNativeResidueTargets: [{ sourceId: 'team', pluginName: 'demo' }],
     });
     expect(ordinary.errors).toEqual([]);
     expect(ordinary.references).not.toContainEqual(expect.objectContaining({
@@ -258,7 +258,6 @@ describe('phase 3B namespaced runtime stores', () => {
     const orphanCleanup = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeOrphanedCodexNativeResidue: true,
     });
     expect(orphanCleanup.errors).toEqual([]);
     expect(orphanCleanup.references).not.toContainEqual(expect.objectContaining({
@@ -923,6 +922,27 @@ describe('phase 3B namespaced runtime stores', () => {
             'demo@aw-team': [{ name: 'demo', scope: 'user', version: '1.0.0' }],
           } });
         }
+        if (command === 'codex'
+          && invocation.args[0] === 'plugin'
+          && invocation.args[1] === 'list'
+          && invocation.args[2] === '--json') {
+          const config = await readCodexConfigFile(
+            path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
+          );
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              installed: Object.entries(config.snapshot.plugins).map(([pluginId, plugin]) => ({
+                pluginId,
+                installed: true,
+                enabled: plugin.enabled === true,
+                version: '1.0.0',
+              })),
+              available: [],
+            }),
+            stderr: '',
+          };
+        }
         return { exitCode: 0, stdout: `${platform}-cli 99.0.0`, stderr: '' };
       };
 
@@ -1132,15 +1152,14 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(1);
     const stdout = output.readStdout();
     const payload = JSON.parse(stdout) as {
-      targets: Array<{ pluginId: string; state: string; errors: Array<{ code: string }> }>;
+      targets: Array<{ pluginId: string; state: string; reasons: Array<{ code: string }> }>;
       errors: Array<{ code: string; message: string }>;
     };
     expect(stdout.trim().split('\n')).toHaveLength(1);
     expect(payload.targets).toContainEqual(expect.objectContaining({
       pluginId: 'team/demo',
-      state: 'error',
-      actual: { state: 'orphaned' },
-      errors: expect.arrayContaining([
+      state: 'blocked',
+      reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'codexSharedNativeCorrupt' }),
         expect.objectContaining({ code: 'codexActivationDrift' }),
       ]),

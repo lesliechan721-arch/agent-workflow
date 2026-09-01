@@ -11,7 +11,7 @@ import {
   inspectCodexSharedNativeLive,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { projectTargetRevision, statusCommandV6 } from '../../src/commands/status-v6.js';
+import { projectTargetRevision, statusCommandV7 } from '../../src/commands/status-v6.js';
 import {
   executeRebuildOperation,
 } from '../../src/commands/rebuild-operations.js';
@@ -326,7 +326,7 @@ describe('rebuild adapter integration', () => {
     });
 
     expect(inspected).toMatchObject({
-      sharedNative: { state: 'claimable', version: '1.0.0' },
+      sharedNative: { state: 'usable', version: '1.0.0', claimable: true },
       activations: { user: false, project: true },
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
@@ -334,6 +334,56 @@ describe('rebuild adapter integration', () => {
       isolation.env.TMPDIR,
     ]));
     expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
+
+  it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName: 'unreadable-list',
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      managedByCurrentIntent: false,
+      nativeCliRunner: async (invocation) => {
+        calls.push(invocation);
+        return { exitCode: 0, stdout: '{invalid', stderr: '' };
+      },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: {
+        state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable',
+      },
+      activationObservations: { user: false, project: false },
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
+
+  it('uses the successful Codex list when the other inspection fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName: 'degraded-list',
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      managedByCurrentIntent: false,
+      nativeCliRunner: async (invocation) => invocation.cwd === isolation.layout.fixtureCwd
+        ? { exitCode: 1, stdout: '', stderr: 'project unavailable' }
+        : {
+            exitCode: 0,
+            stdout: JSON.stringify({ installed: [], available: [] }),
+            stderr: '',
+          },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: { state: 'missing' },
+      activationObservations: { user: true, project: false },
+    });
   });
   it.each(['codex', 'claude'] as const)(
     'does not make an uninstalled %s target partial because the shared marketplace exists',
@@ -4488,7 +4538,7 @@ describe('rebuild adapter integration', () => {
     expect((await fs.readJson(paths.installedPluginsPath)).plugins[`${pluginB}@aw`]).toHaveLength(1);
   });
 
-  it('removes the Claude marketplace only after the last canonical consumer is uninstalled', async () => {
+  it('preserves the shared Claude marketplace after the last current consumer is uninstalled', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const pluginName = 'last-claude';
@@ -4534,10 +4584,8 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(calls).toContain('claude plugin marketplace remove aw');
-    expect(calls.indexOf('claude plugin uninstall last-claude@aw --scope user')).toBeLessThan(
-      calls.indexOf('claude plugin marketplace remove aw'),
-    );
+    expect(calls).toContain('claude plugin uninstall last-claude@aw --scope user');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
   });
 
   it('reports malformed Claude native JSON and rejects an installed version mismatch', async () => {

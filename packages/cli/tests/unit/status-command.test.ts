@@ -3,15 +3,22 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
-import { statusCommandV6 } from '../../src/commands/status-v6.js';
+import {
+  statusCommandV7,
+  statusTargetActivation,
+  statusTargetExtensions,
+  statusTargetIntent,
+  statusTargetSharedNative,
+} from '../../src/commands/status-v6.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { createSharedOwnerToken, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
+import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import {
   createEmptyPluginIntentState,
   resolvePluginIntentStatePath,
@@ -19,7 +26,10 @@ import {
 } from '../../src/utils/plugin-intent-state.js';
 import { resolveAwHome, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  createDependencyCatalogSnapshotFixture,
+} from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function configurePathSource(
@@ -139,7 +149,7 @@ async function writeSystemCodexPackage(options: {
   return binRoot;
 }
 
-describe('status v6 current behavior', () => {
+describe('status v7 current behavior', () => {
   it('reports a qualified pure-native Codex project target without scoped materialization', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
@@ -150,25 +160,23 @@ describe('status v6 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env: { ...env, PATH: '' },
       platform: 'codex', scope: 'project', json: true,
     });
 
-    expect(result.payload.schemaVersion).toBe(6);
-    expect(result.payload.targets).toEqual([
-      expect.objectContaining({
-        pluginId: 'local/demo',
-        state: 'absent',
-        desired: { enabled: false, scopes: [], relation: 'none' },
-        actual: { state: 'absent' },
-        sharedNative: expect.objectContaining({ state: 'missing', shared: true }),
-        activation: {
-          evidence: 'assumed',
-          systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
-        },
-      }),
-    ]);
+    expect(result.payload.schemaVersion).toBe(7);
+    const target = result.payload.targets[0]!;
+    expect(target).toMatchObject({ pluginId: 'local/demo', state: 'absent' });
+    expect(statusTargetIntent(target)).toEqual({ enabled: false, scopes: [], relation: 'none' });
+    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'missing' });
+    expect(statusTargetActivation(target)).toEqual({
+      evidence: 'assumed',
+      systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
+    });
+    for (const removed of ['desired', 'actual', 'errors', 'recovery', 'sharedNative', 'activation', 'extensions']) {
+      expect(target).not.toHaveProperty(removed);
+    }
   });
 
   it('aggregates user and project pure-native intent into one missing shared target', async () => {
@@ -187,21 +195,24 @@ describe('status v6 current behavior', () => {
       });
     }
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', json: true,
     });
 
     expect(result.payload.targets).toHaveLength(1);
-    expect(result.payload.targets[0]).toMatchObject({
-      desired: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
-      actual: { state: 'needsSync' },
-      sharedNative: { state: 'missing', shared: true },
-      activation: {
+    const target = result.payload.targets[0]!;
+    expect(target).toMatchObject({
+      state: 'needsSync',
+      recoveryActions: [expect.objectContaining({ command: 'sync' })],
+    });
+    expect(statusTargetIntent(target)).toEqual({
+      enabled: true, scopes: ['project', 'user'], relation: 'root',
+    });
+    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'missing' });
+    expect(statusTargetActivation(target)).toEqual({
         evidence: 'assumed',
         systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
-      },
-      recovery: [expect.objectContaining({ command: 'sync' })],
     });
   });
 
@@ -222,16 +233,15 @@ describe('status v6 current behavior', () => {
       });
     }
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', json: true,
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      actual: { state: 'conflict' },
-      extensions: expect.objectContaining({ state: 'conflict' }),
-      errors: expect.arrayContaining([expect.objectContaining({ code: 'codexExtensionScopeConflict' })]),
-      recovery: [
+      state: 'blocked',
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'codexExtensionScopeConflict' })]),
+      recoveryActions: [
         expect.objectContaining({
           command: 'uninstall',
           scope: 'user',
@@ -248,7 +258,63 @@ describe('status v6 current behavior', () => {
         }),
       ],
     })]);
-    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
+    expect(statusTargetExtensions(result.payload.targets[0]!)).toMatchObject({ state: 'conflict' });
+    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(true);
+  });
+
+  it('keeps the default-scope Codex dependency component aligned with its project reason', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'project-dependency-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/root', platforms: ['codex'] }],
+    });
+    await applyCodexConfigTransactionFile(
+      resolveCodexPaths(isolation.layout.fixtureCwd, 'project', env).configTomlPath,
+      {
+        upsertManagedInstructionBlock: {
+          pluginName: createSharedOwnerToken({
+            owner: 'agent-workflows',
+            sourceId: 'local',
+            sourceIdentity,
+            pluginId: 'local/root',
+            plugin: 'root',
+            artifactKey: 'developer-instructions',
+            platform: 'codex',
+            scope: 'project',
+          }),
+          value: 'Root live fixture.',
+        },
+      },
+    );
+
+    const result = await statusCommandV7({
+      plugins: ['local/root'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    const target = result.payload.targets[0]!;
+    const reason = target.reasons.find((entry) => entry.code === 'dependencyMissing');
+    const component = target.components.find((entry) =>
+      entry.kind === 'dependency' && entry.key === 'local/leaf');
+    expect(target.scope).toBe('project');
+    expect(reason).toMatchObject({
+      dependencyPluginId: 'local/leaf',
+      rootIssueId: 'dependencyMissing:local/leaf:codex:project',
+      rootIssueCode: 'dependencyMissing',
+    });
+    expect(component).toMatchObject({
+      state: 'absent',
+      metadata: {
+        rootIssueId: reason?.rootIssueId,
+        rootIssueCode: reason?.rootIssueCode,
+      },
+    });
   });
 
   it('keeps unavailable desired intent visible as unresolved', async () => {
@@ -261,16 +327,18 @@ describe('status v6 current behavior', () => {
       roots: [{ pluginId: 'gone/demo', platforms: ['codex'] }],
     });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['gone/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      desired: { enabled: true, scopes: ['project'], relation: 'root' },
-      actual: { state: 'unresolved' },
-      errors: expect.arrayContaining([expect.objectContaining({ code: 'codexIntentSourceUnavailable' })]),
+      state: 'blocked',
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'codexIntentSourceUnavailable' })]),
     })]);
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: true, scopes: ['project'], relation: 'root',
+    });
   });
 
   it('does not apply managed intent from another same-name Codex marketplace', async () => {
@@ -287,16 +355,73 @@ describe('status v6 current behavior', () => {
       managed: { codexPluginIds: ['demo@aw-second'] },
     });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', json: true,
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'local/demo',
-      desired: { enabled: false, scopes: [], relation: 'none' },
-      actual: { state: 'absent' },
+      state: 'absent',
     })]);
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: false, scopes: [], relation: 'none',
+    });
+  });
+
+  it('reports a current-target owned component without desired intent as orphaned', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphaned-owned-source');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'),
+      'console.log(JSON.stringify({ version: 2, artifacts: [] }));\n',
+    );
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [{
+          id: 'orphaned-skill',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'orphaned-skill',
+        }],
+      };
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'orphaned-skill');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), [
+      '---', 'name: orphaned-skill', 'description: Orphaned fixture.', '---', '',
+    ].join('\n'));
+    await writeSkillOwnerMarker({
+      skillRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows', sourceId: 'local', sourceIdentity,
+        pluginId: 'local/demo', plugin: 'demo', artifactKey: 'orphaned-skill',
+        platform: 'codex', scope: 'project',
+      },
+    });
+
+    const result = await statusCommandV7({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', scope: 'project', json: true,
+    });
+
+    expect(result.payload.targets[0]).toMatchObject({ state: 'orphaned' });
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: false, scopes: [], relation: 'none',
+    });
+    expect(result.payload.targets[0]!.recoveryActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ command: 'cleanup' }),
+    ]));
   });
 
   it('keeps desired intent structured when the Catalog has no active generation', async () => {
@@ -308,7 +433,7 @@ describe('status v6 current behavior', () => {
       roots: [{ pluginId: 'official/demo', platforms: ['codex'] }],
     });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['official/demo'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', json: true,
     });
@@ -319,13 +444,15 @@ describe('status v6 current behavior', () => {
     expect(result.payload.catalog.sources[0]).not.toHaveProperty('freshness');
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'official/demo',
-      desired: { enabled: true, scopes: ['project'], relation: 'root' },
-      actual: { state: 'unresolved' },
-      recovery: [
+      state: 'blocked',
+      recoveryActions: [
         expect.objectContaining({ command: 'sync' }),
         expect.objectContaining({ command: 'cleanup' }),
       ],
     })]);
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: true, scopes: ['project'], relation: 'root',
+    });
   });
 
   it('reports cache-only Codex residue as a non-blocking stale-cache diagnostic', async () => {
@@ -348,21 +475,21 @@ describe('status v6 current behavior', () => {
       sourceIdentity,
     });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'user', json: true,
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      actual: { state: 'needsSync' },
-      sharedNative: expect.objectContaining({
-        state: 'missing', diagnostic: 'staleCacheObserved',
-      }),
-      errors: expect.arrayContaining([
+      state: 'needsSync',
+      reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'staleCacheObserved', severity: 'warning' }),
       ]),
     })]);
-    expect(result.payload.targets[0]!.errors).not.toEqual(expect.arrayContaining([
+    expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
+      state: 'missing', staleCacheObserved: true,
+    });
+    expect(result.payload.targets[0]!.reasons).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'codexSharedNativeUpdateRequired' }),
       expect.objectContaining({ code: 'codexSharedNativeForeign' }),
       expect.objectContaining({ severity: 'blocking' }),
@@ -383,18 +510,21 @@ describe('status v6 current behavior', () => {
       getCodexHome(env), 'plugins', 'cache', 'aw', 'demo', '1.0.0', 'plugin.json',
     ), { name: 'demo', version: '1.0.0' });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'user', json: true,
     });
 
-    expect(result.payload.targets).toEqual([expect.objectContaining({
-      desired: { enabled: false, scopes: [], relation: 'none' },
-      actual: { state: 'absent' },
-      sharedNative: expect.objectContaining({
-        state: 'missing', diagnostic: 'staleCacheObserved',
-      }),
-    })]);
+    expect(
+      result.payload.targets,
+      JSON.stringify(result.payload.targets, null, 2),
+    ).toEqual([expect.objectContaining({ state: 'absent' })]);
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: false, scopes: [], relation: 'none',
+    });
+    expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
+      state: 'missing', staleCacheObserved: true,
+    });
   });
 
   it('uses pluginIntentStateInvalid for an unreadable desired-state file', async () => {
@@ -406,7 +536,7 @@ describe('status v6 current behavior', () => {
       scope: 'user', cwd: isolation.layout.fixtureCwd, env,
     }), '{ invalid intent');
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env, json: true,
     });
 
@@ -468,10 +598,20 @@ describe('status v6 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV6({
-      cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      platform: 'codex', scope: 'project', verbose: true, json: true,
-    });
+    setNativeCliRunnerOverrideForTests(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ installed: [], available: [] }),
+      stderr: '',
+    }));
+    let result;
+    try {
+      result = await statusCommandV7({
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+        platform: 'codex', scope: 'project', verbose: true, json: true,
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
 
     expect(result.hasErrors).toBe(true);
     expect(result.payload.catalog.sources).toEqual(expect.arrayContaining([
@@ -518,7 +658,7 @@ describe('status v6 current behavior', () => {
     });
     const { env } = await configurePathSource(sourceRoot);
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
       env: { ...env, AW_RENDER_SENTINEL: sentinel },
       platform: 'codex', scope: 'project', verbose: true,
@@ -550,7 +690,7 @@ describe('status v6 current behavior', () => {
       },
     });
 
-    const result = await statusCommandV6({
+    const result = await statusCommandV7({
       cwd: isolation.layout.fixtureCwd, env,
       platform: 'codex', scope: 'project', json: true,
     });
@@ -570,7 +710,7 @@ describe('status v6 current behavior', () => {
 
     let result;
     try {
-      result = await statusCommandV6({
+      result = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env,
         platform: 'claude', scope: 'project', json: true,
       });
@@ -610,7 +750,7 @@ describe('status v6 current behavior', () => {
 
     let result;
     try {
-      result = await statusCommandV6({
+      result = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
       });
@@ -618,18 +758,12 @@ describe('status v6 current behavior', () => {
       setNativeCliRunnerOverrideForTests(null);
     }
 
-    expect(result.payload.targets).toEqual([
-      expect.objectContaining({
-        activation: expect.objectContaining({
-          evidence: 'observed',
-          systemConsumer: {
-            state: 'compatible',
-            detectedVersion: '0.151.0',
-            requiredMinVersion: '0.151.0',
-          },
-        }),
-      }),
-    ]);
+    expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
+      evidence: 'observed',
+      systemConsumer: {
+        state: 'compatible', detectedVersion: '0.151.0', requiredMinVersion: '0.151.0',
+      },
+    });
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
     expect(await filesystemSnapshot(isolation.layout.codexHomeDir)).toEqual(codexHomeBefore);
     expect(nativeRunner).toHaveBeenCalledTimes(2);
@@ -638,7 +772,7 @@ describe('status v6 current behavior', () => {
       && invocation.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
-  it('uses system registration as the primary shared-native version evidence', async () => {
+  it('uses shallow system registration evidence without recursively hashing the payload', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'registered-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -684,25 +818,44 @@ describe('status v6 current behavior', () => {
     setNativeCliRunnerOverrideForTests(nativeRunner);
 
     try {
-      const present = await statusCommandV6({
+      await fs.remove(cacheRoot);
+      const damaged = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'user', json: true,
       });
-      expect(present.payload.targets).toEqual([expect.objectContaining({
-        sharedNative: expect.objectContaining({ state: 'present', version: '1.0.0' }),
-        activation: expect.objectContaining({ user: true, evidence: 'observed' }),
-        actual: { state: 'ready' },
-      })]);
+      expect(damaged.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+      expect(statusTargetSharedNative(damaged.payload.targets[0]!)).toMatchObject({
+        state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing',
+      });
+
+      await fs.copy(path.join(sourceRoot, 'plugins', 'demo'), cacheRoot);
+      if (process.platform !== 'win32') {
+        await fs.symlink(
+          path.join(isolation.layout.fixtureCwd, 'outside-payload'),
+          path.join(cacheRoot, 'nested-payload-link'),
+        );
+      }
+      const present = await statusCommandV7({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'user', json: true,
+      });
+      expect(present.payload.targets[0]).toMatchObject({ state: 'ready' });
+      expect(statusTargetSharedNative(present.payload.targets[0]!)).toMatchObject({
+        state: 'usable', version: '1.0.0',
+      });
+      expect(statusTargetActivation(present.payload.targets[0]!)).toMatchObject({
+        user: true, evidence: 'observed',
+      });
 
       listedVersion = '0.9.0';
-      const outdated = await statusCommandV6({
+      const outdated = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'user', json: true,
       });
-      expect(outdated.payload.targets).toEqual([expect.objectContaining({
-        sharedNative: expect.objectContaining({ state: 'outdated', version: '0.9.0' }),
-        actual: { state: 'needsSync' },
-      })]);
+      expect(outdated.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+      expect(statusTargetSharedNative(outdated.payload.targets[0]!)).toMatchObject({
+        state: 'replaceable', reason: 'outdated', version: '0.9.0',
+      });
     } finally {
       setNativeCliRunnerOverrideForTests(null);
     }
@@ -736,7 +889,7 @@ describe('status v6 current behavior', () => {
 
     let result;
     try {
-      result = await statusCommandV6({
+      result = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
       });
@@ -745,23 +898,22 @@ describe('status v6 current behavior', () => {
     }
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      actual: { state: 'unresolved' },
-      activation: expect.objectContaining({
-        evidence: 'unobserved',
-        systemConsumer: expect.objectContaining({
-          state: 'incompatible',
-          code: 'codexProjectPluginVersionTooLow',
-          detectedVersion: '0.150.0',
-        }),
-      }),
-      errors: expect.arrayContaining([
+      state: 'blocked',
+      reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'codexProjectPluginVersionTooLow' }),
       ]),
-      recovery: [{
+      recoveryActions: [{
         command: 'manual',
         description: '升级或修复官方 system Codex CLI 后重试原操作。',
       }],
     })]);
+    expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
+      evidence: 'unobserved',
+      systemConsumer: {
+        state: 'incompatible', code: 'codexProjectPluginVersionTooLow',
+        detectedVersion: '0.150.0',
+      },
+    });
     expect(nativeRunner).not.toHaveBeenCalled();
   });
 
@@ -791,7 +943,7 @@ describe('status v6 current behavior', () => {
 
     let result;
     try {
-      result = await statusCommandV6({
+      result = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', json: true,
       });
@@ -799,18 +951,16 @@ describe('status v6 current behavior', () => {
       setNativeCliRunnerOverrideForTests(null);
     }
 
-    expect(result.payload.targets).toEqual([expect.objectContaining({
-      desired: { enabled: true, scopes: ['user'], relation: 'root' },
-      actual: { state: 'needsSync' },
-      activation: expect.objectContaining({
-        evidence: 'observed',
-        systemConsumer: {
-          state: 'compatible',
-          detectedVersion: '0.150.0',
-          requiredMinVersion: '0.145.0',
-        },
-      }),
-    })]);
+    expect(result.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+    expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+      enabled: true, scopes: ['user'], relation: 'root',
+    });
+    expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
+      evidence: 'observed',
+      systemConsumer: {
+        state: 'compatible', detectedVersion: '0.150.0', requiredMinVersion: '0.145.0',
+      },
+    });
     expect(nativeRunner).toHaveBeenCalledTimes(2);
   });
 
@@ -840,7 +990,7 @@ describe('status v6 current behavior', () => {
 
       let result;
       try {
-        result = await statusCommandV6({
+        result = await statusCommandV7({
           plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
           env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
         });
@@ -848,14 +998,12 @@ describe('status v6 current behavior', () => {
         setNativeCliRunnerOverrideForTests(null);
       }
 
-      expect(result.payload.targets).toEqual([expect.objectContaining({
-        actual: { state: 'needsSync' },
-        activation: expect.objectContaining({
-          evidence: 'unobserved',
-          systemConsumer: { state: 'unobserved', requiredMinVersion: '0.151.0' },
-        }),
-      })]);
-      expect(result.payload.targets[0]?.errors).not.toEqual(expect.arrayContaining([
+      expect(result.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+      expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
+        evidence: 'unobserved',
+        systemConsumer: { state: 'unobserved', requiredMinVersion: '0.151.0' },
+      });
+      expect(result.payload.targets[0]?.reasons).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
       ]));
       expect(nativeRunner).not.toHaveBeenCalled();
@@ -887,7 +1035,7 @@ describe('status v6 current behavior', () => {
 
     let result;
     try {
-      result = await statusCommandV6({
+      result = await statusCommandV7({
         plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
       });
@@ -896,22 +1044,21 @@ describe('status v6 current behavior', () => {
     }
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      actual: { state: 'unresolved' },
-      activation: expect.objectContaining({
-        evidence: 'unobserved',
-        systemConsumer: expect.objectContaining({
-          state: 'unresolved',
-          code: 'codexProjectPluginUnsupported',
-        }),
-      }),
-      errors: expect.arrayContaining([
+      state: 'blocked',
+      reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
       ]),
-      recovery: [{
+      recoveryActions: [{
         command: 'manual',
         description: '升级或修复官方 system Codex CLI 后重试原操作。',
       }],
     })]);
+    expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
+      evidence: 'unobserved',
+      systemConsumer: expect.objectContaining({
+        state: 'unresolved', code: 'codexProjectPluginUnsupported',
+      }),
+    });
     expect(nativeRunner).not.toHaveBeenCalled();
   });
 
@@ -923,10 +1070,10 @@ describe('status v6 current behavior', () => {
     const before = await filesystemSnapshot(isolation.layout.rootDir);
 
     try {
-      const result = await statusCommandV6({
+      const result = await statusCommandV7({
         cwd: isolation.layout.fixtureCwd, env, json: true,
       });
-      expect(result.payload.schemaVersion).toBe(6);
+      expect(result.payload.schemaVersion).toBe(7);
     } finally {
       setNativeCliRunnerOverrideForTests(null);
     }

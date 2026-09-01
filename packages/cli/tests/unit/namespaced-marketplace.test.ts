@@ -435,7 +435,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
     expect(inventory.errors).toContainEqual(expect.objectContaining({
       code: 'stateInventoryFailed',
@@ -484,7 +483,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
 
     expect(inventory.errors).toEqual([]);
@@ -529,8 +527,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
-      includeOrphanedCodexNativeResidue: true,
     });
     expect(inventory.errors).toEqual([]);
 
@@ -609,7 +605,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
 
     expect(inventory.errors).toEqual([]);
@@ -787,7 +782,6 @@ describe('namespaced marketplace root', () => {
       const inventory = await inventoryCatalogSourceReferences({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        includeHistoricalProjects: true,
       });
       expect(inventory.references).toContainEqual(expect.objectContaining({
         kind: 'namespacedMarketplace',

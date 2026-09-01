@@ -68,14 +68,13 @@ import {
 } from '../utils/plugin-intent-state.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from './aw-capabilities.js';
 import { createDependencyPlacementPlan } from './dependency-operation-plan.js';
-import { calculateCodexSharedNativePayloadDigest } from '../utils/catalog-digests.js';
 import { getCodexOperationRequirement } from '../utils/agent-version.js';
 import {
   inspectSystemCodexFilesystem,
   type SystemCodexFilesystemInspection,
 } from '../utils/codex-manager.js';
 
-export interface StatusV6CatalogSource {
+export interface StatusV7CatalogSource {
   id: string;
   identity: string;
   type: CatalogSource['type'];
@@ -89,94 +88,56 @@ export interface StatusV6CatalogSource {
   errorCode?: string;
 }
 
-export interface StatusV6Target {
+export interface StatusV7Target {
   pluginName: string;
   sourceId: string;
   sourceIdentity: string;
   pluginId: string;
   version?: string;
   platform: PlatformName;
-  /** TUI placement adapter. Codex shared-native identity is still emitted only once. */
   scope: Scope;
   cwd: string;
-  desired: {
-    enabled: boolean;
-    scopes: Scope[];
-    relation: 'root' | 'dependency' | 'managed' | 'none';
-  };
-  actual: {
-    state: StatusV6ActualState;
-  };
-  state: 'present' | 'absent' | 'partial' | 'error';
-  components: StatusV6Component[];
-  errors: StatusV6TargetError[];
-  recovery: StatusV6RecoveryAction[];
-  sharedNative?: {
-    pluginId: string;
-    state: 'present' | 'missing' | 'outdated' | 'corrupt' | 'foreign';
-    version?: string;
-    diagnostic?: 'staleCacheObserved';
-    shared: true;
-  };
-  activation?: {
-    user?: boolean;
-    project?: boolean;
-    effective?: boolean;
-    evidence: 'observed' | 'assumed' | 'unobserved';
-    systemConsumer?: SystemCodexFilesystemInspection;
-  };
-  extensions?: {
-    state: 'ready' | 'missing' | 'drifted' | 'conflict';
-    kinds: CodexExtensionKind[];
-  };
-  dependency?: {
-    directCount: number;
-    issueCount: number;
-  };
-  dependencyReadiness?: StatusV6DependencyReadiness[];
+  state: StatusV7State;
+  components: StatusV7Component[];
+  reasons: StatusV7Reason[];
+  recoveryActions: StatusV7RecoveryAction[];
 }
 
-export type StatusV6ActualState =
+export type StatusV7State =
+  | 'absent'
   | 'ready'
   | 'needsSync'
-  | 'drifted'
-  | 'conflict'
   | 'orphaned'
-  | 'unresolved'
-  | 'absent';
+  | 'blocked';
 
-export interface StatusV6RecoveryAction {
+export interface StatusV7RecoveryAction {
   command: 'sync' | 'cleanup' | 'reinstall' | 'uninstall' | 'manual';
   scope?: Scope;
   description: string;
 }
 
-type StatusV6TargetDraft = Omit<
-  StatusV6Target,
-  'desired' | 'actual' | 'recovery'
->;
-
-export type StatusV6DependencyReadinessState =
+export type StatusV7DependencyReadinessState =
   | 'ready'
   | 'absent'
   | 'blockedByCollision'
   | 'incomplete'
   | 'error';
 
-export interface StatusV6DependencyReadiness {
+interface StatusV7DependencyReadiness {
   dependencyPluginId: string;
-  state: StatusV6DependencyReadinessState;
+  state: StatusV7DependencyReadinessState;
   rootIssueId?: string;
   rootIssueCode?: string;
 }
 
-export interface StatusV6Component {
+export interface StatusV7Component {
+  kind: 'intent' | 'ownership' | 'sharedNative' | 'activation' | 'extension' | 'dependency' | 'systemConsumer';
   key: string;
-  state: OwnershipInspection['components'][number]['state'];
-  error?: StatusV6TargetError;
+  state: string;
+  metadata?: Record<string, string | number | boolean | string[]>;
 }
 
-export interface StatusV6TargetError {
+export interface StatusV7Reason {
   code: string;
   message: string;
   severity: 'warning' | 'blocking';
@@ -186,16 +147,195 @@ export interface StatusV6TargetError {
   rootIssueCode?: string;
 }
 
-type StatusV6TargetErrorInput = Omit<StatusV6TargetError, 'severity'>;
+type StatusV7ReasonInput = Omit<StatusV7Reason, 'severity'>;
 
-export interface StatusV6Payload {
-  schemaVersion: 6;
+type StatusOwnershipState = 'present' | 'absent' | 'partial' | 'error';
+
+interface StatusOwnershipComponent {
+  key: string;
+  state: OwnershipInspection['components'][number]['state'];
+  error?: StatusV7Reason;
+}
+
+export interface StatusSharedNativeProjection {
+  pluginId: string;
+  state: 'missing' | 'usable' | 'replaceable' | 'blocked';
+  reason?: 'outdated' | 'damaged' | 'foreign' | 'unreadable';
+  version?: string;
+  desiredVersion?: string;
+  diagnostic?: string;
+  claimable?: boolean;
+  staleCacheObserved?: boolean;
+}
+
+export interface StatusActivationProjection {
+  user?: boolean;
+  project?: boolean;
+  effective?: boolean;
+  evidence: 'observed' | 'assumed' | 'unobserved';
+  systemConsumer?: SystemCodexFilesystemInspection;
+}
+
+export interface StatusExtensionProjection {
+  state: 'ready' | 'missing' | 'drifted' | 'conflict';
+  kinds: CodexExtensionKind[];
+}
+
+interface StatusV7TargetDraft {
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  pluginId: string;
+  version?: string;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  state: StatusOwnershipState;
+  components: StatusOwnershipComponent[];
+  errors: StatusV7Reason[];
+  sharedNative?: StatusSharedNativeProjection;
+  activation?: StatusActivationProjection;
+  extensions?: StatusExtensionProjection;
+  dependency?: {
+    directCount: number;
+    issueCount: number;
+  };
+  dependencyReadiness?: StatusV7DependencyReadiness[];
+}
+
+export interface StatusIntentProjection {
+  enabled: boolean;
+  scopes: Scope[];
+  relation: 'root' | 'dependency' | 'managed' | 'none';
+}
+
+function statusComponent(target: StatusV7Target, kind: StatusV7Component['kind'], key?: string) {
+  return target.components.find((component) =>
+    component.kind === kind && (key === undefined || component.key === key));
+}
+
+export function statusTargetIntent(target: StatusV7Target): StatusIntentProjection {
+  const metadata = statusComponent(target, 'intent', 'desired')?.metadata;
+  return {
+    enabled: metadata?.enabled === true,
+    scopes: Array.isArray(metadata?.scopes)
+      ? metadata.scopes.filter((scope): scope is Scope => scope === 'user' || scope === 'project')
+      : [],
+    relation: metadata?.relation === 'root'
+      || metadata?.relation === 'dependency'
+      || metadata?.relation === 'managed'
+      ? metadata.relation
+      : 'none',
+  };
+}
+
+export function statusTargetOwnershipState(target: StatusV7Target): StatusOwnershipState {
+  const components = target.components.filter((component) => component.kind === 'ownership');
+  if (components.some((component) => component.state === 'error')) return 'error';
+  if (components.some((component) => component.state === 'partial')) return 'partial';
+  if (components.some((component) => component.state === 'present')) return 'present';
+  return 'absent';
+}
+
+export function statusTargetSharedNative(
+  target: StatusV7Target,
+): StatusSharedNativeProjection | undefined {
+  const component = statusComponent(target, 'sharedNative');
+  if (!component || (component.state !== 'missing'
+    && component.state !== 'usable'
+    && component.state !== 'replaceable'
+    && component.state !== 'blocked')) return undefined;
+  const reason = component.metadata?.reason;
+  return {
+    pluginId: component.key,
+    state: component.state,
+    ...(reason === 'outdated' || reason === 'damaged' || reason === 'foreign' || reason === 'unreadable'
+      ? { reason }
+      : {}),
+    ...(typeof component.metadata?.version === 'string'
+      ? { version: component.metadata.version }
+      : {}),
+    ...(typeof component.metadata?.desiredVersion === 'string'
+      ? { desiredVersion: component.metadata.desiredVersion }
+      : {}),
+    ...(typeof component.metadata?.diagnostic === 'string'
+      ? { diagnostic: component.metadata.diagnostic }
+      : {}),
+    ...(typeof component.metadata?.claimable === 'boolean'
+      ? { claimable: component.metadata.claimable }
+      : {}),
+    ...(component.metadata?.staleCacheObserved === true ? { staleCacheObserved: true } : {}),
+  };
+}
+
+export function statusTargetActivation(
+  target: StatusV7Target,
+): StatusActivationProjection | undefined {
+  const user = statusComponent(target, 'activation', 'user');
+  const project = statusComponent(target, 'activation', 'project');
+  const consumer = statusComponent(target, 'systemConsumer', 'codex');
+  if (!user && !project && !consumer) return undefined;
+  const activation = user ?? project ?? consumer;
+  const evidence = activation?.metadata?.evidence;
+  const requiredMinVersion = consumer?.metadata?.requiredMinVersion;
+  let systemConsumer: SystemCodexFilesystemInspection | undefined;
+  if (consumer && typeof requiredMinVersion === 'string') {
+    const detectedVersion = consumer.metadata?.detectedVersion;
+    const code = consumer.metadata?.code;
+    const diagnostic = consumer.metadata?.diagnostic;
+    systemConsumer = consumer.state === 'missing' || consumer.state === 'unobserved'
+      ? { state: consumer.state, requiredMinVersion }
+      : consumer.state === 'compatible' && typeof detectedVersion === 'string'
+        ? { state: 'compatible', detectedVersion, requiredMinVersion }
+        : consumer.state === 'incompatible'
+          && (code === 'codexProjectPluginVersionTooLow' || code === 'codexSystemCliUnsupported')
+          && typeof detectedVersion === 'string'
+          && typeof diagnostic === 'string'
+          ? { state: 'incompatible', code, detectedVersion, diagnostic, requiredMinVersion }
+          : consumer.state === 'unresolved'
+            && (code === 'codexProjectPluginUnsupported' || code === 'codexSystemCliUnsupported')
+            && typeof diagnostic === 'string'
+            ? { state: 'unresolved', code, diagnostic, requiredMinVersion }
+            : undefined;
+  }
+  return {
+    ...(user ? { user: user.state === 'enabled' } : {}),
+    ...(project ? { project: project.state === 'enabled' } : {}),
+    ...(typeof activation?.metadata?.effective === 'boolean'
+      ? { effective: activation.metadata.effective }
+      : {}),
+    evidence: evidence === 'observed' || evidence === 'unobserved' ? evidence : 'assumed',
+    ...(systemConsumer ? { systemConsumer } : {}),
+  };
+}
+
+export function statusTargetExtensions(
+  target: StatusV7Target,
+): StatusExtensionProjection | undefined {
+  const component = statusComponent(target, 'extension', 'aw');
+  if (!component || (component.state !== 'ready'
+    && component.state !== 'missing'
+    && component.state !== 'drifted'
+    && component.state !== 'conflict')) return undefined;
+  const kinds = Array.isArray(component.metadata?.kinds)
+    ? component.metadata.kinds.filter((kind): kind is CodexExtensionKind =>
+        kind === 'skill'
+        || kind === 'instruction'
+        || kind === 'permission'
+        || kind === 'agent'
+        || kind === 'config')
+    : [];
+  return { state: component.state, kinds };
+}
+
+export interface StatusV7Payload {
+  schemaVersion: 7;
   catalog: {
     primarySourceId: string;
     configDigest: string;
     compositeDigest: string;
     generationSetDigest?: string;
-    sources: StatusV6CatalogSource[];
+    sources: StatusV7CatalogSource[];
   };
   filters: {
     plugins: string[];
@@ -203,7 +343,7 @@ export interface StatusV6Payload {
     scope?: Scope;
     cwd: string;
   };
-  targets: StatusV6Target[];
+  targets: StatusV7Target[];
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -222,19 +362,18 @@ export interface StatusTargetRevision {
 interface StatusPluginCapability {
   name: string;
   version: string;
-  sharedNativePayloadDigest: string;
   displayName: string;
   shortDescription: string;
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
-  configIssues?: StatusV6PluginSummary['configIssues'];
-  configDiagnostic?: StatusV6PluginSummary['configDiagnostic'];
+  configIssues?: StatusV7PluginSummary['configIssues'];
+  configDiagnostic?: StatusV7PluginSummary['configDiagnostic'];
   targets: Record<PlatformName, Record<Scope, boolean>>;
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
-    state: StatusV6Target['state'];
-    errors: StatusV6Target['errors'];
-    components: StatusV6Component[];
-    dependencyReadiness?: StatusV6DependencyReadiness[];
+    state: StatusOwnershipState;
+    errors: StatusV7Reason[];
+    components: StatusOwnershipComponent[];
+    dependencyReadiness?: StatusV7DependencyReadiness[];
     installedVersion?: string;
   }>>>>;
   dependencies: string[];
@@ -243,12 +382,12 @@ interface StatusPluginCapability {
     pluginId: string;
     nativeKinds: string[];
     extensionKinds: CodexExtensionKind[];
-    sharedNative?: NonNullable<StatusV6Target['sharedNative']>;
-    activation: NonNullable<StatusV6Target['activation']>;
+    sharedNative?: StatusSharedNativeProjection;
+    activation: StatusActivationProjection;
   };
 }
 
-export interface StatusV6PluginSummary {
+export interface StatusV7PluginSummary {
   pluginName: string;
   pluginId: string;
   displayName?: string;
@@ -273,14 +412,14 @@ export interface StatusV6PluginSummary {
 export interface LiveConsoleItem {
   pluginName: string;
   version?: string;
-  pluginSummary?: Omit<StatusV6PluginSummary, 'pluginName' | 'pluginId'>;
-  targets: StatusV6Target[];
+  pluginSummary?: Omit<StatusV7PluginSummary, 'pluginName' | 'pluginId'>;
+  targets: StatusV7Target[];
 }
 
 export interface ConsoleItemsLoadResult {
   items: LiveConsoleItem[];
   catalogUnavailable: boolean;
-  status: StatusV6Payload;
+  status: StatusV7Payload;
 }
 
 let dependencyInspectionHookForTests: (() => void) | undefined;
@@ -298,7 +437,7 @@ export async function loadConsoleItemsResult(
   } = {},
   runtime: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<ConsoleItemsLoadResult> {
-  const result = await statusCommandV6({
+  const result = await statusCommandV7({
     cwd: options.cwd ?? process.cwd(),
     env: runtime.env,
     platform: options.platform,
@@ -397,14 +536,13 @@ function inventoryErrorMatchesSelection(options: {
 }
 
 function finalizeTargetError(
-  error: StatusV6TargetErrorInput | StatusV6TargetError,
-  targetState: StatusV6Target['state'],
-): StatusV6TargetError {
+  error: StatusV7ReasonInput | StatusV7Reason,
+  targetState: StatusOwnershipState,
+): StatusV7Reason {
   return {
     ...error,
     severity: error.code === 'artifactCollision'
       || (targetState === 'error'
-        && error.code !== 'awCapabilityUnsupported'
         && error.dependencyPluginId === undefined)
       ? 'blocking'
       : 'warning',
@@ -412,11 +550,11 @@ function finalizeTargetError(
 }
 
 function projectTargetError(
-  error: StatusV6TargetErrorInput | StatusV6TargetError,
+  error: StatusV7ReasonInput | StatusV7Reason,
   env: NodeJS.ProcessEnv,
   cwd: string,
-  targetState: StatusV6Target['state'],
-): StatusV6TargetError {
+  targetState: StatusOwnershipState,
+): StatusV7Reason {
   const sanitized = sanitizeCatalogSourceError(new Error(error.message), env, [
     getCodexHome(env),
     getClaudeHome(env),
@@ -577,14 +715,14 @@ function calculateDesiredTargetStates(options: {
 }
 
 function statusRecovery(options: {
-  actual: StatusV6ActualState;
+  state: StatusV7State;
   desired: DesiredTargetState;
   platform: PlatformName;
   pluginId: string;
-  sharedNative?: StatusV6Target['sharedNative'];
+  sharedNative?: StatusSharedNativeProjection;
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
-}): StatusV6RecoveryAction[] {
+}): StatusV7RecoveryAction[] {
   if (options.errorCodes?.some((code) =>
     code === 'codexProjectPluginVersionTooLow'
     || code === 'codexProjectPluginUnsupported'
@@ -594,17 +732,27 @@ function statusRecovery(options: {
       description: '升级或修复官方 system Codex CLI 后重试原操作。',
     }];
   }
-  if (options.actual === 'ready' || options.actual === 'absent') return [];
-  if (options.actual === 'orphaned') {
+  if (options.errorCodes?.includes('awCapabilityUnsupported')) {
+    return [{
+      command: 'manual',
+      description: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
+    }];
+  }
+  if (options.state === 'ready' || options.state === 'absent') return [];
+  if (options.state === 'orphaned') {
     return [{ command: 'cleanup', description: '清理可证明属于 AW 的遗留输出。' }];
   }
-  if (options.actual === 'unresolved') {
+  if (options.state === 'blocked' && options.errorCodes?.some((code) =>
+    code === 'sourceMissing'
+    || code === 'catalogSourceUnavailable'
+    || code === 'bundleUnavailable'
+    || code === 'codexIntentSourceUnavailable')) {
     return [
       { command: 'sync', description: '来源恢复后同步 desired intent。' },
       { command: 'cleanup', description: '来源无法恢复时清理可证明属于 AW 的输出。' },
     ];
   }
-  if (options.actual === 'conflict') {
+  if (options.state === 'blocked') {
     if (options.desired.scopes.includes('user') && options.desired.scopes.includes('project')) {
       return (['user', 'project'] as const).flatMap((scope) =>
         (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
@@ -613,7 +761,7 @@ function statusRecovery(options: {
           description: `运行 aw uninstall ${rootPluginId} --platform ${options.platform} --scope ${scope}，再运行 aw sync ${options.pluginId} --platform ${options.platform} --scope ${scope === 'user' ? 'project' : 'user'}。`,
         })));
     }
-    const collision = options.sharedNative?.state === 'foreign'
+    const collision = options.sharedNative?.state === 'blocked'
       ? `Codex shared native ${options.sharedNative.pluginId}`
       : `${options.pluginId} 的 foreign extension`;
     return [
@@ -624,11 +772,12 @@ function statusRecovery(options: {
     ];
   }
   return [{
-    command: options.actual === 'drifted' ? 'reinstall' : 'sync',
+    command: options.errorCodes?.some((code) =>
+      code === 'codexSharedNativeCorrupt'
+      || code === 'codexActivationDrift'
+      || code === 'codexExtensionDrift') ? 'reinstall' : 'sync',
     ...(options.desired.scopes.length === 1 ? { scope: options.desired.scopes[0] } : {}),
-    description: options.actual === 'drifted'
-      ? '重新安装以修复手动修改或损坏的现场。'
-      : '同步 desired intent 和当前现场。',
+    description: '同步 desired intent 和当前现场；现场损坏时使用重新安装修复。',
   }];
 }
 
@@ -672,7 +821,7 @@ function projectedLiveState(options: {
   inspection: OwnershipInspection;
   required: readonly OwnedComponent[];
   optional: readonly OwnedComponent[];
-}): StatusV6Target['state'] {
+}): StatusOwnershipState {
   if (options.inspection.state === 'error'
     || options.inspection.components.some((entry) => entry.state === 'error')) return 'error';
   const owned = options.inspection.components.filter((entry) => (
@@ -712,38 +861,22 @@ export function projectTargetRevision(
   return { state: 'unknown', availableVersion, installedVersion };
 }
 
-function renderStatusV6(payload: StatusV6Payload, verbose: boolean): string {
+function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
     lines.push(`${source.primary ? '*' : '-'} ${source.id}: ${source.error ?? source.freshness ?? 'unavailable'}`);
   }
   for (const target of payload.targets) {
-    const errors = target.errors.length > 0
-      ? ` [${target.errors.map((error) => `${error.code}: ${error.message}`).join('; ')}]`
+    const reasons = target.reasons.length > 0
+      ? ` [${target.reasons.map((reason) => `${reason.code}: ${reason.message}`).join('; ')}]`
       : '';
-    const desired = target.desired.enabled ? target.desired.scopes.join('+') : 'absent';
-    lines.push(`${target.pluginId} ${target.platform}: desired=${desired} actual=${target.actual.state}${errors}`);
-    if (target.sharedNative) {
-      lines.push(`  shared native ${target.sharedNative.pluginId}: ${target.sharedNative.state}`);
-    }
-    if (target.activation) {
-      lines.push(`  activation user=${String(target.activation.user)} project=${String(target.activation.project)} (${target.activation.evidence})`);
-      if (target.activation.systemConsumer) {
-        const version = 'detectedVersion' in target.activation.systemConsumer
-          ? ` ${target.activation.systemConsumer.detectedVersion}`
-          : '';
-        lines.push(`  system Codex consumer: ${target.activation.systemConsumer.state}${version}`);
-      }
-    }
-    if (target.extensions) {
-      lines.push(`  extensions ${target.extensions.kinds.join(',')}: ${target.extensions.state}`);
-    }
+    lines.push(`${target.pluginId} ${target.platform}: ${target.state}${reasons}`);
     if (verbose) {
       for (const component of target.components) {
-        const error = component.error
-          ? ` [${component.error.code}: ${component.error.message}]`
-          : '';
-        lines.push(`  component ${component.key}: ${component.state}${error}`);
+        lines.push(`  component ${component.kind}/${component.key}: ${component.state}`);
+      }
+      for (const action of target.recoveryActions) {
+        lines.push(`  recovery ${action.command}: ${action.description}`);
       }
     }
   }
@@ -776,7 +909,7 @@ function collisionRootIssueId(options: {
   ].join(':');
 }
 
-export async function statusCommandV6(options: {
+export async function statusCommandV7(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -788,10 +921,10 @@ export async function statusCommandV6(options: {
   catalogOperationContext?: CatalogOperationContext;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
 }): Promise<{
-  payload: StatusV6Payload;
+  payload: StatusV7Payload;
   output: string;
   hasErrors: boolean;
-  pluginSummaries: StatusV6PluginSummary[];
+  pluginSummaries: StatusV7PluginSummary[];
   targetRevisions: StatusTargetRevision[];
 }> {
   const env = options.env ?? process.env;
@@ -799,7 +932,7 @@ export async function statusCommandV6(options: {
   const dependencyInspectionCache = new Map<
     string,
     Promise<{
-      state: StatusV6DependencyReadinessState;
+      state: StatusV7DependencyReadinessState;
       rootIssueId?: string;
       rootIssueCode?: string;
     }>
@@ -1130,7 +1263,6 @@ export async function statusCommandV6(options: {
                 return {
                   name: entry.name,
                   version: entry.version,
-                  sharedNativePayloadDigest: entry.contentDigest,
                   displayName: entry.interface?.displayName ?? entry.name,
                   shortDescription: entry.interface?.shortDescription ?? entry.description,
                   description: entry.description,
@@ -1150,14 +1282,11 @@ export async function statusCommandV6(options: {
               const claude = supportsPlatform(plugin.manifest, 'claude');
               const codex = supportsPlatform(plugin.manifest, 'codex');
               const codexSurface = analyzeCodexSurface(plugin.manifest);
-              const sharedNativePayloadDigest = codexSurface.nativeKinds.length > 0
-                ? await calculateCodexSharedNativePayloadDigest(plugin.rootDir)
-                : entry.contentDigest;
               plugin.sourceId = item.resolution!.sourceId;
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let effectiveConfig: Awaited<ReturnType<typeof resolveEffectivePluginConfig>> | undefined;
-              let configDiagnostic: StatusV6PluginSummary['configDiagnostic'];
+              let configDiagnostic: StatusV7PluginSummary['configDiagnostic'];
               if (plugin.manifest.config?.schema) {
                 try {
                   effectiveConfig = await resolveEffectivePluginConfig({
@@ -1269,13 +1398,14 @@ export async function statusCommandV6(options: {
                         marketplaceName,
                         marketplaceRoot,
                       }),
+                      shallow: true,
                     });
                     const liveState = projectedLiveState({
                       inspection: inspected.inspection,
                       required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
                       optional: inspected.target.optionalOwnedComponents ?? [],
                     });
-                    const collisionErrors: StatusV6TargetError[] = inspected.inspection.components.flatMap(
+                    const collisionErrors: StatusV7Reason[] = inspected.inspection.components.flatMap(
                       (component) => component.collision ? [finalizeTargetError({
                         code: 'artifactCollision',
                         message: collisionMessage(component.collision),
@@ -1292,8 +1422,8 @@ export async function statusCommandV6(options: {
                         rootIssueCode: 'artifactCollision',
                       }, liveState)] : [],
                     );
-                    const dependencyErrors: StatusV6TargetError[] = [];
-                    const dependencyReadiness: StatusV6DependencyReadiness[] = [];
+                    const dependencyErrors: StatusV7Reason[] = [];
+                    const dependencyReadiness: StatusV7DependencyReadiness[] = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
                     if (directDependencies.length > 0
                       && (liveState === 'present' || liveState === 'partial')) {
@@ -1358,7 +1488,7 @@ export async function statusCommandV6(options: {
                         }
                         const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
                         let dependencyResult: {
-                          state: StatusV6DependencyReadinessState;
+                          state: StatusV7DependencyReadinessState;
                           rootIssueId?: string;
                           rootIssueCode?: string;
                         } = {
@@ -1399,15 +1529,16 @@ export async function statusCommandV6(options: {
                                   debugLogger: createNoopDebugLogger(),
                                 },
                                 userActivationDesired: codexDesiredUserActivationIds,
-                                nativeProbe: readOnlyNativeProbe({
+                              nativeProbe: readOnlyNativeProbe({
                                   pluginName: dependencyName,
                                   sourceId: item.resolution!.sourceId,
                                   sourceIdentity: item.resolution!.sourceIdentity,
                                   platform,
                                   scope: dependencyScope,
                                   marketplaceName: dependencyMarketplaceName,
-                                  marketplaceRoot,
-                                }),
+                                marketplaceRoot,
+                              }),
+                              shallow: true,
                               });
                               const dependencyLiveState = projectedLiveState({
                                 inspection: dependencyInspected.inspection,
@@ -1459,7 +1590,7 @@ export async function statusCommandV6(options: {
                             dependencyResult = candidate;
                             break;
                           }
-                          const priority: Record<StatusV6DependencyReadinessState, number> = {
+                          const priority: Record<StatusV7DependencyReadinessState, number> = {
                             ready: 5,
                             blockedByCollision: 4,
                             incomplete: 3,
@@ -1582,7 +1713,7 @@ export async function statusCommandV6(options: {
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
                       desiredVersion: entry.version,
-                      expectedPayloadDigest: sharedNativePayloadDigest,
+                      inspectionMode: 'shallow',
                       cwd: options.cwd,
                       env,
                       managedByCurrentIntent: false,
@@ -1596,38 +1727,40 @@ export async function statusCommandV6(options: {
                     })
                   : undefined;
                 const nativeState = sharedInspection?.sharedNative;
-                const sharedNative: StatusV6Target['sharedNative'] = residueFailed
-                  ? { pluginId: codexPluginId, state: 'corrupt', shared: true }
+                const sharedNative: StatusSharedNativeProjection | undefined = residueFailed
+                  ? { pluginId: codexPluginId, state: 'blocked', reason: 'unreadable' }
                   : !nativeState
-                  ? undefined
-                  : nativeState.state === 'foreign'
-                    ? { pluginId: codexPluginId, state: 'foreign', shared: true }
-                    : nativeState.state === 'absent'
+                    ? undefined
+                    : nativeState.state === 'missing'
                       ? {
                           pluginId: codexPluginId,
                           state: 'missing',
-                          shared: true,
-                          ...(nativeState.diagnostic === 'staleCacheObserved'
-                            ? { diagnostic: nativeState.diagnostic }
-                            : {}),
+                          ...(nativeState.staleCacheObserved ? { staleCacheObserved: true } : {}),
                         }
-                      : nativeState.state === 'corrupt'
-                        ? { pluginId: codexPluginId, state: 'corrupt', shared: true }
-                        : nativeState.state === 'outdated'
+                      : nativeState.state === 'usable'
+                        ? {
+                            pluginId: codexPluginId,
+                            state: 'usable',
+                            version: nativeState.version,
+                            claimable: nativeState.claimable,
+                          }
+                        : nativeState.state === 'replaceable'
                           ? {
                               pluginId: codexPluginId,
-                              state: 'outdated',
-                              version: nativeState.version,
-                              shared: true,
+                              state: 'replaceable',
+                              reason: nativeState.reason,
+                              ...(nativeState.version ? { version: nativeState.version } : {}),
+                              ...(nativeState.desiredVersion
+                                ? { desiredVersion: nativeState.desiredVersion }
+                                : {}),
+                              ...(nativeState.diagnostic ? { diagnostic: nativeState.diagnostic } : {}),
                             }
-                        : nativeState.state === 'present' || nativeState.state === 'claimable'
-                          ? {
+                          : {
                               pluginId: codexPluginId,
-                              state: 'present',
-                              version: nativeState.version,
-                              shared: true,
-                            }
-                          : undefined;
+                              state: 'blocked',
+                              reason: nativeState.reason,
+                              diagnostic: nativeState.diagnostic,
+                            };
                 const configuredUserActivation = userCodexConfig
                   ?.snapshot.plugins[codexPluginId]?.enabled;
                 const configuredProjectActivation = projectCodexConfig
@@ -1660,7 +1793,6 @@ export async function statusCommandV6(options: {
               return {
                 name: entry.name,
                 version: entry.version,
-                sharedNativePayloadDigest,
                 displayName: plugin.manifest.interface?.displayName ?? entry.name,
                 shortDescription: plugin.manifest.interface?.shortDescription
                   ?? plugin.manifest.description,
@@ -1783,8 +1915,8 @@ export async function statusCommandV6(options: {
   const selected = [...selectedById.values()];
   const explicitTargetFilter = requested.length > 0
     && (options.platform !== undefined || options.scope !== undefined);
-  const targets: StatusV6TargetDraft[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
-    scopes.flatMap((scope): StatusV6TargetDraft[] => {
+  const targets: StatusV7TargetDraft[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
+    scopes.flatMap((scope): StatusV7TargetDraft[] => {
       const target = {
         pluginName: entry.name,
         sourceId: entry.source.id,
@@ -1794,7 +1926,7 @@ export async function statusCommandV6(options: {
         platform,
         scope,
         cwd: path.resolve(options.cwd),
-        components: [] as StatusV6Component[],
+        components: [] as StatusOwnershipComponent[],
       };
       if (platform === 'codex'
         && scope === 'project'
@@ -1909,7 +2041,7 @@ export async function statusCommandV6(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV6TargetDraft = {
+    const target: StatusV7TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -1938,7 +2070,7 @@ export async function statusCommandV6(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV6TargetDraft = {
+    const target: StatusV7TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -1979,7 +2111,7 @@ export async function statusCommandV6(options: {
     if (requested.length > 0 && !plannedSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName
       && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId))) return [];
-    const target: StatusV6TargetDraft = {
+    const target: StatusV7TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -2056,16 +2188,21 @@ export async function statusCommandV6(options: {
     entry,
   ]));
   const explicitScope = options.scope === undefined ? undefined : scopes[0]!;
-  const warning = (code: string, message: string): StatusV6TargetError => ({
+  const warning = (code: string, message: string): StatusV7Reason => ({
     code,
     message: `${code}: ${message}`,
     severity: 'warning',
   });
+  const blocking = (code: string, message: string): StatusV7Reason => ({
+    code,
+    message: `${code}: ${message}`,
+    severity: 'blocking',
+  });
   const decorateTarget = async (
-    target: StatusV6TargetDraft,
+    target: StatusV7TargetDraft,
     groupedScopes: Scope[],
-    groupedTargets: StatusV6TargetDraft[],
-  ): Promise<StatusV6Target> => {
+    groupedTargets: StatusV7TargetDraft[],
+  ): Promise<StatusV7Target> => {
     const entry = selectedByPluginId.get(target.pluginId);
     const codex = entry?.codex;
     const desiredAll = desiredTargetStates.get(desiredTargetKey(target.pluginId, target.platform))
@@ -2135,7 +2272,7 @@ export async function statusCommandV6(options: {
         && !component.key.startsWith('activation-')
         && !component.key.startsWith('marketplace-'),
     );
-    const extensions: StatusV6Target['extensions'] = target.platform !== 'codex'
+    const extensions: StatusExtensionProjection | undefined = target.platform !== 'codex'
       || (codex?.extensionKinds.length ?? 0) === 0
       ? undefined
       : {
@@ -2162,47 +2299,51 @@ export async function statusCommandV6(options: {
       : undefined;
     const consumerBlocking = consumerIssue !== undefined;
     const claimMissing = false;
-    const actual: StatusV6ActualState = hasSourceError && desiredEnabled
-      ? 'unresolved'
+    const baseTargetErrors = observedTargets.flatMap((candidate) => candidate.errors);
+    const hasBlockingBaseReason = baseTargetErrors.some((reason) => reason.severity === 'blocking');
+    const capabilityUnsupported = baseTargetErrors.some((reason) =>
+      reason.code === 'awCapabilityUnsupported');
+    const state: StatusV7State = hasSourceError && desiredEnabled
+      ? 'blocked'
       : consumerBlocking && desiredEnabled
-        ? 'unresolved'
+        ? 'blocked'
         : desiredOverlapConflict
-          ? 'conflict'
+          ? 'blocked'
+          : sharedNative?.state === 'blocked' || hasBlockingBaseReason || capabilityUnsupported
+            ? 'blocked'
           : !desiredEnabled
             ? ownershipState !== 'absent' || desired.relation === 'managed'
               ? 'orphaned'
               : 'absent'
-            : sharedNative?.state === 'foreign'
-              ? 'conflict'
-              : sharedNative?.state === 'corrupt'
-                ? 'drifted'
-                : sharedNative?.state === 'missing' || sharedNative?.state === 'outdated' || claimMissing
+            : sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable' || claimMissing
                   ? 'needsSync'
                   : activationDrift || extensions?.state === 'drifted'
-                    ? 'drifted'
+                    ? 'needsSync'
                     : extensions?.state === 'missing' || ownershipState === 'absent'
                       ? 'needsSync'
                       : ownershipState === 'partial' || ownershipState === 'error'
-                        ? 'drifted'
+                        ? 'needsSync'
                         : 'ready';
-    const baseTargetErrors = observedTargets.flatMap((candidate) => candidate.errors);
     const stableErrors = [
-      ...(sharedNative?.state === 'foreign'
+      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'foreign'
         && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeForeign')
-        ? [warning('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
+        ? [blocking('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
         : []),
-      ...(sharedNative?.state === 'corrupt'
+      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'unreadable'
         && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeCorrupt')
-        ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is corrupt.`)]
+        ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
         : []),
-      ...(sharedNative?.state === 'outdated'
+      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'damaged'
+        ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
+        : []),
+      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'outdated'
         ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
         : []),
-      ...(sharedNative?.diagnostic === 'staleCacheObserved'
+      ...(sharedNative?.staleCacheObserved
         ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
         : []),
       ...(desiredOverlapConflict
-        ? [warning('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
+        ? [blocking('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
         : []),
       ...(activationDrift && sharedNative?.state !== 'missing'
         ? [warning('codexActivationDrift', `${target.pluginId} activation differs from desired intent.`)]
@@ -2214,7 +2355,7 @@ export async function statusCommandV6(options: {
         ? [warning('codexIntentSourceUnavailable', `${target.pluginId} desired intent cannot be resolved from the current Catalog.`)]
         : []),
       ...(target.platform === 'codex' && consumerBlocking && desiredEnabled
-        ? [warning(
+        ? [blocking(
             consumerIssue.code,
             consumerIssue.diagnostic,
           )]
@@ -2225,27 +2366,107 @@ export async function statusCommandV6(options: {
       `${error.code}\0${error.message}`,
       error,
     ])).values()];
-    const components = [...new Map(observedTargets.flatMap((candidate) => candidate.components)
+    const ownershipComponents = [...new Map(observedTargets.flatMap((candidate) => candidate.components)
       .map((component) => [component.key, component] as const)).values()];
     const representativeScope = explicitScope
       ?? (desired.scopes.length === 1
       ? desired.scopes[0]!
       : observedTargets.find((candidate) => candidate.state !== 'absent')?.scope
         ?? (groupedScopes.includes('user') ? 'user' : groupedScopes[0] ?? target.scope));
-    return {
-      ...target,
-      scope: representativeScope,
-      state: ownershipState,
-      components,
-      errors: dedupedErrors,
-      desired: {
-        enabled: desiredEnabled,
-        scopes: desired.scopes,
-        relation: desired.relation,
+    const representativeTarget = observedTargets.find((candidate) =>
+      candidate.scope === representativeScope) ?? target;
+    const components: StatusV7Component[] = [
+      {
+        kind: 'intent',
+        key: 'desired',
+        state: desiredEnabled ? 'desired' : 'absent',
+        metadata: {
+          enabled: desiredEnabled,
+          scopes: desired.scopes,
+          relation: desired.relation,
+        },
       },
-      actual: { state: actual },
-      recovery: statusRecovery({
-        actual,
+      ...ownershipComponents.map((component): StatusV7Component => ({
+        kind: 'ownership',
+        key: component.key,
+        state: component.state,
+        ...(component.error ? { metadata: { errorCode: component.error.code } } : {}),
+      })),
+      ...(sharedNative ? [{
+        kind: 'sharedNative' as const,
+        key: sharedNative.pluginId,
+        state: sharedNative.state,
+        metadata: {
+          shared: true,
+          ...(sharedNative.reason ? { reason: sharedNative.reason } : {}),
+          ...(sharedNative.version ? { version: sharedNative.version } : {}),
+          ...(sharedNative.desiredVersion ? { desiredVersion: sharedNative.desiredVersion } : {}),
+          ...(sharedNative.diagnostic ? { diagnostic: sharedNative.diagnostic } : {}),
+          ...(sharedNative.claimable !== undefined ? { claimable: sharedNative.claimable } : {}),
+          ...(sharedNative.staleCacheObserved ? { staleCacheObserved: true } : {}),
+        },
+      }] : []),
+      ...(['user', 'project'] as const).flatMap((scope) =>
+        activation?.[scope] === undefined ? [] : [{
+          kind: 'activation' as const,
+          key: scope,
+          state: activation[scope] ? 'enabled' : 'disabled',
+          metadata: {
+            evidence: activation.evidence,
+            ...(activation.effective !== undefined ? { effective: activation.effective } : {}),
+          },
+        }]),
+      ...(activation?.systemConsumer ? [{
+        kind: 'systemConsumer' as const,
+        key: 'codex',
+        state: activation.systemConsumer.state,
+        metadata: {
+          evidence: activation.evidence,
+          requiredMinVersion: activation.systemConsumer.requiredMinVersion,
+          ...('detectedVersion' in activation.systemConsumer
+            ? { detectedVersion: activation.systemConsumer.detectedVersion }
+            : {}),
+          ...('code' in activation.systemConsumer ? { code: activation.systemConsumer.code } : {}),
+          ...('diagnostic' in activation.systemConsumer
+            ? { diagnostic: activation.systemConsumer.diagnostic }
+            : {}),
+        },
+      }] : []),
+      ...(extensions ? [{
+        kind: 'extension' as const,
+        key: 'aw',
+        state: extensions.state,
+        metadata: { kinds: extensions.kinds },
+      }] : []),
+      ...(representativeTarget.dependencyReadiness ?? []).map((dependency): StatusV7Component => ({
+        kind: 'dependency',
+        key: dependency.dependencyPluginId,
+        state: dependency.state,
+        metadata: {
+          ...(dependency.rootIssueId ? { rootIssueId: dependency.rootIssueId } : {}),
+          ...(dependency.rootIssueCode ? { rootIssueCode: dependency.rootIssueCode } : {}),
+        },
+      })),
+    ];
+    const {
+      state: _ownershipState,
+      components: _ownershipComponents,
+      errors: _errors,
+      sharedNative: _sharedNative,
+      activation: _activation,
+      extensions: _extensions,
+      dependency: _dependency,
+      dependencyReadiness: _dependencyReadiness,
+      ...identity
+    } = target;
+    return {
+      ...identity,
+      scope: representativeScope,
+      state,
+      components,
+      reasons: dedupedErrors,
+      recoveryActions: statusRecovery({
+        state,
         desired,
         platform: target.platform,
         pluginId: target.pluginId,
@@ -2259,13 +2480,10 @@ export async function statusCommandV6(options: {
         }),
         errorCodes: dedupedErrors.map((error) => error.code),
       }),
-      ...(sharedNative ? { sharedNative } : {}),
-      ...(activation ? { activation } : {}),
-      ...(extensions ? { extensions } : {}),
     };
   };
-  const codexGroups = new Map<string, StatusV6TargetDraft[]>();
-  const projectedTargets: StatusV6Target[] = [];
+  const codexGroups = new Map<string, StatusV7TargetDraft[]>();
+  const projectedTargets: StatusV7Target[] = [];
   for (const target of draftTargets) {
     if (target.platform !== 'codex') {
       projectedTargets.push(await decorateTarget(target, [target.scope], [target]));
@@ -2296,8 +2514,8 @@ export async function statusCommandV6(options: {
       ),
     };
   });
-  const payload: StatusV6Payload = {
-    schemaVersion: 6,
+  const payload: StatusV7Payload = {
+    schemaVersion: 7,
     catalog: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
@@ -2322,10 +2540,10 @@ export async function statusCommandV6(options: {
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)
     || payload.errors.length > 0
-    || payload.targets.some((target) => target.errors.some((error) => error.severity === 'blocking'));
+    || payload.targets.some((target) => target.reasons.some((reason) => reason.severity === 'blocking'));
   return {
     payload,
-    output: options.json ? JSON.stringify(payload) : renderStatusV6(payload, options.verbose === true),
+    output: options.json ? JSON.stringify(payload) : renderStatusV7(payload, options.verbose === true),
     hasErrors,
     targetRevisions,
     pluginSummaries: available.map((entry) => {

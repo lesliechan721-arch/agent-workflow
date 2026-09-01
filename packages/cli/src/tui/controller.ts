@@ -10,10 +10,11 @@ import type { PortableReview, PortableInstallReceipt } from '../portable/command
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import type {
-  StatusV6Payload,
-  StatusV6PluginSummary,
+  StatusV7Payload,
+  StatusV7PluginSummary,
   StatusTargetRevision,
 } from '../commands/status-v6.js';
+import { statusTargetIntent } from '../commands/status-v6.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
@@ -338,8 +339,8 @@ export interface PluginOperationProgressLine {
 
 export interface TuiStatusLoadResult {
   cliChannel?: 'latest' | 'beta';
-  payload: StatusV6Payload;
-  pluginSummaries: StatusV6PluginSummary[];
+  payload: StatusV7Payload;
+  pluginSummaries: StatusV7PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
@@ -1800,7 +1801,7 @@ export class TuiController {
       if (target.relation !== 'dependency' || target.resolvedScope !== 'project') return false;
       const persistedScopes = new Set(this.#status?.payload.targets.flatMap((candidate) =>
         candidate.pluginId === target.pluginId && candidate.platform === target.platform
-          ? candidate.desired?.scopes ?? []
+          ? statusTargetIntent(candidate).scopes
           : []) ?? []);
       return persistedScopes.has('user') && !persistedScopes.has('project');
     });
@@ -1874,7 +1875,7 @@ export class TuiController {
       const rootSummary = this.#status?.pluginSummaries.find((summary) =>
         summary.pluginId === pluginId);
       const rootSupportedScopes = rootSummary?.supportedTargets?.[platform]
-        ?? platformTargets.filter((target) => !target.errors.some((error) =>
+        ?? platformTargets.filter((target) => !target.reasons.some((error) =>
           error.code === 'unsupportedTarget')).map((target) => target.scope);
       if (!rootSupportedScopes.includes(scope)) {
         return { platform, compatible: false, disabled: '不支持所选位置' };
@@ -1892,7 +1893,7 @@ export class TuiController {
           ?? (this.#status?.payload.targets.filter((target) =>
             target.pluginId === dependency.pluginId
             && target.platform === platform
-            && !target.errors.some((error) => error.code === 'unsupportedTarget'))
+            && !target.reasons.some((error) => error.code === 'unsupportedTarget'))
             .map((target) => target.scope) ?? []);
         const viableScopes = allowedScopes.filter((candidateScope) =>
           scope === 'project' || candidateScope === 'user');
@@ -1926,7 +1927,7 @@ export class TuiController {
     pluginId: string,
     platform: PlatformName,
     scope: Scope,
-  ): StatusV6Payload['targets'][number]['state'] | undefined {
+  ): StatusV7Payload['targets'][number]['state'] | undefined {
     return this.#status?.payload.targets.find((target) =>
       target.pluginId === pluginId
       && target.platform === platform

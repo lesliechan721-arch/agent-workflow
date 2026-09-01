@@ -7,7 +7,7 @@ import {
   type CodexReconcilerInput,
   type CodexReconcilerLiveEvidence,
 } from '../../src/utils/codex-reconciler.js';
-import type { CodexSharedNativeState } from '../../src/utils/codex-shared-native.js';
+import type { CodexSharedNativeInspection } from '../../src/utils/codex-shared-native.js';
 import type { CodexSurfaceAnalysis } from '../../src/utils/codex-surface-analysis.js';
 import {
   createEmptyPluginIntentState,
@@ -65,7 +65,7 @@ function target(
 }
 
 function live(
-  sharedNative: CodexSharedNativeState,
+  sharedNative: CodexSharedNativeInspection,
   overrides: Partial<CodexReconcilerLiveEvidence> = {},
 ): CodexReconcilerLiveEvidence {
   return {
@@ -79,7 +79,7 @@ function live(
 function input(
   operation: CodexReconcilerInput['operation'],
   catalogTarget = target(),
-  evidence = live({ state: 'absent', nativeAction: 'install' }),
+  evidence = live({ state: 'missing' }),
 ): CodexReconcilerInput {
   return {
     operation,
@@ -94,29 +94,32 @@ function input(
 
 describe('Codex desired-state reconciliation planner', () => {
   it.each([
-    ['absent', { state: 'absent', nativeAction: 'install' }, 'install'],
-    ['exact unowned', { state: 'claimable', version: '1.0.0', nativeAction: 'none' }, 'claim'],
-    ['exact owned', { state: 'present', version: '1.0.0', nativeAction: 'none' }, 'reuse'],
+    ['absent', { state: 'missing' }, 'install'],
+    ['exact unowned', { state: 'usable', version: '1.0.0', claimable: true }, 'claim'],
+    ['exact owned', { state: 'usable', version: '1.0.0', claimable: false }, 'reuse'],
     ['outdated', {
-      state: 'outdated', version: '0.9.0', desiredVersion: '1.0.0', nativeAction: 'replace',
+      state: 'replaceable', reason: 'outdated', version: '0.9.0', desiredVersion: '1.0.0',
     }, 'replace'],
   ] as const)('plans install action for %s shared native evidence', (_label, state, action) => {
     expect(createCodexReconcilePlan(input('install', target(), live(state)))
       .sharedNativeActions[0]?.action).toBe(action);
   });
 
-  it('plans repair only for safely repairable owned residue', () => {
-    const corrupt = { state: 'corrupt', diagnostic: 'manifestMissing', nativeAction: 'blocked' } as const;
-    expect(createCodexReconcilePlan(input('sync', target(), live(corrupt, {
-      repairableSharedNative: true,
-    }))).sharedNativeActions[0]?.action).toBe('repair');
-    expect(() => createCodexReconcilePlan(input('sync', target(), live(corrupt))))
+  it('repairs damaged replaceable state and fails closed for unreadable state', () => {
+    const damaged = {
+      state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing',
+    } as const;
+    expect(createCodexReconcilePlan(input('sync', target(), live(damaged)))
+      .sharedNativeActions[0]?.action).toBe('repair');
+    expect(() => createCodexReconcilePlan(input('sync', target(), live({
+      state: 'blocked', reason: 'unreadable', diagnostic: 'manifestUnreadable',
+    }))))
       .toThrowError(CodexReconcilePlanError);
   });
 
   it('restores user=false after project native installation and checks exact plus neutral cwd', () => {
     const plan = createCodexReconcilePlan(input('install', target({ desiredScopes: ['project'] }), live(
-      { state: 'absent', nativeAction: 'install' },
+      { state: 'missing' },
       { activations: { user: true, project: false } },
     )));
     expect(plan.requirement).toMatchObject({
@@ -136,7 +139,7 @@ describe('Codex desired-state reconciliation planner', () => {
     const plan = createCodexReconcilePlan(input('sync', target({
       desiredScopes: ['user', 'project'],
     }), live(
-      { state: 'present', version: '1.0.0', nativeAction: 'none' },
+      { state: 'usable', version: '1.0.0', claimable: false },
       { activations: { user: true, project: true } },
     )));
     expect(plan.activationActions.user[0]?.action).toBe('none');
@@ -149,7 +152,7 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(() => createCodexReconcilePlan({
       ...input('sync'),
       catalogClosure: [first, second],
-      liveEvidence: [live({ state: 'present', version: '1.0.0', nativeAction: 'none' })],
+      liveEvidence: [live({ state: 'usable', version: '1.0.0', claimable: false })],
     })).toThrowError(/codexSurfaceOwnerCollision/u);
   });
 
@@ -159,7 +162,7 @@ describe('Codex desired-state reconciliation planner', () => {
       expect(() => createCodexReconcilePlan(input('sync', target({
         desiredScopes: ['user', 'project'],
         surface: surface(kind),
-      }), live({ state: 'present', version: '1.0.0', nativeAction: 'none' }))))
+      }), live({ state: 'usable', version: '1.0.0', claimable: false }))))
         .toThrowError(/codexExtensionScopeConflict/u);
     },
   );
@@ -169,7 +172,7 @@ describe('Codex desired-state reconciliation planner', () => {
       surface: surface('mixed'),
       desiredScopes: ['project'],
     }), live(
-      { state: 'present', version: '1.0.0', nativeAction: 'none' },
+      { state: 'usable', version: '1.0.0', claimable: false },
       { extensions: [
         { componentKey: 'extensions.instructions:guide', scope: 'user', state: 'present' },
         { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },
@@ -183,7 +186,7 @@ describe('Codex desired-state reconciliation planner', () => {
 
   it('never removes healthy shared native during uninstall or cleanup', () => {
     const evidence = live(
-      { state: 'present', version: '1.0.0', nativeAction: 'none' },
+      { state: 'usable', version: '1.0.0', claimable: false },
       { activations: { project: true } },
     );
     expect(createCodexReconcilePlan(input('uninstall', target({ desiredScopes: [] }), evidence))
@@ -195,11 +198,11 @@ describe('Codex desired-state reconciliation planner', () => {
   });
 
   it('requires direct authorization for shared replace and forced reinstall', () => {
-    const outdated = createCodexReconcilePlan(input('upgrade', target(), live({
-      state: 'outdated', version: '0.9.0', desiredVersion: '1.0.0', nativeAction: 'replace',
+    const outdated = createCodexReconcilePlan(input('sync', target(), live({
+      state: 'replaceable', reason: 'outdated', version: '0.9.0', desiredVersion: '1.0.0',
     })));
     const forced = createCodexReconcilePlan(input('reinstall', target(), live({
-      state: 'present', version: '1.0.0', nativeAction: 'none',
+      state: 'usable', version: '1.0.0', claimable: false,
     })));
     expect(outdated.review).toMatchObject({ requiresConfirmation: true });
     expect(forced.review).toMatchObject({ requiresConfirmation: true });
@@ -210,7 +213,7 @@ describe('Codex desired-state reconciliation planner', () => {
       ...input('sync', target({
         surface: surface('extension'),
         desiredScopes: ['project'],
-      }), live({ state: 'absent', nativeAction: 'install' })),
+      }), live({ state: 'missing' })),
       activationSupport: 'assumed',
     });
     expect(plan.sharedNativeActions).toEqual([]);
@@ -221,7 +224,7 @@ describe('Codex desired-state reconciliation planner', () => {
   it('produces a stable plan for reordered live extension evidence', () => {
     const catalog = target({ surface: surface('mixed') });
     const first = input('sync', catalog, live(
-      { state: 'present', version: '1.0.0', nativeAction: 'none' },
+      { state: 'usable', version: '1.0.0', claimable: false },
       { extensions: [
         { componentKey: 'extensions.instructions:guide', scope: 'user', state: 'absent' },
         { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },
