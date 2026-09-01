@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -194,7 +195,8 @@ describe('TUI v4 real catalog source boundary', () => {
     const { controller } = await configuredController('..');
     const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
     const storeKey = createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest);
-    expect(storeKey.startsWith('%2E%2E/')).toBe(true);
+    expect(storeKey.startsWith(`${crypto.createHash('sha256').update('..', 'utf8').digest('hex')}/`))
+      .toBe(true);
     const recoveryEntryPath = `catalog-store/${storeKey}`;
     await fs.writeFile(
       path.join(isolation.env.AW_HOME!, recoveryEntryPath, 'metadata.json'),

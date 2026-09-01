@@ -71,7 +71,7 @@ publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push
 
 ## Source consumption 和信任
 
-消费端只保存 `catalog-sources.json`、`catalog-state.json` 和内容寻址的 `catalog-store/<logicalIdentity>/<snapshotDigest>/{metadata.json,snapshot/**}`。state 中每个 source 只有 `Active` 和 `lastSync`。普通命令只读 Active store，完全离线；没有 Active 时运行 sync。
+消费端只保存 `catalog-sources.json`、`catalog-state.json` 和内容寻址的 `catalog-store/<logicalIdentitySha256>/<snapshotDigest>/{metadata.json,snapshot/**}`。metadata 保存原始 logical identity。state 中每个 source 只有 `Active` 和 `lastSync`。普通命令只读 Active store，完全离线；没有 Active 时运行 sync。
 
 ```bash
 aw catalog source sync <id> --json

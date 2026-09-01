@@ -84,6 +84,7 @@ import {
   inspectOwnedComponents,
 } from '../utils/ownership.js';
 import {
+  canonicalizePathThroughExistingAncestorSync,
   codexProjectConfigAliasesUserHome,
   resolveCanonicalRepoProjectKey,
 } from '../utils/state-paths.js';
@@ -1201,28 +1202,31 @@ async function readOfflinePluginManifestCandidates(options: {
     ...lifecycleRoots,
     ...marketplaceRoots.map((root) => path.join(root, 'plugins', options.pluginName)),
   ];
-  const storeRoot = path.join(resolveAwHome(options.env), 'catalog-store');
+  const storeRoot = path.join(
+    canonicalizePathThroughExistingAncestorSync(resolveAwHome(options.env)),
+    'catalog-store',
+  );
   const logicalEntries = await fs.readdir(storeRoot, { withFileTypes: true }).catch(() => []);
   for (const logicalEntry of logicalEntries) {
-    if (!logicalEntry.isDirectory() || logicalEntry.isSymbolicLink()) continue;
+    if (!logicalEntry.isDirectory()
+      || logicalEntry.isSymbolicLink()
+      || !/^[0-9a-f]{64}$/u.test(logicalEntry.name)) continue;
     const logicalRoot = path.join(storeRoot, logicalEntry.name);
     const snapshotEntries = await fs.readdir(logicalRoot, { withFileTypes: true }).catch(() => []);
     for (const snapshotEntry of snapshotEntries) {
       if (!snapshotEntry.isDirectory()
         || snapshotEntry.isSymbolicLink()
         || !/^[0-9a-f]{64}$/u.test(snapshotEntry.name)) continue;
-      let logicalIdentity: string;
-      try {
-        logicalIdentity = decodeURIComponent(logicalEntry.name);
-      } catch {
-        continue;
-      }
+      const scannedEntryDir = path.join(logicalRoot, snapshotEntry.name);
+      const metadata = await fs.readJson(path.join(scannedEntryDir, 'metadata.json'))
+        .catch(() => null) as { logicalIdentity?: unknown } | null;
+      if (typeof metadata?.logicalIdentity !== 'string') continue;
       const entry = await readCatalogStoreEntry({
-        logicalIdentity,
+        logicalIdentity: metadata.logicalIdentity,
         snapshotDigest: `sha256:${snapshotEntry.name}`,
         env: options.env,
       }).catch(() => null);
-      if (!entry) continue;
+      if (!entry || entry.entryDir !== scannedEntryDir) continue;
       const storeAnchor = await readPluginManifestIfPresent(path.join(
         entry.snapshotRoot,
         'plugins',

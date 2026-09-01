@@ -5,6 +5,8 @@ export type CatalogGenerationErrorCode =
   | 'catalogGenerationUnavailable'
   | 'catalogGenerationSourceMissing'
   | 'catalogGenerationIdentityMismatch'
+  | 'catalogGenerationReviewStale'
+  | 'catalogLogicalIdentityChanged'
   | 'catalogGenerationRefreshFailed'
   | 'catalogGenerationPublishFailed';
 

@@ -55,7 +55,7 @@ generated schema 6 snapshot
 <AW_HOME>/
   catalog-sources.json                              [强配置]
   catalog-state.json                                [强状态]
-  catalog-store/<logicalIdentity>/<snapshotDigest>/
+  catalog-store/<sha256(UTF-8 logicalIdentity) hex>/<snapshotDigest hex>/
     metadata.json
     snapshot/**
   plugin-config/**                                  [强配置]
@@ -94,11 +94,11 @@ TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显�
 
 Catalog snapshot 的 logical identity 只来自 `.aw-generated.json.workspaceIdentity`。source ID、Git URL、SSH/HTTPS 文本和本地 path 不是 logical identity。
 
-`catalog-state.json` 只为每个 source 保存 `Active` 和 `lastSync`。`Active` 绑定 logical identity、snapshot digest 和 Catalog store 目录。store 的唯一布局是 `<AW_HOME>/catalog-store/<logicalIdentity>/<snapshotDigest>/{metadata.json,snapshot/**}`；它没有 current、last-good、Candidate、Previous、发布版本记录或 refresh policy。
+`catalog-state.json` 只为每个 source 保存 `Active` 和 `lastSync`。`Active` 绑定 logical identity、snapshot digest 和 Catalog store 目录。store 的唯一布局是 `<AW_HOME>/catalog-store/<sha256(UTF-8 logicalIdentity) hex>/<snapshotDigest hex>/{metadata.json,snapshot/**}`，metadata 保留原 logical identity；它不读取或迁移旧 URI identity 布局，也没有 current、last-good、Candidate、Previous、发布版本记录或 refresh policy。
 
-公开入口是 `aw catalog source sync <id> [--check]` 和 `aw catalog source status [id]`。`sync --check` fetch 并验证 snapshot，但不写 store 或 Active；它可更新 `lastSync`。普通 `sync` 在 staging 验证后原子写 store，再原子切换 Active。失败保留原 Active。普通 install、upgrade、reinstall、uninstall、config、status、TUI 和 Portable 命令只读取 Active store，完全离线；没有 Active 时提示运行 source sync。`cleanup` 和 `cleanup --force` 不读取 Active，只凭 live ownership 或离线 evidence 清理 AW-owned 输出；source 或 store 缺失或损坏不能永久阻止 cleanup，且两者保留 foreign 或 shared 内容。
+公开入口是 `aw catalog source sync <id> [--check]` 和 `aw catalog source status [id]`。纯 probe fetch 并执行完整的 snapshot transport validation，不解析未选择的 Plugin bundle；它返回绑定 source config、source identity、logical identity、ref、commit、version、channel 和 digest 的 candidate evidence，清理 staging，不写 store、Active 或 state，也不持有 AW_HOME mutation lock。`sync --check` 使用 probe，且只在短锁内更新 `lastSync`。普通 `sync` 锁外重新 resolve、验证并发布 content-addressed store，再在短锁内重读 source config、检查 logical identity continuity，并原子切换 Active 和 `lastSync`。失败保留原 Active。普通 install、upgrade、reinstall、uninstall、config、status、TUI 和 Portable 命令只读取 Active store，完全离线；没有 Active 时提示运行 source sync。`cleanup` 和 `cleanup --force` 不读取 Active，只凭 live ownership 或离线 evidence 清理 AW-owned 输出；source 或 store 缺失或损坏不能永久阻止 cleanup，且两者保留 foreign 或 shared 内容。
 
-`aw catalog source add` 和 `update` 只原子修改 source config，不同步也不改 Active。`remove` 只修改 source config 和该 source 的 state，不删除其它 store snapshot、插件内容或 live ownership。Git 回退通过修改 ref 后再 sync；Path source 通过恢复目录后再 sync。没有自动 bootstrap、后台同步或远端轮询。
+`aw catalog source add` 和 `update` 只原子修改 source config，不同步也不改 Active。相同 ID 的 add 只在 config 当前不存在时先清理 orphan state；清理失败则不提交 config。`remove` 先原子提交 source config，再 best-effort 清理该 source 的 state；清理失败只产生 warning。它不删除其它 store snapshot、插件内容或 live ownership。精确 repair 只从当前 Active 选择目标并重新获取完整 transport candidate evidence；新 digest 发布新 entry，同 digest 损坏时只 quarantine 和替换该 entry，失败则恢复原目标，cleanup 失败只产生 warning。Git 回退通过修改 ref 后再 sync；Path source 通过恢复目录后再 sync。没有自动 bootstrap、后台同步或远端轮询。
 
 Git provider 保持非交互，并保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。消费端定向清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。AW 不保存 Catalog credential。
 

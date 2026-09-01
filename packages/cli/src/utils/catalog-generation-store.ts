@@ -56,18 +56,7 @@ function logicalIdentitySegment(value: string): string {
   if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
     throw metadataError('Invalid Catalog logical identity.');
   }
-  try {
-    if (value === '.') return '%2E';
-    if (value === '..') return '%2E%2E';
-    const segment = encodeURIComponent(value);
-    if (segment === '.' || segment === '..' || /[\\/]/u.test(segment)) {
-      throw metadataError('Invalid Catalog logical identity.');
-    }
-    return segment;
-  } catch (error) {
-    if (error instanceof CatalogGenerationError) throw error;
-    throw metadataError('Invalid Catalog logical identity.', error);
-  }
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function resolveStrictStoreDescendant(storeRootDir: string, ...segments: string[]): string {
@@ -298,4 +287,104 @@ export async function readCatalogStoreEntry(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<CatalogStoreEntry> {
   return validateEntry({ location: resolveCatalogStoreLocation(options) });
+}
+
+export async function replaceDamagedCatalogStoreEntry(options: {
+  resolution: CatalogSourceResolution;
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<CatalogStoreEntry> {
+  const location = resolveCatalogStoreLocation(options);
+  const stagingDir = resolveStrictStoreDescendant(
+    location.logicalIdentityDirectory,
+    `.replacement-${crypto.randomUUID()}.tmp`,
+  );
+  const quarantineDir = resolveStrictStoreDescendant(
+    location.logicalIdentityDirectory,
+    `.quarantine-${crypto.randomUUID()}.tmp`,
+  );
+  let quarantined = false;
+  try {
+    await ensureRegularDirectoryPath(location.storeRootDir, 'Catalog store');
+    await ensureRegularDirectoryPath(location.logicalIdentityDirectory, 'Catalog logical identity store');
+    await fs.mkdir(stagingDir);
+    const snapshotRoot = path.join(stagingDir, 'snapshot');
+    await fs.copy(options.resolution.rootDir, snapshotRoot, {
+      dereference: false,
+      preserveTimestamps: true,
+      filter: () => {
+        options.signal?.throwIfAborted();
+        return true;
+      },
+    });
+    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
+    if (
+      validation.manifestDigest !== options.resolution.manifestDigest
+      || validation.snapshotDigest !== options.snapshotDigest
+      || await readCatalogSnapshotLogicalIdentity(snapshotRoot) !== options.logicalIdentity
+    ) throw new CatalogGenerationError({
+      code: 'catalogGenerationPublishFailed',
+      sourceId: options.resolution.sourceId,
+      message: `Catalog source "${options.resolution.sourceId}" changed before store repair. Run source sync again.`,
+    });
+    const metadata: CatalogGenerationMetadataV1 = {
+      schemaVersion: 1,
+      logicalIdentity: options.logicalIdentity,
+      catalogVersion: validation.manifest.catalogVersion,
+      channel: validation.manifest.channel,
+      manifestDigest: validation.manifestDigest,
+      snapshotDigest: validation.snapshotDigest,
+      requiredAwCapabilities: normalizeAwCapabilities(validation.manifest.requires.aw.capabilities ?? []),
+    };
+    await fs.writeFile(
+      path.join(stagingDir, CATALOG_STORE_METADATA_FILE),
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    await validateEntry({ location: {
+      ...location,
+      entryDir: stagingDir,
+      metadataPath: path.join(stagingDir, CATALOG_STORE_METADATA_FILE),
+      snapshotRoot,
+    } });
+    options.signal?.throwIfAborted();
+    await fs.rename(location.entryDir, quarantineDir);
+    quarantined = true;
+    try {
+      await fs.rename(stagingDir, location.entryDir);
+    } catch (error) {
+      if (!await fs.pathExists(location.entryDir)) {
+        await fs.rename(quarantineDir, location.entryDir);
+        quarantined = false;
+      }
+      throw error;
+    }
+    const entry = await validateEntry({ location });
+    await fs.remove(quarantineDir).catch(() => {
+      try {
+        process.emitWarning('Catalog store repair succeeded, but quarantine cleanup failed.', {
+          code: 'AW_CATALOG_STORE_QUARANTINE_CLEANUP_FAILED',
+        });
+      } catch {
+        // Cleanup diagnostics cannot replace the repair result.
+      }
+    });
+    quarantined = false;
+    return { ...entry, reused: false };
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationPublishFailed',
+      sourceId: options.resolution.sourceId,
+      message: `Cannot repair the active Catalog store entry for source "${options.resolution.sourceId}".`,
+      cause: error,
+    });
+  } finally {
+    await fs.remove(stagingDir).catch(() => undefined);
+    if (quarantined && !await fs.pathExists(location.entryDir)) {
+      await fs.rename(quarantineDir, location.entryDir).catch(() => undefined);
+    }
+  }
 }

@@ -108,6 +108,17 @@ async function reportMutationProgress(
   }
 }
 
+function warnStateCleanupFailure(sourceId: string): void {
+  try {
+    process.emitWarning(
+      `Catalog source "${sourceId}" was committed, but its orphan state cleanup failed.`,
+      { code: 'AW_CATALOG_SOURCE_STATE_CLEANUP_FAILED' },
+    );
+  } catch {
+    // Cleanup diagnostics cannot replace the config mutation result.
+  }
+}
+
 async function withCatalogSourceMutationLock<T>(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
@@ -263,6 +274,9 @@ export async function addCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
+      if (!snapshot.config.sources.some((source) => source.id === options.source.id)) {
+        await removeCatalogSourceGenerationState({ sourceId: options.source.id, env });
+      }
       const config = await addCatalogSource(snapshot.config, options.source, options.cwd);
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
@@ -374,7 +388,6 @@ export async function removeCatalogSourceCommand(options: {
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
       }
-      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
       const receipt = await commitConfig({
         command: 'catalog:source:remove',
         sourceId: options.sourceId,
@@ -383,6 +396,8 @@ export async function removeCatalogSourceCommand(options: {
         env,
         runtime,
       });
+      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env })
+        .catch(() => warnStateCleanupFailure(options.sourceId));
       return receipt;
     },
   });
