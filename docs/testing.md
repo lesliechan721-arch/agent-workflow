@@ -4,6 +4,12 @@
 
 `pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
+日常开发使用以下三个入口：
+
+- 快速反馈：`pnpm test:unit:fast`，运行 command options、command receipt、hooks contract、platform support 和 template engine 五个稳定文件。
+- 修改范围验证：`pnpm --filter @lesliechan721/aw test tests/unit/<file>.test.ts`；将路径替换为本次修改直接影响的 unit 或 integration 文件，必要时再用 `-t <name>` 缩小到用例。
+- 交付验证：按下方 Validation Matrix 运行所需的完整命令；默认 unit 和 integration 全量入口是 `pnpm test`。Performance、smoke 和需要 single worker 的锁测试继续使用各自的专用 Vitest 配置。
+
 ## Test Layers
 
 | 层 | 命令 | 责任 |
@@ -145,6 +151,7 @@ Performance gate 必须校验摘要名称集合。缺少、重复或未知名称
 ## Test Isolation
 
 - 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
+- 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
 - 平台命令使用 fake native runner。
 - 需要进程树检查的测试在允许 POSIX/Windows 进程检查的环境运行。
 - 测试结束后清理自己的临时目录和 mock。

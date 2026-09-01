@@ -471,8 +471,9 @@ async function startCommand(options) {
     if (!sameSessionDirectory(await physicalSessionLocation(location), location)) {
       throw new Error('Prototype Review session directory physical identity changed during start');
     }
+    const managedByTestRunner = process.env.AW_TEST_RUNNER_PROCESS_TREE === '1';
     child = spawn(process.execPath, [serverScript, '--launch', launchPath], {
-      detached: true,
+      detached: !managedByTestRunner,
       stdio: 'ignore',
     });
     await new Promise((resolve, reject) => {

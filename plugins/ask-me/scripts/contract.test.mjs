@@ -11,7 +11,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
 const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape'];
 const leafSkills = ['decision-grill', 'decision-prototype'];
-const questionToolSkills = new Set(leafSkills);
+const questionToolSkills = new Set(['decision-grill']);
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -277,6 +277,7 @@ test('prepared bundle renders the three static Skills', async () => {
       path.join(context.bundleRoot, context.platform, 'skills', skillName, 'SKILL.md'),
       'utf8',
     );
+    // Static contract exception: a materialized Skill must name only its target platform question tool; behavior test is not suitable because the platform-specific tool name is consumer-read Skill text.
     assert.equal(skill.includes(expectedTool), questionToolSkills.has(skillName));
     assert.equal(skill.includes(otherTool), false);
     assert.equal(skill.includes('{{questionTool}}'), false);

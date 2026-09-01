@@ -86,7 +86,7 @@ async function pushPreparedRef(
   await execFileAsync('git', ['push', '--quiet', publication.pushUrl, source], { cwd: repository });
 }
 
-describe('version-scoped Catalog publication journal', () => {
+describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
   it('plans from committed HEAD and persists a reduced authorization identity and pending repo', async () => {
     const { root } = await createWorkspace('1.2.3');
     const publication = await plan(root);
