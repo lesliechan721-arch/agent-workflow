@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import {
   chmod,
   lstat,
@@ -32,7 +32,6 @@ const serverScript = path.join(scriptDir, 'review-server.mjs');
 const sessionBindings = new WeakMap();
 
 class UsageError extends Error {}
-class SessionBusyError extends Error {}
 
 function globalHelp() {
   return `Usage:
@@ -45,7 +44,7 @@ Commands:
   start   Validate and start a localhost Prototype Review session.
   wait    Wait for submitted feedback, cancellation, or timeout.
   status  Read the current session status without changing it.
-  stop    Stop a reachable session through authenticated HTTP.`;
+  stop    Stop the session when reachable and clean up its local descriptor.`;
 }
 
 function commandHelp(command) {
@@ -106,12 +105,74 @@ function stableJson(value) {
   return JSON.stringify(value);
 }
 
-function feedbackDigest(feedback) {
-  return `sha256:${createHash('sha256').update(stableJson(feedback)).digest('hex')}`;
-}
-
 function sessionBase() {
   return path.join(os.tmpdir(), 'agent-workflow', 'prototype-review');
+}
+
+function submittedReceipt(feedback, feedbackPath) {
+  return {
+    ok: true,
+    status: 'submitted',
+    prototypeId: feedback.prototypeId,
+    revision: feedback.prototypeRevision,
+    verdict: feedback.verdict,
+    selectedOptionCount: feedback.selectedOptions.length,
+    annotationCount: feedback.annotations.length,
+    feedback: feedbackPath,
+  };
+}
+
+async function prepareFeedbackForStart(prototype, feedbackSchema) {
+  const feedbackPath = path.join(prototype.prototypeRoot, 'feedback.json');
+  const rootInfo = await lstat(prototype.prototypeRoot);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error('Prototype root must be a regular non-symlink directory');
+  }
+  let info;
+  try {
+    info = await lstat(feedbackPath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error('Existing feedback must be a regular non-symlink file');
+  }
+  if (await realpath(feedbackPath) !== path.join(prototype.prototypeRoot, 'feedback.json')) {
+    throw new Error('Existing feedback is outside the physical Prototype root');
+  }
+  const feedback = normalizeAndValidate(
+    JSON.parse(await readFile(feedbackPath, 'utf8')),
+    feedbackSchema,
+    'feedback',
+  );
+  if (feedback.prototypeId !== prototype.config.id) {
+    throw new Error('Existing feedback belongs to a different Prototype');
+  }
+  if (feedback.prototypeRevision === prototype.config.revision) {
+    validateFeedbackAgainstPrototype(feedback, prototype.config, 'feedback');
+    return submittedReceipt(feedback, feedbackPath);
+  }
+  if (feedback.prototypeRevision > prototype.config.revision) {
+    throw new Error('Existing feedback belongs to a newer Prototype revision');
+  }
+  const currentInfo = await lstat(feedbackPath);
+  const currentRootInfo = await lstat(prototype.prototypeRoot);
+  if (
+    !currentRootInfo.isDirectory()
+    || currentRootInfo.isSymbolicLink()
+    || currentRootInfo.dev !== rootInfo.dev
+    || currentRootInfo.ino !== rootInfo.ino
+    || !currentInfo.isFile()
+    || currentInfo.isSymbolicLink()
+    || currentInfo.dev !== info.dev
+    || currentInfo.ino !== info.ino
+    || await realpath(feedbackPath) !== path.join(prototype.prototypeRoot, 'feedback.json')
+  ) {
+    throw new Error('Existing feedback changed before the new Prototype revision started');
+  }
+  await rm(feedbackPath);
+  return null;
 }
 
 async function pathExists(filePath) {
@@ -385,8 +446,13 @@ async function waitForStartup(child, sessionPath, errorPath, location, ownedFile
 }
 
 async function startCommand(options) {
-  const prototypeSchema = await readJsonSchema(prototypeSchemaPath);
+  const [prototypeSchema, feedbackSchema] = await Promise.all([
+    readJsonSchema(prototypeSchemaPath),
+    readJsonSchema(feedbackSchemaPath),
+  ]);
   const prototype = await loadAndValidatePrototype(path.resolve(options.prototype), prototypeSchema);
+  const existingReceipt = await prepareFeedbackForStart(prototype, feedbackSchema);
+  if (existingReceipt) return existingReceipt;
   const { sessionDir, sessionId, location } = await createSessionDirectory();
   const sessionPath = path.join(sessionDir, 'session.json');
   const launchPath = path.join(sessionDir, 'launch.json');
@@ -402,18 +468,6 @@ async function startCommand(options) {
       prototypePath: prototype.prototypePath,
     });
     ownedFiles.set(launchPath, await bindOwnedSessionFile(location, launchPath));
-    const startDelayMs = Number(process.env.AW_PROTOTYPE_REVIEW_TEST_AFTER_LAUNCH_DELAY_MS || '0');
-    if (startDelayMs > 0) {
-      const readyPath = path.join(sessionDir, 'start-ready');
-      const temporaryReadyPath = `${readyPath}-${process.pid}`;
-      await writeFile(temporaryReadyPath, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      const readyFile = await bindOwnedSessionFile(location, temporaryReadyPath);
-      ownedFiles.set(temporaryReadyPath, readyFile);
-      await rename(temporaryReadyPath, readyPath);
-      ownedFiles.delete(temporaryReadyPath);
-      ownedFiles.set(readyPath, { ...readyFile, filePath: readyPath });
-      await new Promise((resolve) => setTimeout(resolve, startDelayMs));
-    }
     if (!sameSessionDirectory(await physicalSessionLocation(location), location)) {
       throw new Error('Prototype Review session directory physical identity changed during start');
     }
@@ -468,10 +522,7 @@ async function authenticatedRequest(descriptor, pathname, options = {}) {
   } catch {
     throw new Error(`Prototype Review server returned HTTP ${response.status} without a JSON receipt`);
   }
-  if (!response.ok || body.ok === false) {
-    if (body.status === 'busy') throw new SessionBusyError(body.error || 'Prototype Review session is busy');
-    throw new Error(body.error || `Prototype Review server returned HTTP ${response.status}`);
-  }
+  if (!response.ok || body.ok === false) throw new Error(body.error || `Prototype Review server returned HTTP ${response.status}`);
   return body;
 }
 
@@ -479,7 +530,7 @@ async function stopReachableSession(descriptor) {
   return authenticatedRequest(descriptor, '/api/stop', { method: 'POST' });
 }
 
-async function readSubmittedFeedback(descriptor, expectedDigest) {
+async function readSubmittedFeedback(descriptor) {
   const [prototypeSchema, feedbackSchema] = await Promise.all([
     readJsonSchema(prototypeSchemaPath),
     readJsonSchema(feedbackSchemaPath),
@@ -502,25 +553,7 @@ async function readSubmittedFeedback(descriptor, expectedDigest) {
     'feedback',
   );
   validateFeedbackAgainstPrototype(feedback, prototype.config, 'feedback');
-  const digest = feedbackDigest(feedback);
-  if (digest !== expectedDigest) return null;
-  return { feedback, feedbackPath, feedbackDigest: digest };
-}
-
-async function supersededSession(descriptor, sessionPath) {
-  try {
-    await stopReachableSession(descriptor);
-  } catch {
-    // The server can close itself after it detects the conflicting feedback.
-  }
-  await cleanupSession(sessionPath, descriptor);
-  return {
-    ok: true,
-    status: 'superseded',
-    error: 'Feedback was superseded by another Prototype Review session',
-    prototypeId: descriptor.prototypeId,
-    revision: descriptor.revision,
-  };
+  return { feedback, feedbackPath };
 }
 
 async function waitCommand(options) {
@@ -532,7 +565,17 @@ async function waitCommand(options) {
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      await stopReachableSession(descriptor);
+      let stopped;
+      try {
+        stopped = await stopReachableSession(descriptor);
+      } catch {
+        // Timeout still owns cleanup of its local session descriptor.
+      }
+      if (stopped?.status === 'submitted') {
+        const submitted = await readSubmittedFeedback(descriptor);
+        await cleanupSession(sessionPath, descriptor);
+        return submittedReceipt(submitted.feedback, submitted.feedbackPath);
+      }
       await cleanupSession(sessionPath, descriptor);
       return {
         ok: true,
@@ -557,13 +600,15 @@ async function waitCommand(options) {
         revision: descriptor.revision,
       };
     }
-    if (state.status === 'superseded') return supersededSession(descriptor, sessionPath);
     if (state.status !== 'submitted') throw new Error(`Unknown Prototype Review wait status: ${state.status}`);
 
-    const submitted = await readSubmittedFeedback(descriptor, state.feedbackDigest);
-    if (!submitted) return supersededSession(descriptor, sessionPath);
+    const submitted = await readSubmittedFeedback(descriptor);
     const { feedback, feedbackPath } = submitted;
-    await stopReachableSession(descriptor);
+    try {
+      await stopReachableSession(descriptor);
+    } catch {
+      // Submitted feedback on disk is canonical even if the server already exited.
+    }
     await cleanupSession(sessionPath, descriptor);
     return {
       ok: true,
@@ -574,7 +619,6 @@ async function waitCommand(options) {
       selectedOptionCount: feedback.selectedOptions.length,
       annotationCount: feedback.annotations.length,
       feedback: feedbackPath,
-      feedbackDigest: submitted.feedbackDigest,
     };
   }
 }
@@ -585,23 +629,9 @@ async function statusCommand(options) {
   if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
   try {
     const state = await authenticatedRequest(descriptor, '/api/status');
-    if (state.status === 'superseded') {
-      return {
-        ...await supersededSession(descriptor, sessionPath),
-        session: sessionPath,
-        url: descriptor.url,
-        reviewShellVersion,
-      };
-    }
+    let submitted;
     if (state.status === 'submitted') {
-      if (!await readSubmittedFeedback(descriptor, state.feedbackDigest)) {
-        return {
-          ...await supersededSession(descriptor, sessionPath),
-          session: sessionPath,
-          url: descriptor.url,
-          reviewShellVersion,
-        };
-      }
+      submitted = await readSubmittedFeedback(descriptor);
     }
     return {
       ok: true,
@@ -611,7 +641,7 @@ async function statusCommand(options) {
       prototypeId: descriptor.prototypeId,
       revision: descriptor.revision,
       reviewShellVersion,
-      ...(state.feedbackDigest ? { feedbackDigest: state.feedbackDigest } : {}),
+      ...(submitted ? submittedReceipt(submitted.feedback, submitted.feedbackPath) : {}),
     };
   } catch (error) {
     console.error(error.message);
@@ -631,7 +661,11 @@ async function stopCommand(options) {
   const sessionPath = path.resolve(options.session);
   const descriptor = await readSession(sessionPath, { allowMissing: true });
   if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
-  await stopReachableSession(descriptor);
+  try {
+    await stopReachableSession(descriptor);
+  } catch {
+    // A local stop also cleans up a server that is already unreachable.
+  }
   await cleanupSession(sessionPath, descriptor);
   return {
     ok: true,
@@ -663,11 +697,6 @@ async function main() {
       console.error(options?.command ? commandHelp(options.command) : globalHelp());
       receipt({ ok: false, status: 'usage', error: error.message });
       return 2;
-    }
-    if (error instanceof SessionBusyError) {
-      console.error(error.message);
-      receipt({ ok: false, status: 'busy', error: error.message });
-      return 1;
     }
     console.error(error.stack || error.message);
     receipt({ ok: false, status: 'failed', error: error.message });

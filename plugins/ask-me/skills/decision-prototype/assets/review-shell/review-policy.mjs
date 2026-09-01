@@ -83,14 +83,14 @@ export function feedbackValidationErrors(feedback, prototype, label = 'feedback'
   if (selectionMode === 'single' && selectedOptions.length > 1) {
     errors.push(`${label}.selectedOptions must contain at most one option when selectionMode is "single"`);
   }
-  if (feedback.verdict === 'rejected' && selectedOptions.length !== 0) {
-    errors.push(`${label}.selectedOptions must be empty for a rejected verdict`);
+  if (['rejected', 'new-material-question'].includes(feedback.verdict) && selectedOptions.length !== 0) {
+    errors.push(`${label}.selectedOptions must be empty for a ${feedback.verdict} verdict`);
   }
-  if (feedback.verdict === 'accepted' && selectionMode === 'single' && selectedOptions.length !== 1) {
-    errors.push(`${label}.selectedOptions must contain exactly one option for an accepted single-selection Prototype`);
+  if (['accepted', 'revise'].includes(feedback.verdict) && selectionMode === 'single' && selectedOptions.length !== 1) {
+    errors.push(`${label}.selectedOptions must contain exactly one option for an accepted or revise single-selection Prototype`);
   }
-  if (feedback.verdict === 'accepted' && selectionMode === 'multiple' && selectedOptions.length < 1) {
-    errors.push(`${label}.selectedOptions must contain at least one option for an accepted multiple-selection Prototype`);
+  if (['accepted', 'revise'].includes(feedback.verdict) && selectionMode === 'multiple' && selectedOptions.length < 1) {
+    errors.push(`${label}.selectedOptions must contain at least one option for an accepted or revise multiple-selection Prototype`);
   }
 
   const questions = new Map(

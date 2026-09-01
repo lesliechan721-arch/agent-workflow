@@ -44,51 +44,15 @@
           </div>
         </div>
         <nav id="candidateTabs" class="candidate-tabs" aria-label="候选预览" hidden></nav>
+        <div id="previewHost" class="preview-host" aria-live="polite"></div>
+      </section>
+
+      <section class="panel verdict-panel" aria-labelledby="verdictHeading">
         <fieldset id="candidateSelection" class="candidate-selection" hidden>
           <legend>选择要反馈的候选</legend>
           <div id="selectionChoices"></div>
         </fieldset>
         <p id="selectionError" class="field-error" role="alert" hidden></p>
-        <div id="previewHost" class="preview-host" aria-live="polite"></div>
-      </section>
-
-      <section id="guided" class="panel" aria-labelledby="guidedHeading" hidden>
-        <h2 id="guidedHeading">引导问题</h2>
-        <div id="guidedQuestions"></div>
-        <p id="guidedError" class="field-error" role="alert" hidden></p>
-      </section>
-
-      <section id="tokens" class="panel" aria-labelledby="tokensHeading" hidden>
-        <h2 id="tokensHeading">受控参数</h2>
-        <div id="tokenControls" class="token-controls"></div>
-        <p id="tokensError" class="field-error" role="alert" hidden></p>
-      </section>
-
-      <section id="annotationPanel" class="panel" aria-labelledby="annotationHeading" hidden>
-        <div class="section-heading">
-          <div>
-            <h2 id="annotationHeading">局部标注</h2>
-            <p id="annotationHelp" class="section-description"></p>
-          </div>
-        </div>
-        <div class="annotation-target-picker">
-          <h3>标注目标</h3>
-          <p id="annotationKeyboardHelp" class="section-description"></p>
-          <div id="annotationTargets" class="annotation-targets"></div>
-        </div>
-        <p id="annotationEmpty">还没有标注。</p>
-        <ol id="annotations" class="annotation-list"></ol>
-        <p id="annotationError" class="field-error" role="alert" hidden></p>
-      </section>
-
-      <section class="panel" aria-labelledby="notesHeading">
-        <h2 id="notesHeading">整体观察</h2>
-        <label for="globalNotes">补充说明（可选）</label>
-        <textarea id="globalNotes" rows="5" placeholder="说明整体观察、需要修改的部分或其它方向。"></textarea>
-        <p id="notesError" class="field-error" role="alert" hidden></p>
-      </section>
-
-      <section class="panel verdict-panel" aria-labelledby="verdictHeading">
         <fieldset id="verdictFieldset">
           <legend id="verdictHeading">总体判断</legend>
           <div class="verdict-options">
@@ -106,6 +70,44 @@
         </div>
       </section>
 
+      <div id="detailFeedback" hidden>
+        <section id="guided" class="panel" aria-labelledby="guidedHeading" hidden>
+          <h2 id="guidedHeading">引导问题</h2>
+          <div id="guidedQuestions"></div>
+          <p id="guidedError" class="field-error" role="alert" hidden></p>
+        </section>
+
+        <section id="tokens" class="panel" aria-labelledby="tokensHeading" hidden>
+          <h2 id="tokensHeading">受控参数</h2>
+          <div id="tokenControls" class="token-controls"></div>
+          <p id="tokensError" class="field-error" role="alert" hidden></p>
+        </section>
+
+        <section id="annotationPanel" class="panel" aria-labelledby="annotationHeading" hidden>
+          <div class="section-heading">
+            <div>
+              <h2 id="annotationHeading">局部标注</h2>
+              <p id="annotationHelp" class="section-description"></p>
+            </div>
+          </div>
+          <div class="annotation-target-picker">
+            <h3>标注目标</h3>
+            <p id="annotationKeyboardHelp" class="section-description"></p>
+            <div id="annotationTargets" class="annotation-targets"></div>
+          </div>
+          <p id="annotationEmpty">还没有标注。</p>
+          <ol id="annotations" class="annotation-list"></ol>
+          <p id="annotationError" class="field-error" role="alert" hidden></p>
+        </section>
+
+        <section id="notes" class="panel" aria-labelledby="notesHeading">
+          <h2 id="notesHeading">整体观察</h2>
+          <label for="globalNotes">补充说明（可选）</label>
+          <textarea id="globalNotes" rows="5" placeholder="说明整体观察、需要修改的部分或其它方向。"></textarea>
+          <p id="notesError" class="field-error" role="alert" hidden></p>
+        </section>
+      </div>
+
       <p id="formError" class="form-error" role="alert" tabindex="-1" hidden></p>
       <footer class="submit-bar">
         <button id="submitFeedback" type="submit" class="primary">提交反馈</button>
@@ -115,7 +117,7 @@
 
     <section id="success" class="success-panel" tabindex="-1" hidden>
       <h2>反馈已提交</h2>
-      <p>反馈已提交。Agent 已收到，可以关闭本页。</p>
+      <p id="successMessage">反馈已提交。Agent 已收到，可以关闭本页。</p>
     </section>
   </main>
 

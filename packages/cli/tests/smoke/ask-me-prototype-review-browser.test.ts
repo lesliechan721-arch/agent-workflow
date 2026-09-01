@@ -289,6 +289,24 @@ describe('ask-me Prototype Review browser smoke', () => {
       expect(await page.locator('body').textContent()).not.toContain('"goal"');
       await expectCount(page.locator('button.primary:visible'), 1);
       await expectCount(page.getByText('下载 feedback.json'), 0);
+      await expectHidden(page.locator('#candidateSelection'));
+      await expectHidden(page.locator('#detailFeedback'));
+      expect(await page.evaluate(() => {
+        const ids = [
+          'decisionContext',
+          'candidateTabs',
+          'previewHost',
+          'candidateSelection',
+          'verdictFieldset',
+          'detailFeedback',
+          'submitFeedback',
+        ];
+        const elements = ids.map((id) => document.getElementById(id));
+        return elements.every((element, index) => (
+          index === 0
+          || Boolean(elements[index - 1]?.compareDocumentPosition(element!) & Node.DOCUMENT_POSITION_FOLLOWING)
+        ));
+      })).toBe(true);
 
       await expectCount(page.getByRole('tab'), 2);
       await expectCount(page.locator('.preview-panel'), 1);
@@ -303,6 +321,9 @@ describe('ask-me Prototype Review browser smoke', () => {
       await page.getByRole('button', { name: '结束并排比较' }).click();
 
       await page.locator('input[name="verdict"][value="revise"]').check();
+      await expectVisible(page.locator('#candidateSelection'));
+      await expectVisible(page.locator('#detailFeedback'));
+      await page.locator('input[name="selected-option"][value="html-direction"]').check();
       await page.getByRole('button', { name: '提交反馈' }).click();
       await expectVisible(page.locator('#notesError'));
       await expectFocused(page.locator('#globalNotes'));
@@ -390,7 +411,7 @@ describe('ask-me Prototype Review browser smoke', () => {
       await page.locator('.annotation-summary').first().click();
       await expectFocused(page.locator('.image-marker[data-annotation-id="annotation-1"]'));
       await page.getByRole('tab', { name: 'HTML 方向' }).click();
-      await page.locator('input[name="selected-option"][value="html-direction"]').check();
+      await expectChecked(page.locator('input[name="selected-option"][value="html-direction"]'));
 
       await page.locator('[data-question-id="density"] input[value="合适"]').check();
       await page.locator('[data-question-id="risks"] input[value="层级"]').check();
@@ -465,13 +486,13 @@ describe('ask-me Prototype Review browser smoke', () => {
     try {
       await page.goto(started.url);
       const candidate = page.locator('input[name="selected-option"][value="beta"]');
-      await candidate.focus();
-      await page.keyboard.press('Space');
-      await expectChecked(candidate);
       const verdict = page.locator('input[name="verdict"][value="accepted"]');
       await verdict.focus();
       await page.keyboard.press('Space');
       await expectChecked(verdict);
+      await candidate.focus();
+      await page.keyboard.press('Space');
+      await expectChecked(candidate);
       const submit = page.getByRole('button', { name: '提交反馈' });
       await submit.focus();
       await page.keyboard.press('Enter');
@@ -518,6 +539,9 @@ describe('ask-me Prototype Review browser smoke', () => {
     try {
       await first.page.goto(multipleStarted.url);
       await expectCount(first.page.locator('input[name="selected-option"][type="checkbox"]'), 2);
+      await expectHidden(first.page.locator('#candidateSelection'));
+      await first.page.locator('input[name="verdict"][value="accepted"]').check();
+      await expectVisible(first.page.locator('#candidateSelection'));
       await first.page.locator('input[name="selected-option"]').first().check();
       await first.page.locator('input[name="selected-option"]').last().check();
       await first.page.locator('input[name="verdict"][value="rejected"]').check();

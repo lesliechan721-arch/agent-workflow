@@ -110,17 +110,18 @@ function syncSelectionControls() {
 }
 
 function syncSelectionForVerdict() {
-  const rejected = state.verdict === 'rejected';
-  if (rejected) {
+  const requiresSelection = ['accepted', 'revise'].includes(state.verdict);
+  if (!requiresSelection) {
     state.selectedOptions.clear();
   } else if (
-    ['accepted', 'revise'].includes(state.verdict)
-    && state.config.selectionMode !== 'none'
+    state.config.selectionMode !== 'none'
     && state.config.options.length === 1
   ) {
     state.selectedOptions.add(state.config.options[0].id);
   }
-  $('candidateSelection').disabled = rejected;
+  const hasControls = state.config.options.length > 1 && state.config.selectionMode !== 'none';
+  $('candidateSelection').hidden = !requiresSelection || !hasControls;
+  $('candidateSelection').disabled = !requiresSelection;
   syncSelectionControls();
 }
 
@@ -129,7 +130,7 @@ function renderSelectionControls() {
   const choices = $('selectionChoices');
   choices.innerHTML = '';
   const hasControls = state.config.options.length > 1 && state.config.selectionMode !== 'none';
-  selection.hidden = !hasControls;
+  selection.hidden = !hasControls || !['accepted', 'revise'].includes(state.verdict);
   if (!hasControls) return;
 
   for (const option of state.config.options) {
@@ -728,6 +729,12 @@ function renderVerdictDetail() {
     : '说明哪个新问题会改变当前决定。';
 }
 
+function syncProgressiveFeedback() {
+  $('detailFeedback').hidden = !['accepted', 'revise'].includes(state.verdict);
+  syncSelectionForVerdict();
+  renderVerdictDetail();
+}
+
 function feedback() {
   const value = {
     schemaVersion: 2,
@@ -812,11 +819,14 @@ function clientValidation() {
   return { valid: false, focus };
 }
 
-function markSubmitted() {
+function markSubmitted({ accepted = true } = {}) {
   state.submitted = true;
   closeAnnotationDrawer({ restoreFocus: false });
   $('reviewForm').hidden = true;
   $('success').hidden = false;
+  $('successMessage').textContent = accepted
+    ? '反馈已提交。Agent 已收到，可以关闭本页。'
+    : '已有反馈先完成提交。本次内容没有覆盖已提交的结果，可以关闭本页。';
   $('success').focus();
 }
 
@@ -841,7 +851,8 @@ async function submitFeedback(event) {
       body: JSON.stringify(feedback()),
     });
     if (!response.ok) throw new Error('提交失败');
-    markSubmitted();
+    const receipt = await response.json();
+    markSubmitted({ accepted: receipt.accepted !== false });
   } catch {
     showFieldError('formError', '反馈未提交。请确认会话仍在运行，然后重试。', $('reviewForm'));
     $('status').textContent = '';
@@ -868,6 +879,7 @@ async function initialize() {
   renderAnnotationPanel();
   renderPreviews();
   $('rejectedVerdict').hidden = !state.config.allowOther;
+  syncProgressiveFeedback();
 }
 
 $('reviewForm').addEventListener('submit', submitFeedback);
@@ -885,8 +897,7 @@ for (const input of document.querySelectorAll('input[name="verdict"]')) {
   input.onchange = () => {
     state.verdict = input.value;
     $('verdictDetailInput').value = '';
-    syncSelectionForVerdict();
-    renderVerdictDetail();
+    syncProgressiveFeedback();
     clearFieldError('verdictError', $('verdictFieldset'));
     clearFieldError('verdictDetailError', $('verdictDetailInput'));
   };

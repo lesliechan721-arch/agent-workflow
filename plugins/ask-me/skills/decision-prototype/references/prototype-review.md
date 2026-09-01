@@ -1,47 +1,59 @@
 # Prototype Review
 
-只有需要标准网页反馈时读取本文件。简单文案、单张图片或无需局部定位的示例优先直接展示。
+只有标准网页反馈会显著降低歧义时读取。简单文案、单图或无需定位的示例优先直接展示。
 
-## 会话闭环
+## 用户流程
 
-先生成 `brief.md`、`prototype.json` 和 `artifact/`。从 Skill 根运行：
+1. 页面先说明现在需要决定什么，以及本次目标、比较重点和约束。
+2. 候选默认使用 tabs 和一个大 Preview；静态小卡片可以按需并排。
+3. 用户查看候选后给出总体判断。方向选择默认单选；只有候选允许组合时使用多选；单一候选不显示选择控件。
+4. 页面根据总体判断和 Prototype 配置，再显示需要的引导问题、标注、受控参数或原因输入。
+5. 页面只提供一个“提交反馈”动作。提交后显示 Agent 已收到反馈，并停止编辑。
+6. `wait` 收到反馈后返回，agent 自动继续。
 
-```bash
-node scripts/prototype-review.mjs start --prototype <prototype.json>
+命令和 receipt 见 [Prototype Review 运行时接口](prototype-review-runtime.md)。详细布局见 [Review Shell UX](../assets/review-shell/UX-SPEC.md)。
+
+## 反馈层级
+
+1. 少量候选 + `都不接受` + 评论；
+2. 引导式问题；
+3. DOM、图片、文本块或流程节点标注；
+4. 仅使用 Prototype 声明的 CSS 变量或其它受控 token；
+5. 只有真实操作感受是决定依据时使用高保真交互。
+
+这些能力可以组合，不需要声明互斥 UI mode。
+
+## UI 要求
+
+- Decision frame 显示为目标、优先级和约束，不显示 raw JSON。
+- 标注使用页面内 drawer，并在 Preview 和列表中显示对应 marker；不要使用 `window.prompt`。
+- `accepted` 和 `revise` 遵守 Prototype 的选择基数；`rejected` 和 `new-material-question` 不保留候选选择。
+- `revise` 至少需要评论、引导答案、标注或 token 变化。
+- `rejected` 和 `new-material-question` 要求用户说明原因或新问题。
+- 页面可用键盘完成候选查看、选择、填写和提交。
+
+## 工件
+
+Prototype 目录只包含：
+
+```text
+brief.md
+prototype.json
+artifact/
+feedback.json
+verdict.md
 ```
 
-使用环境可用能力打开 receipt 中的 URL。脚本不会自动打开浏览器。然后运行：
+Review Shell 由已安装 Skill 的 assets 直接提供；server/session 位于临时运行目录。不要生成 `review/`。
 
-```bash
-node scripts/prototype-review.mjs wait --session <session.json> --timeout 30m
-```
+所有候选必须位于 `artifact/`，并指向普通非符号链接文件。会话只服务 Review Shell 和当前 Prototype 的 `artifact/`，不服务 Prototype 根中的其它文件。
 
-`submitted` 后读取 receipt 指向的 `feedback.json`，核对 ID 和 revision，并核对 `feedbackDigest`。摘要使用规范化反馈的 canonical JSON：对象 key 递归排序，数组顺序不变，无额外空白；receipt 格式为 `sha256:<hex>`。只有摘要一致时才消费反馈。`busy` 表示另一提交 transaction 尚未结束；保留 session，稍后用 `status` 或 `wait` 重试。`superseded` 表示同一或更新 Prototype revision 已提交，当前会话不返回 verdict，也不覆盖已有反馈。`timeout` 或 `cancelled` 后保留 Prototype，且不推断用户决定。不能保持阻塞命令时，使用以下只读命令重试：
+## 标注
 
-```bash
-node scripts/prototype-review.mjs status --session <session.json>
-```
-
-需要显式结束会话时运行：
-
-```bash
-node scripts/prototype-review.mjs stop --session <session.json>
-```
-
-命令参数、receipt 和退出码以 `node scripts/prototype-review.mjs --help` 及各子命令 `--help` 为准。
-
-页面先显示当前问题、目标、比较重点和约束。多个候选默认通过 tabs 一次查看一个大预览，也可以主动开启并排比较；单个候选不显示无意义的切换或选择控件。用户完成候选选择、引导问题、可选标注和总体判断后，只通过“提交反馈”完成本轮。页面显示“Agent 已收到”后不再编辑。
-
-## Artifact 和标注
-
-- 所有选项引用都必须位于 `artifact/`，并指向普通非符号链接文件。
-- 静态 HTML 的关键元素使用 `data-prototype-id`。文本块和流程节点可再设置 `data-prototype-kind="text"` 或 `data-prototype-kind="node"`。
-- 点击静态 HTML 标记或图片位置会打开标注 drawer；每条标注包含类型、具体问题和可选期望结果。页面用编号 marker 和列表关联目标。
-- 图片标注使用归一化坐标；图片预览可以缩放。HTML 预览可以在桌面和手机宽度之间切换。
-- 脚本型 HTML 使用不带 same-origin 权限的 sandbox。它不能使用 DOM 标注或 CSS 变量控制。
-- 新 revision 不继承无法重新定位的旧标注。
-
-会话只服务当前 Skill 的 Review Shell 和当前 Prototype 的 `artifact/`。它不服务 `brief.md`、`prototype.json`、`feedback.json` 或 Prototype 根中的其它文件。
+- 静态 HTML 关键元素使用 `data-prototype-id`；文本块或流程节点可增加 `data-prototype-kind`。
+- 图片使用归一化坐标。
+- 脚本型 HTML 使用不带 same-origin 权限的 sandbox，不能使用 DOM 标注或 CSS 变量控制。
+- 反馈绑定 Prototype ID 和 revision；新 revision 不静默继承无法重新定位的旧标注。
 
 ## 反馈结果
 
@@ -50,4 +62,4 @@ node scripts/prototype-review.mjs stop --session <session.json>
 - `rejected`：当前候选空间不成立。
 - `new-material-question`：先处理当前 Prototype 无法回答的新材料问题。
 
-Prototype 目录最终只保留 `brief.md`、`prototype.json`、`artifact/`、`feedback.json` 和 `verdict.md`；不要创建 `review/`。
+这些值只属于 `feedback.json` 及其真实工具消费者，不复制成 Skill 间聊天协议。

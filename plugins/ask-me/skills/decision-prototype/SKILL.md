@@ -9,17 +9,20 @@ description: "当一个重要决定无法只靠提问或文字分析可靠确定
 
 ## 工作流
 
-1. 读取当前对话、已有决定及相关代码和文档。确认阻塞点需要用户判断，而不是可以调查的事实或普通局部实现选择。
-2. 写出唯一的原型问题、用户需要观察什么，以及得到什么反馈后可以停止。不要用“探索整个产品”代替具体问题。
-3. 选择最低成本形式：候选文案、图片、可点击网页、流程 walkthrough、API consumer 示例、状态模拟器或最小技术 spike。
-4. 使用[原型说明模板](assets/prototype-brief.md)，并创建 `brief.md`、`prototype.json` 和 `artifact/`。优先使用用户给定目录，其次遵循仓库约定；都没有时使用 `prototypes/<decision-id>/`。不要覆盖生产文件。
-5. 默认先提供少量候选、`都不接受` 和补充评论。只有具体位置或连续调整会改变决定时，才增加引导问题、局部标注或受控参数。
-6. 简单文案、单图或低成本示例不启动 Review Shell；适合有限选项时使用 {{questionTool}}。标准网页反馈必须读取 [Prototype Review](references/prototype-review.md)，然后执行 `start`。Agent 使用环境可用能力打开返回的 URL，再执行 `wait`。没有打开能力时，把 URL 给用户并仍执行 `wait`；环境不能长时间阻塞时，用 `status` 重试。
-7. `wait` 返回 `submitted` 后，读取 receipt 指向的 `feedback.json`，并按 [Prototype Review](references/prototype-review.md) 核对 ID、revision 和 `feedbackDigest`；只有全部一致时才继续。`busy` 是可重试的非终态；`superseded`、摘要不一致、`timeout` 或 `cancelled` 都不表示接受或拒绝。`revise` 必须更新 artifact、递增 revision，并为新 revision 启动新会话。
-8. 记录当前决定、支持证据、未解决项和新的材料问题。被否决方向只在安全、兼容、迁移、回滚或避免高概率重复错误需要时保留。
+1. 读取当前对话、已有决定、可选共享 Decision frame，以及相关代码和文档。确认阻塞点是需要用户判断的问题，而不是可调查事实或普通局部实现选择。
+2. 写出唯一的原型问题、用户需要观察什么，以及什么反馈足以停止。不要用“探索整个产品”代替具体问题。
+3. 选择最低足够形式：候选文案、图片、可点击网页、流程 walkthrough、API consumer 示例、状态模拟器或技术 spike。
+4. 使用[原型说明模板](assets/prototype-brief.md)。优先使用用户或调用者目录，其次遵循仓库约定；都没有时使用 `prototypes/<decision-id>/`。目录只保存 brief、配置、artifact、feedback 和 verdict，不复制 Review Shell，也不覆盖生产文件。
+5. 默认先用少量候选、`都不接受` 和补充评论取得方向。只有具体位置或连续调整会改变决定时，才升级到引导问题、局部标注或受控参数；只有低保真无法回答时提高保真度。
+6. 简单文案、单图或低成本示例可直接展示；适合有限选项时使用 {{questionTool}}。需要标准网页反馈时读取 [Prototype Review](references/prototype-review.md) 和 [运行时接口](references/prototype-review-runtime.md)：
+   - 执行 `start` 取得 URL 和 session；
+   - 使用当前环境可用的浏览器、页面预览或端口能力打开 URL，脚本不自动打开；
+   - 执行 `wait`，直到用户提交、取消、超时或服务失败；
+   - `submitted` 后读取 receipt 指向的 `feedback.json`，核对 Prototype ID 和 revision，然后在当前任务中自动继续，不要求用户返回聊天说明“已经完成”。
+7. 多文件交互页面、视觉资源、两轮以上修改或大量仓库分析时，可以使用 fresh Prototype builder 子代理。Builder 只创建或修改 artifact，并返回路径、查看方式、变更摘要和限制；不要替用户作决定。
+8. 反馈为 `revise` 时更新 artifact、递增 revision，并按需启动下一次 Review。反馈为 `new-material-question` 时停止当前 Prototype，先向用户说明并处理新问题。
+9. 决定形成后写入 `verdict.md`，记录当前结论、支持证据、未解决项和新的材料问题。被否决方向只有在安全、兼容、迁移、回滚或避免高概率重复错误需要时才保留。
 
-复杂 artifact 可以使用 Prototype builder 子代理。Builder 只修改 artifact，并返回路径、查看方式、变更摘要和限制；用户决定仍由当前 Skill 负责。
-
-Prototype 目录只包含 `brief.md`、`prototype.json`、`artifact/`、提交后生成的 `feedback.json` 和决定后生成的 `verdict.md`。Review Shell 和会话状态不写入 Prototype 目录。
+结束时向用户说明当前结论及仍未解决的问题。使用 Review Shell 时，机器反馈保存在与当前 Prototype revision 绑定的 `feedback.json`。
 
 原型默认可丢弃。只有用户明确选择复用，且后续实现者重新评估结构、测试和风险后，生产实现才可以从原型演进。
