@@ -284,8 +284,8 @@ describe('local prepared release', () => {
   it('treats a corrupt Workspace journal as an occupied exact Catalog version', async () => {
     const root = await temporaryRoot();
     const journalsRoot = path.join(root, '.aw', 'publish');
-    await fs.mkdir(journalsRoot, { recursive: true });
-    await fs.writeFile(path.join(journalsRoot, '2.3.0-beta.2.json'), '{ corrupt journal');
+    await fs.mkdir(path.join(journalsRoot, '2.3.0-beta.2'), { recursive: true });
+    await fs.writeFile(path.join(journalsRoot, '2.3.0-beta.2', 'journal.json'), '{ corrupt journal');
     const attempted = await readCatalogAttemptVersions({ repoRoot: root });
     expect(attempted).toEqual(['2.3.0-beta.2']);
     expect(selectCatalogReleaseCandidate('beta', '2.3.0-beta.2', attempted))
@@ -297,11 +297,11 @@ describe('local prepared release', () => {
     async (state) => {
       const root = await temporaryRoot();
       await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
-      await fs.mkdir(path.join(root, '.aw', 'publish'), { recursive: true });
+      await fs.mkdir(path.join(root, '.aw', 'publish', '2.3.0-beta.2'), { recursive: true });
       await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
         catalog: { version: '2.3.0-beta.2' },
       }));
-      await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0-beta.2.json'), '{}');
+      await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0-beta.2', 'journal.json'), '{}');
       const prepareCatalogPublicationPlan = vi.fn(async () => ({
         state,
         catalogVersion: '2.3.0-beta.2',
@@ -322,11 +322,11 @@ describe('local prepared release', () => {
   it('keeps published and non-matching Catalog attempts occupied', async () => {
     const root = await temporaryRoot();
     await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
-    await fs.mkdir(path.join(root, '.aw', 'publish'), { recursive: true });
+    await fs.mkdir(path.join(root, '.aw', 'publish', '2.3.0'), { recursive: true });
     await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
       catalog: { version: '2.3.0' },
     }));
-    await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0.json'), '{}');
+    await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0', 'journal.json'), '{}');
     await expect(readReusableCatalogAttempt('stable', '2.3.0', {
       repoRoot: root,
       catalogPublicationService: {

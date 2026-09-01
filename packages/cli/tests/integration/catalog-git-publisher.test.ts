@@ -8,9 +8,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   applyCatalogPublicationPlan,
+  catalogPublicationPlanDigest,
+  CATALOG_PUBLICATION_CLEANUP_WARNING,
+  persistCatalogPublicationPlan,
   prepareCatalogPublicationPlan,
   type CatalogPublishPlanReceipt,
 } from '../../src/commands/catalog-publish.js';
+import {
+  disposeCatalogPublicationInspection,
+  prepareCatalogPublicationInspection,
+} from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -34,10 +41,15 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return (await execFileAsync('git', args, { cwd })).stdout.trim();
 }
 
-async function createWorkspace(version = '1.0.0'): Promise<{ root: string; remote: string }> {
+async function createWorkspace(
+  version = '1.0.0',
+  existingRemote?: string,
+): Promise<{ root: string; remote: string }> {
   const root = await temporaryRoot('aw-catalog-journal-workspace-');
-  const remote = await temporaryRoot('aw-catalog-journal-remote-');
-  await execFileAsync('git', ['init', '--bare', '--quiet', remote]);
+  const remote = existingRemote ?? await temporaryRoot('aw-catalog-journal-remote-');
+  if (existingRemote === undefined) {
+    await execFileAsync('git', ['init', '--bare', '--quiet', remote]);
+  }
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
   await runCli([
     'catalog', 'init', '--workspace-root', root, '--catalog-version', version,
@@ -87,6 +99,24 @@ async function pushPreparedRef(
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('rejects a published branch from a different Workspace identity without local or remote writes', async () => {
+    const { root: firstRoot, remote } = await createWorkspace('1.0.0');
+    const firstPublication = await plan(firstRoot);
+    await apply(firstRoot, firstPublication);
+    const remoteRefsBefore = await git(remote, ['show-ref']);
+
+    const { root: secondRoot } = await createWorkspace('1.0.1', remote);
+    const [firstMarker, secondMarker] = await Promise.all([
+      fs.readJson(path.join(firstRoot, '.aw-workspace.json')) as Promise<Record<string, unknown>>,
+      fs.readJson(path.join(secondRoot, '.aw-workspace.json')) as Promise<Record<string, unknown>>,
+    ]);
+    expect(secondMarker.workspaceIdentity).not.toBe(firstMarker.workspaceIdentity);
+
+    await expect(plan(secondRoot)).rejects.toThrow(/different Workspace identity/u);
+    await expect(fs.pathExists(path.join(secondRoot, '.aw', 'publish', '1.0.1'))).resolves.toBe(false);
+    await expect(git(remote, ['show-ref'])).resolves.toBe(remoteRefsBefore);
+  });
+
   it('plans from committed HEAD and persists a reduced authorization identity and pending repo', async () => {
     const { root } = await createWorkspace('1.2.3');
     const publication = await plan(root);
@@ -102,11 +132,19 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       'branch', 'parent', 'remote', 'schemaVersion', 'snapshotDigest', 'sourceHead', 'tag',
       'workspaceIdentity',
     ]);
+    expect(publication.planDigest)
+      .toBe(catalogPublicationPlanDigest(publication.descriptor, publication.expectedCommit));
+    const canonicalRoot = await fs.realpath(root);
+    expect(publication.journalPath)
+      .toBe(path.join(canonicalRoot, '.aw', 'publish', '1.2.3', 'journal.json'));
+    expect(publication.repositoryPath)
+      .toBe(path.join(canonicalRoot, '.aw', 'publish', '1.2.3', 'repository'));
     await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
+      schemaVersion: 2,
       state: 'prepared',
       planDigest: publication.planDigest,
       expectedCommit: publication.expectedCommit,
-      repository: '1.2.3.repo',
+      repository: 'repository',
     });
     await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
     expect(await git(publication.repositoryPath!, ['remote'])).toBe('');
@@ -124,6 +162,101 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
 
     await expect(plan(root)).rejects.toThrow(/clean|dirty/u);
     await expect(fs.pathExists(path.join(root, '.aw', 'publish'))).resolves.toBe(false);
+  });
+
+  it('binds the snapshot marker identity even though the marker is outside the snapshot digest', async () => {
+    const { root } = await createWorkspace();
+    const preparation = await prepareCatalogPublicationInspection({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+    });
+    try {
+      const markerPath = path.join(preparation.prepared.outputRoot, '.aw-generated.json');
+      const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+      marker.workspaceIdentity = 'rewritten-workspace';
+      await fs.writeJson(markerPath, marker, { spaces: 2 });
+
+      await expect(persistCatalogPublicationPlan({ preparation }))
+        .rejects.toThrow(/identity|binding|changed/u);
+      await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.0.0')))
+        .resolves.toBe(false);
+    } finally {
+      await disposeCatalogPublicationInspection(preparation);
+    }
+  });
+
+  it('leaves no formal version directory when plan creation fails before the final rename', async () => {
+    const { root } = await createWorkspace();
+
+    await expect(prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+      beforeFinalRename: async () => {
+        throw new Error('injected pre-rename failure');
+      },
+    })).rejects.toThrow('injected pre-rename failure');
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.0.0')))
+      .resolves.toBe(false);
+    await expect(plan(root)).resolves.toMatchObject({ state: 'prepared', catalogVersion: '1.0.0' });
+  });
+
+  it('rechecks source cleanliness before the plan version directory becomes formal', async () => {
+    const { root } = await createWorkspace();
+
+    await expect(prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+      beforeFinalRename: async () => {
+        await fs.outputFile(path.join(root, 'late-plan-drift.txt'), 'drift\n');
+      },
+    })).rejects.toThrow(/clean|dirty/u);
+    await expect(fs.pathExists(path.join(root, '.aw', 'publish', '1.0.0')))
+      .resolves.toBe(false);
+  });
+
+  it('returns the same plan when another writer atomically installs an equivalent version directory', async () => {
+    const { root } = await createWorkspace();
+    const publication = await prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+      beforeFinalRename: async ({ temporaryStateRoot, finalStateRoot }) => {
+        await fs.copy(temporaryStateRoot, finalStateRoot, { dereference: false, errorOnExist: true });
+      },
+    });
+
+    expect(publication).toMatchObject({ state: 'prepared', catalogVersion: '1.0.0' });
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
+  });
+
+  it('rejects a concurrent version directory that contains a different valid plan', async () => {
+    const { root } = await createWorkspace();
+
+    await expect(prepareCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'origin',
+      branch: 'catalog/latest',
+      env: process.env,
+      beforeFinalRename: async ({ temporaryStateRoot, finalStateRoot }) => {
+        await fs.copy(temporaryStateRoot, finalStateRoot, { dereference: false, errorOnExist: true });
+        const journalPath = path.join(finalStateRoot, 'journal.json');
+        const journal = await fs.readJson(journalPath) as {
+          descriptor: CatalogPublishPlanReceipt['descriptor'];
+          expectedCommit: string;
+          planDigest: string;
+        };
+        journal.descriptor.remote.name = 'other-remote';
+        journal.planDigest = catalogPublicationPlanDigest(journal.descriptor, journal.expectedCommit);
+        await fs.writeJson(journalPath, journal, { spaces: 2 });
+      },
+    })).rejects.toThrow(/different publication plan|Increase/u);
   });
 
   it.each([
@@ -145,7 +278,7 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       .toBe(publication.expectedCommit);
     expect(await git(remote, ['cat-file', '-t', `refs/tags/${publication.tag}`])).toBe('tag');
     await expect(fs.readdir(path.dirname(publication.journalPath)))
-      .resolves.toEqual(['1.0.0.json']);
+      .resolves.toEqual(['journal.json']);
     await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({
       state: 'published',
       repository: null,
@@ -213,6 +346,27 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     })).rejects.toThrow(/identity changed|Increase/u);
   });
 
+  it('rejects the original digest after expectedCommit and the pending repository are rewritten together', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    await git(publication.repositoryPath!, ['tag', '--delete', publication.tag]);
+    await git(publication.repositoryPath!, [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--amend', '--quiet', '-m', 'rewritten prepared commit',
+    ]);
+    const rewrittenCommit = await git(publication.repositoryPath!, ['rev-parse', 'HEAD']);
+    await git(publication.repositoryPath!, [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'tag', '--annotate', publication.tag, '--message', 'rewritten prepared tag',
+    ]);
+    const journal = await fs.readJson(publication.journalPath) as Record<string, unknown>;
+    journal.expectedCommit = rewrittenCommit;
+    await fs.writeJson(publication.journalPath, journal, { spaces: 2 });
+
+    await expect(apply(root, publication)).rejects.toThrow(/damaged|authorized|digest/u);
+    expect(await git(root, ['ls-remote', remote])).toBe('');
+  });
+
   it('returns the published result when a stale pending repository is damaged', async () => {
     const { root } = await createWorkspace();
     const publication = await plan(root);
@@ -222,26 +376,93 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     await expect(apply(root, publication)).resolves.toMatchObject({
       state: 'published',
       reconciliation: 'already-published',
+      warnings: [CATALOG_PUBLICATION_CLEANUP_WARNING],
     });
   });
 
-  it('rechecks the clean source immediately before the first remote write', async () => {
-    const { root, remote } = await createWorkspace();
+  it('returns published success and a stable warning when repository cleanup fails', async () => {
+    const { root } = await createWorkspace();
     const publication = await plan(root);
 
-    await expect(applyCatalogPublicationPlan({
+    const result = await applyCatalogPublicationPlan({
       workspaceRoot: root,
       remote: 'origin',
       branch: 'catalog/latest',
       expectedPlanDigest: publication.planDigest,
       env: process.env,
-      beforeRemoteWrite: async () => {
-        await fs.outputFile(path.join(root, 'late-drift.txt'), 'drift\n');
+      removeRepository: async () => {
+        await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'published' });
+        throw new Error('injected cleanup failure');
       },
-    })).rejects.toThrow(/clean|dirty/u);
-    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'prepared' });
-    expect(await git(root, ['ls-remote', remote])).toBe('');
+    });
+
+    expect(result).toMatchObject({
+      state: 'published',
+      warnings: [CATALOG_PUBLICATION_CLEANUP_WARNING],
+    });
+    await expect(fs.readJson(publication.journalPath)).resolves.toMatchObject({ state: 'published' });
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(true);
+    await expect(apply(root, publication)).resolves.toMatchObject({ warnings: [] });
+    await expect(fs.pathExists(publication.repositoryPath!)).resolves.toBe(false);
   });
+
+  it('applies after the current source HEAD, dirty state, and metadata version change', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    const metadataPath = path.join(root, 'plugins', 'marketplace-source.json');
+    const metadata = await fs.readJson(metadataPath) as { catalog: { version: string } };
+    metadata.catalog.version = '1.0.1';
+    await fs.writeJson(metadataPath, metadata, { spaces: 2 });
+    await execFileAsync('git', ['add', 'plugins/marketplace-source.json'], { cwd: root });
+    await execFileAsync('git', [
+      '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+      'commit', '--quiet', '-m', 'move source head',
+    ], { cwd: root });
+    await fs.outputFile(path.join(root, 'late-drift.txt'), 'drift\n');
+
+    await expect(apply(root, publication)).resolves.toMatchObject({
+      state: 'published',
+      catalogVersion: '1.0.0',
+    });
+    expect(await git(remote, ['rev-parse', `refs/heads/${publication.branch}`]))
+      .toBe(publication.expectedCommit);
+  });
+
+  it('allows a renamed remote alias when its fetch and push identity is unchanged', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    await git(root, ['remote', 'add', 'renamed', remote]);
+    await git(root, ['remote', 'remove', 'origin']);
+
+    await expect(applyCatalogPublicationPlan({
+      workspaceRoot: root,
+      remote: 'renamed',
+      branch: 'catalog/latest',
+      expectedPlanDigest: publication.planDigest,
+      env: process.env,
+    })).resolves.toMatchObject({ state: 'published', remote: 'renamed' });
+  });
+
+  it.each(['remote identity', 'branch'] as const)(
+    'rejects a changed %s during apply',
+    async (changed) => {
+      const { root, remote } = await createWorkspace();
+      const publication = await plan(root);
+      const evilRemote = await temporaryRoot('aw-catalog-journal-changed-remote-');
+      await execFileAsync('git', ['init', '--bare', '--quiet', evilRemote]);
+      if (changed === 'remote identity') await git(root, ['remote', 'set-url', 'origin', evilRemote]);
+
+      await expect(applyCatalogPublicationPlan({
+        workspaceRoot: root,
+        remote: 'origin',
+        branch: changed === 'branch' ? 'catalog/beta' : 'catalog/latest',
+        expectedPlanDigest: publication.planDigest,
+        env: process.env,
+      })).rejects.toThrow(/identity changed|Increase/u);
+      expect(await git(root, ['ls-remote', remote])).toBe('');
+      expect(await git(root, ['ls-remote', evilRemote])).toBe('');
+    },
+  );
 
   it.each(['journal', 'damaged journal', 'repository', 'damaged repository'] as const)(
     'stops when the pending %s is missing or damaged',
@@ -256,6 +477,19 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       await expect(apply(root, publication)).rejects.toThrow(/missing|damaged|Increase/u);
     },
   );
+
+  it('fails closed when the authorized digest appears in multiple schema v2 journal files', async () => {
+    const { root, remote } = await createWorkspace();
+    const publication = await plan(root);
+    await fs.copy(
+      path.dirname(publication.journalPath),
+      path.join(root, '.aw', 'publish', '9.9.9'),
+      { dereference: false, errorOnExist: true },
+    );
+
+    await expect(apply(root, publication)).rejects.toThrow(/Multiple|Increase/u);
+    expect(await git(root, ['ls-remote', remote])).toBe('');
+  });
 
   it('rejects a pending repository URL rewrite before any remote write', async () => {
     const { root, remote } = await createWorkspace();

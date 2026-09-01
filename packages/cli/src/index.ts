@@ -2097,6 +2097,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, `Parent: ${result.parent ?? '<root>'}`);
           writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
           writeLine(io.stdout, `Snapshot digest: ${result.snapshotDigest}`);
+          writeLine(io.stdout, `Expected commit: ${result.expectedCommit}`);
           writeLine(io.stdout, `Plan digest: ${result.planDigest}`);
         }
       } catch (error) {

@@ -61,9 +61,13 @@ aw catalog publish apply --workspace-root "$workspace" \
   --expected-plan-digest <planDigest> --yes --json
 ```
 
-plan 从已提交 source HEAD 的隔离 Git repo 验证插件、构建和 snapshot。它返回并要求授权 Workspace identity、source HEAD、remote identity、branch、parent、tag 和 snapshot digest。`apply` 在远端写入前再次核验这些身份。
+plan 从已提交 source HEAD 的隔离 Git repo 验证插件、构建和 snapshot。它返回 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest 和 `expectedCommit`。`planDigest` 授权 canonical `{ descriptor, expectedCommit }`。snapshot marker 的 Workspace identity 也必须与 descriptor 一致；marker 不进入 snapshot digest。
 
-publication journal 是 version-scoped 强恢复和门禁状态，状态为 `prepared`、`uncertain` 或 `published`。隔离 repo 是 pending plan 的可重建暂存 artifact，但同版本恢复依赖它。对于 `prepared` 或 `uncertain`，journal 或 repo 任一缺失或损坏时，停止并提高 Catalog version；不得盲目重建或复用该版本。`published` journal 缺失时，远端 immutable tag 仍占用版本。首次远端写入前保存已验证隔离 repo；成功后删除 repo 并保留 JSON journal。相同 journal plan 和版本可对账或续跑；不同 plan 必须提高 Catalog version。journal 是恢复记录，不是跨系统补偿。
+publication journal 使用 schema v2 `.aw/publish/<version>/journal.json`；pending repo 是同目录的 `repository/`。新 plan 在同父隐藏 temp 目录写完并完整核验后，原子 rename 为正式版本目录。失败不占用正式目录；并发等价 plan 幂等返回，不同 plan 必须提高 Catalog version。旧 `<version>.json` 和 `<version>.repo` 不进入 discovery。
+
+`apply` 只用授权 digest 在 `.aw/publish/*/journal.json` 中唯一定位 journal，不需要 Catalog version 参数。它重新检查当前 Workspace identity、所选 remote 的 identity digest、branch、授权摘要、pending repo 和远端 refs。它不要求当前 source HEAD、clean state 或 metadata version 与 plan 相同，也不重新 build 或 validate source。remote alias 可变化，但 remote identity 和 branch 必须相同。
+
+对于 `prepared` 或 `uncertain`，journal 或 repo 任一缺失或损坏时，停止并提高 Catalog version；不得盲目重建或复用该版本。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先原子写 `published` journal，再尽力删除 `repository/`。清理失败返回 published success 和稳定 warning；损坏 residue 不覆盖远端成功事实。相同 journal plan 可对账或续跑；不同 plan 必须提高 Catalog version。journal 是恢复记录，不是跨系统补偿。
 
 publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push 和 post-verify。branch 与 tag 都正确时成功；两者都不存在时 atomic push；只有一个缺失时只补该 ref；任一冲突时停止。
 
