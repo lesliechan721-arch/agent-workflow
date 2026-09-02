@@ -38,6 +38,7 @@ import {
 } from './diagnostics.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
+import { projectCatalogSourceState } from './catalog-sources/projection.js';
 
 export type SourceHealthState = 'ready' | 'unavailable';
 
@@ -215,6 +216,7 @@ export interface SourceDetailViewModel {
   id: string;
   type: 'git' | 'path';
   primary: boolean;
+  autoCheck: boolean;
   locationSummary: string;
   refPolicy?: 'cliChannel' | 'explicit';
   explicitRef?: string;
@@ -843,25 +845,6 @@ export function buildPlatformActions(
 export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean {
   return plugin.installedPlacements.some((placement) =>
     placement.state === 'installed' || placement.state === 'scopeConflict');
-}
-
-function sourceState(
-  source: StatusV7Payload['catalog']['sources'][number],
-  health?: SourceHealthViewModel,
-  freshness?: CatalogSourceFreshnessViewModel,
-  generation?: CatalogSourceGenerationViewModel,
-): SourceTabViewModel['state'] {
-  if (health?.state === 'unavailable') return 'error';
-  if (source.error) return 'error';
-  if (generation?.state && generation.state !== 'ready') return 'recovery';
-  if (freshness?.state === 'checking') return 'checking';
-  if (freshness?.state === 'updateAvailable'
-    || freshness?.state === 'localChangesAvailable') return 'update';
-  if (freshness?.state === 'versionConflict'
-    || freshness?.state === 'rollbackDetected'
-    || freshness?.state === 'incompatible') return 'recovery';
-  if (freshness?.state === 'checkFailed') return 'error';
-  return 'ready';
 }
 
 function sourceIssue(
@@ -1664,7 +1647,7 @@ export function buildTuiViewModel(options: {
     label: source.id,
     count: plugins.filter((plugin) => plugin.sourceId === source.id).length,
     primary: source.primary,
-    state: sourceState(
+    state: projectCatalogSourceState(
       source,
       options.sourceHealth?.get(source.id),
       options.catalogFreshness?.get(source.id),

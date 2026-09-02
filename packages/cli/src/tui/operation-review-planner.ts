@@ -9,6 +9,7 @@ import type {
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
+import { catalogSourceAutoCheckOnlyValue } from './catalog-sources/review.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -25,6 +26,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return {
+      title: '恢复 Catalog 来源配置',
+      description: '备份损坏配置，并恢复唯一的主来源 official。',
+      primaryLabel: '备份并恢复官方默认来源',
+      destructive: false,
+    };
+  }
   if (intent.kind === 'portableInstall') {
     return {
       title: '确认安装通用 Skills',
@@ -96,6 +105,16 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     };
   }
   if (intent.kind === 'sourceMutation') {
+    const autoCheck = intent.action === 'update'
+      ? catalogSourceAutoCheckOnlyValue(intent.update) : undefined;
+    if (autoCheck !== undefined) {
+      return {
+        title: '保存自动检查设置',
+        description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+        primaryLabel: '保存设置',
+        destructive: false,
+      };
+    }
     const labels = {
       add: ['添加来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
       update: ['修改来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
@@ -145,6 +164,18 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return [
+      { kind: 'add', title: '备份损坏的 catalog-sources.json' },
+      { kind: 'change', title: '恢复唯一的主来源 official' },
+      { kind: 'keep', title: '保留 catalog-state.json 和 catalog-store' },
+      {
+        kind: 'warning',
+        title: '自定义来源需要之后重新添加',
+        description: '无法从损坏配置中安全恢复自定义来源。',
+      },
+    ];
+  }
   if (intent.kind === 'portableInstall') {
     const review = evidence?.portable;
     if (!review) throw plannerError('portablePrepareFailed', '缺少通用 Skills Review 证据。');

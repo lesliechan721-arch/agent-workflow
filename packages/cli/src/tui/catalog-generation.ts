@@ -12,26 +12,12 @@ import {
   calculateCatalogSourceIdentity,
 } from '../utils/catalog-source-identity.js';
 
-export interface CatalogGenerationViewModel {
-  catalogVersion: string;
-  channel: 'latest' | 'beta';
-  requestedRef: string;
-  resolvedCommit: string;
-  storeKey: string;
-  digestShort: string;
-}
+import type { CatalogSourceGenerationViewModel } from './catalog-sources/types.js';
 
-export interface CatalogSourceGenerationViewModel {
-  sourceId: string;
-  sourceType: 'git' | 'path';
-  active?: CatalogGenerationViewModel;
-  errorCode?: string;
-  recoveryEntryPath?: string;
-  configMismatch?: boolean;
-  state?: 'ready' | 'activationRequired' | 'repairRequired' | 'configMismatch'
-    | 'stateInvalid' | 'unavailable';
-  technicalCommand?: string;
-}
+export type {
+  CatalogGenerationViewModel,
+  CatalogSourceGenerationViewModel,
+} from './catalog-sources/types.js';
 
 export type CatalogGenerationLoadStageEvent =
   | {

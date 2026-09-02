@@ -18,6 +18,7 @@ import {
   replaceCatalogSourcesConfig,
   setPrimaryCatalogSource,
   updateCatalogSource,
+  isCatalogSourceAutoCheckEnabled,
   type CatalogSourceUpdate,
 } from '../utils/catalog-sources.js';
 import {
@@ -42,7 +43,7 @@ export interface CatalogSourceListPayload {
   catalogSourcesSchemaVersion: 2;
   primarySourceId: string;
   configDigest: string;
-  sources: Array<CatalogSource & { sourceIdentity: string }>;
+  sources: Array<CatalogSource & { sourceIdentity: string; autoCheck: boolean }>;
 }
 
 export type CatalogSourceCommandRuntime = {
@@ -250,6 +251,7 @@ export async function listCatalogSources(options: {
     configDigest: snapshot.digest,
     sources: await Promise.all(snapshot.config.sources.map(async (source) => ({
       ...source,
+      autoCheck: isCatalogSourceAutoCheckEnabled(source),
       sourceIdentity: await calculateCatalogSourceIdentity(source),
     }))),
   };
