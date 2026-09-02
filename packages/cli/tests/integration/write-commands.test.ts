@@ -443,7 +443,7 @@ describe('five namespaced write commands', () => {
     30_000,
   );
 
-  it('keeps warm write, config, status, and TUI operations provider-free', async () => {
+  it('keeps warm write, config, and status provider-free after the TUI background check', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'warm-active-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'warm\n', (manifest) => {
@@ -517,6 +517,7 @@ describe('five namespaced write commands', () => {
       { catalogGenerationRuntime },
     ));
     await controller.load();
+    await vi.waitFor(() => expect(providerCalls).toBe(1));
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'team/demo',
@@ -552,7 +553,7 @@ describe('five namespaced write commands', () => {
     await expect(controller.executeOperation(staleReview.reviewToken))
       .resolves.toMatchObject({ state: 'stale' });
     controller.dispose();
-    expect(providerCalls).toBe(0);
+    expect(providerCalls).toBe(1);
   });
 
   it('keeps owner and config identity after the official HTTPS transport changes to SSH', async () => {
@@ -757,8 +758,10 @@ describe('five namespaced write commands', () => {
         expect.objectContaining({ sourceId: 'missing', state: 'unavailable' }),
       ]));
     });
-    expect(goodProviderCalls).toBe(0);
-    expect(missingProviderCalls).toBe(0);
+    await vi.waitFor(() => {
+      expect(goodProviderCalls).toBe(1);
+      expect(missingProviderCalls).toBe(1);
+    });
 
     await writeGoodSource('2.0.0', 'newMode', 'new generation');
     await syncCatalogSourceGeneration({
@@ -804,9 +807,9 @@ describe('five namespaced write commands', () => {
       code: 'catalogGenerationUnavailable',
       message: expect.stringContaining('重新加载'),
     });
-    expect(goodProviderCalls).toBe(0);
+    expect(goodProviderCalls).toBe(1);
     await vi.waitFor(() => {
-      expect(missingProviderCalls).toBe(0);
+      expect(missingProviderCalls).toBe(1);
     });
     controller.dispose();
   });

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4, type ConsoleV4ScreenId } from '../../src/tui/console-app-v4.js';
@@ -22,7 +22,10 @@ import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source
 import {
   probeCatalogSourceGeneration,
   syncCatalogSourceGeneration,
+  type CatalogGenerationServiceRuntime,
 } from '../../src/utils/catalog-generation-service.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
@@ -75,7 +78,10 @@ async function confirmReview(
   await nextTurn(3);
 }
 
-async function configuredController(logicalIdentity?: string): Promise<{
+async function configuredController(
+  logicalIdentity?: string,
+  catalogGenerationRuntime?: CatalogGenerationServiceRuntime,
+): Promise<{
   controller: TuiController;
   firstRoot: string;
   secondRoot: string;
@@ -111,7 +117,9 @@ async function configuredController(logicalIdentity?: string): Promise<{
   });
   const progress = createRebuildProgressFeed();
   return {
-    controller: new TuiController(createTuiControllerDependencies(context, progress), progress),
+    controller: new TuiController(createTuiControllerDependencies(context, progress, {
+      catalogGenerationRuntime,
+    }), progress),
     firstRoot,
     secondRoot,
   };
@@ -192,6 +200,79 @@ async function pushGitCatalogVersion(
 }
 
 describe('TUI v4 real catalog source boundary', () => {
+  it('reuses a complete background candidate for Review and resolves again for Execute', async () => {
+    const pathResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const { controller, firstRoot } = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: pathResolve },
+    });
+    await rewriteCatalogSnapshot(firstRoot, '2.0.0', 'fresh candidate\n');
+
+    await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'complete background candidate',
+    );
+    expect(pathResolve).toHaveBeenCalledTimes(1);
+
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(pathResolve).toHaveBeenCalledTimes(1);
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'catalogGeneration',
+    });
+    expect(pathResolve).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
+  it('falls back to a fresh probe when source config or Active binding changes', async () => {
+    const configResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const configFixture = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: configResolve },
+    });
+    await rewriteCatalogSnapshot(configFixture.firstRoot, '2.0.0', 'config candidate\n');
+    await configFixture.controller.load();
+    await waitFor(
+      () => configFixture.controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'config-bound candidate',
+    );
+    const isolation = getCurrentSourceTestIsolation();
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'local', type: 'path', primary: true, path: configFixture.secondRoot }],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await configFixture.controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(configResolve).toHaveBeenCalledTimes(2);
+    configFixture.controller.dispose();
+
+    const activeResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const activeFixture = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: activeResolve },
+    });
+    await rewriteCatalogSnapshot(activeFixture.firstRoot, '2.0.0', 'active candidate\n');
+    await activeFixture.controller.load();
+    await waitFor(
+      () => activeFixture.controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'Active-bound candidate',
+    );
+    await syncCatalogSourceGeneration({
+      sourceId: 'local', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await rewriteCatalogSnapshot(activeFixture.firstRoot, '3.0.0', 'next candidate\n');
+    await activeFixture.controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(activeResolve).toHaveBeenCalledTimes(2);
+    activeFixture.controller.dispose();
+  });
   it.each([
     ['malformed', '{"schemaVersion":'],
     ['schema-invalid', '{"schemaVersion":2,"sources":[]}\n'],
@@ -428,7 +509,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('blocks a version conflict that appears after an update overlay', async () => {
+  it('reuses the update overlay for Review and blocks a changed candidate at Execute', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller, work } = await configuredGitController();
     const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
@@ -441,9 +522,12 @@ describe('TUI v4 real catalog source boundary', () => {
     );
     await pushGitCatalogVersion(work, '1.0.0', 'conflicting candidate');
 
-    await expect(controller.buildOperationReview({
+    const review = await controller.buildOperationReview({
       kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
-    })).rejects.toMatchObject({ code: 'catalogVersionConflict' });
+    });
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'catalogVersionConflict',
+    });
 
     expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
     controller.dispose();
@@ -532,11 +616,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')?.active?.catalogVersion).toBe('2.0.0');
     expect((await readCatalogGenerationState(isolation.env)).sources.local!.active?.snapshotDigest)
       .not.toBe(before.snapshotDigest);
-    await waitFor(
-      () => controller.getCatalogFreshness('local')?.state === 'current',
-      'freshness after Active switch',
-      () => controller.getCatalogFreshness('local'),
-    );
+    expect(controller.getCatalogFreshness('local')?.state).toBe('notChecked');
     controller.dispose();
   });
 

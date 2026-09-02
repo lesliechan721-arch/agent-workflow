@@ -101,7 +101,9 @@ aw catalog dev deactivate --workspace-root "$workspace" --json
 
 `activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。
 
-Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
+Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`。完整 resolve 默认 180000 ms；ref probe 最多 30000 ms；`0` 表示无 deadline。每次 probe 或完整 resolve 内的命令共享各自 deadline，probe 后的完整 resolve 使用新的 deadline。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
+
+TUI 的自动检查和“重新检查”先做轻量 Git ref probe，commit 未变时不 fetch；“完整验证”强制完整 resolve。完整 freshness candidate 可在当前 session 内复用于普通 Review preparation，但必须继续匹配 session token、source config fingerprint 和 Active store key。Execute 总是重新 resolve。这个复用不持久 Candidate，也不改变 Active 或 Status。候选要求当前 AW 不支持的 capability 时，TUI 显示 missing capability IDs，保留旧 Active，并阻止普通 update。
 
 Snapshot v6 首次上线使用空的新 branch state，不读取旧 snapshot state。旧 `AW_HOME` 不迁移或自动删除；开发环境使用新的 `AW_HOME`，或手工清理后重新 sync。
 

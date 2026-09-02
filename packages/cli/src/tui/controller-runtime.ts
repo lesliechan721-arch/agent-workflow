@@ -63,6 +63,7 @@ import {
   type ReviewPreparationStageId,
   type TuiControllerDependencies,
 } from './controller.js';
+import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import {
   buildConfigGroups,
   buildConfigPage,
@@ -104,6 +105,7 @@ import {
   repairCatalogSourceGeneration,
   replaceDamagedCatalogSourceGeneration,
   syncCatalogSourceGeneration,
+  type CatalogGenerationServiceRuntime,
 } from '../utils/catalog-generation-service.js';
 import {
   calculateCatalogSourceImpactDigest,
@@ -122,6 +124,25 @@ import {
   MANAGED_CODEX_PACKAGE_NAME,
   MANAGED_CODEX_VERSION,
 } from '../utils/codex-manager.js';
+
+function reusableCandidateEvidenceIsComplete(
+  candidate: CatalogSessionReusableCandidate,
+): boolean {
+  const evidence = candidate.probe.candidate;
+  return [
+    evidence.sourceConfigFingerprint,
+    evidence.sourceIdentity,
+    evidence.logicalIdentity,
+    evidence.requestedRef,
+    evidence.resolvedCommit,
+    evidence.catalogVersion,
+    evidence.channel,
+    evidence.manifestDigest,
+    evidence.snapshotDigest,
+  ].every((value) => typeof value === 'string' && value.length > 0)
+    && typeof candidate.probe.manifest === 'object'
+    && candidate.probe.manifest !== null;
+}
 
 async function loadPortablePluginIds(options: {
   context: CliExecutionContext;
@@ -548,6 +569,7 @@ export function createTuiControllerDependencies(
   options: {
     now?: () => number;
     inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+    catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   } = {},
 ): TuiControllerDependencies {
   const readInventory = options.inventoryCatalogSourceReferences
@@ -718,6 +740,7 @@ export function createTuiControllerDependencies(
     },
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
+    reusableCandidate?: CatalogSessionReusableCandidate,
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'catalogSourcesRecovery') {
       signal?.throwIfAborted();
@@ -783,6 +806,24 @@ export function createTuiControllerDependencies(
           || !(error instanceof CatalogGenerationError)
           || error.code !== 'catalogGenerationStateInvalid') throw error;
       }
+      const activeStoreKey = previousActive
+        ? createCatalogStoreKey(previousActive.logicalIdentity, previousActive.snapshotDigest)
+        : null;
+      const configuredFingerprint = configuredSource
+        ? calculateCatalogSourceConfigFingerprint(configuredSource)
+        : undefined;
+      const canReuseCandidate = Boolean(
+        reusableCandidate
+        && !intent.sourceMutation
+        && (intent.action === 'activate' || intent.action === 'update')
+        && configuredFingerprint
+        && reusableCandidate.sourceId === intent.sourceId
+        && reusableCandidate.sourceConfigFingerprint === configuredFingerprint
+        && reusableCandidate.probe.candidate.sourceConfigFingerprint === configuredFingerprint
+        && reusableCandidate.activeStoreKey === activeStoreKey
+        && reusableCandidate.probe.sourceId === intent.sourceId
+        && reusableCandidateEvidenceIsComplete(reusableCandidate),
+      );
       const probe = intent.action === 'repair'
         ? await probeCatalogSourceRepairGeneration({
             sourceId: intent.sourceId,
@@ -791,13 +832,17 @@ export function createTuiControllerDependencies(
             expectedConfigDigest: config.digest,
             env: context.env,
             signal,
+            runtime: options.catalogGenerationRuntime,
           })
+        : canReuseCandidate
+          ? structuredClone(reusableCandidate!.probe)
         : await probeCatalogSourceGeneration({
             sourceId: intent.sourceId,
             ...(proposedSource ? { source: proposedSource } : {}),
             cliVersion: packageInfo.version,
             env: context.env,
             signal,
+            runtime: options.catalogGenerationRuntime,
           });
       signal?.throwIfAborted();
       await preparation?.reporter.emit('evidence');
@@ -1366,7 +1411,11 @@ export function createTuiControllerDependencies(
         env: context.env,
         signal,
         fullValidation: freshnessOptions.fullValidation,
-        runtime: { validatedStoreEntries, validatingStoreEntries },
+        runtime: {
+          ...options.catalogGenerationRuntime,
+          validatedStoreEntries,
+          validatingStoreEntries,
+        },
       });
     },
     async inspectSourceRemoval(sourceId, signal) {
@@ -1393,7 +1442,7 @@ export function createTuiControllerDependencies(
         dependencies: impact.affectedReferences,
       };
     },
-    async prepareReviewEvidence(intent, signal, onStage) {
+    async prepareReviewEvidence(intent, signal, onStage, reusableCandidate) {
       const reporter = createReviewStageReporter({
         context,
         onStage,
@@ -1425,7 +1474,7 @@ export function createTuiControllerDependencies(
           reporter,
           validateIntent: true,
         }, createOperationInventoryReader(), intent.kind === 'pluginWrite'
-          && intent.action === 'refreshAndSync');
+          && intent.action === 'refreshAndSync', reusableCandidate);
         if (preparationWarnings.length > 0) evidence.preparationWarnings = preparationWarnings;
         return evidence;
       } finally {
@@ -1671,6 +1720,7 @@ export function createTuiControllerDependencies(
               expectedCandidate: expected.candidate,
               env: context.env,
               signal,
+              runtime: options.catalogGenerationRuntime,
             });
           } else if (intent.action === 'repair') {
             generation = await repairCatalogSourceGeneration({
@@ -1683,6 +1733,7 @@ export function createTuiControllerDependencies(
               env: context.env,
               signal,
               runtime: {
+                ...options.catalogGenerationRuntime,
                 afterCandidateResolved: tuiControllerRuntimeTestHooks
                   ?.afterCatalogGenerationCandidateResolved,
               },
@@ -1696,6 +1747,7 @@ export function createTuiControllerDependencies(
               expectedConfigDigest: expected.proposedConfigDigest ?? expected.configDigest,
               env: context.env,
               signal,
+              runtime: options.catalogGenerationRuntime,
             });
           } else if (intent.action === 'replaceDamaged') {
             generation = await replaceDamagedCatalogSourceGeneration({
@@ -1710,6 +1762,7 @@ export function createTuiControllerDependencies(
               env: context.env,
               signal,
               runtime: {
+                ...options.catalogGenerationRuntime,
                 afterCandidateResolved: tuiControllerRuntimeTestHooks
                   ?.afterCatalogGenerationCandidateResolved,
               },
@@ -1729,6 +1782,7 @@ export function createTuiControllerDependencies(
               env: context.env,
               signal,
               runtime: {
+                ...options.catalogGenerationRuntime,
                 afterCandidateResolved: tuiControllerRuntimeTestHooks
                   ?.afterCatalogGenerationCandidateResolved,
               },

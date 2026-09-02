@@ -67,6 +67,7 @@ import {
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -447,6 +448,7 @@ export interface TuiControllerDependencies {
     intent: OperationIntent,
     signal: AbortSignal,
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void>,
+    reusableCandidate?: CatalogSessionReusableCandidate,
   ) => Promise<OperationEvidence>;
   previewDependencyPlacement?: (
     intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
@@ -1635,6 +1637,10 @@ export class TuiController {
     return this.#catalogSourcesSession.recheck(sourceId);
   }
 
+  fullValidateCatalogSource(sourceId: string): Promise<void> {
+    return this.#catalogSourcesSession.fullValidate(sourceId);
+  }
+
   setExternalDraftState(state?: 'configDraft' | 'sourceDraft'): void {
     this.#externalDraft = state;
   }
@@ -1917,7 +1923,17 @@ export class TuiController {
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void> = () => undefined,
   ): Promise<OperationEvidence> {
     if (this.dependencies.prepareReviewEvidence) {
-      return this.dependencies.prepareReviewEvidence(structuredClone(intent), signal, onStage);
+      const reusableCandidate = intent.kind === 'catalogGeneration'
+        && !intent.sourceMutation
+        && (intent.action === 'activate' || intent.action === 'update')
+        ? this.#catalogSourcesSession.reusableCandidate(intent.sourceId)
+        : undefined;
+      return this.dependencies.prepareReviewEvidence(
+        structuredClone(intent),
+        signal,
+        onStage,
+        reusableCandidate,
+      );
     }
     await onStage('validate');
     await this.dependencies.validateIntent?.(structuredClone(intent), signal);
@@ -2103,7 +2119,7 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind !== 'pluginWrite') {
+    if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
         current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
@@ -2189,9 +2205,6 @@ export class TuiController {
       if (ticket.intent.kind === 'catalogSourcesRecovery') {
         this.#phase = 'ready';
         this.#loadError = undefined;
-      }
-      if (ticket.intent.kind === 'catalogGeneration') {
-        void this.#catalogSourcesSession.refresh(ticket.intent.sourceId, false);
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         ? operationResultSummary(ticket.intent, execution)

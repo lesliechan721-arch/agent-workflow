@@ -507,7 +507,9 @@ function sourceDiagnostic(
       severity: 'error',
       title: freshness.state === 'versionConflict' ? 'Catalog 版本冲突'
         : freshness.state === 'rollbackDetected' ? '检测到 Catalog 回退' : '候选 Catalog 不兼容',
-      userMessage: '普通更新已阻止。当前 Active Catalog 保持不变。',
+      userMessage: freshness.state === 'incompatible'
+        ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力。普通更新已阻止，当前 Active Catalog 保持不变。`
+        : '普通更新已阻止。当前 Active Catalog 保持不变。',
       impact: [
         { state: 'blocked', message: '不能直接切换到这个候选。' },
         { state: 'preserved', message: '当前 Active Catalog 和插件浏览仍可用。' },
@@ -517,6 +519,9 @@ function sourceDiagnostic(
         code: safeDiagnosticCode(freshness.errorCode, `catalog${freshness.state}`),
         stage: 'compare-candidate',
         sourceId,
+        ...(freshness.state === 'incompatible' && freshness.missingCapabilities?.length ? {
+          context: [{ key: 'compatibility' as const, value: freshness.missingCapabilities.join('、') }],
+        } : {}),
         checks: ['检查当前版本和候选版本。', '检查来源 ref 和 Catalog logical identity。'],
       },
     };
@@ -3243,7 +3248,9 @@ export function ConsoleAppV4(props: {
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = freshness?.state === 'checkFailed' && activeVersion
+    description = freshness?.state === 'incompatible' && activeVersion
+      ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；Active Catalog ${activeVersion} 仍可浏览和使用。`
+      : freshness?.state === 'checkFailed' && activeVersion
       ? `更新检查失败，但 Active Catalog ${activeVersion} 仍可浏览和使用。`
       : freshness?.state === 'updateAvailable'
         ? `当前使用 ${activeVersion ?? '未启用'}；候选版本 ${candidateVersion ?? '未知'} 可更新。`
@@ -3310,7 +3317,7 @@ export function ConsoleAppV4(props: {
               }]
             : [{
                 label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
-                description: '只检查这个来源；不会自动切换 Active',
+                description: '轻量检查这个来源；commit 变化时才完整验证',
                 disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
                 run: () => props.controller.recheckCatalogSource(route.sourceId),
               }];
@@ -3335,6 +3342,23 @@ export function ConsoleAppV4(props: {
       },
       { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
       { label: '技术详情', description: '查看脱敏错误代码和 Active 证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
+      ...(generationState !== 'ready'
+        || freshness?.state === 'updateAvailable'
+        || freshness?.state === 'localChangesAvailable'
+        || freshness?.state === 'versionConflict'
+        || freshness?.state === 'rollbackDetected'
+        || freshness?.state === 'incompatible' ? [{
+        label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
+        description: '轻量检查这个来源；commit 变化时才完整验证',
+        disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
+        run: () => props.controller.recheckCatalogSource(route.sourceId),
+      }] : []),
+      {
+        label: '完整验证',
+        description: '强制重新取得并完整验证这个来源',
+        disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
+        run: () => props.controller.fullValidateCatalogSource(route.sourceId),
+      },
     ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
     const freshnessLabel = catalogSourceFreshnessLabel(freshness);

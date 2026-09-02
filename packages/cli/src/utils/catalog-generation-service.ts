@@ -78,6 +78,13 @@ export interface CatalogGenerationFreshnessResult {
   activeResolvedCommit?: string;
   candidate?: CatalogGenerationCandidateEvidence;
   errorCode?: 'catalogLogicalIdentityChanged';
+  reusableCandidate?: CatalogGenerationReusableCandidate;
+}
+
+export interface CatalogGenerationReusableCandidate {
+  probe: CatalogGenerationProbeResult;
+  sourceConfigFingerprint: string;
+  activeStoreKey: string | null;
 }
 
 export interface CatalogGenerationStatusEntry {
@@ -701,6 +708,11 @@ export async function probeCatalogSourceFreshness(options: {
       candidate: probe.candidate,
     }),
     sourceId: source.id,
+    reusableCandidate: {
+      probe,
+      sourceConfigFingerprint: calculateCatalogSourceConfigFingerprint(source),
+      activeStoreKey: active?.storeKey ?? null,
+    },
   };
 }
 

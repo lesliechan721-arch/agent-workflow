@@ -23,6 +23,7 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
+import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 
 afterEach(() => cleanup());
 
@@ -4181,6 +4182,43 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('configDigest');
     expect(instance.lastFrame()).not.toContain('/Users/private');
     expect(instance.lastFrame()).not.toContain('token:secret');
+  });
+
+  it('shows structured candidate capability diagnostics while preserving the old Active', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const value = controller({
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('Active Catalog 2.4.0 仍可浏览和使用');
+    expect(detail).not.toContain('更新到候选版本');
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 重新检查');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 完整验证');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
   });
 
   it('never echoes Git credentials or query tokens while S06 is receiving input', async () => {
