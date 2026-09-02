@@ -101,6 +101,7 @@ import {
 import {
   parsePluginId,
   withResolvedCatalogPlugin,
+  withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
@@ -617,6 +618,7 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
+    sourceIdentity: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -630,8 +632,12 @@ async function loadStoredConfigWizardCandidates(
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
+        sourceIdentity: store.sourceIdentity,
         keys: new Set<string>(),
       };
+      if (existing.sourceIdentity !== store.sourceIdentity) {
+        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
+      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -642,6 +648,7 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
+      sourceIdentity: store.sourceIdentity,
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
@@ -726,7 +733,7 @@ async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string }> {
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
   const stores = (await Promise.all(options.locations.map((location) =>
@@ -736,10 +743,30 @@ async function resolveStoredOnlyConfigIdentity(options: {
       scope: location.scope,
     })))).flat().filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
+  const identities = new Set(stores.map((store) => store.sourceIdentity));
+  if (identities.size !== 1) {
+    throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
+  }
+  const sourceIdentity = [...identities][0]!;
+  await withResolvedMultiSourceCatalog({
+    cliVersion: resolveCliVersion(),
+    sourceIds: [parsed.sourceId],
+    env: options.context.env,
+    consume: async (catalog) => {
+      const source = catalog.sources.find((entry) => entry.sourceId === parsed.sourceId);
+      if (!source?.resolution) {
+        throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
+      }
+      if (source.resolution.sourceIdentity !== sourceIdentity) {
+        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
+      }
+    },
+  });
   return {
     pluginName: parsed.pluginName,
     pluginId: options.selector,
     sourceId: parsed.sourceId,
+    sourceIdentity,
   };
 }
 
@@ -797,6 +824,7 @@ async function resolveMultiSourceConfigRead(options: {
     });
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
+      sourceIdentity: stored.sourceIdentity,
       pluginName: stored.pluginName,
       plugin: null,
       scope: resolveConfigReadResolution(options.rawOptions.scope),

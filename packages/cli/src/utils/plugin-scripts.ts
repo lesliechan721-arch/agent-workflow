@@ -127,7 +127,7 @@ export async function runPostApplyScript(options: {
   const declaration = options.plugin.manifest.scripts?.postApply; if (!declaration) return;
   const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'postApply script' });
   const effective = options.plugin.manifest.config?.fields
-    ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, cwd: options.cwd, env: options.context.env })
+    ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env })
     : { values: {}, issues: [] };
   if (effective.issues.length > 0) throw new Error(`postApply config is invalid for ${options.plugin.manifest.name}.`);
   const payload: PostApplyContextV1 = {

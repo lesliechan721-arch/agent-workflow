@@ -48,7 +48,11 @@ import {
   resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  readPluginConfigStore,
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
   setNativeCliRunnerOverrideForTests,
@@ -862,6 +866,92 @@ describe('five namespaced write commands', () => {
       scope: 'user',
     }, { env, nativeCliRunner });
     expect(reinstalled.overallState, JSON.stringify(reinstalled.rebuildResults)).toBe('succeeded');
+  });
+
+  it('isolates user lifecycle planning from project config', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'target-scoped-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'target-scoped', [], 'config\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'target-scoped', title: 'Target scoped', content: 'Target scoped.' }],
+      };
+      manifest.config = { fields: { mode: { type: 'string', default: 'default' } } };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'user' },
+    });
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: source.id,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }), '{invalid');
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'stateInventoryFailed' })],
+    });
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'project-before' },
+    });
+    const reviewed = await reinstallWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { ...runtime, previewOperationPlan: true });
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'project-after' },
+    });
+    await expect(reinstallWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, {
+      ...runtime,
+      expectedPlanFingerprint: reviewed.operationPlan!.planFingerprint,
+    })).resolves.toMatchObject({ overallState: 'succeeded' });
   });
 
   it.each(['direct', 'symlink'] as const)(

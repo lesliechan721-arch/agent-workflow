@@ -20,6 +20,7 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -565,6 +566,43 @@ describe('multi-source read commands', () => {
     })).toBe(1);
     expect(blocked.readStdout()).toBe('');
     expect(blocked.readStderr()).toContain('legacyStateUnsupported');
+  });
+
+  it('keeps source identity when reading a stored-only plugin config', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('stored-only-config');
+    await createCatalogSnapshotFixture(sourceRoot, 'other');
+    const source = { id: 'good', type: 'path', primary: true, path: sourceRoot } as const;
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'stored' },
+    });
+    const captured = createCapturedCliIo();
+
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      pluginId: 'good/demo',
+      sourceId: 'good',
+      sourceIdentity,
+      fields: [expect.objectContaining({ key: 'mode', effectiveValue: '[redacted]' })],
+    });
   });
 
   it('uses qualified plugin IDs in the multi-source console writes', async () => {
