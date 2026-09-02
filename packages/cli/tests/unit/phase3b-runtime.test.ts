@@ -469,6 +469,13 @@ describe('phase 3B namespaced runtime stores', () => {
                 presets: [{ id: 'fast', title: 'Fast', value: 'fast' }],
               },
             },
+            enabled: {
+              type: 'boolean',
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'off', title: 'Off', value: false }],
+              },
+            },
           },
         };
       }),
@@ -528,6 +535,23 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(stored.values).toEqual({ mode: 'fast' });
     expect(JSON.stringify(stored.values)).not.toContain('preset');
+    const booleanPresetOutput = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'set', 'team/demo', 'enabled', '--preset', 'off', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: booleanPresetOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(await readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: setReceipt.sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).toMatchObject({ values: { mode: 'fast', enabled: false } });
     const getOutput = createCapturedCliIo();
     expect(await runCli(['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,

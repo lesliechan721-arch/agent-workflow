@@ -19,8 +19,6 @@ import type {
 import type {
   ConfigSchemaEvidence,
   ConfigFieldEntry,
-  PluginConfigAdditionalPropertiesField,
-  PluginConfigObjectPropertyField,
   PluginConfigSchema,
   PluginConfigSchemaField,
   PluginConfigValue as CorePluginConfigValue,
@@ -1152,75 +1150,6 @@ export async function coercePluginConfigValue(options: {
   return coerceConfigValue(options.key, options.field, options.value);
 }
 
-function filesystemPathFormat(
-  field: PluginConfigSchemaField
-    | PluginConfigObjectPropertyField
-    | PluginConfigAdditionalPropertiesField,
-): 'file' | 'directory' | undefined {
-  if (field.type !== 'string') return undefined;
-  return field.validation?.format === 'file' || field.validation?.format === 'directory'
-    ? field.validation.format
-    : undefined;
-}
-
-async function resolveSubmittedFilesystemPath(options: {
-  key: string;
-  value: string;
-  format: 'file' | 'directory';
-  cwd: string;
-}): Promise<string> {
-  const expected = options.format === 'file' ? 'file' : 'directory';
-  try {
-    const candidate = path.isAbsolute(options.value)
-      ? options.value
-      : path.resolve(options.cwd, options.value);
-    const resolved = await fs.realpath(candidate);
-    const stats = await fs.stat(resolved);
-    if (options.format === 'file' ? !stats.isFile() : !stats.isDirectory()) {
-      throw new Error('wrong path type');
-    }
-    return resolved;
-  } catch {
-    throw new Error(`Config "${options.key}" must point to an existing ${expected}.`);
-  }
-}
-
-async function resolveSubmittedFilesystemConfigValue(options: {
-  key: string;
-  field: PluginConfigSchemaField;
-  value: PluginConfigValue;
-  cwd: string;
-}): Promise<PluginConfigValue> {
-  const format = filesystemPathFormat(options.field);
-  if (format) {
-    return resolveSubmittedFilesystemPath({
-      key: options.key,
-      value: options.value as string,
-      format,
-      cwd: options.cwd,
-    });
-  }
-  if (options.field.type !== 'object' || !isRecord(options.value)) return options.value;
-
-  const resolved = { ...options.value };
-  for (const [property, value] of Object.entries(options.value)) {
-    const child = options.field.properties && Object.hasOwn(options.field.properties, property)
-      ? options.field.properties[property]
-      : options.field.additionalProperties === false
-        ? undefined
-        : options.field.additionalProperties;
-    const childFormat = child && filesystemPathFormat(child);
-    if (!childFormat) continue;
-    resolved[property] = await resolveSubmittedFilesystemPath({
-      key: `${options.key}.${property}`,
-      value: value as string,
-      format: childFormat,
-      cwd: options.cwd,
-    });
-  }
-  return resolved;
-}
-
 function redactValue(
   field: PluginConfigSchemaField,
   value: PluginConfigValue,
@@ -1392,38 +1321,6 @@ export async function resolveEffectivePluginConfig(options: {
   };
 }
 
-function projectValueContainsFilesystemPath(
-  field: PluginConfigSchemaField,
-  value: PluginConfigValue,
-): boolean {
-  if (filesystemPathFormat(field) !== undefined) return true;
-  if (field.type !== 'object' || !isRecord(value)) return false;
-  return Object.entries(value).some(([property]) => {
-    const child = field.properties && Object.hasOwn(field.properties, property)
-      ? field.properties[property]
-      : field.additionalProperties;
-    return child !== undefined && child !== false && filesystemPathFormat(child) !== undefined;
-  });
-}
-
-export function collectProjectArtifactConfigBoundaryIssues(options: {
-  schema: PluginConfigSchema['fields'];
-  projectStore?: PluginConfigStore;
-}): PluginConfigIssue[] {
-  if (!options.projectStore) return [];
-  return Object.entries(options.schema).flatMap(([key, field]) =>
-    Object.hasOwn(options.projectStore!.values, key)
-      && projectValueContainsFilesystemPath(field, options.projectStore!.values[key]!)
-      ? [{
-          type: 'sharedCompositeContainsLocalPath' as const,
-          key,
-          source: 'project' as const,
-          message: `Config "${key}" contains a local file or directory path and cannot be used for project artifacts.`,
-        }]
-      : [],
-  );
-}
-
 export async function coercePluginConfigUpdates(options: {
   schema: PluginConfigSchema['fields'];
   updates: Record<string, unknown>;
@@ -1441,12 +1338,7 @@ export async function coercePluginConfigUpdates(options: {
       field,
       value,
     });
-    output[key] = await resolveSubmittedFilesystemConfigValue({
-      key,
-      field,
-      value: coerced,
-      cwd: options.cwd,
-    });
+    output[key] = coerced;
   }
 
   return output;
@@ -1503,13 +1395,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
     projectRoot: effective.projectRoot,
     values: effective.values,
     sources: effective.sources,
-    issues: [
-      ...effective.issues,
-      ...collectProjectArtifactConfigBoundaryIssues({
-        schema: effective.schema,
-        projectStore: effective.stores.project,
-      }),
-    ],
+    issues: effective.issues,
     ignoredUnknownKeys: effective.ignoredUnknownKeys,
     schema: effective.schema,
     stores: {

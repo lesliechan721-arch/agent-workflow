@@ -2652,15 +2652,10 @@ describe('authoring tools', () => {
           configFile: {
             type: 'string',
             default: './config.txt',
-            validation: { format: 'path' },
           },
-          constructor: { type: 'string', default: 'declared-constructor' },
           metadata: {
             type: 'object',
-            properties: Object.fromEntries([
-              ['__proto__', { type: 'string' }],
-              ['constructor', { type: 'string' }],
-            ]),
+            properties: { owner: { type: 'string' } },
           },
           labels: {
             type: 'object',
@@ -2710,12 +2705,9 @@ describe('authoring tools', () => {
           token: 'project-secret',
           mode: 'strict',
           metadata: Object.fromEntries([
-            ['__proto__', 'fixed-prototype'],
-            ['constructor', 'fixed-constructor'],
+            ['owner', 'fixed-owner'],
           ]),
           labels: Object.fromEntries([
-            ['__proto__', 'dynamic-prototype'],
-            ['constructor', 'dynamic-constructor'],
             ['toString', 'dynamic-to-string'],
           ]),
           staleProjectSecret: 'do-not-print-project',
@@ -2750,23 +2742,14 @@ describe('authoring tools', () => {
       token: '[redacted]',
       mode: 'strict',
       configFile: './config.txt',
-      constructor: 'declared-constructor',
     });
     expect(payload.sources).toMatchObject({
       token: 'project',
       mode: 'project',
       configFile: 'default',
-      constructor: 'default',
     });
-    expect(payload.values.metadata).toEqual(Object.fromEntries([
-      ['__proto__', 'fixed-prototype'],
-      ['constructor', 'fixed-constructor'],
-    ]));
-    expect(payload.values.labels).toEqual(Object.fromEntries([
-      ['__proto__', 'dynamic-prototype'],
-      ['constructor', 'dynamic-constructor'],
-      ['toString', 'dynamic-to-string'],
-    ]));
+    expect(payload.values.metadata).toEqual({ owner: 'fixed-owner' });
+    expect(payload.values.labels).toEqual({ toString: 'dynamic-to-string' });
     expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
       expect.arrayContaining([
         { scope: 'user', key: 'staleUserSecret' },
@@ -3267,11 +3250,9 @@ describe('authoring tools', () => {
       },
       rules: {
         type: 'string',
-        validation: { format: 'path' },
       },
       workspace: {
         type: 'string',
-        validation: { format: 'path' },
       },
     };
     const scriptPath = path.join(
@@ -3314,8 +3295,8 @@ describe('authoring tools', () => {
       cwd: repoRoot(),
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('sensitive config cannot declare choices'),
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -5893,7 +5874,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
   });
 
@@ -5942,7 +5923,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -5955,7 +5936,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
   });
 

@@ -23,6 +23,11 @@ export type Capabilities = string[]
 export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField) | undefined
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectField".
+ */
+export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalar".
  */
 export type ConfigScalar = (string | number | boolean) | undefined
@@ -405,7 +410,7 @@ export interface ConfigStringValidation {
 minLength?: number
 maxLength?: number
 pattern?: string
-format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email" | "path" | "file" | "directory")
+format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email")
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -461,12 +466,32 @@ description?: string
 default?: boolean
 required?: boolean
 sensitive?: boolean
+choices?: ConfigBooleanChoices
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectField".
+ * via the `definition` "configBooleanChoices".
  */
-export interface ConfigObjectField {
+export interface ConfigBooleanChoices {
+allowCustom: boolean
+presets: ConfigBooleanPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configBooleanPreset".
+ */
+export interface ConfigBooleanPreset {
+id: string
+title: string
+description?: string
+value: boolean
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configFixedObjectField".
+ */
+export interface ConfigFixedObjectField {
 type: "object"
 title?: string
 description?: string
@@ -476,10 +501,10 @@ default?: {
 required?: boolean
 sensitive?: boolean
 choices?: ConfigObjectChoices
-properties?: {
+properties: {
 [k: string]: ConfigScalarChildField | undefined
 }
-additionalProperties?: (false | ConfigScalarDynamicField)
+additionalProperties?: false
 validation?: ConfigObjectValidation
 }
 /**
@@ -539,6 +564,33 @@ title?: string
 description?: string
 required?: boolean
 sensitive?: boolean
+choices?: ConfigBooleanChoices
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectValidation".
+ */
+export interface ConfigObjectValidation {
+minProperties?: number
+maxProperties?: number
+key?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configKeyValueObjectField".
+ */
+export interface ConfigKeyValueObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar | undefined
+}
+required?: boolean
+sensitive?: boolean
+choices?: ConfigObjectChoices
+additionalProperties: ConfigScalarDynamicField
+validation?: ConfigObjectValidation
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -573,13 +625,5 @@ type: "boolean"
 title?: string
 description?: string
 sensitive?: boolean
-}
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectValidation".
- */
-export interface ConfigObjectValidation {
-minProperties?: number
-maxProperties?: number
-key?: ConfigStringValidation
+choices?: ConfigBooleanChoices
 }

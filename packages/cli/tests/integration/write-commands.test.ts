@@ -6473,7 +6473,7 @@ describe('five namespaced write commands', () => {
           },
           count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
           token: { type: 'string', sensitive: true, title: '令牌' },
-          rules: { type: 'string', validation: { format: 'path' }, title: '规则文件' },
+          rules: { type: 'string', title: '规则文件' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],

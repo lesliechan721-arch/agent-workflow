@@ -21,7 +21,6 @@ import type {
 } from './plugin-config.js';
 import {
   assertReadyPluginConfigStore,
-  collectProjectArtifactConfigBoundaryIssues,
   readPluginConfigStore,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
@@ -223,13 +222,7 @@ export async function resolveArtifactRenderConfig(options: {
     schema,
     values: effective.values,
     sources: effective.sources,
-    issues: [
-      ...effective.issues,
-      ...collectProjectArtifactConfigBoundaryIssues({
-        schema,
-        projectStore: effective.stores.project,
-      }),
-    ],
+    issues: effective.issues,
     stores: effective.stores,
   };
 }

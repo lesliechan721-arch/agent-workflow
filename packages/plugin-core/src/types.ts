@@ -105,10 +105,7 @@ export type PluginConfigStringFormat =
   | 'semver'
   | 'url'
   | 'hostname'
-  | 'email'
-  | 'path'
-  | 'file'
-  | 'directory';
+  | 'email';
 export interface PluginConfigPreset<Value extends PluginConfigValue = PluginConfigValue> {
   id: string;
   title: string;
@@ -156,6 +153,7 @@ export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
 }
 export interface PluginConfigBooleanField extends PluginConfigFieldBase<boolean> {
   type: 'boolean';
+  choices?: PluginConfigChoices<boolean>;
 }
 export type PluginConfigScalarField =
   | PluginConfigStringField
@@ -168,13 +166,22 @@ export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
   PluginConfigScalarField,
   'default' | 'required'
 >;
-export interface PluginConfigObjectField extends PluginConfigFieldBase<PluginConfigObject> {
+interface PluginConfigObjectFieldBase extends PluginConfigFieldBase<PluginConfigObject> {
   type: 'object';
   choices?: PluginConfigChoices<PluginConfigObject>;
-  properties?: Record<string, PluginConfigObjectPropertyField>;
-  additionalProperties?: false | PluginConfigAdditionalPropertiesField;
   validation?: PluginConfigObjectValidation;
 }
+export interface PluginConfigFixedObjectField extends PluginConfigObjectFieldBase {
+  properties: Record<string, PluginConfigObjectPropertyField>;
+  additionalProperties?: false;
+}
+export interface PluginConfigKeyValueObjectField extends PluginConfigObjectFieldBase {
+  properties?: never;
+  additionalProperties: PluginConfigAdditionalPropertiesField;
+}
+export type PluginConfigObjectField =
+  | PluginConfigFixedObjectField
+  | PluginConfigKeyValueObjectField;
 export type PluginConfigSchemaField = PluginConfigScalarField | PluginConfigObjectField;
 export interface PluginConfigPresentationGroup {
   id: string;

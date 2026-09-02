@@ -36,8 +36,7 @@ describe('generated aw-config helper', () => {
           type: 'string',
           validation: { minLength: 2 },
         },
-        certificate: { type: 'string', validation: { format: 'file' } },
-        workspace: { type: 'string', validation: { format: 'directory' } },
+        endpoint: { type: 'string', validation: { format: 'url' } },
         credentials: {
           type: 'object',
           properties: {
@@ -48,14 +47,10 @@ describe('generated aw-config helper', () => {
         },
         locations: {
           type: 'object',
-          properties: {
-            certificate: { type: 'string', validation: { format: 'file' } },
-          },
-          additionalProperties: { type: 'string', validation: { format: 'directory' } },
+          additionalProperties: { type: 'string', validation: { minLength: 2 } },
         },
         labels: {
           type: 'object',
-          properties: { 'fixed-key': { type: 'string' } },
           additionalProperties: { type: 'string' },
           validation: { key: { format: 'identifier' } },
         },
@@ -64,17 +59,16 @@ describe('generated aw-config helper', () => {
     const fixtures = [
       ['mode', 'x'],
       ['mode', 'safe'],
-      ['certificate', './not-yet-created.pem'],
-      ['certificate', ''],
-      ['workspace', './not-yet-created-directory'],
-      ['workspace', ''],
+      ['endpoint', 'https://example.test'],
+      ['endpoint', 'example.test'],
       ['credentials', { token: 'secret', retries: 2 }],
       ['credentials', { retries: -1 }],
       ['credentials', { token: 'secret', nested: {} }],
-      ['locations', { certificate: './not-yet-created.pem', cache: './not-yet-created-directory' }],
+      ['locations', { certificate: 'pem', cache: 'directory' }],
       ['locations', { certificate: '', cache: '' }],
-      ['labels', { 'fixed-key': 'fixed', dynamic_key: 'dynamic' }],
-      ['labels', { 'fixed-key': 'fixed', 'bad key': 'dynamic' }],
+      ['labels', { fixed_key: 'fixed', dynamic_key: 'dynamic' }],
+      ['labels', { fixed_key: 'fixed', 'bad key': 'dynamic' }],
+      ['labels', Object.fromEntries([['__proto__', 'dangerous']])],
     ] as const;
 
     for (const [key, value] of fixtures) {

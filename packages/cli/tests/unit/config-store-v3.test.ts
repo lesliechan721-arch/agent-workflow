@@ -22,6 +22,10 @@ const config = normalizePluginConfigDefinition({
         region: { type: 'string' },
         token: { type: 'string', sensitive: true },
       },
+      additionalProperties: false,
+    },
+    labels: {
+      type: 'object',
       additionalProperties: { type: 'string' },
       validation: { key: { format: 'identifier' } },
     },
@@ -162,19 +166,25 @@ describe('plugin config Store v3', () => {
     }
   });
 
-  it('accepts a fixed key that does not match the dynamic key format in schema-aware stores', async () => {
+  it('validates fixed and key-value objects without mixing their schemas', async () => {
     const user = storeOptions('user');
     await fs.outputJson(resolvePluginConfigStorePath(user), {
       schemaVersion: 3,
       sourceId: user.sourceId,
       sourceIdentity,
       pluginName: manifest.name,
-      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+      values: {
+        connection: { 'display-name': 'fixed' },
+        labels: { dynamic_name: 'dynamic' },
+      },
     });
 
     await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
       state: 'ready',
-      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+      values: {
+        connection: { 'display-name': 'fixed' },
+        labels: { dynamic_name: 'dynamic' },
+      },
     });
 
     await fs.outputJson(resolvePluginConfigStorePath(user), {
@@ -182,7 +192,7 @@ describe('plugin config Store v3', () => {
       sourceId: user.sourceId,
       sourceIdentity,
       pluginName: manifest.name,
-      values: { connection: { 'display-name': 'fixed', 'bad key': 'dynamic' } },
+      values: { labels: { 'bad key': 'dynamic' } },
     });
     await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
       state: 'invalid',

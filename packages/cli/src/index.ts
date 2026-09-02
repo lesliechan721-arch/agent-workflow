@@ -3083,9 +3083,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             throw new Error('--value-json must contain valid JSON.');
           }
         } else {
-          const preset = field.type === 'boolean'
-            ? undefined
-            : field.choices?.presets.find((entry) => entry.id === rawOptions.preset);
+          const preset = field.choices?.presets.find((entry) => entry.id === rawOptions.preset);
           if (!preset) throw new Error(`Unknown preset "${rawOptions.preset}" for config key "${key}".`);
           inputValue = structuredClone(preset.value);
         }

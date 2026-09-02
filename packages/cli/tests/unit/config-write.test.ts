@@ -121,11 +121,10 @@ async function createFixture(
           },
           default: 'safe',
         },
-        workspace: { type: 'string', sensitive: true, validation: { format: 'directory' } },
-        certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
+        workspace: { type: 'string', sensitive: true },
+        certificate: { type: 'string', sensitive: true },
         presetCertificate: {
           type: 'string',
-          validation: { format: 'file' },
           choices: {
             allowCustom: true,
             presets: [{ id: 'nested', title: 'Nested certificate', value: './preset-file' }],
@@ -134,11 +133,11 @@ async function createFixture(
         locations: {
           type: 'object',
           properties: {
-            certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
+            certificate: { type: 'string', sensitive: true },
           },
-          additionalProperties: { type: 'string', sensitive: true, validation: { format: 'directory' } },
+          additionalProperties: false,
         },
-        genericPath: { type: 'string', validation: { format: 'path' } },
+        genericPath: { type: 'string' },
       },
     },
     ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
@@ -487,22 +486,10 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(read)).not.toContain('private-token');
   });
 
-  it('resolves submitted file and directory formats without exposing sensitive paths', async () => {
+  it('keeps submitted strings literal without a filesystem path contract', async () => {
     const fixture = await createFixture();
     const nestedCwd = path.join(fixture.cwd, 'nested');
-    const privateDirectory = path.join(nestedCwd, 'same-directory');
-    const privateFile = path.join(nestedCwd, 'same-file');
-    const presetFile = path.join(nestedCwd, 'preset-file');
-    await Promise.all([
-      fs.ensureDir(privateDirectory),
-      fs.outputFile(privateFile, 'private-certificate'),
-      fs.outputFile(presetFile, 'preset-certificate'),
-      fs.ensureDir(path.join(fixture.cwd, 'same-directory')),
-      fs.outputFile(path.join(fixture.cwd, 'same-file'), 'wrong-parent-certificate'),
-    ]);
-    const resolvedDirectory = await fs.realpath(privateDirectory);
-    const resolvedFile = await fs.realpath(privateFile);
-    const resolvedPresetFile = await fs.realpath(presetFile);
+    await fs.ensureDir(nestedCwd);
 
     const receipt = await applyPluginConfigWrite({
       plugin: fixture.plugin,
@@ -514,7 +501,7 @@ describe('config write full reinstall apply', () => {
           workspace: './same-directory',
           certificate: './same-file',
           presetCertificate: './preset-file',
-          locations: { certificate: './same-file', cache: './same-directory' },
+          locations: { certificate: './same-file' },
           genericPath: './not-yet-created',
         },
       },
@@ -528,35 +515,13 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(store.values).toMatchObject({
-      workspace: resolvedDirectory,
-      certificate: resolvedFile,
-      presetCertificate: resolvedPresetFile,
-      locations: { certificate: resolvedFile, cache: resolvedDirectory },
+      workspace: './same-directory',
+      certificate: './same-file',
+      presetCertificate: './preset-file',
+      locations: { certificate: './same-file' },
       genericPath: './not-yet-created',
     });
-    expect(JSON.stringify(receipt)).not.toContain(privateDirectory);
-    expect(JSON.stringify(receipt)).not.toContain(privateFile);
-    await expect(applyPluginConfigWrite({
-      plugin: fixture.plugin,
-      scope: 'user',
-      cwd: nestedCwd,
-      env: fixture.env,
-      request: { updates: { certificate: privateDirectory } },
-    })).rejects.toThrow('existing file');
-    await expect(applyPluginConfigWrite({
-      plugin: fixture.plugin,
-      scope: 'user',
-      cwd: nestedCwd,
-      env: fixture.env,
-      request: { updates: { locations: { certificate: privateDirectory } } },
-    })).rejects.toThrow('existing file');
-    await expect(applyPluginConfigWrite({
-      plugin: fixture.plugin,
-      scope: 'user',
-      cwd: nestedCwd,
-      env: fixture.env,
-      request: { updates: { locations: { cache: privateFile } } },
-    })).rejects.toThrow('existing directory');
+    expect(JSON.stringify(receipt)).not.toContain('./same-file');
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {
