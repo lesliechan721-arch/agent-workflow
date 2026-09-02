@@ -53,6 +53,10 @@ import type {
 import { extractPortableError, userIssueKey } from './controller.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import {
+  catalogSourceFreshnessLabel,
+  catalogSourceListPresentation,
+} from './catalog-sources/screens.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { catalogRefPolicyForPreset } from './source-ref-presets.js';
@@ -147,6 +151,7 @@ interface SourceDraft {
   refPolicy: 'cliChannel' | 'explicit';
   ref: string;
   subdir: string;
+  autoCheck: boolean;
   editField?: 'location' | 'refPolicy' | 'subdir';
 }
 
@@ -1530,13 +1535,13 @@ export function ConsoleAppV4(props: {
   };
   const beginAddSource = (): void => {
     const owner = `source-add:${Date.now()}`;
-    setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
+    setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '', autoCheck: true });
     setDirty(true);
     go({ name: 'sourceAdd', step: 'type', owner });
   };
   const beginIssueSourceAdd = (sourceId: string): void => {
     const owner = `source-readd:${sourceId}:${Date.now()}`;
-    setSourceDraft({ owner, mode: 'add', sourceId, type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
+    setSourceDraft({ owner, mode: 'add', sourceId, type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '', autoCheck: true });
     setDirty(true);
     go({ name: 'sourceAdd', step: 'type', owner });
   };
@@ -1601,8 +1606,15 @@ export function ConsoleAppV4(props: {
         url: draft.location,
         refPolicy: draft.refPolicy === 'cliChannel' ? { type: 'cliChannel' } : { type: 'explicit', ref: draft.ref },
         ...(draft.subdir ? { subdir: draft.subdir } : {}),
+        ...(draft.autoCheck ? {} : { autoCheck: false }),
       }
-    : { id: draft.sourceId, type: 'path', primary: false, path: draft.location };
+    : {
+        id: draft.sourceId,
+        type: 'path',
+        primary: false,
+        path: draft.location,
+        ...(draft.autoCheck ? {} : { autoCheck: false }),
+      };
   const beginSourceAddReviewWith = async (draft: SourceDraft): Promise<void> => {
     const source = sourceFromDraft(draft);
     setDirty(false);
@@ -3166,28 +3178,17 @@ export function ConsoleAppV4(props: {
         const generation = props.controller.getCatalogGeneration(source.id);
         const freshness = props.controller.getCatalogFreshness(source.id);
         const health = overview.health?.state ?? source.state;
-        const status = freshness?.state === 'checking' ? '检查中'
-          : freshness?.state === 'updateAvailable' ? `可更新到 ${freshness.candidate?.catalogVersion ?? '新版本'}`
-            : freshness?.state === 'localChangesAvailable' ? '本地内容有变化'
-              : freshness?.state === 'versionConflict' ? '版本冲突'
-                : freshness?.state === 'rollbackDetected' ? '检测到回退'
-                  : freshness?.state === 'checkFailed' ? '检查失败 · Active 可用'
-                    : freshness?.state === 'incompatible' ? '候选不兼容'
-        : generation?.active ? `Active ${generation.active.catalogVersion}`
-          : health === 'ready' ? '当前使用'
-          : '无法读取';
+        const presentation = catalogSourceListPresentation({
+          freshness,
+          activeVersion: generation?.active?.catalogVersion,
+          health,
+          primary: source.primary,
+        });
         return {
           label: `${source.id}${source.primary ? '  主来源' : ''}`,
           description: `${overview.detail?.type === 'path' ? '本地目录' : 'Git 仓库'} · ${source.count ?? 0} 个插件`,
-          meta: status,
-          status: !generation?.active || health === 'unavailable'
-            || freshness?.state === 'checkFailed' || freshness?.state === 'incompatible'
-            ? 'error' as const
-            : freshness?.state === 'updateAvailable'
-              || freshness?.state === 'localChangesAvailable'
-              || freshness?.state === 'versionConflict'
-              || freshness?.state === 'rollbackDetected' ? 'warning' as const
-                : source.primary ? 'success' as const : undefined,
+          meta: presentation.label,
+          status: presentation.status,
           run: () => go({ name: 'sourceDetail', sourceId: source.id }),
         };
       }),
@@ -3289,16 +3290,8 @@ export function ConsoleAppV4(props: {
       { label: '技术详情', description: '查看脱敏错误代码和 Active 证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
     ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
-    const freshnessLabel = freshness?.state === 'checking' ? '检查中'
-      : freshness?.state === 'current' ? '当前已是最新'
-        : freshness?.state === 'fixed' ? '固定 commit'
-          : freshness?.state === 'checkFailed' ? '检查失败 · Active 仍可用'
-            : freshness?.state === 'localChangesAvailable' ? '本地内容有变化'
-              : freshness?.state === 'updateAvailable' ? '有可用更新'
-                : freshness?.state === 'versionConflict' ? '同版本内容冲突'
-                  : freshness?.state === 'rollbackDetected' ? '检测到版本回退'
-                    : freshness?.state === 'incompatible' ? '候选不兼容' : '尚未检查';
-    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} compact />{candidateVersion ? <StaticRow title={`候选 Catalog ${candidateVersion}`} meta={freshnessLabel} status={freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable' ? 'warning' : undefined} compact /> : <StaticRow title={freshnessLabel} status={freshness?.state === 'checkFailed' ? 'warning' : undefined} compact />}</SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
+    const freshnessLabel = catalogSourceFreshnessLabel(freshness);
+    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} compact />{candidateVersion ? <StaticRow title={`候选 Catalog ${candidateVersion}`} meta={freshnessLabel} status={freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable' ? 'warning' : undefined} compact /> : <StaticRow title={freshnessLabel} status={freshness?.state === 'checkFailed' ? 'warning' : undefined} compact />}</SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /><StaticRow title="自动检查更新" meta={detail?.autoCheck === false ? '关闭' : '开启'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
   } else if (route.name === 'sourceTechnical') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
@@ -3334,12 +3327,19 @@ export function ConsoleAppV4(props: {
     breadcrumb = sourceDraft.mode === 'add' ? '插件来源 / 添加' : `插件来源 / ${sourceDraft.sourceId} / 编辑`;
     const stepLabel = { type: '第 1 步，共 6 步', id: '第 2 步，共 6 步', location: '第 3 步，共 6 步', refPolicy: '第 4 步，共 6 步', ref: '第 5 步，共 6 步', subdir: '可选高级步骤' }[route.step];
     context = stepLabel;
-    help = route.step === 'type' || route.step === 'refPolicy' ? '↑↓ 移动 · Enter 继续 · Esc 返回' : '输入 · Enter 继续 · Esc 返回';
+    help = route.step === 'type' || route.step === 'refPolicy'
+      ? '↑↓ 移动 · Enter 继续 · Esc 返回' : '输入 · Enter 继续 · Esc 返回';
     if (route.step === 'type') {
       title = '选择来源类型'; description = '来源类型创建后不能修改。';
+      const selectType = (type: SourceDraft['type'], autoCheck: boolean): void => {
+        setSourceDraft({ ...sourceDraft, type, autoCheck });
+        go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner });
+      };
       actions = [
-        { label: 'Git 仓库', description: '从远端 Git 仓库读取 Catalog', run: () => { setSourceDraft({ ...sourceDraft, type: 'git' }); go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner }); } },
-        { label: '本地目录', description: '用于本地开发与测试', run: () => { setSourceDraft({ ...sourceDraft, type: 'path' }); go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner }); } },
+        { label: 'Git 仓库', description: '自动检查更新（推荐）', run: () => selectType('git', true) },
+        { label: '本地目录', description: '自动检查本地内容变化（推荐）', run: () => selectType('path', true) },
+        { label: 'Git 仓库 · 关闭自动检查', description: '仍可从详情页手动检查', run: () => selectType('git', false) },
+        { label: '本地目录 · 关闭自动检查', description: '仍可从详情页手动检查', run: () => selectType('path', false) },
       ]; content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (route.step === 'refPolicy') {
       title = '选择版本来源'; description = 'Release 和 Beta 是固定 Git ref 的显示预设。';
@@ -3375,7 +3375,7 @@ export function ConsoleAppV4(props: {
     const startEdit = (field: SourceDraft['editField']): void => {
       if (!detail) return;
       const owner = `source-update:${route.sourceId}:${field}:${Date.now()}`;
-      setSourceDraft({ owner, mode: 'update', sourceId: route.sourceId, type: detail.type, location: '', refPolicy: detail.refPolicy ?? 'cliChannel', ref: detail.explicitRef ?? '', subdir: detail.subdir ?? '', editField: field });
+      setSourceDraft({ owner, mode: 'update', sourceId: route.sourceId, type: detail.type, location: '', refPolicy: detail.refPolicy ?? 'cliChannel', ref: detail.explicitRef ?? '', subdir: detail.subdir ?? '', autoCheck: detail.autoCheck, editField: field });
       setDirty(true);
       go({ name: 'sourceAdd', step: field === 'location' ? 'location' : field === 'subdir' ? 'subdir' : 'refPolicy', owner });
     };
@@ -3392,6 +3392,7 @@ export function ConsoleAppV4(props: {
         refPolicy: detail.refPolicy ?? 'cliChannel',
         ref: detail.explicitRef ?? '',
         subdir: detail.subdir ?? '',
+        autoCheck: detail.autoCheck,
         editField: 'location',
       };
       setSourceDraft(next);
@@ -3405,7 +3406,11 @@ export function ConsoleAppV4(props: {
       ] : [{ label: 'Git URL', description: detail.locationSummary, run: () => startEdit('location') }]),
       { label: '版本引用', description: detail.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startEdit('refPolicy') },
       { label: 'Catalog 子目录', description: detail.subdir ?? '未设置', run: () => startEdit('subdir') },
-    ] : [{ label: '本地目录', description: '已选择本地目录', run: () => startEdit('location') }];
+      { label: '自动检查更新', description: detail.autoCheck ? '已开启' : '已关闭', selected: detail.autoCheck, run: () => beginReview({ kind: 'sourceMutation', action: 'update', sourceId: route.sourceId, update: { autoCheck: !detail.autoCheck }, changes: [{ title: '自动检查更新', before: detail.autoCheck ? '开启' : '关闭', after: detail.autoCheck ? '关闭' : '开启' }] }) },
+    ] : [
+      { label: '本地目录', description: '已选择本地目录', run: () => startEdit('location') },
+      { label: '自动检查更新', description: detail?.autoCheck ? '已开启' : '已关闭', selected: detail?.autoCheck, run: () => detail && beginReview({ kind: 'sourceMutation', action: 'update', sourceId: route.sourceId, update: { autoCheck: !detail.autoCheck }, changes: [{ title: '自动检查更新', before: detail.autoCheck ? '开启' : '关闭', after: detail.autoCheck ? '关闭' : '开启' }] }) },
+    ];
     content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
       {route.sourceId === 'official' && detail?.type === 'git' ? <SectionCard title="来源身份">
         <StaticRow title="逻辑 Catalog" meta="lesliechan721-arch/agent-workflow" />

@@ -674,6 +674,7 @@ export function createTuiControllerDependencies(
             id: source.id,
             type: source.type,
             primary: source.primary,
+            autoCheck: source.autoCheck,
             locationSummary: projectCatalogSourceLocation(
               source.type === 'git' ? source.url : source.path,
             ),

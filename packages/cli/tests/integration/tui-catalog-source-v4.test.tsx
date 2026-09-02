@@ -23,7 +23,10 @@ import {
   syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
-import { createCatalogStoreKey } from '../../src/utils/catalog-generation-store.js';
+import {
+  createCatalogStoreKey,
+  resolveCatalogStoreLocation,
+} from '../../src/utils/catalog-generation-store.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -443,6 +446,50 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'ready' });
     const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
     expect(issue).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('saves only autoCheck through source Review without resolving or switching Catalog data', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot } = await configuredController();
+    await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state !== 'checking',
+      'initial automatic path check',
+      () => controller.getCatalogFreshness('local'),
+    );
+    const beforeConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const beforeState = await readCatalogGenerationState(isolation.env);
+    const active = beforeState.sources.local!.active!;
+    const store = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env: isolation.env,
+    });
+    const beforeStoreInventory = await fs.readdir(store.entryDir, { recursive: true });
+    await fs.remove(firstRoot);
+
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'update',
+      sourceId: 'local',
+      update: { autoCheck: false },
+      changes: [{ title: '自动检查更新', before: '开启', after: '关闭' }],
+    });
+    expect(review).toMatchObject({
+      operationKind: 'sourceMutation',
+      sourceAction: 'update',
+      changes: expect.arrayContaining([expect.objectContaining({ title: '自动检查更新' })]),
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'sourceMutation', sourceAction: 'update',
+    });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources[0])
+      .toMatchObject({ id: 'local', autoCheck: false });
+    expect(await readCatalogGenerationState(isolation.env)).toEqual(beforeState);
+    expect(await fs.readdir(store.entryDir, { recursive: true })).toEqual(beforeStoreInventory);
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(beforeConfig.digest);
     controller.dispose();
   });
 

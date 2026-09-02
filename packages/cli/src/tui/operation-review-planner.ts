@@ -9,6 +9,7 @@ import type {
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
+import { catalogSourceAutoCheckOnlyValue } from './catalog-sources/review.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -96,6 +97,16 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     };
   }
   if (intent.kind === 'sourceMutation') {
+    const autoCheck = intent.action === 'update'
+      ? catalogSourceAutoCheckOnlyValue(intent.update) : undefined;
+    if (autoCheck !== undefined) {
+      return {
+        title: '保存自动检查设置',
+        description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+        primaryLabel: '保存设置',
+        destructive: false,
+      };
+    }
     const labels = {
       add: ['添加来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
       update: ['修改来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
