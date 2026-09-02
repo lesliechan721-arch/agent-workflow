@@ -95,14 +95,22 @@ function input(
 describe('Codex desired-state reconciliation planner', () => {
   it.each([
     ['absent', { state: 'missing' }, 'install'],
-    ['exact unowned', { state: 'usable', version: '1.0.0', claimable: true }, 'claim'],
-    ['exact owned', { state: 'usable', version: '1.0.0', claimable: false }, 'reuse'],
     ['outdated', {
       state: 'replaceable', reason: 'outdated', version: '0.9.0', desiredVersion: '1.0.0',
     }, 'replace'],
-  ] as const)('plans install action for %s shared native evidence', (_label, state, action) => {
+  ] as const)('plans the expected action for %s shared native evidence', (_label, state, action) => {
     expect(createCodexReconcilePlan(input('install', target(), live(state)))
       .sharedNativeActions[0]?.action).toBe(action);
+  });
+
+  it('reuses exact usable shared native without ownership warnings', () => {
+    const plan = createCodexReconcilePlan(input(
+      'install',
+      target(),
+      live({ state: 'usable', version: '1.0.0' }),
+    ));
+    expect(plan.sharedNativeActions[0]?.action).toBe('reuse');
+    expect(plan.warnings).toEqual([]);
   });
 
   it('repairs damaged replaceable state and fails closed for unreadable state', () => {
@@ -139,20 +147,20 @@ describe('Codex desired-state reconciliation planner', () => {
     const plan = createCodexReconcilePlan(input('sync', target({
       desiredScopes: ['user', 'project'],
     }), live(
-      { state: 'usable', version: '1.0.0', claimable: false },
+      { state: 'usable', version: '1.0.0' },
       { activations: { user: true, project: true } },
     )));
     expect(plan.activationActions.user[0]?.action).toBe('none');
     expect(plan.activationActions.project[0]?.action).toBe('none');
   });
 
-  it('fails closed when two Catalog owners claim the same native artifact ID', () => {
+  it('fails closed when two Catalog owners map to the same native artifact ID', () => {
     const first = target({ pluginId: 'first/demo' });
     const second = target({ pluginId: 'second/demo' });
     expect(() => createCodexReconcilePlan({
       ...input('sync'),
       catalogClosure: [first, second],
-      liveEvidence: [live({ state: 'usable', version: '1.0.0', claimable: false })],
+      liveEvidence: [live({ state: 'usable', version: '1.0.0' })],
     })).toThrowError(/codexSurfaceOwnerCollision/u);
   });
 
@@ -162,7 +170,7 @@ describe('Codex desired-state reconciliation planner', () => {
       expect(() => createCodexReconcilePlan(input('sync', target({
         desiredScopes: ['user', 'project'],
         surface: surface(kind),
-      }), live({ state: 'usable', version: '1.0.0', claimable: false }))))
+      }), live({ state: 'usable', version: '1.0.0' }))))
         .toThrowError(/codexExtensionScopeConflict/u);
     },
   );
@@ -172,7 +180,7 @@ describe('Codex desired-state reconciliation planner', () => {
       surface: surface('mixed'),
       desiredScopes: ['project'],
     }), live(
-      { state: 'usable', version: '1.0.0', claimable: false },
+      { state: 'usable', version: '1.0.0' },
       { extensions: [
         { componentKey: 'extensions.instructions:guide', scope: 'user', state: 'present' },
         { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },
@@ -186,7 +194,7 @@ describe('Codex desired-state reconciliation planner', () => {
 
   it('never removes healthy shared native during uninstall or cleanup', () => {
     const evidence = live(
-      { state: 'usable', version: '1.0.0', claimable: false },
+      { state: 'usable', version: '1.0.0' },
       { activations: { project: true } },
     );
     expect(createCodexReconcilePlan(input('uninstall', target({ desiredScopes: [] }), evidence))
@@ -202,7 +210,7 @@ describe('Codex desired-state reconciliation planner', () => {
       state: 'replaceable', reason: 'outdated', version: '0.9.0', desiredVersion: '1.0.0',
     })));
     const forced = createCodexReconcilePlan(input('reinstall', target(), live({
-      state: 'usable', version: '1.0.0', claimable: false,
+      state: 'usable', version: '1.0.0',
     })));
     expect(outdated.review).toMatchObject({ requiresConfirmation: true });
     expect(forced.review).toMatchObject({ requiresConfirmation: true });
@@ -224,7 +232,7 @@ describe('Codex desired-state reconciliation planner', () => {
   it('produces a stable plan for reordered live extension evidence', () => {
     const catalog = target({ surface: surface('mixed') });
     const first = input('sync', catalog, live(
-      { state: 'usable', version: '1.0.0', claimable: false },
+      { state: 'usable', version: '1.0.0' },
       { extensions: [
         { componentKey: 'extensions.instructions:guide', scope: 'user', state: 'absent' },
         { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },

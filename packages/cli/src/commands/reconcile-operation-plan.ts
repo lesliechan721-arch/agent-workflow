@@ -1,4 +1,4 @@
-import type { PlatformName } from '../types.js';
+import type { PlatformName, Scope } from '../types.js';
 import type {
   DependencyPlacementPlan,
   DependencyPlacementTarget,
@@ -11,6 +11,7 @@ export interface ReconcileTargetPlan extends DependencyPlacementTarget {
   state: ReconcileTargetState;
   action: ReconcileTargetAction;
   errorCode?: string;
+  preservedScope?: Scope;
   order: number;
 }
 
@@ -26,6 +27,7 @@ export function createReconcileOperationPlan(options: {
     state: ReconcileTargetState;
     action: ReconcileTargetAction;
     errorCode?: string;
+    preservedScope?: Scope;
     order: number;
   }>;
 }): ReconcileOperationPlan {
@@ -49,6 +51,7 @@ export function createReconcileOperationPlan(options: {
         ...(errorCode
           ? { errorCode }
           : {}),
+        ...(actual.preservedScope ? { preservedScope: actual.preservedScope } : {}),
         order: actual.order,
       };
     }),

@@ -169,14 +169,12 @@ function reviewChanges(
       : [];
     const codexChanges = (evidence?.codexReconcilePlans ?? []).flatMap((codexPlan) => [
       ...codexPlan.sharedNativeActions.map((action): OperationReviewChange => ({
-        kind: action.action === 'reuse' || action.action === 'claim' || action.action === 'none' ? 'keep'
+        kind: action.action === 'reuse' || action.action === 'none' ? 'keep'
           : action.action === 'install' ? 'add' : 'change',
         group: 'sharedCodexNative',
         pluginId: action.pluginId,
-        title: action.action === 'claim'
-          ? `${action.codexPluginId}：复用精确现有 shared native（不建立 ledger）`
-          : action.codexPluginId,
-        description: action.action === 'claim'
+        title: action.codexPluginId,
+        description: action.action === 'reuse'
           ? '复用已存在的精确 shared native；不建立 ownership ledger'
           : `${action.action} · shared${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
       })),

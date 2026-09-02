@@ -35,7 +35,6 @@ function evidence(
       payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
       pathSafe: true,
     },
-    managedByCurrentIntent: true,
     ...overrides,
   };
 }
@@ -48,17 +47,12 @@ describe('codex-shared-native', () => {
           marketplaceRegistration: undefined,
           pluginListEntries: [],
           manifest: { state: 'absent' },
-          managedByCurrentIntent: false,
         }),
         { state: 'missing' },
       ],
       [
-        evidence({ managedByCurrentIntent: false }),
-        { state: 'usable', version: '2.0.0', claimable: true },
-      ],
-      [
         evidence(),
-        { state: 'usable', version: '2.0.0', claimable: false },
+        { state: 'usable', version: '2.0.0' },
       ],
       [
         evidence({
@@ -116,11 +110,10 @@ describe('codex-shared-native', () => {
     }
   });
 
-  it('classifies an exact canonical existing plugin as a zero-write claim', () => {
-    expect(inspectCodexSharedNative(evidence({ managedByCurrentIntent: false }))).toEqual({
+  it('classifies an exact canonical existing plugin as reusable shared native', () => {
+    expect(inspectCodexSharedNative(evidence())).toEqual({
       state: 'usable',
       version: '2.0.0',
-      claimable: true,
     });
   });
 
@@ -163,11 +156,9 @@ describe('codex-shared-native', () => {
       marketplaceRegistration: undefined,
       pluginListEntries: [],
       manifest: { state: 'absent' },
-      managedByCurrentIntent: false,
     }))).toEqual({ state: 'missing' });
     expect(inspectCodexSharedNative(evidence({
       pluginListEntries: [],
-      managedByCurrentIntent: false,
     }))).toEqual({
       state: 'missing',
       staleCacheObserved: true,

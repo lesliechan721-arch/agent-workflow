@@ -45,7 +45,7 @@ import {
 } from './rebuild-integration.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
-import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type {
   ArtifactCollisionEvidence,
@@ -170,7 +170,6 @@ export interface StatusSharedNativeProjection {
   version?: string;
   desiredVersion?: string;
   diagnostic?: string;
-  claimable?: boolean;
   staleCacheObserved?: boolean;
 }
 
@@ -266,9 +265,6 @@ export function statusTargetSharedNative(
       : {}),
     ...(typeof component.metadata?.diagnostic === 'string'
       ? { diagnostic: component.metadata.diagnostic }
-      : {}),
-    ...(typeof component.metadata?.claimable === 'boolean'
-      ? { claimable: component.metadata.claimable }
       : {}),
     ...(component.metadata?.staleCacheObserved === true ? { staleCacheObserved: true } : {}),
   };
@@ -760,12 +756,16 @@ function statusRecovery(options: {
   }
   if (options.state === 'blocked') {
     if (options.desired.scopes.includes('user') && options.desired.scopes.includes('project')) {
-      return (['user', 'project'] as const).flatMap((scope) =>
-        (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
+      return (['user', 'project'] as const).flatMap((scope) => {
+        const retainedScope = scope === 'user' ? 'project' : 'user';
+        const retainedRoot = options.conflictRoots?.[retainedScope]?.[0];
+        if (!retainedRoot) return [];
+        return (options.conflictRoots?.[scope] ?? []).map((rootPluginId) => ({
           command: 'uninstall' as const,
           scope,
-          description: `运行 aw uninstall ${rootPluginId} --platform ${options.platform} --scope ${scope}，再运行 aw sync ${options.pluginId} --platform ${options.platform} --scope ${scope === 'user' ? 'project' : 'user'}。`,
-        })));
+          description: `运行 aw uninstall ${rootPluginId} --platform ${options.platform} --scope ${scope}，再运行 aw sync ${retainedRoot} --platform ${options.platform} --scope ${retainedScope}。`,
+        }));
+      });
     }
     const collision = options.sharedNative?.state === 'blocked'
       ? `Codex shared native ${options.sharedNative.pluginId}`
@@ -919,6 +919,7 @@ export async function statusCommandV7(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
   cliVersion?: string;
   platform?: string;
   scope?: string;
@@ -1004,7 +1005,7 @@ export async function statusCommandV7(options: {
       relevance: error.relevance,
     });
   }
-  const nativeCliRunner = getDefaultNativeCliRunner();
+  const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexFilesystemInspection>>();
   const inspectCodexSystemConsumer = (scope: Scope) => {
     let inspection = codexSystemConsumerInspections.get(scope);
@@ -1069,6 +1070,7 @@ export async function statusCommandV7(options: {
             options.scope === undefined ? probe.scope : scopes[0]!,
           ).then((registration) => registration.entries.some((entry) =>
             entry.pluginId === `${probe.pluginName}@${probe.marketplaceName}`)
+            && registration.activations[probe.scope] === true
             ? 'present' as const
             : 'absent' as const)
         : Promise.resolve(ownerInventory.references.some((reference) =>
@@ -1390,7 +1392,7 @@ export async function statusCommandV7(options: {
                       },
                       context: {
                         env,
-                        nativeCliRunner: getDefaultNativeCliRunner(),
+                        nativeCliRunner,
                         reporter: createNoopReporter(),
                         debugLogger: createNoopDebugLogger(),
                       },
@@ -1504,7 +1506,14 @@ export async function statusCommandV7(options: {
                           });
                           dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
                         }
-                        const placements: Scope[] = scope === 'project' ? ['project', 'user'] : ['user'];
+                        const dependencyOverride = (scope === 'project'
+                          ? projectIntent
+                          : userIntent).dependencyScopeOverrides.find((override) =>
+                            override.pluginId === dependencyId
+                            && (override.platform === undefined || override.platform === platform));
+                        const placements: Scope[] = dependencyOverride
+                          ? [dependencyOverride.scope]
+                          : scope === 'project' ? ['project', 'user'] : ['user'];
                         let dependencyResult: {
                           state: StatusV7DependencyReadinessState;
                           dependencyScope?: Scope;
@@ -1543,7 +1552,7 @@ export async function statusCommandV7(options: {
                                 catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
                                 context: {
                                   env,
-                                  nativeCliRunner: getDefaultNativeCliRunner(),
+                                  nativeCliRunner,
                                   reporter: createNoopReporter(),
                                   debugLogger: createNoopDebugLogger(),
                                 },
@@ -1750,7 +1759,6 @@ export async function statusCommandV7(options: {
                       inspectionMode: 'shallow',
                       cwd: options.cwd,
                       env,
-                      managedByCurrentIntent: false,
                       marketplaceName,
                       marketplaceRoot,
                       nativeCliRunner,
@@ -1776,7 +1784,6 @@ export async function statusCommandV7(options: {
                             pluginId: codexPluginId,
                             state: 'usable',
                             version: nativeState.version,
-                            claimable: nativeState.claimable,
                           }
                         : nativeState.state === 'replaceable'
                           ? {
@@ -2332,7 +2339,6 @@ export async function statusCommandV7(options: {
       ? activation.systemConsumer
       : undefined;
     const consumerBlocking = consumerIssue !== undefined;
-    const claimMissing = false;
     const baseTargetErrors = observedTargets.flatMap((candidate) => candidate.errors);
     const hasBlockingBaseReason = baseTargetErrors.some((reason) => reason.severity === 'blocking');
     const capabilityUnsupported = baseTargetErrors.some((reason) =>
@@ -2349,7 +2355,7 @@ export async function statusCommandV7(options: {
             ? ownershipState !== 'absent' || desired.relation === 'managed'
               ? 'orphaned'
               : 'absent'
-            : sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable' || claimMissing
+            : sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
                   ? 'needsSync'
                   : activationDrift || extensions?.state === 'drifted'
                     ? 'needsSync'
@@ -2436,7 +2442,6 @@ export async function statusCommandV7(options: {
           ...(sharedNative.version ? { version: sharedNative.version } : {}),
           ...(sharedNative.desiredVersion ? { desiredVersion: sharedNative.desiredVersion } : {}),
           ...(sharedNative.diagnostic ? { diagnostic: sharedNative.diagnostic } : {}),
-          ...(sharedNative.claimable !== undefined ? { claimable: sharedNative.claimable } : {}),
           ...(sharedNative.staleCacheObserved ? { staleCacheObserved: true } : {}),
         },
       }] : []),

@@ -5,11 +5,14 @@ import type { ReconcileOperationPlan } from '../commands/reconcile-operation-pla
 import type {
   PlatformName,
   RebuildReceiptOverallState,
-  ReceiptOverallState,
   ReceiptTargetIdentity,
   ReceiptTargetResult,
   Scope,
 } from '../types.js';
+import type {
+  CodexReconcilePlan,
+  CodexSharedNativeAction,
+} from '../utils/codex-reconciler.js';
 
 export interface CliCommandResult {
   platforms: string[];
@@ -24,10 +27,11 @@ export interface CliCommandResult {
     platform: PlatformName;
     scope: Scope;
   }>;
-  overallState?: ReceiptOverallState;
+  overallState?: RebuildReceiptOverallState;
   dependencyPlan?: ReconcileOperationPlan;
   operationPlan?: OperationPlan;
   targetResults?: ReceiptTargetResult[];
+  codexReconcilePlans?: CodexReconcilePlan[];
 }
 
 export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
@@ -42,6 +46,10 @@ export interface RebuildReceiptTargetResult extends ReceiptTargetResult {
   residual: string[];
   quarantined: string[];
   failures: RebuildResult['failures'];
+  sharedNative?: {
+    codexPluginId: string;
+    action: Exclude<CodexSharedNativeAction, 'none'>;
+  };
 }
 
 export interface RebuildReceiptJson {
@@ -258,18 +266,29 @@ function receiptTargetResult(
   const changes = planChanges.length > 0
     ? planChanges
     : observableTargetChanges(targetResult, rebuild);
-  const recoveryActions = recoveryForTarget(
-    targetResult.action === 'skipped' ? 'failed' : targetResult.state,
-    errorCode,
-  );
+  const recoveryActions = unique([
+    ...(targetResult.recoveryActions ?? []),
+    ...recoveryForTarget(
+      targetResult.action === 'skipped' ? 'failed' : targetResult.state,
+      errorCode,
+    ),
+  ]);
+  const sharedNative = target.platform === 'codex' && target.pluginId
+    ? result.codexReconcilePlans?.flatMap((plan) =>
+        plan.desiredTargets.some((desired) =>
+          desired.pluginId === target.pluginId && desired.scopes.includes(target.scope))
+          ? plan.sharedNativeActions
+          : [])
+        .find((action) => action.pluginId === target.pluginId && action.action !== 'none')
+    : undefined;
   return {
     target,
     action: targetResult.action,
     state: targetResult.state,
     ...(message ? { message } : {}),
     ...(errorCode ? { errorCode } : {}),
-    relation: planned?.relation ?? 'requested',
-    requiredBy: planned?.requiredBy ?? [],
+    relation: planned?.relation ?? targetResult.relation ?? 'requested',
+    requiredBy: planned?.requiredBy ?? targetResult.requiredBy ?? [],
     changes,
     recoveryActions,
     cleanupAttempted: rebuild?.cleanupAttempted ?? false,
@@ -279,18 +298,28 @@ function receiptTargetResult(
     residual: rebuild?.residual ?? [],
     quarantined: rebuild?.quarantined ?? [],
     failures: rebuild?.failures ?? [],
+    ...(sharedNative ? {
+      sharedNative: {
+        codexPluginId: sharedNative.codexPluginId,
+        action: sharedNative.action as Exclude<CodexSharedNativeAction, 'none'>,
+      },
+    } : {}),
   };
 }
 
 function overallState(
   targetResults: readonly RebuildReceiptTargetResult[],
-  fallback: ReceiptOverallState | undefined,
+  fallback: RebuildReceiptOverallState | undefined,
 ): RebuildReceiptOverallState {
   if (targetResults.length === 0) return fallback ?? 'succeeded';
   const successful = targetResults.filter((target) =>
     target.state === 'completed' && target.action !== 'skipped').length;
   if (successful === targetResults.length) return 'succeeded';
-  return successful === 0 ? 'failed' : 'partial';
+  const successfulRequested = targetResults.some((target) =>
+    target.relation === 'requested'
+    && target.state === 'completed'
+    && target.action !== 'skipped');
+  return successfulRequested ? 'partial' : 'failed';
 }
 
 export function buildRebuildReceiptJson(
@@ -358,6 +387,9 @@ export function renderRebuildReceipt(
       const pluginId = target.target.pluginId ?? target.target.pluginName;
       return [
         `- ${pluginId} / ${target.target.platform} / ${target.target.scope}: ${target.state}`,
+        ...(target.sharedNative
+          ? [`  shared native ${target.sharedNative.codexPluginId}: ${target.sharedNative.action}`]
+          : []),
         ...(target.message ? [`  ${target.message}`] : []),
         ...target.failures
           .filter((failure) => failure.message !== target.message)

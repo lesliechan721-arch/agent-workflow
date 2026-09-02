@@ -307,7 +307,6 @@ describe('rebuild adapter integration', () => {
       expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(cacheRoot),
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      managedByCurrentIntent: false,
       nativeCliRunner: async (invocation) => {
         calls.push(invocation);
         return {
@@ -326,7 +325,7 @@ describe('rebuild adapter integration', () => {
     });
 
     expect(inspected).toMatchObject({
-      sharedNative: { state: 'usable', version: '1.0.0', claimable: true },
+      sharedNative: { state: 'usable', version: '1.0.0' },
       activations: { user: false, project: true },
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
@@ -345,7 +344,6 @@ describe('rebuild adapter integration', () => {
       expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      managedByCurrentIntent: false,
       nativeCliRunner: async (invocation) => {
         calls.push(invocation);
         return { exitCode: 0, stdout: '{invalid', stderr: '' };
@@ -370,7 +368,6 @@ describe('rebuild adapter integration', () => {
       expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      managedByCurrentIntent: false,
       nativeCliRunner: async (invocation) => invocation.cwd === isolation.layout.fixtureCwd
         ? { exitCode: 1, stdout: '', stderr: 'project unavailable' }
         : {

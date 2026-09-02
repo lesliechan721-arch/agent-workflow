@@ -77,8 +77,49 @@ function target(options: {
       : options.state === 'error'
         ? [{ code: options.errorCode ?? 'targetError', message: '安全说明', severity: 'blocking' }]
         : [],
-    recoveryActions: [],
+    recoveryActions: options.errorCode === 'sourceMissing'
+      || options.errorCode === 'catalogSourceUnavailable'
+      || options.errorCode === 'bundleUnavailable'
+      ? [
+          { command: 'sync', description: '来源恢复后同步 desired intent。' },
+          { command: 'cleanup', description: '来源无法恢复时清理可证明属于 AW 的输出。' },
+        ]
+      : [],
   };
+}
+
+function mixedScopeConflictTarget(
+  pluginName: string,
+  sourceId = 'official',
+): StatusV7Payload['targets'][number] {
+  const value = target({ pluginName, sourceId, platform: 'codex', scope: 'user', state: 'present' });
+  value.state = 'blocked';
+  value.components.push(
+    {
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+    },
+    { kind: 'sharedNative', key: `${pluginName}@aw-${sourceId}`, state: 'usable', metadata: { shared: true } },
+    { kind: 'extension', key: 'aw', state: 'conflict', metadata: { kinds: ['instruction'] } },
+  );
+  value.reasons = [{
+    code: 'codexExtensionScopeConflict',
+    message: 'codexExtensionScopeConflict: mixed scope overlap',
+    severity: 'blocking',
+  }];
+  value.recoveryActions = [
+    {
+      command: 'uninstall',
+      scope: 'user',
+      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope user，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope project。`,
+    },
+    {
+      command: 'uninstall',
+      scope: 'project',
+      description: `运行 aw uninstall ${sourceId}/${pluginName} --platform codex --scope project，再运行 aw sync ${sourceId}/${pluginName} --platform codex --scope user。`,
+    },
+  ];
+  return value;
 }
 
 type LegacyStatusTargetFixture = StatusV7Payload['targets'][number] & {
@@ -98,7 +139,6 @@ type LegacyStatusTargetFixture = StatusV7Payload['targets'][number] & {
     version?: string;
     desiredVersion?: string;
     diagnostic?: string;
-    claimable?: boolean;
     staleCacheObserved?: boolean;
   };
   activation?: {
@@ -644,11 +684,15 @@ describe('ConsoleAppV4', () => {
 
   it('routes typed I01-I09 issues and the empty state through mounted pages', async () => {
     const loaded = loadResult();
-    const conflictTarget = loaded.payload.targets.find((entry) =>
+    const conflictTargetIndex = loaded.payload.targets.findIndex((entry) =>
       entry.pluginId === 'team-tools/review-gate'
       && entry.platform === 'codex'
-      && entry.scope === 'project');
-    if (conflictTarget) conflictTarget.state = 'present';
+      && entry.scope === 'user');
+    loaded.payload.targets.splice(
+      conflictTargetIndex,
+      1,
+      mixedScopeConflictTarget('review-gate', 'team-tools'),
+    );
     loaded.payload.targets.push(
       target({ pluginName: 'missing', sourceId: 'archive', platform: 'codex', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
       target({ pluginName: 'changed', sourceId: 'team-tools', platform: 'codex', scope: 'project', state: 'error', errorCode: 'sourceChanged' }),
@@ -681,7 +725,7 @@ describe('ConsoleAppV4', () => {
       expect(reached).toContain(screen);
       expect(detailInstance.lastFrame()).not.toContain('private legacy location');
       if (category === 'sourceMissing') {
-        expect(detailInstance.lastFrame()).toContain('清理已安装内容');
+        expect(detailInstance.lastFrame()).toContain('清理 AW-owned 内容');
         expect(detailInstance.lastFrame()).toContain('重新添加同一来源');
         expect(detailInstance.lastFrame()).toContain('技术详情');
         expect(detailInstance.lastFrame()).not.toContain('aw cleanup');
@@ -765,7 +809,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.originIssue).toMatchObject({
       issueId: selected.issueId,
       category: 'incompleteInstallation',
-      actionId: 'reinstall',
+      actionId: 'sync',
     });
     instance.unmount();
     const reviewInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
@@ -816,7 +860,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(instance.lastFrame()).toContain('当前 Catalog 不再包含此插件');
-    expect(instance.lastFrame()).toContain('清理已安装内容');
+    expect(instance.lastFrame()).toContain('清理 AW-owned 内容');
     expect(instance.lastFrame()).not.toContain('--force');
     await input(instance, '\r');
 
@@ -914,15 +958,12 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    { key: '', actionId: 'keepUserScope', removedScope: 'project' },
-    { key: '\u001B[B', actionId: 'keepProjectScope', removedScope: 'user' },
+    { key: '', actionId: 'keepProjectScope', removedScope: 'user' },
+    { key: '\u001B[B', actionId: 'keepUserScope', removedScope: 'project' },
   ] as const)('maps the canonical scope choice $actionId to removing $removedScope', async ({ key, actionId, removedScope }) => {
     const loaded = loadResult();
     loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    loaded.payload.targets = [
-      target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'present' }),
-      target({ pluginName: 'review-gate', platform: 'codex', scope: 'project', state: 'present' }),
-    ];
+    loaded.payload.targets = [mixedScopeConflictTarget('review-gate')];
     loaded.pluginSummaries = [loaded.pluginSummaries[1]!];
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -5137,7 +5178,7 @@ describe('ConsoleAppV4', () => {
       sharedNativeActions: [{
         pluginId: 'official/agent-lab',
         codexPluginId: 'agent-lab@aw-official',
-        action: 'claim',
+        action: 'reuse',
         desiredVersion: '0.4.2',
         affectsOtherScopes: false,
       }],
@@ -5203,7 +5244,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'd');
     const technicalReviewFrame = instance.lastFrame() ?? '';
     expect(technicalReviewFrame).toContain('Shared Codex native');
-    expect(technicalReviewFrame).toContain('复用精确现有 shared');
+    expect(technicalReviewFrame).toContain('复用已存在的精确 shared');
     expect(technicalReviewFrame).not.toContain('claim');
     expect(technicalReviewFrame).not.toContain('install · shared');
 
@@ -5383,7 +5424,7 @@ describe('ConsoleAppV4', () => {
 
   it.each([
     ['dependencyMissing', 'installDependency', 'install', 'absent', 'D14'],
-    ['dependencyNotReady', 'reinstallDependency', 'reinstall', 'partial', 'D15'],
+    ['dependencyNotReady', 'reinstallDependency', 'sync', 'partial', 'D15'],
   ] as const)('uses the contract dependency placement for a project consumer %s action', async (
     category,
     actionId,
@@ -5841,7 +5882,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('必需依赖 · Agent Skill Toolkit');
     expect(frame).toContain('被依赖 · Agent Content Toolkit');
     expect(frame).not.toContain('Agent Skill Toolkit             所有项目 · 已可用');
-    expect(frame).toContain('› 技术详情');
+    expect(frame).toContain('› 调整依赖位置…');
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
@@ -6018,7 +6059,8 @@ describe('ConsoleAppV4', () => {
 
     const initial = instance.lastFrame() ?? '';
     expect(screens).toContain(expectedScreen);
-    expect(initial).toContain('› 技术详情');
+    const focusedAction = expectedScreen === 'D10' ? '› 调整依赖位置…' : '› 技术详情';
+    expect(initial).toContain(focusedAction);
     expect(initial).toContain('阻塞 · 高优先级阻塞');
     expect(initial).toContain('必需依赖 · 高数量依赖 5');
     expect(initial).toContain('需要处理');
@@ -6032,11 +6074,13 @@ describe('ConsoleAppV4', () => {
     expect(technical).toContain('技术详情');
     expect(technical).toContain('8 依赖 · 5 被依赖 · 已折叠');
     expect(technical).toMatch(/另有 \d+ 项/u);
-    expect(technical).toContain('› 技术详情');
+    expect(technical).toContain(focusedAction);
     expect(technical).toContain('↑↓ 移动');
     expect(technical.match(/›/gu)).toHaveLength(1);
     expect(technical.split('\n').length).toBeLessThanOrEqual(rows);
 
+    if (expectedScreen === 'D10') await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 技术详情');
     await input(instance, '\r');
     expect(instance.lastFrame()).not.toContain('8 依赖 · 5 被依赖 · 已折叠');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });

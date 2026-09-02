@@ -161,6 +161,38 @@ describe('TUI config affected targets', () => {
     expect(configAffectedStatusTargets(targets, 'official/demo', 'project')
       .map(({ platform, scope }) => `${platform}:${scope}`)).toEqual(['codex:project']);
   });
+
+  it('includes desired missing targets and excludes orphaned actual targets', () => {
+    const desiredMissing = target('user', 'absent');
+    desiredMissing.components.find((component) => component.kind === 'intent')!.metadata = {
+      enabled: true, scopes: ['user'], relation: 'root',
+    };
+    const orphanedActual = target('project', 'present');
+    orphanedActual.components.find((component) => component.kind === 'intent')!.metadata = {
+      enabled: false, scopes: [], relation: 'none',
+    };
+
+    expect(configAffectedStatusTargets(
+      [desiredMissing, orphanedActual], 'official/demo', 'user',
+    ).map(({ platform, scope }) => `${platform}:${scope}`)).toEqual(['codex:user']);
+    expect(configAffectedStatusTargets(
+      [desiredMissing, orphanedActual], 'official/demo', 'project',
+    )).toEqual([]);
+  });
+
+  it('expands a collapsed pure-native target into each desired scope', () => {
+    const collapsed = target('user', 'present');
+    collapsed.components.find((component) => component.kind === 'intent')!.metadata = {
+      enabled: true, scopes: ['project', 'user'], relation: 'root',
+    };
+
+    expect(configAffectedStatusTargets([collapsed], 'official/demo', 'user')
+      .map(({ platform, scope }) => `${platform}:${scope}`)).toEqual([
+      'codex:project', 'codex:user',
+    ]);
+    expect(configAffectedStatusTargets([collapsed], 'official/demo', 'project')
+      .map(({ platform, scope }) => `${platform}:${scope}`)).toEqual(['codex:project']);
+  });
 });
 
 describe('TUI controller runtime scope conflict validation', () => {

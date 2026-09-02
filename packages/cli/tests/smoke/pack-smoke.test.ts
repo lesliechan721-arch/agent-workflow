@@ -722,11 +722,13 @@ describe('pack smoke', () => {
     expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
       ok: false,
       overallState: 'failed',
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: `${developmentSourceId}/packed-build`,
-        platform: 'codex',
-        scope: 'project',
-        errorCode: 'writeFailed',
+      targetResults: expect.arrayContaining([expect.objectContaining({
+        target: expect.objectContaining({
+          pluginId: `${developmentSourceId}/packed-build`,
+          platform: 'codex',
+          scope: 'project',
+        }),
+        errorCode: 'codexActivationPostcheckFailed',
         failures: expect.arrayContaining([expect.objectContaining({
           phase: 'postcheck.inspect',
           message: expect.stringContaining('codexProjectConfigNotEffective'),
@@ -749,9 +751,17 @@ describe('pack smoke', () => {
       ok: true,
       command: 'install',
       overallState: 'succeeded',
-      targets: expect.arrayContaining([
-        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project' }),
-        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project' }),
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project',
+          }),
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project',
+          }),
+        }),
       ]),
     });
     const projectCodexConfig = await fs.readFile(
@@ -852,13 +862,20 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(sourceSync.stderr).toBe('');
-    const consumedStatus = await execFileAsync(awBin, ['status', 'packed/packed-build', '--json'], {
-      cwd: tempRoot,
-      env: packedConsumerEnv,
-    });
-    expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
+    const consumedStatus = await execFileAsync(
+      awBin,
+      ['status', 'packed/packed-build', '--json'],
+      { cwd: tempRoot, env: packedConsumerEnv },
+    ).then(
+      () => null,
+      (error: unknown) => error as { stdout?: string },
+    );
+    expect(consumedStatus).not.toBeNull();
+    expect(JSON.parse(consumedStatus?.stdout ?? '{}')).toMatchObject({
       catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
-      targets: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
+      targets: expect.arrayContaining([expect.objectContaining({
+        pluginId: 'packed/packed-build',
+      })]),
     });
     const packedRemoval = await execFileAsync(awBin, [
       'plugin', 'remove', 'packed-build',

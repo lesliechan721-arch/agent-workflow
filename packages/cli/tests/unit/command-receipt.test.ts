@@ -9,6 +9,7 @@ import {
   renderRebuildReceipt,
 } from '../../src/output/command-receipt.js';
 import type { ReceiptTargetResult } from '../../src/types.js';
+import type { CodexReconcilePlan } from '../../src/utils/codex-reconciler.js';
 
 const target = {
   pluginName: 'demo',
@@ -39,6 +40,32 @@ function successfulRebuild(command: RebuildResult['command'] = 'install'): Rebui
     residual: [],
     quarantined: [],
     failures: [],
+  };
+}
+
+function codexReusePlan(): CodexReconcilePlan {
+  return {
+    requirement: {
+      scope: 'project', minimumVersion: '0.0.0', requiresProjectPluginContract: true,
+    },
+    desiredTargets: [{ pluginId: 'team/demo', scopes: ['project', 'user'] }],
+    sharedNativeActions: [{
+      pluginId: 'team/demo', codexPluginId: 'demo@aw', action: 'reuse',
+      desiredVersion: '1.0.0', affectsOtherScopes: true,
+    }],
+    activationActions: { user: [], project: [] },
+    extensionWrites: [],
+    extensionRemovals: [],
+    staleActivationRemovals: [],
+    managedInventory: {
+      before: [], desired: [], ownershipSuperset: [], converged: [],
+      related: { before: [], desired: [], ownershipSuperset: [], converged: [] },
+    },
+    warnings: [],
+    postcheck: { requirement: {
+      scope: 'project', minimumVersion: '0.0.0', requiresProjectPluginContract: true,
+    }, support: 'observed', plugins: [] },
+    review: { requiresConfirmation: false, sharedImpact: { pluginIds: [] } },
   };
 }
 
@@ -135,6 +162,28 @@ describe('command receipt v6', () => {
     });
   });
 
+  it('projects an exact shared-native reuse result into the matching Codex target', () => {
+    const projectTarget = { ...target, scope: 'project' as const };
+    const receipt = buildRebuildReceiptJson('install', {
+      platforms: ['codex'], plugins: ['team/demo'], warnings: [], overallState: 'succeeded',
+      targetResults: [{ target: projectTarget, action: 'install', state: 'completed' }],
+      rebuildResults: [{ ...successfulRebuild(), target: {
+        ...successfulRebuild().target, scope: 'project',
+      } }],
+      codexReconcilePlans: [codexReusePlan()],
+    });
+
+    expect(receipt.targetResults[0]).toMatchObject({
+      target: { pluginId: 'team/demo', platform: 'codex', scope: 'project' },
+      sharedNative: { codexPluginId: 'demo@aw', action: 'reuse' },
+    });
+    expect(renderRebuildReceipt('install', {
+      platforms: ['codex'], plugins: ['team/demo'], warnings: [], overallState: 'succeeded',
+      targetResults: [{ target: projectTarget, action: 'install', state: 'completed' }],
+      codexReconcilePlans: [codexReusePlan()],
+    }).join('\n')).toContain('shared native demo@aw: reuse');
+  });
+
   it.each([
     {
       name: 'all completed or kept targets',
@@ -145,9 +194,9 @@ describe('command receipt v6', () => {
       expected: 'succeeded',
     },
     {
-      name: 'completed and skipped targets',
-      targetResults: [completedTarget('keep'), {
-        ...completedTarget('skipped'),
+      name: 'completed and failed independent requested targets',
+      targetResults: [completedTarget('install'), {
+        ...completedTarget('install'),
         target: { ...target, pluginName: 'root', pluginId: 'team/root' },
         state: 'failed' as const,
         message: 'dependencyInstallFailed: leaf failed',
@@ -168,6 +217,102 @@ describe('command receipt v6', () => {
 
     expect(receipt.overallState).toBe(expected);
     expect(receipt.ok).toBe(expected === 'succeeded');
+  });
+
+  it('reports failed when a completed dependency is followed by a failed requested root', () => {
+    const dependencyPlan: ReconcileOperationPlan = {
+      requestedPluginIds: ['team/root'],
+      resolvedPluginIds: ['team/leaf', 'team/root'],
+      dependencyEdges: [{ from: 'team/root', to: 'team/leaf', platform: 'codex' }],
+      scopeOverrides: [],
+      targets: [
+        {
+          pluginId: 'team/leaf', pluginName: 'leaf', platform: 'codex',
+          resolvedScope: 'user', relation: 'dependency', requiredBy: ['team/root'], state: 'absent',
+          action: 'install', order: 0, depth: 1, rootScope: 'user', minimumScope: 'user',
+          allowedScopes: ['user'], assignmentSource: 'default', locked: false, affectsOtherProjects: false,
+        },
+        {
+          pluginId: 'team/root', pluginName: 'root', platform: 'codex',
+          resolvedScope: 'user', relation: 'requested', requiredBy: [], state: 'absent',
+          action: 'install', order: 1, depth: 0, rootScope: 'user', minimumScope: 'user',
+          allowedScopes: ['user'], assignmentSource: 'default', locked: false, affectsOtherProjects: false,
+        },
+      ],
+    };
+    const receipt = buildRebuildReceiptJson('install', {
+      platforms: ['codex'], plugins: ['team/root'], warnings: [], overallState: 'failed', dependencyPlan,
+      targetResults: [
+        {
+          target: { ...target, pluginName: 'leaf', pluginId: 'team/leaf' },
+          action: 'install', state: 'completed',
+        },
+        {
+          target: { ...target, pluginName: 'root', pluginId: 'team/root' },
+          action: 'install', state: 'failed', message: 'writeFailed: root failed',
+        },
+      ],
+    });
+
+    expect(receipt).toMatchObject({
+      ok: false,
+      overallState: 'failed',
+      targetResults: [
+        { target: { pluginId: 'team/leaf' }, relation: 'dependency', state: 'completed' },
+        { target: { pluginId: 'team/root' }, relation: 'requested', state: 'failed' },
+      ],
+    });
+  });
+
+  it('keeps dependency relation for a failed cleanup of the previous migration scope', () => {
+    const dependencyPlan: ReconcileOperationPlan = {
+      requestedPluginIds: ['team/root'],
+      resolvedPluginIds: ['team/leaf', 'team/root'],
+      dependencyEdges: [{ from: 'team/root', to: 'team/leaf', platform: 'codex' }],
+      scopeOverrides: [],
+      targets: [
+        {
+          pluginId: 'team/leaf', pluginName: 'leaf', platform: 'codex',
+          resolvedScope: 'user', relation: 'dependency', requiredBy: ['team/root'], state: 'absent',
+          action: 'move', order: 0, depth: 1, rootScope: 'user', minimumScope: 'user',
+          allowedScopes: ['project', 'user'], assignmentSource: 'consumerPromotion',
+          locked: false, affectsOtherProjects: true,
+        },
+        {
+          pluginId: 'team/root', pluginName: 'root', platform: 'codex',
+          resolvedScope: 'user', relation: 'requested', requiredBy: [], state: 'absent',
+          action: 'install', order: 1, depth: 0, rootScope: 'user', minimumScope: 'user',
+          allowedScopes: ['project', 'user'], assignmentSource: 'root',
+          locked: true, lockReason: 'requestedRootScope', affectsOtherProjects: true,
+        },
+      ],
+    };
+    const receipt = buildRebuildReceiptJson('install', {
+      platforms: ['codex'], plugins: ['team/root'], warnings: [], overallState: 'partial',
+      dependencyPlan,
+      targetResults: [
+        {
+          target: { ...target, pluginName: 'root', pluginId: 'team/root' },
+          action: 'install', state: 'completed',
+        },
+        {
+          target: {
+            ...target, pluginName: 'leaf', pluginId: 'team/leaf', scope: 'project',
+          },
+          action: 'cleanup', state: 'failed', message: 'cleanupFailed: old scope',
+          relation: 'dependency', requiredBy: ['team/root'],
+        },
+      ],
+    });
+
+    expect(receipt).toMatchObject({
+      ok: false,
+      overallState: 'partial',
+      targetResults: expect.arrayContaining([expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'project' }),
+        action: 'cleanup', state: 'failed', relation: 'dependency', requiredBy: ['team/root'],
+      })]),
+    });
   });
 
   it('keeps early failure recovery without inventing a plan fingerprint or changes', () => {

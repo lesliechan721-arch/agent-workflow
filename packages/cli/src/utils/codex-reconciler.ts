@@ -16,7 +16,6 @@ export type CodexReconcileOperation =
 
 export type CodexSharedNativeAction =
   | 'reuse'
-  | 'claim'
   | 'install'
   | 'replace'
   | 'repair'
@@ -218,7 +217,6 @@ function nativeAction(options: {
   if (state.state === 'replaceable') {
     return state.reason === 'damaged' ? 'repair' : 'replace';
   }
-  if (state.claimable) return 'claim';
   return 'reuse';
 }
 
@@ -345,7 +343,7 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
   if (ownerCollision) {
     throw new CodexReconcilePlanError(
       'codexSurfaceOwnerCollision',
-      `${ownerCollision[0]} is claimed by ${[...ownerCollision[1]].sort(compareText).join(', ')}.`,
+      `${ownerCollision[0]} has multiple Catalog owners: ${[...ownerCollision[1]].sort(compareText).join(', ')}.`,
     );
   }
 
@@ -389,7 +387,6 @@ export function createCodexReconcilePlan(input: CodexReconcilerInput): CodexReco
         affectsOtherScopes: action === 'replace' || action === 'repair',
       });
     }
-    if (action === 'claim') warnings.push(`codexSharedNativeClaim:${target.codexPluginId}`);
     if (action === 'replace' || action === 'repair') {
       warnings.push(`codexSharedNativeAffectsOtherScopes:${target.codexPluginId}`);
     }

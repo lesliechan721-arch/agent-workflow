@@ -63,6 +63,7 @@ function target(options: {
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
   errors?: StatusV7Payload['targets'][number]['errors'];
+  recoveryActions?: StatusV7Payload['targets'][number]['recoveryActions'];
 }): StatusV7Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
@@ -84,7 +85,7 @@ function target(options: {
     components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
     reasons: options.errors
       ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure', severity: 'blocking' }] : []),
-    recoveryActions: [],
+    recoveryActions: options.recoveryActions ?? [],
   };
 }
 
@@ -1021,37 +1022,39 @@ describe('TUI v4 router and ViewModel', () => {
     }));
   });
 
-  it('projects one installed scope as normal placement and two scopes as a conflict issue', () => {
+  it('does not synthesize a conflict or removal recovery for two ready pure-native scopes', () => {
+    const pureNativeTarget = (scope: 'user' | 'project') => {
+      const value = target({ scope, state: 'present' });
+      value.components.push(
+        {
+          kind: 'intent', key: 'desired', state: 'desired',
+          metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+        },
+        { kind: 'sharedNative', key: 'demo@aw-official', state: 'usable', metadata: { shared: true } },
+        { kind: 'activation', key: 'user', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+      );
+      return value;
+    };
     const view = buildTuiViewModel({
       status: status({
         targets: [
-          target({ scope: 'user', state: 'present' }),
-          target({ scope: 'project', state: 'partial' }),
+          pureNativeTarget('user'),
+          pureNativeTarget('project'),
         ],
       }),
       pluginSummaries: summaries(['official', 'demo']),
     });
 
-    expect(view.plugins[0]?.installedPlacements).toEqual([{
-      platform: 'codex',
-      state: 'scopeConflict',
-      placements: [
-        { scope: 'project', health: 'incomplete', revision: { state: 'unknown', availableVersion: '1.0.0' } },
-        { scope: 'user', health: 'ready', revision: { state: 'unknown', availableVersion: '1.0.0' } },
-      ],
-    }]);
-    expect(view.issues).toEqual(expect.arrayContaining([
+    expect(view.plugins[0]?.installedPlacements).toEqual([
       expect.objectContaining({
-        issueId: 'scope:official/demo:codex',
-        pluginId: 'official/demo',
-        sourceId: 'official',
-        placements: ['project', 'user'],
-        actions: expect.arrayContaining([
-          expect.objectContaining({ id: 'keepUserScope' }),
-          expect.objectContaining({ id: 'keepProjectScope' }),
-        ]),
+        platform: 'codex', state: 'installed', health: 'ready',
+        desiredScopes: ['project', 'user'], actualState: 'ready',
       }),
-    ]));
+    ]);
+    expect(view.issues.some((issue) => issue.category === 'scopeConflict')).toBe(false);
+    expect(buildPluginDetailActions(view.plugins[0]!).some((action) =>
+      action.id === 'resolveScopeConflict')).toBe(false);
   });
 
   it.each([
@@ -1123,7 +1126,13 @@ describe('TUI v4 router and ViewModel', () => {
               },
             }],
           }),
-          target({ pluginName: 'missing', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
+          target({
+            pluginName: 'missing', scope: 'user', state: 'error', errorCode: 'sourceMissing',
+            recoveryActions: [
+              { command: 'sync', description: '来源恢复后同步 desired intent。' },
+              { command: 'cleanup', description: '清理可证明属于 AW 的输出。' },
+            ],
+          }),
           target({ pluginName: 'changed', scope: 'user', state: 'error', errorCode: 'sourceChanged' }),
           target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
           target({ pluginName: 'offline-two', scope: 'project', state: 'error', errorCode: 'catalogSourceUnavailable' }),
@@ -1153,6 +1162,8 @@ describe('TUI v4 router and ViewModel', () => {
       'source:official:unavailable': 'sourceUnavailable',
     });
     expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
+    expect(view.issues.find((issue) => issue.category === 'incompleteInstallation')?.actions
+      .map((action) => action.id)).toEqual(['sync', 'viewTechnical']);
     const collision = view.issues.find((issue) => issue.category === 'artifactCollision');
     expect(collision).toMatchObject({
       title: expect.stringContaining('输出冲突'),
@@ -1406,6 +1417,10 @@ describe('TUI v4 router and ViewModel', () => {
       pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
     });
     unavailableTarget.reasons.push({ code: 'bundleUnavailable', message: 'bundle missing' });
+    unavailableTarget.recoveryActions = [
+      { command: 'sync', description: '来源恢复后同步 desired intent。' },
+      { command: 'cleanup', description: '清理可证明属于 AW 的输出。' },
+    ];
     const view = buildTuiViewModel({
       status: status({ targets: [unavailableTarget] }),
       pluginSummaries: [],
@@ -1428,7 +1443,7 @@ describe('TUI v4 router and ViewModel', () => {
         title: expect.stringContaining('当前 Catalog 不再包含此插件'),
         explanation: '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。',
         actions: expect.arrayContaining([
-          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理已安装内容' }),
+          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理 AW-owned 内容' }),
         ]),
       }),
     ]));
@@ -1589,7 +1604,7 @@ describe('TUI v4 Review safety', () => {
   it('shows an exact existing shared native as reuse without an ownership ledger', async () => {
     const codexReconcilePlans = [{
       sharedNativeActions: [{
-        pluginId: 'official/demo', codexPluginId: 'demo@aw-official', action: 'claim',
+        pluginId: 'official/demo', codexPluginId: 'demo@aw-official', action: 'reuse',
         desiredVersion: '1.0.0', affectsOtherScopes: false,
       }],
       activationActions: { user: [], project: [] },
@@ -1755,7 +1770,7 @@ describe('TUI v4 Review safety', () => {
     expect(result).not.toHaveProperty('writeMayHaveCompleted');
   });
 
-  it('groups the frozen plan by intent layer and projects target-level partial evidence', async () => {
+  it('groups the frozen plan by intent layer while a skipped requested target keeps the result failed', async () => {
     const dependencyPlan = {
       dependencyPlanSchemaVersion: 1 as const,
       requestedPluginIds: ['official/root'],
@@ -1837,8 +1852,9 @@ describe('TUI v4 Review safety', () => {
       'aw install official/root --platform codex --scope user --yes',
     );
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
-      state: 'partial',
-      summary: { targets: expect.arrayContaining([
+      state: 'blocked',
+      code: 'operationFailed',
+      summary: { code: 'operationFailed', targets: expect.arrayContaining([
         expect.objectContaining({ pluginId: 'official/base', relation: 'transitive', state: 'failed' }),
         expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept', requiredBy: ['official/root'] }),
         expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
@@ -2221,7 +2237,7 @@ describe('TUI v4 Review safety', () => {
     expect(fixture.value.snapshot.phase).toBe('ready');
   });
 
-  it('keeps an issue-origin dependency partial result when the origin issue remains', async () => {
+  it('keeps an issue-origin dependency result failed when the requested target is skipped', async () => {
     const dependencyPlan = {
       dependencyPlanSchemaVersion: 1 as const,
       requestedPluginIds: ['official/demo'],
@@ -2261,9 +2277,10 @@ describe('TUI v4 Review safety', () => {
     const result = await value.executeOperation(review.reviewToken);
 
     expect(result).toMatchObject({
-      state: 'partial',
+      state: 'blocked',
+      code: 'operationFailed',
       summary: {
-        code: 'operationPartial',
+        code: 'operationFailed',
         targets: [
           expect.objectContaining({ pluginId: 'official/base', relation: 'transitive', state: 'kept' }),
           expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'failed' }),

@@ -46,6 +46,24 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function mergedSyncOverallState(
+  results: readonly RebuildCommandResult[],
+  plan: ReconcileOperationPlan | undefined,
+): RebuildCommandResult['overallState'] {
+  if (results.every((result) => result.overallState === 'succeeded')) return 'succeeded';
+  if (results.some((result) => result.overallState === 'partial')) return 'partial';
+  if (!plan) return 'failed';
+  const requested = new Set(plan.targets
+    .filter((target) => target.relation === 'requested')
+    .map((target) => `${target.pluginId}\0${target.platform}`));
+  const completedRequested = results.some((result) => result.targetResults.some((target) =>
+    target.state === 'completed'
+    && target.action !== 'skipped'
+    && target.target.pluginId !== undefined
+    && requested.has(`${target.target.pluginId}\0${target.target.platform}`)));
+  return completedRequested ? 'partial' : 'failed';
+}
+
 function mergeSyncResults(results: RebuildCommandResult[]): RebuildCommandResult {
   const operationPlans = results.flatMap((result) => result.operationPlan ? [result.operationPlan] : []);
   const dependencyPlans = results.flatMap((result) =>
@@ -76,9 +94,7 @@ function mergeSyncResults(results: RebuildCommandResult[]): RebuildCommandResult
     warnings: results.flatMap((result) => result.warnings),
     rebuildResults: results.flatMap((result) => result.rebuildResults),
     targetResults: results.flatMap((result) => result.targetResults),
-    overallState: results.every((result) => result.overallState === 'succeeded')
-      ? 'succeeded'
-      : 'failed',
+    overallState: mergedSyncOverallState(results, dependencyPlan),
     receiptTargets: results.flatMap((result) => result.receiptTargets),
     ...(dependencyPlan ? { dependencyPlan } : {}),
     ...(results.some((result) => result.codexReconcilePlans !== undefined)

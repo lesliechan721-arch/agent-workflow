@@ -313,6 +313,9 @@ export type UserIssueGroup =
   | 'diagnostic';
 
 export type UserIssueActionId =
+  | 'install'
+  | 'sync'
+  | 'refreshAndSync'
   | 'reinstall'
   | 'cleanup'
   | 'remove'
@@ -339,7 +342,7 @@ export interface UserIssueActionViewModel {
   platform?: PlatformName;
   scope?: Scope;
   project?: 'current' | 'other' | null;
-  writeAction?: 'install' | 'reinstall' | 'uninstall' | 'cleanup';
+  writeAction?: 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
 }
 
 export type TargetIssueRootCode =
@@ -652,40 +655,32 @@ export function projectPlatformPlacement(
       revision: revisionFor(errorTarget),
     };
   }
-  if (installed.length === 1) {
-    const target = installed[0]!;
-    const intent = statusTargetIntent(target);
-    const activation = statusTargetActivation(target);
-    const sharedNative = statusTargetSharedNative(target);
-    const extensions = statusTargetExtensions(target);
-    const blockingReason = target.reasons.some((reason) =>
-      reason.code === 'artifactCollision' && reason.severity === 'blocking')
-      ? 'artifactCollision' as const
-      : undefined;
-    return {
-      platform,
-      state: 'installed',
-      scope: target.scope,
-      health: targetHealth(target),
-      revision: revisionFor(target),
-      desiredScopes: [...intent.scopes],
-      relation: intent.relation,
-      actualState: target.state,
-      ...(activation ? { activation } : {}),
-      ...(sharedNative ? { sharedNative } : {}),
-      ...(extensions ? { extensions } : {}),
-      recovery: [...target.recoveryActions],
-      ...(blockingReason ? { blockingReason } : {}),
-    };
-  }
+  const target = installed.find((candidate) => candidate.state === 'blocked')
+    ?? installed.find((candidate) => candidate.state === 'needsSync')
+    ?? installed.find((candidate) => candidate.state === 'orphaned')
+    ?? installed[0]!;
+  const intent = statusTargetIntent(target);
+  const activation = statusTargetActivation(target);
+  const sharedNative = statusTargetSharedNative(target);
+  const extensions = statusTargetExtensions(target);
+  const blockingReason = target.reasons.some((reason) =>
+    reason.code === 'artifactCollision' && reason.severity === 'blocking')
+    ? 'artifactCollision' as const
+    : undefined;
   return {
     platform,
-    state: 'scopeConflict',
-    placements: installed.map((target) => ({
-      scope: target.scope,
-      health: targetHealth(target),
-      revision: revisionFor(target),
-    })).sort((left, right) => compareText(left.scope, right.scope)),
+    state: 'installed',
+    scope: target.scope,
+    health: targetHealth(target),
+    revision: revisionFor(target),
+    desiredScopes: [...intent.scopes],
+    relation: intent.relation,
+    actualState: target.state,
+    ...(activation ? { activation } : {}),
+    ...(sharedNative ? { sharedNative } : {}),
+    ...(extensions ? { extensions } : {}),
+    recovery: [...target.recoveryActions],
+    ...(blockingReason ? { blockingReason } : {}),
   };
 }
 
@@ -882,9 +877,55 @@ function sourceIssue(
   };
 }
 
+function lifecycleIssueActions(
+  target: Pick<StatusV7Target,
+    'pluginId' | 'platform' | 'scope' | 'state' | 'recoveryActions'>,
+  options: { dependency?: boolean; project?: 'current' | 'other' | null } = {},
+): UserIssueActionViewModel[] {
+  return buildAllowedLifecycleActions(target).flatMap((action): UserIssueActionViewModel[] => {
+    if (options.dependency) {
+      if (action.id === 'install') return [{
+        id: 'installDependency',
+        label: '补齐依赖插件',
+        pluginId: action.pluginId,
+        platform: action.platform,
+        scope: action.scope,
+        project: options.project,
+        writeAction: 'install',
+      }];
+      if (action.id === 'sync' || action.id === 'reinstall') return [{
+        id: 'reinstallDependency',
+        label: action.label,
+        description: action.description,
+        pluginId: action.pluginId,
+        platform: action.platform,
+        scope: action.scope,
+        project: options.project,
+        writeAction: action.id,
+      }];
+      return [];
+    }
+    const projection = {
+      install: { id: 'install' as const, writeAction: 'install' as const },
+      sync: { id: 'sync' as const, writeAction: 'sync' as const },
+      refreshAndSync: { id: 'refreshAndSync' as const, writeAction: 'refreshAndSync' as const },
+      reinstall: { id: 'reinstall' as const, writeAction: 'reinstall' as const },
+      uninstall: { id: 'remove' as const, writeAction: 'uninstall' as const },
+      cleanup: { id: 'cleanup' as const, writeAction: 'cleanup' as const },
+    }[action.id];
+    return [{
+      ...projection,
+      label: action.label,
+      description: action.description,
+      pluginId: action.pluginId,
+      platform: action.platform,
+      scope: action.scope,
+    }];
+  });
+}
+
 function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
-  const byPlacement = new Map<string, StatusV7Target[]>();
   const canonicalRootsByEntity = new Map<string, string>();
   for (const target of payload.targets) {
     for (const error of target.reasons) {
@@ -906,8 +947,6 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
     }
   }
   for (const target of payload.targets) {
-    const key = `${target.pluginId}\0${target.platform}`;
-    byPlacement.set(key, [...(byPlacement.get(key) ?? []), target]);
     const intent = statusTargetIntent(target);
     const scopedConflictRecovery = target.reasons.some((reason) =>
       reason.code === 'codexExtensionScopeConflict')
@@ -1031,26 +1070,32 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
       const dependencyScope = rootError?.dependencyScope;
       const dependencyProject = rootError?.dependencyProject;
       const dependencyCategory = root.category.startsWith('dependency');
+      const dependencyTarget = dependencyPluginId && dependencyPlatform && dependencyScope
+        ? payload.targets.find((candidate) => candidate.pluginId === dependencyPluginId
+          && candidate.platform === dependencyPlatform && candidate.scope === dependencyScope)
+        : undefined;
+      const dependencyLifecycleActions = dependencyPluginId && dependencyPlatform && dependencyScope
+        ? lifecycleIssueActions(dependencyTarget ?? {
+            pluginId: dependencyPluginId,
+            platform: dependencyPlatform,
+            scope: dependencyScope,
+            state: 'absent',
+            recoveryActions: [],
+          }, { dependency: true, project: dependencyProject })
+        : [];
+      const directLifecycleActions = dependencyCategory ? [] : lifecycleIssueActions(target);
       const actions: UserIssueActionViewModel[] = root.category === 'dependencyMissing'
         ? [
-            ...(dependencyPluginId && dependencyPlatform && dependencyScope
-              ? [{ id: 'installDependency' as const, label: '补齐依赖插件',
-                  pluginId: dependencyPluginId, platform: dependencyPlatform,
-                  scope: dependencyScope, project: dependencyProject,
-                  writeAction: 'install' as const }]
-              : []),
+            ...dependencyLifecycleActions,
             { id: 'viewDependencies', label: '查看依赖关系' },
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'dependencyNotReady'
           ? [
-              ...(dependencyPluginId && dependencyPlatform && dependencyScope ? [
+              ...(dependencyPluginId ? [
                 { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
-                { id: 'reinstallDependency' as const, label: '重新安装依赖插件',
-                  pluginId: dependencyPluginId, platform: dependencyPlatform,
-                  scope: dependencyScope, project: dependencyProject,
-                  writeAction: 'reinstall' as const },
               ] : []),
+              ...dependencyLifecycleActions.filter((action) => action.id === 'reinstallDependency'),
               { id: 'viewDependencies', label: '查看依赖关系' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
@@ -1059,20 +1104,19 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
                 { id: 'viewDependencies', label: '查看依赖关系' },
                 { id: 'viewTechnical', label: '技术详情' },
               ]
-            : root.category === 'artifactCollision'
+              : root.category === 'artifactCollision'
               ? [
                   { id: 'viewTechnical', label: '查看冲突原因' },
                   { id: 'retryLater', label: '处理冲突后重试' },
                 ]
               : root.category === 'incompleteInstallation'
         ? [
-            { id: 'reinstall', label: '重新安装', description: '保留插件设置，重新生成缺失内容' },
-            { id: 'remove', label: '移除安装', description: '保留插件设置' },
+            ...directLifecycleActions,
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'sourceMissing'
           ? [
-              { id: 'cleanup', label: '清理已安装内容', description: '只清理 matching owner 的现场内容；保留插件设置', writeAction: 'cleanup' },
+              ...directLifecycleActions,
               { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
@@ -1083,16 +1127,13 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
               ]
             : root.category === 'sourceUnavailable'
               ? [
-                  ...(root.code === 'bundleUnavailable' ? [{
-                    id: 'cleanup' as const,
-                    label: '清理已安装内容',
-                    description: '只清理 AW 管理的现场内容；保留插件设置',
-                    writeAction: 'cleanup' as const,
-                  }] : []),
+                  ...(root.code === 'bundleUnavailable' ? directLifecycleActions : []),
                   { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查当前 Catalog 或稍后重试' : '修复来源配置或稍后重试' },
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
-              : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
+              : [...directLifecycleActions,
+                  { id: 'viewTechnical', label: '技术详情' },
+                  { id: 'retryLater', label: '稍后重试' }];
       const bundleUnavailable = root.code === 'bundleUnavailable';
       const relationship = targetIssueRelationship({
         target,
@@ -1180,30 +1221,6 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           : [{ code: 'targetStateError', message: '目标状态异常。' }],
       });
     }
-  }
-  for (const targets of byPlacement.values()) {
-    const installed = targets.filter(isInstalledScopeEvidence);
-    if (new Set(installed.map((target) => target.scope)).size < 2) continue;
-    const sample = installed[0]!;
-    issues.push({
-      issueId: `scope:${sample.pluginId}:${sample.platform}`,
-      category: 'scopeConflict',
-      title: `${sample.pluginId} · ${sample.platform === 'codex' ? 'Codex' : 'Claude Code'} · 安装位置冲突`,
-      explanation: '所有项目和当前项目同时发现了这个插件。',
-      impact: ['正常状态只能保留一个位置。'],
-      entity: { kind: 'plugin', id: sample.pluginId },
-      pluginId: sample.pluginId,
-      platform: sample.platform,
-      sourceId: sample.sourceId,
-      sourceIdentity: sample.sourceIdentity,
-      placements: installed.map((target) => target.scope).sort(compareText),
-      actions: [
-        { id: 'keepUserScope', label: '保留所有项目', description: '移除当前项目中的安装；设置保留' },
-        { id: 'keepProjectScope', label: '保留当前项目', description: '移除所有项目中的安装；设置保留' },
-        { id: 'viewTechnical', label: '查看两个位置的详情' },
-      ],
-      technicalDetails: [{ code: 'scopeConflict', message: '同一插件和平台存在两个安装位置。' }],
-    });
   }
   return issues;
 }

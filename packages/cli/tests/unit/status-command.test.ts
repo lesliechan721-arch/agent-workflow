@@ -262,6 +262,51 @@ describe('status v7 current behavior', () => {
     expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(true);
   });
 
+  it('recovers a dependency scope conflict through its desired roots', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-conflict-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'project-root', dependencies: ['leaf'] },
+      { name: 'user-root', dependencies: ['leaf'] },
+    ]);
+    const { env } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env,
+    }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/user-root', platforms: ['codex'] }],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env,
+    }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/project-root', platforms: ['codex'] }],
+    });
+
+    const result = await statusCommandV7({
+      plugins: ['local/leaf'], cwd: isolation.layout.fixtureCwd, env,
+      platform: 'codex', json: true,
+    });
+
+    expect(result.payload.targets).toEqual([expect.objectContaining({
+      pluginId: 'local/leaf',
+      state: 'blocked',
+      recoveryActions: [
+        {
+          command: 'uninstall',
+          scope: 'user',
+          description: '运行 aw uninstall local/user-root --platform codex --scope user，再运行 aw sync local/project-root --platform codex --scope project。',
+        },
+        {
+          command: 'uninstall',
+          scope: 'project',
+          description: '运行 aw uninstall local/project-root --platform codex --scope project，再运行 aw sync local/user-root --platform codex --scope user。',
+        },
+      ],
+    })]);
+  });
+
   it('keeps the default-scope Codex dependency component aligned with its project reason', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'project-dependency-source');
@@ -846,8 +891,15 @@ describe('status v7 current behavior', () => {
         env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'user', json: true,
       });
       expect(present.payload.targets[0]).toMatchObject({ state: 'ready' });
-      expect(statusTargetSharedNative(present.payload.targets[0]!)).toMatchObject({
-        state: 'usable', version: '1.0.0',
+      expect(statusTargetSharedNative(present.payload.targets[0]!)).toEqual({
+        pluginId: 'demo@aw-local', state: 'usable', version: '1.0.0',
+      });
+      expect(present.payload.targets[0]!.components.find((component) =>
+        component.kind === 'sharedNative')).toEqual({
+        kind: 'sharedNative',
+        key: 'demo@aw-local',
+        state: 'usable',
+        metadata: { shared: true, version: '1.0.0' },
       });
       expect(statusTargetActivation(present.payload.targets[0]!)).toMatchObject({
         user: true, evidence: 'observed',

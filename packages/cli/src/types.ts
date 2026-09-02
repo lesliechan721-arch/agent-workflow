@@ -247,6 +247,9 @@ export interface ReceiptTargetResult {
   state: TargetWriteState;
   message?: string;
   errorCode?: string;
+  relation?: 'requested' | 'dependency';
+  requiredBy?: string[];
+  recoveryActions?: string[];
 }
 
 export interface ConfigFieldEntry {

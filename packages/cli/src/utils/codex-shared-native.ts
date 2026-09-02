@@ -29,7 +29,6 @@ export type CodexSharedNativeInspection =
   | {
       state: 'usable';
       version: string;
-      claimable: boolean;
     }
   | {
       state: 'replaceable';
@@ -67,7 +66,6 @@ export interface CodexSharedNativeEvidence {
   marketplacePathSafe: boolean;
   pluginListEntries: CodexPluginListEntry[] | null;
   manifest: CodexSharedNativeManifestEvidence;
-  managedByCurrentIntent: boolean;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -170,7 +168,6 @@ export function inspectCodexSharedNative(
   return {
     state: 'usable',
     version: evidence.manifest.version,
-    claimable: !evidence.managedByCurrentIntent,
   };
 }
 

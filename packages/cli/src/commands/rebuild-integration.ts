@@ -59,6 +59,7 @@ import {
   buildCodexPluginListJsonInvocation,
   buildCodexProjectPluginListInvocations,
   buildCodexPluginRemoveInvocation,
+  CodexProjectConfigNotEffectiveError,
   parseCodexPluginListJson,
   postcheckCodexProjectPluginActivation,
   runNativeCli,
@@ -183,6 +184,19 @@ export interface PreparedRebuildTarget {
   target: DesiredTarget;
 }
 
+export class CodexActivationPostcheckError extends Error {
+  readonly code = 'codexActivationPostcheckFailed';
+  readonly codexPluginIds: string[];
+
+  constructor(codexPluginIds: string | readonly string[], detail: string) {
+    super(`codexActivationPostcheckFailed: ${detail}`);
+    this.name = 'CodexActivationPostcheckError';
+    this.codexPluginIds = [...new Set(
+      typeof codexPluginIds === 'string' ? [codexPluginIds] : codexPluginIds,
+    )];
+  }
+}
+
 export interface RebuildExecutionContext {
   env: NodeJS.ProcessEnv;
   nativeCliRunner: NativeCliRunner;
@@ -238,12 +252,13 @@ export async function executeCodexReconcileActivations(options: {
     const configPath = resolveCodexPaths(options.cwd, scope, options.env).configTomlPath;
     await applyCodexConfigTransactionFile(configPath, { upsertPluginActivations: enables });
     const enabledConfig = await readCodexConfigFile(configPath);
-    for (const pluginId of Object.keys(enables)) {
-      if (enabledConfig.snapshot.plugins[pluginId]?.enabled !== true) {
-        throw new Error(
-          `codexActivationPostcheckFailed: ${pluginId} ${scope} activation was not enabled before obsolete activation removal.`,
-        );
-      }
+    const missingEnables = Object.keys(enables).filter((pluginId) =>
+      enabledConfig.snapshot.plugins[pluginId]?.enabled !== true);
+    if (missingEnables.length > 0) {
+      throw new CodexActivationPostcheckError(
+        missingEnables,
+        `${missingEnables.join(', ')} ${scope} activation was not enabled before obsolete activation removal.`,
+      );
     }
   }
   for (const scope of ['user', 'project'] as const) {
@@ -268,6 +283,8 @@ export async function executeCodexReconcileActivations(options: {
     readCodexConfigFile(resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath),
     readCodexConfigFile(resolveCodexPaths(options.cwd, 'project', options.env).configTomlPath),
   ]);
+  const configMismatchIds: string[] = [];
+  const configMismatchDetails: string[] = [];
   for (const plan of options.plans) {
     for (const scope of ['user', 'project'] as const) {
       const snapshot = scope === 'user' ? userConfig.snapshot : projectConfig.snapshot;
@@ -277,19 +294,25 @@ export async function executeCodexReconcileActivations(options: {
           ? true
           : action.action === 'disable' || actual === false ? false : undefined;
         if (actual !== expected) {
-          throw new Error(
-            `codexActivationPostcheckFailed: ${action.codexPluginId} ${scope} activation is ${String(actual)}; expected ${String(expected)}.`,
+          configMismatchIds.push(action.codexPluginId);
+          configMismatchDetails.push(
+            `${action.codexPluginId} ${scope} activation is ${String(actual)}; expected ${String(expected)}.`,
           );
         }
       }
       for (const removal of plan.staleActivationRemovals.filter((entry) => entry.scope === scope)) {
         if (snapshot.plugins[removal.codexPluginId]?.enabled !== undefined) {
-          throw new Error(
-            `codexActivationPostcheckFailed: stale ${removal.codexPluginId} ${scope} activation remains.`,
-          );
+          configMismatchIds.push(removal.codexPluginId);
+          configMismatchDetails.push(`stale ${removal.codexPluginId} ${scope} activation remains.`);
         }
       }
     }
+  }
+  if (configMismatchIds.length > 0) {
+    throw new CodexActivationPostcheckError(
+      configMismatchIds,
+      configMismatchDetails.join(' '),
+    );
   }
 
   const observedProjectChecks = options.plans.flatMap((plan) =>
@@ -309,14 +332,31 @@ export async function executeCodexReconcileActivations(options: {
       runNativeCliChecked(invocations.exact, options.runner),
       runNativeCliChecked(invocations.neutral, options.runner),
     ]);
+    const ineffectivePlugins: string[] = [];
+    const ineffectiveDetails: string[] = [];
     for (const plugin of observedProjectChecks) {
-      postcheckCodexProjectPluginActivation({
-        pluginId: plugin.codexPluginId,
-        userEnabled: plugin.expectedUserEnabled,
-        projectEnabled: plugin.expectedProjectEnabled,
-        exactResult,
-        neutralResult,
-      });
+      try {
+        postcheckCodexProjectPluginActivation({
+          pluginId: plugin.codexPluginId,
+          userEnabled: plugin.expectedUserEnabled,
+          projectEnabled: plugin.expectedProjectEnabled,
+          exactResult,
+          neutralResult,
+        });
+      } catch (error) {
+        if (error instanceof CodexProjectConfigNotEffectiveError) {
+          ineffectivePlugins.push(plugin.codexPluginId);
+          ineffectiveDetails.push(error.message);
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (ineffectivePlugins.length > 0) {
+      throw new CodexActivationPostcheckError(
+        ineffectivePlugins,
+        ineffectiveDetails.join(' '),
+      );
     }
   } finally {
     await fs.remove(neutralCwd);
@@ -1841,12 +1881,11 @@ async function buildInspectionWrites(options: {
 
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
   const repoRoot = await resolveRepoRoot(options.cwd);
-  if (options.scope === 'user') {
+  if (options.scope === 'user' && options.shallow !== true) {
     writes.push(...await buildBundledCodexSkillWrites({
       plugin: options.plugin,
       env: options.env,
       marketplaceRoot: options.marketplaceRoot,
-      shallow: options.shallow,
     }));
   }
   const instructions = resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex');
@@ -2382,7 +2421,6 @@ export async function inspectCodexSharedNativeLive(options: {
   inspectionMode?: 'shallow' | 'payload';
   cwd: string;
   env: NodeJS.ProcessEnv;
-  managedByCurrentIntent: boolean;
   marketplaceName?: string;
   marketplaceRoot?: string;
   nativeCliRunner?: NativeCliRunner;
@@ -2528,7 +2566,6 @@ export async function inspectCodexSharedNativeLive(options: {
     marketplacePathSafe: true,
     pluginListEntries: pluginList.readable === false ? null : pluginList.entries,
     manifest,
-    managedByCurrentIntent: options.managedByCurrentIntent && manifest.state === 'present',
   });
   return {
     sharedNative,
@@ -4354,7 +4391,7 @@ export function createRebuildIntegration(options: {
           ? []
           : [
               path.join(getCodexHome(options.context.env), 'skills'),
-              ...(preserveCodexSharedNativePayload
+              ...(preserveCodexSharedNativePayload || input.readOnlyShallowInspectionPlan === true
                 ? []
                 : [await canonicalizePathThroughExistingAncestor(path.join(
                     input.marketplaceRoot ?? resolveAwHome(options.context.env),

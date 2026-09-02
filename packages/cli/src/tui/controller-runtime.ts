@@ -4,8 +4,8 @@ import path from 'node:path';
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogSourceResolution } from '../types.js';
 import {
-  statusTargetOwnershipState,
   statusCommandV7,
+  statusTargetIntent,
   type StatusTargetRevision,
   type StatusV7Target,
 } from '../commands/status-v6.js';
@@ -177,10 +177,16 @@ export function configAffectedStatusTargets(
   pluginId: string,
   configScope: 'user' | 'project',
 ): StatusV7Target[] {
-  return targets.filter((target) => target.pluginId === pluginId
-    && (configScope === 'user' || target.scope === 'project')
-    && (statusTargetOwnershipState(target) === 'present'
-      || statusTargetOwnershipState(target) === 'partial'))
+  const affected = new Map<string, StatusV7Target>();
+  for (const target of targets) {
+    const intent = statusTargetIntent(target);
+    if (target.pluginId !== pluginId || !intent.enabled) continue;
+    for (const scope of intent.scopes) {
+      if (configScope === 'project' && scope !== 'project') continue;
+      affected.set(`${target.platform}\0${scope}`, { ...target, scope });
+    }
+  }
+  return [...affected.values()]
     .sort((left, right) => `${left.platform}\0${left.scope}`
       .localeCompare(`${right.platform}\0${right.scope}`, 'en'));
 }

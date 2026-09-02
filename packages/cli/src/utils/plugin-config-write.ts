@@ -1,25 +1,20 @@
-import path from 'node:path';
-
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import {
-  discoverRebuildTargetNames,
-  inspectRebuildTarget,
-} from '../commands/rebuild-integration.js';
+  statusCommandV7,
+  statusTargetIntent,
+} from '../commands/status-v6.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
-import { createNoopDebugLogger } from '../output/debug-log.js';
-import { createNoopReporter } from '../output/reporter.js';
 import type {
   ConfigReceiptFieldEntry,
   ConfigSchemaEvidence,
   PlatformName,
   PluginMeta,
-  ReceiptOverallState,
+  RebuildReceiptOverallState,
   ReceiptTargetIdentity,
   ReceiptTargetResult,
   Scope,
 } from '../types.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
-import { resolveAwHome } from './paths.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
@@ -38,7 +33,6 @@ import {
   type ProjectBoundaryWarning,
 } from './project-boundary.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from './paths.js';
-import { supportsPlatform } from './platform-support.js';
 import {
   withAwHomeMutationLock,
   type AwHomeMutationToken,
@@ -63,7 +57,7 @@ export interface PluginConfigWriteReceipt {
   removedKeys: string[];
   effective: ReturnType<typeof summarizeEffectivePluginConfig>;
   configWrite: 'succeeded';
-  overallState: ReceiptOverallState;
+  overallState: RebuildReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
   otherProjectsRequireReinstall: boolean;
@@ -82,7 +76,7 @@ export interface ResetPluginConfigWriteReceipt {
   removedKeys: string[];
   effective?: ReturnType<typeof summarizeEffectivePluginConfig>;
   configWrite: 'succeeded';
-  overallState: ReceiptOverallState;
+  overallState: RebuildReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
   otherProjectsRequireReinstall: boolean;
@@ -95,7 +89,7 @@ type ReinstallCommand = typeof syncWriteCommand;
 
 interface ConfigRuntimeReplayReceipt {
   configWrite: 'succeeded';
-  overallState: ReceiptOverallState;
+  overallState: RebuildReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
   otherProjectsRequireReinstall: boolean;
@@ -155,84 +149,29 @@ async function discoverVisibleTargets(options: {
 }> {
   const targets: ReceiptTargetIdentity[] = [];
   const failures: ReceiptTargetResult[] = [];
-  const namedTargets: ReceiptTargetIdentity[] = [];
-  const scopes: Scope[] = options.scope === 'user' ? ['user', 'project'] : ['project'];
-
-  for (const platform of ['codex', 'claude'] as const) {
-    for (const scope of scopes) {
-      if (!supportsPlatform(options.plugin.manifest, platform)) continue;
-      const target = await createCandidateTarget({
+  const selector = options.plugin.pluginId ?? options.pluginName;
+  const status = await statusCommandV7({
+    plugins: [selector],
+    cwd: options.cwd,
+    env: options.env,
+    nativeCliRunner: options.nativeCliRunner,
+    ...(options.scope === 'project' ? { scope: 'project' } : {}),
+    ...(options.rebuildRuntime?.catalogOperationContext
+      ? { catalogOperationContext: options.rebuildRuntime.catalogOperationContext }
+      : {}),
+  });
+  for (const statusTarget of status.payload.targets) {
+    const intent = statusTargetIntent(statusTarget);
+    if ((statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName)
+      || !intent.enabled) continue;
+    for (const scope of intent.scopes) {
+      if (options.scope === 'project' && scope !== 'project') continue;
+      targets.push(await createCandidateTarget({
         pluginName: options.pluginName,
-        platform,
+        platform: statusTarget.platform,
         scope,
         cwd: options.cwd,
-      });
-      try {
-        const names = await discoverRebuildTargetNames({
-          cwd: options.cwd,
-          env: options.env,
-          platform,
-          scope,
-          nativeCliRunner: options.nativeCliRunner,
-          nativeFailureMode: 'ignore',
-          marketplaceName: options.plugin.marketplaceName,
-          marketplaceRoot: options.plugin.sourceId
-            ? path.join(resolveAwHome(options.env), 'marketplaces', options.plugin.sourceId)
-            : undefined,
-        });
-        if (!names.includes(options.pluginName)) continue;
-        namedTargets.push(target);
-      } catch (error) {
-        failures.push({
-          target,
-          action: 'reinstall',
-          state: 'failed',
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-  }
-
-  if (namedTargets.length === 0) return { targets, failures };
-  const catalog = options.rebuildRuntime?.catalogResolution ?? {
-    rootDir: options.plugin.sourceId
-      ? path.resolve(options.plugin.rootDir, '..', '..')
-      : options.plugin.rootDir,
-    source: 'local' as const,
-  };
-
-  for (const target of namedTargets) {
-    try {
-      const inspected = await inspectRebuildTarget({
-        sourceId: options.plugin.sourceId,
-        sourceIdentity: options.plugin.sourceIdentity,
-        pluginId: options.plugin.pluginId,
-        marketplaceName: options.plugin.marketplaceName,
-        marketplaceRoot: options.plugin.sourceId
-          ? path.join(resolveAwHome(options.env), 'marketplaces', options.plugin.sourceId)
-          : undefined,
-        plugin: options.plugin,
-        platform: target.platform,
-        scope: target.scope,
-        cwd: options.cwd,
-        catalog,
-        context: {
-          env: options.env,
-          nativeCliRunner: options.nativeCliRunner,
-          reporter: options.rebuildRuntime?.reporter ?? createNoopReporter(),
-          debugLogger: options.rebuildRuntime?.debugLogger ?? createNoopDebugLogger(),
-        },
-      });
-      if (inspected.inspection.state === 'present' || inspected.inspection.state === 'partial') {
-        targets.push(target);
-      }
-    } catch (error) {
-      failures.push({
-        target,
-        action: 'reinstall',
-        state: 'failed',
-        message: error instanceof Error ? error.message : String(error),
-      });
+      }));
     }
   }
 
@@ -249,7 +188,7 @@ async function reinstallVisibleTargets(options: {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
 }): Promise<{
-  overallState: ReceiptOverallState;
+  overallState: RebuildReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
 }> {
@@ -304,7 +243,7 @@ async function reinstallVisibleTargets(options: {
   }
 
   const overallState = runtimeFailed || targetResults.some((entry) => entry.state === 'failed')
-    ? 'failed' : 'succeeded';
+    ? 'partial' : 'succeeded';
   return {
     overallState,
     targetResults,

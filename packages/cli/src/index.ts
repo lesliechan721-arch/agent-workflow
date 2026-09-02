@@ -123,6 +123,7 @@ import type {
   PlatformName,
   PlatformSelection,
   PluginConfigSchemaField,
+  RebuildReceiptOverallState,
   Scope,
 } from './types.js';
 import {
@@ -213,10 +214,7 @@ function resolveCliVersion(): string {
 function resolveCommandReceiptExitCode(
   result: CliCommandResult,
 ): number {
-  if (result.overallState === 'failed') {
-    return 1;
-  }
-  return 0;
+  return result.overallState === 'succeeded' ? 0 : 1;
 }
 
 interface RawDiagnosticsOptions {
@@ -693,8 +691,8 @@ function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardSto
   ];
 }
 
-function overallResultState(value: { overallState: 'succeeded' | 'failed' }): 'succeeded' | 'failed' {
-  return value.overallState;
+function overallResultState(value: { overallState: RebuildReceiptOverallState }): 'succeeded' | 'failed' {
+  return value.overallState === 'succeeded' ? 'succeeded' : 'failed';
 }
 
 async function resolveStoredOnlyConfigIdentity(options: {
@@ -1126,7 +1124,7 @@ function writeConfigApplyNotice(
   write: (text: string) => void,
   receipt: {
     plugin: string;
-    overallState: 'succeeded' | 'failed';
+    overallState: RebuildReceiptOverallState;
     targetResults: Array<{
       target: { platform: string; scope: Scope };
       state: string;
@@ -2842,7 +2840,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
       }
       writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = result.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = resolveCommandReceiptExitCode(result);
     });
 
   program
@@ -3191,7 +3189,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   config
@@ -3326,7 +3324,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   config
@@ -3513,7 +3511,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   program

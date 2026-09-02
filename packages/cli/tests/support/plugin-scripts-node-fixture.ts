@@ -75,13 +75,8 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
   manifest.marketplace.policy.products = ['CLAUDE'];
   delete manifest.apps;
   manifest.scripts = {
-    lifecycle: {
-      install: {
-        default: {
-          runner: 'node',
-          path: './scripts/runtime.mjs',
-        },
-      },
+    postApply: {
+      path: './scripts/runtime.mjs',
     },
     node: {
       packageRoot: './scripts',
