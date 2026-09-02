@@ -3046,6 +3046,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--value-json <json>', 'set the field to an exact JSON value')
     .option('--preset <id>', 'set the field to the current manifest preset value')
     .option('--apply', 'apply the saved config to visible desired placements', false)
+    .option('-y, --yes', 'confirm shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3107,6 +3108,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             updates: { [key]: inputValue },
           },
           apply: rawOptions.apply === true,
+          sharedNativeApplyConfirmed: rawOptions.yes === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3150,6 +3152,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
+    .option('-y, --yes', 'confirm shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3197,6 +3200,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             removeKeys: [selectedKey],
           },
           apply: rawOptions.apply === true,
+          sharedNativeApplyConfirmed: rawOptions.yes === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',

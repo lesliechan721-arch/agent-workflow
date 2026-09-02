@@ -190,6 +190,40 @@ describe('plugin manifest v3 structure', () => {
     }))).toThrow(/additional properties/u)
   })
 
+  it('requires artifact IDs to be unique only within overlapping surface scopes', () => {
+    const codexInstruction = {
+      id: 'shared-id', platform: 'codex', scopes: ['user'],
+      target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: [],
+    }
+    const codexRole = {
+      id: 'shared-id', platform: 'codex', scopes: ['user'],
+      target: 'codex.agentRole', states: ['present'], refreshKeys: [], roleKey: 'shared-role',
+    }
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+      artifacts: { targets: [codexInstruction, codexRole] },
+    }))).toThrow(/duplicate artifact id "shared-id" for surface\/scope "codex:user"/u)
+
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'] },
+      },
+      artifacts: { targets: [
+        codexInstruction,
+        {
+          id: 'shared-id', platform: 'claude', scopes: ['user'],
+          target: 'claude.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-skill',
+        },
+      ] },
+    }))).not.toThrow()
+  })
+
   it('fails closed for reserved imports and accepts only injected exports', () => {
     const withImport = (exportName: string) => manifest({
       schemaVersion: 3,

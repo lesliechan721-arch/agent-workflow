@@ -72,6 +72,15 @@ function createContext(overrides = {}) {
       name: 'codex-enhance',
       version: '0.2.0',
     },
+    requestedArtifactIds: [
+      'codex-explore-skill',
+      ...expectedRoles.map((role) => role.id),
+      'codex-subagent-guide-skill',
+      'codex-subagent-simple-role',
+      'codex-subagent-general-role',
+      'codex-subagent-complex-role',
+      'codex-subagent-advanced-role',
+    ],
     artifactSources: [
       {
         id: 'codex-explore-skill',

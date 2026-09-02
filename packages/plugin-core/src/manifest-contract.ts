@@ -1989,7 +1989,7 @@ function normalizeArtifacts(
           throw new Error(`Invalid ${fieldName}.targets: expected an array.`);
         }
 
-        const seen = new Set<string>();
+        const seenIdsBySurfaceScope = new Set<string>();
         const seenSkillOwners = new Set<string>();
         return targetsInput.map((entry, index) => {
           const target = normalizeArtifactTargetEntry(
@@ -1999,11 +1999,15 @@ function normalizeArtifacts(
             schema,
             reservedImports,
           );
-          const key = `${target.id}:${target.target}`;
-          if (seen.has(key)) {
-            throw new Error(`Invalid ${fieldName}.targets[${index}]: duplicate artifact id + target "${key}".`);
+          for (const scope of target.scopes) {
+            const surfaceScopeId = `${target.platform ?? target.distribution}:${scope}:${target.id}`;
+            if (seenIdsBySurfaceScope.has(surfaceScopeId)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate artifact id "${target.id}" for surface/scope "${target.platform ?? target.distribution}:${scope}".`,
+              );
+            }
+            seenIdsBySurfaceScope.add(surfaceScopeId);
           }
-          seen.add(key);
           if ((target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') && target.skillKey) {
             for (const scope of target.scopes) {
               const ownerKey = `${target.platform ?? target.distribution}:${scope}:${target.skillKey}`;

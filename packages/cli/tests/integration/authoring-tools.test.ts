@@ -3531,6 +3531,70 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
     });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: {
+        targets: [
+          validManifest.artifacts.targets[0],
+          {
+            ...validManifest.artifacts.targets[1],
+            id: validManifest.artifacts.targets[0].id,
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'duplicate artifact id "lightweight-instruction" for surface/scope "codex:user"',
+      ),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      marketplace: {
+        ...validManifest.marketplace,
+        policy: { ...validManifest.marketplace.policy, products: ['CODEX', 'CLAUDE'] },
+      },
+      artifacts: {
+        targets: [
+          {
+            ...validManifest.artifacts.targets[0],
+            id: 'shared-surface-id',
+            scopes: ['user'],
+          },
+          {
+            id: 'shared-surface-id',
+            platform: 'claude',
+            scopes: ['user'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'shared-claude-skill',
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(path.join(pluginDir, 'scripts', 'render-artifacts.mjs'), [
+      'const fs = await import("node:fs");',
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const artifact = context.platform === "codex" ? {',
+      '  id: "shared-surface-id", kind: "instruction", platform: "codex",',
+      '  target: "codex.developerInstructionsBlock", state: "present",',
+      '  refreshKeys: ["enableInstruction", "explorerModel"], content: "Codex surface."',
+      '} : {',
+      '  id: "shared-surface-id", kind: "skill", platform: "claude", target: "claude.skill",',
+      '  state: "present", refreshKeys: [], skillKey: "shared-claude-skill",',
+      '  content: { files: {',
+      '    "SKILL.md": "---\\nname: shared-claude-skill\\ndescription: Shared Claude Skill.\\n---\\n",',
+      '    "README.md": "# Shared Claude Skill\\n"',
+      '  } }',
+      '};',
+      'process.stdout.write(JSON.stringify({ version: 2, artifacts: [artifact] }));',
+    ].join('\n'));
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
   });
 
   it('keeps author validation aligned with Catalog build across native and portable runtime surfaces', async () => {

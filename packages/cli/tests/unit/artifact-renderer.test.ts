@@ -9,17 +9,57 @@ import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
   resolveArtifactRenderConfig,
-  runArtifactRenderer,
-  writeArtifactRendererContext,
+  runArtifactRenderer as runArtifactRendererExact,
+  writeArtifactRendererContext as writeArtifactRendererContextExact,
   resolveArtifactRendererTarget,
 } from '../../src/utils/artifact-renderer.js';
 import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import { resolveAwDeliveredArtifactIds } from '../../src/utils/artifact-request.js';
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
+
+function requestedIdsFor(
+  manifest: PluginMeta['manifest'],
+  platform: 'codex' | 'claude' | 'agent-skills',
+  scope: 'user' | 'project',
+): string[] {
+  return (manifest.artifacts?.targets ?? [])
+    .filter((target) =>
+      (target.platform ?? target.distribution) === platform
+      && target.scopes.includes(scope))
+    .map((target) => target.id);
+}
+
+function runArtifactRenderer(
+  options: Omit<Parameters<typeof runArtifactRendererExact>[0], 'requestedArtifactIds'> & {
+    requestedArtifactIds?: readonly string[];
+  },
+) {
+  return runArtifactRendererExact({
+    ...options,
+    requestedArtifactIds: options.requestedArtifactIds ??
+      requestedIdsFor(options.plugin.manifest, options.platform, options.scope),
+  });
+}
+
+function writeArtifactRendererContext(
+  options: Omit<Parameters<typeof writeArtifactRendererContextExact>[0], 'requestedArtifactIds'> & {
+    requestedArtifactIds?: readonly string[];
+  },
+) {
+  return writeArtifactRendererContextExact({
+    ...options,
+    requestedArtifactIds: options.requestedArtifactIds ?? requestedIdsFor(
+      options.target.sourceManifest!,
+      options.platform,
+      options.scope,
+    ),
+  });
+}
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -225,7 +265,7 @@ describe('artifact renderer runtime', () => {
     const controller = new AbortController();
     const abortReason = new DOMException('renderer cancelled', 'AbortError');
     const rendering = runArtifactRenderer({
-      event: 'materialize', plugin, platform: 'agent-skills', scope: 'project', cwd,
+      event: 'install', plugin, platform: 'codex', scope: 'user', cwd,
       commandEnv: {
         AW_HOME: awHome,
         PATH: process.env.PATH,
@@ -260,7 +300,7 @@ describe('artifact renderer runtime', () => {
     ].join('\n'));
     const controller = new AbortController();
     const rendering = runArtifactRenderer({
-      event: 'materialize', plugin, platform: 'agent-skills', scope: 'project', cwd,
+      event: 'install', plugin, platform: 'codex', scope: 'user', cwd,
       commandEnv: { AW_HOME: awHome, PATH: process.env.PATH },
       scriptTimeoutMs: 1_000,
       signal: controller.signal,
@@ -320,6 +360,7 @@ describe('artifact renderer runtime', () => {
       commandEnv: env,
       changedConfigKeys: ['explorerModel'],
       previousArtifacts: [{ id: 'lightweight-instruction', state: 'present' }],
+      requestedArtifactIds: ['codex-explorer-role'],
     });
     expect(userContext.context.config).toMatchObject({
       mode: 'artifact-render',
@@ -338,6 +379,10 @@ describe('artifact renderer runtime', () => {
       },
     });
     expect(userContext.context.changedConfigKeys).toEqual(['explorerModel']);
+    expect(userContext.context.requestedArtifactIds).toEqual(['codex-explorer-role']);
+    expect(userContext.context.artifactSources.map((source) => source.id)).toEqual([
+      'codex-explorer-role',
+    ]);
     expect(userContext.context.previousArtifacts).toEqual([
       { id: 'lightweight-instruction', state: 'present' },
     ]);
@@ -355,12 +400,17 @@ describe('artifact renderer runtime', () => {
       scope: 'project',
       cwd,
       commandEnv: env,
+      requestedArtifactIds: ['codex-explorer-role', 'lightweight-instruction'],
     });
     expect(projectContext.context.config.values.explorerModel).toBe('project-model');
     expect(projectContext.context.config.values.modelReasoningEffort).toBe('high');
     expect(projectContext.context.config.sources.explorerModel).toBe('project');
     expect(projectContext.context.config.sources.modelReasoningEffort).toBe('project');
     expect(projectContext.context.changedConfigKeys).toEqual([]);
+    expect(projectContext.context.requestedArtifactIds).toEqual([
+      'lightweight-instruction',
+      'codex-explorer-role',
+    ]);
 
     await fs.outputFile(resolvePluginConfigStorePath({
       pluginName: plugin.manifest.name,
@@ -391,6 +441,54 @@ describe('artifact renderer runtime', () => {
       projectContext.cleanup(),
       userContextWithInvalidProjectStore.cleanup(),
     ]);
+  });
+
+  it('requests only AW-delivered artifacts from a mixed native and AW renderer', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-mixed-delivery-');
+    const cwd = path.join(root, 'repo');
+    const manifest = createManifest();
+    manifest.artifacts!.targets = [
+      manifest.artifacts!.targets[0]!,
+      {
+        id: 'native-skill',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'native-skill',
+      },
+    ];
+    const plugin = await writePlugin(root, manifest, [
+      'import { readFileSync } from "node:fs";',
+      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'if (JSON.stringify(context.requestedArtifactIds) !== JSON.stringify(["lightweight-instruction"])) process.exit(9);',
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "lightweight-instruction", kind: "instruction", platform: "codex",',
+      '  target: "codex.developerInstructionsBlock", state: "present",',
+      '  refreshKeys: ["enableLightweightInstruction", "explorerModel", "modelReasoningEffort"],',
+      '  content: "AW output"',
+      '}] }));',
+    ].join('\n'));
+    await fs.ensureDir(cwd);
+
+    const result = await runArtifactRendererExact({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      requestedArtifactIds: resolveAwDeliveredArtifactIds({
+        manifest: plugin.manifest,
+        platform: 'codex',
+        scope: 'user',
+      }),
+    });
+
+    expect(result.context.requestedArtifactIds).toEqual(['lightweight-instruction']);
+    expect(result.plan.artifacts.map((artifact) => artifact.id)).toEqual(['lightweight-instruction']);
   });
 
   it('reports one project artifact boundary issue for an object with filesystem path children', async () => {

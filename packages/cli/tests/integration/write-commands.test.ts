@@ -8191,4 +8191,130 @@ describe('five namespaced write commands', () => {
     expect(configAfterFailure).toContain('mode=fast');
     expect(configAfterFailure).not.toContain('mode=fail');
   });
+
+  it('requires --yes for native-refreshing user config with only a project Codex intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'shared-native-config-source');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'native-config', 'scripts', 'render.mjs'), [
+      'import { readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
+      '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
+      '  skillKey: "native-config", refreshKeys: ["mode"], content: { files: { "SKILL.md": "native" } }',
+      '})) }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'native-config', [], 'native\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.config = {
+        fields: { mode: { type: 'string', writableLayers: ['user'], default: 'safe' } },
+      };
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [{
+          id: 'native-config',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-config',
+        }],
+      };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, {
+      schemaVersion: 1,
+      kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/native-config', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+      managed: { codexPluginIds: [] },
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: runtime.nativeCliRunner,
+      });
+      return {
+        exitCode,
+        payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
+      };
+    };
+    const readStore = () => readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'native-config',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+
+    expect(await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"saved"', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+
+    const blocked = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"blocked"', '--scope', 'user', '--apply',
+    ]);
+    expect(blocked).toMatchObject({
+      exitCode: 1,
+      payload: {
+        overallState: 'failed',
+        errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })],
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'saved' });
+
+    const authorized = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"authorized"', '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(authorized).toMatchObject({
+      exitCode: 0,
+      payload: {
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'authorized' });
+
+    expect(await runPublic([
+      'config', 'unset', 'team/native-config', 'mode', '--scope', 'user', '--apply',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: {
+        overallState: 'failed',
+        errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })],
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'authorized' });
+
+    expect(await runPublic([
+      'config', 'unset', 'team/native-config', 'mode', '--scope', 'user', '--apply', '--yes',
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    expect((await readStore()).values).toEqual({});
+  });
 });

@@ -1087,7 +1087,9 @@ describe('manifest utils', () => {
       ],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('duplicate artifact id + target');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'duplicate artifact id "lightweight-instruction" for surface/scope "codex:project"',
+    );
 
     manifest.artifacts = {
       targets: [

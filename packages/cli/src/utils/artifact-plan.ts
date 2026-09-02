@@ -20,6 +20,7 @@ import type {
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { assertPlatformFieldSupported } from './manifest.js';
 import { validatePortableSkillName } from './dynamic-skill-tree.js';
+import { resolveArtifactRequest } from './artifact-request.js';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
@@ -564,16 +565,27 @@ export function validateArtifactPlan(options: {
   plan: unknown;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  requestedArtifactIds: readonly string[];
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
   rendererDigest?: string;
   manifestDigest?: string;
 }): ValidatedArtifactPlan {
   const pluginName = options.pluginName ?? options.manifest.name;
-  const declarationMap = getDeclaredTargets({
+  const allDeclarations = getDeclaredTargets({
     manifest: options.manifest,
     platform: options.platform,
     scope: options.scope,
   });
+  const request = resolveArtifactRequest({
+    manifest: options.manifest,
+    platform: options.platform,
+    scope: options.scope,
+    requestedArtifactIds: options.requestedArtifactIds,
+  });
+  const requestedIds = new Set(request.requestedArtifactIds);
+  const declarationMap = new Map(
+    [...allDeclarations].filter(([, declaration]) => requestedIds.has(declaration.id)),
+  );
   const parsedPlan = resolvePlanObject(options.plan);
   const digestSalt = resolveDigestSalt({
     manifest: options.manifest,

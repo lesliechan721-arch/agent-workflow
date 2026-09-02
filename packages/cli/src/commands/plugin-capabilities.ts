@@ -97,6 +97,10 @@ const adapterFacts: Readonly<Partial<Record<
   },
   artifacts: {
     'scripts.artifacts.render': { requires: 'artifacts.targets.' },
+    'rendererContext.requestedArtifactIds': {
+      requires: 'Return exactly these declared artifacts and no other artifacts.',
+      provenance: ['CLI artifact renderer context'],
+    },
     'artifacts.targets': { requires: 'scripts.artifacts.render and complete static target identity.' },
     'artifacts.targets[].delivery': {
       profiles: 'CODEX dynamic Skill',

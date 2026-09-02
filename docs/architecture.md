@@ -31,7 +31,7 @@
 
 ### Module Invariants
 
-- renderer 只返回 `ArtifactPlan`，不直接写平台文件。
+- renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；renderer 只返回与该集合精确相等的 `ArtifactPlan`，不直接写平台文件。AW direct writer 不请求 `codex-native` target。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
 - Manifest v3 的 `config.fields.*.writableLayers` 是字段写入层真值。顶层字段必须显式声明非空、无重复的 `user|project` 集合；对象 child 继承该集合。配置只在声明层写入。
@@ -194,7 +194,7 @@ TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | e
 
 ownership health 只表示当前 live 组件是否完整。Status v7 的 shared native version 比较投影为 `replaceable: outdated`，target 状态为 `needsSync`，并使用 `codexSharedNativeUpdateRequired` 原因。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v7 JSON。
 
-配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用带 source identity 的 namespaced schemaVersion 3 envelope，并通过原子替换写入。配置值只支持标量或一层标量对象；对象在层之间完整覆盖，不做子属性深合并。旧 `plugin-config.local` 和 store v2 不读取、不迁移，也不由 reset 删除。`config set/unset` 要求当前 `config.fields`；`config reset` 只删除已定位 store。完整 plugin ID 直接定位；裸名只在所选 scope 的 store 中唯一时允许。默认写命令只提交配置；显式 `--apply` 才对当前 cwd 可见的 desired placement 执行 sync。配置提交后，平台 apply 失败不回滚配置；receipt 和 status 报告 partial 结果，用户可再次 sync 恢复。
+配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用带 source identity 的 namespaced schemaVersion 3 envelope，并通过原子替换写入。配置值只支持标量或一层标量对象；对象在层之间完整覆盖，不做子属性深合并。旧 `plugin-config.local` 和 store v2 不读取、不迁移，也不由 reset 删除。`config set/unset` 要求当前 `config.fields`；`config reset` 只删除已定位 store。完整 plugin ID 直接定位；裸名只在所选 scope 的 store 中唯一时允许。默认写命令只提交配置；显式 `--apply` 才对当前 cwd 可见的 desired placement 执行 sync。user scope 变更命中 `codex-native` target 的 `refreshKeys`，且 `--apply` 将更新可见 Codex placement 时，公开 CLI 必须在写 config 或 materialize 前要求 `--yes`；不带 `--apply` 仍只保存 user config。授权后配置提交成功但平台 apply 失败时不回滚配置；receipt 和 status 报告 partial 结果，用户可再次 sync 恢复。
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，再选择 user 或 project 写入层。编辑器以单个插件和单个写入层拥有草稿，并在字段旁显示当前有效值。对象字段支持逐个编辑子属性，但保存时写入完整对象。配置持久化、Review 和执行只作用于所选写入层。
 

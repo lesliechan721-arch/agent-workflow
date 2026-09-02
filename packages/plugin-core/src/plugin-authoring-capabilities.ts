@@ -163,8 +163,9 @@ const registry = {
       entries: [
         { field: 'scripts.artifacts.render', type: '{runner,path,args?}', required: 'with artifacts.targets' },
         { field: 'scripts.artifacts.render.runner', type: 'literal node', required: true, acceptedValues: ['node'] },
+        { field: 'rendererContext.requestedArtifactIds', type: 'non-empty unique artifact id[]', required: true },
         { field: 'artifacts.targets', type: 'artifact target[]', required: false },
-        { field: 'artifacts.targets[].id', type: 'stable identifier', required: true },
+        { field: 'artifacts.targets[].id', type: 'surface/scope-unique stable identifier', required: true },
         { field: 'artifacts.targets[].platform', type: 'enum', required: 'for native targets', acceptedValues: ['codex', 'claude'] },
         { field: 'artifacts.targets[].distribution', type: 'enum', required: 'for portable targets', acceptedValues: ['agent-skills'] },
         { field: 'artifacts.targets[].target', type: 'enum', required: true, acceptedValues: ['codex.developerInstructionsBlock', 'codex.agentRole', 'codex.skill', 'claude.skill', 'agent-skills.skill'] },

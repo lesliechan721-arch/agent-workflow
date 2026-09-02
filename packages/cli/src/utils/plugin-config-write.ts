@@ -319,8 +319,21 @@ type ApplyPluginConfigWriteOptions = {
   awHomeMutationToken?: AwHomeMutationToken;
   request: PluginConfigWriteRequest;
   apply?: boolean;
+  sharedNativeApplyConfirmed?: boolean;
   reviewPreflight?: () => Promise<void> | void;
 };
+
+function changedKeysAffectSharedNativeTarget(options: {
+  plugin: PluginMeta;
+  changedKeys: readonly string[];
+}): boolean {
+  const changedKeys = new Set(options.changedKeys);
+  return (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === 'codex'
+    && target.target === 'codex.skill'
+    && target.delivery?.mode === 'codex-native'
+    && target.refreshKeys.some((key) => changedKeys.has(key)));
+}
 
 async function applyPluginConfigWriteUnlocked(
   options: ApplyPluginConfigWriteOptions,
@@ -388,6 +401,32 @@ async function applyPluginConfigWriteUnlocked(
   const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
   const updatedKeys = Object.keys(updates);
   const changedKeys = [...updatedKeys, ...removedKeys];
+  let applyTargets = options.applyTargets;
+  const sharedNativeAffected = changedKeysAffectSharedNativeTarget({
+    plugin: schemaPlugin,
+    changedKeys,
+  });
+  if (
+    options.apply !== false
+    && options.scope === 'user'
+    && options.sharedNativeApplyConfirmed === false
+    && sharedNativeAffected
+  ) {
+    applyTargets ??= (await discoverVisibleTargets({
+      plugin: schemaPlugin,
+      pluginName,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+      rebuildRuntime: options.rebuildRuntime,
+    })).targets;
+    if (applyTargets.some((target) => target.platform === 'codex')) {
+      throw new Error(
+        'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
+      );
+    }
+  }
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({
       ...configIdentity,
@@ -420,7 +459,7 @@ async function applyPluginConfigWriteUnlocked(
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
-        applyTargets: options.applyTargets,
+        applyTargets,
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,

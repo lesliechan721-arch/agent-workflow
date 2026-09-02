@@ -65,6 +65,15 @@ function createContext(values = {}) {
       name: 'codex-enhance',
       version: '0.2.0',
     },
+    requestedArtifactIds: [
+      'codex-explore-skill',
+      'codex-explore-quick-role',
+      'codex-explore-standard-role',
+      'codex-explore-deep-role',
+      'codex-explore-custom-role',
+      'codex-subagent-guide-skill',
+      ...ROLE_EXPECTATIONS.map((role) => role.artifactId),
+    ],
     artifactSources: [
       {
         id: 'codex-explore-skill',

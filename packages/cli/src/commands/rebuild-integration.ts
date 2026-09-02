@@ -87,6 +87,7 @@ import {
 } from '../utils/ownership.js';
 import { resolveArtifactRenderConfig, runArtifactRenderer } from '../utils/artifact-renderer.js';
 import { validateArtifactPlan, type ValidatedArtifactPlanArtifact } from '../utils/artifact-plan.js';
+import { resolveAwDeliveredArtifactIds } from '../utils/artifact-request.js';
 import {
   createAwPluginRequirementsReceipt,
 } from '../utils/manifest.js';
@@ -1214,10 +1215,12 @@ async function resolveDynamicArtifacts(options: {
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
 }> {
-  const declarations = (options.plugin.manifest.artifacts?.targets ?? []).filter(
-    (target) => target.platform === options.platform && target.scopes.includes(options.scope),
-  );
-  if (declarations.length === 0) return { artifacts: [], sourceDirs: () => [] };
+  const requestedArtifactIds = resolveAwDeliveredArtifactIds({
+    manifest: options.plugin.manifest,
+    platform: options.platform,
+    scope: options.scope,
+  });
+  if (requestedArtifactIds.length === 0) return { artifacts: [], sourceDirs: () => [] };
   const render = await runArtifactRenderer({
     event: options.event,
     plugin: options.plugin,
@@ -1226,6 +1229,7 @@ async function resolveDynamicArtifacts(options: {
     cwd: options.cwd,
     commandEnv: options.env,
     previousArtifacts: [...options.previousArtifacts],
+    requestedArtifactIds,
     scriptTimeoutMs: options.scriptTimeoutMs,
   });
   const config = await resolveArtifactRenderConfig({
@@ -1242,6 +1246,7 @@ async function resolveDynamicArtifacts(options: {
     plan: render.plan,
     platform: options.platform,
     scope: options.scope,
+    requestedArtifactIds: render.context.requestedArtifactIds,
     renderConfig: config,
     rendererDigest: render.target.rendererDigest!,
     manifestDigest: render.target.manifestDigest!,

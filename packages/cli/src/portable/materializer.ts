@@ -342,6 +342,7 @@ async function materializePluginCandidates(options: {
     cwd: options.cwd,
     commandEnv: options.env,
     signal: options.signal,
+    requestedArtifactIds: dynamicTargets.map((target) => target.id),
   });
   const plan = validateArtifactPlan({
     pluginName: options.plugin.manifest.name,
@@ -349,6 +350,7 @@ async function materializePluginCandidates(options: {
     plan: rendered.plan,
     platform: 'agent-skills',
     scope: options.scope,
+    requestedArtifactIds: rendered.context.requestedArtifactIds,
     renderConfig: config,
     rendererDigest: rendered.target.rendererDigest,
     manifestDigest: rendered.target.manifestDigest,

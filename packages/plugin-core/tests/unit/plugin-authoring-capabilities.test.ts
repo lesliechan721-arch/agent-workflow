@@ -79,6 +79,11 @@ describe('plugin authoring capability structure registry', () => {
   it('publishes required nested artifact identity fields', () => {
     expect(getPluginAuthoringCapabilitySurface('artifacts').entries)
       .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          field: 'rendererContext.requestedArtifactIds',
+          type: 'non-empty unique artifact id[]',
+          required: true,
+        }),
         expect.objectContaining({ field: 'artifacts.targets[].id', required: true }),
         expect.objectContaining({ field: 'artifacts.targets[].refreshKeys', required: true }),
         expect.objectContaining({ field: 'artifacts.targets[].delivery', required: 'for codex.skill' }),

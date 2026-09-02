@@ -2032,7 +2032,7 @@ function validateStringArray(value, fieldName, options = {}) {
   return output;
 }
 
-function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
+function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
   const fieldName = `artifacts.targets[${index}]`;
   const target = expectRecord(entry, fieldName);
   if (!target) return null;
@@ -2103,14 +2103,6 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     if (target.distribution !== undefined) {
       error(`${fieldName}.distribution: platform targets do not support distribution`);
     }
-  }
-
-  const key = id && artifactTarget ? `${id}:${artifactTarget}` : null;
-  if (key) {
-    if (seen.has(key)) {
-      error(`${fieldName}: duplicate artifact id + target "${key}"`);
-    }
-    seen.add(key);
   }
 
   const expectedKind = ARTIFACT_KIND_BY_TARGET[artifactTarget];
@@ -2283,10 +2275,24 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
     return [];
   }
 
-  const seen = new Set();
   const declarations = artifacts.targets
-    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir))
+    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, pluginDir))
     .filter(Boolean);
+  const idsBySurfaceScope = new Map();
+  for (const [declarationIndex, declaration] of declarations.entries()) {
+    for (const scope of declaration.scopes) {
+      const surface = declaration.platform ?? declaration.distribution;
+      const key = `${surface}:${scope}:${declaration.id}`;
+      const existing = idsBySurfaceScope.get(key);
+      if (existing !== undefined) {
+        error(
+          `artifacts.targets has duplicate artifact id "${declaration.id}" for surface/scope "${surface}:${scope}" in targets[${existing}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        idsBySurfaceScope.set(key, declarationIndex);
+      }
+    }
+  }
   const staticSkillNames = new Set(collectDeclaredSkillNames(pluginDir, manifest).static);
   for (const [index, declaration] of declarations.entries()) {
     if (
@@ -2897,6 +2903,7 @@ function runArtifactRendererFixture(
             issues: [],
           },
           changedConfigKeys: [],
+          requestedArtifactIds: scopedDeclarations.map((target) => target.id),
           previousArtifacts: [],
           artifactSources: scopedDeclarations.map((target) => ({
             id: target.id,
