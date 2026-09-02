@@ -4,6 +4,7 @@ import type {
   CatalogSource,
   CatalogGenerationActiveV1,
   CatalogGenerationCandidateEvidence,
+  CatalogGenerationSyncResult,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -148,6 +149,9 @@ export type OperationIntent =
         | { action: 'add'; source: CatalogSource }
         | { action: 'update'; update: CatalogSourceUpdate };
       setPrimaryAfterActivation?: boolean;
+    }
+  | {
+      kind: 'catalogSourcesRecovery';
     }
   ;
 
@@ -339,6 +343,9 @@ export interface OperationResultSummary {
   message: string;
   pluginId?: string;
   action?: PluginWriteOperation;
+  catalogAction?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
+  catalogGeneration?: Pick<CatalogGenerationSyncResult,
+    'activeChanged' | 'outcome'> & { catalogVersion: string };
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
@@ -1812,6 +1819,7 @@ export class TuiController {
   }
 
   #reviewPreparationLabel(intent: OperationIntent): string {
+    if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
     if ('pluginId' in intent) {
       return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
         ?? pluginNameFromId(intent.pluginId);
@@ -1952,7 +1960,8 @@ export class TuiController {
     this.#pruneReviewTickets(now);
     const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
-    const pluginId = 'pluginId' in intent ? intent.pluginId : intent.sourceId;
+    const pluginId = 'pluginId' in intent ? intent.pluginId
+      : 'sourceId' in intent ? intent.sourceId : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent
       ? evidence.source?.pluginVersion
@@ -2051,7 +2060,8 @@ export class TuiController {
       startedAtMs,
       elapsedMs: 0,
       current: {
-        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId : ticket.intent.sourceId,
+        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId
+          : 'sourceId' in ticket.intent ? ticket.intent.sourceId : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
     };
@@ -2098,7 +2108,8 @@ export class TuiController {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }
-    if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
+    if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration'
+      || ticket.intent.kind === 'catalogSourcesRecovery') {
       generation = ++this.#generation;
     }
     try {
@@ -2127,7 +2138,8 @@ export class TuiController {
       });
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       generation = ++this.#generation;
-      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
+      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration'
+        || ticket.intent.kind === 'catalogSourcesRecovery') {
         this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'sourceMutation' ? {
           reuseValidatedGenerations: true,
         } : undefined);
@@ -2163,6 +2175,10 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#applyStatus(refreshed);
+      if (ticket.intent.kind === 'catalogSourcesRecovery') {
+        this.#phase = 'ready';
+        this.#loadError = undefined;
+      }
       if (ticket.intent.kind === 'catalogGeneration') {
         void this.#catalogSourcesSession.refresh(ticket.intent.sourceId, false);
       }
@@ -2303,6 +2319,22 @@ export class TuiController {
         const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         this.#applyStatus(refreshed);
+        if (ticket.intent.kind === 'catalogSourcesRecovery'
+          && code === 'catalogSourcesConfigRecoveryStale') {
+          this.#phase = 'ready';
+          this.#loadError = undefined;
+          this.#activeReview = undefined;
+          this.#result = undefined;
+          this.#router.replace({ name: 'home' });
+          this.#publish();
+          return cloneFrozen({
+            state: 'blocked',
+            operationId,
+            code,
+            message: '来源配置已变化，已重新加载当前状态。',
+            operationKind: ticket.intent.kind,
+          });
+        }
       } catch (reloadError) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
@@ -2314,7 +2346,7 @@ export class TuiController {
         intent: ticket.intent,
         navigation: 'result',
         returnRoute: ticket.returnRoute,
-        writeMayHaveCompleted: true,
+        writeMayHaveCompleted: ticket.intent.kind === 'catalogSourcesRecovery' ? false : true,
       });
     }
   }
@@ -2492,27 +2524,55 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    const result = execution as { backupPath: string };
+    return {
+      code: 'operationSucceeded',
+      message: 'Catalog 来源配置已恢复。',
+      messages: [
+        `损坏配置已备份为 ${result.backupPath}。`,
+        '已恢复唯一的主来源 official；自定义来源需要重新添加。',
+      ],
+    };
+  }
   if (intent.kind === 'catalogGeneration') {
     const result = execution as {
       status?: 'succeeded' | 'partial';
       partialReason?: 'activation' | 'primary';
       configSaved?: boolean;
       errorCode?: string;
+      generation?: CatalogGenerationSyncResult;
     };
+    const generation = result.generation;
+    const updateActivated = intent.action === 'update'
+      && generation?.activeChanged === true
+      && generation.outcome === 'activated';
     return {
       code: result.status === 'partial' ? 'operationPartial' : 'operationSucceeded',
+      catalogAction: intent.action,
+      ...(generation ? { catalogGeneration: {
+        activeChanged: generation.activeChanged,
+        outcome: generation.outcome,
+        catalogVersion: generation.resolution.catalogVersion,
+      } } : {}),
       message: result.status === 'partial'
         ? result.partialReason === 'primary'
           ? 'Catalog 已启用，但主来源尚未切换。可在 TUI 中重试。'
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
           : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
-            : 'Catalog 已验证并启用。',
+            : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
+              : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'
+              : 'Catalog 已验证并启用。',
       messages: result.status === 'partial'
         ? [result.partialReason === 'primary'
             ? `新的 Active 可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
             : `旧 Active 保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
-        : ['Plugin 列表已从新的 Active Catalog 重新加载。'],
+        : updateActivated
+          ? ['已安装插件不会自动升级。', '已重新计算可用的插件升级。']
+          : intent.action === 'update'
+            ? [`当前 Active Catalog 已是 ${generation?.resolution.catalogVersion ?? '已验证版本'}。`]
+          : ['Plugin 列表已从新的 Active Catalog 重新加载。'],
     };
   }
   if (intent.kind === 'portableInstall') {

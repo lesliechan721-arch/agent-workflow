@@ -844,6 +844,20 @@ function dependencySummaryText(summary: NonNullable<PluginListItemViewModel['dep
   return `${summary.directCount} 个直接 · ${summary.totalCount} 个总计`;
 }
 
+function isCatalogSourcesBootstrapFlow(snapshot: TuiControllerSnapshot): boolean {
+  const route = snapshot.router.current.route;
+  if (route.name === 'reviewPreparing') {
+    return snapshot.reviewPreparation?.intent.kind === 'catalogSourcesRecovery';
+  }
+  if (route.name === 'review' || route.name === 'progress') {
+    return snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
+  }
+  return route.name === 'result'
+    && snapshot.result !== undefined
+    && 'operationKind' in snapshot.result
+    && snapshot.result.operationKind === 'catalogSourcesRecovery';
+}
+
 function operationTargetStateLabel(
   state: 'completed' | 'kept' | 'failed' | 'skipped',
 ): { label: string; status: ActionItem['status'] } {
@@ -874,7 +888,7 @@ export function resolveConsoleV4ScreenId(
   if (tooSmall) return 'G05';
   if (overlay === 'help') return 'G03';
   if (overlay === 'discard') return 'G04';
-  if (snapshot.phase !== 'ready') return 'G01';
+  if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) return 'G01';
   const route = snapshot.router.current.route;
   if (route.name === 'home') return 'G02';
   if (route.name === 'pluginList') {
@@ -952,10 +966,12 @@ export function resolveConsoleV4ScreenId(
     return ({ add: 'S10', update: 'S15', setPrimary: 'S16', remove: 'S18' } as const)[snapshot.activeReview.sourceAction!];
   }
   if (route.name === 'progress' && (snapshot.activeReview?.operationKind === 'sourceMutation'
-    || snapshot.activeReview?.operationKind === 'catalogGeneration')) return 'S11';
+    || snapshot.activeReview?.operationKind === 'catalogGeneration'
+    || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery')) return 'S11';
   if (route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
     && (snapshot.result.operationKind === 'sourceMutation'
-      || snapshot.result.operationKind === 'catalogGeneration')) {
+      || snapshot.result.operationKind === 'catalogGeneration'
+      || snapshot.result.operationKind === 'catalogSourcesRecovery')) {
     return snapshot.result.state === 'succeeded' ? 'S12' : 'S13';
   }
   if (route.name === 'review') return snapshot.activeReview?.operationKind === 'portableInstall' ? 'U06'
@@ -1301,7 +1317,8 @@ export function ConsoleAppV4(props: {
   const portableVariantCandidates = route.name === 'portableSkillSelect' && snapshot.portableDraft
     ? snapshot.portableDraft.candidates.filter(portableScopeVariantsDiffer)
     : [];
-  const supportsTechnicalDetails = Boolean(route.name === 'progress' && snapshot.progress.messages.length > 0)
+  const supportsTechnicalDetails = snapshot.phase === 'error'
+    || Boolean(route.name === 'progress' && snapshot.progress.messages.length > 0)
     || Boolean(route.name === 'review' && snapshot.activeReview?.technicalDetails?.length)
     || Boolean(route.name === 'issueDetail' && issue
       && issue.diagnostic.technical)
@@ -1861,13 +1878,27 @@ export function ConsoleAppV4(props: {
     setPendingPresetId(undefined);
   }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
 
-  if (snapshot.phase === 'error') {
-    breadcrumb = '启动失败';
-    title = '无法读取插件状态';
-    description = snapshot.loadError?.message ?? '当前不能安全显示插件状态。';
-    help = 'q 退出 · Ctrl-C 退出';
-    content = <StatusCard status="error" title={snapshot.loadError?.code ?? 'statusLoadFailed'} description="没有执行任何写操作。" />;
-  } else if (snapshot.phase !== 'ready') {
+  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)) {
+    const sourcesConfigInvalid = snapshot.loadError?.code === 'catalogSourcesConfigInvalid';
+    breadcrumb = sourcesConfigInvalid ? 'Catalog 来源恢复' : '启动失败';
+    title = sourcesConfigInvalid ? 'Catalog 来源配置损坏' : '无法读取插件状态';
+    description = sourcesConfigInvalid
+      ? '来源配置无法安全读取。可以先备份原文件，再恢复官方默认来源。'
+      : snapshot.loadError?.message ?? '当前不能安全显示插件状态。';
+    help = sourcesConfigInvalid
+      ? '↑↓ 移动 · Enter 选择 · d 技术详情 · q 退出'
+      : 'd 技术详情 · q 退出 · Ctrl-C 退出';
+    actions = sourcesConfigInvalid ? [{
+      label: '备份并恢复官方默认来源',
+      description: '先进入 Review；不会删除 Catalog state 或 store',
+      run: () => beginReview({ kind: 'catalogSourcesRecovery' }),
+    }] : [];
+    content = <Box flexDirection="column">
+      <StatusCard status="error" title={snapshot.loadError?.code ?? 'statusLoadFailed'} description="没有执行任何写操作。" />
+      {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}
+      {showTechnical ? <TechnicalDetails><StaticRow title="安全诊断" meta={snapshot.loadError?.code ?? 'statusLoadFailed'} compact /></TechnicalDetails> : null}
+    </Box>;
+  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) {
     breadcrumb = '启动';
     title = '正在检查插件状态';
     description = '单个来源失败不会阻止其他来源继续加载。';
@@ -3831,19 +3862,23 @@ export function ConsoleAppV4(props: {
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configReset';
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation'
-      || snapshot.activeReview?.operationKind === 'catalogGeneration';
+      || snapshot.activeReview?.operationKind === 'catalogGeneration'
+      || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     const issueOperation = snapshot.activeReview?.originIssue;
     breadcrumb = portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
     const configApply = snapshot.activeReview?.operationKind === 'configSave'
       && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
     const catalogGenerationOperation = snapshot.activeReview?.operationKind === 'catalogGeneration';
+    const catalogSourcesRecovery = snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     title = portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题'
       : catalogGenerationOperation ? '正在验证并启用 Catalog'
+        : catalogSourcesRecovery ? '正在恢复 Catalog 来源配置'
         : sourceOperation ? '正在保存来源配置'
           : configOperation ? configApply ? '正在保存并应用设置' : '正在保存设置'
             : '正在执行插件操作';
     description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。'
       : catalogGenerationOperation ? '正在验证并应用明确确认的 Catalog 操作。'
+        : catalogSourcesRecovery ? '正在备份损坏配置并恢复官方默认来源。'
         : sourceOperation ? '只原子保存来源配置，不访问网络。'
           : configOperation ? configApply ? '先保存所选层，再重新应用当前可见安装位置。' : '只保存所选设置层。'
             : '请勿关闭当前终端。';
@@ -3987,7 +4022,9 @@ export function ConsoleAppV4(props: {
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
     const successfulConfigOperation = configOperation !== undefined && !blocked && !partial;
-    const sourceOperation = operationKind === 'sourceMutation' || operationKind === 'catalogGeneration';
+    const sourceOperation = operationKind === 'sourceMutation'
+      || operationKind === 'catalogGeneration'
+      || operationKind === 'catalogSourcesRecovery';
     const issueOperation = result.originIssue;
     const completedTitle = {
       install: '✓ 插件添加完成',
@@ -4005,7 +4042,16 @@ export function ConsoleAppV4(props: {
       : issueOperation
       ? blocked || partial ? '× 问题仍未解决' : '✓ 问题已处理'
       : sourceOperation
-      ? blocked ? '× 来源操作未完成' : '✓ 来源配置已保存'
+      ? blocked ? '× 来源操作未完成'
+        : operationKind === 'catalogSourcesRecovery' ? '✓ Catalog 来源配置已恢复'
+          : resultSummary?.catalogAction === 'update'
+            ? resultSummary.catalogGeneration?.activeChanged
+              && resultSummary.catalogGeneration.outcome === 'activated'
+              ? '✓ Catalog 已更新' : '✓ Catalog 无需更新'
+            : resultSummary?.catalogAction === 'repair' ? '✓ Catalog 已修复'
+              : resultSummary?.catalogAction === 'recoverState' ? '✓ Catalog 状态已恢复'
+                : operationKind === 'catalogGeneration' ? '✓ Catalog 已启用'
+                  : '✓ 来源配置已保存'
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
@@ -4040,8 +4086,7 @@ export function ConsoleAppV4(props: {
           ? '来源配置可能已保存。请重新检查来源列表。'
           : '来源操作未执行。草稿已保留，可返回修改。'
         : partial ? resultSummary?.message ?? '来源配置已保存，但 Catalog 尚未启用。可立即重试。'
-          : operationKind === 'catalogGeneration' ? 'Catalog 已验证并启用，插件列表已重新加载。'
-            : '来源配置已保存。'
+          : resultSummary?.message ?? '来源配置已保存。'
       : blocked ? result.message
         : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const pluginId = resultSummary?.pluginId
@@ -4087,7 +4132,7 @@ export function ConsoleAppV4(props: {
       : undefined;
     const retryAction = failedPluginId && failedTarget && failedTargetState
       ? selectLifecycleRetryAction({
-          operationKind,
+          operationKind: operationKind === 'catalogSourcesRecovery' ? undefined : operationKind,
           originalAction: action,
           target: {
             pluginId: failedPluginId,

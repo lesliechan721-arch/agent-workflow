@@ -28,6 +28,7 @@ import {
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   readCatalogSourcesConfigSnapshot,
+  recoverInvalidCatalogSourcesConfig,
 } from '../utils/catalog-sources.js';
 import {
   withResolvedCatalogPlugin,
@@ -712,6 +713,17 @@ export function createTuiControllerDependencies(
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
   ): Promise<OperationEvidence> => {
+    if (intent.kind === 'catalogSourcesRecovery') {
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('validate');
+      await preparation?.reporter.emit('evidence');
+      return {
+        catalog: {
+          configDigest: 'invalid-catalog-sources-config',
+          compositeDigest: 'bootstrap-recovery',
+        },
+      };
+    }
     if (intent.kind === 'catalogGeneration') {
       signal?.throwIfAborted();
       await preparation?.reporter.emit('validate');
@@ -1358,6 +1370,10 @@ export function createTuiControllerDependencies(
       return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
+      if (intent.kind === 'catalogSourcesRecovery') {
+        signal.throwIfAborted();
+        return;
+      }
       if (intent.kind === 'catalogGeneration') {
         signal.throwIfAborted();
         return;
@@ -1541,6 +1557,10 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence, signal) {
+      if (intent.kind === 'catalogSourcesRecovery') {
+        signal?.throwIfAborted();
+        return recoverInvalidCatalogSourcesConfig({ env: context.env });
+      }
       if (intent.kind === 'catalogGeneration') {
         signal?.throwIfAborted();
         const expected = expectedEvidence.catalogGeneration;

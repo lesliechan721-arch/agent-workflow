@@ -26,6 +26,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return {
+      title: '恢复 Catalog 来源配置',
+      description: '备份损坏配置，并恢复唯一的主来源 official。',
+      primaryLabel: '备份并恢复官方默认来源',
+      destructive: false,
+    };
+  }
   if (intent.kind === 'portableInstall') {
     return {
       title: '确认安装通用 Skills',
@@ -156,6 +164,18 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return [
+      { kind: 'add', title: '备份损坏的 catalog-sources.json' },
+      { kind: 'change', title: '恢复唯一的主来源 official' },
+      { kind: 'keep', title: '保留 catalog-state.json 和 catalog-store' },
+      {
+        kind: 'warning',
+        title: '自定义来源需要之后重新添加',
+        description: '无法从损坏配置中安全恢复自定义来源。',
+      },
+    ];
+  }
   if (intent.kind === 'portableInstall') {
     const review = evidence?.portable;
     if (!review) throw plannerError('portablePrepareFailed', '缺少通用 Skills Review 证据。');
