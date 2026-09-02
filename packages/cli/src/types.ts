@@ -273,6 +273,14 @@ export interface ConfigFieldEntry {
   sourceLayer: 'default' | 'user' | 'project' | null;
   storedValue?: unknown;
   storedSourceLayer?: 'user' | 'project';
+  invalidOverride?: {
+    sourceLayer: 'default' | 'user' | 'project';
+    issues: unknown[];
+  };
+  fallback?: {
+    effectiveValue: unknown;
+    sourceLayer: 'default' | 'user' | 'project';
+  };
   value: unknown | null;
   source: 'default' | 'user' | 'project' | 'missing';
   matchedPreset: string | null;

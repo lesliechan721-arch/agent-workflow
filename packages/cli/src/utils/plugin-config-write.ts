@@ -1,3 +1,5 @@
+import { stablePluginConfigStringify } from '@lesliechan721/aw-plugin-core/manifest';
+
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import {
   statusCommandV7,
@@ -41,6 +43,7 @@ export interface PluginConfigWriteRequest {
 export type ConfigApplySkippedReason =
   | 'noVisibleTarget'
   | 'noConfigChange'
+  | 'invalidConfig'
   | 'notRequested';
 
 export interface PluginConfigWriteReceipt {
@@ -176,13 +179,14 @@ async function reinstallVisibleTargets(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
+  discovered?: Awaited<ReturnType<typeof discoverVisibleTargets>>;
 }): Promise<{
   overallState: RebuildReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
 }> {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
-  const discovered = options.applyTargets === undefined
+  const discovered = options.discovered ?? (options.applyTargets === undefined
     ? await discoverVisibleTargets({
         pluginName: options.plugin.manifest.name,
         plugin: options.plugin,
@@ -192,7 +196,7 @@ async function reinstallVisibleTargets(options: {
         nativeCliRunner,
         rebuildRuntime: options.rebuildRuntime,
       })
-    : { targets: dedupeTargets(options.applyTargets), failures: [] };
+    : { targets: dedupeTargets(options.applyTargets), failures: [] });
   const targetResults = [...discovered.failures];
   let runtimeFailed = discovered.failures.length > 0;
   const reinstall = options.reinstallCommandImpl ?? syncWriteCommand;
@@ -242,6 +246,55 @@ async function reinstallVisibleTargets(options: {
   };
 }
 
+async function resolveConfigApplyTargets(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  applyTargets?: ReceiptTargetIdentity[];
+  nativeCliRunner?: NativeCliRunner;
+  rebuildRuntime?: RebuildCommandRuntime;
+}): Promise<Awaited<ReturnType<typeof discoverVisibleTargets>>> {
+  if (options.applyTargets !== undefined) {
+    return { targets: dedupeTargets(options.applyTargets), failures: [] };
+  }
+  return discoverVisibleTargets({
+    pluginName: options.plugin.manifest.name,
+    plugin: options.plugin,
+    scope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
+    nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+    rebuildRuntime: options.rebuildRuntime,
+  });
+}
+
+async function configApplyHasIssues(options: {
+  plugin: PluginMeta;
+  targets: ReceiptTargetIdentity[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  knownValidScopes?: Scope[];
+}): Promise<boolean> {
+  const scopes = [...new Set(options.targets.map((target) => target.scope))];
+  for (const scope of scopes) {
+    if (options.knownValidScopes?.includes(scope)) continue;
+    const effective = await resolveEffectivePluginConfig({
+      ...(options.plugin.sourceId ? {
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+      } : {}),
+      pluginName: options.plugin.manifest.name,
+      manifest: options.plugin.manifest,
+      targetScope: scope,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    if (effective.issues.length > 0) return true;
+  }
+  return false;
+}
+
 function otherProjectsWarning(scope: Scope): string[] {
   return scope === 'user'
     ? ['其它项目不会由本次命令扫描或更新。请在每个项目目录中运行对应的 aw reinstall 命令。']
@@ -284,16 +337,37 @@ export async function replayConfigRuntimeWrites(options: {
     env: options.env,
     token: options.awHomeMutationToken,
     action: async (awHomeMutationToken) => {
-      const applied = await reinstallVisibleTargets({
+      const env = options.env ?? process.env;
+      const rebuildRuntime = { ...options.rebuildRuntime, awHomeMutationToken };
+      const discovered = await resolveConfigApplyTargets({
         plugin: options.plugin,
         scope: options.scope,
         cwd: options.cwd,
-        env: options.env ?? process.env,
+        env,
         applyTargets: options.applyTargets,
         nativeCliRunner: options.nativeCliRunner,
-        reinstallCommandImpl: options.reinstallCommandImpl,
-        rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
+        rebuildRuntime,
       });
+      const applied = await configApplyHasIssues({
+        plugin: options.plugin,
+        targets: discovered.targets,
+        cwd: options.cwd,
+        env,
+      }) ? {
+          overallState: 'partial' as const,
+          targetResults: [],
+          applySkippedReason: 'invalidConfig' as const,
+        } : await reinstallVisibleTargets({
+          plugin: options.plugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          reinstallCommandImpl: options.reinstallCommandImpl,
+          rebuildRuntime,
+          discovered,
+        });
       return {
         configWrite: 'succeeded',
         overallState: applied.overallState,
@@ -380,7 +454,10 @@ async function applyPluginConfigWriteUnlocked(
   assertReadyPluginConfigStore(store);
   const warnings: string[] = [];
   const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
-  const updatedKeys = Object.keys(updates);
+  const updatedKeys = Object.entries(updates)
+    .filter(([key, value]) => !Object.hasOwn(store.values, key)
+      || stablePluginConfigStringify(store.values[key]!) !== stablePluginConfigStringify(value))
+    .map(([key]) => key);
   const changedKeys = [...updatedKeys, ...removedKeys];
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({
@@ -389,7 +466,7 @@ async function applyPluginConfigWriteUnlocked(
       scope: options.scope,
       cwd: options.cwd,
       env: options.env,
-      updates,
+      updates: Object.fromEntries(updatedKeys.map((key) => [key, updates[key]!])),
       removeKeys: requestedRemoveKeys,
       schema,
     });
@@ -403,13 +480,46 @@ async function applyPluginConfigWriteUnlocked(
     cwd: options.cwd,
     env: options.env,
   }));
-  const applied = changedKeys.length === 0
-    ? {
-        overallState: 'succeeded' as const,
+  let applied: Awaited<ReturnType<typeof reinstallVisibleTargets>>;
+  if (changedKeys.length === 0) {
+    applied = {
+      overallState: 'succeeded',
+      targetResults: [],
+      applySkippedReason: 'noConfigChange',
+    };
+  } else if (effective.issues.length > 0) {
+    applied = {
+      overallState: 'partial',
+      targetResults: [],
+      applySkippedReason: 'invalidConfig',
+    };
+  } else if (options.apply === false) {
+    applied = {
+      overallState: 'succeeded',
+      targetResults: [],
+      applySkippedReason: 'notRequested',
+    };
+  } else {
+    const discovered = await resolveConfigApplyTargets({
+      plugin: schemaPlugin,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      applyTargets: options.applyTargets,
+      nativeCliRunner: options.nativeCliRunner,
+      rebuildRuntime: options.rebuildRuntime,
+    });
+    applied = await configApplyHasIssues({
+      plugin: schemaPlugin,
+      targets: discovered.targets,
+      cwd: options.cwd,
+      env: options.env,
+      knownValidScopes: [options.scope],
+    }) ? {
+        overallState: 'partial',
         targetResults: [],
-        applySkippedReason: 'noConfigChange' as const,
-      }
-    : options.apply !== false ? await reinstallVisibleTargets({
+        applySkippedReason: 'invalidConfig',
+      } : await reinstallVisibleTargets({
         plugin: schemaPlugin,
         scope: options.scope,
         cwd: options.cwd,
@@ -418,13 +528,13 @@ async function applyPluginConfigWriteUnlocked(
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-      }) : {
-        overallState: 'succeeded' as const,
-        targetResults: [],
-        applySkippedReason: 'notRequested' as const,
-      };
+        discovered,
+      });
+  }
   const otherProjectsRequireReinstall = options.scope === 'user'
-    && changedKeys.length > 0;
+    && changedKeys.length > 0
+    && effective.issues.length === 0
+    && applied.applySkippedReason !== 'invalidConfig';
   if (otherProjectsRequireReinstall) warnings.push(...otherProjectsWarning(options.scope));
 
   return {
@@ -545,22 +655,50 @@ async function resetPluginConfigWithHelperUnlocked(
         env: options.env,
       }));
     }
-    if (reset.deleted && options.apply !== false) {
-      applied = await reinstallVisibleTargets({
+    if (reset.deleted && effective && effective.issues.length > 0) {
+      applied = {
+        overallState: 'partial',
+        targetResults: [],
+        applySkippedReason: 'invalidConfig',
+      };
+    } else if (reset.deleted && options.apply !== false) {
+      const discovered = await resolveConfigApplyTargets({
         plugin: schemaAccess.plugin,
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
         applyTargets: options.applyTargets,
         nativeCliRunner: options.nativeCliRunner,
-        reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
       });
+      applied = await configApplyHasIssues({
+        plugin: schemaAccess.plugin,
+        targets: discovered.targets,
+        cwd: options.cwd,
+        env: options.env,
+        knownValidScopes: effective ? [options.scope] : undefined,
+      }) ? {
+          overallState: 'partial',
+          targetResults: [],
+          applySkippedReason: 'invalidConfig',
+        } : await reinstallVisibleTargets({
+          plugin: schemaAccess.plugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          reinstallCommandImpl: options.reinstallCommandImpl,
+          rebuildRuntime: options.rebuildRuntime,
+          discovered,
+        });
     }
   }
   const otherProjectsRequireReinstall = Boolean(schemaAccess?.plugin)
     && options.scope === 'user'
-    && reset.deleted;
+    && reset.deleted
+    && (effective?.issues.length ?? 0) === 0
+    && applied.applySkippedReason !== 'invalidConfig';
   if (otherProjectsRequireReinstall) warnings.push(...otherProjectsWarning(options.scope));
 
   return {

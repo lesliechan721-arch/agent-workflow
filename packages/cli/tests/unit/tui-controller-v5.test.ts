@@ -3094,6 +3094,40 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.activeReview).toBeUndefined();
   });
 
+  it('reports a saved invalid config with no target writes as unapplied partial', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+        targetResults: [],
+      }),
+    }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'strict' },
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'partial',
+      summary: {
+        code: 'operationPartial',
+        configApplied: false,
+        configApplySkippedReason: 'invalidConfig',
+        message: '设置已保存，但没有应用。当前配置仍无效。',
+      },
+    });
+  });
+
   it('reports a reset as unconfirmed when the post-write status reload fails', async () => {
     const initial = {
       payload: status({ sources: [source('official', { type: 'path', primary: true })] }),

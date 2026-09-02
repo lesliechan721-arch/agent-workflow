@@ -354,6 +354,7 @@ export interface OperationResultSummary {
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
+  configApplySkippedReason?: 'invalidConfig';
   changes?: string[];
   warnings?: string[];
   recoveryActions?: string[];
@@ -2724,18 +2725,30 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
               : entry.state as 'completed' | 'failed',
       }];
     });
-    const partial = targets.some((target) => target.state === 'failed' || target.state === 'skipped')
+    const overallState = typeof execution === 'object' && execution !== null
+      ? (execution as { overallState?: unknown }).overallState
+      : undefined;
+    const applySkippedReason = typeof execution === 'object' && execution !== null
+      ? (execution as { applySkippedReason?: unknown }).applySkippedReason
+      : undefined;
+    const invalidConfig = applySkippedReason === 'invalidConfig';
+    const partial = overallState === 'partial'
+      || invalidConfig
+      || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
       && targets.some((target) => target.state === 'completed' || target.state === 'kept');
-    const failed = typeof execution === 'object' && execution !== null
-      && (execution as { overallState?: unknown }).overallState === 'failed'
+    const failed = overallState === 'failed'
       || (targets.length > 0
         && targets.every((target) => target.state === 'failed' || target.state === 'skipped'));
     return {
       code: failed && !partial ? 'operationFailed'
         : partial ? 'operationPartial' : 'operationSucceeded',
-      message: failed && !partial ? '操作结果无法确认。'
+      message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
+        : failed && !partial ? '操作结果无法确认。'
         : partial ? '操作只完成了一部分。' : '操作已完成。',
-      ...(intent.kind === 'configSave' ? { configApplied: intent.apply } : {}),
+      ...(intent.kind === 'configSave'
+        ? { configApplied: invalidConfig ? false : intent.apply }
+        : invalidConfig ? { configApplied: false } : {}),
+      ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
       ...(targets.length > 0 ? { targets } : {}),
     };
   }

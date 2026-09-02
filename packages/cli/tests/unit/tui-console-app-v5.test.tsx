@@ -4420,6 +4420,40 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('C15');
   });
 
+  it('shows a saved invalid config as unapplied instead of an apply failure', async () => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+        targetResults: [],
+      }),
+    });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'note',
+      editor: 'string',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, 'SAVED', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'), '\r');
+    await nextTurn(3);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({
+      state: 'partial',
+      summary: { configApplied: false },
+    });
+    expect(instance.lastFrame()).toContain('设置已保存，但未应用');
+    expect(instance.lastFrame()).toContain('当前配置仍无效');
+    expect(instance.lastFrame()).not.toContain('部分应用失败');
+  });
+
   it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {
     const executeIntent = vi.fn().mockResolvedValue({ configWrite: 'succeeded', overallState: 'succeeded', targetResults: [] });
     const value = controller({ executeIntent });

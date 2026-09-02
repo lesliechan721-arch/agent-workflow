@@ -1085,7 +1085,7 @@ export function createTuiControllerDependencies(
         config: {
           scope: intent.scope,
           schemaIdentity: selected.source.manifestDigest,
-          storeDigest: digest({ exists: store.exists, values: store.values }),
+          storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
         },
       };
@@ -1318,7 +1318,7 @@ export function createTuiControllerDependencies(
       evidence.config = {
         scope: intent.scope,
         schemaIdentity: selected.source.manifestDigest,
-        storeDigest: digest({ exists: store.exists, values: store.values }),
+        storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
         affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
       };
     }
@@ -1601,7 +1601,7 @@ export function createTuiControllerDependencies(
             storeDigest: digest({
               exists: store.exists,
               pluginId,
-              values: store.values,
+              rawDigest: store.rawDigest,
             }),
           };
         },

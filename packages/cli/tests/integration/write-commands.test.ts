@@ -8065,6 +8065,11 @@ describe('five namespaced write commands', () => {
       manifest.config = {
         fields: {
           mode: { type: 'string', default: 'safe' },
+          labels: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            validation: { key: { format: 'identifier' } },
+          },
         },
       };
       manifest.scripts = {
@@ -8174,6 +8179,54 @@ describe('five namespaced write commands', () => {
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { labels: { 'bad key': 'preserved' } },
+    });
+    const partial = await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply',
+    ]);
+    expect(partial).toMatchObject({
+      exitCode: 1,
+      payload: {
+        receiptSchemaVersion: 5,
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+        targetResults: [],
+        effective: {
+          fieldStates: {
+            labels: { invalidOverride: { source: 'project' } },
+            mode: { effective: { source: 'project', value: 'fast' } },
+          },
+        },
+      },
+    });
+    expect((await readStore()).values).toEqual({
+      labels: { 'bad key': 'preserved' },
+      mode: 'fast',
+    });
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+    const repaired = await runPublic([
+      'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
+      '--scope', 'project', '--apply',
+    ]);
+    expect(repaired).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    expect((await readStore()).values).toEqual({
+      labels: { good_key: 'repaired' },
+      mode: 'fast',
+    });
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
     const failed = await runPublic([
       'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project', '--apply',
@@ -8182,7 +8235,10 @@ describe('five namespaced write commands', () => {
       exitCode: 1,
       payload: { configWrite: 'succeeded', overallState: 'partial' },
     });
-    expect((await readStore()).values).toEqual({ mode: 'fail' });
+    expect((await readStore()).values).toEqual({
+      labels: { good_key: 'repaired' },
+      mode: 'fail',
+    });
     const configAfterFailure = await fs.readFile(configPath, 'utf8');
     expect(configAfterFailure).toContain('mode=fast');
     expect(configAfterFailure).not.toContain('mode=fail');

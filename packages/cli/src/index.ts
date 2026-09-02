@@ -1132,6 +1132,8 @@ function writeConfigApplyNotice(
   if (receipt.targetResults.length === 0) {
     const message = receipt.applySkippedReason === 'noConfigChange'
       ? '配置内容没有变化，因此没有运行 reinstall。'
+      : receipt.applySkippedReason === 'invalidConfig'
+        ? '配置已保存，但当前配置无效，因此没有运行 reinstall。请先修复无效字段。'
       : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
     writeLine(write, message);
   } else {

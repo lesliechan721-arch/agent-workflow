@@ -4531,7 +4531,9 @@ export function ConsoleAppV4(props: {
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
-        : partial ? '! 设置已保存，但部分应用失败'
+        : partial ? resultSummary?.configApplySkippedReason === 'invalidConfig'
+          ? '! 设置已保存，但未应用'
+          : '! 设置已保存，但部分应用失败'
           : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
@@ -4566,7 +4568,7 @@ export function ConsoleAppV4(props: {
       : blocked ? result.message
         : configOperation
           ? partial
-            ? '设置层已经保存；平台应用失败不会回滚设置。'
+            ? resultSummary?.message ?? '设置层已经保存；平台应用失败不会回滚设置。'
             : '设置层已经更新。'
           : '状态已刷新。';
     const pluginId = resultSummary?.pluginId

@@ -472,12 +472,13 @@ describe('TUI controller runtime scope conflict validation', () => {
     const signal = new AbortController().signal;
     await dependencies.loadStatus(signal);
 
-    await expect(dependencies.prepareReviewEvidence!({
+    const evidence = await dependencies.prepareReviewEvidence!({
       kind: 'configSave',
       pluginId: 'team/demo',
       scope: 'user',
       updates: { mode: 'strict' },
-    }, signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
+    }, signal, (stage) => { stages.push(stage); });
+    expect(evidence).toMatchObject({
       config: {
         scope: 'user',
         affectedTargets: [
@@ -494,6 +495,30 @@ describe('TUI controller runtime scope conflict validation', () => {
       expect.objectContaining({ type: 'review.prepare.config' }),
       expect.objectContaining({ type: 'review.prepare.evidence' }),
     ]);
+
+    const storePath = path.join(isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json');
+    const envelope = {
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: evidence.source.sourceIdentity,
+      pluginName: 'demo',
+      values: { mode: 'saved' },
+    };
+    await fs.outputJson(storePath, envelope, { spaces: 2 });
+    const beforeReorder = await dependencies.prepareReviewEvidence!({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', updates: { mode: 'strict' },
+    }, signal, () => undefined);
+    await fs.outputFile(storePath, `${JSON.stringify({
+      values: envelope.values,
+      pluginName: envelope.pluginName,
+      sourceIdentity: envelope.sourceIdentity,
+      sourceId: envelope.sourceId,
+      schemaVersion: envelope.schemaVersion,
+    })}\n`);
+    const afterReorder = await dependencies.prepareReviewEvidence!({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', updates: { mode: 'strict' },
+    }, signal, () => undefined);
+    expect(afterReorder.config?.storeDigest).not.toBe(beforeReorder.config?.storeDigest);
   });
 
   it('keeps Review, stale fingerprints, and writer reapply targets on one config affected-target rule', async () => {

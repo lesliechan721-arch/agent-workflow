@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import {
+  canonicalizePluginConfigValues,
   formatPluginConfigIssue,
   matchPluginConfigPreset,
   redactPluginConfigValue,
@@ -68,6 +69,7 @@ export interface PluginConfigStore {
   exists: boolean;
   state: 'missing' | 'ready' | 'invalid';
   values: Record<string, PluginConfigValue>;
+  rawDigest?: string;
   invalidCode?: PluginConfigStoreInvalidCode;
   issues: string[];
 }
@@ -92,10 +94,26 @@ export interface ResolvedEffectivePluginConfig {
   values: Record<string, PluginConfigValue>;
   redactedValues: Record<string, RedactedPluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
+  fieldStates: Record<string, PluginConfigFieldState>;
   issues: PluginConfigIssue[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
   schema: PluginConfigSchema['fields'];
   stores: Partial<Record<Scope, PluginConfigStore>>;
+}
+
+export interface PluginConfigResolvedValue {
+  value: PluginConfigValue;
+  redactedValue: RedactedPluginConfigValue;
+  source: Exclude<PluginConfigSource, 'missing'>;
+}
+
+export interface PluginConfigFieldState {
+  effective?: PluginConfigResolvedValue;
+  invalidOverride?: {
+    source: Exclude<PluginConfigSource, 'missing'>;
+    issues: PluginConfigIssue[];
+  };
+  fallback?: PluginConfigResolvedValue;
 }
 
 export interface ResolvedProjectArtifactRenderConfig {
@@ -574,12 +592,14 @@ function invalidStore(
   filePath: string,
   code: PluginConfigStoreInvalidCode,
   message: string,
+  rawDigest?: string,
 ): PluginConfigStore {
   return {
     path: filePath,
     exists: true,
     state: 'invalid',
     values: {},
+    ...(rawDigest ? { rawDigest } : {}),
     invalidCode: code,
     issues: [message],
   };
@@ -588,12 +608,14 @@ function invalidStore(
 function readyStore(
   filePath: string,
   values: Record<string, PluginConfigValue>,
+  rawDigest?: string,
 ): PluginConfigStore {
   return {
     path: filePath,
     exists: true,
     state: 'ready',
-    values,
+    values: canonicalizePluginConfigValues(values),
+    ...(rawDigest ? { rawDigest } : {}),
     issues: [],
   };
 }
@@ -606,20 +628,23 @@ export function assertReadyPluginConfigStore(store: PluginConfigStore): void {
 }
 
 type ParsedStoreJson =
-  | { state: 'parsed'; value: unknown }
+  | { state: 'parsed'; value: unknown; rawDigest: string }
   | { state: 'invalidJson'; store: PluginConfigStore };
 
 async function parseStoreJson(filePath: string): Promise<ParsedStoreJson> {
+  const content = await fs.readFile(filePath);
+  const rawDigest = `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`;
   try {
     return {
       state: 'parsed',
-      value: JSON.parse(await fs.readFile(filePath, 'utf8')) as unknown,
+      value: JSON.parse(content.toString('utf8')) as unknown,
+      rawDigest,
     };
   } catch (error) {
     if (error instanceof SyntaxError) {
       return {
         state: 'invalidJson',
-        store: invalidStore(filePath, 'invalidJson', 'The store is not valid JSON.'),
+        store: invalidStore(filePath, 'invalidJson', 'The store is not valid JSON.', rawDigest),
       };
     }
     throw error;
@@ -629,10 +654,15 @@ async function parseStoreJson(filePath: string): Promise<ParsedStoreJson> {
 function validateStoreValues(options: {
   filePath: string;
   values: unknown;
-  schema?: PluginConfigSchema['fields'];
+  rawDigest?: string;
 }): PluginConfigStore {
   if (!isRecord(options.values)) {
-    return invalidStore(options.filePath, 'invalidValues', 'The values field must be an object.');
+    return invalidStore(
+      options.filePath,
+      'invalidValues',
+      'The values field must be an object.',
+      options.rawDigest,
+    );
   }
   const values: Record<string, PluginConfigValue> = {};
   const issues: string[] = [];
@@ -641,25 +671,17 @@ function validateStoreValues(options: {
       issues.push(`Config "${key}" is not a supported config value.`);
       continue;
     }
-    const field = options.schema?.[key];
-    if (field) {
-      const fieldIssues = validateCorePluginConfigValue(field, value, key);
-      issues.push(...fieldIssues.map(formatPluginConfigIssue));
-    }
     values[key] = value;
   }
   return issues.length > 0
-    ? invalidStore(options.filePath, 'invalidValues', issues.join(' '))
-    : readyStore(options.filePath, values);
+    ? invalidStore(options.filePath, 'invalidValues', issues.join(' '), options.rawDigest)
+    : readyStore(options.filePath, values, options.rawDigest);
 }
 
-async function readStoreFile(
-  filePath: string,
-  schema?: PluginConfigSchema['fields'],
-): Promise<PluginConfigStore> {
+async function readStoreFile(filePath: string): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
-  return validateStoreValues({ filePath, values: parsed.value, schema });
+  return validateStoreValues({ filePath, values: parsed.value, rawDigest: parsed.rawDigest });
 }
 
 async function readNamespacedStoreFile(options: {
@@ -667,7 +689,6 @@ async function readNamespacedStoreFile(options: {
   sourceId: string;
   sourceIdentity: string;
   pluginName: string;
-  schema?: PluginConfigSchema['fields'];
 }): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(options.filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
@@ -677,6 +698,7 @@ async function readNamespacedStoreFile(options: {
       options.filePath,
       'schemaVersionUnsupported',
       'Only plugin config store schemaVersion 3 is supported.',
+      parsed.rawDigest,
     );
   }
   if (
@@ -688,12 +710,13 @@ async function readNamespacedStoreFile(options: {
       options.filePath,
       'identityMismatch',
       'The store identity does not match its source and namespaced path.',
+      parsed.rawDigest,
     );
   }
   return validateStoreValues({
     filePath: options.filePath,
     values: raw.values,
-    schema: options.schema,
+    rawDigest: parsed.rawDigest,
   });
 }
 
@@ -703,7 +726,8 @@ function namespacedConfigContent(options: {
   pluginName: string;
   values: Record<string, PluginConfigValue>;
 }): string {
-  if (!options.sourceId) return `${JSON.stringify(options.values, null, 2)}\n`;
+  const values = canonicalizePluginConfigValues(options.values);
+  if (!options.sourceId) return `${JSON.stringify(values, null, 2)}\n`;
   if (!options.sourceIdentity) {
     throw new Error('sourceChanged: namespaced plugin config requires a source identity.');
   }
@@ -712,7 +736,7 @@ function namespacedConfigContent(options: {
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
     pluginName: options.pluginName,
-    values: options.values,
+    values,
   };
   return `${JSON.stringify(envelope, null, 2)}\n`;
 }
@@ -779,9 +803,8 @@ export async function readPluginConfigStore(options: {
         sourceId: options.sourceId,
         sourceIdentity: options.sourceIdentity!,
         pluginName: options.pluginName,
-        schema: options.schema,
       })
-    : readStoreFile(filePath, options.schema);
+    : readStoreFile(filePath);
 }
 
 export async function readNamespacedPluginConfigStoreIdentity(options: {
@@ -1000,9 +1023,8 @@ export async function patchPluginConfigStore(options: {
               sourceId: options.sourceId,
               sourceIdentity: options.sourceIdentity!,
               pluginName: options.pluginName,
-              schema: options.schema,
             })
-          : await readStoreFile(filePath, options.schema)
+          : await readStoreFile(filePath)
         : readyStore(filePath, {});
       assertReadyPluginConfigStore(current);
       if (options.requireExistingRemoveKeys) {
@@ -1166,36 +1188,41 @@ async function applyConfigLayer(options: {
   values: Record<string, PluginConfigValue>;
   redactedValues: Record<string, RedactedPluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
-  invalidIssues: Map<string, PluginConfigIssue>;
+  fieldStates: Record<string, PluginConfigFieldState>;
   schema: PluginConfigSchema['fields'];
   entries: Record<string, unknown>;
-  source: PluginConfigSource;
+  source: Exclude<PluginConfigSource, 'missing'>;
 }): Promise<void> {
   for (const [key, field] of Object.entries(options.schema)) {
     if (!Object.hasOwn(options.entries, key)) {
       continue;
     }
 
-    try {
-      const coerced = await coercePluginConfigValue({
-        key,
-        field,
-        value: options.entries[key],
-      });
-      options.values[key] = coerced;
-      options.redactedValues[key] = redactValue(field, coerced);
+    const value = options.entries[key] as PluginConfigValue;
+    const validationIssues = validateCorePluginConfigValue(field, value, key);
+    if (validationIssues.length === 0) {
+      const redactedValue = redactValue(field, value);
+      options.values[key] = value;
+      options.redactedValues[key] = redactedValue;
       options.sources[key] = options.source;
-      options.invalidIssues.delete(key);
-    } catch (error) {
+      options.fieldStates[key] = {
+        effective: { value, redactedValue, source: options.source },
+      };
+    } else {
+      const fallback = options.fieldStates[key]?.effective;
       delete options.values[key];
       delete options.redactedValues[key];
       options.sources[key] = options.source;
-      options.invalidIssues.set(key, {
+      const issues = validationIssues.map((issue): PluginConfigIssue => ({
         type: 'invalid-config',
         key,
         source: options.source,
-        message: error instanceof Error ? error.message : String(error),
-      });
+        message: formatPluginConfigIssue(issue),
+      }));
+      options.fieldStates[key] = {
+        invalidOverride: { source: options.source, issues },
+        ...(fallback ? { fallback } : {}),
+      };
     }
   }
 }
@@ -1223,7 +1250,6 @@ export async function resolveEffectivePluginConfig(options: {
     scope: 'user',
     cwd: options.cwd,
     env: options.env,
-    schema,
   });
   const projectStore = options.targetScope === 'user'
     ? undefined
@@ -1234,7 +1260,6 @@ export async function resolveEffectivePluginConfig(options: {
         scope: 'project',
         cwd: options.cwd,
         env: options.env,
-        schema,
       });
   assertReadyPluginConfigStore(userStore);
   if (projectStore) assertReadyPluginConfigStore(projectStore);
@@ -1242,7 +1267,7 @@ export async function resolveEffectivePluginConfig(options: {
   const values: Record<string, PluginConfigValue> = {};
   const redactedValues: Record<string, RedactedPluginConfigValue> = {};
   const sources: Record<string, PluginConfigSource> = {};
-  const invalidIssues = new Map<string, PluginConfigIssue>();
+  const fieldStates: Record<string, PluginConfigFieldState> = {};
   const ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[] = [];
   const schemaKeys = new Set(Object.keys(schema));
 
@@ -1258,7 +1283,7 @@ export async function resolveEffectivePluginConfig(options: {
       values,
       redactedValues,
       sources,
-      invalidIssues,
+      fieldStates,
       schema: { [key]: field },
       entries: { [key]: field.default },
       source: 'default',
@@ -1286,16 +1311,17 @@ export async function resolveEffectivePluginConfig(options: {
       values,
       redactedValues,
       sources,
-      invalidIssues,
+      fieldStates,
       schema,
       entries: plainEntries,
       source: sourceForStoreLayer(scope),
     });
   }
 
-  const issues = [...invalidIssues.values()];
+  const issues = Object.values(fieldStates).flatMap((state) =>
+    state.invalidOverride?.issues ?? []);
   for (const [key, field] of Object.entries(schema)) {
-    if (field.required && values[key] === undefined) {
+    if (field.required && values[key] === undefined && !fieldStates[key]?.invalidOverride) {
       issues.push({
         type: 'missing-required',
         key,
@@ -1311,6 +1337,7 @@ export async function resolveEffectivePluginConfig(options: {
     values,
     redactedValues,
     sources,
+    fieldStates,
     issues,
     ignoredUnknownKeys,
     schema,
@@ -1588,11 +1615,13 @@ async function buildManifestFieldEntries(options: {
   });
   const effectiveFieldState = (key: string): Pick<ConfigFieldEntry,
     'valueState' | 'effectiveValue' | 'sourceLayer'
-    | 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'> => {
+    | 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'
+    | 'invalidOverride' | 'fallback'> => {
     const source = effective.sources[key];
     const sourceLayer = toConfigSourceLayer(source);
     const field = schema[key]!;
     const fieldIssues = effective.issues.filter((entry) => entry.key === key);
+    const fieldState = effective.fieldStates[key];
     if (source === undefined || source === 'missing') {
       return {
         valueState: fieldIssues.length > 0 ? 'invalid' : 'default',
@@ -1606,6 +1635,18 @@ async function buildManifestFieldEntries(options: {
       valueState: issue ? 'invalid' : source === 'default' ? 'default' : 'configured',
       effectiveValue: issue ? null : effective.redactedValues[key] ?? null,
       sourceLayer,
+      ...(fieldState?.invalidOverride ? {
+        invalidOverride: {
+          sourceLayer: fieldState.invalidOverride.source,
+          issues: fieldState.invalidOverride.issues,
+        },
+      } : {}),
+      ...(fieldState?.fallback ? {
+        fallback: {
+          effectiveValue: fieldState.fallback.redactedValue,
+          sourceLayer: fieldState.fallback.source,
+        },
+      } : {}),
       ...configFieldProjection({
         field,
         value: issue ? undefined : effective.values[key],
@@ -1852,12 +1893,26 @@ export function summarizeEffectivePluginConfig(
 ): {
   values: Record<string, RedactedPluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
+  fieldStates: Record<string, {
+    effective?: { value: RedactedPluginConfigValue; source: Exclude<PluginConfigSource, 'missing'> };
+    invalidOverride?: PluginConfigFieldState['invalidOverride'];
+    fallback?: { value: RedactedPluginConfigValue; source: Exclude<PluginConfigSource, 'missing'> };
+  }>;
   issues: PluginConfigIssue[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
 } {
   return {
     values: config.redactedValues,
     sources: config.sources,
+    fieldStates: Object.fromEntries(Object.entries(config.fieldStates).map(([key, state]) => [key, {
+      ...(state.effective ? {
+        effective: { value: state.effective.redactedValue, source: state.effective.source },
+      } : {}),
+      ...(state.invalidOverride ? { invalidOverride: state.invalidOverride } : {}),
+      ...(state.fallback ? {
+        fallback: { value: state.fallback.redactedValue, source: state.fallback.source },
+      } : {}),
+    }])),
     issues: config.issues,
     ignoredUnknownKeys: config.ignoredUnknownKeys,
   };
