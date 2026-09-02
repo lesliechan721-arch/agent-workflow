@@ -43,7 +43,11 @@ import {
   resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  readPluginConfigStore,
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
   setNativeCliRunnerOverrideForTests,
@@ -3224,6 +3228,130 @@ describe('five namespaced write commands', () => {
     }
   });
 
+  it('scopes install config preflight to the resolved target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'target-scoped-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'target-scoped', [], 'config\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'target-scoped', title: 'Target scoped', content: 'Target scoped.' }],
+      };
+      manifest.config = {
+        fields: {
+          mode: { type: 'string', default: 'default' },
+          locations: {
+            type: 'object',
+            properties: {
+              certificate: { type: 'string', validation: { format: 'file' } },
+            },
+          },
+        },
+      };
+    });
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'user' },
+    });
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: source.id,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }), '{invalid');
+    const userListOutput = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'list', 'team/target-scoped', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: userListOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(userListOutput.readStdout())).toMatchObject({
+      scope: 'user',
+      fields: expect.arrayContaining([expect.objectContaining({ key: 'mode', effectiveValue: 'user' })]),
+    });
+    const userGetOutput = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'get', 'team/target-scoped', 'mode', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: userGetOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(userGetOutput.readStdout())).toMatchObject({
+      scope: 'user',
+      fields: [expect.objectContaining({ key: 'mode', effectiveValue: 'user' })],
+    });
+    for (const scope of ['project', undefined] as const) {
+      const output = createCapturedCliIo();
+      const args = [
+        'config', 'list', 'team/target-scoped',
+        ...(scope ? ['--scope', scope] : []),
+        '--json',
+      ];
+      expect(await runCli(args, {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      })).toBe(1);
+      expect(output.readStderr()).toContain('invalidJson');
+    }
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+
+    const userResult = await installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime);
+    expect(userResult.overallState, JSON.stringify(userResult)).toBe('succeeded');
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'stateInventoryFailed' })],
+    });
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { locations: { certificate: '/machine/certificate.pem' } },
+    });
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'invalidConfig' })],
+    });
+  });
+
   it('adds a missing dependency when upgrade --all starts from live requested roots', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'upgrade-all-dependency-source');
@@ -5969,9 +6097,10 @@ describe('five namespaced write commands', () => {
           count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
           token: { type: 'string', sensitive: true, title: '令牌' },
           rules: { type: 'string', sensitive: true, validation: { format: 'path' }, title: '规则文件' },
+          certificate: { type: 'string', validation: { format: 'file' }, title: '证书文件' },
         },
         presentation: {
-          groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
+          groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules', 'certificate'] }],
         },
       };
     });
@@ -5982,9 +6111,20 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: source.id,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }), '{invalid');
+    const operationCwd = path.join(isolation.layout.fixtureCwd, 'nested-config-operation');
+    await fs.outputFile(path.join(operationCwd, 'certificate.pem'), 'certificate');
+    const resolvedCertificate = await fs.realpath(path.join(operationCwd, 'certificate.pem'));
     const debugLog = vi.fn();
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
+      cwd: operationCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       interactive: false,
@@ -6032,13 +6172,12 @@ describe('five namespaced write commands', () => {
       pluginId: 'team/demo',
       scope: 'user',
       projectLayer: 'shared',
-      updates: { level: 'strict', count: '7', token: 'sk-private' },
+      updates: { level: 'strict', count: '7', token: 'sk-private', certificate: './certificate.pem' },
       sensitiveKeys: ['token'],
     });
     expect(JSON.stringify(save)).not.toContain('sk-private');
     await expect(controller.executeOperation(save.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
 
-    const sourceIdentity = await calculateCatalogSourceIdentity(source);
     await expect(readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
@@ -6046,7 +6185,10 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ exists: true, values: { level: 'strict', count: 7, token: 'sk-private' } });
+    })).resolves.toMatchObject({
+      exists: true,
+      values: { level: 'strict', count: 7, token: 'sk-private', certificate: resolvedCertificate },
+    });
 
     await expect(controller.buildOperationReview({
       kind: 'configSave',
@@ -6093,7 +6235,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     })).resolves.toMatchObject({
       exists: true,
-      values: { level: 'strict', count: 7, token: 'sk-private' },
+      values: { level: 'strict', count: 7, token: 'sk-private', certificate: resolvedCertificate },
     });
 
     await fs.move(unavailableRoot, sourceRoot);

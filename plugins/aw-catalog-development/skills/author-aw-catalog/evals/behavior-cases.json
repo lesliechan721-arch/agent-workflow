@@ -35,7 +35,7 @@
         "workspaceFiles": {
           ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"author-maintenance-fixture\"}\n",
           "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://catalog.example.com/owner\"},\"interface\":{\"displayName\":\"Author Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-          "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"shared\",\"title\":\"Shared rules\",\"content\":\"Use shared rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+          "plugins/shared-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":3,\"name\":\"shared-rules\",\"version\":\"0.1.0\",\"description\":\"Shared rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"shared\",\"title\":\"Shared rules\",\"content\":\"Use shared rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
           "plugins/shared-rules/README.md": "# Shared rules\n",
           "fixtures/scenario.txt": "scenario=maintenance\n"
         },
@@ -93,7 +93,7 @@
         "workspaceFiles": {
           ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"author-delete-fixture\"}\n",
           "plugins/marketplace-source.json": "{\"owner\":{\"name\":\"Fixture Owner\",\"url\":\"https://catalog.example.com/owner\"},\"interface\":{\"displayName\":\"Author Delete Fixture\"},\"catalog\":{\"version\":\"0.1.0\"}}\n",
-          "plugins/legacy-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"legacy-rules\",\"version\":\"0.1.0\",\"description\":\"Legacy rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"legacy\",\"title\":\"Legacy rules\",\"content\":\"Use legacy rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
+          "plugins/legacy-rules/.agents-plugin/plugin.json": "{\"schemaVersion\":3,\"name\":\"legacy-rules\",\"version\":\"0.1.0\",\"description\":\"Legacy rules.\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\",\"CLAUDE\"]}},\"extensions\":{\"instructions\":[{\"name\":\"legacy\",\"title\":\"Legacy rules\",\"content\":\"Use legacy rules.\"}]},\"requires\":{\"aw\":{\"capabilities\":[]}}}\n",
           "plugins/legacy-rules/README.md": "# Legacy rules\n",
           "fixtures/scenario.txt": "scenario=safe-delete-empty-inventory\n"
         },

@@ -51,6 +51,25 @@ describe('plugin manifest v3 structure', () => {
   it.each([
     ['array default', { fields: { value: { type: 'string', default: [] } } }],
     ['null default', { fields: { value: { type: 'string', default: null } } }],
+    ['closed top-level scalar choices without presets', {
+      fields: { value: { type: 'string', choices: { allowCustom: false, presets: [] } } },
+    }],
+    ['closed fixed child choices without presets', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: { child: { type: 'string', choices: { allowCustom: false, presets: [] } } },
+        },
+      },
+    }],
+    ['closed dynamic child choices without presets', {
+      fields: {
+        value: {
+          type: 'object',
+          additionalProperties: { type: 'number', choices: { allowCustom: false, presets: [] } },
+        },
+      },
+    }],
     ['nested object', {
       fields: {
         value: {
@@ -69,6 +88,36 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       config,
     }))).toThrow(PluginManifestStructureError)
+  })
+
+  it('accepts custom Config v2 choices without presets', () => {
+    expect(() => assertPluginManifestStructure(manifest({
+      schemaVersion: 3,
+      config: {
+        fields: {
+          value: { type: 'string', choices: { allowCustom: true, presets: [] } },
+        },
+      },
+    }))).not.toThrow()
+  })
+
+  it('accepts file and directory string validation formats', () => {
+    expect(() => assertPluginManifestStructure(manifest({
+      schemaVersion: 3,
+      config: {
+        fields: {
+          certificate: { type: 'string', validation: { format: 'file' } },
+          workspace: { type: 'string', validation: { format: 'directory' } },
+          locations: {
+            type: 'object',
+            properties: {
+              certificate: { type: 'string', validation: { format: 'file' } },
+            },
+            additionalProperties: { type: 'string', validation: { format: 'directory' } },
+          },
+        },
+      },
+    }))).not.toThrow()
   })
 
   it('fails closed for reserved imports and accepts only injected exports', () => {

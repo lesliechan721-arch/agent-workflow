@@ -28,6 +28,7 @@ import {
 } from './paths.js';
 import {
   resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
   type PluginConfigValue,
 } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
@@ -530,6 +531,7 @@ export async function writeLifecycleScriptContext(options: {
       sourceIdentity: options.sourceIdentity,
       pluginName: options.target.sourceManifest.name,
       manifest: options.target.sourceManifest,
+      targetScope: options.scope,
       cwd: options.cwd,
       env: options.commandEnv,
     });
@@ -539,8 +541,20 @@ export async function writeLifecycleScriptContext(options: {
       );
     }
     configStores = {
-      user: effective.stores.user.path,
-      project: effective.stores.project.path,
+      user: resolvePluginConfigStorePath({
+        sourceId: options.sourceId,
+        pluginName: options.target.sourceManifest.name,
+        scope: 'user',
+        cwd: options.cwd,
+        env: options.commandEnv,
+      }),
+      project: resolvePluginConfigStorePath({
+        sourceId: options.sourceId,
+        pluginName: options.target.sourceManifest.name,
+        scope: 'project',
+        cwd: options.cwd,
+        env: options.commandEnv,
+      }),
     };
     config = {
       schema: options.target.sourceManifest.config.fields,

@@ -46,6 +46,8 @@ describe('plugin authoring capability structure registry', () => {
         const definition = entry.$ref.split('/').at(-1)!
         return schema.$defs[definition].properties.type.const
       }))
+    expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.validation.format'))
+      .toEqual(schema.$defs.configStringValidation.properties.format.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].distributions'))

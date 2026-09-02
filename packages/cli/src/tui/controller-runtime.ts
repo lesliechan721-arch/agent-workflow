@@ -726,9 +726,11 @@ export function createTuiControllerDependencies(
     sourceIdentity?: string;
     pluginName: string;
     schema: PluginConfigSchema['fields'];
+    scope: Scope | 'effective';
     signal: AbortSignal;
   }) => {
-    const [user, project] = await Promise.all((['user', 'project'] as const)
+    const scopes = config.scope === 'user' ? ['user'] as const : ['user', 'project'] as const;
+    const stores = await Promise.all(scopes
       .map((scope) => readPluginConfigStore({
         sourceId: config.sourceId,
         sourceIdentity: config.sourceIdentity,
@@ -738,10 +740,12 @@ export function createTuiControllerDependencies(
         env: context.env,
         schema: config.schema,
       })));
+    const user = stores[0]!;
+    const project = config.scope === 'user' ? undefined : stores[1]!;
     config.signal.throwIfAborted();
     const invalidStores = ([
       { scope: 'user' as const, store: user },
-      { scope: 'project' as const, store: project },
+      ...(project ? [{ scope: 'project' as const, store: project }] : []),
     ]).flatMap(({ scope, store }) => store.state === 'invalid' ? [{
       scope,
       code: store.invalidCode!,
@@ -750,7 +754,7 @@ export function createTuiControllerDependencies(
         : `<project>/.agent-workflows/plugin-config/${config.sourceId ?? '<source>'}/${config.pluginName}/config.json`,
     }] : []);
     if (invalidStores.length > 0) throw new TuiConfigInvalidStoreError(invalidStores);
-    return { user, project };
+    return { user, ...(project ? { project } : {}) };
   };
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
@@ -1468,6 +1472,7 @@ export function createTuiControllerDependencies(
             sourceIdentity: plugin.sourceIdentity,
             pluginName: plugin.manifest.name,
             schema: plugin.manifest.config.fields,
+            scope: layer.scope,
             signal,
           });
           const read = await resolveConfigRead({
@@ -1477,13 +1482,15 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          const effectiveRead = await resolveConfigRead({
-            pluginName: plugin.manifest.name,
-            plugin,
-            scope: 'effective',
-            cwd: context.cwd,
-            env: context.env,
-          });
+          const effectiveRead = layer.scope === 'user'
+            ? read
+            : await resolveConfigRead({
+                pluginName: plugin.manifest.name,
+                plugin,
+                scope: 'effective',
+                cwd: context.cwd,
+                env: context.env,
+              });
           return buildConfigGroups({ schema: plugin.manifest.config, read, effectiveRead });
         },
       });
@@ -1507,6 +1514,7 @@ export function createTuiControllerDependencies(
             sourceIdentity: plugin.sourceIdentity,
             pluginName: plugin.manifest.name,
             schema: plugin.manifest.config.fields,
+            scope: layer.scope,
             signal,
           });
           const userStore = stores.user;
@@ -1518,34 +1526,31 @@ export function createTuiControllerDependencies(
             cwd: context.cwd,
             env: context.env,
           });
-          const effectiveRead = layer.scope === 'effective' ? read : await resolveConfigRead({
-            pluginName: plugin.manifest.name,
-            plugin,
-            scope: 'effective',
-            cwd: context.cwd,
-            env: context.env,
-          });
+          const effectiveRead = layer.scope === 'user'
+            ? read
+            : layer.scope === 'effective' ? read : await resolveConfigRead({
+                pluginName: plugin.manifest.name,
+                plugin,
+                scope: 'effective',
+                cwd: context.cwd,
+                env: context.env,
+              });
           const layerReads = layer.scope === 'effective' ? undefined : {
-            user: await resolveConfigRead({
+            user: layer.scope === 'user' ? read : await resolveConfigRead({
               pluginName: plugin.manifest.name,
               plugin,
               scope: 'user',
               cwd: context.cwd,
               env: context.env,
             }),
-            project: await resolveConfigRead({
-              pluginName: plugin.manifest.name,
-              plugin,
-              scope: 'project',
-              cwd: context.cwd,
-              env: context.env,
-            }),
+            ...(layer.scope === 'user' ? {} : { project: read }),
           };
           const effectiveRaw = await resolveEffectivePluginConfig({
             sourceId: plugin.sourceId,
             sourceIdentity: plugin.sourceIdentity,
             pluginName: plugin.manifest.name,
             manifest: plugin.manifest,
+            targetScope: layer.scope === 'user' ? 'user' : 'project',
             cwd: context.cwd,
             env: context.env,
           });
@@ -1559,7 +1564,10 @@ export function createTuiControllerDependencies(
             effectiveRead,
             ...(layerReads ? { layerReads } : {}),
             ...(layerStore ? { rawValues: layerStore.values } : {}),
-            rawLayerValues: { user: userStore.values, project: projectStore.values },
+            rawLayerValues: {
+              user: userStore.values,
+              ...(projectStore ? { project: projectStore.values } : {}),
+            },
             effectiveRawValues: effectiveRaw.values,
           });
         },

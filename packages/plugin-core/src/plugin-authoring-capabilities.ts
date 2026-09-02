@@ -141,7 +141,7 @@ const registry = {
         { field: 'config.fields.<key>.choices.allowCustom', type: 'boolean', required: 'with choices' },
         { field: 'config.fields.<key>.choices.presets', type: '{id,title,description?,value,recommended?}[]', required: 'with choices' },
         { field: 'config.fields.<key>.validation', type: 'type-specific validation object', required: false },
-        { field: 'config.fields.<key>.validation.format', type: 'enum', required: false, acceptedValues: ['identifier', 'slug', 'semver', 'url', 'hostname', 'email', 'path'] },
+        { field: 'config.fields.<key>.validation.format', type: 'enum', required: false, acceptedValues: ['identifier', 'slug', 'semver', 'url', 'hostname', 'email', 'path', 'file', 'directory'] },
         { field: 'config.fields.<key>.properties', type: 'scalar child field map', required: 'for fixed object properties' },
         { field: 'config.fields.<key>.additionalProperties', type: 'false | scalar child field', required: false },
         { field: 'config.presentation.groups', type: 'group[]', required: false },

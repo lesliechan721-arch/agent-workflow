@@ -34,11 +34,11 @@ aw plugin capabilities --surface manifest --json
 
 Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段类型只允许 `string`、`number`、`boolean` 和 `object`。配置值只允许标量或一层标量对象；数组、`null` 和嵌套对象无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
 
-`string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email|path` 格式校验。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非 boolean 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。sensitive 字段不能声明 choices。
+`string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email|path|file|directory` 格式校验。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非 boolean 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。sensitive 字段不能声明 choices。
 
 `object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 和控制台支持标量及一层 object 的完整编辑。
 
-AW 只提供 `default < user < project` 两个持久写入层。Store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的独立 `scripts/aw-config.mjs`；不要维护第二份字段 validator。
+AW 只提供 `default < user < project` 两个持久写入层。Store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。字符串 validation format 支持 `identifier`、`slug`、`semver`、`url`、`hostname`、`email`、`path`、`file` 和 `directory`。`path` 只要求非空且无 NUL。CLI 写入 `file` 和 `directory` 时会 realpath 到已有的普通文件或目录；存储该真实路径。project store 中含 `file` 或 `directory` child 的 object 字段不能用于 project artifact，整个顶层字段产生 boundary issue。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的独立 `scripts/aw-config.mjs`；不要维护第二份字段 validator。
 
 已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 

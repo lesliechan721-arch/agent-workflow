@@ -30,6 +30,8 @@ const STRING_FORMATS = new Set<PluginConfigStringFormat>([
   'hostname',
   'email',
   'path',
+  'file',
+  'directory',
 ])
 const MAX_OBJECT_PROPERTIES = 32
 
@@ -177,7 +179,9 @@ function stringFormatMatches(value: string, format: PluginConfigStringFormat): b
   if (format === 'semver') return SEMVER_PATTERN.test(value)
   if (format === 'hostname') return HOSTNAME_PATTERN.test(value)
   if (format === 'email') return EMAIL_PATTERN.test(value)
-  if (format === 'path') return value.length > 0 && !value.includes('\0')
+  if (format === 'path' || format === 'file' || format === 'directory') {
+    return value.length > 0 && !value.includes('\0')
+  }
   try {
     const url = new URL(value)
     return url.protocol.length > 1
@@ -298,9 +302,6 @@ function validateObjectField(
     }
   }
   for (const [property, childValue] of Object.entries(input)) {
-    if (fieldDefinition.validation?.key !== undefined) {
-      issues.push(...validateString(property, fieldDefinition.validation.key, field, property))
-    }
     const child = ownProperty(fieldDefinition.properties, property)
     if (child !== undefined) {
       issues.push(...validateScalarField(child, childValue, field, property))
@@ -310,6 +311,9 @@ function validateObjectField(
     if (dynamicChild === undefined || dynamicChild === false) {
       issues.push(createIssue('additionalProperty', field, 'Additional property is not allowed.', property))
       continue
+    }
+    if (fieldDefinition.validation?.key !== undefined) {
+      issues.push(...validateString(property, fieldDefinition.validation.key, field, property))
     }
     issues.push(...validateScalarField(dynamicChild, childValue, field, property))
   }
@@ -547,6 +551,9 @@ function assertChoices(
     throw new Error(`Invalid ${path}.choices: sensitive config cannot declare choices.`)
   }
   if (definition.type === 'boolean' || definition.choices === undefined) return
+  if (definition.choices.allowCustom === false && definition.choices.presets.length === 0) {
+    throw new Error(`Invalid ${path}.choices.presets: expected at least one preset when allowCustom is false.`)
+  }
   const ids = new Set<string>()
   let recommendedCount = 0
   for (const [index, preset] of definition.choices.presets.entries()) {

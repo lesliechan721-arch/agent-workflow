@@ -317,8 +317,12 @@ function resolveFallback(scope) {
     if (fs.existsSync(legacyPath)) fail('Legacy non-namespaced plugin config is not supported.');
   }
   const stores = {
-    user: readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema),
-    project: readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
+    user: scope === 'project'
+      ? missingStore('')
+      : readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema),
+    project: scope === 'user'
+      ? missingStore('')
+      : readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
   };
   return resolveFromStores({ identity, schema, scope, stores });
 }

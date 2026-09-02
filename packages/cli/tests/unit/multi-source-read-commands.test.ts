@@ -19,6 +19,10 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -229,7 +233,8 @@ describe('multi-source read commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(missing.pluginSummaries[0]?.configIssues).toEqual([
-      { type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
+      { scope: 'user', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
+      { scope: 'project', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
     ]);
     expect(JSON.parse(missing.output)).not.toHaveProperty('pluginSummaries');
 
@@ -240,10 +245,79 @@ describe('multi-source read commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(unreadable.pluginSummaries[0]?.configDiagnostic).toEqual({
+      scope: 'user',
       code: 'configReadFailed',
       message: '插件设置当前不可读。未读取或显示设置值。',
     });
     expect(JSON.stringify(unreadable)).not.toContain('private invalid config');
+  });
+
+  it('resolves status config independently for user and project targets', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('status-scoped-config');
+    await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = {
+        fields: {
+          rules: { type: 'string', required: true },
+          sharedFile: { type: 'string', validation: { format: 'file' } },
+        },
+      };
+    });
+    const source = { id: 'good', type: 'path' as const, primary: true, path: root };
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { rules: 'user-rules' },
+    });
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { sharedFile: '/machine/rules.json' },
+    });
+
+    const user = await statusCommandV6({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true, scope: 'user',
+    });
+    expect(user.pluginSummaries[0]?.configIssues).toBeUndefined();
+    const project = await statusCommandV6({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true, scope: 'project',
+    });
+    expect(project.pluginSummaries[0]?.configIssues).toContainEqual(expect.objectContaining({
+      scope: 'project', type: 'sharedCompositeContainsLocalPath', key: 'sharedFile', source: 'project',
+    }));
+
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: source.id,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }), '{invalid');
+    const userWithInvalidProject = await statusCommandV6({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true, scope: 'user',
+    });
+    expect(userWithInvalidProject.pluginSummaries[0]?.configDiagnostic).toBeUndefined();
+    const allScopes = await statusCommandV6({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
+    });
+    expect(allScopes.pluginSummaries[0]?.configDiagnostic).toMatchObject({
+      scope: 'project', code: 'configReadFailed',
+    });
   });
 
   it('does not project a legacy project Skill marker in ordinary or verbose status', async () => {

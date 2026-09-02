@@ -397,8 +397,9 @@ export interface UserIssueViewModel {
   requiredFields?: Array<{
     key: string;
     title: string;
-    type: 'missing-required' | 'invalid-config';
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
     source: 'default' | 'user' | 'project' | 'missing';
+    scope: Scope;
   }>;
   configLayer?: { scope: Scope };
   actions: UserIssueActionViewModel[];
@@ -1235,9 +1236,10 @@ function statusIssues(payload: StatusV6Payload): UserIssueDraft[] {
 function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[] {
   return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
+    const issues: UserIssueDraft[] = [];
     if (summary.configDiagnostic) {
-      return [{
-        issueId: `config:${summary.pluginId}:read`,
+      issues.push({
+        issueId: `config:${summary.pluginId}:read:${summary.configDiagnostic.scope}`,
         category: 'diagnostic' as const,
         title: `${summary.displayName ?? summary.pluginName} · 设置状态不可读`,
         explanation: '当前不能安全读取这个插件的设置状态。',
@@ -1253,19 +1255,14 @@ function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[
           code: summary.configDiagnostic.code,
           message: '设置读取报告了这个安全错误代码。',
         }],
-      }];
+      });
     }
-    if (!summary.configIssues?.length) return [];
+    if (!summary.configIssues?.length) return issues;
     const types = new Set(summary.configIssues.map((issue) => issue.type));
-    const invalid = types.has('invalid-config');
-    const sources = new Set(summary.configIssues.map((issue) => issue.source));
-    const onlySource = sources.size === 1 ? [...sources][0] : undefined;
-    const configLayer = onlySource === 'user'
-      ? { scope: 'user' as const }
-      : onlySource === 'project'
-        ? { scope: 'project' as const }
-        : undefined;
-    return [{
+    const invalid = types.has('invalid-config') || types.has('sharedCompositeContainsLocalPath');
+    const scopes = new Set(summary.configIssues.map((issue) => issue.scope));
+    const configLayer = scopes.size === 1 ? { scope: [...scopes][0]! } : undefined;
+    issues.push({
       issueId: `config:${summary.pluginId}:${invalid ? 'invalid' : 'required'}`,
       category: 'requiredConfigMissing' as const,
       title: `${summary.displayName ?? summary.pluginName} · ${invalid ? '设置值无效' : '缺少必填设置'}`,
@@ -1276,7 +1273,9 @@ function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[
       entity: { kind: 'plugin' as const, id: summary.pluginId },
       pluginId: summary.pluginId,
       sourceId,
-      requiredFields: summary.configIssues.map(({ key, title, type, source }) => ({ key, title, type, source })),
+      requiredFields: summary.configIssues.map(({ key, title, type, source, scope }) => ({
+        key, title, type, source, scope,
+      })),
       ...(configLayer ? { configLayer } : {}),
       actions: [
         { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入建议的设置层' : '选择个人或项目设置层' },
@@ -1284,9 +1283,10 @@ function configIssues(pluginSummaries: StatusV6PluginSummary[]): UserIssueDraft[
       ],
       technicalDetails: summary.configIssues.map((entry) => ({
         code: entry.type,
-        message: `${entry.title} · ${entry.source}`,
+        message: `${entry.title} · ${entry.scope} · ${entry.source}`,
       })),
-    }];
+    });
+    return issues;
   });
 }
 
@@ -1759,9 +1759,6 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
 function configEditorDefinition(field: PluginConfigSchemaField): PluginConfigSchemaField {
   const definition = structuredClone(field);
   delete definition.default;
-  if (definition.type === 'object') {
-    for (const child of Object.values(definition.properties ?? {})) delete child.default;
-  }
   return definition;
 }
 
@@ -1807,16 +1804,10 @@ export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
-  layerReads?: {
-    user: ResolvedConfigRead;
-    project: ResolvedConfigRead;
-  };
+  layerReads?: Partial<Record<Scope, ResolvedConfigRead>>;
   dirtyKeys?: ReadonlySet<string>;
   rawValues?: Record<string, PluginConfigValue>;
-  rawLayerValues?: {
-    user: Record<string, PluginConfigValue>;
-    project: Record<string, PluginConfigValue>;
-  };
+  rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
@@ -1824,8 +1815,8 @@ export function buildConfigGroups(options: {
     (options.effectiveRead ?? options.read).fields.map((field) => [field.key, field]),
   );
   const effectivePage = options.read.scope === 'effective';
-  const layerEntry = (layer: keyof NonNullable<typeof options.layerReads>, key: string) =>
-    options.layerReads?.[layer].fields.find((field) => field.key === key);
+  const layerEntry = (layer: Scope, key: string) =>
+    options.layerReads?.[layer]?.fields.find((field) => field.key === key);
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.fields[key]!;
     const entry = entryByKey.get(key);
@@ -1857,10 +1848,12 @@ export function buildConfigGroups(options: {
     const omittedLayer = options.read.scope === 'user'
       ? 'user'
       : 'project';
-    const fallback = (['project', 'user'] as const)
-      .filter((layer) => layer !== omittedLayer)
-      .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
-      .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
+    const fallback = options.read.scope === 'user'
+      ? undefined
+      : (['project', 'user'] as const)
+        .filter((layer) => layer !== omittedLayer)
+        .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
+        .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
     const fallbackValue = fallback?.entry?.storedValue ?? schema.default;
     const fallbackRawValue = fallback
       ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
@@ -2008,15 +2001,9 @@ export function buildConfigPage(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
   effectiveRead?: ResolvedConfigRead;
-  layerReads?: {
-    user: ResolvedConfigRead;
-    project: ResolvedConfigRead;
-  };
+  layerReads?: Partial<Record<Scope, ResolvedConfigRead>>;
   rawValues?: Record<string, PluginConfigValue>;
-  rawLayerValues?: {
-    user: Record<string, PluginConfigValue>;
-    project: Record<string, PluginConfigValue>;
-  };
+  rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
 }): ConfigPageViewModel {
   return {

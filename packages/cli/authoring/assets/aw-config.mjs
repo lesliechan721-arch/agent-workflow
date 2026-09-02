@@ -20,6 +20,8 @@ const STRING_FORMATS = new Set([
     'hostname',
     'email',
     'path',
+    'file',
+    'directory',
 ]);
 const MAX_OBJECT_PROPERTIES = 32;
 function createPropertyMap() {
@@ -143,8 +145,9 @@ function stringFormatMatches(value, format) {
         return HOSTNAME_PATTERN.test(value);
     if (format === 'email')
         return EMAIL_PATTERN.test(value);
-    if (format === 'path')
+    if (format === 'path' || format === 'file' || format === 'directory') {
         return value.length > 0 && !value.includes('\0');
+    }
     try {
         const url = new URL(value);
         return url.protocol.length > 1;
@@ -233,9 +236,6 @@ function validateObjectField(fieldDefinition, value, field, checkChoices = true)
         }
     }
     for (const [property, childValue] of Object.entries(input)) {
-        if (fieldDefinition.validation?.key !== undefined) {
-            issues.push(...validateString(property, fieldDefinition.validation.key, field, property));
-        }
         const child = ownProperty(fieldDefinition.properties, property);
         if (child !== undefined) {
             issues.push(...validateScalarField(child, childValue, field, property));
@@ -245,6 +245,9 @@ function validateObjectField(fieldDefinition, value, field, checkChoices = true)
         if (dynamicChild === undefined || dynamicChild === false) {
             issues.push(createIssue('additionalProperty', field, 'Additional property is not allowed.', property));
             continue;
+        }
+        if (fieldDefinition.validation?.key !== undefined) {
+            issues.push(...validateString(property, fieldDefinition.validation.key, field, property));
         }
         issues.push(...validateScalarField(dynamicChild, childValue, field, property));
     }
@@ -423,6 +426,9 @@ function assertChoices(definition, path) {
     }
     if (definition.type === 'boolean' || definition.choices === undefined)
         return;
+    if (definition.choices.allowCustom === false && definition.choices.presets.length === 0) {
+        throw new Error(`Invalid ${path}.choices.presets: expected at least one preset when allowCustom is false.`);
+    }
     const ids = new Set();
     let recommendedCount = 0;
     for (const [index, preset] of definition.choices.presets.entries()) {
@@ -904,8 +910,12 @@ function resolveFallback(scope) {
     if (fs.existsSync(legacyPath)) fail('Legacy non-namespaced plugin config is not supported.');
   }
   const stores = {
-    user: readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema),
-    project: readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
+    user: scope === 'project'
+      ? missingStore('')
+      : readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema),
+    project: scope === 'user'
+      ? missingStore('')
+      : readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
   };
   return resolveFromStores({ identity, schema, scope, stores });
 }

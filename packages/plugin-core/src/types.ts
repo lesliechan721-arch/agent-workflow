@@ -114,7 +114,9 @@ export type PluginConfigStringFormat =
   | 'url'
   | 'hostname'
   | 'email'
-  | 'path';
+  | 'path'
+  | 'file'
+  | 'directory';
 export interface PluginConfigPreset<Value extends PluginConfigValue = PluginConfigValue> {
   id: string;
   title: string;
@@ -169,7 +171,7 @@ export type PluginConfigScalarField =
   | PluginConfigBooleanField;
 type DistributiveOmit<Value, Key extends PropertyKey> =
   Value extends unknown ? Omit<Value, Key> : never;
-export type PluginConfigObjectPropertyField = PluginConfigScalarField;
+export type PluginConfigObjectPropertyField = DistributiveOmit<PluginConfigScalarField, 'default'>;
 export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
   PluginConfigScalarField,
   'default' | 'required'

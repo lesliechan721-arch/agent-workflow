@@ -831,7 +831,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(field.displayValue).not.toContain('secret');
   });
 
-  it('matches a raw inherited object preset and precomputes redacted unset changes', () => {
+  it('matches a raw inherited object preset for a project override and precomputes redacted unset changes', () => {
     const schema = {
       fields: {
         credentials: {
@@ -863,34 +863,34 @@ describe('TUI v4 router and ViewModel', () => {
       storedValue: value,
       storedSourceLayer: scope,
     });
-    const userRaw = { token: 'current-secret', region: 'east' };
-    const projectRaw = { token: 'inherited-secret', region: 'west' };
+    const userRaw = { token: 'inherited-secret', region: 'west' };
+    const projectRaw = { token: 'current-secret', region: 'east' };
     const page = buildConfigPage({
       pluginId: 'official/demo',
       schema,
       read: {
         pluginName: 'demo',
-        scope: 'user',
-        fields: [entry('user', { token: '[redacted]', region: 'east' })],
+        scope: 'project',
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
       },
       effectiveRead: {
         pluginName: 'demo',
         scope: 'effective',
-        fields: [entry('project', { token: '[redacted]', region: 'west' })],
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
       },
       layerReads: {
         user: {
           pluginName: 'demo',
           scope: 'user',
-          fields: [entry('user', { token: '[redacted]', region: 'east' })],
+          fields: [entry('user', { token: '[redacted]', region: 'west' })],
         },
         project: {
           pluginName: 'demo',
           scope: 'project',
-          fields: [entry('project', { token: '[redacted]', region: 'west' })],
+          fields: [entry('project', { token: '[redacted]', region: 'east' })],
         },
       },
-      rawValues: { credentials: userRaw },
+      rawValues: { credentials: projectRaw },
       rawLayerValues: { user: { credentials: userRaw }, project: { credentials: projectRaw } },
       effectiveRawValues: { credentials: projectRaw },
     });
@@ -1204,7 +1204,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'required',
         pluginId: 'official/required',
         description: 'required config fixture',
-        configIssues: [{ type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
+        configIssues: [{ scope: 'user', type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official',
@@ -1286,7 +1286,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'team/configured',
           description: 'config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
         {
@@ -1294,7 +1294,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'official/source-configured',
           description: 'source config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
       ],
@@ -1459,7 +1459,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'offline',
         pluginId: 'official/offline',
         description: 'offline fixture',
-        configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+        configIssues: [{ scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
@@ -1517,11 +1517,11 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: [
         {
           pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
-          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
+          configIssues: [{ scope: 'project', type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
         },
         {
           pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
-          configDiagnostic: { code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
+          configDiagnostic: { scope: 'user', code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
         },
       ],
     });
@@ -1529,7 +1529,7 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
       title: 'invalid · 设置值无效',
       configLayer: { scope: 'project' },
-      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project' }],
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project', scope: 'project' }],
       diagnostic: {
         technical: { code: 'invalid-config', stage: 'validate-config' },
       },

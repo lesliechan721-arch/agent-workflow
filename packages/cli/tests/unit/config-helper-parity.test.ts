@@ -36,6 +36,8 @@ describe('generated aw-config helper', () => {
           type: 'string',
           validation: { minLength: 2 },
         },
+        certificate: { type: 'string', validation: { format: 'file' } },
+        workspace: { type: 'string', validation: { format: 'directory' } },
         credentials: {
           type: 'object',
           properties: {
@@ -44,14 +46,35 @@ describe('generated aw-config helper', () => {
           },
           additionalProperties: false,
         },
+        locations: {
+          type: 'object',
+          properties: {
+            certificate: { type: 'string', validation: { format: 'file' } },
+          },
+          additionalProperties: { type: 'string', validation: { format: 'directory' } },
+        },
+        labels: {
+          type: 'object',
+          properties: { 'fixed-key': { type: 'string' } },
+          additionalProperties: { type: 'string' },
+          validation: { key: { format: 'identifier' } },
+        },
       },
     }).fields;
     const fixtures = [
       ['mode', 'x'],
       ['mode', 'safe'],
+      ['certificate', './not-yet-created.pem'],
+      ['certificate', ''],
+      ['workspace', './not-yet-created-directory'],
+      ['workspace', ''],
       ['credentials', { token: 'secret', retries: 2 }],
       ['credentials', { retries: -1 }],
       ['credentials', { token: 'secret', nested: {} }],
+      ['locations', { certificate: './not-yet-created.pem', cache: './not-yet-created-directory' }],
+      ['locations', { certificate: '', cache: '' }],
+      ['labels', { 'fixed-key': 'fixed', dynamic_key: 'dynamic' }],
+      ['labels', { 'fixed-key': 'fixed', 'bad key': 'dynamic' }],
     ] as const;
 
     for (const [key, value] of fixtures) {

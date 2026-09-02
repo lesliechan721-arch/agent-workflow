@@ -115,6 +115,37 @@ describe('Plugin Config v2 contract', () => {
     }).fields.labels).toMatchObject({ additionalProperties: false })
   })
 
+  it('applies object key validation only to dynamic keys in defaults and presets', () => {
+    const config = normalizePluginConfigDefinition({
+      fields: {
+        labels: {
+          type: 'object',
+          default: { 'fixed-key': 'default' },
+          choices: {
+            allowCustom: true,
+            presets: [{ id: 'fixed', title: 'Fixed', value: { 'fixed-key': 'preset' } }],
+          },
+          properties: {
+            'fixed-key': { type: 'string' },
+          },
+          additionalProperties: { type: 'string' },
+          validation: { key: { format: 'identifier' } },
+        },
+      },
+    })
+
+    expect(validatePluginConfigDocument(config, { labels: { 'fixed-key': 'value' } })).toEqual([])
+    expect(validatePluginConfigPreset(config.fields.labels!, {
+      id: 'fixed-again', title: 'Fixed again', value: { 'fixed-key': 'preset' },
+    }, 'labels')).toEqual([])
+    expect(validatePluginConfigDocument(config, {
+      labels: { 'fixed-key': 'value', 'bad key': 'dynamic' },
+    })).toContainEqual(expect.objectContaining({
+      code: 'format',
+      path: { field: 'labels', property: 'bad key' },
+    }))
+  })
+
   it('uses own properties for declared and dynamic special keys', () => {
     const config = normalizePluginConfigDefinition({
       fields: {
@@ -167,12 +198,40 @@ describe('Plugin Config v2 contract', () => {
     ['hostname', 'api.example.com', '-bad.example.com'],
     ['email', 'user@example.com', 'user@example'],
     ['path', './relative/path', ''],
+    ['file', './not-yet-created.txt', ''],
+    ['directory', './not-yet-created-dir', ''],
   ] as const)('validates the %s string format', (format, valid, invalid) => {
     const config = normalizePluginConfigDefinition({
       fields: { value: { type: 'string', validation: { format } } },
     })
     expect(validatePluginConfigValue(config.fields.value!, valid, 'value')).toEqual([])
     expect(validatePluginConfigValue(config.fields.value!, invalid, 'value')[0]?.code).toBe('format')
+  })
+
+  it('keeps file and directory object child formats as pure path strings', () => {
+    const field = normalizePluginConfigDefinition({
+      fields: {
+        locations: {
+          type: 'object',
+          properties: {
+            certificate: { type: 'string', validation: { format: 'file' } },
+          },
+          additionalProperties: { type: 'string', validation: { format: 'directory' } },
+        },
+      },
+    }).fields.locations!
+
+    expect(validatePluginConfigValue(field, {
+      certificate: './not-yet-created.pem',
+      cache: './not-yet-created-cache',
+    }, 'locations')).toEqual([])
+    expect(validatePluginConfigValue(field, {
+      certificate: '',
+      cache: '',
+    }, 'locations')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'format', path: { field: 'locations', property: 'certificate' } }),
+      expect.objectContaining({ code: 'format', path: { field: 'locations', property: 'cache' } }),
+    ]))
   })
 
   it('matches actual preset values, canonicalizes objects, and redacts one object level', () => {
@@ -230,6 +289,22 @@ describe('Plugin Config v2 contract', () => {
         },
       },
     }).fields.mode).toMatchObject({ choices: { allowCustom: true, presets: [] } })
+    for (const field of [
+      { type: 'string', choices: { allowCustom: false, presets: [] } },
+      {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', choices: { allowCustom: false, presets: [] } },
+        },
+      },
+      {
+        type: 'object',
+        additionalProperties: { type: 'number', choices: { allowCustom: false, presets: [] } },
+      },
+    ]) {
+      expect(() => normalizePluginConfigDefinition({ fields: { value: field } }))
+        .toThrow(/at least one preset/u)
+    }
     expect(() => normalizePluginConfigDefinition({
       fields: {
         mode: {

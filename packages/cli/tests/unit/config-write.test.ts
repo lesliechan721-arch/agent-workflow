@@ -123,8 +123,24 @@ async function createFixture(
           },
           default: 'safe',
         },
-        workspace: { type: 'string', sensitive: true },
-        certificate: { type: 'string', sensitive: true },
+        workspace: { type: 'string', sensitive: true, validation: { format: 'directory' } },
+        certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
+        presetCertificate: {
+          type: 'string',
+          validation: { format: 'file' },
+          choices: {
+            allowCustom: true,
+            presets: [{ id: 'nested', title: 'Nested certificate', value: './preset-file' }],
+          },
+        },
+        locations: {
+          type: 'object',
+          properties: {
+            certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
+          },
+          additionalProperties: { type: 'string', sensitive: true, validation: { format: 'directory' } },
+        },
+        genericPath: { type: 'string', validation: { format: 'path' } },
       },
     },
     ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
@@ -236,6 +252,136 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
+  it('writes and resets user config when the project store is invalid', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    await fs.outputFile(resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    }), '{invalid');
+    const reinstall = createReinstallMock();
+
+    const set = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(set).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      effective: {
+        values: { mode: 'fast' },
+        sources: { mode: 'user' },
+        issues: [],
+      },
+    });
+
+    const reset = await resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(reset).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      deleted: true,
+      removedKeys: ['mode'],
+      effective: {
+        values: { mode: 'safe' },
+        sources: { mode: 'default' },
+        issues: [],
+      },
+    });
+    expect(reinstall).toHaveBeenCalledTimes(2);
+    expect(reinstall.mock.calls.map((call) => call[1].scope)).toEqual(['user', 'user']);
+  });
+
+  it.each(['set', 'unset', 'reset'] as const)(
+    'does not mutate project config when the inherited user store is invalid during %s',
+    async (action) => {
+      const fixture = await createFixture();
+      const projectPath = resolvePluginConfigStorePath({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'project',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      });
+      await writePluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'project',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        values: { mode: 'safe' },
+      });
+      await fs.outputFile(resolvePluginConfigStorePath({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      }), '{invalid');
+      const before = await fs.readFile(projectPath);
+      const reinstall = createReinstallMock();
+
+      const write = action === 'reset'
+        ? resetPluginConfigWithHelper({
+            pluginName: fixture.plugin.manifest.name,
+            plugin: fixture.plugin,
+            scope: 'project',
+            cwd: fixture.cwd,
+            env: fixture.env,
+            reinstallCommandImpl: reinstall,
+          })
+        : applyPluginConfigWrite({
+            plugin: fixture.plugin,
+            scope: 'project',
+            cwd: fixture.cwd,
+            env: fixture.env,
+            request: action === 'set'
+              ? { updates: { mode: 'fast' } }
+              : { removeKeys: ['mode'] },
+            reinstallCommandImpl: reinstall,
+          });
+
+      await expect(write).rejects.toThrow('invalidJson');
+      await expect(fs.readFile(projectPath)).resolves.toEqual(before);
+      await expect(fs.pathExists(projectPath)).resolves.toBe(true);
+      expect(reinstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('resets an invalid project store after the inherited user store is ready', async () => {
+    const fixture = await createFixture();
+    const projectPath = resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    await fs.outputFile(projectPath, '{invalid');
+
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      reinstallCommandImpl: createReinstallMock(),
+    });
+
+    expect(receipt).toMatchObject({ deleted: true, configWrite: 'succeeded' });
+    await expect(fs.pathExists(projectPath)).resolves.toBe(false);
+  });
+
   it.each(['save', 'reset'] as const)(
     'rejects a stale Review for config %s once under the config transaction without a write',
     async (action) => {
@@ -323,6 +469,78 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(read)).not.toContain(privateDirectory);
     expect(JSON.stringify(read)).not.toContain(privateFile);
     expect(JSON.stringify(read)).not.toContain('private-token');
+  });
+
+  it('resolves submitted file and directory formats without exposing sensitive paths', async () => {
+    const fixture = await createFixture();
+    const nestedCwd = path.join(fixture.cwd, 'nested');
+    const privateDirectory = path.join(nestedCwd, 'same-directory');
+    const privateFile = path.join(nestedCwd, 'same-file');
+    const presetFile = path.join(nestedCwd, 'preset-file');
+    await Promise.all([
+      fs.ensureDir(privateDirectory),
+      fs.outputFile(privateFile, 'private-certificate'),
+      fs.outputFile(presetFile, 'preset-certificate'),
+      fs.ensureDir(path.join(fixture.cwd, 'same-directory')),
+      fs.outputFile(path.join(fixture.cwd, 'same-file'), 'wrong-parent-certificate'),
+    ]);
+    const resolvedDirectory = await fs.realpath(privateDirectory);
+    const resolvedFile = await fs.realpath(privateFile);
+    const resolvedPresetFile = await fs.realpath(presetFile);
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: nestedCwd,
+      env: fixture.env,
+      request: {
+        updates: {
+          workspace: './same-directory',
+          certificate: './same-file',
+          presetCertificate: './preset-file',
+          locations: { certificate: './same-file', cache: './same-directory' },
+          genericPath: './not-yet-created',
+        },
+      },
+      reinstallCommandImpl: createReinstallMock(),
+    });
+    const store = await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(store.values).toMatchObject({
+      workspace: resolvedDirectory,
+      certificate: resolvedFile,
+      presetCertificate: resolvedPresetFile,
+      locations: { certificate: resolvedFile, cache: resolvedDirectory },
+      genericPath: './not-yet-created',
+    });
+    expect(JSON.stringify(receipt)).not.toContain(privateDirectory);
+    expect(JSON.stringify(receipt)).not.toContain(privateFile);
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: nestedCwd,
+      env: fixture.env,
+      request: { updates: { certificate: privateDirectory } },
+    })).rejects.toThrow('existing file');
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: nestedCwd,
+      env: fixture.env,
+      request: { updates: { locations: { certificate: privateDirectory } } },
+    })).rejects.toThrow('existing file');
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: nestedCwd,
+      env: fixture.env,
+      request: { updates: { locations: { cache: privateFile } } },
+    })).rejects.toThrow('existing directory');
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {

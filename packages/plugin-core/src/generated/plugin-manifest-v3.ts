@@ -414,7 +414,7 @@ export interface ConfigStringValidation {
 minLength?: number
 maxLength?: number
 pattern?: string
-format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email" | "path")
+format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email" | "path" | "file" | "directory")
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

@@ -8,11 +8,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
+  resolveArtifactRenderConfig,
   runArtifactRenderer,
   writeArtifactRendererContext,
   resolveArtifactRendererTarget,
 } from '../../src/utils/artifact-renderer.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
@@ -353,8 +357,159 @@ describe('artifact renderer runtime', () => {
     expect(projectContext.context.config.sources.modelReasoningEffort).toBe('project');
     expect(projectContext.context.changedConfigKeys).toEqual([]);
 
-    await userContext.cleanup();
-    await projectContext.cleanup();
+    await fs.outputFile(resolvePluginConfigStorePath({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+    }), '{invalid');
+    const userContextWithInvalidProjectStore = await writeArtifactRendererContext({
+      target,
+      event: 'install',
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    });
+    expect(userContextWithInvalidProjectStore.context.config.values.explorerModel).toBe('gpt-5.4');
+    await expect(writeArtifactRendererContext({
+      target,
+      event: 'install',
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      commandEnv: env,
+    })).rejects.toThrow('invalidJson');
+
+    await Promise.all([
+      userContext.cleanup(),
+      projectContext.cleanup(),
+      userContextWithInvalidProjectStore.cleanup(),
+    ]);
+  });
+
+  it('reports one project artifact boundary issue for an object with filesystem path children', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-boundary-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const manifest = createManifest();
+    manifest.config!.fields.sharedFile = {
+      type: 'string',
+      validation: { format: 'file' },
+    };
+    manifest.config!.fields.locations = {
+      type: 'object',
+      properties: {
+        certificate: { type: 'string', validation: { format: 'file' } },
+        label: { type: 'string' },
+      },
+      additionalProperties: { type: 'string', validation: { format: 'directory' } },
+    };
+    const plugin = await writePlugin(root, manifest);
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: { locations: { label: 'shared label' } },
+    });
+
+    const clean = await resolveArtifactRenderConfig({
+      manifest: plugin.manifest,
+      scope: 'project',
+      cwd,
+      env,
+    });
+    expect(clean.issues).not.toContainEqual(expect.objectContaining({
+      type: 'sharedCompositeContainsLocalPath',
+    }));
+
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: {
+        sharedFile: '/machine/certificate.pem',
+        locations: { certificate: '/machine/certificate.pem', cache: '/machine/cache' },
+      },
+    });
+
+    const project = await resolveArtifactRenderConfig({
+      manifest: plugin.manifest,
+      scope: 'project',
+      cwd,
+      env,
+    });
+    const user = await resolveArtifactRenderConfig({
+      manifest: plugin.manifest,
+      scope: 'user',
+      cwd,
+      env,
+    });
+
+    expect(project.issues).toContainEqual({
+      type: 'sharedCompositeContainsLocalPath',
+      key: 'locations',
+      source: 'project',
+      message: expect.any(String),
+    });
+    expect(project.issues).toContainEqual({
+      type: 'sharedCompositeContainsLocalPath',
+      key: 'sharedFile',
+      source: 'project',
+      message: expect.any(String),
+    });
+    expect(user.issues).not.toContainEqual(expect.objectContaining({
+      type: 'sharedCompositeContainsLocalPath',
+    }));
+  });
+
+  it('does not start the renderer when project config crosses the artifact boundary', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-blocked-');
+    const cwd = path.join(root, 'repo');
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await fs.ensureDir(cwd);
+    const manifest = createManifest();
+    manifest.config!.fields.locations = {
+      type: 'object',
+      properties: {
+        certificate: { type: 'string', validation: { format: 'file' } },
+      },
+    };
+    const plugin = await writePlugin(root, manifest);
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: { locations: { certificate: '/machine/certificate.pem' } },
+    });
+    let runnerCalled = false;
+
+    await expect(runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      commandEnv: env,
+      runner: {
+        async run() {
+          runnerCalled = true;
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: JSON.stringify({ version: 2, artifacts: [] }),
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      },
+    })).rejects.toThrow('sharedCompositeContainsLocalPath');
+
+    expect(runnerCalled).toBe(false);
   });
 
   it('runs renderer with empty changed keys for install and upgrade, and explicit keys for refresh', async () => {

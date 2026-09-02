@@ -411,6 +411,17 @@ async function applyPluginConfigWriteUnlocked(
   if (!schema || !schemaPlugin) {
     throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
   }
+  if (options.scope === 'project') {
+    const userStore = await readPluginConfigStore({
+      ...configIdentity,
+      pluginName,
+      scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+      schema,
+    });
+    assertReadyPluginConfigStore(userStore);
+  }
 
   for (const key of requestedRemoveKeys) {
     if (!schema[key]) throw new Error(`Unknown config key "${key}".`);
@@ -447,6 +458,7 @@ async function applyPluginConfigWriteUnlocked(
     ...configIdentity,
     pluginName,
     manifest: schemaPlugin.manifest,
+    targetScope: options.scope,
     cwd: options.cwd,
     env: options.env,
   }));
@@ -541,6 +553,17 @@ async function resetPluginConfigWithHelperUnlocked(
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
   } : {};
+  if (options.scope === 'project') {
+    const userStore = await readPluginConfigStore({
+      ...configIdentity,
+      pluginName,
+      scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+      schema: schemaAccess.plugin.manifest.config.fields,
+    });
+    assertReadyPluginConfigStore(userStore);
+  }
   const store = await readPluginConfigStore({
     ...configIdentity,
     pluginName,
@@ -571,6 +594,7 @@ async function resetPluginConfigWithHelperUnlocked(
         ...configIdentity,
         pluginName,
         manifest: schemaAccess.plugin.manifest,
+        targetScope: options.scope,
         cwd: options.cwd,
         env: options.env,
       }));

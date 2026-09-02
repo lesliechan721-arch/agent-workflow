@@ -26,6 +26,10 @@ const declaredCapabilities = [
   'aw.plugin-authoring.v1',
   'aw.self-check.v1',
 ];
+const derivedCapabilities = [
+  'aw.plugin-manifest.v3',
+  'aw.plugin-skills.v1',
+];
 
 async function readCaseDocument(skill, name) {
   return JSON.parse(await readFile(path.join(
@@ -167,7 +171,7 @@ async function commitFixture(root) {
 
 test('manifest exposes the complete runtime capability contract', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'));
-  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.name, 'aw-catalog-development');
   assert.deepEqual(manifest.dependencies, ['aw-plugin-development']);
   assert.deepEqual(manifest.requires.aw.capabilities, declaredCapabilities);
@@ -178,6 +182,8 @@ test('manifest exposes the complete runtime capability contract', async () => {
   assert.equal(result.exitCode, 0, result.stderr);
   const receipt = parseSingleJson(result.stdout, 'plugin requirements');
   assert.deepEqual(receipt.declared, declaredCapabilities);
+  assert.deepEqual(receipt.derived, derivedCapabilities);
+  assert.deepEqual(receipt.effective, [...declaredCapabilities, ...derivedCapabilities].sort());
   assert.deepEqual(receipt.unsupportedByCurrentAw, []);
   assert.ok(receipt.detected.every((capability) => declaredCapabilities.includes(capability)));
   assert.ok(declaredCapabilities.every((capability) => receipt.effective.includes(capability)));

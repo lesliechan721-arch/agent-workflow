@@ -2789,6 +2789,50 @@ describe('authoring tools', () => {
       stdout: '[redacted]\n',
     });
 
+    const userStorePath = path.join(
+      awHome, 'plugin-config', sourceId, 'config-demo', 'config.json',
+    );
+    const projectStorePath = path.join(
+      projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json',
+    );
+    const userStoreContent = await fs.readFile(userStorePath);
+    const projectStoreContent = await fs.readFile(projectStorePath);
+    await fs.writeFile(projectStorePath, '{invalid');
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json', '--scope', 'user'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: expect.stringContaining('"scope": "user"'),
+    });
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).rejects.toMatchObject({ stderr: expect.stringContaining('invalidJson') });
+    await fs.writeFile(projectStorePath, projectStoreContent);
+    await fs.writeFile(userStorePath, '{invalid');
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json', '--scope', 'project'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: expect.stringContaining('"scope": "project"'),
+    });
+    await fs.writeFile(userStorePath, userStoreContent);
+
     const extraValue = 'prototype-extra-must-not-leak';
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),

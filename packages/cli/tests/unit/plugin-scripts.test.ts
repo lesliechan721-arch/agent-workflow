@@ -159,7 +159,9 @@ describe('plugin lifecycle scripts', () => {
     const awHome = path.join(root, 'aw-home');
     const cwd = path.join(root, 'repo');
     await fs.ensureDir(cwd);
-    const plugin = await writePlugin(root);
+    const manifest = createManifest();
+    manifest.config!.fields.mode = { type: 'string', default: 'default' };
+    const plugin = await writePlugin(root, manifest);
     const sourceId = 'team';
     const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     plugin.sourceId = sourceId;
@@ -172,7 +174,16 @@ describe('plugin lifecycle scripts', () => {
       scope: 'user',
       cwd,
       env,
-      values: { token: 'secret-token', legacyToken: 'legacy-secret' },
+      values: { token: 'secret-token', mode: 'user', legacyToken: 'legacy-secret' },
+    });
+    await writePluginConfigStore({
+      sourceId,
+      sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: { mode: 'project' },
     });
     const target = await resolveLifecycleScriptTarget({
       event: 'install',
@@ -209,6 +220,7 @@ describe('plugin lifecycle scripts', () => {
       config: {
         values: {
           token: 'secret-token',
+          mode: 'user',
         },
       },
       script: {
@@ -240,7 +252,22 @@ describe('plugin lifecycle scripts', () => {
       expect((await fs.stat(written.contextPath)).mode & 0o777).toBe(0o600);
     }
 
-    await written.cleanup();
+    const projectWritten = await writeLifecycleScriptContext({
+      sourceId,
+      sourceIdentity,
+      target,
+      event: 'install',
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      commandEnv: env,
+    });
+    expect(projectWritten.context.config).toMatchObject({
+      values: { token: 'secret-token', mode: 'project' },
+      sources: { token: 'user', mode: 'project' },
+    });
+
+    await Promise.all([written.cleanup(), projectWritten.cleanup()]);
     await expect(fs.pathExists(written.contextPath)).resolves.toBe(false);
   });
 

@@ -18,10 +18,12 @@ const config = normalizePluginConfigDefinition({
     connection: {
       type: 'object',
       properties: {
+        'display-name': { type: 'string' },
         region: { type: 'string' },
         token: { type: 'string', sensitive: true },
       },
-      additionalProperties: false,
+      additionalProperties: { type: 'string' },
+      validation: { key: { format: 'identifier' } },
     },
   },
 });
@@ -71,6 +73,26 @@ describe('plugin config Store v3', () => {
       key: 'unknownFutureKey',
     });
 
+    const userTarget = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'user',
+      cwd: user.cwd,
+      env: user.env,
+    });
+    const projectTarget = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'project',
+      cwd: user.cwd,
+      env: user.env,
+    });
+    expect(userTarget.values.connection).toEqual({ region: 'user', token: 'user-secret' });
+    expect(userTarget.ignoredUnknownKeys).toEqual([]);
+    expect(projectTarget.values.connection).toEqual({ region: 'project' });
+
     await patchPluginConfigStore({
       ...project,
       updates: {},
@@ -90,6 +112,26 @@ describe('plugin config Store v3', () => {
       region: 'user',
       token: '[redacted]',
     });
+
+    await fs.outputFile(resolvePluginConfigStorePath(project), '{invalid');
+    await expect(resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'user',
+      cwd: user.cwd,
+      env: user.env,
+    })).resolves.toMatchObject({
+      values: { connection: { region: 'user', token: 'user-secret' } },
+    });
+    await expect(resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'project',
+      cwd: user.cwd,
+      env: user.env,
+    })).rejects.toThrow('invalidJson');
   });
 
   it('rejects a known invalid object value as an invalidValues store projection', async () => {
@@ -108,12 +150,43 @@ describe('plugin config Store v3', () => {
       invalidCode: 'invalidValues',
       values: {},
     });
-    await expect(resolveEffectivePluginConfig({
+    for (const targetScope of ['user', 'project'] as const) {
+      await expect(resolveEffectivePluginConfig({
+        sourceId: user.sourceId,
+        sourceIdentity,
+        manifest,
+        targetScope,
+        cwd: user.cwd,
+        env: user.env,
+      })).rejects.toThrow('invalidValues');
+    }
+  });
+
+  it('accepts a fixed key that does not match the dynamic key format in schema-aware stores', async () => {
+    const user = storeOptions('user');
+    await fs.outputJson(resolvePluginConfigStorePath(user), {
+      schemaVersion: 3,
       sourceId: user.sourceId,
       sourceIdentity,
-      manifest,
-      cwd: user.cwd,
-      env: user.env,
-    })).rejects.toThrow('invalidValues');
+      pluginName: manifest.name,
+      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+    });
+
+    await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
+      state: 'ready',
+      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+    });
+
+    await fs.outputJson(resolvePluginConfigStorePath(user), {
+      schemaVersion: 3,
+      sourceId: user.sourceId,
+      sourceIdentity,
+      pluginName: manifest.name,
+      values: { connection: { 'display-name': 'fixed', 'bad key': 'dynamic' } },
+    });
+    await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
+      state: 'invalid',
+      invalidCode: 'invalidValues',
+    });
   });
 });

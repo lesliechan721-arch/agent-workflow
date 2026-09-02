@@ -300,7 +300,7 @@
         "minLength": { "type": "integer", "minimum": 0 },
         "maxLength": { "type": "integer", "minimum": 0 },
         "pattern": { "type": "string" },
-        "format": { "enum": ["identifier", "slug", "semver", "url", "hostname", "email", "path"] }
+        "format": { "enum": ["identifier", "slug", "semver", "url", "hostname", "email", "path", "file", "directory"] }
       }
     },
     "configNumberValidation": {
@@ -345,6 +345,7 @@
     },
     "configStringChoices": {
       "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
+      "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
       "properties": {
         "allowCustom": { "type": "boolean" },
         "presets": { "type": "array", "items": { "$ref": "#/$defs/configStringPreset" } }
@@ -352,6 +353,7 @@
     },
     "configNumberChoices": {
       "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
+      "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
       "properties": {
         "allowCustom": { "type": "boolean" },
         "presets": { "type": "array", "items": { "$ref": "#/$defs/configNumberPreset" } }
@@ -359,6 +361,7 @@
     },
     "configObjectChoices": {
       "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
+      "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
       "properties": {
         "allowCustom": { "type": "boolean" },
         "presets": { "type": "array", "items": { "$ref": "#/$defs/configObjectPreset" } }
