@@ -29,7 +29,7 @@
       "assertions": [
         "首次 AW 命令是 run-owned 真实 CLI 的 self check；随后用静态 catalog status 从 cwd 自动发现 Workspace",
         "把 canonical status-tools target、依赖和验收条件交给 author-aw-plugin；返回后只对受影响插件和反向依赖闭包运行所需 plugin validate/test/build",
-        "普通维护最终运行 catalog build 和现有 snapshot validate，生成 schema 6 snapshot；没有 catalog dev activate 或 publication 命令"
+        "普通维护最终运行 catalog build 和现有 snapshot validate，生成 schema 7 snapshot；没有 catalog dev activate 或 publication 命令"
       ],
       "input": {
         "workspaceFiles": {
@@ -44,7 +44,7 @@
         ]
       },
       "expected": {
-        "output": "Plugin Author 完成插件内部变更；Catalog Author 重读静态 status，验证受影响闭包并完成 schema 6 Catalog build/validate。",
+        "output": "Plugin Author 完成插件内部变更；Catalog Author 重读静态 status，验证受影响闭包并完成 schema 7 Catalog build/validate。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "plugins/status-tools/**",
@@ -87,7 +87,7 @@
         "首次 AW 命令是 self check；随后静态 catalog status 识别 canonical legacy-rules target、其空反向依赖闭包和合法 Workspace",
         "交接给 author-aw-plugin 时包含同一 Workspace root、canonical `plugins/legacy-rules` target、删除意图和验收条件；Catalog Author 不直接删除目录",
         "删除 receipt 返回后重新运行静态 status；真实 trace 不对已删除 legacy-rules 运行 plugin validate/test/build，空 inventory 后也不运行任何 plugin 命令",
-        "最终只运行普通 catalog build 和现有 snapshot validate，生成空 entries 的 schema 6 snapshot；没有 dev、source mutation 或 publication 命令"
+        "最终只运行普通 catalog build 和现有 snapshot validate，生成空 entries 的 schema 7 snapshot；没有 dev、source mutation 或 publication 命令"
       ],
       "input": {
         "workspaceFiles": {

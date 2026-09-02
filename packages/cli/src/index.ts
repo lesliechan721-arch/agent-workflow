@@ -157,7 +157,10 @@ import {
   runCatalogPublishApplyCommand,
   runCatalogPublishPlanCommand,
 } from './commands/catalog-publish.js';
-import { catalogPublicationFailure } from './commands/catalog-publication-inspection.js';
+import {
+  catalogPublicationFailure,
+  CatalogPublicationInspectionError,
+} from './commands/catalog-publication-inspection.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import {
   activateCatalogDevSource,
@@ -2035,7 +2038,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('validate')
-    .description('Validate a schema 6 Catalog snapshot')
+    .description('Validate a schema 7 Catalog snapshot')
     .argument('<snapshot-directory>', 'Catalog snapshot directory')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (snapshotDirectory: string, rawOptions: { json?: boolean }) => {
@@ -3710,11 +3713,20 @@ export async function runCli(
       }
       return await runActionWithContext(context, () => runConsoleController(context));
     }
+    let catalogPublicationActionStarted = false;
+    const programIo = jsonCatalogDevCommand || jsonWriteRequest
+      ? { ...io, stderr: () => undefined }
+      : jsonAuthoringCommand === 'catalog:publish'
+        ? {
+            ...io,
+            stderr: (text: string) => {
+              if (catalogPublicationActionStarted) io.stderr(text);
+            },
+          }
+        : io;
     const program = buildProgram({
       ...options,
-      io: jsonCatalogDevCommand || jsonWriteRequest
-        ? { ...io, stderr: () => undefined }
-        : io,
+      io: programIo,
       diagnostics: {
         ...options.diagnostics,
         metadata: {
@@ -3723,6 +3735,11 @@ export async function runCli(
         },
       },
     });
+    if (jsonAuthoringCommand === 'catalog:publish') {
+      program.hook('preAction', () => {
+        catalogPublicationActionStarted = true;
+      });
+    }
     await program.parseAsync(['node', 'aw', ...argv]);
     return (program as Command & {
       __awCommandExitState?: { exitCode: number };
@@ -3751,6 +3768,16 @@ export async function runCli(
     }
     if (jsonWriteRequest) {
       writeCommandFailureReceipt(io.stdout, jsonWriteRequest, error);
+      return 1;
+    }
+    if (jsonAuthoringCommand === 'catalog:publish' && error instanceof CommanderError) {
+      const failure = catalogPublicationFailure({
+        error: new CatalogPublicationInspectionError('invalidArguments', error.message),
+        env: options.env,
+        sensitiveRoots: [options.cwd ?? process.cwd()],
+      });
+      writeJsonReceipt(io.stdout, failure);
+      writeLine(io.stderr, failure.message);
       return 1;
     }
     if (jsonAuthoringCommand && !(error instanceof CommanderError)) {

@@ -62,6 +62,43 @@ afterEach(async () => {
 
 describe('CLI JSON Status v7 and Receipt v6 harness', () => {
   it.each([
+    [['catalog', 'publish', 'apply', '--json'], "error: required option '--expected-plan-digest <sha256>' not specified"],
+    [[
+      'catalog', 'publish', 'apply', '--json',
+      '--expected-plan-digest', `sha256:${'a'.repeat(64)}`,
+      '--unknown',
+    ], "error: unknown option '--unknown'"],
+  ] as const)('uses the flat Catalog publication failure contract for %j', async (argv, message) => {
+    const result = await runCliEntry([...argv]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toEqual({
+      ok: false,
+      code: 'invalidArguments',
+      message,
+    });
+    expect(result.stderr).toBe(`${message}\n`);
+  });
+
+  it('redacts Catalog publication argument errors on stdout and stderr', async () => {
+    const sensitivePath = '/Users/alice/private';
+    const result = await runCliEntry([
+      'catalog', 'publish', 'apply', '--json',
+      '--expected-plan-digest', `sha256:${'a'.repeat(64)}`,
+      `--unknown=${sensitivePath}`,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toEqual({
+      ok: false,
+      code: 'invalidArguments',
+      message: "error: unknown option '--unknown=[private-path]'",
+    });
+    expect(result.stderr).toBe("error: unknown option '--unknown=[private-path]'\n");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(sensitivePath);
+  });
+
+  it.each([
     ['install', '-jy'],
     ['reinstall', '-jy'],
     ['uninstall', '-j'],
