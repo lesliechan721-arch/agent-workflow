@@ -81,16 +81,20 @@ publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push
 
 ```bash
 aw catalog source sync <id> --json
+aw catalog source sync <id> --yes --json
 aw catalog source sync <id> --check --json
+aw catalog source sync <id> --replace-damaged --yes --json
 aw catalog source status <id> --json
 ```
 
-`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。精确 repair 只接受与强 Active state 相同的 logical identity 和 snapshot digest；update 与损坏 Active 同 key 时，可在确认后精确替换该条目。只有完整匹配的 metadata 和 snapshot 才提供可信旧版本；任一不完整时不作 rollback/version-conflict 结论。旧版本不可用且候选 key 不同时，普通恢复/update 在 store 或 state 写入前阻止，用户必须明确编辑真实 source，或 remove 后 add。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`，JSON receipt 包含脱敏的 source impact。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。候选删除插件、使插件新出现能力不兼容、改变依赖，或传递影响这些插件的现有引用时，sync 需要 `--yes`；清单或旧 manifest 不可读时影响为 unknown，也需要确认。`catalog source add/update` 只改 source config；remove 有引用或清单不完整时需要 `--yes`。普通 Git 激活只接受更高 Catalog version；相同 version 不同 digest 和较低 version 都拒绝。明确修改 source config 后的 sync 可确认这些关系。Path source 允许内容变化。
+
+Active store 损坏时，Git source 使用当前 transport 配置获取 `Active.resolvedCommit`，并只在 logical identity、snapshot digest、manifest digest 和 commit 全部匹配时修复旧 key；source config 不变。CLI 修复后继续普通 sync，TUI 修复成功后停止。旧 commit 不可取得，或 Path 当前内容不是旧 key 时，命令返回 replace-required。只有 `--replace-damaged --yes` 或 TUI 的独立替换 Review 可以使用已绑定的当前候选。替换执行前重查 source config、候选、Active 和旧 entry 仍损坏；它只跳过无法完成的旧版本比较，未经已验证的 source config 变化仍不能改变 logical identity。
 
 当前 Workspace 的 development source 使用：
 
 ```bash
-aw catalog dev activate --workspace-root "$workspace" --json
+aw catalog dev activate --workspace-root "$workspace" --yes --json
 aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --json
 ```

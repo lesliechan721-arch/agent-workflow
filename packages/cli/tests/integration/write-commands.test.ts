@@ -33,7 +33,10 @@ import {
 import { TuiController } from '../../src/tui/controller.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { runCli } from '../../src/index.js';
-import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
@@ -2924,7 +2927,7 @@ describe('five namespaced write commands', () => {
     leafEntry.contentDigest = await calculateCatalogEntryContentDigest(leafRoot);
     await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
     await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
 
     await expect(statusCommandV7({
@@ -3877,7 +3880,9 @@ describe('five namespaced write commands', () => {
       { name: 'leaf', configureManifest: configureLeaf },
       { name: 'root', dependencies: [], configureManifest: configureRoot },
     ]);
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
     const intentLocation = {
       scope: 'project' as const,
       cwd: isolation.layout.fixtureCwd,
@@ -4286,7 +4291,7 @@ describe('five namespaced write commands', () => {
       { name: 'root', dependencies: ['leaf'] },
     ]);
     await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
 
     const upgraded = await syncCommand([], {
@@ -4948,6 +4953,7 @@ describe('five namespaced write commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const projectA = isolation.layout.fixtureCwd;
     const projectB = path.join(isolation.layout.rootDir, 'dependency-project-b');
+    registerCurrentTestWritableStateRoot(projectB, 'secondary current project');
     const sourceRoot = path.join(projectA, 'historical-consumer-source');
     await fs.ensureDir(projectB);
     await createDependencyCatalogSnapshotFixture(sourceRoot, [

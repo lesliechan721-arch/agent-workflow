@@ -504,6 +504,56 @@ describe('namespaced marketplace root', () => {
     });
   });
 
+  it('includes platform-enumerable historical project records only when requested', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const installedPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'installed_plugins.json',
+    );
+    const historicalProject = path.join(isolation.layout.rootDir, 'historical-project');
+    await Promise.all([
+      createMarketplaceRoot(root),
+      fs.ensureDir(historicalProject),
+      fs.outputJson(installedPath, {
+        plugins: {
+          'current@aw': [{
+            marketplace: 'aw', name: 'current', scope: 'project',
+            projectPath: isolation.layout.fixtureCwd,
+          }],
+          'historical@aw': [{
+            marketplace: 'aw', name: 'historical', scope: 'project',
+            projectPath: historicalProject,
+          }],
+        },
+      }),
+    ]);
+
+    const currentOnly = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(currentOnly.references).toContainEqual(expect.objectContaining({
+      sourceId: 'official', pluginName: 'current', scope: 'project',
+    }));
+    expect(currentOnly.references).not.toContainEqual(expect.objectContaining({
+      sourceId: 'official', pluginName: 'historical', scope: 'project',
+    }));
+
+    const withHistory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      includePlatformHistoricalProjects: true,
+    });
+    expect(withHistory.references).toContainEqual(expect.objectContaining({
+      sourceId: 'official', pluginName: 'current', scope: 'project',
+    }));
+    expect(withHistory.references).toContainEqual(expect.objectContaining({
+      sourceId: 'official', pluginName: 'historical', scope: 'project',
+    }));
+  });
+
   it.each(['EACCES', 'EPERM'])('does not inspect Codex private residue when cache access gets %s', async (code) => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');

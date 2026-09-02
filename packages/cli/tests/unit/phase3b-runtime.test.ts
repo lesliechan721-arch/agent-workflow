@@ -1338,7 +1338,18 @@ describe('phase 3B namespaced runtime stores', () => {
 
       resumeInstall.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+      await expect(mutation).resolves.toMatchObject({
+        ok: true,
+        changed: true,
+        references: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'installation', pluginId: 'team/demo', scope: 'project',
+          }),
+          expect.objectContaining({
+            category: 'lifecycle', pluginId: 'team/demo', scope: 'project',
+          }),
+        ]),
+      });
       expect(mutationCompleted).toBe(true);
       expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
     } finally {

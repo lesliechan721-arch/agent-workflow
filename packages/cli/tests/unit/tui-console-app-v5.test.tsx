@@ -4212,8 +4212,39 @@ describe('ConsoleAppV4', () => {
         scope: 'project',
       }],
     });
+    const executeIntent = vi.fn().mockResolvedValue({ ok: true });
     const value = controller({
       inspectSourceRemoval,
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        sourceWrite: {
+          configDigest: 'sha256:before',
+          proposedConfigDigest: 'sha256:after',
+          inventoryDigest: 'sha256:inventory',
+          referenceCount: 4,
+          inventoryComplete: false,
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            affectedReferences: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'stateInventoryFailed', kind: 'nativeStateRead' }],
+          },
+        },
+      }),
+      executeIntent,
     });
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const screens = new Set<ConsoleV4ScreenId>();
@@ -4224,6 +4255,74 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('S18');
     expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
     expect(inspectSourceRemoval).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('安装引用受影响');
+    expect(instance.lastFrame()).toContain('生命周期意图引用受影响');
+    expect(instance.lastFrame()).toContain('来源影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('opens the damaged Active replacement Review and requires explicit impact confirmation', async () => {
+    const loaded = loadResult();
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools'
+        ? { ...generation, state: 'repairRequired' as const }
+        : generation);
+    const executeIntent = vi.fn().mockResolvedValue({ status: 'succeeded' });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      const prepared = evidenceForIntent(intent);
+      if (intent.kind !== 'catalogGeneration' || !prepared.catalogGeneration) return prepared;
+      return {
+        ...prepared,
+        catalogGeneration: {
+          ...prepared.catalogGeneration,
+          previousActive: {
+            sourceConfigFingerprint: 'sha256:old-config',
+            sourceIdentity: 'identity:team-tools',
+            logicalIdentity: 'workspace:team-tools',
+            requestedRef: 'catalog/stable',
+            resolvedCommit: 'old123',
+            manifestDigest: 'sha256:old-manifest',
+            snapshotDigest: 'sha256:old-snapshot',
+            activatedAt: 500,
+          },
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],
+            affectedReferences: [],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'catalogManifestUnavailable' as const, kind: 'currentManifestRead' }],
+          },
+        },
+      };
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+      executeIntent,
+    });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('使用当前候选替换损坏的 Active');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'team-tools',
+    }), expect.anything());
+    expect(instance.lastFrame()).toContain('替换损坏的 Active Catalog');
+    expect(instance.lastFrame()).toContain('候选影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('已确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).toHaveBeenCalledOnce();
   });
 
   it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {

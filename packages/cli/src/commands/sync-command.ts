@@ -198,6 +198,48 @@ export async function syncCommand(
   }
 
   const env = options.env ?? runtime.env ?? process.env;
+  const initialIntent = await readPluginIntentState({
+    scope: options.scope,
+    cwd: options.cwd,
+    env,
+  });
+  const requested = selectors.length > 0 || options.all
+    ? selectedIntentRoots({
+        roots: initialIntent.roots,
+        selectors,
+        all: options.all === true,
+        platform: options.platform,
+      })
+    : await selectInteractively({
+        roots: initialIntent.roots,
+        platform: options.platform,
+        prompt: options.prompt,
+      });
+  if (requested.length === 0) {
+    throw new SyncCommandError(
+      'syncSelectionRequired',
+      `No desired ${options.platform} plugins exist in ${options.scope} scope.`,
+    );
+  }
+  const refreshWarnings: string[] = [];
+  if (options.refresh) {
+    if (!options.cliVersion) throw new Error('syncRefreshCliVersionRequired');
+    const sourceIds = [...new Set(requested.map((selector) => parsePluginId(selector).sourceId!))];
+    for (const sourceId of sourceIds) {
+      await syncCatalogSourceGeneration({
+        sourceId,
+        cliVersion: options.cliVersion,
+        cwd: options.cwd,
+        impactConfirmed: options.yes === true,
+        env,
+        runtime: runtime.catalogGenerationRuntime,
+      }).catch((error) => {
+        refreshWarnings.push(
+          `catalogSourceRefreshFailed: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }
+  }
   return withAwHomeMutationLock({
     env,
     token: runtime.awHomeMutationToken,
@@ -207,40 +249,14 @@ export async function syncCommand(
         cwd: options.cwd,
         env,
       });
-      const requested = selectors.length > 0 || options.all
-        ? selectedIntentRoots({
-            roots: intent.roots,
-            selectors,
-            all: options.all === true,
-            platform: options.platform,
-          })
-        : await selectInteractively({
-              roots: intent.roots,
-              platform: options.platform,
-              prompt: options.prompt,
-            });
-      if (requested.length === 0) {
-        throw new SyncCommandError(
-          'syncSelectionRequired',
-          `No desired ${options.platform} plugins exist in ${options.scope} scope.`,
-        );
-      }
-      const refreshWarnings: string[] = [];
-      if (options.refresh) {
-        if (!options.cliVersion) throw new Error('syncRefreshCliVersionRequired');
-        const sourceIds = [...new Set(requested.map((selector) => parsePluginId(selector).sourceId!))];
-        for (const sourceId of sourceIds) {
-          await syncCatalogSourceGeneration({
-            sourceId,
-            cliVersion: options.cliVersion,
-            env,
-            runtime: runtime.catalogGenerationRuntime,
-          }).catch((error) => {
-            refreshWarnings.push(
-              `catalogSourceRefreshFailed: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          });
-        }
+      const currentRequested = selectedIntentRoots({
+        roots: intent.roots,
+        selectors: requested,
+        all: false,
+        platform: options.platform,
+      });
+      if (JSON.stringify(currentRequested) !== JSON.stringify(requested)) {
+        throw new SyncCommandError('syncPluginNotDesired', 'Desired plugin intent changed during Catalog refresh.');
       }
       const work = new Map<string, { platform: 'codex' | 'claude'; selectors: string[] }>();
       for (const selector of requested) {

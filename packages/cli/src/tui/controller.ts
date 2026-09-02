@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 
 import type {
+  CatalogActivationMode,
   CatalogSource,
   CatalogGenerationActiveV1,
   CatalogGenerationCandidateEvidence,
   CatalogGenerationSyncResult,
+  CatalogSourceImpact,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -143,7 +145,7 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogGeneration';
-      action: 'activate' | 'update' | 'repair' | 'recoverState';
+      action: 'activate' | 'update' | 'repair' | 'replaceDamaged' | 'recoverState';
       sourceId: string;
       sourceMutation?:
         | { action: 'add'; source: CatalogSource }
@@ -196,8 +198,10 @@ export interface OperationEvidence {
     proposedConfigDigest: string;
     sourceIdentity?: string;
     inventoryDigest: string;
+    impactDigest?: string;
     referenceCount: number;
     inventoryComplete: boolean;
+    impact?: CatalogSourceImpact;
   };
   catalogGeneration?: {
     action: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
@@ -207,6 +211,10 @@ export interface OperationEvidence {
     candidateRelation?: CatalogGenerationFreshnessState;
     explicitSourceChange?: boolean;
     exactRepair?: boolean;
+    activationMode?: CatalogActivationMode;
+    impact?: CatalogSourceImpact;
+    impactDigest?: string;
+    impactMode?: 'generation' | 'identityChange';
     configDigest: string;
     proposedConfigDigest?: string;
     proposedSource?: CatalogSource;
@@ -411,9 +419,10 @@ export interface SourceReferenceSummaryViewModel {
   inventoryComplete: boolean;
   installationCount?: number;
   configCount?: number;
+  lifecycleCount?: number;
   marketplaceCount?: number;
   dependencies: Array<{
-    category: 'installation' | 'config' | 'marketplace';
+    category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
     pluginId?: string;
     sourceId?: string;
     platform?: PlatformName;
@@ -1888,6 +1897,8 @@ export class TuiController {
         ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
         : code === 'catalogGenerationActiveComparisonUnavailable'
           ? '损坏的当前 Active 无法提供可信版本，不能安全比较候选。当前 Active 保持不变。请明确编辑来源，或移除后重新添加。'
+        : code === 'catalogReplaceDamagedRequired'
+          ? '无法重新取得或精确匹配旧 Active。当前 Active 保持不变。请返回并选择“使用当前候选替换损坏的 Active”。'
         : code === 'catalogVersionConflict'
           ? '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。'
           : code === 'catalogRollbackDetected'
@@ -2560,6 +2571,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
           ? 'Catalog 已启用，但主来源尚未切换。可在 TUI 中重试。'
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
+          : intent.action === 'replaceDamaged' ? '损坏的 Active Catalog 已由当前候选替换。'
           : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
             : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
               : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'

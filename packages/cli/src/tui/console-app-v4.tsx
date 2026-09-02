@@ -3259,18 +3259,34 @@ export function ConsoleAppV4(props: {
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
     const generationAction: ActionItem[] = logicalIdentityChanged ? []
+      : generationState === 'repairRequired' ? [{
+          label: '重新下载旧版本并精确修复',
+          description: '使用 Active 的精确 commit；成功后保持当前 Active 并停止',
+          disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
+          run: () => beginReview({
+            kind: 'catalogGeneration',
+            action: 'repair',
+            sourceId: route.sourceId,
+          }),
+        }, {
+          label: '使用当前候选替换损坏的 Active…',
+          description: '旧版本无法取得时使用；进入独立影响 Review',
+          disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
+          run: () => beginReview({
+            kind: 'catalogGeneration',
+            action: 'replaceDamaged',
+            sourceId: route.sourceId,
+          }),
+        }]
       : generationState !== 'ready' ? [{
-          label: generationState === 'repairRequired' && !combinedRepairAndMismatch ? '重新下载并修复'
-            : combinedRepairAndMismatch ? '验证候选并恢复'
-            : generationState === 'stateInvalid' ? '恢复状态并启用'
+          label: generationState === 'stateInvalid' ? '恢复状态并启用'
               : generationState === 'configMismatch' ? '验证并切换' : '获取并启用',
           description: '先准备只读候选 Review；确认后才切换 Active',
           disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
           run: () => beginReview({
             kind: 'catalogGeneration',
             action: generationState === 'stateInvalid' ? 'recoverState'
-              : generationState === 'repairRequired' && !combinedRepairAndMismatch ? 'repair'
-                : generationState === 'configMismatch' || combinedRepairAndMismatch ? 'update' : 'activate',
+              : generationState === 'configMismatch' ? 'update' : 'activate',
             sourceId: route.sourceId,
           }),
         }]
@@ -3455,7 +3471,7 @@ export function ConsoleAppV4(props: {
     description = sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整，不能把未知引用当作零。' : '仍有内容依赖这个来源。';
     actions = [{ label: sourceDependenciesExpanded ? '收起依赖内容' : '查看依赖内容', description: '只显示插件、来源、平台、位置和类别聚合', run: () => setSourceDependenciesExpanded((value) => !value) }, { label: '返回来源详情', run: back }];
     const countLabel = (value: number | undefined, unit: string): string => value === undefined ? '未知' : `${value} ${unit}`;
-    content = <Box flexDirection="column"><Callout status="error" title={sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'} /><SectionCard title="引用汇总"><StaticRow title="安装位置" meta={countLabel(sourceReferenceSummary?.installationCount, '个')} /><StaticRow title="插件设置" meta={countLabel(sourceReferenceSummary?.configCount, '份')} /><StaticRow title="Marketplace" meta={countLabel(sourceReferenceSummary?.marketplaceCount, '个')} />{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, Math.max(1, pageActionBudget(10))).map((dependency, index) => <StaticRow key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} title={`${dependency.category} · ${dependency.pluginId ?? dependency.sourceId ?? '身份未知'}`} meta={`${dependency.platform ? platformLabel(dependency.platform) : ''}${dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}`} />) : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><Callout status="error" title={sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'} /><SectionCard title="引用汇总"><StaticRow title="安装位置" meta={countLabel(sourceReferenceSummary?.installationCount, '个')} /><StaticRow title="插件设置" meta={countLabel(sourceReferenceSummary?.configCount, '份')} /><StaticRow title="生命周期意图" meta={countLabel(sourceReferenceSummary?.lifecycleCount, '项')} /><StaticRow title="Marketplace" meta={countLabel(sourceReferenceSummary?.marketplaceCount, '个')} />{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, Math.max(1, pageActionBudget(10))).map((dependency, index) => <StaticRow key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} title={`${dependency.category} · ${dependency.pluginId ?? dependency.sourceId ?? '身份未知'}`} meta={`${dependency.platform ? platformLabel(dependency.platform) : ''}${dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}`} />) : null}</SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'issueList') {
     const issues = props.controller.listUserIssues();
     breadcrumb = '需要处理';
@@ -4049,6 +4065,7 @@ export function ConsoleAppV4(props: {
               && resultSummary.catalogGeneration.outcome === 'activated'
               ? '✓ Catalog 已更新' : '✓ Catalog 无需更新'
             : resultSummary?.catalogAction === 'repair' ? '✓ Catalog 已修复'
+              : resultSummary?.catalogAction === 'replaceDamaged' ? '✓ 损坏的 Catalog 已替换'
               : resultSummary?.catalogAction === 'recoverState' ? '✓ Catalog 状态已恢复'
                 : operationKind === 'catalogGeneration' ? '✓ Catalog 已启用'
                   : '✓ 来源配置已保存'

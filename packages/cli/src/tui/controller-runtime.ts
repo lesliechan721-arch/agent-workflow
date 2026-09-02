@@ -78,7 +78,6 @@ import {
 } from '../utils/catalog-source-identity.js';
 import { checkAwCapabilitySupport, readPluginManifest } from '../utils/manifest.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import { syncCatalogSourceGeneration } from '../utils/catalog-generation-service.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
   calculateCatalogGenerationSetDigest,
@@ -100,9 +99,16 @@ import {
   compareCatalogGenerationFreshness,
   probeCatalogSourceFreshness,
   probeCatalogSourceGeneration,
+  probeCatalogSourceRepairGeneration,
   recoverCatalogGenerationStateAndActivate,
   repairCatalogSourceGeneration,
+  replaceDamagedCatalogSourceGeneration,
+  syncCatalogSourceGeneration,
 } from '../utils/catalog-generation-service.js';
+import {
+  calculateCatalogSourceImpactDigest,
+  inspectCatalogSourceImpact,
+} from '../utils/catalog-source-impact.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from '../utils/catalog-public-error.js';
@@ -733,6 +739,7 @@ export function createTuiControllerDependencies(
       let proposedSource: import('../types.js').CatalogSource | undefined;
       let proposedConfigDigest: string | undefined;
       let explicitSourceChange = false;
+      let sourceIdentityChangeImpact: import('../types.js').CatalogSourceImpact | undefined;
       if (intent.sourceMutation) {
         const preview = await preflightCatalogSourceMutation({
           request: intent.sourceMutation.action === 'add'
@@ -751,19 +758,19 @@ export function createTuiControllerDependencies(
             !== calculateCatalogSourceConfigFingerprint(configuredSource)));
         explicitSourceChange = preview.proposedConfigDigest !== preview.configDigest
           && (preview.identityChanged || sourceFingerprintChanged);
+        if (preview.identityChanged) sourceIdentityChangeImpact = {
+          impactSchemaVersion: 1,
+          sourceId: preview.sourceId,
+          inventoryComplete: preview.references.inventoryComplete,
+          references: preview.references.references,
+          affectedReferences: preview.references.references,
+          changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+          errors: preview.references.errors,
+        };
         if (!explicitSourceChange) {
           throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
         }
       }
-      const probe = await probeCatalogSourceGeneration({
-        sourceId: intent.sourceId,
-        ...(proposedSource ? { source: proposedSource } : {}),
-        cliVersion: packageInfo.version,
-        env: context.env,
-        signal,
-      });
-      signal?.throwIfAborted();
-      await preparation?.reporter.emit('evidence');
       let previousActive: import('../types.js').CatalogGenerationActiveV1 | undefined;
       let healthyActive: Awaited<ReturnType<typeof resolveActiveCatalogGeneration>> | undefined;
       let previousActiveVersion: string | undefined;
@@ -776,6 +783,24 @@ export function createTuiControllerDependencies(
           || !(error instanceof CatalogGenerationError)
           || error.code !== 'catalogGenerationStateInvalid') throw error;
       }
+      const probe = intent.action === 'repair'
+        ? await probeCatalogSourceRepairGeneration({
+            sourceId: intent.sourceId,
+            cliVersion: packageInfo.version,
+            ...(previousActive ? { expectedActive: previousActive } : {}),
+            expectedConfigDigest: config.digest,
+            env: context.env,
+            signal,
+          })
+        : await probeCatalogSourceGeneration({
+            sourceId: intent.sourceId,
+            ...(proposedSource ? { source: proposedSource } : {}),
+            cliVersion: packageInfo.version,
+            env: context.env,
+            signal,
+          });
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
       if (intent.action === 'activate' || intent.action === 'update') {
         try {
           healthyActive = await resolveActiveCatalogGeneration({ sourceId: intent.sourceId, env: context.env });
@@ -828,36 +853,47 @@ export function createTuiControllerDependencies(
           === createCatalogStoreKey(probe.candidate.logicalIdentity, probe.candidate.snapshotDigest);
       if (intent.action === 'repair' && !exactStoreTarget) {
         throw new CatalogGenerationError({
-          code: 'catalogGenerationRepairTargetChanged', sourceId: intent.sourceId,
-          message: `Catalog source "${intent.sourceId}" now resolves to a different store target. Review an explicit update instead.`,
+          code: 'catalogReplaceDamagedRequired', sourceId: intent.sourceId,
+          message: `Catalog source "${intent.sourceId}" cannot reproduce the damaged Active entry. Use the current candidate replacement Review.`,
         });
       }
-      const exactRepair = intent.action === 'update' && exactStoreTarget && !previousStoreReady;
-      if (previousActive && !previousStoreReady && !exactStoreTarget && !intent.sourceMutation) {
+      const exactRepair = (intent.action === 'repair' || intent.action === 'update')
+        && exactStoreTarget && !previousStoreReady;
+      if (previousActive && !previousStoreReady && !exactStoreTarget
+        && !intent.sourceMutation && intent.action !== 'replaceDamaged') {
         throw new CatalogGenerationError({
-          code: 'catalogGenerationActiveComparisonUnavailable',
+          code: 'catalogReplaceDamagedRequired',
           sourceId: intent.sourceId,
           message: `Catalog source "${intent.sourceId}" has a damaged Active entry whose version cannot be compared safely. The current Active remains unchanged. Edit the source explicitly, or remove and add it again.`,
         });
       }
-      if (!explicitSourceChange && candidateRelation === 'incompatible') {
+      if (intent.action !== 'replaceDamaged' && !explicitSourceChange && candidateRelation === 'incompatible') {
         throw new CatalogGenerationError({
           code: 'catalogLogicalIdentityChanged', sourceId: intent.sourceId,
           message: `Catalog source "${intent.sourceId}" changed logical identity. Edit or remove and re-add the source.`,
         });
       }
-      if (!explicitSourceChange && candidateRelation === 'versionConflict') {
+      if (intent.action !== 'replaceDamaged' && !explicitSourceChange && candidateRelation === 'versionConflict') {
         throw new TuiOperationBlockedError(
           'catalogVersionConflict',
           '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。',
         );
       }
-      if (!explicitSourceChange && candidateRelation === 'rollbackDetected') {
+      if (intent.action !== 'replaceDamaged' && !explicitSourceChange && candidateRelation === 'rollbackDetected') {
         throw new TuiOperationBlockedError(
           'catalogRollbackDetected',
           '候选 Catalog 版本低于当前 Active。普通更新已阻止。',
         );
       }
+      const impact = intent.action === 'repair' ? undefined
+        : sourceIdentityChangeImpact ?? await inspectCatalogSourceImpact({
+          sourceId: intent.sourceId,
+          cwd: context.cwd,
+          env: context.env,
+          sourcePrimary: comparisonSource?.primary === true,
+          mode: 'generation',
+          candidateManifest: probe.manifest,
+        });
       return {
         catalog: {
           configDigest: config.digest,
@@ -871,6 +907,13 @@ export function createTuiControllerDependencies(
           ...(candidateRelation ? { candidateRelation } : {}),
           ...(explicitSourceChange ? { explicitSourceChange: true } : {}),
           ...(exactRepair ? { exactRepair: true } : {}),
+          activationMode: intent.action === 'replaceDamaged' ? 'replaceDamaged'
+            : explicitSourceChange ? 'explicitSourceChange' : 'normal',
+          ...(impact ? {
+            impact,
+            impactDigest: calculateCatalogSourceImpactDigest(impact),
+            impactMode: sourceIdentityChangeImpact ? 'identityChange' as const : 'generation' as const,
+          } : {}),
           configDigest: config.digest,
           ...(proposedConfigDigest ? { proposedConfigDigest } : {}),
           ...(proposedSource ? { proposedSource } : {}),
@@ -906,8 +949,18 @@ export function createTuiControllerDependencies(
           proposedConfigDigest: preview.proposedConfigDigest,
           ...(preview.sourceIdentity ? { sourceIdentity: preview.sourceIdentity } : {}),
           inventoryDigest: digest({ references: preview.references.references, errors: preview.references.errors }),
+          impactDigest: preview.impactDigest,
           referenceCount: preview.references.references.length,
-          inventoryComplete: preview.references.errors.length === 0,
+          inventoryComplete: preview.references.inventoryComplete,
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: preview.sourceId,
+            inventoryComplete: preview.references.inventoryComplete,
+            references: preview.references.references,
+            affectedReferences: preview.references.references,
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: preview.references.errors,
+          },
         },
       };
       if (preparation?.validateIntent
@@ -1316,15 +1369,28 @@ export function createTuiControllerDependencies(
         runtime: { validatedStoreEntries, validatingStoreEntries },
       });
     },
-    async inspectSourceRemoval(_sourceId, signal) {
+    async inspectSourceRemoval(sourceId, signal) {
       signal.throwIfAborted();
+      const config = await readCatalogSourcesConfigSnapshot(context.env);
+      const source = config.config.sources.find((entry) => entry.id === sourceId);
+      if (!source) throw new TuiOperationBlockedError('catalogGenerationSourceMissing', '来源不存在。');
+      const impact = await inspectCatalogSourceImpact({
+        sourceId,
+        cwd: context.cwd,
+        env: context.env,
+        sourcePrimary: source.primary,
+        mode: 'remove',
+      });
+      const counts = (category: import('../types.js').CatalogSourceImpactCategory) =>
+        impact.affectedReferences.filter((reference) => reference.category === category).length;
       return {
-        blocked: false,
-        inventoryComplete: true,
-        installationCount: 0,
-        configCount: 0,
-        marketplaceCount: 0,
-        dependencies: [],
+        blocked: impact.affectedReferences.length > 0 || !impact.inventoryComplete,
+        inventoryComplete: impact.inventoryComplete,
+        installationCount: counts('installation'),
+        configCount: counts('config'),
+        lifecycleCount: counts('lifecycle'),
+        marketplaceCount: counts('marketplace'),
+        dependencies: impact.affectedReferences,
       };
     },
     async prepareReviewEvidence(intent, signal, onStage) {
@@ -1342,6 +1408,7 @@ export function createTuiControllerDependencies(
           await syncCatalogSourceGeneration({
             sourceId,
             cliVersion: packageInfo.version,
+            cwd: context.cwd,
             env: context.env,
             signal,
           }).catch((error) => {
@@ -1584,45 +1651,89 @@ export function createTuiControllerDependencies(
               ...common,
               sourceId: intent.sourceId,
               update: intent.sourceMutation.update,
+              expectedImpactDigest: expected.impactDigest,
+              requireIdentityChangeConfirmation: true,
+              confirmIdentityChange: true,
             });
           }
           configSaved = true;
           await tuiControllerRuntimeTestHooks?.afterCatalogSourceConfigCommit?.();
         }
         try {
-          const generation = intent.action === 'recoverState'
-            ? await recoverCatalogGenerationStateAndActivate({
-                sourceId: intent.sourceId,
-                cliVersion: packageInfo.version,
-                expectedCandidate: expected.candidate,
-                env: context.env,
-                signal,
-              })
-            : intent.action === 'repair' || intent.action === 'update' && expected.exactRepair
-            ? await repairCatalogSourceGeneration({
-                sourceId: intent.sourceId,
-                cliVersion: packageInfo.version,
-                expectedCandidate: expected.candidate,
-                expectedActive: expected.previousActive ?? null,
-                env: context.env,
-                signal,
-                runtime: {
-                  afterCandidateResolved: tuiControllerRuntimeTestHooks
-                    ?.afterCatalogGenerationCandidateResolved,
-                },
-              })
-            : await activateCatalogSourceGeneration({
-                sourceId: intent.sourceId,
-                cliVersion: packageInfo.version,
-                expectedCandidate: expected.candidate,
-                expectedActive: expected.previousActive ?? null,
-                env: context.env,
-                signal,
-                runtime: {
-                  afterCandidateResolved: tuiControllerRuntimeTestHooks
-                    ?.afterCatalogGenerationCandidateResolved,
-                },
-              });
+          let generation;
+          if (intent.action === 'recoverState') {
+            generation = await recoverCatalogGenerationStateAndActivate({
+              sourceId: intent.sourceId,
+              cliVersion: packageInfo.version,
+              cwd: context.cwd,
+              impactConfirmed: true,
+              expectedImpactDigest: expected.impactDigest,
+              expectedCandidate: expected.candidate,
+              env: context.env,
+              signal,
+            });
+          } else if (intent.action === 'repair') {
+            generation = await repairCatalogSourceGeneration({
+              sourceId: intent.sourceId,
+              cliVersion: packageInfo.version,
+              cwd: context.cwd,
+              expectedCandidate: expected.candidate,
+              expectedActive: expected.previousActive ?? null,
+              expectedConfigDigest: expected.proposedConfigDigest ?? expected.configDigest,
+              env: context.env,
+              signal,
+              runtime: {
+                afterCandidateResolved: tuiControllerRuntimeTestHooks
+                  ?.afterCatalogGenerationCandidateResolved,
+              },
+            });
+          } else if (intent.action === 'update' && expected.exactRepair) {
+            generation = await repairCatalogSourceGeneration({
+              sourceId: intent.sourceId,
+              cliVersion: packageInfo.version,
+              cwd: context.cwd,
+              expectedActive: expected.previousActive ?? null,
+              expectedConfigDigest: expected.proposedConfigDigest ?? expected.configDigest,
+              env: context.env,
+              signal,
+            });
+          } else if (intent.action === 'replaceDamaged') {
+            generation = await replaceDamagedCatalogSourceGeneration({
+              sourceId: intent.sourceId,
+              cliVersion: packageInfo.version,
+              cwd: context.cwd,
+              expectedCandidate: expected.candidate,
+              expectedActive: expected.previousActive!,
+              expectedConfigDigest: expected.proposedConfigDigest ?? expected.configDigest,
+              impactConfirmed: true,
+              expectedImpactDigest: expected.impactDigest,
+              env: context.env,
+              signal,
+              runtime: {
+                afterCandidateResolved: tuiControllerRuntimeTestHooks
+                  ?.afterCatalogGenerationCandidateResolved,
+              },
+            });
+          } else {
+            generation = await activateCatalogSourceGeneration({
+              sourceId: intent.sourceId,
+              cliVersion: packageInfo.version,
+              cwd: context.cwd,
+              activationMode: expected.activationMode,
+              impactConfirmed: true,
+              expectedImpactDigest: expected.impactDigest,
+              impactMode: expected.impactMode,
+              expectedCandidate: expected.candidate,
+              expectedActive: expected.previousActive ?? null,
+              expectedConfigDigest: expected.proposedConfigDigest ?? expected.configDigest,
+              env: context.env,
+              signal,
+              runtime: {
+                afterCandidateResolved: tuiControllerRuntimeTestHooks
+                  ?.afterCatalogGenerationCandidateResolved,
+              },
+            });
+          }
           let primaryChanged = false;
           if (intent.setPrimaryAfterActivation) {
             try {
@@ -1705,19 +1816,32 @@ export function createTuiControllerDependencies(
           cwd: context.cwd,
           env: context.env,
           expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
+          expectedImpactDigest: expectedEvidence.sourceWrite?.impactDigest,
           runtime,
         };
         if (intent.action === 'add' && intent.source) {
           return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
         }
         if (intent.action === 'update' && intent.update) {
-          return updateCatalogSourceCommand({ ...common, sourceId: intent.sourceId, update: intent.update, cliVersion: packageInfo.version });
+          return updateCatalogSourceCommand({
+            ...common,
+            sourceId: intent.sourceId,
+            update: intent.update,
+            cliVersion: packageInfo.version,
+            requireIdentityChangeConfirmation: true,
+            confirmIdentityChange: true,
+          });
         }
         if (intent.action === 'setPrimary') {
           return setPrimaryCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
         }
         if (intent.action === 'remove') {
-          return removeCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+          return removeCatalogSourceCommand({
+            ...common,
+            sourceId: intent.sourceId,
+            requireImpactConfirmation: true,
+            confirmImpact: true,
+          });
         }
         throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
       }

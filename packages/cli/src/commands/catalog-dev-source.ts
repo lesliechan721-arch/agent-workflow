@@ -173,8 +173,10 @@ export function createCatalogDevFailureReceipt(options: {
 }
 
 function codedFailure(error: unknown, fallbackCode: string): { code: string; message: string } {
+  const typedCode = typeof error === 'object' && error !== null && 'code' in error
+    && error.code === 'catalogImpactConfirmationRequired' ? error.code : undefined;
   return {
-    code: error instanceof CatalogDevSourceError ? error.code : fallbackCode,
+    code: error instanceof CatalogDevSourceError ? error.code : typedCode ?? fallbackCode,
     message: error instanceof CatalogDevSourceError ? error.message : 'The Catalog development operation failed.',
   };
 }
@@ -203,6 +205,7 @@ export async function activateCatalogDevSource(options: {
   sourceId?: string;
   primary?: boolean;
   forceBuild?: boolean;
+  yes?: boolean;
   cliVersion: string;
   env: NodeJS.ProcessEnv;
   runtime?: CatalogDevSourceRuntime;
@@ -296,7 +299,11 @@ export async function activateCatalogDevSource(options: {
     }
     await options.runtime?.beforeSync?.();
     await syncCatalogSourceCommand({
-      sourceId: selectedId, cliVersion: options.cliVersion, env: options.env,
+      sourceId: selectedId,
+      cliVersion: options.cliVersion,
+      cwd: workspace.workspaceRoot,
+      impactConfirmed: options.yes === true,
+      env: options.env,
     });
     await options.runtime?.afterSync?.();
     const finalStatus = await getCatalogDevSourceStatus({

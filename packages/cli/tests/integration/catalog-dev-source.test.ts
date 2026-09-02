@@ -10,6 +10,11 @@ import {
 } from '../../src/commands/catalog-dev-source.js';
 import { runCli } from '../../src/index.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import {
+  createEmptyPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
 
 const roots: string[] = [];
 
@@ -164,6 +169,38 @@ describe('Catalog Workspace development source', () => {
       active: { ready: false },
       errors: [{ code: 'activeNotReady' }],
     });
+  });
+
+  it('does not bypass generation impact confirmation when activating a changed development snapshot', async () => {
+    const { workspaceRoot, env } = await fixture();
+    expect(await runCli([
+      'plugin', 'init', 'dev-dependency', '--description', 'Dependency fixture.', '--no-skills',
+      '--workspace-root', workspaceRoot,
+    ], { cwd: workspaceRoot, env, io: capture().io })).toBe(0);
+    const initial = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(initial.exitCode, initial.stderr).toBe(0);
+    const sourceId = initial.receipt.source.id as string;
+    await writePluginIntentState({ scope: 'user', cwd: workspaceRoot, env }, upsertPluginIntentRoot(
+      createEmptyPluginIntentState(),
+      { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
+    ));
+    const manifestPath = path.join(
+      workspaceRoot, 'plugins', 'dev-demo', '.agents-plugin', 'plugin.json',
+    );
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, { ...manifest, dependencies: ['dev-dependency'] }, { spaces: 2 });
+
+    const blocked = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.receipt).toMatchObject({
+      ok: false,
+      errors: [{ code: 'catalogImpactConfirmationRequired' }],
+    });
+    const confirmed = await jsonCommand([
+      'catalog', 'dev', 'activate', '--yes', '--json',
+    ], workspaceRoot, env);
+    expect(confirmed.exitCode, confirmed.stderr).toBe(0);
+    expect(confirmed.receipt).toMatchObject({ ok: true, active: { ready: true } });
   });
 
   it('protects the managed source from public update and remove commands', async () => {

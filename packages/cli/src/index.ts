@@ -2200,12 +2200,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--source-id <id>', 'explicit managed source ID')
     .option('--primary', 'make the development source primary', false)
     .option('--force-build', 'rebuild a current snapshot', false)
+    .option('-y, --yes', 'confirm affected or unknown source references', false)
     .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
       primary?: boolean;
       forceBuild?: boolean;
+      yes?: boolean;
     }) => {
       try {
         const receipt = await activateCatalogDevSource({
@@ -2214,6 +2216,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceId: rawOptions.sourceId,
           primary: rawOptions.primary,
           forceBuild: rawOptions.forceBuild,
+          yes: rawOptions.yes,
           cliVersion: resolveCliVersion(),
           env,
         });
@@ -2292,6 +2295,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const failure = sanitizeCatalogSourceError(error, env, sensitiveRoots) as Error & {
       code?: string;
       inventory?: { references?: CatalogSourceMutationReceipt['references'] };
+      impact?: { references?: CatalogSourceMutationReceipt['references'] };
     };
     const message = failure instanceof Error ? failure.message : String(error);
     if (json) {
@@ -2301,7 +2305,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         ok: false,
         changed: false,
         sourceId,
-        references: failure.inventory?.references ?? [],
+        references: failure.impact?.references ?? failure.inventory?.references ?? [],
         errors: [{ code: failure.code ?? failure.name ?? 'catalogSourceMutationFailed', message }],
       });
     }
@@ -2315,7 +2319,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     json: boolean,
     error: unknown,
   ): void => {
-    const failure = sanitizeCatalogSourceError(error, env);
+    const failure = sanitizeCatalogSourceError(error, env) as Error & {
+      impact?: import('./types.js').CatalogSourceImpact;
+    };
     const message = redactString(failure.message);
     if (json) {
       writeJsonReceipt(io.stdout, {
@@ -2325,6 +2331,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         command,
         ok: false,
         ...(sourceId ? { sourceId } : {}),
+        ...(failure.impact ? { impact: failure.impact } : {}),
         errors: [{ code: catalogGenerationErrorCode(error), message }],
       });
     }
@@ -2419,13 +2426,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('sync')
     .argument('<id>')
     .option('--check', 'fetch and validate without changing the Catalog store or Active state', false)
+    .option('--replace-damaged', 'replace a damaged Active entry with the current candidate', false)
+    .option('-y, --yes', 'confirm affected, unknown, or damaged Active replacement impact', false)
     .option('-j, --json', 'print the source sync result as JSON', false)
-    .action(async (id: string, rawOptions: { check?: boolean; json?: boolean }) => {
+    .action(async (id: string, rawOptions: {
+      check?: boolean;
+      replaceDamaged?: boolean;
+      yes?: boolean;
+      json?: boolean;
+    }) => {
       try {
+        if (rawOptions.check && rawOptions.replaceDamaged) {
+          throw new Error('catalog source sync --check cannot use --replace-damaged.');
+        }
         const result = await syncCatalogSourceCommand({
           sourceId: id,
           cliVersion: resolveCliVersion(),
+          cwd,
           check: rawOptions.check === true,
+          impactConfirmed: rawOptions.yes === true,
+          replaceDamaged: rawOptions.replaceDamaged === true,
           env,
         });
         if (rawOptions.json) {
@@ -2649,10 +2669,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogSource
     .command('remove')
     .argument('<id>')
+    .option('-y, --yes', 'confirm affected or unknown source references', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
-    .action(async (id: string, rawOptions: { json?: boolean }) => {
+    .action(async (id: string, rawOptions: { yes?: boolean; json?: boolean }) => {
       try {
-        const receipt = await removeCatalogSourceCommand({ sourceId: id, cwd, env });
+        const receipt = await removeCatalogSourceCommand({
+          sourceId: id,
+          cwd,
+          env,
+          requireImpactConfirmation: true,
+          confirmImpact: rawOptions.yes === true,
+        });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} removed.`);
       } catch (error) {

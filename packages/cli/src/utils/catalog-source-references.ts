@@ -24,6 +24,10 @@ import {
 } from './ownership.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
+import {
+  readPluginIntentState,
+  resolvePluginIntentStatePath,
+} from './plugin-intent-state.js';
 import type { PlatformName, Scope } from '../types.js';
 
 export type CatalogSourceReferenceKind =
@@ -31,6 +35,7 @@ export type CatalogSourceReferenceKind =
   | 'namespacedOwner'
   | 'legacyConfig'
   | 'namespacedConfig'
+  | 'namespacedLifecycle'
   | 'legacyMarketplace'
   | 'namespacedMarketplace';
 
@@ -102,6 +107,7 @@ function claudeConsumersFromInstalled(
   value: Record<string, unknown> | null,
   marketplaceName: string,
   currentProject: string,
+  includeHistoricalProjects = false,
 ): NativeMarketplaceConsumer[] {
   const output: NativeMarketplaceConsumer[] = [];
   if (value !== null && !isRecord(value)) {
@@ -143,7 +149,7 @@ function claudeConsumersFromInstalled(
           ? canonicalizePathThroughExistingAncestorSync(item.projectPath)
           : null
         : undefined;
-      if (scope === 'project' && projectKey !== currentProject) continue;
+      if (scope === 'project' && !includeHistoricalProjects && projectKey !== currentProject) continue;
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
@@ -375,8 +381,16 @@ async function inventoryPluginConfigRoots(options: {
   errors: CatalogSourceInventoryError[];
   env: NodeJS.ProcessEnv;
   cwd: string;
-}): Promise<string[]> {
-  const roots: string[] = [];
+}): Promise<Array<{
+  root: string;
+  scope: 'user' | 'project';
+  projectKey?: string;
+}>> {
+  const roots: Array<{
+    root: string;
+    scope: 'user' | 'project';
+    projectKey?: string;
+  }> = [];
   const rawAwHome = resolveAwHome(options.env);
   const awHome = await inventoryRead({
     operation: () => resolveAwHomeCanonical(options.env),
@@ -402,7 +416,7 @@ async function inventoryPluginConfigRoots(options: {
       env: options.env,
       cwd: options.cwd,
     });
-    if (userRoot) roots.push(userRoot);
+    if (userRoot) roots.push({ root: userRoot, scope: 'user' });
   }
 
   const rawRepoRoot = resolveRepoRootSync(options.cwd);
@@ -432,7 +446,7 @@ async function inventoryPluginConfigRoots(options: {
         env: options.env,
         cwd: options.cwd,
       });
-      if (projectRoot) roots.push(projectRoot);
+      if (projectRoot) roots.push({ root: projectRoot, scope: 'project', projectKey: repoRoot });
     }
   }
   return roots;
@@ -553,7 +567,8 @@ export async function inventoryLegacyConfigReferences(options: {
   const env = options.env ?? process.env;
   const references: CatalogSourceReference[] = [];
   const errors: CatalogSourceInventoryError[] = [];
-  for (const directory of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+  for (const configRoot of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+    const directory = configRoot.root;
     const entries = await inventoryRead({
       operation: () => fs.readdir(directory, { withFileTypes: true }),
       absent: [], errors, location: directory, kind: 'configDirectoryRead', env, cwd: options.cwd,
@@ -569,7 +584,13 @@ export async function inventoryLegacyConfigReferences(options: {
         absent: null, errors, location: legacyFile, kind: 'configFileStat', env, cwd: options.cwd,
       });
       if (stat?.isFile()) {
-        references.push({ kind: 'legacyConfig', location: legacyFile, pluginName: entry.name });
+        references.push({
+          kind: 'legacyConfig',
+          location: legacyFile,
+          pluginName: entry.name,
+          scope: configRoot.scope,
+          ...(configRoot.projectKey ? { projectKey: configRoot.projectKey } : {}),
+        });
       }
     }
   }
@@ -901,6 +922,7 @@ async function oldMarketplaceReferences(
   env: NodeJS.ProcessEnv,
   cwd: string,
   errors: CatalogSourceInventoryError[],
+  includePlatformHistoricalProjects: boolean,
 ): Promise<CatalogSourceReference[]> {
   const codexPath = path.join(getCodexHome(env), 'config.toml');
   const claudeSettingsPath = path.join(getClaudeHome(env), 'settings.json');
@@ -1008,6 +1030,7 @@ async function oldMarketplaceReferences(
         installed,
         'aw',
         path.normalize(canonicalProjectRoot),
+        includePlatformHistoricalProjects,
       )) {
         output.push({ kind: 'legacyMarketplace', location: claudeInstalledPath, ...consumer });
       }
@@ -1082,6 +1105,7 @@ function registeredMarketplaceRoots(
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  includePlatformHistoricalProjects?: boolean;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -1099,7 +1123,35 @@ export async function inventoryCatalogSourceReferences(options: {
   const legacyConfig = await inventoryLegacyConfigReferences(options);
   references.push(...legacyConfig.references);
   errors.push(...legacyConfig.errors);
-  for (const configRoot of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+  for (const scope of ['user', 'project'] as const) {
+    const location = resolvePluginIntentStatePath({ scope, cwd: options.cwd, env });
+    const state = await inventoryRead({
+      operation: () => readPluginIntentState({ scope, cwd: options.cwd, env }),
+      absent: null,
+      errors,
+      location,
+      kind: 'lifecycleIntentRead',
+      env,
+      cwd: options.cwd,
+    });
+    if (!state) continue;
+    for (const pluginId of new Set([
+      ...state.roots.map((root) => root.pluginId),
+      ...state.dependencyScopeOverrides.map((override) => override.pluginId),
+    ])) {
+      const separator = pluginId.indexOf('/');
+      if (separator <= 0 || separator === pluginId.length - 1) continue;
+      references.push({
+        kind: 'namespacedLifecycle',
+        location,
+        sourceId: pluginId.slice(0, separator),
+        pluginName: pluginId.slice(separator + 1),
+        scope,
+      });
+    }
+  }
+  for (const configInventory of await inventoryPluginConfigRoots({ errors, env, cwd: options.cwd })) {
+    const configRoot = configInventory.root;
     const sourceEntries = await inventoryRead({
       operation: () => fs.readdir(configRoot, { withFileTypes: true }),
       absent: [], errors, location: configRoot, kind: 'configDirectoryRead', env, cwd: options.cwd,
@@ -1157,6 +1209,8 @@ export async function inventoryCatalogSourceReferences(options: {
           location: configPath,
           sourceId: sourceEntry.name,
           pluginName: pluginEntry.name,
+          scope: configInventory.scope,
+          ...(configInventory.projectKey ? { projectKey: configInventory.projectKey } : {}),
         });
       }
     }
@@ -1174,7 +1228,12 @@ export async function inventoryCatalogSourceReferences(options: {
       operation, absent: [], errors, location, kind, env, cwd: options.cwd,
     }));
   }
-  references.push(...await oldMarketplaceReferences(env, options.cwd, errors));
+  references.push(...await oldMarketplaceReferences(
+    env,
+    options.cwd,
+    errors,
+    options.includePlatformHistoricalProjects === true,
+  ));
   const marketplacesRoot = path.join(awHome, 'marketplaces');
   const codexConfigPath = path.join(getCodexHome(env), 'config.toml');
   const codexConfig = await inventoryRead({
@@ -1347,6 +1406,7 @@ export async function inventoryCatalogSourceReferences(options: {
           claudeInstalled,
           marketplaceName,
           path.normalize(canonicalProjectRoot),
+          options.includePlatformHistoricalProjects === true,
         ));
       } catch (error) {
         errors.push(inventoryError(
