@@ -2471,6 +2471,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--ref <ref>', 'use an explicit Git ref'))
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .option('--subdir <path>', 'use a catalog snapshot below the Git repository root')
+    .option('--no-auto-check', 'disable automatic update checks for this source')
     .option('--primary', 'make this source primary', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
@@ -2479,6 +2480,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string;
+      autoCheck?: boolean;
       primary?: boolean;
       json?: boolean;
     }) => {
@@ -2492,7 +2494,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
         )) {
-          throw new Error('Path catalog source add only accepts `--path` and `--primary`.');
+          throw new Error('Path catalog source add only accepts `--path`, `--primary`, and `--no-auto-check`.');
         }
         const source = rawOptions.git !== undefined
           ? {
@@ -2502,12 +2504,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               url: rawOptions.git,
               refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true),
               ...(rawOptions.subdir ? { subdir: rawOptions.subdir } : {}),
+              ...(rawOptions.autoCheck === false ? { autoCheck: false } : {}),
             }
           : {
               id,
               type: 'path' as const,
               primary: rawOptions.primary === true,
               path: rawOptions.path!,
+              ...(rawOptions.autoCheck === false ? { autoCheck: false } : {}),
             };
         const receipt = await addCatalogSourceCommand({
           source,
@@ -2538,6 +2542,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .addOption(new Option('--subdir <path>', 'update the Git catalog subdirectory'))
     .addOption(new Option('--no-subdir', 'remove the Git catalog subdirectory'))
+    .addOption(new Option('--auto-check', 'enable automatic update checks for this source'))
+    .addOption(new Option('--no-auto-check', 'disable automatic update checks for this source'))
     .option('-y, --yes', 'confirm a source identity change', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
@@ -2546,6 +2552,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string | false;
+      autoCheck?: boolean;
       yes?: boolean;
       json?: boolean;
     }) => {
@@ -2560,15 +2567,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           || rawOptions.path !== undefined
           || rawOptions.ref !== undefined
           || rawOptions.defaultRef === true
-          || rawOptions.subdir !== undefined;
+          || rawOptions.subdir !== undefined
+          || rawOptions.autoCheck !== undefined;
         if (!hasUpdate) throw new Error('catalog source update requires at least one update option.');
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
-        )) throw new Error('Path catalog source update only accepts `--path`.');
+        )) throw new Error('Path catalog source update only accepts `--path` and auto-check options.');
+        const hasGitUpdate = rawOptions.git !== undefined
+          || rawOptions.ref !== undefined
+          || rawOptions.defaultRef === true
+          || rawOptions.subdir !== undefined;
         const update = rawOptions.path !== undefined
-          ? { type: 'path' as const, path: rawOptions.path }
-          : {
+          ? {
+              type: 'path' as const,
+              path: rawOptions.path,
+              ...(rawOptions.autoCheck !== undefined ? { autoCheck: rawOptions.autoCheck } : {}),
+            }
+          : hasGitUpdate ? {
               type: 'git' as const,
+              ...(rawOptions.autoCheck !== undefined ? { autoCheck: rawOptions.autoCheck } : {}),
               ...(rawOptions.git !== undefined ? { url: rawOptions.git } : {}),
               ...(rawOptions.ref !== undefined || rawOptions.defaultRef === true
                 ? { refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true) }
@@ -2576,7 +2593,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               ...(rawOptions.subdir !== undefined
                 ? { subdir: rawOptions.subdir === false ? null : rawOptions.subdir }
                 : {}),
-            };
+            }
+            : { autoCheck: rawOptions.autoCheck! };
         const receipt = await updateCatalogSourceCommand({
           sourceId: id,
           update,
@@ -3585,6 +3603,23 @@ export async function runCli(
       && argv.includes('--no-subdir')) {
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
+        writeJsonReceipt(io.stdout, {
+          receiptSchemaVersion: 5,
+          command: 'catalog:source:update',
+          ok: false,
+          changed: false,
+          sourceId: argv[3] ?? '',
+          references: [],
+          errors: [{ code: 'catalogSourceOptionConflict', message }],
+        });
+      }
+      writeLine(io.stderr, `error: ${message}`);
+      return 1;
+    }
+    if (argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update'
+      && argv.includes('--auto-check') && argv.includes('--no-auto-check')) {
+      const message = 'option --auto-check cannot be used with option --no-auto-check';
+      if (argv.includes('--json') || argv.includes('-j')) {
         writeJsonReceipt(io.stdout, {
           receiptSchemaVersion: 5,
           command: 'catalog:source:update',

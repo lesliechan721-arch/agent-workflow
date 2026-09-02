@@ -1,5 +1,7 @@
 export type CatalogGenerationErrorCode =
   | 'catalogSourcesConfigInvalid'
+  | 'catalogSourcesConfigRecoveryStale'
+  | 'catalogSourcesConfigRecoveryFailed'
   | 'catalogGenerationStateInvalid'
   | 'catalogGenerationMetadataInvalid'
   | 'catalogGenerationUnavailable'

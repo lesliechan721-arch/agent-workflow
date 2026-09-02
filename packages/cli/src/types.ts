@@ -89,6 +89,7 @@ export type CatalogGitRefPolicy =
 interface CatalogSourceBase {
   id: CatalogSourceId;
   primary: boolean;
+  autoCheck?: boolean;
 }
 
 export interface GitCatalogSource extends CatalogSourceBase {

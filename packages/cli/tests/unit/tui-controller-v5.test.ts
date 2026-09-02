@@ -36,6 +36,25 @@ function source(
   };
 }
 
+function sourceDetail(
+  id: string,
+  options: { autoCheck?: boolean; primary?: boolean; explicitRef?: string } = {},
+): NonNullable<TuiStatusLoadResult['sourceDetails']>[number] {
+  return {
+    id,
+    type: 'git',
+    primary: options.primary ?? id === 'official',
+    autoCheck: options.autoCheck ?? true,
+    locationSummary: `https://example.test/${id}.git`,
+    refPolicy: options.explicitRef ? 'explicit' : 'cliChannel',
+    ...(options.explicitRef ? { explicitRef: options.explicitRef } : {}),
+    pluginCount: 0,
+    sourceIdentity: `identity:${id}`,
+    requestedRef: options.explicitRef ?? 'refs/heads/catalog/latest',
+    configDigest: 'sha256:config',
+  };
+}
+
 function status(options: {
   sources?: StatusV7Payload['catalog']['sources'];
   targets?: StatusV7Payload['targets'];
@@ -1661,6 +1680,272 @@ describe('TUI Catalog freshness session overlay', () => {
     });
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
     expect(controller.getPluginOverview('official/demo')?.aggregateStatus).not.toBe('unavailable');
+    expect(controller.listSources()).toContainEqual(expect.objectContaining({
+      id: 'official', state: 'ready',
+    }));
+    expect(controller.snapshot.viewModel?.home).toMatchObject({
+      issueCount: 0,
+      unavailableSourceCount: 0,
+      catalogRecoveryCount: 0,
+    });
+    controller.dispose();
+  });
+
+  it('automatically checks only enabled sources but keeps manual checks available', async () => {
+    const sources = [source('official', { primary: true }), source('team', { primary: false })];
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId,
+      state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ sources }),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [
+          sourceDetail('official', { primary: true }),
+          sourceDetail('team', { primary: false, autoCheck: false }),
+        ],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official']);
+    expect(controller.getSourceOverview('team').detail?.autoCheck).toBe(false);
+
+    await controller.recheckCatalogSource('team');
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official', 'team']);
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
+    controller.dispose();
+  });
+
+  it('aborts and invalidates a running automatic check when autoCheck is disabled', async () => {
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    let aborted = false;
+    const enabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official')],
+    };
+    const disabled = {
+      ...enabled,
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(enabled)
+      .mockResolvedValueOnce(disabled)
+      .mockResolvedValueOnce(enabled);
+    const probeCatalogFreshness = vi.fn((_sourceId, _options, signal: AbortSignal) => {
+      signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+      return pending.promise;
+    });
+    const controller = new TuiController(dependencies({ loadStatus, probeCatalogFreshness }));
+
+    await controller.load();
+    await nextTurn();
+    await controller.reloadCatalog({ sourceId: 'official' });
+    expect(aborted).toBe(true);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('queues a newly enabled source when it has not been attempted in this session', async () => {
+    const initial = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const enabled = {
+      ...initial,
+      sourceDetails: [sourceDetail('official')],
+    };
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(enabled),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('marks an exact commit source fixed without calling its automatic provider', async () => {
+    const probeCatalogFreshness = vi.fn();
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
+    controller.dispose();
+  });
+
+  it.each([
+    ['disabled', sourceDetail('official', { autoCheck: false })],
+    ['fixed', sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+  ])('keeps a manual probe running across a same-descriptor reload for a %s source', async (
+    _label,
+    detail,
+  ) => {
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    let aborted = false;
+    const loaded = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [detail],
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn((_sourceId, _options, signal) => {
+        signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return pending.promise;
+      }),
+    }));
+
+    await controller.load();
+    const manual = controller.recheckCatalogSource('official');
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('checking');
+    await controller.reloadCatalog({ sourceId: 'official' });
+    expect(aborted).toBe(false);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('checking');
+
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await manual;
+    expect(controller.getCatalogFreshness('official')?.state).toBe('updateAvailable');
+    controller.dispose();
+  });
+
+  it('marks a 64-character commit without Active fixed and never calls its automatic provider', async () => {
+    const probeCatalogFreshness = vi.fn();
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [sourceDetail('official', { explicitRef: 'b'.repeat(64) })],
+        catalogGenerations: [{
+          sourceId: 'official', sourceType: 'git', state: 'activationRequired',
+        }],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(controller.getCatalogGeneration('official')?.active).toBeUndefined();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
+    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it('applies a confirmed autoCheck disable before the final status reload completes', async () => {
+    const finalLoad = deferred<TuiStatusLoadResult>();
+    const automatic = deferred<{ sourceId: string; state: 'current' }>();
+    let aborted = false;
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const enabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official')],
+    };
+    const disabled = {
+      ...enabled,
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(enabled).mockImplementationOnce(() => finalLoad.promise),
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+      probeCatalogFreshness: vi.fn((_sourceId, _options, signal) => {
+        signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return automatic.promise;
+      }),
+    }));
+    await controller.load();
+    await nextTurn();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'update', sourceId: 'official',
+      update: { autoCheck: false },
+    });
+
+    const executing = controller.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    expect(aborted).toBe(true);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    finalLoad.resolve(disabled);
+    await expect(executing).resolves.toMatchObject({ state: 'succeeded' });
+    automatic.resolve({ sourceId: 'official', state: 'current' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    controller.dispose();
+  });
+
+  it('queues a confirmed autoCheck enable before a delayed final reload fails', async () => {
+    const finalLoad = deferred<TuiStatusLoadResult>();
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const disabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(disabled).mockImplementationOnce(() => finalLoad.promise),
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+      probeCatalogFreshness,
+    }));
+    await controller.load();
+    await nextTurn();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'update', sourceId: 'official',
+      update: { autoCheck: true },
+    });
+
+    const executing = controller.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    finalLoad.reject(new Error('final load failed'));
+    await expect(executing).resolves.toMatchObject({
+      state: 'blocked', code: 'tuiStateReloadFailed', writeMayHaveCompleted: true,
+    });
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
     controller.dispose();
   });
 
@@ -3407,6 +3692,39 @@ describe('TUI v4 Review safety', () => {
     await controller.executeOperation(review.reviewToken);
     expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'sourceMutation' });
     expect(vi.mocked(controller.dependencies.loadStatus).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('describes an autoCheck-only Review as a settings save with unchanged Active and store', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'update',
+      sourceId: 'official',
+      update: { autoCheck: false },
+      changes: [{ title: '自动检查更新', before: '开启', after: '关闭' }],
+    });
+
+    expect(review).toMatchObject({
+      title: '保存自动检查设置',
+      description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+      primaryLabel: '保存设置',
+      changes: [expect.objectContaining({
+        title: '自动检查更新', description: '开启 → 关闭',
+      })],
+    });
+    expect(JSON.stringify(review)).not.toContain('source sync');
+    controller.dispose();
   });
 
   it('rebuilds a source Review with zero writes when config evidence becomes stale', async () => {

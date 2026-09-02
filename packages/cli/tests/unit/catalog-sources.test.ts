@@ -22,13 +22,16 @@ import {
   CatalogSourcesConfigConflictError,
   createDefaultCatalogSourcesConfig,
   isDefaultOfficialCatalogSource,
+  isCatalogSourceAutoCheckEnabled,
   readCatalogSourcesConfig,
   readCatalogSourcesConfigSnapshot,
   removeCatalogSource,
+  recoverInvalidCatalogSourcesConfig,
   replaceCatalogSourcesConfig,
   resolveCatalogSourceRef,
   resolveCatalogSourcesConfigPath,
   setPrimaryCatalogSource,
+  setCatalogSourcesBackupBeforeOpenHookForTests,
   updateCatalogSource,
   validateCatalogSourcesConfig,
   type CatalogSourcesConfig,
@@ -57,12 +60,42 @@ async function createTwoSourceConfig(pathSourceRoot: string): Promise<CatalogSou
 }
 
 afterEach(async () => {
+  setCatalogSourcesBackupBeforeOpenHookForTests(undefined);
   setAtomicConfigBeforeRenameHookForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
 describe('catalog sources config v2', () => {
+  it('normalizes effective autoCheck and rejects non-boolean values', () => {
+    const official = createDefaultCatalogSourcesConfig().sources[0]!;
+    const omitted = validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{ ...official }],
+    }).sources[0]!;
+    const enabled = validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{ ...official, autoCheck: true }],
+    }).sources[0]!;
+    const disabled = validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{ ...official, autoCheck: false }],
+    }).sources[0]!;
+
+    expect(omitted).not.toHaveProperty('autoCheck');
+    expect(enabled).not.toHaveProperty('autoCheck');
+    expect(disabled).toHaveProperty('autoCheck', false);
+    expect(calculateCatalogSourcesConfigDigest({ schemaVersion: 2, sources: [{ ...official, autoCheck: true }] }))
+      .toBe(calculateCatalogSourcesConfigDigest({ schemaVersion: 2, sources: [official] }));
+    expect(isCatalogSourceAutoCheckEnabled(omitted)).toBe(true);
+    expect(isCatalogSourceAutoCheckEnabled(enabled)).toBe(true);
+    expect(isCatalogSourceAutoCheckEnabled(disabled)).toBe(false);
+    expect(() => validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{ ...official, autoCheck: 'false' }],
+    })).toThrow('autoCheck');
+  });
+
   it('validates the source union, ID, primary invariant, and stable ID order', () => {
     const config = validateCatalogSourcesConfig({
       schemaVersion: 2,
@@ -263,6 +296,70 @@ describe('catalog sources config v2', () => {
       .toThrow();
   });
 
+  it('preserves and switches autoCheck for Git and path sources', async () => {
+    const sourceRoot = await makePathSourceRoot();
+    const withPath = await addCatalogSource(createDefaultCatalogSourcesConfig(), {
+      id: 'local',
+      type: 'path',
+      primary: false,
+      path: sourceRoot,
+      autoCheck: false,
+    }, path.dirname(sourceRoot));
+    expect(withPath.sources.find((source) => source.id === 'local')).toHaveProperty('autoCheck', false);
+    const enabledPath = await updateCatalogSource(withPath, 'local', { autoCheck: true }, path.dirname(sourceRoot));
+    expect(enabledPath.sources.find((source) => source.id === 'local')).not.toHaveProperty('autoCheck');
+    expect(enabledPath.sources.find((source) => source.id === 'official')).not.toHaveProperty('autoCheck');
+    const disabledGit = await updateCatalogSource(enabledPath, 'official', { autoCheck: false }, path.dirname(sourceRoot));
+    expect(disabledGit.sources.find((source) => source.id === 'official')).toHaveProperty('autoCheck', false);
+    const updatedGit = await updateCatalogSource(disabledGit, 'official', {
+      url: 'https://example.test/catalog.git',
+    }, path.dirname(sourceRoot));
+    expect(updatedGit.sources.find((source) => source.id === 'official')).toHaveProperty('autoCheck', false);
+    expect(setPrimaryCatalogSource(updatedGit, 'local').sources.find((source) => source.id === 'official'))
+      .toHaveProperty('autoCheck', false);
+  });
+
+  it('updates path autoCheck after the source directory is removed without resolving the path again', async () => {
+    const sourceRoot = await makePathSourceRoot();
+    const withPath = await addCatalogSource(createDefaultCatalogSourcesConfig(), {
+      id: 'local',
+      type: 'path',
+      primary: false,
+      path: sourceRoot,
+    }, path.dirname(sourceRoot));
+    const storedSource = withPath.sources.find((source) => source.id === 'local');
+    if (!storedSource || storedSource.type !== 'path') throw new Error('Expected path source fixture.');
+    const storedPath = storedSource.path;
+    await fs.remove(sourceRoot);
+
+    const updated = await updateCatalogSource(
+      withPath,
+      'local',
+      { autoCheck: false },
+      path.dirname(sourceRoot),
+    );
+
+    expect(updated.sources.find((source) => source.id === 'local')).toMatchObject({
+      type: 'path',
+      path: storedPath,
+      autoCheck: false,
+    });
+  });
+
+  it('includes autoCheck in config digest but excludes it from source identity and fingerprint', async () => {
+    const enabled = createDefaultCatalogSourcesConfig();
+    const disabled = validateCatalogSourcesConfig({
+      schemaVersion: 2,
+      sources: [{ ...enabled.sources[0], autoCheck: false }],
+    });
+    expect(calculateCatalogSourcesConfigDigest(disabled))
+      .not.toBe(calculateCatalogSourcesConfigDigest(enabled));
+    expect(await calculateCatalogSourceIdentity(disabled.sources[0]!))
+      .toBe(await calculateCatalogSourceIdentity(enabled.sources[0]!));
+    expect(calculateCatalogSourceConfigFingerprint(disabled.sources[0]!))
+      .toBe(calculateCatalogSourceConfigFingerprint(enabled.sources[0]!));
+  });
+
   it('maps cliChannel refs from an explicitly injected CLI version', () => {
     expect(resolveCatalogSourceRef({ type: 'cliChannel' }, '1.2.3')).toBe(CATALOG_LATEST_REF);
     expect(resolveCatalogSourceRef({ type: 'cliChannel' }, '1.2.3-beta.4')).toBe(CATALOG_BETA_REF);
@@ -331,6 +428,94 @@ describe('catalog sources config v2', () => {
     });
     const entries = await fs.readdir(isolation.layout.awHomeDir);
     expect(entries.filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+  });
+});
+
+describe('catalog sources config recovery', () => {
+  it.each([
+    ['malformed JSON', Buffer.from('{"private":', 'utf8')],
+    ['schema-invalid JSON', Buffer.from('{"schemaVersion":2,"sources":[]}', 'utf8')],
+  ])('backs up exact bytes and restores only the config for %s', async (_name, originalBytes) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const storePath = path.join(isolation.env.AW_HOME!, 'catalog-store', 'fixture.bin');
+    await fs.outputFile(configPath, originalBytes);
+    await fs.outputFile(statePath, '{"state":"unchanged"}\n');
+    await fs.outputFile(storePath, 'store-unchanged');
+
+    const result = await recoverInvalidCatalogSourcesConfig({ env: isolation.env });
+
+    expect(result.snapshot.config).toEqual(createDefaultCatalogSourcesConfig());
+    expect(result.snapshot.materialized).toBe(true);
+    expect(path.isAbsolute(result.backupPath)).toBe(false);
+    expect(result.backupPath).toMatch(/^catalog-sources\.json\.broken-\d{8}T\d{9}Z-[0-9a-f-]+$/u);
+    await expect(fs.readFile(path.join(isolation.env.AW_HOME!, result.backupPath)))
+      .resolves.toEqual(originalBytes);
+    await expect(fs.readJson(configPath)).resolves.toEqual(createDefaultCatalogSourcesConfig());
+    await expect(fs.readFile(statePath, 'utf8')).resolves.toBe('{"state":"unchanged"}\n');
+    await expect(fs.readFile(storePath, 'utf8')).resolves.toBe('store-unchanged');
+  });
+
+  it.each(['missing', 'valid'] as const)('rejects a %s target as stale without a backup', async (kind) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    if (kind === 'valid') await fs.outputJson(configPath, createDefaultCatalogSourcesConfig());
+
+    await expect(recoverInvalidCatalogSourcesConfig({ env: isolation.env }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigRecoveryStale' });
+    expect((await fs.readdir(isolation.env.AW_HOME!)).filter((entry) => entry.includes('.broken-')))
+      .toEqual([]);
+  });
+
+  it('rejects an unsafe target without creating a backup', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    const outside = path.join(isolation.layout.fixtureCwd, 'unsafe-catalog-sources.json');
+    await fs.outputFile(outside, '{');
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.symlink(outside, configPath);
+
+    await expect(recoverInvalidCatalogSourcesConfig({ env: isolation.env }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigRecoveryFailed' });
+    expect((await fs.readdir(isolation.env.AW_HOME!)).filter((entry) => entry.includes('.broken-')))
+      .toEqual([]);
+    await expect(fs.readFile(outside, 'utf8')).resolves.toBe('{');
+  });
+
+  it('keeps the exact backup when atomic replacement fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    const originalBytes = Buffer.from('{broken-config', 'utf8');
+    await fs.outputFile(configPath, originalBytes);
+    setAtomicConfigBeforeRenameHookForTests(async () => {
+      throw new Error('injected recovery replacement failure');
+    });
+
+    await expect(recoverInvalidCatalogSourcesConfig({ env: isolation.env }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigRecoveryFailed' });
+    await expect(fs.readFile(configPath)).resolves.toEqual(originalBytes);
+    const backups = (await fs.readdir(isolation.env.AW_HOME!))
+      .filter((entry) => entry.includes('.broken-'));
+    expect(backups).toHaveLength(1);
+    await expect(fs.readFile(path.join(isolation.env.AW_HOME!, backups[0]!)))
+      .resolves.toEqual(originalBytes);
+  });
+
+  it('does not replace the config when exclusive backup creation fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    const originalBytes = Buffer.from('{broken-config', 'utf8');
+    await fs.outputFile(configPath, originalBytes);
+    setCatalogSourcesBackupBeforeOpenHookForTests(async () => {
+      throw Object.assign(new Error('injected backup failure'), { code: 'EIO' });
+    });
+
+    await expect(recoverInvalidCatalogSourcesConfig({ env: isolation.env }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigRecoveryFailed' });
+    await expect(fs.readFile(configPath)).resolves.toEqual(originalBytes);
+    expect((await fs.readdir(isolation.env.AW_HOME!)).filter((entry) => entry.includes('.broken-')))
+      .toEqual([]);
   });
 });
 
