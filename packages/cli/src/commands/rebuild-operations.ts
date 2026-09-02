@@ -351,8 +351,7 @@ function validateDesiredTarget(target: DesiredTarget): void {
   let nativeCount = 0;
   for (const component of target.ownedComponents) {
     validateOwnerIdentity(component.identity);
-    const crossScopeLegacyNativeSkill = target.requiresNative
-      && platform === 'codex'
+    const crossScopeLegacyNativeSkill = platform === 'codex'
       && component.kind === 'skill-directory'
       && !desiredComponentSet.has(component)
       && sharedNativeSkillKeys.has(component.identity.artifactKey)

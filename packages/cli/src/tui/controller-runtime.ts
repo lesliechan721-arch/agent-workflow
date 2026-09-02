@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution, PluginConfigSchema, Scope } from '../types.js';
+import type { CatalogSourceResolution, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
 import {
   statusCommandV7,
   statusTargetIntent,
@@ -216,6 +216,21 @@ export function configAffectedStatusTargets(
   return [...affected.values()]
     .sort((left, right) => `${left.platform}\0${left.scope}`
       .localeCompare(`${right.platform}\0${right.scope}`, 'en'));
+}
+
+function configSharedNativeRenderTargets(
+  plugin: PluginMeta,
+  changedKeys: readonly string[],
+): Array<{ id: string; skillKey: string; refreshKeys: string[] }> {
+  const changed = new Set(changedKeys);
+  return (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+    target.platform === 'codex'
+      && target.target === 'codex.skill'
+      && target.delivery.mode === 'codex-native'
+      && target.skillKey
+      && target.refreshKeys.some((key) => changed.has(key))
+      ? [{ id: target.id, skillKey: target.skillKey, refreshKeys: [...target.refreshKeys] }]
+      : []);
 }
 
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
@@ -1052,6 +1067,12 @@ export function createTuiControllerDependencies(
           return {
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+            sharedNativeRenderTargets: intent.kind === 'configSave'
+              ? configSharedNativeRenderTargets(plugin, [
+                  ...Object.keys(intent.updates ?? {}),
+                  ...(intent.removeKeys ?? []),
+                ])
+              : [],
           };
         },
       });
@@ -1087,6 +1108,9 @@ export function createTuiControllerDependencies(
           schemaIdentity: selected.source.manifestDigest,
           storeDigest: digest({ exists: store.exists, values: store.values }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+          ...(selected.sharedNativeRenderTargets.length > 0
+            ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
+            : {}),
         },
       };
       catalogOperationByEvidence.set(evidence, catalogOperation);
@@ -1198,6 +1222,12 @@ export function createTuiControllerDependencies(
             return {
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+              sharedNativeRenderTargets: intent.kind === 'configSave'
+                ? configSharedNativeRenderTargets(plugin, [
+                    ...Object.keys(intent.updates ?? {}),
+                    ...(intent.removeKeys ?? []),
+                  ])
+                : [],
             };
           },
         });
@@ -1317,9 +1347,15 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
-        schemaIdentity: selected.source.manifestDigest,
+        ...('manifestDigest' in selected.source
+          ? { schemaIdentity: selected.source.manifestDigest }
+          : {}),
         storeDigest: digest({ exists: store.exists, values: store.values }),
         affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
+        ...('sharedNativeRenderTargets' in selected
+          && selected.sharedNativeRenderTargets.length > 0
+          ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
+          : {}),
       };
     }
     if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
@@ -1567,6 +1603,12 @@ export function createTuiControllerDependencies(
               ...(projectStore ? { project: projectStore.values } : {}),
             },
             effectiveRawValues: effectiveRaw.values,
+            sharedNativeRefreshKeys: new Set(
+              (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+                target.target === 'codex.skill' && target.delivery.mode === 'codex-native'
+                  ? target.refreshKeys
+                  : []),
+            ),
           });
         },
       });

@@ -1261,6 +1261,35 @@ describe('TUI v4 router and ViewModel', () => {
     expect(JSON.stringify(view.issues)).not.toContain('private-token');
   });
 
+  it('presents shared native render drift as a recoverable sync warning', () => {
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [target({
+          scope: 'project',
+          state: 'partial',
+          errors: [{
+            code: 'codexSharedNativeRenderDrift',
+            message: 'stable technical detail',
+            severity: 'warning',
+          }],
+        })],
+      }),
+      pluginSummaries: summaries(['official', 'demo']),
+    });
+
+    const issue = view.issues[0]!;
+    expect(issue).toMatchObject({
+      title: expect.stringContaining('共享 native 待同步'),
+      explanation: expect.stringContaining('个人默认已变化'),
+      impact: [expect.stringContaining('不是 cache 损坏')],
+      technicalDetails: [{
+        code: 'codexSharedNativeRenderDrift',
+        message: '状态检查报告了这个安全错误代码。',
+      }],
+    });
+    expect(JSON.stringify(issue)).not.toContain('corrupt');
+  });
+
   it('classifies issue routes from typed status and config evidence without message matching', () => {
     const view = buildTuiViewModel({
       status: status({
@@ -3454,6 +3483,77 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes.filter((change) => change.group === 'configImpact').map((change) => change.title))
       .toEqual(labels.map((label) => `重新应用 ${label}`));
   });
+
+  it.each([
+    [false, ['共享 Codex native render 待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
+    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新共享 Codex native 插件会影响所有启用项目。'],
+  ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
+    const evidence: OperationEvidence = {
+      ...baseEvidence,
+      config: {
+        scope: 'user',
+        schemaIdentity: 'sha256:schema',
+        storeDigest: 'sha256:store',
+        affectedTargets: [
+          { platform: 'codex', scope: 'user' },
+          { platform: 'codex', scope: 'project' },
+        ],
+        sharedNativeRenderTargets: [
+          { id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'] },
+          { id: 'subagent', skillKey: 'codex-subagent-guide', refreshKeys: ['subagentWait'] },
+        ],
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    }));
+
+    const review = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
+      projectLayer: 'shared', apply, updates: { exploreWait: 15 },
+      changes: [{ key: 'exploreWait', title: '等待窗口', before: '10', after: '15' }],
+    });
+
+    expect(review.changes.filter((change) => change.group === 'configImpact')
+      .map((change) => change.title)).toEqual(impactTitles);
+    expect(review.changes).toContainEqual(expect.objectContaining({ description }));
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      title: 'project Agent role 继续按当前项目配置', kind: 'keep',
+    }));
+  });
+
+  it.each([false, true])(
+    'only promises to save shared native config without visible targets when apply=%s',
+    async (apply) => {
+      const evidence: OperationEvidence = {
+        ...baseEvidence,
+        config: {
+          scope: 'user',
+          schemaIdentity: 'sha256:schema',
+          storeDigest: 'sha256:store',
+          affectedTargets: [],
+          sharedNativeRenderTargets: [
+            { id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'] },
+            { id: 'subagent', skillKey: 'codex-subagent-guide', refreshKeys: ['subagentWait'] },
+          ],
+        },
+      };
+      const controller = new TuiController(dependencies({
+        captureEvidence: vi.fn().mockResolvedValue(evidence),
+      }));
+
+      const review = await controller.buildOperationReview({
+        kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
+        projectLayer: 'shared', apply, updates: { exploreWait: 15 },
+        changes: [{ key: 'exploreWait', title: '等待窗口', before: '10', after: '15' }],
+      });
+
+      expect(review.changes.filter((change) => change.group === 'configImpact'))
+        .toEqual([{ kind: 'keep', group: 'configImpact', title: '当前没有可见安装；只保存设置' }]);
+      expect(JSON.stringify(review.changes)).not.toContain('共享 Codex native render 待同步');
+      expect(JSON.stringify(review.changes)).not.toContain('重新生成');
+    },
+  );
 
   it('passes the canonical plugin identity to the write executor', async () => {
     const executeIntent = vi.fn().mockResolvedValue({ ok: true });

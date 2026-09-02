@@ -195,6 +195,7 @@ export interface OperationEvidence {
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+    sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
   };
   sourceWrite?: {
     configDigest: string;

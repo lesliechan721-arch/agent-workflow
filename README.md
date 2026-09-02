@@ -218,12 +218,12 @@ Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使�
 
 ```bash
 aw config list codex-enhance -s user
-aw config set codex-enhance standardModel gpt-5.6-terra -s user
-aw config set codex-enhance standardReasoningEffort high -s user
-aw config set codex-enhance minimumInitialWaitMinutes 15 -s user
+aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
+aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
 ```
 
-具体配置项和行为见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
+两个等待字段只允许写入个人默认。已有可见安装时，保存但不应用会形成可恢复的 shared native render drift；`--apply --yes` 会重新生成共享 Skill，并影响所有启用该插件的项目。project profile 只改变项目 Agent role。具体配置项和真实 Codex App qualification gap 见 [`codex-enhance` README](plugins/codex-enhance/README.md)。
 
 ## 安装范围
 

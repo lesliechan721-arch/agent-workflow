@@ -288,6 +288,7 @@ export interface ConfigFieldViewModel {
   min?: number;
   max?: number;
   advanced: boolean;
+  sharedNativeRender?: boolean;
 }
 
 export interface ConfigGroupViewModel {
@@ -1011,6 +1012,8 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
       && !target.reasons.some((error) => error.code === 'artifactCollision'
         || error.dependencyPluginId !== undefined && error.rootIssueId !== undefined)) continue;
     const codes = new Set(target.reasons.map((error) => error.code));
+    const sharedNativeRenderDrift = target.state === 'needsSync'
+      && codes.has('codexSharedNativeRenderDrift');
     const dependencyCodes = [
       'dependencyMissing',
       'dependencyNotReady',
@@ -1188,7 +1191,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeRenderDrift ? '共享 native 待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1201,12 +1204,16 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           ? dependencyPluginId
             ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
             : '当前依赖检查不能安全通过。'
+          : sharedNativeRenderDrift
+          ? '个人默认已变化。共享 Codex native Skill 尚未重新生成。'
           : target.state === 'needsSync'
           ? '必要内容缺失，插件可能不能稳定运行。'
           : bundleUnavailable
             ? '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : '当前目标不能安全分类为正常安装。',
-        impact: [root.category === 'artifactCollision'
+        impact: [sharedNativeRenderDrift
+          ? '运行同步可恢复；这不是 cache 损坏。'
+          : root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable
           ? '可以清理可信的 AW 现场；这不表示来源整体可用。'
@@ -1841,6 +1848,7 @@ export function buildConfigGroups(options: {
   rawValues?: Record<string, PluginConfigValue>;
   rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
+  sharedNativeRefreshKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
   const effectiveEntryByKey = new Map(
@@ -1973,6 +1981,7 @@ export function buildConfigGroups(options: {
       ...(schema.type === 'number' && schema.validation?.minimum !== undefined ? { min: schema.validation.minimum } : {}),
       ...(schema.type === 'number' && schema.validation?.maximum !== undefined ? { max: schema.validation.maximum } : {}),
       advanced: false,
+      sharedNativeRender: options.sharedNativeRefreshKeys?.has(key) === true,
     };
   };
   const assigned = new Set<string>();
@@ -2038,6 +2047,7 @@ export function buildConfigPage(options: {
   rawValues?: Record<string, PluginConfigValue>;
   rawLayerValues?: Partial<Record<Scope, Record<string, PluginConfigValue>>>;
   effectiveRawValues?: Record<string, PluginConfigValue>;
+  sharedNativeRefreshKeys?: ReadonlySet<string>;
 }): ConfigPageViewModel {
   return {
     pluginId: options.pluginId,

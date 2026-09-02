@@ -4216,11 +4216,15 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('▌');
   });
 
-  it('hides user-only fields from project editing and deletion', async () => {
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('shows shared native user-only fields as project read-only guidance at $columns x $rows', async (size) => {
     const page = configPage();
     const userOnly = page.groups[0]!.fields[0]!;
-    userOnly.title = '仅个人字段';
+    userOnly.title = '共享等待窗口';
     userOnly.writable = false;
+    userOnly.sharedNativeRender = true;
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
     });
@@ -4229,10 +4233,13 @@ describe('ConsoleAppV4', () => {
       pluginId: page.pluginId,
       layer: { scope: 'project', projectLayer: 'shared' },
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
 
-    expect(instance.lastFrame()).not.toContain('仅个人字段');
+    const frame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
+    expect(frame).toContain('个人默认控制共享native');
+    expect(frame).toContain('项目不可改');
+    expect(frame).toContain('影响所有项目');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).not.toMatchObject({
       name: 'configFieldAction',

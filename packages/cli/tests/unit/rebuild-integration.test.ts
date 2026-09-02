@@ -59,6 +59,7 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
+import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from '../../src/utils/codex-native-render-receipt.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -2421,7 +2422,7 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each(['codex-enhance'])(
-    'installs %s dynamic user Skills as AW-owned Codex extensions',
+    'installs %s Skills in one shared native plugin while roles remain AW-owned',
     async (pluginName) => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
@@ -2489,6 +2490,36 @@ describe('rebuild adapter integration', () => {
         context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
         scriptTimeoutMs: 30_000,
       });
+      const legacySkills = [
+        {
+          root: path.join(isolation.layout.codexHomeDir, 'skills'),
+          skillKey: 'codex-explore',
+          scope: 'user' as const,
+        },
+        {
+          root: path.join(isolation.layout.fixtureCwd, '.agents', 'skills'),
+          skillKey: 'codex-subagent-guide',
+          scope: 'project' as const,
+        },
+      ];
+      for (const legacy of legacySkills) {
+        const skillRoot = path.join(legacy.root, legacy.skillKey);
+        await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Legacy AW delivery\n');
+        await writeSkillOwnerMarker({
+          skillRoot,
+          allowedRoot: legacy.root,
+          identity: {
+            owner: 'agent-workflows',
+            sourceId: 'team',
+            sourceIdentity: TEST_SOURCE_IDENTITY,
+            pluginId: `team/${pluginName}`,
+            plugin: pluginName,
+            artifactKey: legacy.skillKey,
+            platform: 'codex',
+            scope: legacy.scope,
+          },
+        });
+      }
       const target = await integration.buildTarget({
         plugin,
         platform: 'codex',
@@ -2501,15 +2532,41 @@ describe('rebuild adapter integration', () => {
         command: 'install', target, driver: integration.driver,
       });
       expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-      const skillArtifact = target.artifacts.find((artifact) =>
-        artifact.target === 'codex.skill' && artifact.state !== 'disabled');
-      expect(skillArtifact?.artifactKey).toBeTruthy();
-      expect(skillArtifact!.path).toBe(path.join(
+      for (const legacy of legacySkills) {
+        await expect(fs.pathExists(path.join(legacy.root, legacy.skillKey))).resolves.toBe(false);
+      }
+      expect(target.artifacts.some((artifact) => artifact.target === 'codex.skill')).toBe(false);
+      expect(target.artifacts.filter((artifact) => artifact.target === 'codex.agentRole'))
+        .toHaveLength(8);
+      const cacheRoot = path.join(
         isolation.layout.codexHomeDir,
-        'skills',
-        skillArtifact!.artifactKey!,
-      ));
-      expect(await fs.pathExists(path.join(skillArtifact!.path, 'SKILL.md'))).toBe(true);
+        'plugins',
+        'cache',
+        'aw',
+        pluginName,
+        plugin.manifest.version,
+      );
+      for (const skillKey of ['codex-explore', 'codex-subagent-guide']) {
+        expect(await fs.pathExists(path.join(
+          cacheRoot,
+          'codex',
+          'skills',
+          skillKey,
+          'SKILL.md',
+        ))).toBe(true);
+        expect(await fs.pathExists(path.join(
+          isolation.layout.codexHomeDir,
+          'skills',
+          skillKey,
+        ))).toBe(false);
+      }
+      await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
+        .resolves.toMatchObject({
+          targets: [
+            { id: 'codex-explore-skill', skillKey: 'codex-explore' },
+            { id: 'codex-subagent-guide-skill', skillKey: 'codex-subagent-guide' },
+          ],
+        });
     },
   );
 
@@ -3936,7 +3993,7 @@ describe('rebuild adapter integration', () => {
       .resolves.toBe(false);
     const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
     await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
-      .resolves.toBe(true);
+      .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'codex-clarifier')))
       .resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillsRoot, 'requirements-clarifier')))

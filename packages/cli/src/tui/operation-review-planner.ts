@@ -438,6 +438,33 @@ function reviewChanges(
   const removeKeys = new Set(intent.removeKeys ?? []);
   const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
   if (intent.changes) {
+    const hasAffectedCodexTarget = evidence?.config?.affectedTargets.some(
+      (target) => target.platform === 'codex',
+    ) ?? false;
+    const sharedNativeTargets = hasAffectedCodexTarget
+      ? evidence?.config?.sharedNativeRenderTargets ?? []
+      : [];
+    const sharedNativeImpact: OperationReviewChange[] = sharedNativeTargets.length === 0
+      ? []
+      : intent.apply
+        ? [
+            {
+              kind: 'change', group: 'configImpact',
+              title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} 动态 Skill`,
+              description: '配置来源为个人默认；更新共享 Codex native 插件会影响所有启用项目。',
+            },
+            { kind: 'keep', group: 'preserved', title: '保留当前 user/project activation' },
+            { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
+          ]
+        : [
+            {
+              kind: 'warning', group: 'configImpact',
+              title: '共享 Codex native render 待同步',
+              description: '个人默认已保存；动态 Skill 尚未重新生成。',
+            },
+            { kind: 'keep', group: 'preserved', title: '当前 native 插件和 activation 保持不变' },
+            { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
+          ];
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
@@ -454,7 +481,10 @@ function reviewChanges(
           : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
       })),
-      ...(intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
+      ...sharedNativeImpact,
+      ...(sharedNativeTargets.length > 0
+        ? []
+        : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
             kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))

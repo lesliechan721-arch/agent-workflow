@@ -3259,6 +3259,12 @@ export function ConsoleAppV4(props: {
       const activeGroup = activeTab?.kind === 'group'
         ? currentConfigPage.groups.find((group) => group.id === activeTab.id)
         : undefined;
+      const projectSharedNativeFields = route.layer.scope === 'project'
+        ? (activeGroup?.fields ?? []).filter((field) => field.sharedNativeRender && !field.writable)
+        : [];
+      if (projectSharedNativeFields.length > 0) {
+        description += ' 等待设置由个人默认控制共享 native；当前项目不可改。更改影响所有项目。';
+      }
       const mutableLayer = {
         scope: route.layer.scope as Scope,
       };
@@ -3307,7 +3313,14 @@ export function ConsoleAppV4(props: {
       const operationActions: ActionItem[] = readonly ? [] : [
         ...buildAllowedConfigActions(dirty).map((action): ActionItem => ({
           label: action.label,
-          description: action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
+          description: route.layer.scope === 'user'
+            && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
+              currentConfigPage.groups.flatMap((group) => group.fields)
+                .some((field) => field.key === key && field.sharedNativeRender))
+            ? action.apply
+              ? '保存并重新生成共享 Codex native Skill；影响所有启用项目'
+              : '只保存个人默认；共享 Codex native render 将待同步'
+            : action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
           run: () => beginConfigSave(action.apply),
         })),
         ...(currentConfigPage.storedCount > 0 ? [{

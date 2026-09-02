@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
   "marketplace": {
     "category": "workflow",
@@ -516,7 +516,11 @@
           "project"
         ],
         "target": "codex.skill",
-        "delivery": { "mode": "aw-extension" },
+        "delivery": {
+          "mode": "codex-native",
+          "identity": "shared",
+          "renderProfile": "user"
+        },
         "projectManagedKind": "skill",
         "states": [
           "present"
@@ -607,7 +611,11 @@
           "project"
         ],
         "target": "codex.skill",
-        "delivery": { "mode": "aw-extension" },
+        "delivery": {
+          "mode": "codex-native",
+          "identity": "shared",
+          "renderProfile": "user"
+        },
         "projectManagedKind": "skill",
         "states": [
           "present"

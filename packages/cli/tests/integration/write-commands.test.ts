@@ -37,11 +37,13 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
+import { fileURLToPath } from 'node:url';
 import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
   git,
 } from '../helpers/catalog-source-fixture.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -143,6 +145,7 @@ function createCodexNativeTestRuntime(
   codexVersion = '0.200.0',
 ) {
   const installed = new Set<string>();
+  const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
   const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
@@ -174,16 +177,27 @@ function createCodexNativeTestRuntime(
       const pluginName = pluginId.slice(0, separator);
       const marketplaceName = pluginId.slice(separator + 1);
       installed.add(pluginId);
+      const marketplacePluginRoot = path.join(
+        marketplaceRoots.get(marketplaceName)!,
+        'plugins',
+        pluginName,
+      );
+      const pluginVersion = String((await fs.readJson(path.join(
+        marketplacePluginRoot,
+        '.agents-plugin',
+        'plugin.json',
+      ))).version);
+      installedVersions.set(pluginId, pluginVersion);
       const cacheRoot = path.join(
         isolation.env.AW_CODEX_HOME!,
         'plugins',
         'cache',
         marketplaceName,
         pluginName,
-        '1.0.0',
+        pluginVersion,
       );
       await fs.copy(
-        path.join(marketplaceRoots.get(marketplaceName)!, 'plugins', pluginName),
+        marketplacePluginRoot,
         cacheRoot,
         { overwrite: true },
       );
@@ -194,6 +208,7 @@ function createCodexNativeTestRuntime(
       const pluginId = pluginArgs[2]!;
       const separator = pluginId.lastIndexOf('@');
       installed.delete(pluginId);
+      installedVersions.delete(pluginId);
       await fs.remove(path.join(
         isolation.env.AW_CODEX_HOME!,
         'plugins',
@@ -221,7 +236,7 @@ function createCodexNativeTestRuntime(
             installed: true,
             enabled: user.snapshot.plugins[pluginId]?.enabled === true
               || (exact && project.snapshot.plugins[pluginId]?.enabled === true),
-            version: '1.0.0',
+            version: installedVersions.get(pluginId) ?? '1.0.0',
           })),
           available: [],
         }),
@@ -8728,5 +8743,179 @@ describe('five namespaced write commands', () => {
       'SKILL.md',
     ), 'utf8')).resolves.toBe('native mixed');
 
+  });
+
+  it('runs codex-enhance shared Skills and project roles through public commands', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
+    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
+    await fs.copy(
+      path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
+      path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
+    );
+    await fs.copy(sourcePluginRoot, path.join(authoringRoot, 'plugins', 'codex-enhance'));
+    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
+      schemaVersion: 1,
+      kind: 'catalog',
+      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+    });
+    const manifest = await fs.readJson(path.join(
+      sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
+    ));
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: runtime.nativeCliRunner,
+      });
+      return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
+    };
+
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
+      '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    const projectInstall = await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+    ]);
+    expect(projectInstall, JSON.stringify(projectInstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const cacheRoot = path.join(
+      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+    );
+    const marketplaceRoot = path.join(
+      isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
+    );
+    const skillPaths = ['codex-explore', 'codex-subagent-guide'].map((skill) =>
+      path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
+    for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
+    for (const skill of ['codex-explore', 'codex-subagent-guide']) {
+      await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'skills', skill)))
+        .resolves.toBe(false);
+    }
+    const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
+    const initialReceipt = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    expect(initialReceipt.targets.map((target) => target.skillKey)).toEqual([
+      'codex-explore', 'codex-subagent-guide',
+    ]);
+    const projectStore = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(projectStore.values.standardProfile).toEqual({
+      model: 'project-standard', reasoningEffort: 'max',
+    });
+    await expect(fs.readFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents',
+      'aw-codex-enhance-codex-explore-standard.toml',
+    ), 'utf8')).resolves.toContain('model = "project-standard"');
+    for (const [index, skillPath] of skillPaths.entries()) {
+      await expect(fs.readFile(skillPath)).resolves.toEqual(initialSkillBytes[index]);
+    }
+    const projectOnlyConfig = await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ));
+    const projectOnlyUserConfig = await readCodexConfigFile(path.join(
+      isolation.env.AW_CODEX_HOME!, 'config.toml',
+    ));
+    expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
+    expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+
+    const userInstall = await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
+    ]);
+    expect(userInstall, JSON.stringify(userInstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.pathExists(path.join(
+      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore-standard.toml',
+    ))).resolves.toBe(true);
+    const userUninstall = await runPublic([
+      'uninstall', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
+    ]);
+    expect(userUninstall, JSON.stringify(userUninstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    expect(await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+
+    const receiptBeforeWaitSave = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    );
+    const skillsBeforeWaitSave = await Promise.all(
+      skillPaths.map((skillPath) => fs.readFile(skillPath)),
+    );
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '15',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
+      .resolves.toEqual(receiptBeforeWaitSave);
+    for (const [index, skillPath] of skillPaths.entries()) {
+      await expect(fs.readFile(skillPath)).resolves.toEqual(skillsBeforeWaitSave[index]);
+    }
+    const statusBinRoot = await writeStatusSystemCodexPackage(
+      path.join(isolation.layout.fixtureCwd, 'codex-enhance-status-prefix'),
+      '0.200.0',
+    );
+    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
+    const status = await statusCommandV7({
+      plugins: ['team/codex-enhance'], platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: statusBinRoot },
+      cliVersion: '1.0.0', json: true,
+    }).finally(() => setNativeCliRunnerOverrideForTests(null));
+    expect(status.payload.targets[0], JSON.stringify(status.payload.targets[0], null, 2))
+      .toMatchObject({ state: 'needsSync' });
+    expect(statusTargetSharedNative(status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '20', '--apply',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })] },
+    });
+    const storeAfterReject = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(storeAfterReject.values.exploreMinimumInitialWaitMinutes).toBe(15);
+
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '20', '--apply', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const replacedReceipt = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    expect(replacedReceipt.configDigest).not.toBe(initialReceipt.configDigest);
+    await expect(fs.readFile(path.join(
+      marketplaceRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md',
+    ), 'utf8')).resolves.toContain('至少 `20` 分钟');
+    const [userConfig, projectConfig] = await Promise.all([
+      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
+    ]);
+    expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    expect(projectConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
   });
 });
