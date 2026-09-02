@@ -177,6 +177,33 @@ export async function withCatalogGenerationStateTransaction<T>(options: {
   return output.result;
 }
 
+export async function replaceInvalidCatalogGenerationState(options: {
+  state: CatalogGenerationStateFileV1;
+  env?: NodeJS.ProcessEnv;
+  beforeReplace?: (next: CatalogGenerationStateFileV1) => Promise<void> | void;
+}): Promise<void> {
+  const env = options.env ?? process.env;
+  const filePath = resolveCatalogGenerationStatePath(env);
+  try {
+    await readStateAt(filePath);
+  } catch (error) {
+    if (!(error instanceof CatalogGenerationError)
+      || error.code !== 'catalogGenerationStateInvalid') throw error;
+    const next = validateCatalogGenerationState(options.state);
+    await options.beforeReplace?.(next);
+    await atomicReplaceConfigFile({
+      filePath,
+      allowedRoot: resolveAwHome(env),
+      content: `${JSON.stringify(next, null, 2)}\n`,
+    });
+    return;
+  }
+  throw new CatalogGenerationError({
+    code: 'catalogGenerationReviewStale',
+    message: 'Catalog generation state changed after review. Review it again.',
+  });
+}
+
 export async function removeCatalogSourceGenerationState(options: {
   sourceId: string;
   env?: NodeJS.ProcessEnv;

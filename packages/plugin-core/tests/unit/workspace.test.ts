@@ -15,6 +15,7 @@ import {
   resolveCatalogWorkspaceOutputPath,
   validateCatalogSnapshotComplete,
   validatePublishedCatalogSnapshot,
+  validatePublishedCatalogSnapshotMetadata,
 } from '../../src/workspace.js'
 import { validateMarketplaceSourceMeta } from '../../src/manifest-contract.js'
 import { createAwPluginRequirementsReceipt } from '../../src/aw-capabilities.js'
@@ -364,7 +365,7 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
-  it('builds a complete schema 6 snapshot for an empty plugin inventory', async () => {
+  it('builds a complete schema 7 snapshot for an empty plugin inventory', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     let adapterCalls = 0
@@ -378,7 +379,7 @@ describe('AW Catalog Workspace v1', () => {
     expect(built.pluginNames).toEqual([])
     await expect(fs.readdir(path.join(built.outputRoot, 'plugins'))).resolves.toEqual([])
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 6, catalogVersion: '0.1.0', entries: [] },
+      manifest: { schemaVersion: 7, catalogVersion: '0.1.0', entries: [] },
     })
   })
 
@@ -431,7 +432,7 @@ describe('AW Catalog Workspace v1', () => {
       adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
     })
     await expect(validateCatalogSnapshotComplete(built.outputRoot)).resolves.toMatchObject({
-      manifest: { schemaVersion: 6, catalogVersion: '0.1.0' },
+      manifest: { schemaVersion: 7, catalogVersion: '0.1.0' },
     })
     const agentsPath = path.join(built.outputRoot, '.agents', 'plugins', 'marketplace.json')
     const validMarketplace = await fs.readFile(agentsPath)
@@ -503,7 +504,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '1'.repeat(40),
     })
     await expect(fs.pathExists(path.join(first.outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false)
-    await fs.writeJson(path.join(first.outputRoot, 'plugin-release-ledger.json'), { schemaVersion: 2, records: [] })
+    await fs.writeJson(path.join(first.outputRoot, 'plugin-release-ledger.json'), { schemaVersion: 3, records: [] })
     await expect(validateCatalogSnapshotComplete(first.outputRoot)).rejects.toThrow(/root layout/u)
     await fs.remove(path.join(first.outputRoot, 'plugin-release-ledger.json'))
 
@@ -541,6 +542,39 @@ describe('AW Catalog Workspace v1', () => {
     )
   })
 
+  it('validates published history metadata without requiring Plugin bundles', async () => {
+    const root = await createWorkspace()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const manifest = await writeSourcePlugin(root)
+    const prepared = await preparePublishedCatalogWorkspace({
+      workspaceRoot: root,
+      sourceHead: '3'.repeat(40),
+      adapter: { build: ({ outputRoot }) => writeBundle(outputRoot, manifest) },
+    })
+    const metadataRoot = await createWorkspace()
+    for (const relative of ['.aw-generated.json', 'catalog-manifest.json']) {
+      await fs.copy(path.join(prepared.outputRoot, relative), path.join(metadataRoot, relative))
+    }
+
+    await expect(validatePublishedCatalogSnapshotMetadata(metadataRoot)).resolves.toMatchObject({
+      workspaceIdentity: (await fs.readJson(path.join(prepared.outputRoot, '.aw-generated.json'))).workspaceIdentity,
+      manifest: {
+        release: { state: 'published', sourceHead: '3'.repeat(40) },
+        entries: [{ name: 'atomic-plugin', version: '0.1.0' }],
+      },
+    })
+
+    const manifestPath = path.join(metadataRoot, 'catalog-manifest.json')
+    const historyManifest = await fs.readJson(manifestPath) as Record<string, unknown>
+    const entries = historyManifest.entries as Array<Record<string, unknown>>
+    await fs.writeJson(manifestPath, {
+      ...historyManifest,
+      entries: [{ ...entries[0], source: './plugins/different-plugin' }],
+    }, { spaces: 2 })
+    await expect(validatePublishedCatalogSnapshotMetadata(metadataRoot))
+      .rejects.toThrow(/source.*does not match its plugin bundle/u)
+  })
+
   it('rejects a schema 5 publication parent before building the next snapshot', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
@@ -563,7 +597,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: '5'.repeat(40),
       previousSnapshotRoot: first.outputRoot,
       adapter: { build: async () => { buildCalled = true } },
-    })).rejects.toThrow(/schemaVersion: expected 6/u)
+    })).rejects.toThrow(/schemaVersion: expected 7/u)
     expect(buildCalled).toBe(false)
   })
 
@@ -669,7 +703,7 @@ describe('AW Catalog Workspace v1', () => {
     })
   })
 
-  it('increments beta versions from only the adjacent manifest and resets on a higher source base', async () => {
+  it('increments beta versions from the recent entry and resets on a higher source base', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
@@ -817,7 +851,7 @@ describe('AW Catalog Workspace v1', () => {
     })).rejects.toThrow(/must not be lower than previous/u)
   })
 
-  it('forgets a removed Plugin before it is added again', async () => {
+  it('retains a removed Plugin history entry when it is added again', async () => {
     const root = await createWorkspace()
     await initializeCatalogWorkspace({ workspaceRoot: root })
     const manifest = await writeSourcePlugin(root)
@@ -827,6 +861,7 @@ describe('AW Catalog Workspace v1', () => {
       sourceHead: 'e'.repeat(40),
       adapter,
     })
+    const firstValidation = await validatePublishedCatalogSnapshot(first.outputRoot)
     await fs.remove(path.join(root, 'plugins', 'atomic-plugin'))
     await mutateCatalogWorkspaceVersion(root, { version: '0.2.0' })
     const removed = await preparePublishedCatalogWorkspace({
@@ -838,20 +873,18 @@ describe('AW Catalog Workspace v1', () => {
 
     const readded = await writeSourcePlugin(root)
     await mutateCatalogWorkspaceVersion(root, { version: '0.3.0' })
-    const third = await preparePublishedCatalogWorkspace({
+    await expect(preparePublishedCatalogWorkspace({
       workspaceRoot: root,
       sourceHead: '0'.repeat(40),
       previousSnapshotRoot: removed.outputRoot,
+      historicalPluginEntries: [firstValidation.manifest.entries[0]!],
       adapter: {
         async build({ outputRoot }) {
           await writeBundle(outputRoot, readded)
           await fs.writeFile(path.join(outputRoot, 'changed.txt'), 'new history')
         },
       },
-    })
-    await expect(validatePublishedCatalogSnapshot(third.outputRoot)).resolves.toMatchObject({
-      manifest: { entries: [{ version: '0.1.0' }] },
-    })
+    })).rejects.toThrow(/maps to different content/u)
   })
 
   it('rejects a bundle runtime requirements receipt that does not match its manifest', async () => {

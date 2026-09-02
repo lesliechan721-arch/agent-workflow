@@ -10,14 +10,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   visible: new Set<string>(),
   states: new Map<string, 'present' | 'partial' | 'absent' | 'error'>(),
-  discover: vi.fn(),
-  inspect: vi.fn(),
+  status: vi.fn(),
 }));
 
-vi.mock('../../src/commands/rebuild-integration.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/commands/rebuild-integration.js')>(),
-  discoverRebuildTargetNames: mocks.discover,
-  inspectRebuildTarget: mocks.inspect,
+vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
+  statusCommandV7: mocks.status,
 }));
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
@@ -191,14 +189,32 @@ function createReinstallMock(options: {
 beforeEach(() => {
   mocks.visible.clear();
   mocks.states.clear();
-  mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) =>
-    mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : []);
-  mocks.inspect.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => ({
-    target: {},
-    inspection: {
-      state: mocks.states.get(locationKey(options.platform, options.scope)) ?? 'present',
-      components: [],
-      errors: [],
+  mocks.status.mockImplementation(async (options: { scope?: Scope }) => ({
+    payload: {
+      targets: [...mocks.visible].flatMap((key) => {
+        const [platform, scope] = key.split(':') as [PlatformName, Scope];
+        if (options.scope && options.scope !== scope) return [];
+        const ownership = mocks.states.get(key) ?? 'present';
+        return [{
+          pluginName: 'configurable-plugin',
+          pluginId: 'configurable-plugin',
+          sourceId: 'fixture',
+          sourceIdentity: 'identity:fixture',
+          platform,
+          scope,
+          cwd: '/workspace',
+          state: ownership === 'present' ? 'ready'
+            : ownership === 'partial' ? 'needsSync'
+              : ownership === 'error' ? 'blocked' : 'absent',
+          components: [
+            { kind: 'intent', key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: [scope], relation: 'root' } },
+            { kind: 'ownership', key: 'fixture', state: ownership },
+          ],
+          reasons: [],
+          recoveryActions: [],
+        }];
+      }),
     },
   }));
 });
@@ -636,6 +652,43 @@ describe('config write full reinstall apply', () => {
     expect(receipt.warnings.join('\n')).toContain('其它项目');
   });
 
+  it('expands one Status target into both desired pure-native scopes', async () => {
+    const fixture = await createFixture();
+    mocks.status.mockResolvedValueOnce({
+      payload: {
+        targets: [{
+          pluginName: fixture.plugin.manifest.name,
+          pluginId: fixture.plugin.manifest.name,
+          sourceId: 'fixture',
+          sourceIdentity: 'identity:fixture',
+          platform: 'codex',
+          scope: 'user',
+          cwd: fixture.cwd,
+          state: 'ready',
+          components: [{
+            kind: 'intent', key: 'desired', state: 'desired',
+            metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+          }],
+          reasons: [],
+          recoveryActions: [],
+        }],
+      },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'user']);
+    expect(reinstall).toHaveBeenCalledTimes(2);
+  });
+
   it('preserves a failed dependency and skipped root from the normal reinstall receipt', async () => {
     const fixture = await createFixture('root');
     fixture.plugin.sourceId = 'team';
@@ -686,13 +739,14 @@ describe('config write full reinstall apply', () => {
     expect(reinstall.mock.calls[0]?.[2].awHomeMutationToken).toBeDefined();
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'failed',
+      overallState: 'partial',
       targetResults: [
         expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/leaf' }), state: 'failed' }),
         expect.objectContaining({
           target: expect.objectContaining({ pluginId: 'team/root' }),
           action: 'skipped',
           state: 'failed',
+          errorCode: 'dependencyInstallFailed',
         }),
       ],
     });
@@ -747,13 +801,33 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
-  it('does not probe Codex for a Claude-only manifest when Codex CLI is unavailable', async () => {
+  it('syncs a desired target when all of its actual content is absent', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    mocks.states.set('codex:user', 'absent');
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.applySkippedReason).toBeUndefined();
+    expect(reinstall).toHaveBeenCalledOnce();
+    expect(reinstall).toHaveBeenCalledWith(
+      ['configurable-plugin'],
+      expect.objectContaining({ platform: 'codex', scope: 'user' }),
+      expect.any(Object),
+    );
+  });
+
+  it('applies only the desired Claude target for a Claude-only manifest', async () => {
     const fixture = await createFixture('configurable-plugin', { products: ['CLAUDE'] });
     mocks.visible.add('claude:user');
-    mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => {
-      if (options.platform === 'codex') throw new Error('Codex CLI is unavailable');
-      return mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : [];
-    });
     const reinstall = createReinstallMock();
 
     const receipt = await applyPluginConfigWrite({
@@ -766,17 +840,12 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(mocks.discover.mock.calls.every((call) => call[0].platform === 'claude')).toBe(true);
     expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
   });
 
-  it('does not probe Claude for a Codex-only manifest when Claude CLI is unavailable', async () => {
+  it('applies only the desired Codex target for a Codex-only manifest', async () => {
     const fixture = await createFixture('configurable-plugin', { products: ['CODEX'] });
     mocks.visible.add('codex:user');
-    mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => {
-      if (options.platform === 'claude') throw new Error('Claude CLI is unavailable');
-      return mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : [];
-    });
     const reinstall = createReinstallMock();
 
     const receipt = await applyPluginConfigWrite({
@@ -789,7 +858,6 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(mocks.discover.mock.calls.every((call) => call[0].platform === 'codex')).toBe(true);
     expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['codex']);
   });
 
@@ -867,8 +935,7 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(mocks.discover).toHaveBeenCalledTimes(2);
-    expect(mocks.discover.mock.calls.map((call) => call[0].scope)).toEqual(['user', 'project']);
+    expect(mocks.status).toHaveBeenCalledOnce();
     expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['user', 'project']);
   });
 
@@ -889,8 +956,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.applySkippedReason).toBe('noVisibleTarget');
-    expect(mocks.discover.mock.calls.every((call) => call[0].nativeFailureMode === 'ignore')).toBe(true);
-    expect(mocks.inspect).not.toHaveBeenCalled();
+    expect(mocks.status).toHaveBeenCalledOnce();
     expect(reinstall).not.toHaveBeenCalled();
   });
 
@@ -929,7 +995,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.configWrite).toBe('succeeded');
-    expect(receipt.overallState).toBe('failed');
+    expect(receipt.overallState).toBe('partial');
     expect(receipt.targetResults.map((entry) => entry.state).sort()).toEqual(['completed', 'failed']);
     expect(stored.values).toEqual({ mode: 'fast' });
     expect(observedModes).toEqual(['fast', 'fast']);
@@ -1004,7 +1070,7 @@ describe('config write full reinstall apply', () => {
     releaseFirst();
 
     const [firstReceipt, secondReceipt] = await Promise.all([first, second]);
-    expect(firstReceipt).toMatchObject({ configWrite: 'succeeded', overallState: 'failed' });
+    expect(firstReceipt).toMatchObject({ configWrite: 'succeeded', overallState: 'partial' });
     expect(secondReceipt.configWrite).toBe('succeeded');
     expect(observed).toEqual(['A:fast', 'B:safe']);
     expect(firstReinstall).toHaveBeenCalledOnce();
@@ -1034,7 +1100,7 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'failed',
+      overallState: 'partial',
       targetResults: [expect.objectContaining({
         state: 'failed',
         message: 'target failed',
@@ -1079,7 +1145,7 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'failed',
+      overallState: 'partial',
       deleted: true,
       removedKeys: ['mode'],
     });
@@ -1087,7 +1153,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).toHaveBeenCalledOnce();
   });
 
-  it('keeps an unknown catalog plugin store when reset cannot validate the plugin', async () => {
+  it('resets a located store without a catalog plugin or schema', async () => {
     const fixture = await createFixture('unknown-plugin');
     await writePluginConfigStore({
       pluginName: 'unknown-plugin',
@@ -1106,7 +1172,7 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
       reinstallCommandImpl: reinstall,
-    })).rejects.toThrow('sourceMissing');
+    })).resolves.toMatchObject({ deleted: true, removedKeys: ['secret'] });
 
     expect(reinstall).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -1114,7 +1180,7 @@ describe('config write full reinstall apply', () => {
       scope: 'user',
       cwd: fixture.cwd,
       env: fixture.env,
-    }))).toMatchObject({ exists: true, values: { secret: 'kept-only-in-store' } });
+    }))).toMatchObject({ exists: false, values: {} });
   });
 
   it.each([

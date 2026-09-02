@@ -5,7 +5,6 @@ import type {
   PlatformSelection,
   Scope,
   StatusCommandOptions,
-  UpgradeCommandOptions,
 } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 
@@ -30,10 +29,6 @@ export type RawCommandOptions = {
 export type RawInstallCommandOptions = RawCommandOptions & {
   dependencyScope?: string | string[];
   dependencyScopeOverrides?: InstallCommandOptions['dependencyScopeOverrides'];
-};
-
-export type RawUpgradeCommandOptions = RawCommandOptions & {
-  all?: boolean;
 };
 
 export type RawStatusCommandOptions = {
@@ -64,6 +59,12 @@ export type RawReinstallCommandOptions = RawCommandOptions & {
 export interface ReinstallCommandOptions extends InstallCommandOptions {
   json?: boolean;
 }
+
+export interface RawConfigProjectLayerOptions {
+  scope?: string;
+  local?: boolean;
+}
+
 
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
 export const SCRIPT_TIMEOUT_MAX_MS = 300000;
@@ -189,6 +190,18 @@ export function resolveConfigReadResolution(scope: unknown): ConfigReadResolutio
   return scope === undefined ? CONFIG_READ_DEFAULT_RESOLUTION : parseScopeValue(scope);
 }
 
+export function resolveConfigProjectLayer(
+  raw: RawConfigProjectLayerOptions = {},
+): 'shared' | 'local' {
+  if (!raw.local) {
+    return 'shared';
+  }
+  if (raw.scope !== 'project') {
+    throw new Error('`--local` 只能与 `--scope project` 一起使用。');
+  }
+  return 'local';
+}
+
 function resolveCwd(rawCwd: string | undefined, defaultCwd: string | undefined): string {
   return rawCwd ?? defaultCwd ?? process.cwd();
 }
@@ -236,21 +249,6 @@ export function normalizeInstallCommandOptions(
     ...(normalizedDependencyScopeOverrides.length > 0
       ? { dependencyScopeOverrides: normalizedDependencyScopeOverrides }
       : {}),
-  };
-}
-
-export function normalizeUpgradeCommandOptions(
-  raw: RawUpgradeCommandOptions = {},
-  defaults: NormalizeCommandOptionsDefaults = {},
-): UpgradeCommandOptions {
-  return {
-    ...normalizeCommandOptions(raw, {
-      defaultScope: 'user',
-      requirePlatform: true,
-      missingPlatformMessage: 'upgrade 命令需要显式指定 `--platform codex|claude|both`。',
-      ...defaults,
-    }),
-    all: raw.all,
   };
 }
 

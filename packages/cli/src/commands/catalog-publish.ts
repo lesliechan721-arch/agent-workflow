@@ -3,24 +3,31 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { validatePublishedCatalogSnapshot } from '@lesliechan721/aw-plugin-core';
+import {
+  GENERATED_OUTPUT_MARKER_FILENAME,
+  validatePublishedCatalogSnapshot,
+} from '@lesliechan721/aw-plugin-core';
 
 import {
   disposeCatalogPublicationInspection,
+  inspectCatalogPublicationApplyContext,
   inspectCatalogPublicationLiveContext,
   parseRemoteRefs,
   prepareCatalogPublicationInspection,
   publicationGit,
   publicationGitExit,
   readCatalogPublicationBranchState,
+  type CatalogPublicationApplyContext,
   type CatalogPublicationLiveContext,
   type CatalogPublicationPreparation,
 } from './catalog-publication-inspection.js';
 import {
+  catalogPublicationDirectoryPath,
   catalogPublicationJournalPath,
   catalogPublicationPlanDigest,
   catalogPublicationRepositoryName,
   catalogPublicationRepositoryPath,
+  findCatalogPublicationJournalByPlanDigest,
   readCatalogPublicationJournal,
   writeCatalogPublicationJournalAtomic,
   type CatalogPublicationDescriptor,
@@ -88,7 +95,11 @@ export interface CatalogPublishApplyReceipt extends CatalogPublishReceiptBase {
   state: 'published';
   commit: string;
   reconciliation: 'already-published' | 'already-remote' | 'atomic' | 'tag' | 'branch';
+  warnings: string[];
 }
+
+export const CATALOG_PUBLICATION_CLEANUP_WARNING =
+  'Catalog publication succeeded, but local repository cleanup did not complete. Retry apply with the same plan digest.';
 
 interface ReceiptResolution {
   workspaceRootResolvedFrom?: CatalogWorkspaceResolvedFrom;
@@ -111,6 +122,20 @@ interface PublicationTargetOptions {
   env: NodeJS.ProcessEnv;
 }
 
+interface PersistPlanHooks {
+  beforeFinalRename?: (paths: {
+    temporaryStateRoot: string;
+    finalStateRoot: string;
+  }) => Promise<void>;
+}
+
+interface ApplyPlanHooks {
+  beforeRemoteWrite?: () => Promise<void>;
+  removeRepository?: (repositoryPath: string) => Promise<void>;
+}
+
+type CatalogPublicationReceiptContext = CatalogPublicationLiveContext | CatalogPublicationApplyContext;
+
 async function assertPublicationStatePathSafe(workspaceRoot: string): Promise<void> {
   for (const candidate of [
     path.join(workspaceRoot, '.aw'),
@@ -124,8 +149,24 @@ async function assertPublicationStatePathSafe(workspaceRoot: string): Promise<vo
   }
 }
 
+async function assertPublicationDirectorySafe(directoryPath: string, catalogVersion: string): Promise<boolean> {
+  let stats;
+  try {
+    stats = await fs.lstat(directoryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Catalog ${catalogVersion} publication state directory is damaged. Increase the Catalog version.`);
+  }
+  return true;
+}
+
 function sameDescriptor(left: CatalogPublicationDescriptor, right: CatalogPublicationDescriptor): boolean {
-  return catalogPublicationPlanDigest(left) === catalogPublicationPlanDigest(right);
+  const comparisonCommit = '0'.repeat(40);
+  return catalogPublicationPlanDigest(left, comparisonCommit)
+    === catalogPublicationPlanDigest(right, comparisonCommit);
 }
 
 async function clearWorktree(repositoryRoot: string): Promise<void> {
@@ -149,16 +190,25 @@ async function assertSnapshotBinding(
   descriptor: CatalogPublicationDescriptor,
   display: CatalogPublicationDisplayMetadata,
 ): Promise<void> {
-  const [stats, validation] = await Promise.all([
+  const markerPath = path.join(snapshotRoot, GENERATED_OUTPUT_MARKER_FILENAME);
+  const [stats, markerStats] = await Promise.all([
     fs.lstat(snapshotRoot),
-    validatePublishedCatalogSnapshot(snapshotRoot),
+    fs.lstat(markerPath),
   ]);
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     throw new Error('Prepared Catalog snapshot must be a regular local directory.');
   }
+  if (!markerStats.isFile() || markerStats.isSymbolicLink()) {
+    throw new Error('Prepared Catalog snapshot marker must be a regular local file.');
+  }
+  const [marker, validation] = await Promise.all([
+    fs.readJson(markerPath) as Promise<Record<string, unknown>>,
+    validatePublishedCatalogSnapshot(snapshotRoot),
+  ]);
   const release = validation.manifest.release;
   if (
-    validation.manifest.catalogVersion !== display.catalogVersion
+    marker.workspaceIdentity !== descriptor.workspaceIdentity
+    || validation.manifest.catalogVersion !== display.catalogVersion
     || validation.manifest.channel !== display.channel
     || validation.manifest.entries.length !== display.pluginCount
     || validation.snapshotDigest !== descriptor.snapshotDigest
@@ -189,6 +239,19 @@ function assertLiveContextMatchesDescriptor(
     || context.remoteIdentityDigest !== descriptor.remote.identityDigest
     || context.branch !== descriptor.branch
     || context.tag !== descriptor.tag
+  ) {
+    throw new Error('Catalog publication identity changed. Increase the Catalog version and create a new plan.');
+  }
+}
+
+function assertApplyContextMatchesDescriptor(
+  context: CatalogPublicationApplyContext,
+  descriptor: CatalogPublicationDescriptor,
+): void {
+  if (
+    context.workspaceIdentity !== descriptor.workspaceIdentity
+    || context.remoteIdentityDigest !== descriptor.remote.identityDigest
+    || context.branch !== descriptor.branch
   ) {
     throw new Error('Catalog publication identity changed. Increase the Catalog version and create a new plan.');
   }
@@ -435,37 +498,75 @@ async function validatePersistentRepository(
   }
 }
 
-async function persistRepository(
+async function persistPublicationState(
   preparation: CatalogPublicationPreparation,
-  finalPath: string,
+  finalStateRoot: string,
   journal: CatalogPublicationJournal,
-): Promise<void> {
-  const parent = path.dirname(finalPath);
+  hooks: PersistPlanHooks,
+): Promise<CatalogPublicationJournal> {
+  const parent = path.dirname(finalStateRoot);
   await fs.ensureDir(parent);
-  const staging = path.join(parent, `.${path.basename(finalPath)}.${crypto.randomUUID()}.tmp`);
+  const staging = path.join(parent, `.${path.basename(finalStateRoot)}.${crypto.randomUUID()}.tmp`);
+  const repositoryPath = path.join(staging, catalogPublicationRepositoryName());
+  const journalPath = path.join(staging, 'journal.json');
   try {
     await publicationGit(preparation.repositoryRoot, [
       'remote', 'remove', 'publish',
     ], preparation.env, 'temporaryRepositoryFailed', 'Could not seal the publication repository.');
-    await fs.copy(preparation.repositoryRoot, staging, { dereference: false, errorOnExist: true });
-    await validatePersistentRepository(staging, journal, preparation.env);
-    await fs.rename(staging, finalPath);
+    await fs.ensureDir(staging);
+    await fs.copy(preparation.repositoryRoot, repositoryPath, { dereference: false, errorOnExist: true });
+    await writeCatalogPublicationJournalAtomic(journalPath, journal);
+    const persisted = await readCatalogPublicationJournal(journalPath, journal.display.catalogVersion);
+    if (!persisted || persisted.planDigest !== journal.planDigest) {
+      throw new Error(`Catalog ${journal.display.catalogVersion} publication state could not be verified.`);
+    }
+    await validatePersistentRepository(repositoryPath, persisted, preparation.env);
+    await hooks.beforeFinalRename?.({
+      temporaryStateRoot: staging,
+      finalStateRoot,
+    });
+    try {
+      await fs.rename(staging, finalStateRoot);
+      return persisted;
+    } catch (error) {
+      if (!(await fs.pathExists(finalStateRoot))) throw error;
+      if (!(await assertPublicationDirectorySafe(finalStateRoot, journal.display.catalogVersion))) throw error;
+      const existing = await readCatalogPublicationJournal(
+        path.join(finalStateRoot, 'journal.json'),
+        journal.display.catalogVersion,
+      );
+      if (!existing) {
+        throw new Error(
+          `Catalog ${journal.display.catalogVersion} publication state is incomplete. Increase the Catalog version.`,
+        );
+      }
+      if (existing.planDigest !== journal.planDigest) {
+        throw new Error(
+          `Catalog ${journal.display.catalogVersion} already has a different publication plan. Increase the Catalog version.`,
+        );
+      }
+      if (existing.state !== 'published') {
+        await validatePersistentRepository(
+          path.join(finalStateRoot, catalogPublicationRepositoryName()),
+          existing,
+          preparation.env,
+        );
+      }
+      return existing;
+    }
   } finally {
     await fs.remove(staging);
   }
 }
 
 function receiptBase(
-  context: CatalogPublicationLiveContext,
+  context: CatalogPublicationReceiptContext,
   journal: CatalogPublicationJournal,
   resolution: ReceiptResolution,
 ): CatalogPublishReceiptBase {
   const repositoryPath = journal.repository === null
     ? null
-    : path.join(path.dirname(catalogPublicationJournalPath(
-      context.catalogWorkspaceRoot,
-      journal.display.catalogVersion,
-    )), journal.repository);
+    : catalogPublicationRepositoryPath(context.catalogWorkspaceRoot, journal.display.catalogVersion);
   return {
     ok: true,
     workspaceRoot: context.catalogWorkspaceRoot,
@@ -501,11 +602,13 @@ async function readExistingPlan(
   resolution: ReceiptResolution,
 ): Promise<CatalogPublishPlanReceipt | null> {
   await assertPublicationStatePathSafe(context.catalogWorkspaceRoot);
+  const stateRoot = catalogPublicationDirectoryPath(context.catalogWorkspaceRoot, context.catalogVersion);
   const journalPath = catalogPublicationJournalPath(context.catalogWorkspaceRoot, context.catalogVersion);
   const repositoryPath = catalogPublicationRepositoryPath(context.catalogWorkspaceRoot, context.catalogVersion);
+  const stateRootExists = await assertPublicationDirectorySafe(stateRoot, context.catalogVersion);
   const journal = await readCatalogPublicationJournal(journalPath, context.catalogVersion);
   if (!journal) {
-    if (await fs.pathExists(repositoryPath)) {
+    if (stateRootExists) {
       throw new Error(`Catalog ${context.catalogVersion} pending publication journal is missing. Increase the Catalog version.`);
     }
     return null;
@@ -542,19 +645,19 @@ async function persistNewPlan(options: {
   descriptor: CatalogPublicationDescriptor;
   snapshotRoot: string;
   resolution: ReceiptResolution;
-}): Promise<CatalogPublishPlanReceipt> {
+} & PersistPlanHooks): Promise<CatalogPublishPlanReceipt> {
   const { preparation, descriptor, snapshotRoot, resolution } = options;
   await assertPublicationStatePathSafe(preparation.catalogWorkspaceRoot);
   if (!sameDescriptor(preparation.descriptor, descriptor)) {
     throw new Error('Catalog publication descriptor changed during preparation.');
   }
   const display = displayFromPreparation(preparation);
+  const stateRoot = catalogPublicationDirectoryPath(preparation.catalogWorkspaceRoot, display.catalogVersion);
   const journalPath = catalogPublicationJournalPath(preparation.catalogWorkspaceRoot, display.catalogVersion);
-  const repositoryPath = catalogPublicationRepositoryPath(preparation.catalogWorkspaceRoot, display.catalogVersion);
   if (!(await publicationGitExit(preparation.repoRoot, ['check-ignore', '-q', journalPath], preparation.env))) {
     throw new Error('Catalog publish state under .aw/publish must be ignored by Git. Add .aw/ to .gitignore.');
   }
-  if (await fs.pathExists(journalPath) || await fs.pathExists(repositoryPath)) {
+  if (await fs.pathExists(stateRoot)) {
     throw new Error(
       `Catalog ${display.catalogVersion} already has publication state. Use its existing plan or increase the Catalog version.`,
     );
@@ -563,7 +666,7 @@ async function persistNewPlan(options: {
     throw new Error(`Remote Catalog tag ${descriptor.tag} already exists. Increase the Catalog version.`);
   }
   const expectedCommit = await createPublicationCommit(preparation, descriptor, snapshotRoot, display);
-  const context = await inspectCatalogPublicationLiveContext({
+  let context = await inspectCatalogPublicationLiveContext({
     workspaceRoot: preparation.catalogWorkspaceRoot,
     ...(descriptor.remote.name === null ? { remoteUrl: preparation.pushUrl } : { remote: descriptor.remote.name }),
     branch: descriptor.branch,
@@ -581,30 +684,45 @@ async function persistNewPlan(options: {
     throw new Error(`Catalog ${display.catalogVersion} remote changed during plan creation. Increase the Catalog version.`);
   }
   const journal: CatalogPublicationJournal = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: 'prepared',
-    planDigest: catalogPublicationPlanDigest(descriptor),
+    planDigest: catalogPublicationPlanDigest(descriptor, expectedCommit),
     descriptor,
     expectedCommit,
-    repository: catalogPublicationRepositoryName(display.catalogVersion),
+    repository: catalogPublicationRepositoryName(),
     display,
     preparedAt: new Date().toISOString(),
   };
-  await persistRepository(preparation, repositoryPath, journal);
-  try {
-    await writeCatalogPublicationJournalAtomic(journalPath, journal, true);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new Error(
-        `Catalog ${display.catalogVersion} publication journal already exists. Use its plan or increase the Catalog version.`,
+  const persisted = await persistPublicationState(preparation, stateRoot, journal, {
+    beforeFinalRename: async (paths) => {
+      await options.beforeFinalRename?.(paths);
+      context = await inspectCatalogPublicationLiveContext({
+        workspaceRoot: preparation.catalogWorkspaceRoot,
+        ...(descriptor.remote.name === null
+          ? { remoteUrl: preparation.pushUrl }
+          : { remote: descriptor.remote.name }),
+        branch: descriptor.branch,
+        env: preparation.env,
+      });
+      assertLiveContextMatchesDescriptor(context, descriptor);
+      const finalRefs = await remoteRefState(
+        context.repoRoot,
+        context.pushUrl,
+        context.branchRef,
+        context.tagRef,
+        context.env,
       );
-    }
-    throw error;
-  }
+      if (finalRefs.branchCommit !== descriptor.parent || finalRefs.tagPresent) {
+        throw new Error(
+          `Catalog ${display.catalogVersion} remote changed during plan creation. Increase the Catalog version.`,
+        );
+      }
+    },
+  });
   return {
     command: 'catalog:publish:plan',
-    state: 'prepared',
-    ...receiptBase(context, journal, resolution),
+    state: persisted.state,
+    ...receiptBase(context, persisted, resolution),
   };
 }
 
@@ -615,17 +733,18 @@ export async function persistCatalogPublicationPlan(options: {
   workspaceRootResolvedFrom?: CatalogWorkspaceResolvedFrom;
   remoteResolvedFrom?: CatalogRemoteResolvedFrom;
   branchResolvedFrom?: CatalogBranchResolvedFrom;
-}): Promise<CatalogPublishPlanReceipt> {
+} & PersistPlanHooks): Promise<CatalogPublishPlanReceipt> {
   return persistNewPlan({
     preparation: options.preparation,
     descriptor: options.descriptor ?? options.preparation.descriptor,
     snapshotRoot: options.snapshotRoot ?? options.preparation.prepared.outputRoot,
     resolution: options,
+    beforeFinalRename: options.beforeFinalRename,
   });
 }
 
 export async function prepareCatalogPublicationPlan(
-  options: PublicationTargetOptions & ReceiptResolution,
+  options: PublicationTargetOptions & ReceiptResolution & PersistPlanHooks,
 ): Promise<CatalogPublishPlanReceipt> {
   const context = await inspectCatalogPublicationLiveContext(options);
   const existing = await readExistingPlan(context, options);
@@ -660,6 +779,7 @@ export async function prepareCatalogPublicationPlan(
       descriptor: preparation.descriptor,
       snapshotRoot: preparation.prepared.outputRoot,
       resolution: options,
+      beforeFinalRename: options.beforeFinalRename,
     });
   } finally {
     await disposeCatalogPublicationInspection(preparation);
@@ -671,7 +791,7 @@ async function markUncertain(
   journal: Exclude<CatalogPublicationJournal, { state: 'published' }>,
 ): Promise<CatalogPublicationJournal> {
   const uncertain: CatalogPublicationJournal = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: 'uncertain',
     planDigest: journal.planDigest,
     descriptor: journal.descriptor,
@@ -685,86 +805,132 @@ async function markUncertain(
   return uncertain;
 }
 
+interface AuthorizedPublicationPlan {
+  context: CatalogPublicationApplyContext;
+  journalPath: string;
+  repositoryPath: string;
+  tagRef: string;
+  journal: CatalogPublicationJournal;
+}
+
+async function readAuthorizedPublicationPlan(
+  options: PublicationTargetOptions & { expectedPlanDigest: string },
+): Promise<AuthorizedPublicationPlan> {
+  await assertPublicationStatePathSafe(options.workspaceRoot);
+  const located = await findCatalogPublicationJournalByPlanDigest(
+    options.workspaceRoot,
+    options.expectedPlanDigest,
+  );
+  const context = await inspectCatalogPublicationApplyContext(options);
+  assertApplyContextMatchesDescriptor(context, located.journal.descriptor);
+  return {
+    context,
+    journalPath: located.journalPath,
+    repositoryPath: catalogPublicationRepositoryPath(
+      context.catalogWorkspaceRoot,
+      located.catalogVersion,
+    ),
+    tagRef: `refs/tags/${located.journal.descriptor.tag}`,
+    journal: located.journal,
+  };
+}
+
+async function cleanupPublishedRepository(
+  repositoryPath: string,
+  journal: Extract<CatalogPublicationJournal, { state: 'published' }>,
+  env: NodeJS.ProcessEnv,
+  removeRepository: (repositoryPath: string) => Promise<void>,
+): Promise<string[]> {
+  try {
+    await fs.lstat(repositoryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    return [CATALOG_PUBLICATION_CLEANUP_WARNING];
+  }
+  const pendingJournal: CatalogPublicationJournal = {
+    schemaVersion: 2,
+    state: 'prepared',
+    planDigest: journal.planDigest,
+    descriptor: journal.descriptor,
+    expectedCommit: journal.expectedCommit,
+    repository: catalogPublicationRepositoryName(),
+    display: journal.display,
+    preparedAt: journal.preparedAt,
+  };
+  try {
+    await validatePersistentRepository(repositoryPath, pendingJournal, env);
+    await removeRepository(repositoryPath);
+    return [];
+  } catch {
+    return [CATALOG_PUBLICATION_CLEANUP_WARNING];
+  }
+}
+
+async function inspectCatalogPublicationPlanForApply(
+  options: PublicationTargetOptions & { expectedPlanDigest: string } & ReceiptResolution,
+): Promise<CatalogPublishPlanReceipt> {
+  const authorized = await readAuthorizedPublicationPlan(options);
+  const { context, journal, repositoryPath, tagRef } = authorized;
+  if (journal.state !== 'published') {
+    await validatePersistentRepository(repositoryPath, journal, context.env);
+  }
+  const state = await remoteRefState(
+    journal.state === 'published' ? context.repoRoot : repositoryPath,
+    context.pushUrl,
+    context.branchRef,
+    tagRef,
+    context.env,
+  );
+  if (journal.state === 'published'
+    && (state.branchCommit !== journal.expectedCommit
+      || !state.tagAnnotated
+      || state.tagCommit !== journal.expectedCommit)) {
+    throw new Error(
+      `Catalog ${journal.display.catalogVersion} published journal conflicts with remote refs. Increase the Catalog version.`,
+    );
+  }
+  assertReconciliableRemoteState(state, journal);
+  return {
+    command: 'catalog:publish:plan',
+    state: journal.state,
+    ...receiptBase(context, journal, options),
+  };
+}
+
 export async function applyCatalogPublicationPlan(options: PublicationTargetOptions & {
   expectedPlanDigest: string;
-  beforeRemoteWrite?: () => Promise<void>;
-} & ReceiptResolution): Promise<CatalogPublishApplyReceipt> {
+} & ReceiptResolution & ApplyPlanHooks): Promise<CatalogPublishApplyReceipt> {
   if (!/^sha256:[0-9a-f]{64}$/u.test(options.expectedPlanDigest)) {
     throw new Error('Catalog publish apply requires --expected-plan-digest from catalog publish plan.');
   }
-  const context = await inspectCatalogPublicationLiveContext(options);
-  await assertPublicationStatePathSafe(context.catalogWorkspaceRoot);
-  const journalPath = catalogPublicationJournalPath(context.catalogWorkspaceRoot, context.catalogVersion);
-  const repositoryPath = catalogPublicationRepositoryPath(context.catalogWorkspaceRoot, context.catalogVersion);
-  let journal = await readCatalogPublicationJournal(journalPath, context.catalogVersion);
-  if (!journal) {
-    const state = await remoteRefState(
-      context.repoRoot,
-      context.pushUrl,
-      context.branchRef,
-      context.tagRef,
-      context.env,
-    );
-    const branchState = state.branchCommit === null
-      ? null
-      : await readCatalogPublicationBranchState({
-        workspaceRoot: context.catalogWorkspaceRoot,
-        ...(options.remoteUrl === undefined ? { remote: options.remote } : { remoteUrl: options.remoteUrl }),
-        branch: context.branch,
-        env: options.env,
-      });
-    if (
-      state.tagPresent
-      || await fs.pathExists(repositoryPath)
-      || branchState?.version === context.catalogVersion
-    ) {
-      throw new Error(
-        `Catalog ${context.catalogVersion} publication state is missing while the version is occupied. Increase the Catalog version.`,
-      );
-    }
-    throw new Error(`Catalog ${context.catalogVersion} has no prepared publication plan. Run catalog publish plan.`);
-  }
-  if (journal.planDigest !== options.expectedPlanDigest) {
-    throw new Error(
-      `Catalog ${context.catalogVersion} plan does not match the authorized digest. Increase the Catalog version for a different plan.`,
-    );
-  }
-  assertLiveContextMatchesDescriptor(context, journal.descriptor);
+  const authorized = await readAuthorizedPublicationPlan(options);
+  const { context, journalPath, repositoryPath, tagRef } = authorized;
+  let { journal } = authorized;
   if (journal.state === 'published') {
     const state = await remoteRefState(
       context.repoRoot,
       context.pushUrl,
       context.branchRef,
-      context.tagRef,
+      tagRef,
       context.env,
     );
     if (state.branchCommit !== journal.expectedCommit || !state.tagAnnotated || state.tagCommit !== journal.expectedCommit) {
       throw new Error(
-        `Catalog ${context.catalogVersion} published journal conflicts with remote refs. Increase the Catalog version.`,
+        `Catalog ${journal.display.catalogVersion} published journal conflicts with remote refs. Increase the Catalog version.`,
       );
     }
-    if (await fs.pathExists(repositoryPath)) {
-      try {
-        await validatePersistentRepository(repositoryPath, {
-          schemaVersion: 1,
-          state: 'prepared',
-          planDigest: journal.planDigest,
-          descriptor: journal.descriptor,
-          expectedCommit: journal.expectedCommit,
-          repository: catalogPublicationRepositoryName(context.catalogVersion),
-          display: journal.display,
-          preparedAt: journal.preparedAt,
-        }, context.env);
-        await fs.remove(repositoryPath);
-      } catch {
-        // Published remote refs are authoritative. Leave unrecognized local residue for safe manual cleanup.
-      }
-    }
+    const warnings = await cleanupPublishedRepository(
+      repositoryPath,
+      journal,
+      context.env,
+      options.removeRepository ?? fs.remove,
+    );
     return {
       command: 'catalog:publish:apply',
       state: 'published',
       commit: journal.expectedCommit,
       reconciliation: 'already-published',
+      warnings,
       ...receiptBase(context, journal, options),
     };
   }
@@ -773,7 +939,7 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     repositoryPath,
     context.pushUrl,
     context.branchRef,
-    context.tagRef,
+    tagRef,
     context.env,
   );
   assertReconciliableRemoteState(state, journal);
@@ -784,14 +950,14 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     reconciliation = 'already-remote';
   } else {
     await options.beforeRemoteWrite?.();
-    const writeContext = await inspectCatalogPublicationLiveContext(options);
-    assertLiveContextMatchesDescriptor(writeContext, journal.descriptor);
+    const writeContext = await inspectCatalogPublicationApplyContext(options);
+    assertApplyContextMatchesDescriptor(writeContext, journal.descriptor);
     await validatePersistentRepository(repositoryPath, journal, writeContext.env);
     state = await remoteRefState(
       repositoryPath,
       writeContext.pushUrl,
       writeContext.branchRef,
-      writeContext.tagRef,
+      tagRef,
       writeContext.env,
     );
     assertReconciliableRemoteState(state, journal);
@@ -807,12 +973,12 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
           `--force-with-lease=${writeContext.branchRef}:${journal.descriptor.parent ?? ''}`,
           writeContext.pushUrl,
           `${journal.expectedCommit}:${writeContext.branchRef}`,
-          `${writeContext.tagRef}:${writeContext.tagRef}`,
+          `${tagRef}:${tagRef}`,
         ], writeContext.env, 'publicationUncertain', 'Catalog atomic push failed or its result is uncertain.');
       } else if (state.branchCommit === journal.expectedCommit && !state.tagPresent) {
         reconciliation = 'tag';
         await publicationGit(repositoryPath, [
-          'push', writeContext.pushUrl, `${writeContext.tagRef}:${writeContext.tagRef}`,
+          'push', writeContext.pushUrl, `${tagRef}:${tagRef}`,
         ], writeContext.env, 'publicationUncertain', 'Catalog tag push failed or its result is uncertain.');
       } else {
         reconciliation = 'branch';
@@ -824,34 +990,34 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     } catch (error) {
       journal = await markUncertain(journalPath, journal);
       throw new Error(
-        `Catalog ${context.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
+        `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
         { cause: error },
       );
     }
     try {
       state = await remoteRefState(
         repositoryPath,
-        context.pushUrl,
-        context.branchRef,
-        context.tagRef,
-        context.env,
+        writeContext.pushUrl,
+        writeContext.branchRef,
+        tagRef,
+        writeContext.env,
       );
     } catch (error) {
       journal = await markUncertain(journalPath, journal);
       throw new Error(
-        `Catalog ${context.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
+        `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
         { cause: error },
       );
     }
     if (state.branchCommit !== journal.expectedCommit || !state.tagAnnotated || state.tagCommit !== journal.expectedCommit) {
       journal = await markUncertain(journalPath, journal);
       throw new Error(
-        `Catalog ${context.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
+        `Catalog ${journal.display.catalogVersion} publication result is uncertain. Retry apply with the same plan digest.`,
       );
     }
   }
   const published: CatalogPublicationJournal = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     state: 'published',
     planDigest: journal.planDigest,
     descriptor: journal.descriptor,
@@ -862,12 +1028,18 @@ export async function applyCatalogPublicationPlan(options: PublicationTargetOpti
     publishedAt: new Date().toISOString(),
   };
   await writeCatalogPublicationJournalAtomic(journalPath, published);
-  await fs.remove(repositoryPath);
+  const warnings = await cleanupPublishedRepository(
+    repositoryPath,
+    published,
+    context.env,
+    options.removeRepository ?? fs.remove,
+  );
   return {
     command: 'catalog:publish:apply',
     state: 'published',
     commit: published.expectedCommit,
     reconciliation,
+    warnings,
     ...receiptBase(context, published, options),
   };
 }
@@ -934,10 +1106,11 @@ export async function runCatalogPublishApplyCommand(options: {
     requireRemote: true,
   });
   if (!options.yes) {
-    const plan = await prepareCatalogPublicationPlan({
+    const plan = await inspectCatalogPublicationPlanForApply({
       workspaceRoot: workspace.workspaceRoot,
       remote: target.remote!,
       branch: target.branch,
+      expectedPlanDigest: options.expectedPlanDigest!,
       env: options.env,
       workspaceRootResolvedFrom: workspace.workspaceRootResolvedFrom,
       remoteResolvedFrom: target.remoteResolvedFrom,
@@ -961,7 +1134,7 @@ export async function runCatalogPublishApplyCommand(options: {
       return null;
     }
   }
-  return applyCatalogPublicationPlan({
+  const result = await applyCatalogPublicationPlan({
     workspaceRoot: workspace.workspaceRoot,
     remote: target.remote!,
     branch: target.branch,
@@ -971,4 +1144,6 @@ export async function runCatalogPublishApplyCommand(options: {
     remoteResolvedFrom: target.remoteResolvedFrom,
     branchResolvedFrom: target.branchResolvedFrom,
   });
+  for (const warning of result.warnings) options.io.stderr(`${warning}\n`);
+  return result;
 }

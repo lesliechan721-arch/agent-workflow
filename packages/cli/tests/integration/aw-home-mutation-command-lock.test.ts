@@ -188,7 +188,7 @@ describe('public AW_HOME mutation command lock', () => {
           scope: 'project',
         }, {
           env: isolation.env,
-          previewDependencyPlanOnly: true,
+          previewOperationPlan: true,
           nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
         }),
     });
@@ -224,6 +224,12 @@ describe('public AW_HOME mutation command lock', () => {
       'team',
       'demo',
       'config.json',
-    ))).resolves.toMatchObject({ sourceIdentity: oldIdentity, values: { mode: 'safe' } });
+    ))).resolves.toEqual({
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: oldIdentity,
+      pluginName: 'demo',
+      values: { mode: 'safe' },
+    });
   });
 });

@@ -13,7 +13,7 @@ import {
   createCliExecutionContext,
   createCommandExecutionContext,
 } from '../../src/commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV6 } from '../../src/commands/status-v6.js';
+import { loadConsoleItemsResult, statusCommandV7 } from '../../src/commands/status-v6.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
 import type { CommandEvent } from '../../src/output/model.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -109,7 +109,7 @@ describe('multi-source performance budgets', () => {
           manifest.extensions = {
             instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
           };
-          manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+          manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
         },
       },
       ...Array.from({ length: 20 }, (_, index) => ({
@@ -269,7 +269,6 @@ describe('multi-source performance budgets', () => {
       cwd: root,
       command: 'install',
       catalog: { rootDir: sourceRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     await integration.driver.writeNative(target);
     await expect(fs.pathExists(path.join(marketplaceRoot, 'config.json'))).resolves.toBe(true);
@@ -291,7 +290,7 @@ describe('multi-source performance budgets', () => {
 
   it('keeps warm multi-source status and console loading within budget', async () => {
     const durations = await sample(async () => {
-      const result = await statusCommandV6({
+      const result = await statusCommandV7({
         cwd: root, env, cliVersion: '1.0.0', json: true,
       });
       const consoleResult = await loadConsoleItemsResult({ cwd: root }, { env });
@@ -367,6 +366,7 @@ describe('multi-source performance budgets', () => {
         expect(controller.snapshot.phase).toBe('ready');
         await controller.buildOperationReview({
           kind: 'configSave',
+          apply: false,
           pluginId: 'path-a/config-target',
           scope: 'project',
           projectLayer: 'shared',

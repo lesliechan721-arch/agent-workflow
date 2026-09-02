@@ -43,9 +43,6 @@ import type {
   PluginArtifactTargetDefinition,
   PluginExtensions,
   PluginInterfaceMeta,
-  PluginLifecycleScriptEntry,
-  PluginLifecycleScriptSelector,
-  PluginLifecycleRuntimeOs,
   PluginNodeBuildScript,
   PluginNodeScriptsConfig,
   PluginManifestSource,
@@ -72,15 +69,8 @@ import {
   resolvePlatformHookDefinitions,
 } from './hooks-contract.js';
 import {
-  inferLifecycleScriptRunnerFromPath,
-  isPluginLifecycleOsSelector,
-  isPluginScriptRunner,
-  PLUGIN_AUTO_RUNNER_EXTENSIONS,
-  PLUGIN_LIFECYCLE_EVENTS,
-  PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
-  resolveLifecycleScriptForOs,
 } from './plugin-script-contract.js';
 import {
   DEFAULT_SLASH_COMMANDS_PATH,
@@ -1286,14 +1276,6 @@ function assertNodeRunnablePath(value: string, fieldName: string): void {
   }
 }
 
-function assertAutoRunnablePath(value: string, fieldName: string): void {
-  if (!inferLifecycleScriptRunnerFromPath(value)) {
-    throw new Error(
-      `Invalid ${fieldName}: runner "auto" requires one of these file extensions: ${PLUGIN_AUTO_RUNNER_EXTENSIONS.join(', ')}.`,
-    );
-  }
-}
-
 function assertNotInlineCommandLike(value: string, fieldName: string): void {
   if (/\s|[;&|<>`]/.test(value) || value.includes('$(')) {
     throw new Error(`Invalid ${fieldName}: inline command strings are not allowed.`);
@@ -1314,8 +1296,7 @@ function normalizeScriptEntry(
   pluginRoot: string,
   value: unknown,
   fieldName: string,
-  options: { requireNodeRunner?: boolean } = {},
-): PluginLifecycleScriptEntry {
+): PluginNodeBuildScript {
   const input = assertObject(value, fieldName);
   if ('command' in input) {
     throw new Error(`Invalid ${fieldName}: inline command strings are not allowed.`);
@@ -1326,20 +1307,13 @@ function normalizeScriptEntry(
   assertAllowedKeys(input, fieldName, ['runner', 'path', 'args']);
 
   const runner = ensureString(input.runner, `${fieldName}.runner`);
-  if (!isPluginScriptRunner(runner)) {
-    throw new Error(`Invalid ${fieldName}.runner: unsupported runner "${runner}".`);
-  }
-  if (options.requireNodeRunner && runner !== 'node') {
+  if (runner !== 'node') {
     throw new Error(`Invalid ${fieldName}.runner: expected "node".`);
   }
 
   const scriptPath = normalizePluginScriptPath(pluginRoot, input.path, `${fieldName}.path`);
-  if (runner === 'auto') {
-    assertAutoRunnablePath(scriptPath, `${fieldName}.path`);
-  }
-
   return {
-    runner,
+    runner: 'node',
     path: scriptPath,
     args:
       input.args === undefined
@@ -1348,75 +1322,21 @@ function normalizeScriptEntry(
   };
 }
 
-function normalizeLifecycleScriptDefinition(
+function normalizePostApplyScript(
   pluginRoot: string,
   value: unknown,
   fieldName: string,
-): PluginLifecycleScriptSelector {
-  if (typeof value === 'string') {
-    const scriptPath = normalizePluginScriptPath(pluginRoot, value, fieldName);
-    assertAutoRunnablePath(scriptPath, fieldName);
-    return {
-      default: {
-        runner: 'auto',
-        path: scriptPath,
-      },
-    };
-  }
-
+): NonNullable<PluginScriptsConfig['postApply']> {
   const input = assertObject(value, fieldName);
-  if ('runner' in input || 'path' in input || 'command' in input) {
-    throw new Error(`Invalid ${fieldName}: lifecycle scripts must be declared under OS selectors.`);
-  }
-  if ('timeoutMs' in input || 'timeout' in input) {
-    throw new Error(`Invalid ${fieldName}: per-event and per-selector timeouts are not supported.`);
-  }
-
-  for (const key of Object.keys(input)) {
-    if (!isPluginLifecycleOsSelector(key)) {
-      throw new Error(`Invalid ${fieldName}: unknown OS selector "${key}".`);
-    }
-  }
-
-  const output: PluginLifecycleScriptSelector = {};
-  for (const [selector, entry] of Object.entries(input)) {
-    output[selector as keyof PluginLifecycleScriptSelector] = normalizeScriptEntry(
-      pluginRoot,
-      entry,
-      `${fieldName}.${selector}`,
-    );
-  }
-
-  for (const osName of ['linux', 'darwin', 'win32'] as const satisfies readonly PluginLifecycleRuntimeOs[]) {
-    if (!resolveLifecycleScriptForOs(output, osName)) {
-      throw new Error(`Invalid ${fieldName}: no lifecycle entry resolves on ${osName}.`);
-    }
-  }
-
-  return output;
-}
-
-function normalizeLifecycleScripts(
-  pluginRoot: string,
-  value: unknown,
-  fieldName: string,
-): NonNullable<PluginScriptsConfig['lifecycle']> {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, [...PLUGIN_LIFECYCLE_EVENTS]);
-
-  const output: NonNullable<PluginScriptsConfig['lifecycle']> = {};
-  for (const event of PLUGIN_LIFECYCLE_EVENTS) {
-    if (input[event] === undefined) {
-      continue;
-    }
-    output[event] = normalizeLifecycleScriptDefinition(
-      pluginRoot,
-      input[event],
-      `${fieldName}.${event}`,
-    );
-  }
-
-  return output;
+  assertAllowedKeys(input, fieldName, ['path', 'timeoutMs']);
+  const scriptPath = normalizePluginScriptPath(pluginRoot, input.path, `${fieldName}.path`);
+  assertNodeRunnablePath(scriptPath, `${fieldName}.path`);
+  return {
+    path: scriptPath,
+    ...(input.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: normalizeScriptTimeout(input.timeoutMs, `${fieldName}.timeoutMs`) }),
+  };
 }
 
 function normalizeScriptHelpers(
@@ -1442,9 +1362,7 @@ function normalizeNodeBuildScript(
   value: unknown,
   fieldName: string,
 ): PluginNodeBuildScript {
-  const entry = normalizeScriptEntry(pluginRoot, value, fieldName, {
-    requireNodeRunner: true,
-  });
+  const entry = normalizeScriptEntry(pluginRoot, value, fieldName);
   assertNodeRunnablePath(entry.path, `${fieldName}.path`);
   return {
     runner: 'node',
@@ -1589,9 +1507,7 @@ function normalizeArtifactRenderScript(
   value: unknown,
   fieldName: string,
 ): PluginArtifactRenderScriptEntry {
-  const entry = normalizeScriptEntry(pluginRoot, value, fieldName, {
-    requireNodeRunner: true,
-  });
+  const entry = normalizeScriptEntry(pluginRoot, value, fieldName);
   assertNodeRunnablePath(entry.path, `${fieldName}.path`);
   return {
     runner: 'node',
@@ -1622,17 +1538,12 @@ function normalizePluginScripts(
   fieldName: string,
 ): PluginScriptsConfig {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['timeoutMs', 'lifecycle', 'helpers', 'node', 'artifacts', 'tests']);
+  assertAllowedKeys(input, fieldName, ['postApply', 'helpers', 'node', 'artifacts', 'tests']);
 
-  const output: PluginScriptsConfig = {
-    timeoutMs:
-      input.timeoutMs === undefined
-        ? PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS
-        : normalizeScriptTimeout(input.timeoutMs, `${fieldName}.timeoutMs`),
-  };
+  const output: PluginScriptsConfig = {};
 
-  if (input.lifecycle !== undefined) {
-    output.lifecycle = normalizeLifecycleScripts(pluginRoot, input.lifecycle, `${fieldName}.lifecycle`);
+  if (input.postApply !== undefined) {
+    output.postApply = normalizePostApplyScript(pluginRoot, input.postApply, `${fieldName}.postApply`);
   }
 
   if (input.helpers !== undefined) {

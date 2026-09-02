@@ -11,7 +11,7 @@ import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import {
   createAwPluginRequirementsReceipt,
   readPluginManifest,
@@ -722,11 +722,13 @@ describe('pack smoke', () => {
     expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
       ok: false,
       overallState: 'failed',
-      targets: expect.arrayContaining([expect.objectContaining({
-        pluginId: `${developmentSourceId}/packed-build`,
-        platform: 'codex',
-        scope: 'project',
-        errorCode: 'writeFailed',
+      targetResults: expect.arrayContaining([expect.objectContaining({
+        target: expect.objectContaining({
+          pluginId: `${developmentSourceId}/packed-build`,
+          platform: 'codex',
+          scope: 'project',
+        }),
+        errorCode: 'codexActivationPostcheckFailed',
         failures: expect.arrayContaining([expect.objectContaining({
           phase: 'postcheck.inspect',
           message: expect.stringContaining('codexProjectConfigNotEffective'),
@@ -749,9 +751,17 @@ describe('pack smoke', () => {
       ok: true,
       command: 'install',
       overallState: 'succeeded',
-      targets: expect.arrayContaining([
-        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project' }),
-        expect.objectContaining({ pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project' }),
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginId: `${developmentSourceId}/packed-build`, platform: 'codex', scope: 'project',
+          }),
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({
+            pluginId: `${developmentSourceId}/packed-build`, platform: 'claude', scope: 'project',
+          }),
+        }),
       ]),
     });
     const projectCodexConfig = await fs.readFile(
@@ -852,13 +862,20 @@ describe('pack smoke', () => {
       active: { snapshotDigest: expect.stringMatching(/^sha256:/u) },
     });
     expect(sourceSync.stderr).toBe('');
-    const consumedStatus = await execFileAsync(awBin, ['status', 'packed/packed-build', '--json'], {
-      cwd: tempRoot,
-      env: packedConsumerEnv,
-    });
-    expect(JSON.parse(consumedStatus.stdout)).toMatchObject({
+    const consumedStatus = await execFileAsync(
+      awBin,
+      ['status', 'packed/packed-build', '--json'],
+      { cwd: tempRoot, env: packedConsumerEnv },
+    ).then(
+      () => null,
+      (error: unknown) => error as { stdout?: string },
+    );
+    expect(consumedStatus).not.toBeNull();
+    expect(JSON.parse(consumedStatus?.stdout ?? '{}')).toMatchObject({
       catalog: { sources: expect.arrayContaining([expect.objectContaining({ id: 'packed' })]) },
-      targets: expect.arrayContaining([expect.objectContaining({ pluginId: 'packed/packed-build' })]),
+      targets: expect.arrayContaining([expect.objectContaining({
+        pluginId: 'packed/packed-build',
+      })]),
     });
     const packedRemoval = await execFileAsync(awBin, [
       'plugin', 'remove', 'packed-build',
@@ -967,7 +984,7 @@ describe('pack smoke', () => {
     const portableCatalogManifestPath = path.join(portableCatalog, 'catalog-manifest.json');
     const portableCatalogManifest = await fs.readJson(portableCatalogManifestPath);
     portableCatalogManifest.entries = [
-      await createCatalogManifestV6Entry(portablePlugin, portablePlugin.rootDir),
+      await createCatalogManifestV7Entry(portablePlugin, portablePlugin.rootDir),
     ];
     await fs.writeJson(portableCatalogManifestPath, portableCatalogManifest, { spaces: 2 });
     const portableCwd = path.join(tempRoot, 'portable-project');

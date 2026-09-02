@@ -11,9 +11,6 @@ import {
   PLUGIN_AUTHORING_CAPABILITY_SURFACES,
 } from '../../src/plugin-authoring-capabilities.js'
 import {
-  PLUGIN_LIFECYCLE_EVENTS,
-  PLUGIN_LIFECYCLE_OS_SELECTORS,
-  PLUGIN_SCRIPT_RUNNERS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
 } from '../../src/plugin-script-contract.js'
@@ -60,18 +57,12 @@ describe('plugin authoring capability structure registry', () => {
       .toEqual(schema.$defs.artifactTarget.properties.states.items.enum)
   })
 
-  it('derives validator-owned lifecycle and hook values from their Core contracts', () => {
+  it('publishes postApply timeout and hook values from their Core contracts', () => {
     expect(getPluginAuthoringAcceptedValues('extensions', 'extensions.hooks[].event'))
       .toEqual(PUBLIC_HOOK_EVENTS)
-    expect(getPluginAuthoringAcceptedValues('lifecycle', 'scripts.lifecycle'))
-      .toEqual(PLUGIN_LIFECYCLE_EVENTS)
-    expect(getPluginAuthoringAcceptedValues('lifecycle', 'scripts.lifecycle.<event>'))
-      .toEqual(PLUGIN_LIFECYCLE_OS_SELECTORS)
-    expect(getPluginAuthoringAcceptedValues('lifecycle', 'scripts.lifecycle.<event>.<selector>.runner'))
-      .toEqual(PLUGIN_SCRIPT_RUNNERS)
-    expect(getPluginAuthoringCapabilitySurface('lifecycle').entries)
+    expect(getPluginAuthoringCapabilitySurface('post-apply').entries)
       .toContainEqual(expect.objectContaining({
-        field: 'scripts.timeoutMs',
+        field: 'scripts.postApply.timeoutMs',
         acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}`,
       }))
   })

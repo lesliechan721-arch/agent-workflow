@@ -18,18 +18,6 @@ export type StringArray = string[]
 export type Capabilities = string[]
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "lifecycleDefinition".
- */
-export type LifecycleDefinition = (string | {
-default?: ScriptEntry
-unix?: ScriptEntry
-windows?: ScriptEntry
-linux?: ScriptEntry
-darwin?: ScriptEntry
-win32?: ScriptEntry
-})
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
  */
 export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField) | undefined
@@ -326,12 +314,7 @@ export: string
  * via the `definition` "scripts".
  */
 export interface Scripts {
-timeoutMs?: number
-lifecycle?: {
-install?: LifecycleDefinition
-upgrade?: LifecycleDefinition
-uninstall?: LifecycleDefinition
-}
+postApply?: PostApply
 helpers?: {
 config: string
 }
@@ -348,10 +331,18 @@ node?: StringArray
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "postApply".
+ */
+export interface PostApply {
+path: PluginPath
+timeoutMs?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "scriptEntry".
  */
 export interface ScriptEntry {
-runner: ("node" | "sh" | "bash" | "pwsh" | "powershell" | "cmd" | "auto")
+runner: "node"
 path: string
 args?: StringArray
 }

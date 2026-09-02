@@ -1,26 +1,21 @@
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformSelection, Scope } from '../types.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
-import {
-  canonicalMarketplaceRegistrationNames,
-  inventoryCatalogSourceReferences,
-  type CatalogSourceReferenceInventory,
-} from '../utils/catalog-source-references.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 import { readPluginIntentState } from '../utils/plugin-intent-state.js';
-import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../utils/catalog-generation-service.js';
 import type { CliPrompt } from './runtime.js';
-import {
-  installWriteCommand,
-} from './write-commands.js';
+import { syncWriteCommand } from './write-commands.js';
 import type {
   RebuildCommandResult,
   RebuildCommandRuntime,
 } from './rebuild-command.js';
+import { createOperationPlan } from './operation-plan.js';
+import type { ReconcileOperationPlan } from './reconcile-operation-plan.js';
 
 export interface SyncCommandOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  platform: PlatformName;
+  platform: PlatformSelection;
   scope: Scope;
   all?: boolean;
   json?: boolean;
@@ -28,6 +23,8 @@ export interface SyncCommandOptions {
   prompt?: CliPrompt;
   allowManagedCodexInstall?: boolean;
   yes?: boolean;
+  refresh?: boolean;
+  cliVersion?: string;
 }
 
 export class SyncCommandError extends Error {
@@ -35,7 +32,6 @@ export class SyncCommandError extends Error {
     | 'syncSelectorConflict'
     | 'syncSelectionRequired'
     | 'syncSelectionCancelled'
-    | 'syncPlatformUnsupported'
     | 'syncPluginNotDesired'
     | 'syncManagedIdentityUnresolved';
 
@@ -46,97 +42,92 @@ export class SyncCommandError extends Error {
   }
 }
 
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function mergedSyncOverallState(
+  results: readonly RebuildCommandResult[],
+  plan: ReconcileOperationPlan | undefined,
+): RebuildCommandResult['overallState'] {
+  if (results.every((result) => result.overallState === 'succeeded')) return 'succeeded';
+  if (results.some((result) => result.overallState === 'partial')) return 'partial';
+  if (!plan) return 'failed';
+  const requested = new Set(plan.targets
+    .filter((target) => target.relation === 'requested')
+    .map((target) => `${target.pluginId}\0${target.platform}`));
+  const completedRequested = results.some((result) => result.targetResults.some((target) =>
+    target.state === 'completed'
+    && target.action !== 'skipped'
+    && target.target.pluginId !== undefined
+    && requested.has(`${target.target.pluginId}\0${target.target.platform}`)));
+  return completedRequested ? 'partial' : 'failed';
+}
+
+function mergeSyncResults(results: RebuildCommandResult[]): RebuildCommandResult {
+  const operationPlans = results.flatMap((result) => result.operationPlan ? [result.operationPlan] : []);
+  const dependencyPlans = results.flatMap((result) =>
+    result.dependencyPlan ? [result.dependencyPlan] : []);
+  const dependencyPlan: ReconcileOperationPlan | undefined = dependencyPlans.length > 0
+    ? {
+        requestedPluginIds: [...new Set(dependencyPlans.flatMap((plan) =>
+          plan.requestedPluginIds))].sort(),
+        resolvedPluginIds: [...new Set(dependencyPlans.flatMap((plan) =>
+          plan.resolvedPluginIds))].sort(),
+        dependencyEdges: dependencyPlans.flatMap((plan) => plan.dependencyEdges).sort((left, right) =>
+          compareText(
+            `${left.platform}\0${left.from}\0${left.to}`,
+            `${right.platform}\0${right.from}\0${right.to}`,
+          )),
+        scopeOverrides: dependencyPlans.flatMap((plan) => plan.scopeOverrides).sort((left, right) =>
+          compareText(`${left.platform}\0${left.pluginId}`, `${right.platform}\0${right.pluginId}`)),
+        targets: dependencyPlans.flatMap((plan) => plan.targets).sort((left, right) =>
+          compareText(
+            `${left.platform}\0${left.pluginId}\0${left.resolvedScope}\0${left.order}`,
+            `${right.platform}\0${right.pluginId}\0${right.resolvedScope}\0${right.order}`,
+          )),
+      }
+    : undefined;
+  return {
+    platforms: [...new Set(results.flatMap((result) => result.platforms))],
+    plugins: [...new Set(results.flatMap((result) => result.plugins))],
+    warnings: results.flatMap((result) => result.warnings),
+    rebuildResults: results.flatMap((result) => result.rebuildResults),
+    targetResults: results.flatMap((result) => result.targetResults),
+    overallState: mergedSyncOverallState(results, dependencyPlan),
+    receiptTargets: results.flatMap((result) => result.receiptTargets),
+    ...(dependencyPlan ? { dependencyPlan } : {}),
+    ...(results.some((result) => result.codexReconcilePlans !== undefined)
+      ? { codexReconcilePlans: results.flatMap((result) => result.codexReconcilePlans ?? []) }
+      : {}),
+    ...(operationPlans.length > 0 ? {
+      operationPlan: createOperationPlan({
+        intentChanges: operationPlans.flatMap((plan) => plan.intentChanges),
+        actions: operationPlans.flatMap((plan) => plan.actions),
+        changes: operationPlans.flatMap((plan) => plan.changes),
+        warnings: operationPlans.flatMap((plan) => plan.warnings),
+        evidence: {
+          catalogDigests: operationPlans.flatMap((plan) => plan.evidence.catalogDigests),
+          intentDigests: operationPlans.flatMap((plan) => plan.evidence.intentDigests),
+          configDigests: operationPlans.flatMap((plan) => plan.evidence.configDigests),
+          targetOwnerFingerprints: operationPlans.flatMap((plan) =>
+            plan.evidence.targetOwnerFingerprints),
+        },
+      }),
+    } : {}),
+  };
+}
+
 function selectedIntentRoots(options: {
   roots: Awaited<ReturnType<typeof readPluginIntentState>>['roots'];
-  managedCodexPluginIds: string[];
-  inventory: CatalogSourceReferenceInventory;
-  configuredSources: Array<{ id: string; primary: boolean }>;
   selectors: string[];
   all: boolean;
-  platform: PlatformName;
-}): { selectors: string[]; preservedManagedIds: string[] } {
-  const eligible = options.roots.filter((root) => root.platforms.includes(options.platform));
-  if (options.all) {
-    const marketplaceSources = new Map<string, Set<string>>();
-    const configuredSourceById = new Map(options.configuredSources.map((source) => [source.id, source]));
-    for (const reference of options.inventory.references) {
-      if (reference.kind !== 'namespacedMarketplace'
-        || reference.pluginName !== undefined
-        || !reference.sourceId
-        || !reference.marketplaceName) continue;
-      const sources = marketplaceSources.get(reference.marketplaceName) ?? new Set<string>();
-      sources.add(reference.sourceId);
-      marketplaceSources.set(reference.marketplaceName, sources);
-    }
-    for (const source of options.configuredSources) {
-      if (canonicalMarketplaceRegistrationNames(options.inventory.references, source.id).length > 0) {
-        continue;
-      }
-      const marketplaceName = source.primary ? 'aw' : `aw-${source.id}`;
-      if (!marketplaceSources.has(marketplaceName)) {
-        marketplaceSources.set(marketplaceName, new Set([source.id]));
-      }
-    }
-    const desiredNativeIds = new Set(eligible.flatMap((root) => {
-      const parsed = parsePluginId(root.pluginId);
-      if (!parsed.sourceId) return [];
-      const source = configuredSourceById.get(parsed.sourceId);
-      if (!source) return [];
-      const registeredNames = canonicalMarketplaceRegistrationNames(
-        options.inventory.references,
-        source.id,
-      );
-      if (registeredNames.length > 1) {
-        throw new SyncCommandError(
-          'syncManagedIdentityUnresolved',
-          `Catalog source ${source.id} has multiple canonical native marketplace registrations.`,
-        );
-      }
-      const marketplaceName = registeredNames[0]
-        ?? (source.primary ? 'aw' : `aw-${source.id}`);
-      const mappedSources = marketplaceSources.get(marketplaceName);
-      return mappedSources?.size === 1 && mappedSources.has(source.id)
-        ? [`${parsed.pluginName}@${marketplaceName}`]
-        : [];
-    }));
-    const preservedManagedIds: string[] = [];
-    const managedSelectors = options.managedCodexPluginIds.flatMap((pluginId) => {
-      if (desiredNativeIds.has(pluginId)) return [];
-      const separator = pluginId.lastIndexOf('@');
-      if (separator <= 0 || separator === pluginId.length - 1) {
-        throw new SyncCommandError(
-          'syncManagedIdentityUnresolved',
-          `Managed Codex plugin ID ${pluginId} is invalid.`,
-        );
-      }
-      const pluginName = pluginId.slice(0, separator);
-      const marketplaceName = pluginId.slice(separator + 1);
-      const sources = marketplaceSources.get(marketplaceName);
-      if (sources && sources.size > 1) {
-        throw new SyncCommandError(
-          'syncManagedIdentityUnresolved',
-          `Managed Codex plugin ID ${pluginId} does not map to one canonical Catalog source.`,
-        );
-      }
-      if (!sources || sources.size === 0) {
-        preservedManagedIds.push(pluginId);
-        return [];
-      }
-      return [`${[...sources][0]!}/${pluginName}`];
-    });
-    const desiredSelectors = eligible.map((root) => root.pluginId);
-    const duplicateSelector = managedSelectors.find((selector, index) =>
-      managedSelectors.indexOf(selector) !== index || desiredSelectors.includes(selector));
-    if (duplicateSelector) {
-      throw new SyncCommandError(
-        'syncManagedIdentityUnresolved',
-        `Multiple native identities map to ${duplicateSelector}; exact reconciliation is unavailable.`,
-      );
-    }
-    return { selectors: [...managedSelectors, ...desiredSelectors], preservedManagedIds };
-  }
-  return {
-    selectors: options.selectors.map((selector) => {
+  platform: PlatformSelection;
+}): string[] {
+  const eligible = options.roots.filter((root) => options.platform === 'both'
+    || root.platforms.includes(options.platform));
+  if (options.all) return eligible.map((root) => root.pluginId);
+  return options.selectors.map((selector) => {
     const parsed = parsePluginId(selector);
     const matches = eligible.filter((root) => {
       const rootParsed = parsePluginId(root.pluginId);
@@ -152,17 +143,16 @@ function selectedIntentRoots(options: {
       );
     }
     return matches[0]!.pluginId;
-    }),
-    preservedManagedIds: [],
-  };
+    });
 }
 
 async function selectInteractively(options: {
   roots: Awaited<ReturnType<typeof readPluginIntentState>>['roots'];
-  platform: PlatformName;
+  platform: PlatformSelection;
   prompt?: CliPrompt;
 }): Promise<string[]> {
-  const eligible = options.roots.filter((root) => root.platforms.includes(options.platform));
+  const eligible = options.roots.filter((root) => options.platform === 'both'
+    || root.platforms.includes(options.platform));
   if (!options.prompt?.multiSelect) {
     throw new SyncCommandError(
       'syncSelectionRequired',
@@ -188,12 +178,6 @@ export async function syncCommand(
   options: SyncCommandOptions,
   runtime: RebuildCommandRuntime = {},
 ): Promise<RebuildCommandResult> {
-  if (options.platform !== 'codex') {
-    throw new SyncCommandError(
-      'syncPlatformUnsupported',
-      'The public sync rollout currently supports only --platform codex.',
-    );
-  }
   if (options.all && selectors.length > 0) {
     throw new SyncCommandError(
       'syncSelectorConflict',
@@ -223,67 +207,97 @@ export async function syncCommand(
         cwd: options.cwd,
         env,
       });
-      const inventory = options.all
-        ? await (runtime.inventoryCatalogSourceReferences
-          ?? inventoryCatalogSourceReferences)({ cwd: options.cwd, env })
-        : { inventorySchemaVersion: 1 as const, references: [], errors: [] };
-      const configuredSources = options.all
-        ? (await readCatalogSourcesConfigSnapshot(env)).config.sources
-        : [];
-      const selection = selectors.length > 0 || options.all
+      const requested = selectors.length > 0 || options.all
         ? selectedIntentRoots({
             roots: intent.roots,
-            managedCodexPluginIds: intent.managed.codexPluginIds,
-            inventory,
-            configuredSources,
             selectors,
             all: options.all === true,
             platform: options.platform,
           })
-        : {
-            selectors: await selectInteractively({
+        : await selectInteractively({
               roots: intent.roots,
               platform: options.platform,
               prompt: options.prompt,
-            }),
-            preservedManagedIds: [],
-          };
-      const requested = selection.selectors;
-      const preservedWarning = selection.preservedManagedIds.length > 0
-        ? `syncManagedIdentityPreserved: ${selection.preservedManagedIds.join(', ')} does not map to a canonical Catalog source.`
-        : undefined;
+            });
       if (requested.length === 0) {
-        if (options.all && intent.managed.codexPluginIds.length > 0) {
-          return {
-            platforms: [options.platform],
-            plugins: [],
-            warnings: preservedWarning ? [preservedWarning] : [],
-            rebuildResults: [],
-            targetResults: [],
-            overallState: 'succeeded',
-            receiptTargets: [],
-          };
-        }
         throw new SyncCommandError(
           'syncSelectionRequired',
           `No desired ${options.platform} plugins exist in ${options.scope} scope.`,
         );
       }
-      const result = await installWriteCommand(requested, {
-        cwd: options.cwd,
-        scope: options.scope,
-        platform: options.platform,
-        ...(options.yes ? { yes: true } : {}),
-        ...(options.allowManagedCodexInstall ? { allowManagedCodexInstall: true } : {}),
-      }, {
-        ...runtime,
-        env,
-        awHomeMutationToken: token,
-        reconcileIntentOnly: true,
-        directCli: true,
-      });
-      return preservedWarning
-        ? { ...result, warnings: [...result.warnings, preservedWarning] }
+      const refreshWarnings: string[] = [];
+      if (options.refresh) {
+        if (!options.cliVersion) throw new Error('syncRefreshCliVersionRequired');
+        const sourceIds = [...new Set(requested.map((selector) => parsePluginId(selector).sourceId!))];
+        for (const sourceId of sourceIds) {
+          await syncCatalogSourceGeneration({
+            sourceId,
+            cliVersion: options.cliVersion,
+            env,
+            runtime: runtime.catalogGenerationRuntime,
+          }).catch((error) => {
+            refreshWarnings.push(
+              `catalogSourceRefreshFailed: ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
+      }
+      const work = new Map<string, { platform: 'codex' | 'claude'; selectors: string[] }>();
+      for (const selector of requested) {
+        const sourceId = parsePluginId(selector).sourceId!;
+        const root = intent.roots.find((candidate) => candidate.pluginId === selector)!;
+        for (const platform of (options.platform === 'both'
+          ? root.platforms
+          : [options.platform])) {
+          const key = `${sourceId}\0${platform}`;
+          const current = work.get(key) ?? { platform, selectors: [] };
+          current.selectors.push(selector);
+          work.set(key, current);
+        }
+      }
+      const sourceResults: RebuildCommandResult[] = [];
+      for (const item of work.values()) {
+        try {
+          sourceResults.push(await syncWriteCommand(item.selectors, {
+            cwd: options.cwd,
+            scope: options.scope,
+            platform: item.platform,
+            ...(options.yes ? { yes: true } : {}),
+            ...(options.allowManagedCodexInstall ? { allowManagedCodexInstall: true } : {}),
+          }, {
+            ...runtime,
+            env,
+            awHomeMutationToken: token,
+            directCli: true,
+          }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const targets = item.selectors.map((selector) => ({
+            pluginName: parsePluginId(selector).pluginName,
+            pluginId: selector,
+            sourceId: parsePluginId(selector).sourceId!,
+            platform: item.platform,
+            scope: options.scope,
+          }));
+          sourceResults.push({
+            platforms: [item.platform],
+            plugins: [],
+            warnings: [],
+            rebuildResults: [],
+            targetResults: targets.map((target) => ({
+              target,
+              action: 'sync',
+              state: 'failed',
+              message,
+            })),
+            overallState: 'failed',
+            receiptTargets: targets,
+          });
+        }
+      }
+      const result = mergeSyncResults(sourceResults);
+      return refreshWarnings.length > 0
+        ? { ...result, warnings: [...result.warnings, ...refreshWarnings] }
         : result;
     },
   });

@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PortableReview, PortableInstallReceipt } from '../../src/portable/commands.js';
-import type { StatusV6Payload, StatusV6PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
@@ -24,7 +24,7 @@ const candidates: PortableReview['selected'] = [
 ];
 
 function status(): TuiStatusLoadResult {
-  const summaries: StatusV6PluginSummary[] = [{
+  const summaries: StatusV7PluginSummary[] = [{
     pluginName: 'toolkit', pluginId: 'official/toolkit', displayName: 'Toolkit', description: '工具集',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
     dependencyDirectCount: 1, dependencyTotalCount: 1, dependencyIssueCount: 0,
@@ -32,12 +32,12 @@ function status(): TuiStatusLoadResult {
     pluginName: 'content', pluginId: 'official/content', displayName: 'Content', description: '内容工具',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
   }];
-  const payload: StatusV6Payload = {
-    schemaVersion: 6,
+  const payload: StatusV7Payload = {
+    schemaVersion: 7,
     catalog: { primarySourceId: 'official', configDigest: 'sha256:config', compositeDigest: 'sha256:catalog', sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'active' }] },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: summaries.flatMap((summary) => (['codex', 'claude'] as const).map((platform) => ({
-      pluginName: summary.pluginName, pluginId: summary.pluginId, sourceId: 'official', sourceIdentity: 'identity:official', version: '1.0.0', platform, scope: 'project' as const, cwd: '/workspace', state: 'absent' as const, components: [], errors: [],
+      pluginName: summary.pluginName, pluginId: summary.pluginId, sourceId: 'official', sourceIdentity: 'identity:official', version: '1.0.0', platform, scope: 'project' as const, cwd: '/workspace', state: 'absent' as const, components: [], reasons: [], recoveryActions: [],
     }))),
     errors: [],
   };
@@ -597,7 +597,7 @@ describe('Portable Skills TUI V1', () => {
     });
     value.replace({ name: 'configLayer', pluginId: 'official/toolkit' });
     const operation = await value.buildOperationReview({
-      kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared',
+      kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared', apply: true,
       updates: { token: 'private' }, privateKeys: ['token'],
     });
 

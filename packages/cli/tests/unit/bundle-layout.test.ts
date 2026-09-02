@@ -166,9 +166,7 @@ async function writeRuntimeScriptFixture(repoRoot: string): Promise<void> {
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.mjs'), 'import "./shared.mjs";\n', 'utf8');
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'shared.mjs'), 'export const ok = true;\n', 'utf8');
   manifest.scripts = {
-    lifecycle: {
-      install: './scripts/lifecycle.mjs',
-    },
+    postApply: { path: './scripts/lifecycle.mjs' },
     helpers: {
       config: './scripts/aw-config.mjs',
     },
@@ -195,9 +193,7 @@ async function writePackageRuntimeFixture(repoRoot: string): Promise<void> {
   );
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
   manifest.scripts = {
-    lifecycle: {
-      install: './scripts/lifecycle.mjs',
-    },
+    postApply: { path: './scripts/lifecycle.mjs' },
     node: {
       packageRoot: './scripts',
     },
@@ -1027,7 +1023,7 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(message);
   });
 
-  it('rejects bundles missing lifecycle, helper, or runtime sibling files', async () => {
+  it('rejects bundles missing postApply, helper, or runtime sibling files', async () => {
     const repoRoot = await makeTempRepo();
     await writeRuntimeScriptFixture(repoRoot);
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -1037,7 +1033,7 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
 
     await fs.remove(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'));
-    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('scripts.lifecycle.install.default.path');
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('scripts.postApply.path');
 
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "./shared.mjs";\n', 'utf8');
     await fs.remove(path.join(pluginRoot, 'scripts', 'aw-config.mjs'));
@@ -1124,7 +1120,7 @@ describe('bundle layout validation', () => {
     await fs.writeFile(path.join(scriptsRoot, 'helper.cjs'), 'module.exports = "helper-ok";\n', 'utf8');
     await fs.writeFile(path.join(scriptsRoot, 'aw-config.mjs'), 'export default {};\n', 'utf8');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.scripts.lifecycle.install = './scripts/lifecycle.cjs';
+      manifest.scripts.postApply = { path: './scripts/lifecycle.cjs' };
     });
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -1163,7 +1159,7 @@ describe('bundle layout validation', () => {
     });
     await fs.writeFile(path.join(scriptsRoot, 'aw-config.mjs'), 'export default {};\n', 'utf8');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.scripts.lifecycle.install = './scripts/lifecycle.cjs';
+      manifest.scripts.postApply = { path: './scripts/lifecycle.cjs' };
     });
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);

@@ -7,7 +7,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import {
-  buildLifecycleSpawnEnv,
+  buildPluginScriptSpawnEnv,
   bundleLocalPlugin,
   collectSensitivePluginConfigValues,
   discoverPlugins,
@@ -574,7 +574,7 @@ async function runPreparedPluginTests(options: {
       env,
       tempDir,
     });
-    const spawnEnv = buildLifecycleSpawnEnv({
+    const spawnEnv = buildPluginScriptSpawnEnv({
       commandEnv: env,
       contextPath: writtenContext.contextPath,
       tempDir,

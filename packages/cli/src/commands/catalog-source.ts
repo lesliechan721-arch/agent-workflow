@@ -68,6 +68,7 @@ export interface CatalogSourceMutationPreflight {
   proposedConfigDigest: string;
   sourceIdentity?: string;
   identityChanged: boolean;
+  proposedSource?: CatalogSource;
   references: CatalogSourcePreflightInventory;
 }
 
@@ -105,6 +106,17 @@ async function reportMutationProgress(
     await runtime?.onProgress?.(event);
   } catch {
     // Progress observers must not change the source transaction result.
+  }
+}
+
+function warnStateCleanupFailure(sourceId: string): void {
+  try {
+    process.emitWarning(
+      `Catalog source "${sourceId}" was committed, but its orphan state cleanup failed.`,
+      { code: 'AW_CATALOG_SOURCE_STATE_CLEANUP_FAILED' },
+    );
+  } catch {
+    // Cleanup diagnostics cannot replace the config mutation result.
   }
 }
 
@@ -189,6 +201,7 @@ export async function preflightCatalogSourceMutation(options: {
     proposedConfigDigest: calculateCatalogSourcesConfigDigest(proposedConfig),
     ...(sourceIdentity ? { sourceIdentity } : {}),
     identityChanged: changedIdentity,
+    ...(after ? { proposedSource: after } : {}),
     references: { inventorySchemaVersion: 1, references: [], errors: [] },
   };
 }
@@ -263,6 +276,9 @@ export async function addCatalogSourceCommand(options: {
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
+      if (!snapshot.config.sources.some((source) => source.id === options.source.id)) {
+        await removeCatalogSourceGenerationState({ sourceId: options.source.id, env });
+      }
       const config = await addCatalogSource(snapshot.config, options.source, options.cwd);
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
@@ -289,6 +305,8 @@ export async function updateCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
+  requireIdentityChangeConfirmation?: boolean;
+  confirmIdentityChange?: boolean;
 }): Promise<CatalogSourceMutationReceipt> {
   return withCatalogSourceMutationLock({
     env: options.env,
@@ -303,6 +321,18 @@ export async function updateCatalogSourceCommand(options: {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
       const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
+      const after = config.sources.find((source) => source.id === options.sourceId)!;
+      const identityChanged = before.type === 'git' && after.type === 'git'
+        ? before.url !== after.url || before.subdir !== after.subdir
+        : before.type === 'path' && after.type === 'path'
+          ? before.path !== after.path
+          : true;
+      if (options.requireIdentityChangeConfirmation
+        && identityChanged
+        && options.confirmIdentityChange !== true) {
+        throw new Error('catalogSourceIdentityChangeConfirmationRequired: use --yes to confirm the source URL, path, or subdirectory change.');
+      }
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
       }
@@ -374,7 +404,6 @@ export async function removeCatalogSourceCommand(options: {
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
       }
-      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env });
       const receipt = await commitConfig({
         command: 'catalog:source:remove',
         sourceId: options.sourceId,
@@ -383,6 +412,8 @@ export async function removeCatalogSourceCommand(options: {
         env,
         runtime,
       });
+      await removeCatalogSourceGenerationState({ sourceId: options.sourceId, env })
+        .catch(() => warnStateCleanupFailure(options.sourceId));
       return receipt;
     },
   });

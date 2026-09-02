@@ -49,6 +49,10 @@ export {
   type CatalogGenerationViewModel,
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
+export type {
+  CatalogSourceFreshnessState,
+  CatalogSourceFreshnessViewModel,
+} from './catalog-freshness.js';
 export { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from './runner.js';
 export {
   TuiController,

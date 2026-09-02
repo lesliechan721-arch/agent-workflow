@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addCatalogSourceCommand,
@@ -16,12 +16,18 @@ import {
 } from '../../src/commands/catalog-generation.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
   return path.join(getCurrentSourceTestIsolation().layout.fixtureCwd, name);
 }
+
+afterEach(() => {
+  setAtomicConfigBeforeRenameHookForTests(undefined);
+  vi.restoreAllMocks();
+});
 
 describe('catalog source mutation v4', () => {
   it('protects Workspace-managed sources in public commands and preflight', async () => {
@@ -106,6 +112,20 @@ describe('catalog source mutation v4', () => {
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
   });
 
+  it('stops add before config commit when orphan state cleanup fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('orphan-add-cleanup');
+    await createCatalogSnapshotFixture(root);
+    await fs.mkdir(path.join(isolation.env.AW_HOME!, 'catalog-state.json'), { recursive: true });
+
+    await expect(addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationStateInvalid' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+  });
+
   it('commits update as config-only without reading or validating the new snapshot', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('update-first');
@@ -126,6 +146,30 @@ describe('catalog source mutation v4', () => {
       .find((source) => source.id === 'team');
     expect(configured).toMatchObject({ id: 'team', type: 'path' });
     expect(configured && 'path' in configured ? path.basename(configured.path) : '').toBe('update-second');
+  });
+
+  it('requires CLI confirmation only when URL, path, or subdirectory identity changes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('confirmed-update-first');
+    const second = fixturePath('confirmed-update-second');
+    await createCatalogSnapshotFixture(first);
+    await createCatalogSnapshotFixture(second);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: first, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true,
+    })).rejects.toThrow('catalogSourceIdentityChangeConfirmationRequired');
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true,
+      confirmIdentityChange: true,
+    })).resolves.toMatchObject({ changed: true });
   });
 
   it('keeps the old Active selection when update changes source identity', async () => {
@@ -188,6 +232,53 @@ describe('catalog source mutation v4', () => {
       .not.toContainEqual(expect.objectContaining({ id: 'team' }));
     expect((await readCatalogGenerationState(isolation.env)).sources.team).toBeUndefined();
     await expect(fs.pathExists(storeRoot)).resolves.toBe(true);
+  });
+
+  it('preserves Active when source config replacement fails during remove', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('remove-config-failure');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await syncCatalogSourceCommand({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const active = (await readCatalogGenerationState(isolation.env)).sources.team!.active;
+    setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
+      if (path.basename(filePath) === 'catalog-sources.json') throw new Error('injected config failure');
+    });
+
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toThrow('injected config failure');
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(active);
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .toContainEqual(expect.objectContaining({ id: 'team' }));
+  });
+
+  it('returns remove success and emits a warning when orphan state cleanup fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('remove-cleanup-warning');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await syncCatalogSourceCommand({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    await fs.remove(statePath);
+    await fs.mkdir(statePath);
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ ok: true, changed: true });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('orphan state cleanup failed'),
+      { code: 'AW_CATALOG_SOURCE_STATE_CLEANUP_FAILED' },
+    );
   });
 
   it('rejects an expected config digest conflict before writing', async () => {

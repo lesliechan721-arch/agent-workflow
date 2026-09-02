@@ -136,14 +136,14 @@ export async function readCatalogAttemptVersions(options = {}) {
   );
   let entries;
   try {
-    entries = await fs.readdir(journalsRoot);
+    entries = await fs.readdir(journalsRoot, { withFileTypes: true });
   } catch (error) {
     if (error?.code === 'ENOENT') return [];
     throw error;
   }
   return entries.flatMap((entry) => {
-    if (!entry.endsWith('.json')) return [];
-    const version = entry.slice(0, -'.json'.length);
+    if (!entry.isDirectory()) return [];
+    const version = entry.name;
     return /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/u.test(version)
       ? [version]
       : [];
@@ -161,7 +161,8 @@ export async function readReusableCatalogAttempt(channel, currentVersion, option
     path.resolve(options.repoRoot ?? defaultRepoRoot),
     '.aw',
     'publish',
-    `${currentVersion}.json`,
+    currentVersion,
+    'journal.json',
   );
   try {
     await fs.lstat(journalPath);

@@ -8,7 +8,7 @@
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 内置插件作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、publication journal 或 Catalog store。
 - 作者用 Plugin Manifest v3 的 `requires.aw.capabilities` 声明真实要求。未知但语法合法的 capability 是合法数据；当前 AW 未实现时，validator 报告 `awCapabilityUnsupported`。
-- Catalog 生成和消费只使用 snapshot schema 6；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
+- Catalog 生成和消费只使用 snapshot schema 7；Catalog source config 只使用 schema 2。旧 manifest、Catalog 或 source schema 只可作为拒绝 fixture 或历史记录，不是受支持作者合同。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 

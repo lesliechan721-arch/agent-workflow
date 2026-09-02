@@ -92,16 +92,16 @@ describe('portable materializer', () => {
         plugin.manifest.requires?.aw.capabilities ?? [],
       ),
     );
-    const { createCatalogManifestV6, createCatalogManifestV6Entry } = await import('../../src/utils/catalog-manifest-v6.js');
-    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV6({
+    const { createCatalogManifestV7, createCatalogManifestV7Entry } = await import('../../src/utils/catalog-manifest-v7.js');
+    await fs.writeJson(path.join(snapshotRoot, 'catalog-manifest.json'), createCatalogManifestV7({
       catalogVersion: '1.0.0', channel: 'latest',
-      requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },
       },
       release: { state: 'development' },
-      entries: [await createCatalogManifestV6Entry(plugin, plugin.rootDir)],
+      entries: [await createCatalogManifestV7Entry(plugin, plugin.rootDir)],
     }));
     const env = { ...process.env, AW_HOME: path.join(root, 'home') };
     const config = {

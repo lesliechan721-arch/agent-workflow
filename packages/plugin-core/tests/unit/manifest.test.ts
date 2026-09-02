@@ -33,6 +33,8 @@ describe('plugin manifest v3 structure', () => {
     expect(() => assertPluginManifestStructure(explicit)).not.toThrow()
     expect(normalizePluginManifestSchemaVersion(explicit)).toEqual(explicit)
     expect(() => assertPluginManifestStructure(manifest())).toThrow(/schemaVersion/u)
+    expect(() => assertPluginManifestStructure(manifest({ schemaVersion: 2 })))
+      .toThrow(/Unsupported plugin manifest schemaVersion/u)
   })
 
   it('rejects unknown versions and invalid structures', () => {

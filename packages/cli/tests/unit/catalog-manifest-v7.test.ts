@@ -10,10 +10,10 @@ import {
   calculateCatalogEntryContentDigest,
 } from '../../src/utils/catalog-digests.js';
 import {
-  createCatalogManifestV6,
-  createCatalogManifestV6Entry,
-  validateCatalogManifestV6,
-} from '../../src/utils/catalog-manifest-v6.js';
+  createCatalogManifestV7,
+  createCatalogManifestV7Entry,
+  validateCatalogManifestV7,
+} from '../../src/utils/catalog-manifest-v7.js';
 
 const tempDirs: string[] = [];
 
@@ -23,10 +23,10 @@ function sha256(char: string): string {
 
 function createManifestFixture() {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     catalogVersion: '1.2.3',
     channel: 'latest',
-    requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+    requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
     marketplace: {
       owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
       interface: { displayName: 'Fixture Marketplace' },
@@ -56,11 +56,11 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
-describe('catalog manifest schema 6', () => {
+describe('catalog manifest schema 7', () => {
   it('validates a package-independent manifest with entry content digests', () => {
-    const manifest = validateCatalogManifestV6(createManifestFixture());
+    const manifest = validateCatalogManifestV7(createManifestFixture());
 
-    expect(manifest.schemaVersion).toBe(6);
+    expect(manifest.schemaVersion).toBe(7);
     expect(manifest.entries[0]).toMatchObject({
       artifactDigest: sha256('a'),
       manifestDigest: sha256('b'),
@@ -72,63 +72,63 @@ describe('catalog manifest schema 6', () => {
   it('requires one explicit canonical marketplace root identity', () => {
     const missing = createManifestFixture();
     delete (missing as Partial<typeof missing>).marketplace;
-    expect(() => validateCatalogManifestV6(missing)).toThrow(/marketplace/u);
+    expect(() => validateCatalogManifestV7(missing)).toThrow(/marketplace/u);
     const ambiguous = createManifestFixture() as ReturnType<typeof createManifestFixture> & {
       marketplace: ReturnType<typeof createManifestFixture>['marketplace'] & { catalog: object };
     };
     ambiguous.marketplace.catalog = { version: '1.2.3' };
-    expect(() => validateCatalogManifestV6(ambiguous)).toThrow(/unknown field/u);
+    expect(() => validateCatalogManifestV7(ambiguous)).toThrow(/unknown field/u);
   });
 
   it('rejects schema 5 and limits published release metadata to sourceHead', () => {
     const schemaFive = createManifestFixture();
     schemaFive.schemaVersion = 5;
-    expect(() => validateCatalogManifestV6(schemaFive)).toThrow('schemaVersion: expected 6');
+    expect(() => validateCatalogManifestV7(schemaFive)).toThrow('schemaVersion: expected 7');
 
     const published = createManifestFixture() as Record<string, unknown>;
     published.release = { state: 'published' };
-    expect(() => validateCatalogManifestV6(published)).toThrow('sourceHead');
+    expect(() => validateCatalogManifestV7(published)).toThrow('sourceHead');
 
     published.release = {
       state: 'published',
       sourceHead: 'e'.repeat(40),
     };
-    expect(validateCatalogManifestV6(published).release).toEqual(published.release);
+    expect(validateCatalogManifestV7(published).release).toEqual(published.release);
 
     const withLedgerIdentity = structuredClone(published);
     (withLedgerIdentity.release as Record<string, unknown>).contentDigest = sha256('f');
-    expect(() => validateCatalogManifestV6(withLedgerIdentity)).toThrow('unknown field');
+    expect(() => validateCatalogManifestV7(withLedgerIdentity)).toThrow('unknown field');
   });
 
   it('rejects npm package identity and missing or invalid content digests', () => {
-    expect(() => validateCatalogManifestV6({
+    expect(() => validateCatalogManifestV7({
       ...createManifestFixture(),
       packages: {},
     })).toThrow('unknown field "packages"');
 
     const missing = createManifestFixture();
     delete (missing.entries[0] as Partial<typeof missing.entries[0]>).contentDigest;
-    expect(() => validateCatalogManifestV6(missing)).toThrow('contentDigest');
+    expect(() => validateCatalogManifestV7(missing)).toThrow('contentDigest');
 
     const invalid = createManifestFixture();
     invalid.entries[0]!.contentDigest = 'sha256:not-hex';
-    expect(() => validateCatalogManifestV6(invalid)).toThrow('contentDigest');
+    expect(() => validateCatalogManifestV7(invalid)).toThrow('contentDigest');
   });
 
   it('applies package-independent catalog and entry invariants while accepting future capabilities', () => {
     const duplicate = createManifestFixture();
     duplicate.entries.push(structuredClone(duplicate.entries[0]!));
-    expect(() => validateCatalogManifestV6(duplicate)).toThrow('duplicate plugin "demo"');
+    expect(() => validateCatalogManifestV7(duplicate)).toThrow('duplicate plugin "demo"');
 
     const future = createManifestFixture();
     future.entries[0]!.requires.aw.capabilities.push('aw.future-feature.v3');
-    expect(validateCatalogManifestV6(future).entries[0]!.requires.aw.capabilities)
+    expect(validateCatalogManifestV7(future).entries[0]!.requires.aw.capabilities)
       .toContain('aw.future-feature.v3');
   });
 
-  it('creates and validates a schema 6 manifest through its explicit generator API', () => {
+  it('creates and validates a schema 7 manifest through its explicit generator API', () => {
     const fixture = createManifestFixture();
-    const generated = createCatalogManifestV6({
+    const generated = createCatalogManifestV7({
       catalogVersion: fixture.catalogVersion,
       channel: fixture.channel as 'latest',
       requires: fixture.requires,
@@ -141,7 +141,7 @@ describe('catalog manifest schema 6', () => {
   });
 
   it('generates entry artifact, manifest, and content digests from a real plugin tree', async () => {
-    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-manifest-v6-'));
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-manifest-v7-'));
     tempDirs.push(pluginRoot);
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest: PluginMeta['manifest'] = {
@@ -164,7 +164,7 @@ describe('catalog manifest schema 6', () => {
     await fs.outputFile(path.join(pluginRoot, 'README.md'), 'demo\n');
     const plugin: PluginMeta = { rootDir: pluginRoot, manifestPath, manifest };
 
-    const entry = await createCatalogManifestV6Entry(plugin, pluginRoot);
+    const entry = await createCatalogManifestV7Entry(plugin, pluginRoot);
 
     expect(entry.contentDigest).toBe(await calculateCatalogEntryContentDigest(pluginRoot));
     expect(entry.artifactDigest).toMatch(/^sha256:[0-9a-f]{64}$/);

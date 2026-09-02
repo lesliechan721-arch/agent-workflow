@@ -9,7 +9,7 @@ import {
   type PluginStagingRunner,
 } from '../../src/generators/local-plugin.js';
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
-import { createCatalogManifestV6Entry } from '../../src/utils/catalog-manifest-v6.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import type { PluginMeta } from '../../src/types.js';
 
@@ -216,7 +216,7 @@ describe('catalog runtime projection', () => {
     await expect(fs.readFile(path.join(outputRoot, resolvedImport.path), 'utf8'))
       .resolves.toBe('{"portable":true}\n');
     const bundledPlugin = await readPluginManifest(outputRoot, { mode: 'bundle' });
-    await expect(createCatalogManifestV6Entry(bundledPlugin, outputRoot))
+    await expect(createCatalogManifestV7Entry(bundledPlugin, outputRoot))
       .resolves.toMatchObject({
         requires: { aw: { capabilities: expect.arrayContaining(['aw.review-publication.v1']) } },
       });
@@ -426,7 +426,7 @@ describe('catalog runtime projection', () => {
       runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
     });
     const firstBundlePlugin = await readPluginManifest(firstRoot, { mode: 'bundle' });
-    const firstEntry = await createCatalogManifestV6Entry(firstBundlePlugin, firstRoot);
+    const firstEntry = await createCatalogManifestV7Entry(firstBundlePlugin, firstRoot);
 
     const providerManifestPath = path.join(provider.rootDir, '.agents-plugin', 'plugin.json');
     const providerManifest = await fs.readJson(providerManifestPath);
@@ -440,7 +440,7 @@ describe('catalog runtime projection', () => {
       runtimeResolver: createCatalogRuntimeImportResolver([changedProvider, consumer]),
     });
     const secondBundlePlugin = await readPluginManifest(secondRoot, { mode: 'bundle' });
-    const secondEntry = await createCatalogManifestV6Entry(secondBundlePlugin, secondRoot);
+    const secondEntry = await createCatalogManifestV7Entry(secondBundlePlugin, secondRoot);
 
     expect(second.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest)
       .toBe(first.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest);

@@ -1,5 +1,3 @@
-import crypto from 'node:crypto';
-
 import type {
   DependencyScopeOverride,
   DependencyScopeSelector,
@@ -9,16 +7,6 @@ import type {
 
 export type { DependencyScopeOverride } from '../types.js';
 
-export const DEPENDENCY_PLAN_SCHEMA_VERSION = 2;
-
-export type DependencyTargetAction =
-  | 'install'
-  | 'upgrade'
-  | 'reinstall'
-  | 'move'
-  | 'keep'
-  | 'block';
-export type DependencyTargetState = 'absent' | 'present' | 'partial' | 'error';
 export type DependencyAssignmentSource =
   | 'root'
   | 'default'
@@ -27,7 +15,7 @@ export type DependencyAssignmentSource =
   | 'consumerPromotion'
   | 'platformRequirement';
 
-export interface DependencyPlanTarget {
+export interface DependencyPlacementTarget {
   pluginId: string;
   pluginName: string;
   platform: PlatformName;
@@ -42,52 +30,15 @@ export interface DependencyPlanTarget {
   locked: boolean;
   lockReason?: string;
   affectsOtherProjects: boolean;
-  state: DependencyTargetState;
-  action: DependencyTargetAction;
-  errorCode?: string;
-  order: number;
+  placementErrorCode?: string;
 }
 
-export interface DependencyOperationPlan {
-  dependencyPlanSchemaVersion: 2;
-  dependencyPlanDigest: string;
+export interface DependencyPlacementPlan {
   requestedPluginIds: string[];
   resolvedPluginIds: string[];
   dependencyEdges: Array<{ from: string; to: string; platform: PlatformName }>;
   scopeOverrides: DependencyScopeOverride[];
-  targets: DependencyPlanTarget[];
-  claimRoots: Array<{ pluginId: string; platform: PlatformName }>;
-}
-
-export interface DependencyOperationPlanInputTarget {
-  pluginId: string;
-  pluginName: string;
-  platform: PlatformName;
-  relation: 'requested' | 'dependency';
-  requiredBy: string[];
-  resolvedScope: Scope;
-  state: DependencyTargetState;
-  action: DependencyTargetAction;
-  order: number;
-  requestedScope?: Scope;
-  depth?: number;
-  rootScope?: Scope;
-  minimumScope?: Scope;
-  allowedScopes?: Scope[];
-  assignmentSource?: DependencyAssignmentSource;
-  locked?: boolean;
-  lockReason?: string;
-  affectsOtherProjects?: boolean;
-  errorCode?: string;
-}
-
-export interface DependencyOperationPlanInput {
-  requestedPluginIds: string[];
-  resolvedPluginIds: string[];
-  dependencyEdges: Array<{ from: string; to: string; platform?: PlatformName }>;
-  scopeOverrides?: DependencyScopeOverride[];
-  targets: DependencyOperationPlanInputTarget[];
-  claimRoots?: Array<{ pluginId: string; platform: PlatformName }>;
+  targets: DependencyPlacementTarget[];
 }
 
 export interface DependencyPlacementNodeInput {
@@ -97,7 +48,8 @@ export interface DependencyPlacementNodeInput {
   relation: 'requested' | 'dependency';
   depth: number;
   allowedScopes: Scope[];
-  current?: Partial<Record<Scope, DependencyTargetState>>;
+  preferredScope?: Scope;
+  preferredScopeReason?: 'existingWiderTarget';
 }
 
 export interface DependencyPlacementRootInput {
@@ -112,7 +64,6 @@ export interface DependencyPlacementPlanInput {
   roots: DependencyPlacementRootInput[];
   dependencyEdges: Array<{ from: string; to: string; platform: PlatformName }>;
   scopeOverrides?: DependencyScopeSelector[];
-  operation?: 'install' | 'upgrade' | 'reinstall';
 }
 
 const SCOPE_RANK: Record<Scope, number> = { project: 0, user: 1 };
@@ -234,81 +185,6 @@ function canonicalEdges(
   ));
 }
 
-function calculateDependencyPlanDigest(
-  plan: Omit<DependencyOperationPlan, 'dependencyPlanDigest'>,
-): string {
-  const digest = crypto.createHash('sha256').update(JSON.stringify(plan)).digest('hex');
-  return `sha256:${digest}`;
-}
-
-function inferEdgePlatforms(
-  edge: { from: string; to: string; platform?: PlatformName },
-  targets: readonly DependencyOperationPlanInputTarget[],
-): PlatformName[] {
-  if (edge.platform) return [edge.platform];
-  const fromPlatforms = new Set(targets
-    .filter((target) => target.pluginId === edge.from)
-    .map((target) => target.platform));
-  return [...new Set(targets
-    .filter((target) => target.pluginId === edge.to && fromPlatforms.has(target.platform))
-    .map((target) => target.platform))].sort(compareText);
-}
-
-export function createDependencyOperationPlan(
-  input: DependencyOperationPlanInput,
-): DependencyOperationPlan {
-  const targets = input.targets.map((target): DependencyPlanTarget => {
-    const rootScope = target.rootScope ?? target.requestedScope ?? target.resolvedScope;
-    return {
-      pluginId: target.pluginId,
-      pluginName: target.pluginName,
-      platform: target.platform,
-      relation: target.relation,
-      depth: target.depth ?? (target.relation === 'requested' ? 0 : 1),
-      requiredBy: [...new Set(target.requiredBy)].sort(compareText),
-      rootScope,
-      minimumScope: target.minimumScope ?? rootScope,
-      resolvedScope: target.resolvedScope,
-      allowedScopes: canonicalScopes(target.allowedScopes ?? ['project', 'user']),
-      assignmentSource: target.assignmentSource
-        ?? (target.relation === 'requested'
-          ? 'root'
-          : target.resolvedScope !== rootScope ? 'existingWiderTarget' : 'default'),
-      locked: target.locked ?? target.relation === 'requested',
-      ...(target.lockReason ? { lockReason: target.lockReason } : {}),
-      affectsOtherProjects: target.affectsOtherProjects ?? target.resolvedScope === 'user',
-      state: target.state,
-      action: target.action,
-      ...(target.errorCode ? { errorCode: target.errorCode } : {}),
-      order: target.order,
-    };
-  }).sort((left, right) => left.order - right.order || compareText(
-    targetKey(left.pluginId, left.platform),
-    targetKey(right.pluginId, right.platform),
-  ));
-  const dependencyEdges = canonicalEdges(input.dependencyEdges.flatMap((edge) =>
-    inferEdgePlatforms(edge, input.targets).map((platform) => ({ ...edge, platform }))));
-  const planWithoutDigest: Omit<DependencyOperationPlan, 'dependencyPlanDigest'> = {
-    dependencyPlanSchemaVersion: DEPENDENCY_PLAN_SCHEMA_VERSION,
-    requestedPluginIds: [...new Set(input.requestedPluginIds)].sort(compareText),
-    resolvedPluginIds: [...new Set(input.resolvedPluginIds)].sort(compareText),
-    dependencyEdges,
-    scopeOverrides: canonicalOverrides(input.scopeOverrides ?? []),
-    targets,
-    claimRoots: [...new Map((input.claimRoots ?? []).map((root) => [
-      targetKey(root.pluginId, root.platform),
-      { ...root },
-    ])).values()].sort((left, right) => compareText(
-      targetKey(left.pluginId, left.platform),
-      targetKey(right.pluginId, right.platform),
-    )),
-  };
-  return {
-    ...planWithoutDigest,
-    dependencyPlanDigest: calculateDependencyPlanDigest(planWithoutDigest),
-  };
-}
-
 interface MutablePlacement {
   node: DependencyPlacementNodeInput;
   rootScope: Scope;
@@ -317,38 +193,12 @@ interface MutablePlacement {
   assignmentSource: DependencyAssignmentSource;
   locked: boolean;
   lockReason?: string;
-  errorCode?: string;
-}
-
-function stateFor(
-  node: DependencyPlacementNodeInput,
-  scope: Scope,
-): DependencyTargetState {
-  return node.current?.[scope] ?? 'absent';
-}
-
-function actionFor(
-  placement: MutablePlacement,
-  operation: 'install' | 'upgrade' | 'reinstall',
-): DependencyTargetAction {
-  if (placement.errorCode) return 'block';
-  const state = stateFor(placement.node, placement.resolvedScope);
-  const otherScope: Scope = placement.resolvedScope === 'project' ? 'user' : 'project';
-  if (state === 'error') return 'block';
-  if (state === 'present') {
-    return operation === 'install' && placement.node.relation === 'dependency'
-      ? 'keep'
-      : operation;
-  }
-  if (state === 'partial') return 'reinstall';
-  if (stateFor(placement.node, otherScope) !== 'absent') return 'move';
-  return operation;
+  placementErrorCode?: string;
 }
 
 export function createDependencyPlacementPlan(
   input: DependencyPlacementPlanInput,
-): DependencyOperationPlan {
-  const operation = input.operation ?? 'install';
+): DependencyPlacementPlan {
   const nodesByKey = new Map<string, DependencyPlacementNodeInput>();
   for (const node of input.nodes) {
     const key = targetKey(node.pluginId, node.platform);
@@ -403,7 +253,7 @@ export function createDependencyPlacementPlan(
     let assignmentSource: DependencyAssignmentSource;
     let locked = false;
     let lockReason: string | undefined;
-    let errorCode: string | undefined;
+    let placementErrorCode: string | undefined;
 
     if (root) {
       resolvedScope = root.scope;
@@ -415,9 +265,9 @@ export function createDependencyPlacementPlan(
       assignmentSource = 'userOverride';
       locked = true;
       lockReason = 'dependencyScopeOverride';
-    } else if (stateFor(node, 'user') === 'present') {
-      resolvedScope = 'user';
-      assignmentSource = 'existingWiderTarget';
+    } else if (node.preferredScope) {
+      resolvedScope = node.preferredScope;
+      assignmentSource = node.preferredScopeReason ?? 'default';
     } else if (allowedScopes.includes('project')) {
       resolvedScope = 'project';
       assignmentSource = 'default';
@@ -425,8 +275,12 @@ export function createDependencyPlacementPlan(
       resolvedScope = 'user';
       assignmentSource = 'platformRequirement';
     }
+    if (!locked && allowedScopes.length === 1) {
+      locked = true;
+      lockReason = 'platformRequirement';
+    }
     if (!allowedScopes.includes(resolvedScope)) {
-      errorCode = root
+      placementErrorCode = root
         ? 'dependencyRootScopeUnsupported'
         : override ? 'dependencyScopeOverrideUnsupported' : 'dependencyTargetUnsupported';
     }
@@ -438,7 +292,7 @@ export function createDependencyPlacementPlan(
       assignmentSource,
       locked,
       ...(lockReason ? { lockReason } : {}),
-      ...(errorCode ? { errorCode } : {}),
+      ...(placementErrorCode ? { placementErrorCode } : {}),
     });
   }
 
@@ -461,11 +315,11 @@ export function createDependencyPlacementPlan(
       }
       if (SCOPE_RANK[dependency.resolvedScope] >= SCOPE_RANK[dependency.minimumScope]) continue;
       if (dependency.assignmentSource === 'userOverride') {
-        dependency.errorCode = 'dependencyScopeOverrideTooNarrow';
+        dependency.placementErrorCode = 'dependencyScopeOverrideTooNarrow';
         continue;
       }
       if (!dependency.node.allowedScopes.includes(dependency.minimumScope)) {
-        dependency.errorCode = 'dependencyTargetUnsupported';
+        dependency.placementErrorCode = 'dependencyTargetUnsupported';
         continue;
       }
       dependency.resolvedScope = dependency.minimumScope;
@@ -474,19 +328,22 @@ export function createDependencyPlacementPlan(
     }
   }
 
+  for (const placement of placements.values()) {
+    if (placement.locked) continue;
+    const selectableScopes = placement.node.allowedScopes.filter((scope) =>
+      SCOPE_RANK[scope] >= SCOPE_RANK[placement.minimumScope]);
+    if (selectableScopes.length === 1) {
+      placement.locked = true;
+      placement.lockReason = 'minimumScopeRequirement';
+    }
+  }
+
   const requiredByByKey = new Map<string, string[]>();
   for (const edge of edges) {
     const key = targetKey(edge.to, edge.platform);
     requiredByByKey.set(key, [...(requiredByByKey.get(key) ?? []), edge.from]);
   }
-  const claimRoots = edges.flatMap((edge) => {
-    const consumer = placements.get(targetKey(edge.from, edge.platform))!;
-    const dependency = placements.get(targetKey(edge.to, edge.platform))!;
-    return consumer.resolvedScope === 'project' && dependency.resolvedScope === 'user'
-      ? [{ pluginId: edge.to, platform: edge.platform }]
-      : [];
-  });
-  const targets = [...placements.values()].map((placement): DependencyOperationPlanInputTarget => ({
+  const targets = [...placements.values()].map((placement): DependencyPlacementTarget => ({
     pluginId: placement.node.pluginId,
     pluginName: placement.node.pluginName,
     platform: placement.node.platform,
@@ -504,18 +361,19 @@ export function createDependencyPlacementPlan(
     locked: placement.locked,
     ...(placement.lockReason ? { lockReason: placement.lockReason } : {}),
     affectsOtherProjects: placement.resolvedScope === 'user',
-    state: stateFor(placement.node, placement.resolvedScope),
-    action: actionFor(placement, operation),
-    ...(placement.errorCode ? { errorCode: placement.errorCode } : {}),
-    order: placement.node.depth,
-  }));
+    ...(placement.placementErrorCode
+      ? { placementErrorCode: placement.placementErrorCode }
+      : {}),
+  })).sort((left, right) => left.depth - right.depth || compareText(
+    targetKey(left.pluginId, left.platform),
+    targetKey(right.pluginId, right.platform),
+  ));
 
-  return createDependencyOperationPlan({
-    requestedPluginIds: input.requestedPluginIds,
-    resolvedPluginIds: input.nodes.map((node) => node.pluginId),
+  return {
+    requestedPluginIds: [...new Set(input.requestedPluginIds)].sort(compareText),
+    resolvedPluginIds: [...new Set(input.nodes.map((node) => node.pluginId))].sort(compareText),
     dependencyEdges: edges,
     scopeOverrides: overrides,
     targets,
-    claimRoots,
-  });
+  };
 }

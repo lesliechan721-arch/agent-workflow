@@ -204,29 +204,16 @@ export function createInkPrompt(options: InkPromptOptions = {}): CliPrompt {
       const choices = pluginChoices(pluginOptions);
       return pluginOptions.allowMultiple
         ? unwrap(await multiSelect({
-            message: `选择要${pluginOptions.command === 'install' ? '安装' : pluginOptions.command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            message: `选择要${pluginOptions.command === 'install' ? '安装' : '卸载'}的插件`,
             choices,
             defaultValues: pluginOptions.defaultValues,
           }))
         : [unwrap(await select({
-            message: `选择要${pluginOptions.command === 'install' ? '安装' : pluginOptions.command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            message: `选择要${pluginOptions.command === 'install' ? '安装' : '卸载'}的插件`,
             choices,
             defaultValue: pluginOptions.defaultValues?.[0],
           }))];
     },
-    selectUpgradeMode: async ({ canUpgradeAll }) =>
-      unwrap(await select({
-        message: '选择升级方式',
-        choices: [
-          {
-            value: 'all',
-            label: '全部可升级插件',
-            disabled: canUpgradeAll ? undefined : '当前存在需要显式处理的插件，不能使用全部升级',
-          },
-          { value: 'select', label: '手动选择插件' },
-        ],
-        defaultValue: canUpgradeAll ? 'all' : 'select',
-      })),
   };
 
   prompt.configurePlugin = async (configOptions): Promise<CliConfigPromptResult> => {

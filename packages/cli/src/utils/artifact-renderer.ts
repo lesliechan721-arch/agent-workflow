@@ -27,22 +27,22 @@ import {
   resolvePluginConfigStorePath,
 } from './plugin-config.js';
 import {
-  buildLifecycleScriptInvocation,
+  buildNodeScriptInvocation,
   buildPluginScriptSpawnEnv,
   calculateFileDigest,
   collectSensitivePluginConfigValues,
   defaultPluginProcessRunner,
   resolveBundledPluginFilePath,
-  resolveLifecycleScriptTimeoutMs,
+  resolvePluginScriptTimeoutMs,
   summarizePluginScriptOutput,
-  type LifecycleProcessRunner,
-  type LifecycleProcessResult,
-  type LifecycleScriptInvocation,
+  type PluginProcessRunner,
+  type PluginProcessResult,
+  type PluginScriptInvocation,
 } from './plugin-scripts.js';
 import { resolveAwHome } from './paths.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 
-export type ArtifactRenderEvent = 'install' | 'upgrade' | 'refresh' | 'materialize';
+export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 
 export interface ResolvedArtifactRenderConfig {
   mode: 'artifact-render';
@@ -136,7 +136,6 @@ export interface RunArtifactRendererResult {
 
 const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
   'install',
-  'upgrade',
   'refresh',
   'materialize',
 ]);
@@ -156,7 +155,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
   if (!SUPPORTED_ARTIFACT_RENDER_EVENTS.has(value as ArtifactRenderEvent)) {
     throw new Error(
-      `Artifact renderer only supports install, upgrade, refresh, and materialize events; received "${value}".`,
+      `Artifact renderer only supports install, refresh, and materialize events; received "${value}".`,
     );
   }
   return value as ArtifactRenderEvent;
@@ -466,8 +465,13 @@ function buildArtifactRendererInvocation(options: {
   entryPath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-}): LifecycleScriptInvocation {
-  return buildLifecycleScriptInvocation(options);
+}): PluginScriptInvocation {
+  return buildNodeScriptInvocation({
+    entryPath: options.entryPath,
+    cwd: options.cwd,
+    env: options.env,
+    args: options.entry.args,
+  });
 }
 
 function assertRefreshKeysForEvent(
@@ -483,11 +487,11 @@ function assertRefreshKeysForEvent(
 }
 
 async function runArtifactRendererProcess(options: {
-  invocation: LifecycleScriptInvocation;
+  invocation: PluginScriptInvocation;
   timeoutMs: number;
   signal?: AbortSignal;
-  runner?: LifecycleProcessRunner;
-}): Promise<LifecycleProcessResult> {
+  runner?: PluginProcessRunner;
+}): Promise<PluginProcessResult> {
   return (options.runner ?? defaultPluginProcessRunner).run(options.invocation, {
     timeoutMs: options.timeoutMs,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -505,7 +509,7 @@ export async function runArtifactRenderer(options: {
   previousArtifacts?: unknown[];
   scriptTimeoutMs?: number;
   signal?: AbortSignal;
-  runner?: LifecycleProcessRunner;
+  runner?: PluginProcessRunner;
 }): Promise<RunArtifactRendererResult> {
   options.signal?.throwIfAborted();
   const event = assertArtifactRenderEvent(options.event);
@@ -540,9 +544,9 @@ export async function runArtifactRenderer(options: {
     }
     await fs.ensureDir(path.join(writtenContext.tempDir, 'home'));
     await fs.ensureDir(path.join(writtenContext.tempDir, 'tmp'));
-    const timeoutMs = resolveLifecycleScriptTimeoutMs({
+    const timeoutMs = resolvePluginScriptTimeoutMs({
       cliTimeoutMs: options.scriptTimeoutMs,
-      manifest: target.sourceManifest,
+      manifestTimeoutMs: undefined,
     });
     const spawnEnv = buildPluginScriptSpawnEnv({
       commandEnv,

@@ -478,10 +478,10 @@ for (const relativePath of ['nested/.git', 'nested/node_modules']) {
       interactive: false,
       io: output.io,
     })).toBe(1);
-    expect(JSON.parse(output.stdout())).toMatchObject({
-      command: 'catalog:publish:apply',
+    expect(JSON.parse(output.stdout())).toEqual({
       ok: false,
-      errors: [{ message: expect.stringContaining('requires --yes') }],
+      code: 'catalogPublicationFailed',
+      message: 'Catalog publish apply with --json requires --yes.',
     });
     expect(output.stderr()).toContain('requires --yes');
   });

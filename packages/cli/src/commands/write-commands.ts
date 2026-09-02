@@ -1,7 +1,6 @@
 import type {
   InstallCommandOptions,
   PlatformName,
-  UpgradeCommandOptions,
 } from '../types.js';
 import {
   withAwHomeMutationLock,
@@ -12,12 +11,10 @@ import {
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeUninstallCommandOptions,
-  normalizeUpgradeCommandOptions,
   type RawCleanupCommandOptions,
   type RawInstallCommandOptions,
   type RawReinstallCommandOptions,
   type RawUninstallCommandOptions,
-  type RawUpgradeCommandOptions,
 } from './options.js';
 import {
   runRebuildCommand,
@@ -25,7 +22,7 @@ import {
   type RebuildCommandRuntime,
 } from './rebuild-command.js';
 
-type WriteCommand = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
+type WriteCommand = 'install' | 'sync' | 'reinstall' | 'uninstall' | 'cleanup';
 
 function writeErrorCode(message: string): string {
   for (const code of [
@@ -171,7 +168,7 @@ async function runPublicWriteCommand(options: {
     && !options.runtime.managedCodexAuthorizer
     ? { ...options.runtime, managedCodexAuthorizer: async () => true }
     : options.runtime;
-  const execution = runtime.previewDependencyPlanOnly === true
+  const execution = runtime.previewOperationPlan === true
     ? runRebuildCommand({
         command: options.command,
         pluginNames: options.pluginNames,
@@ -216,19 +213,18 @@ export async function installWriteCommand(
   return runPublicWriteCommand({ command: 'install', pluginNames, commandOptions, runtime });
 }
 
-export async function upgradeWriteCommand(
+export async function syncWriteCommand(
   pluginNames: string[],
-  rawOptions: RawUpgradeCommandOptions,
+  rawOptions: RawInstallCommandOptions,
   runtime: RebuildCommandRuntime = {},
 ): Promise<RebuildCommandResult> {
-  const commandOptions: UpgradeCommandOptions = normalizeUpgradeCommandOptions(rawOptions);
-  if (!commandOptions.all) requirePluginNames('upgrade', pluginNames);
+  requirePluginNames('sync', pluginNames);
+  const commandOptions: InstallCommandOptions = normalizeInstallCommandOptions(rawOptions);
   return runPublicWriteCommand({
-    command: 'upgrade',
+    command: 'sync',
     pluginNames,
     commandOptions,
     runtime,
-    all: commandOptions.all,
   });
 }
 

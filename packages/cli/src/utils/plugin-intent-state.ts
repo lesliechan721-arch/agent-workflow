@@ -19,7 +19,7 @@ import {
   assertTestWritablePath,
 } from './test-path-fence.js';
 
-export const PLUGIN_INTENT_SCHEMA_VERSION = 1;
+export const PLUGIN_INTENT_SCHEMA_VERSION = 2;
 export const PLUGIN_INTENT_KIND = 'aw-plugin-intents';
 
 export interface PluginIntentRoot {
@@ -30,13 +30,10 @@ export interface PluginIntentRoot {
 export type PluginIntentDependencyScopeOverride = DependencyScopeOverride;
 
 export interface PluginIntentState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: 'aw-plugin-intents';
   roots: PluginIntentRoot[];
   dependencyScopeOverrides: PluginIntentDependencyScopeOverride[];
-  managed: {
-    codexPluginIds: string[];
-  };
 }
 
 export interface PluginIntentStateLocation {
@@ -97,13 +94,6 @@ function parseScope(value: unknown, fieldName: string): Scope {
   return value;
 }
 
-function parseCodexPluginId(value: unknown, fieldName: string): string {
-  if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
-    throw new Error(`Invalid ${fieldName}: expected a non-empty canonical Codex plugin ID.`);
-  }
-  return value;
-}
-
 function canonicalPlatforms(platforms: readonly PlatformName[]): PlatformName[] {
   return [...new Set(platforms)].sort(compareText);
 }
@@ -114,7 +104,6 @@ export function createEmptyPluginIntentState(): PluginIntentState {
     kind: PLUGIN_INTENT_KIND,
     roots: [],
     dependencyScopeOverrides: [],
-    managed: { codexPluginIds: [] },
   };
 }
 
@@ -153,10 +142,6 @@ export function canonicalizePluginIntentState(state: PluginIntentState): PluginI
       `${left.pluginId}\0${left.platform}`,
       `${right.pluginId}\0${right.platform}`,
     )),
-    managed: {
-      codexPluginIds: [...new Set(state.managed.codexPluginIds.map((pluginId) =>
-        parseCodexPluginId(pluginId, 'managed.codexPluginIds[]')))].sort(compareText),
-    },
   };
 }
 
@@ -164,11 +149,11 @@ export function parsePluginIntentState(value: unknown): PluginIntentState {
   if (!isRecord(value)) throw new Error('Invalid plugin intent state: expected an object.');
   assertExactKeys(
     value,
-    ['schemaVersion', 'kind', 'roots', 'dependencyScopeOverrides', 'managed'],
+    ['schemaVersion', 'kind', 'roots', 'dependencyScopeOverrides'],
     'plugin intent state',
   );
   if (value.schemaVersion !== PLUGIN_INTENT_SCHEMA_VERSION) {
-    throw new Error('Invalid plugin intent state schemaVersion: expected 1.');
+    throw new Error('Invalid plugin intent state schemaVersion: expected 2.');
   }
   if (value.kind !== PLUGIN_INTENT_KIND) {
     throw new Error(`Invalid plugin intent state kind: expected ${PLUGIN_INTENT_KIND}.`);
@@ -176,11 +161,6 @@ export function parsePluginIntentState(value: unknown): PluginIntentState {
   if (!Array.isArray(value.roots)) throw new Error('Invalid roots: expected an array.');
   if (!Array.isArray(value.dependencyScopeOverrides)) {
     throw new Error('Invalid dependencyScopeOverrides: expected an array.');
-  }
-  if (!isRecord(value.managed)) throw new Error('Invalid managed: expected an object.');
-  assertExactKeys(value.managed, ['codexPluginIds'], 'managed');
-  if (!Array.isArray(value.managed.codexPluginIds)) {
-    throw new Error('Invalid managed.codexPluginIds: expected an array.');
   }
 
   const roots = value.roots.map((entry, index): PluginIntentRoot => {
@@ -219,10 +199,6 @@ export function parsePluginIntentState(value: unknown): PluginIntentState {
     kind: PLUGIN_INTENT_KIND,
     roots,
     dependencyScopeOverrides,
-    managed: {
-      codexPluginIds: value.managed.codexPluginIds.map((pluginId, index) =>
-        parseCodexPluginId(pluginId, `managed.codexPluginIds[${index}]`)),
-    },
   });
 }
 
@@ -297,31 +273,6 @@ export function removePluginIntentRootPlatforms(
   return platforms.length === 0
     ? removePluginIntentRoot(state, pluginId)
     : upsertPluginIntentRoot(state, { pluginId, platforms });
-}
-
-export function widenPluginIntentManagedCodexOwnership(
-  state: PluginIntentState,
-  desiredCodexPluginIds: readonly string[],
-): PluginIntentState {
-  return canonicalizePluginIntentState({
-    ...state,
-    managed: {
-      codexPluginIds: [
-        ...state.managed.codexPluginIds,
-        ...desiredCodexPluginIds,
-      ],
-    },
-  });
-}
-
-export function convergePluginIntentManagedCodexOwnership(
-  state: PluginIntentState,
-  desiredCodexPluginIds: readonly string[],
-): PluginIntentState {
-  return canonicalizePluginIntentState({
-    ...state,
-    managed: { codexPluginIds: [...desiredCodexPluginIds] },
-  });
 }
 
 export function resolvePluginIntentStatePath(

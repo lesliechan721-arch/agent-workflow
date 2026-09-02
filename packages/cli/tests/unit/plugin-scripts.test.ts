@@ -1,906 +1,118 @@
-import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
-import type { InstalledScopeRecord, PluginManifestSource, PluginMeta } from '../../src/types.js';
+import type { PluginMeta } from '../../src/types.js';
 import {
-  buildLifecycleScriptInvocation,
-  buildLifecycleSpawnEnv,
-  buildPluginScriptSpawnEnv,
-  garbageCollectLifecycleConfigSnapshots,
-  persistLifecycleConfigSnapshot,
-  prepareLifecycleConfigSnapshot,
-  quoteCmdArgument,
-  resolveLifecycleScriptTarget,
-  resolveLifecycleScriptTimeoutMs,
-  runLifecycleScript,
-  writeLifecycleScriptContext,
+  runPostApplyScript,
+  type PluginProcessRunner,
+  type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
-import {
-  PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS,
-} from '../../src/utils/plugin-script-contract.js';
-import {
-  resolvePluginConfigStorePath,
-  writePluginConfigStore,
-} from '../../src/utils/plugin-config.js';
-import {
-  getCurrentSourceTestIsolation,
-  getSourceTestRepositoryCwd,
-  registerCurrentTestReadonlyFixtureRoot,
-} from '../setup/test-isolation.js';
 
-const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
-async function makeTempRoot(prefix: string): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(root);
-  return root;
-}
-
-function createManifest(name = 'script-plugin'): PluginManifestSource {
+async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-post-apply-'));
+  tempDirs.push(rootDir);
+  await fs.outputFile(path.join(rootDir, 'scripts', 'postApply.mjs'), 'process.stdin.resume();\n');
   return {
-    schemaVersion: 3,
-    name,
-    version: '0.1.0',
-    description: 'Lifecycle test plugin',
-    marketplace: {
-      category: 'test',
-      strict: true,
-      policy: {
-        installation: 'AVAILABLE',
-        authentication: 'ON_INSTALL',
+    sourceId: 'local',
+    pluginId: 'local/demo',
+    rootDir,
+    manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
+    manifest: {
+      schemaVersion: 3,
+      name: 'demo',
+      version: '1.0.0',
+      description: 'postApply fixture',
+      marketplace: {
+        category: 'test',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
-    },
-    scripts: {
-      timeoutMs: 2500,
-      lifecycle: {
-        install: {
-          default: {
-            runner: 'node',
-            path: './scripts/install.mjs',
-            args: ['--flag'],
-          },
-        },
-      },
-    },
-    config: {
-      fields: {
-        token: {
-          type: 'string',
-          required: true,
-          sensitive: true,
-        },
-      },
+      scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
+      ...(options.sensitiveDefault ? {
+        config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
+      } : {}),
     },
   };
-}
-
-async function writePlugin(root: string, manifest = createManifest()): Promise<PluginMeta> {
-  const pluginRoot = path.join(root, 'plugins', manifest.name);
-  await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest, { spaces: 2 });
-  await fs.outputFile(
-    path.join(pluginRoot, 'scripts', 'install.mjs'),
-    [
-      'import { readFileSync, writeFileSync } from "node:fs";',
-      'import path from "node:path";',
-      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      'writeFileSync(path.join(context.cwd, "marker.txt"), `${context.plugin.name}:${context.config.values.token}`);',
-    ].join('\n'),
-  );
-  await fs.outputFile(path.join(pluginRoot, 'scripts', 'uninstall.cmd'), '@echo off\n');
-  return {
-    rootDir: pluginRoot,
-    manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
-    manifest,
-  };
-}
-
-async function commandIsAvailable(command: string, args: string[]): Promise<boolean> {
-  try {
-    await execFileAsync(command, args, {
-      env: process.env,
-      maxBuffer: 1024 * 1024,
-      timeout: 5000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function readMarkerLines(markerPath: string): Promise<string[]> {
-  return fs.readFile(markerPath, 'utf8').then((content) => content.trimEnd().split(/\r?\n/));
 }
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-async function createLifecycleConfigSnapshotForTest(options: {
-  plugin: PluginMeta;
-  platform: 'codex' | 'claude';
-  scope: 'user' | 'project';
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}) {
-  return persistLifecycleConfigSnapshot(
-    await prepareLifecycleConfigSnapshot(options),
-  );
-}
-
-describe('plugin lifecycle scripts', () => {
-  it('uses distinct platform and distribution environment variables', async () => {
-    const root = await makeTempRoot('aw-plugin-surface-env-');
-    const common = {
-      commandEnv: { AW_HOME: path.join(root, 'home'), PATH: '' },
-      contextPath: path.join(root, 'context.json'),
-      tempDir: root,
-      plugin: { name: 'demo', version: '0.1.0' },
-      event: 'materialize',
-      scope: 'user' as const,
-      bundleRoot: root,
+describe('postApply script', () => {
+  it('runs fixed Node in the plugin root and sends the minimal v1 context on stdin', async () => {
+    const plugin = await createPlugin();
+    let invocation: PluginScriptInvocation | undefined;
+    const runner: PluginProcessRunner = {
+      async run(value) {
+        invocation = value;
+        return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      },
     };
-    const native = buildPluginScriptSpawnEnv({ ...common, platform: 'codex' });
-    expect(native).toMatchObject({ AW_PLUGIN_PLATFORM: 'codex' });
-    expect(native.AW_PLUGIN_DISTRIBUTION).toBeUndefined();
-    const portable = buildPluginScriptSpawnEnv({ ...common, distribution: 'agent-skills' });
-    expect(portable).toMatchObject({ AW_PLUGIN_DISTRIBUTION: 'agent-skills' });
-    expect(portable.AW_PLUGIN_PLATFORM).toBeUndefined();
-  });
-
-  it('writes AW_PLUGIN_CONTEXT as 0600 best effort and cleans it up', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest();
-    manifest.config!.fields.mode = { type: 'string', default: 'default' };
-    const plugin = await writePlugin(root, manifest);
-    const sourceId = 'team';
-    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
-    plugin.sourceId = sourceId;
-    plugin.sourceIdentity = sourceIdentity;
-    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    await writePluginConfigStore({
-      sourceId,
-      sourceIdentity,
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: { token: 'secret-token', mode: 'user', legacyToken: 'legacy-secret' },
-    });
-    await writePluginConfigStore({
-      sourceId,
-      sourceIdentity,
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-      values: { mode: 'project' },
-    });
-    const target = await resolveLifecycleScriptTarget({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      currentPlugin: plugin,
-      cwd,
-      runtimeOs: 'linux',
-      env,
-    });
-
-    const written = await writeLifecycleScriptContext({
-      sourceId,
-      sourceIdentity,
-      target,
-      event: 'install',
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      commandEnv: env,
-    });
-
-    const pluginRoot = await fs.realpath(plugin.rootDir);
-    const contextJson = await fs.readJson(written.contextPath);
-    expect(contextJson).toMatchObject({
-      event: 'install',
-      plugin: {
-        name: 'script-plugin',
-        rootDir: pluginRoot,
-        sourceId,
-        sourceIdentity,
-        pluginId: `${sourceId}/${plugin.manifest.name}`,
-      },
-      config: {
-        values: {
-          token: 'secret-token',
-          mode: 'user',
-        },
-      },
-      script: {
-        args: ['--flag'],
-      },
-      paths: {
-        configStores: {
-          user: resolvePluginConfigStorePath({
-            sourceId,
-            pluginName: plugin.manifest.name,
-            scope: 'user',
-            cwd,
-            env,
-          }),
-          project: resolvePluginConfigStorePath({
-            sourceId,
-            pluginName: plugin.manifest.name,
-            scope: 'project',
-            cwd,
-            env,
-          }),
-        },
-      },
-    });
-    expect(Object.keys(contextJson.paths.configStores).sort()).toEqual(['project', 'user']);
-    expect(contextJson.config.stores).toBeUndefined();
-    expect(JSON.stringify(contextJson)).not.toContain('legacy-secret');
-    if (process.platform !== 'win32') {
-      expect((await fs.stat(written.contextPath)).mode & 0o777).toBe(0o600);
-    }
-
-    const projectWritten = await writeLifecycleScriptContext({
-      sourceId,
-      sourceIdentity,
-      target,
-      event: 'install',
+    const cwd = path.join(plugin.rootDir, 'project');
+    await runPostApplyScript({
+      plugin,
       platform: 'codex',
       scope: 'project',
       cwd,
-      commandEnv: env,
-    });
-    expect(projectWritten.context.config).toMatchObject({
-      values: { token: 'secret-token', mode: 'project' },
-      sources: { token: 'user', mode: 'project' },
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH } }),
+      artifacts: [],
+      runner,
     });
 
-    await Promise.all([written.cleanup(), projectWritten.cleanup()]);
-    await expect(fs.pathExists(written.contextPath)).resolves.toBe(false);
+    expect(invocation?.command).toBe(process.execPath);
+    expect(invocation?.cwd).toBe(plugin.rootDir);
+    expect(invocation?.env.HOME).not.toBe(process.env.HOME);
+    expect(JSON.parse(invocation?.stdin ?? '{}')).toEqual({
+      schemaVersion: 1,
+      plugin: { pluginId: 'local/demo', name: 'demo', version: '1.0.0', rootDir: plugin.rootDir },
+      target: { platform: 'codex', scope: 'project', projectRoot: cwd },
+      config: { values: {} },
+      components: [{ kind: 'target', key: 'codex:project', outcome: 'unchanged' }],
+    });
   });
 
-  it('blocks lifecycle context temp writes when AW_HOME points at a read-only fixture root', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-context-fence-');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest('context-fence-plugin');
-    delete manifest.config;
-    const plugin = await writePlugin(root, manifest);
-    const repositoryCwd = getSourceTestRepositoryCwd();
-    registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
-    const env = { AW_HOME: repositoryCwd } as NodeJS.ProcessEnv;
-    const target = await resolveLifecycleScriptTarget({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      currentPlugin: plugin,
-      cwd,
-      runtimeOs: 'linux',
-      env,
-    });
-
-    await expect(writeLifecycleScriptContext({
-      target,
-      event: 'install',
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      commandEnv: env,
-    })).rejects.toThrow(/source: AW_HOME/);
-  });
-
-  it('runs a node lifecycle script with isolated env and cleans context on success', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    const markerPath = path.join(cwd, 'marker.txt');
-    await fs.ensureDir(cwd);
-    const plugin = await writePlugin(root);
-    const env = {
-      AW_HOME: awHome,
-      AW_CODEX_HOME: path.join(root, 'codex-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-      PATH: process.env.PATH,
-    } as NodeJS.ProcessEnv;
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: { token: 'secret-token' },
-    });
-
-    const result = await runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context: createCommandExecutionContext({ env }),
-      runtimeOs: 'linux',
-    });
-
-    expect(result.executed).toBe(true);
-    await expect(fs.readFile(markerPath, 'utf8')).resolves.toBe('script-plugin:secret-token');
-    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
-  });
-
-  it('runs a bash lifecycle script through the real process runner when bash is available', async () => {
-    if (process.platform === 'win32' || !(await commandIsAvailable('bash', ['--version']))) {
-      return;
-    }
-
-    const root = await makeTempRoot('aw-plugin-scripts-bash-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    const markerPath = path.join(cwd, 'shell-marker.txt');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest('bash-plugin');
-    delete manifest.config;
-    manifest.scripts!.lifecycle!.install = {
-      default: {
-        runner: 'bash',
-        path: './scripts/install.sh',
-        args: ['alpha beta', 'gamma'],
+  it('reports timeout and redacts sensitive stderr', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const runner: PluginProcessRunner = {
+      async run() {
+        return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: 'secret-value', timedOut: true };
       },
     };
-    const plugin = await writePlugin(root, manifest);
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'scripts', 'install.sh'),
-      [
-        '#!/usr/bin/env bash',
-        'set -euo pipefail',
-        'test -f "$AW_PLUGIN_CONTEXT"',
-        'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$AW_PLUGIN_NAME" "$AW_PLUGIN_PLATFORM" "$AW_PLUGIN_EVENT" "$1" "$2" > shell-marker.txt',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const env = {
-      AW_HOME: awHome,
-      PATH: process.env.PATH ?? process.env.Path,
-    } as NodeJS.ProcessEnv;
-
-    const result = await runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context: createCommandExecutionContext({ env }),
-      runtimeOs: process.platform === 'darwin' ? 'darwin' : 'linux',
-    });
-
-    expect(result.executed).toBe(true);
-    await expect(readMarkerLines(markerPath)).resolves.toEqual([
-      'bash-plugin',
-      'codex',
-      'install',
-      'alpha beta',
-      'gamma',
-    ]);
-    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
-  });
-
-  it('runs a powershell lifecycle script through the real process runner when powershell is available', async () => {
-    const hasPowershell = await commandIsAvailable('powershell', [
-      '-NoProfile',
-      '-Command',
-      '$PSVersionTable.PSVersion.ToString()',
-    ]);
-    if (!hasPowershell) {
-      return;
-    }
-
-    const root = await makeTempRoot('aw-plugin-scripts-powershell-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    const markerPath = path.join(cwd, 'shell-marker.txt');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest('powershell-plugin');
-    delete manifest.config;
-    manifest.scripts!.lifecycle!.install = {
-      default: {
-        runner: 'powershell',
-        path: './scripts/install.ps1',
-        args: ['alpha beta', 'gamma'],
-      },
-    };
-    const plugin = await writePlugin(root, manifest);
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'scripts', 'install.ps1'),
-      [
-        'if (-not (Test-Path $env:AW_PLUGIN_CONTEXT)) { exit 21 }',
-        '$lines = @($env:AW_PLUGIN_NAME, $env:AW_PLUGIN_PLATFORM, $env:AW_PLUGIN_EVENT, $args[0], $args[1])',
-        'Set-Content -LiteralPath "shell-marker.txt" -Value $lines -Encoding ascii',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    const env = {
-      AW_HOME: awHome,
-      PATH: process.env.PATH ?? process.env.Path,
-    } as NodeJS.ProcessEnv;
-
-    const result = await runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context: createCommandExecutionContext({ env }),
-      runtimeOs: process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux',
-    });
-
-    expect(result.executed).toBe(true);
-    await expect(readMarkerLines(markerPath)).resolves.toEqual([
-      'powershell-plugin',
-      'codex',
-      'install',
-      'alpha beta',
-      'gamma',
-    ]);
-    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
-  });
-
-  it('runs a cmd lifecycle script through the real process runner on Windows', async () => {
-    if (process.platform !== 'win32') {
-      return;
-    }
-
-    const root = await makeTempRoot('aw-plugin-scripts-cmd-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    const markerPath = path.join(cwd, 'shell-marker.txt');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest('cmd-plugin');
-    delete manifest.config;
-    manifest.scripts!.lifecycle!.install = {
-      win32: {
-        runner: 'cmd',
-        path: './scripts/install.cmd',
-        args: ['alpha beta', 'gamma'],
-      },
-    };
-    const plugin = await writePlugin(root, manifest);
-    await fs.outputFile(
-      path.join(plugin.rootDir, 'scripts', 'install.cmd'),
-      [
-        '@echo off',
-        'if not exist "%AW_PLUGIN_CONTEXT%" exit /b 21',
-        '(',
-        '  echo %AW_PLUGIN_NAME%',
-        '  echo %AW_PLUGIN_PLATFORM%',
-        '  echo %AW_PLUGIN_EVENT%',
-        '  echo %~1',
-        '  echo %~2',
-        ') > shell-marker.txt',
-        '',
-      ].join('\r\n'),
-      'utf8',
-    );
-    const env = {
-      AW_HOME: awHome,
-      PATH: process.env.PATH ?? process.env.Path,
-      SystemRoot: process.env.SystemRoot,
-      ComSpec: process.env.ComSpec,
-    } as NodeJS.ProcessEnv;
-
-    const result = await runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context: createCommandExecutionContext({ env }),
-      runtimeOs: 'win32',
-    });
-
-    expect(result.executed).toBe(true);
-    await expect(readMarkerLines(markerPath)).resolves.toEqual([
-      'cmd-plugin',
-      'codex',
-      'install',
-      'alpha beta',
-      'gamma',
-    ]);
-    await expect(fs.readdir(path.join(awHome, 'tmp'))).resolves.toHaveLength(0);
-  });
-
-  it('redacts sensitive stderr summaries and removes context on exit code failure', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const plugin = await writePlugin(root);
-    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: { token: 'secret-token' },
-    });
-    let contextPath = '';
-    const events: unknown[] = [];
-    const context = createCommandExecutionContext({
-      env,
-      reporter: {
-        event: (event) => events.push(event),
-        notice: () => {},
-      },
-      debugLogger: {
-        log: (event) => events.push(event),
-      },
-    });
-
-    await expect(runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context,
-      runtimeOs: 'linux',
-      runner: {
-        async run(invocation) {
-          contextPath = invocation.env.AW_PLUGIN_CONTEXT!;
-          return {
-            exitCode: 7,
-            signal: null,
-            stdout: 'token=secret-token\n',
-            stderr: 'failed with secret-token\n',
-            timedOut: false,
-          };
-        },
-      },
-    })).rejects.toThrow('failed with [REDACTED]');
-
-    await expect(fs.pathExists(contextPath)).resolves.toBe(false);
-    expect(JSON.stringify(events)).not.toContain('secret-token');
-  });
-
-  it('redacts non-string sensitive config values from lifecycle output', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest();
-    manifest.config!.fields.pin = {
-      type: 'number',
-      sensitive: true,
-      default: 8675309,
-    };
-    manifest.config!.fields.enabled = {
-      type: 'boolean',
-      sensitive: true,
-      default: true,
-    };
-    manifest.config!.fields.credentials = {
-      type: 'object',
-      properties: {
-        accessKey: { type: 'string', sensitive: true },
-      },
-    };
-    const plugin = await writePlugin(root, manifest);
-    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: { token: 'secret-token', credentials: { accessKey: 'nested-secret-key' } },
-    });
-    const events: unknown[] = [];
-    const context = createCommandExecutionContext({
-      env,
-      reporter: {
-        event: (event) => events.push(event),
-        notice: () => {},
-      },
-      debugLogger: {
-        log: (event) => events.push(event),
-      },
-    });
-
-    await expect(runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context,
-      runtimeOs: 'linux',
-      runner: {
-        async run() {
-          return {
-            exitCode: 7,
-            signal: null,
-            stdout: 'stdout pin=8675309 enabled=true token=secret-token access=nested-secret-key\n',
-            stderr: 'stderr pin=8675309 enabled=true token=secret-token access=nested-secret-key\n',
-            timedOut: false,
-          };
-        },
-      },
-    })).rejects.toThrow('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
-
-    const finishEvent = events.find((event) => (event as { type?: string }).type === 'lifecycle.finish') as {
-      data?: { stdout?: string; stderr?: string };
-    };
-    expect(finishEvent.data?.stdout).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
-    expect(finishEvent.data?.stderr).toContain('pin=[REDACTED] enabled=[REDACTED] token=[REDACTED] access=[REDACTED]');
-    expect(finishEvent.data?.stdout).not.toContain('8675309');
-    expect(finishEvent.data?.stderr).not.toContain('enabled=true');
-    expect(JSON.stringify(events)).not.toContain('nested-secret-key');
-  });
-
-  it('reports timeouts with redacted stderr summaries', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const awHome = path.join(root, 'aw-home');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const plugin = await writePlugin(root);
-    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: { token: 'secret-token' },
-    });
-
-    await expect(runLifecycleScript({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      currentPlugin: plugin,
-      context: createCommandExecutionContext({ env }),
-      scriptTimeoutMs: 1000,
-      runtimeOs: 'linux',
-      runner: {
-        async run() {
-          return {
-            exitCode: null,
-            signal: 'SIGTERM',
-            stdout: '',
-            stderr: 'timeout secret-token',
-            timedOut: true,
-          };
-        },
-      },
-    })).rejects.toThrow('timeout [REDACTED]');
-  });
-
-  it('builds runner argv without shell:true, including cmd quoting', () => {
-    const env = {} as NodeJS.ProcessEnv;
-    expect(buildLifecycleScriptInvocation({
-      entry: { runner: 'node', path: './x.mjs', args: ['a'] },
-      entryPath: '/tmp/x.mjs',
-      cwd: '/tmp',
-      env,
-    })).toMatchObject({
-      command: process.execPath,
-      args: ['/tmp/x.mjs', 'a'],
-    });
-    expect(buildLifecycleScriptInvocation({
-      entry: { runner: 'bash', path: './x.sh', args: ['a'] },
-      entryPath: '/tmp/x.sh',
-      cwd: '/tmp',
-      env,
-    })).toMatchObject({ command: 'bash', args: ['/tmp/x.sh', 'a'] });
-    expect(buildLifecycleScriptInvocation({
-      entry: { runner: 'powershell', path: './x.ps1', args: ['a'] },
-      entryPath: 'C:\\tmp\\x.ps1',
-      cwd: 'C:\\tmp',
-      env,
-    })).toMatchObject({
-      command: 'powershell',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\tmp\\x.ps1', 'a'],
-    });
-    const cmd = buildLifecycleScriptInvocation({
-      entry: { runner: 'cmd', path: './x.cmd', args: ['has space', 'has"quote'] },
-      entryPath: 'C:\\Program Files\\x.cmd',
-      cwd: 'C:\\tmp',
-      env,
-    });
-    expect(cmd.command).toBe('cmd');
-    expect(cmd.args.at(-1)).toContain('"C:\\Program Files\\x.cmd"');
-    expect(cmd.args.at(-1)).toContain('"has space"');
-    expect(quoteCmdArgument('has"quote')).toBe('"has\\"quote"');
-  });
-
-  it('enforces timeout priority and bounds', () => {
-    expect(resolveLifecycleScriptTimeoutMs({
-      cliTimeoutMs: 1234,
-      manifest: createManifest(),
-    })).toBe(1234);
-    expect(resolveLifecycleScriptTimeoutMs({ manifest: createManifest() })).toBe(2500);
-    const manifest = createManifest();
-    delete manifest.scripts!.timeoutMs;
-    expect(resolveLifecycleScriptTimeoutMs({ manifest })).toBe(PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS);
-    expect(() => resolveLifecycleScriptTimeoutMs({ cliTimeoutMs: 999 })).toThrow('between 1000 and 300000');
-    manifest.scripts!.timeoutMs = 300001;
-    expect(() => resolveLifecycleScriptTimeoutMs({ manifest })).toThrow('between 1000 and 300000');
-  });
-
-  it('builds an isolated spawn env from the command env whitelist', () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const env = buildLifecycleSpawnEnv({
-      commandEnv: {
-        AW_HOME: isolation.layout.awHomeDir,
-        AW_CODEX_HOME: isolation.layout.codexHomeDir,
-        AW_CLAUDE_HOME: isolation.layout.claudeHomeDir,
-        HOME: '/real-home',
-        TMPDIR: '/real-tmp',
-        PATH: '/bin',
-        SECRET_TOKEN: 'do-not-copy',
-      } as NodeJS.ProcessEnv,
-      contextPath: '/ctx.json',
-      tempDir: '/isolated',
-      plugin: { name: 'p', version: '1.0.0' },
-      event: 'install',
-      platform: 'codex',
-      scope: 'user',
-      bundleRoot: '/bundle',
-      runtimeOs: 'linux',
-    });
-
-    expect(env).toMatchObject({
-      AW_HOME: isolation.layout.awHomeDir,
-      AW_CODEX_HOME: isolation.layout.codexHomeDir,
-      AW_CLAUDE_HOME: isolation.layout.claudeHomeDir,
-      PATH: '/bin',
-      HOME: '/isolated/home',
-      TMPDIR: '/isolated/tmp',
-      AW_PLUGIN_CONTEXT: '/ctx.json',
-      AW_PLUGIN_ROOT: '/bundle',
-    });
-    expect(env.SECRET_TOKEN).toBeUndefined();
-
-    const defaults = buildLifecycleSpawnEnv({
-      commandEnv: {
-        AW_HOME: isolation.layout.awHomeDir,
-        PATH: '/bin',
-      } as NodeJS.ProcessEnv,
-      contextPath: '/ctx.json',
-      tempDir: '/isolated',
-      plugin: { name: 'p', version: '1.0.0' },
-      event: 'install',
-      platform: 'codex',
-      scope: 'user',
-      bundleRoot: '/bundle',
-      runtimeOs: 'linux',
-    });
-    expect(defaults.AW_CODEX_HOME).toBe(path.join(isolation.layout.awHomeDir, 'isolated-codex-home'));
-    expect(defaults.AW_CLAUDE_HOME).toBe(path.join(isolation.layout.awHomeDir, 'isolated-claude-home'));
-
-    const windowsAwHome = isolation.layout.awHomeDir;
-    const windowsTempDir = 'C:\\isolated';
-    const windowsEnv = buildLifecycleSpawnEnv({
-      commandEnv: {
-        AW_HOME: windowsAwHome,
-        PATH: 'C:\\bin',
-        HOME: 'C:\\real-home',
-        TMPDIR: 'C:\\real-tmp',
-        USERPROFILE: 'C:\\real-user',
-        TEMP: 'C:\\real-temp',
-        TMP: 'C:\\real-tmp',
-        SystemRoot: 'C:\\Windows',
-        ComSpec: 'C:\\Windows\\System32\\cmd.exe',
-      } as NodeJS.ProcessEnv,
-      contextPath: 'C:\\ctx.json',
-      tempDir: windowsTempDir,
-      plugin: { name: 'p', version: '1.0.0' },
-      event: 'test',
+    await expect(runPostApplyScript({
+      plugin,
       platform: 'claude',
-      scope: 'project',
-      bundleRoot: 'C:\\bundle',
-      runtimeOs: 'win32',
-    });
-    expect(windowsEnv).toMatchObject({
-      AW_HOME: windowsAwHome,
-      AW_CODEX_HOME: path.join(windowsAwHome, 'isolated-codex-home'),
-      AW_CLAUDE_HOME: path.join(windowsAwHome, 'isolated-claude-home'),
-      PATH: 'C:\\bin',
-      USERPROFILE: path.join(windowsTempDir, 'home'),
-      TEMP: path.join(windowsTempDir, 'tmp'),
-      TMP: path.join(windowsTempDir, 'tmp'),
-      SystemRoot: 'C:\\Windows',
-      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
-      AW_PLUGIN_PLATFORM: 'claude',
-      AW_PLUGIN_SCOPE: 'project',
-    });
-    expect(windowsEnv.HOME).toBeUndefined();
-    expect(windowsEnv.TMPDIR).toBeUndefined();
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      artifacts: [],
+      runner,
+    })).rejects.toThrow('postApply timed out. stderr: [REDACTED]');
   });
 
-  it('fails before execution when no lifecycle entry resolves on the current OS', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const cwd = path.join(root, 'repo');
-    await fs.ensureDir(cwd);
-    const manifest = createManifest();
-    manifest.scripts!.lifecycle!.install = {
-      win32: {
-        runner: 'cmd',
-        path: './scripts/install.cmd',
+  it('reports a non-zero exit without persisting failure state', async () => {
+    const plugin = await createPlugin();
+    const awHome = path.join(plugin.rootDir, 'aw-home');
+    const runner: PluginProcessRunner = {
+      async run() {
+        return { exitCode: 7, signal: null, stdout: '', stderr: 'failed', timedOut: false };
       },
     };
-    const plugin = await writePlugin(root, manifest);
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'install.cmd'), '@echo off\n');
-
-    await expect(resolveLifecycleScriptTarget({
-      event: 'install',
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      currentPlugin: plugin,
-      cwd,
-      runtimeOs: 'linux',
-      env: { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv,
-    })).rejects.toThrow('none support linux');
-  });
-
-  it('warns and continues when historical uninstall has no executable lifecycle source', async () => {
-    const root = await makeTempRoot('aw-plugin-scripts-');
-    const cwd = path.join(root, 'repo');
-    const awHome = path.join(root, 'aw-home');
-    await fs.ensureDir(cwd);
-    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
-    const notices: unknown[] = [];
-    const events: unknown[] = [];
-    const context = createCommandExecutionContext({
-      env,
-      reporter: {
-        event: (event) => events.push(event),
-        notice: (notice) => notices.push(notice),
-      },
-      debugLogger: {
-        log: (event) => events.push(event),
-      },
-    });
-
-    const result = await runLifecycleScript({
-      event: 'uninstall',
-      pluginName: 'removed-script-plugin',
+    await expect(runPostApplyScript({
+      plugin,
       platform: 'codex',
       scope: 'user',
-      cwd,
-      context,
-      runtimeOs: 'linux',
-    });
-
-    expect(result.executed).toBe(false);
-    expect(result.target.source).toBe('none');
-    expect(notices).toEqual([
-      expect.objectContaining({
-        level: 'warning',
-        message: expect.stringContaining('No executable uninstall lifecycle script was found'),
-      }),
-    ]);
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: 'lifecycle.noop',
-      }),
-    ]));
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: awHome } }),
+      artifacts: [],
+      runner,
+    })).rejects.toThrow('postApply failed with exit code 7');
+    expect(await fs.pathExists(path.join(awHome, 'lifecycle'))).toBe(false);
   });
-
 });

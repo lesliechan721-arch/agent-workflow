@@ -435,7 +435,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
     expect(inventory.errors).toContainEqual(expect.objectContaining({
       code: 'stateInventoryFailed',
@@ -484,7 +483,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
 
     expect(inventory.errors).toEqual([]);
@@ -506,7 +504,7 @@ describe('namespaced marketplace root', () => {
     });
   });
 
-  it.each(['EACCES', 'EPERM'])('keeps the root when Codex inventory gets %s', async (code) => {
+  it.each(['EACCES', 'EPERM'])('does not inspect Codex private residue when cache access gets %s', async (code) => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
     const pluginsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'plugins');
@@ -529,14 +527,8 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
-      includeOrphanedCodexNativeResidue: true,
     });
-    expect(inventory.errors).toContainEqual(expect.objectContaining({
-      code: 'stateInventoryFailed',
-      kind: 'nativeStateRead',
-      relevance: expect.objectContaining({ global: false, sourceId: 'official' }),
-    }));
+    expect(inventory.errors).toEqual([]);
 
     await expect(cleanupOrphanNamespacedMarketplaceRoot({
       sourceId: 'official',
@@ -544,16 +536,16 @@ describe('namespaced marketplace root', () => {
       marketplaceName: 'aw',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toBe(false);
-    await expect(fs.pathExists(root)).resolves.toBe(true);
+    })).resolves.toBe(true);
+    await expect(fs.pathExists(root)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       isolation.env.AW_HOME!,
       'marketplace-quarantine',
-    ))).resolves.toBe(false);
+    ))).resolves.toBe(true);
   });
 
   it.each(['file', 'symlink'] as const)(
-    'types a Codex cache residue %s root and performs zero marketplace deletion',
+    'ignores a Codex cache residue %s root while deleting only the AW marketplace',
     async (nodeKind) => {
       const isolation = getCurrentSourceTestIsolation();
       const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
@@ -591,12 +583,13 @@ describe('namespaced marketplace root', () => {
         marketplaceName: 'aw',
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-      })).resolves.toBe(false);
-      await expect(fs.pathExists(root)).resolves.toBe(true);
+      })).resolves.toBe(true);
+      await expect(fs.pathExists(root)).resolves.toBe(false);
+      await expect(fs.pathExists(cacheRoot)).resolves.toBe(true);
       await expect(fs.pathExists(path.join(
         isolation.env.AW_HOME!,
         'marketplace-quarantine',
-      ))).resolves.toBe(false);
+      ))).resolves.toBe(true);
     },
   );
 
@@ -612,7 +605,6 @@ describe('namespaced marketplace root', () => {
     const inventory = await inventoryCatalogSourceReferences({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      includeHistoricalProjects: true,
     });
 
     expect(inventory.errors).toEqual([]);
@@ -626,7 +618,7 @@ describe('namespaced marketplace root', () => {
       id: 'someone-else@aw',
       version: '1.0.0',
     })],
-  ] as const)('fails closed on Codex %s and performs zero marketplace deletion', async (_label, createResidue) => {
+  ] as const)('leaves Codex %s residue untouched while deleting only the AW marketplace', async (_label, createResidue) => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
     await createMarketplaceRoot(root);
@@ -656,12 +648,13 @@ describe('namespaced marketplace root', () => {
       marketplaceName: 'aw',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toBe(false);
-    await expect(fs.pathExists(root)).resolves.toBe(true);
+    })).resolves.toBe(true);
+    await expect(fs.pathExists(root)).resolves.toBe(false);
+    await expect(fs.pathExists(path.dirname(manifestPath))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(
       isolation.env.AW_HOME!,
       'marketplace-quarantine',
-    ))).resolves.toBe(false);
+    ))).resolves.toBe(true);
   });
 
   it.each([
@@ -690,7 +683,7 @@ describe('namespaced marketplace root', () => {
         'plugin.json',
       ), { id: 'retained', version: '1.0.0' });
     }],
-  ] as const)('keeps the root for %s', async (_label, createResidue) => {
+  ] as const)('does not claim %s while deleting the AW marketplace', async (_label, createResidue) => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
     await createMarketplaceRoot(root);
@@ -702,12 +695,12 @@ describe('namespaced marketplace root', () => {
       marketplaceName: 'aw',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toBe(false);
-    await expect(fs.pathExists(root)).resolves.toBe(true);
+    })).resolves.toBe(true);
+    await expect(fs.pathExists(root)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(
       isolation.env.AW_HOME!,
       'marketplace-quarantine',
-    ))).resolves.toBe(false);
+    ))).resolves.toBe(true);
   });
 
   it('keeps the root when a configured Codex plugin has an empty cache directory', async () => {
@@ -789,7 +782,6 @@ describe('namespaced marketplace root', () => {
       const inventory = await inventoryCatalogSourceReferences({
         cwd: isolation.layout.fixtureCwd,
         env: isolation.env,
-        includeHistoricalProjects: true,
       });
       expect(inventory.references).toContainEqual(expect.objectContaining({
         kind: 'namespacedMarketplace',
@@ -843,7 +835,6 @@ describe('namespaced marketplace root', () => {
         identity: {
           owner: 'agent-workflows',
           sourceId: 'official',
-          sourceIdentity,
           pluginId: `official/${pluginName}`,
           plugin: pluginName,
           artifactKey: pluginName,
@@ -866,7 +857,14 @@ describe('namespaced marketplace root', () => {
         skillRoot: path.join(stagingRoot, 'plugins', pluginName, 'codex', 'skills', pluginName),
         allowedRoot: path.join(stagingRoot, 'plugins', pluginName, 'codex', 'skills'),
       })).resolves.toMatchObject({
-        sourceId: 'official', sourceIdentity, pluginId: `official/${pluginName}`,
+        schemaVersion: 3,
+        owner: 'agent-workflows',
+        sourceId: 'official',
+        pluginId: `official/${pluginName}`,
+        plugin: pluginName,
+        artifactKey: pluginName,
+        platform: 'codex',
+        scope: 'user',
       });
     }
   });

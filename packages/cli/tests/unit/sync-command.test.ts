@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const catalogMocks = vi.hoisted(() => ({ refresh: vi.fn() }));
+
+vi.mock('../../src/utils/catalog-generation-service.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/catalog-generation-service.js')>(),
+  syncCatalogSourceGeneration: catalogMocks.refresh,
+}));
+
 vi.mock('../../src/commands/write-commands.js', () => ({
-  installWriteCommand: vi.fn(async () => ({
+  syncWriteCommand: vi.fn(async () => ({
     platforms: ['codex'],
     plugins: ['demo'],
     warnings: [],
@@ -13,20 +20,24 @@ vi.mock('../../src/commands/write-commands.js', () => ({
 }));
 
 import { syncCommand } from '../../src/commands/sync-command.js';
-import { installWriteCommand } from '../../src/commands/write-commands.js';
+import { syncWriteCommand } from '../../src/commands/write-commands.js';
+import { buildRebuildReceiptJson } from '../../src/output/command-receipt.js';
 import {
   createEmptyPluginIntentState,
   readPluginIntentState,
   upsertPluginIntentRoot,
-  widenPluginIntentManagedCodexOwnership,
   writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-const mockedInstall = vi.mocked(installWriteCommand);
+const mockedReconcile = vi.mocked(syncWriteCommand);
 
 describe('public Codex sync command', () => {
-  beforeEach(() => mockedInstall.mockClear());
+  beforeEach(() => {
+    mockedReconcile.mockClear();
+    catalogMocks.refresh.mockReset();
+    catalogMocks.refresh.mockResolvedValue({});
+  });
 
   it('rejects selectors with --all and non-interactive missing selection', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -41,7 +52,7 @@ describe('public Codex sync command', () => {
       .rejects.toMatchObject({ code: 'syncSelectorConflict' });
     await expect(syncCommand([], base))
       .rejects.toMatchObject({ code: 'syncSelectionRequired' });
-    expect(mockedInstall).not.toHaveBeenCalled();
+    expect(mockedReconcile).not.toHaveBeenCalled();
   });
 
   it('uses the existing prompt and reconciles selected desired roots without changing them', async () => {
@@ -80,7 +91,7 @@ describe('public Codex sync command', () => {
     })).resolves.toMatchObject({ overallState: 'succeeded' });
 
     expect(multiSelect).toHaveBeenCalledOnce();
-    expect(mockedInstall).toHaveBeenCalledWith(
+    expect(mockedReconcile).toHaveBeenCalledWith(
       ['official/demo'],
       expect.objectContaining({
         platform: 'codex',
@@ -88,50 +99,10 @@ describe('public Codex sync command', () => {
         yes: true,
       }),
       expect.objectContaining({
-        reconcileIntentOnly: true,
         directCli: true,
       }),
     );
-    expect(mockedInstall.mock.calls[0]?.[1]).not.toHaveProperty('dependencyScopeOverrides');
-  });
-
-  it('uses managed inventory for --all recovery after the last root is removed', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const intent = widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['leaf@aw', 'root@aw'],
-    );
-    await writePluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    }, intent);
-
-    await syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      all: true,
-      interactive: false,
-    }, {
-      inventoryCatalogSourceReferences: vi.fn(async () => ({
-        inventorySchemaVersion: 1,
-        references: [{
-          kind: 'namespacedMarketplace',
-          location: '/aw/marketplaces/official/config.json',
-          sourceId: 'official',
-          marketplaceName: 'aw',
-        }],
-        errors: [],
-      })),
-    });
-
-    expect(mockedInstall).toHaveBeenCalledWith(
-      ['official/leaf', 'official/root'],
-      expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ reconcileIntentOnly: true }),
-    );
+    expect(mockedReconcile.mock.calls[0]?.[1]).not.toHaveProperty('dependencyScopeOverrides');
   });
 
   it('recovers a new clone from shared project intent with --all', async () => {
@@ -155,10 +126,10 @@ describe('public Codex sync command', () => {
       interactive: false,
     });
 
-    expect(mockedInstall).toHaveBeenCalledWith(
+    expect(mockedReconcile).toHaveBeenCalledWith(
       ['official/demo'],
       expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ reconcileIntentOnly: true, directCli: true }),
+      expect.objectContaining({ directCli: true }),
     );
     await expect(readPluginIntentState({
       scope: 'project',
@@ -167,124 +138,272 @@ describe('public Codex sync command', () => {
     })).resolves.toEqual(intent);
   });
 
-  it('uses the current primary name only when no live canonical mapping exists', async () => {
+  it('refreshes only selected root sources and keeps reconciling with the old Active on failure', async () => {
     const isolation = getCurrentSourceTestIsolation();
     let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'official/demo',
-      platforms: ['codex'],
+      pluginId: 'first/demo', platforms: ['codex'],
     });
-    intent = widenPluginIntentManagedCodexOwnership(intent, ['demo@aw']);
+    intent = upsertPluginIntentRoot(intent, {
+      pluginId: 'second/other', platforms: ['codex'],
+    });
     await writePluginIntentState({
-      scope: 'project',
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, intent);
+    catalogMocks.refresh.mockRejectedValueOnce(new Error('offline'));
+
+    const result = await syncCommand(['first/demo'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      refresh: true,
+      cliVersion: '1.0.0',
+      interactive: false,
+    });
+
+    expect(catalogMocks.refresh).toHaveBeenCalledOnce();
+    expect(catalogMocks.refresh).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'first' }));
+    expect(result.warnings).toEqual([expect.stringContaining('catalogSourceRefreshFailed: first')]);
+    expect(mockedReconcile).toHaveBeenCalledWith(
+      ['first/demo'],
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it('isolates a source without Active while continuing unrelated refreshed sources', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'first/demo', platforms: ['codex'],
+    });
+    intent = upsertPluginIntentRoot(intent, {
+      pluginId: 'second/other', platforms: ['codex'],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, intent);
+    mockedReconcile.mockRejectedValueOnce(new Error('catalogSourceActiveMissing: first'))
+      .mockImplementationOnce(async () => ({
+      platforms: ['codex'], plugins: ['other'], warnings: [], rebuildResults: [],
+      targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      }));
+
+    const result = await syncCommand([], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'project',
+      all: true,
+      refresh: true,
+      cliVersion: '1.0.0',
+      interactive: false,
+    });
+
+    expect(catalogMocks.refresh).toHaveBeenCalledTimes(2);
+    expect(mockedReconcile.mock.calls.map((call) => call[0])).toEqual([
+      ['first/demo'],
+      ['second/other'],
+    ]);
+    expect(result.plugins).toEqual(['other']);
+    expect(result.overallState).toBe('failed');
+    expect(result.targetResults).toContainEqual(expect.objectContaining({
+      target: expect.objectContaining({ pluginId: 'first/demo' }),
+      state: 'failed',
+      message: expect.stringContaining('catalogSourceActiveMissing'),
+    }));
+  });
+
+  it('refreshes one source once and dispatches both platforms from each root intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team/codex-only', platforms: ['codex'],
+    });
+    intent = upsertPluginIntentRoot(intent, {
+      pluginId: 'team/dual', platforms: ['codex', 'claude'],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
 
     await syncCommand([], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      platform: 'codex',
+      platform: 'both',
       scope: 'project',
       all: true,
+      refresh: true,
+      cliVersion: '1.0.0',
       interactive: false,
-    }, {
-      inventoryCatalogSourceReferences: vi.fn(async () => ({
-        inventorySchemaVersion: 1,
-        references: [],
-        errors: [],
-      })),
     });
 
-    expect(mockedInstall).toHaveBeenCalledWith(
-      ['official/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'project' }),
-      expect.objectContaining({ reconcileIntentOnly: true }),
-    );
+    expect(catalogMocks.refresh).toHaveBeenCalledOnce();
+    expect(catalogMocks.refresh).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'team' }));
+    expect(mockedReconcile.mock.calls.map((call) => [call[0], call[1].platform])).toEqual([
+      [['team/codex-only', 'team/dual'], 'codex'],
+      [['team/dual'], 'claude'],
+    ]);
   });
 
-  it('rejects a rootless managed identity with an ambiguous canonical marketplace source mapping', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    await writePluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-    }, widenPluginIntentManagedCodexOwnership(
-      createEmptyPluginIntentState(),
-      ['demo@unknown'],
-    ));
-
-    await expect(syncCommand([], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      all: true,
-      interactive: false,
-    }, {
-      inventoryCatalogSourceReferences: vi.fn(async () => ({
-        inventorySchemaVersion: 1,
-        references: [
-          {
-            kind: 'namespacedMarketplace',
-            location: '/aw/marketplaces/first/config.json',
-            sourceId: 'first',
-            marketplaceName: 'unknown',
-          },
-          {
-            kind: 'namespacedMarketplace',
-            location: '/aw/marketplaces/second/config.json',
-            sourceId: 'second',
-            marketplaceName: 'unknown',
-          },
-        ],
-        errors: [],
-      })),
-    })).rejects.toMatchObject({ code: 'syncManagedIdentityUnresolved' });
-
-    expect(mockedInstall).not.toHaveBeenCalled();
-  });
-
-  it('rejects multiple live marketplace identities for one desired source', async () => {
+  it('merges dependency plans from source and platform groups into the public receipt', async () => {
     const isolation = getCurrentSourceTestIsolation();
     let intent = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
-      pluginId: 'official/demo',
-      platforms: ['codex'],
+      pluginId: 'first/root', platforms: ['codex'],
     });
-    intent = widenPluginIntentManagedCodexOwnership(intent, ['demo@aw']);
+    intent = upsertPluginIntentRoot(intent, {
+      pluginId: 'second/root', platforms: ['claude'],
+    });
     await writePluginIntentState({
-      scope: 'project',
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     }, intent);
+    mockedReconcile.mockImplementation(async (selectors, options) => {
+      const rootId = selectors[0]!;
+      const sourceId = rootId.split('/')[0]!;
+      const dependencyId = `${sourceId}/leaf`;
+      const platform = options.platform === 'both' ? 'codex' : options.platform;
+      const dependencyScope = sourceId === 'first' ? 'user' : 'project';
+      const targets = [
+        {
+          pluginId: dependencyId,
+          pluginName: 'leaf',
+          platform,
+          resolvedScope: dependencyScope,
+          relation: 'dependency' as const,
+          requiredBy: [rootId],
+          state: 'absent' as const,
+          action: 'install' as const,
+          order: 0,
+          depth: 1,
+          rootScope: 'project' as const,
+          minimumScope: 'project' as const,
+          allowedScopes: ['project', 'user'] as const,
+          assignmentSource: sourceId === 'first' ? 'userOverride' as const : 'default' as const,
+          locked: sourceId === 'first',
+          ...(sourceId === 'first' ? { lockReason: 'dependencyScopeOverride' } : {}),
+          affectsOtherProjects: sourceId === 'first',
+        },
+        {
+          pluginId: rootId,
+          pluginName: 'root',
+          platform,
+          resolvedScope: 'project' as const,
+          relation: 'requested' as const,
+          requiredBy: [],
+          state: 'present' as const,
+          action: 'keep' as const,
+          order: 1,
+          depth: 0,
+          rootScope: 'project' as const,
+          minimumScope: 'project' as const,
+          allowedScopes: ['project', 'user'] as const,
+          assignmentSource: 'root' as const,
+          locked: true,
+          lockReason: 'requestedRootScope',
+          affectsOtherProjects: false,
+        },
+      ];
+      return {
+        platforms: [platform],
+        plugins: [dependencyId, rootId],
+        warnings: [],
+        rebuildResults: targets.map((target) => ({
+          status: 'succeeded' as const,
+          command: 'sync' as const,
+          target: {
+            pluginName: target.pluginName,
+            pluginId: target.pluginId,
+            sourceId,
+            pluginVersion: '1.0.0',
+            platform,
+            scope: target.resolvedScope,
+            cwd: isolation.layout.fixtureCwd,
+          },
+          actions: [],
+          cleanupAttempted: false,
+          removed: [],
+          absent: [],
+          residual: [],
+          quarantined: [],
+          failures: [],
+        })),
+        targetResults: targets.map((target) => ({
+          target: {
+            pluginName: target.pluginName,
+            pluginId: target.pluginId,
+            sourceId,
+            platform,
+            scope: target.resolvedScope,
+          },
+          action: target.action,
+          state: 'completed' as const,
+          message: 'done',
+        })),
+        overallState: 'succeeded' as const,
+        receiptTargets: [],
+        dependencyPlan: {
+          requestedPluginIds: [rootId],
+          resolvedPluginIds: [dependencyId, rootId],
+          dependencyEdges: [{ from: rootId, to: dependencyId, platform }],
+          scopeOverrides: sourceId === 'first'
+            ? [{ pluginId: dependencyId, platform, scope: 'user' as const }]
+            : [],
+          targets,
+        },
+      };
+    });
 
-    await expect(syncCommand([], {
+    const result = await syncCommand([], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      platform: 'codex',
+      platform: 'both',
       scope: 'project',
       all: true,
       interactive: false,
-    }, {
-      inventoryCatalogSourceReferences: vi.fn(async () => ({
-        inventorySchemaVersion: 1,
-        references: [
-          {
-            kind: 'namespacedMarketplace',
-            location: '/aw/marketplaces/official/config.json',
-            sourceId: 'official',
-            marketplaceName: 'aw',
-          },
-          {
-            kind: 'namespacedMarketplace',
-            location: '/aw/marketplaces/official/config.json',
-            sourceId: 'official',
-            marketplaceName: 'aw-official',
-          },
-        ],
-        errors: [],
-      })),
-    })).rejects.toMatchObject({ code: 'syncManagedIdentityUnresolved' });
+    });
+    const receipt = buildRebuildReceiptJson('sync', result);
 
-    expect(mockedInstall).not.toHaveBeenCalled();
+    expect(mockedReconcile.mock.calls.map((call) => [call[0], call[1].platform])).toEqual([
+      [['first/root'], 'codex'],
+      [['second/root'], 'claude'],
+    ]);
+    expect(result.dependencyPlan).toMatchObject({
+      requestedPluginIds: ['first/root', 'second/root'],
+      resolvedPluginIds: ['first/leaf', 'first/root', 'second/leaf', 'second/root'],
+      dependencyEdges: [
+        { from: 'second/root', to: 'second/leaf', platform: 'claude' },
+        { from: 'first/root', to: 'first/leaf', platform: 'codex' },
+      ],
+      scopeOverrides: [{ pluginId: 'first/leaf', platform: 'codex', scope: 'user' }],
+      targets: expect.arrayContaining([
+        expect.objectContaining({
+          pluginId: 'first/leaf', relation: 'dependency', requiredBy: ['first/root'],
+          action: 'install', state: 'absent',
+        }),
+        expect.objectContaining({
+          pluginId: 'second/leaf', relation: 'dependency', requiredBy: ['second/root'],
+          action: 'install', state: 'absent',
+        }),
+      ]),
+    });
+    expect(receipt).toMatchObject({
+      receiptSchemaVersion: 6,
+      overallState: 'succeeded',
+      requestedPluginIds: ['first/root', 'second/root'],
+      resolvedPluginIds: ['first/leaf', 'first/root', 'second/leaf', 'second/root'],
+      dependencyEdges: [
+        { from: 'second/root', to: 'second/leaf', platform: 'claude' },
+        { from: 'first/root', to: 'first/leaf', platform: 'codex' },
+      ],
+      targetResults: expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'first/leaf' }),
+          relation: 'dependency', requiredBy: ['first/root'],
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'second/leaf' }),
+          relation: 'dependency', requiredBy: ['second/root'],
+        }),
+      ]),
+    });
   });
+
 });

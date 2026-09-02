@@ -5,6 +5,7 @@ import { tryParseStrictSemVer } from './manifest.js';
 import type { CodexPluginListEntry } from './native-cli.js';
 
 export type CodexSharedNativeDiagnostic =
+  | 'staleCacheObserved'
   | 'marketplaceRegistrationForeign'
   | 'marketplacePathUnsafe'
   | 'pluginListUnavailable'
@@ -18,25 +19,28 @@ export type CodexSharedNativeDiagnostic =
   | 'payloadPathUnsafe'
   | 'payloadDigestMismatch';
 
-export type CodexSharedNativeState =
-  | { state: 'absent'; nativeAction: 'install' }
-  | { state: 'claimable'; version: string; nativeAction: 'none' }
-  | { state: 'present'; version: string; nativeAction: 'none' }
+export type CodexSharedNativeState = 'missing' | 'usable' | 'replaceable' | 'blocked';
+
+export type CodexSharedNativeInspection =
   | {
-      state: 'outdated';
+      state: 'missing';
+      staleCacheObserved?: true;
+    }
+  | {
+      state: 'usable';
       version: string;
-      desiredVersion: string;
-      nativeAction: 'replace';
     }
   | {
-      state: 'corrupt';
-      diagnostic: CodexSharedNativeDiagnostic;
-      nativeAction: 'blocked';
+      state: 'replaceable';
+      reason: 'outdated' | 'damaged';
+      version?: string;
+      desiredVersion?: string;
+      diagnostic?: CodexSharedNativeDiagnostic;
     }
   | {
-      state: 'foreign';
+      state: 'blocked';
+      reason: 'foreign' | 'unreadable';
       diagnostic: CodexSharedNativeDiagnostic;
-      nativeAction: 'blocked';
     };
 
 export type CodexSharedNativeManifestEvidence =
@@ -46,7 +50,7 @@ export type CodexSharedNativeManifestEvidence =
       state: 'present';
       identity: string;
       version: string;
-      payloadDigest: string;
+      payloadDigest?: string;
       payloadPath: string;
       pathSafe: boolean;
     };
@@ -57,17 +61,11 @@ export interface CodexSharedNativeEvidence {
   marketplaceName: string;
   canonicalMarketplaceRoot: string;
   desiredVersion: string;
-  expectedPayloadDigest: string;
+  expectedPayloadDigest?: string;
   marketplaceRegistration?: CodexMarketplaceSnapshot;
   marketplacePathSafe: boolean;
   pluginListEntries: CodexPluginListEntry[] | null;
   manifest: CodexSharedNativeManifestEvidence;
-  managedByCurrentIntent: boolean;
-}
-
-function namespacedPluginName(pluginId: string): string | null {
-  const separator = pluginId.lastIndexOf('@');
-  return separator > 0 ? pluginId.slice(0, separator) : null;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -84,17 +82,20 @@ export function isCanonicalCodexMarketplaceRegistration(
     && samePath(registration.source, canonicalMarketplaceRoot);
 }
 
-function corrupt(diagnostic: CodexSharedNativeDiagnostic): CodexSharedNativeState {
-  return { state: 'corrupt', diagnostic, nativeAction: 'blocked' };
+function damaged(diagnostic: CodexSharedNativeDiagnostic): CodexSharedNativeInspection {
+  return { state: 'replaceable', reason: 'damaged', diagnostic };
 }
 
-function foreign(diagnostic: CodexSharedNativeDiagnostic): CodexSharedNativeState {
-  return { state: 'foreign', diagnostic, nativeAction: 'blocked' };
+function blocked(
+  reason: 'foreign' | 'unreadable',
+  diagnostic: CodexSharedNativeDiagnostic,
+): CodexSharedNativeInspection {
+  return { state: 'blocked', reason, diagnostic };
 }
 
 export function inspectCodexSharedNative(
   evidence: CodexSharedNativeEvidence,
-): CodexSharedNativeState {
+): CodexSharedNativeInspection {
   const expectedPluginId = `${evidence.pluginName}@${evidence.marketplaceName}`;
   if (evidence.pluginId !== expectedPluginId) {
     throw new Error(`Invalid Codex shared native identity: expected ${expectedPluginId}.`);
@@ -102,63 +103,72 @@ export function inspectCodexSharedNative(
   if (!tryParseStrictSemVer(evidence.desiredVersion)) {
     throw new Error(`Invalid desired Codex shared native version: ${evidence.desiredVersion}.`);
   }
-  if (!/^sha256:[0-9a-f]{64}$/u.test(evidence.expectedPayloadDigest)) {
+  if (evidence.expectedPayloadDigest !== undefined
+    && !/^sha256:[0-9a-f]{64}$/u.test(evidence.expectedPayloadDigest)) {
     throw new Error('Invalid expected Codex shared native payload digest.');
   }
 
+  if (evidence.pluginListEntries === null) return blocked('unreadable', 'pluginListUnavailable');
+
+  const listMatches = evidence.pluginListEntries.filter((entry) =>
+    entry.pluginId === evidence.pluginId);
+  if (listMatches.length > 1) return blocked('unreadable', 'pluginListDuplicate');
+  const listEntry = listMatches[0];
+
+  if (!listEntry) {
+    return evidence.manifest.state === 'absent'
+      ? { state: 'missing' }
+      : { state: 'missing', staleCacheObserved: true };
+  }
   if (evidence.marketplaceRegistration && !isCanonicalCodexMarketplaceRegistration(
     evidence.marketplaceRegistration,
     evidence.canonicalMarketplaceRoot,
   )) {
-    return foreign('marketplaceRegistrationForeign');
+    return blocked('foreign', 'marketplaceRegistrationForeign');
   }
-  if (!evidence.marketplacePathSafe) return foreign('marketplacePathUnsafe');
-  if (evidence.pluginListEntries === null) return corrupt('pluginListUnavailable');
+  if (!evidence.marketplacePathSafe) return blocked('foreign', 'marketplacePathUnsafe');
 
-  const nameCollisions = evidence.pluginListEntries.filter((entry) =>
-    namespacedPluginName(entry.pluginId) === evidence.pluginName
-    && entry.pluginId !== evidence.pluginId);
-  if (nameCollisions.length > 0) return foreign('pluginNameCollision');
-  const listMatches = evidence.pluginListEntries.filter((entry) =>
-    entry.pluginId === evidence.pluginId);
-  if (listMatches.length > 1) return corrupt('pluginListDuplicate');
-  const listEntry = listMatches[0];
-
-  if (evidence.manifest.state === 'unreadable') return corrupt('manifestUnreadable');
+  if (evidence.manifest.state === 'unreadable') return blocked('unreadable', 'manifestUnreadable');
   if (evidence.manifest.state === 'absent') {
-    return listEntry || evidence.managedByCurrentIntent
-      ? corrupt('manifestMissing')
-      : { state: 'absent', nativeAction: 'install' };
+    return damaged('manifestMissing');
   }
-  if (!listEntry) return corrupt('pluginListUnavailable');
-  if (!evidence.marketplaceRegistration) return corrupt('marketplaceRegistrationForeign');
-  if (!evidence.manifest.pathSafe) return foreign('payloadPathUnsafe');
+  if (!evidence.marketplaceRegistration) {
+    return blocked('foreign', 'marketplaceRegistrationForeign');
+  }
+  if (!evidence.manifest.pathSafe) return blocked('foreign', 'payloadPathUnsafe');
   if (
     evidence.manifest.identity !== evidence.pluginId
     && evidence.manifest.identity !== evidence.pluginName
   ) {
-    return foreign('manifestIdentityMismatch');
+    return blocked('foreign', 'manifestIdentityMismatch');
   }
   if (!tryParseStrictSemVer(evidence.manifest.version)) {
-    return corrupt('manifestVersionInvalid');
+    return damaged('manifestVersionInvalid');
   }
   if (listEntry.version !== undefined && listEntry.version !== evidence.manifest.version) {
-    return corrupt('pluginListVersionMismatch');
+    return {
+      state: 'replaceable',
+      reason: 'outdated',
+      version: listEntry.version,
+      desiredVersion: evidence.desiredVersion,
+    };
   }
   if (evidence.manifest.version !== evidence.desiredVersion) {
     return {
-      state: 'outdated',
+      state: 'replaceable',
+      reason: 'outdated',
       version: evidence.manifest.version,
       desiredVersion: evidence.desiredVersion,
-      nativeAction: 'replace',
     };
   }
-  if (evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest) {
-    return corrupt('payloadDigestMismatch');
+  if (evidence.expectedPayloadDigest !== undefined
+    && evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest) {
+    return damaged('payloadDigestMismatch');
   }
-  return evidence.managedByCurrentIntent
-    ? { state: 'present', version: evidence.manifest.version, nativeAction: 'none' }
-    : { state: 'claimable', version: evidence.manifest.version, nativeAction: 'none' };
+  return {
+    state: 'usable',
+    version: evidence.manifest.version,
+  };
 }
 
 export const classifyCodexSharedNativeEvidence = inspectCodexSharedNative;

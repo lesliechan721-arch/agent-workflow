@@ -5,7 +5,6 @@ import {
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeUninstallCommandOptions,
-  normalizeUpgradeCommandOptions,
   parseDependencyScopeOverrides,
 } from '../../src/commands/options.js';
 
@@ -13,7 +12,6 @@ describe('write command options', () => {
   it('requires explicit platforms for every write command', () => {
     for (const normalize of [
       normalizeInstallCommandOptions,
-      normalizeUpgradeCommandOptions,
       normalizeReinstallCommandOptions,
       normalizeUninstallCommandOptions,
     ]) {

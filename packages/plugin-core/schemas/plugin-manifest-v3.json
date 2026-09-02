@@ -275,19 +275,19 @@
     },
     "scriptEntry": {
       "type": "object", "additionalProperties": false, "required": ["runner", "path"],
-      "properties": { "runner": { "enum": ["node", "sh", "bash", "pwsh", "powershell", "cmd", "auto"] }, "path": { "type": "string" }, "args": { "$ref": "#/$defs/stringArray" } }
+      "properties": { "runner": { "const": "node" }, "path": { "type": "string" }, "args": { "$ref": "#/$defs/stringArray" } }
     },
-    "lifecycleDefinition": {
-      "oneOf": [
-        { "type": "string" },
-        { "type": "object", "additionalProperties": false, "properties": { "default": { "$ref": "#/$defs/scriptEntry" }, "unix": { "$ref": "#/$defs/scriptEntry" }, "windows": { "$ref": "#/$defs/scriptEntry" }, "linux": { "$ref": "#/$defs/scriptEntry" }, "darwin": { "$ref": "#/$defs/scriptEntry" }, "win32": { "$ref": "#/$defs/scriptEntry" } } }
-      ]
+    "postApply": {
+      "type": "object", "additionalProperties": false, "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/pluginPath" },
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000 }
+      }
     },
     "scripts": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "timeoutMs": { "type": "integer" },
-        "lifecycle": { "type": "object", "additionalProperties": false, "properties": { "install": { "$ref": "#/$defs/lifecycleDefinition" }, "upgrade": { "$ref": "#/$defs/lifecycleDefinition" }, "uninstall": { "$ref": "#/$defs/lifecycleDefinition" } } },
+        "postApply": { "$ref": "#/$defs/postApply" },
         "helpers": { "type": "object", "additionalProperties": false, "required": ["config"], "properties": { "config": { "type": "string" } } },
         "node": { "type": "object", "additionalProperties": false, "properties": { "packageRoot": { "type": "string" }, "build": { "$ref": "#/$defs/scriptEntry" } } },
         "artifacts": { "type": "object", "additionalProperties": false, "properties": { "render": { "$ref": "#/$defs/scriptEntry" } } },

@@ -116,9 +116,12 @@ exec "${process.execPath}" "${evalBin}" "$@"
     artifacts: {
       targets: [{
         id: 'demo-codex',
+        platform: 'codex',
         target: 'codex.skill',
         skillKey: 'demo',
         scopes: ['project'],
+        states: ['present'],
+        refreshKeys: [],
         sourceDirs: ['./skills/demo'],
       }],
     },

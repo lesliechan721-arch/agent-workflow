@@ -146,10 +146,6 @@ const TEMPLATE_TEXT_FILE_EXTENSIONS = /\.(md|markdown|txt|json|yaml|yml|toml|rul
 const SLASH_COMMAND_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_SLASH_COMMANDS_DIR = 'slash-commands';
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
-const SCRIPT_AUTO_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.sh', '.ps1', '.cmd', '.bat']);
-const SCRIPT_RUNNERS = new Set(['node', 'sh', 'bash', 'pwsh', 'powershell', 'cmd', 'auto']);
-const SCRIPT_OS_SELECTORS = new Set(['default', 'unix', 'windows', 'linux', 'darwin', 'win32']);
-const SCRIPT_LIFECYCLE_EVENTS = new Set(['install', 'upgrade', 'uninstall']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 300000;
 const ARTIFACT_TARGETS = new Set(getPluginAuthoringAcceptedValues(
@@ -1673,10 +1669,6 @@ function isNodeRunnablePath(relativePath) {
   return SCRIPT_NODE_EXTENSIONS.has(path.posix.extname(normalizeRelativePath(relativePath)));
 }
 
-function isAutoRunnablePath(relativePath) {
-  return SCRIPT_AUTO_EXTENSIONS.has(path.posix.extname(normalizeRelativePath(relativePath)).toLowerCase());
-}
-
 function normalizePluginScriptPath(pluginDir, value, fieldName) {
   if (typeof value !== 'string' || value.trim() === '') {
     error(`${fieldName} must be a non-empty string`);
@@ -1728,18 +1720,12 @@ function validateScriptEntry(pluginDir, value, fieldName, options = {}) {
   validateAllowedKeys(entry, fieldName, ['runner', 'path', 'args']);
 
   const runner = validateManifestString(entry.runner, `${fieldName}.runner`);
-  if (runner && !SCRIPT_RUNNERS.has(runner)) {
-    error(`${fieldName}.runner has unsupported runner "${runner}"`);
-  }
-  if (options.requireNodeRunner && runner !== 'node') {
+  if (runner !== 'node') {
     error(`${fieldName}.runner must be "node"`);
   }
 
   const relativePath = normalizePluginScriptPath(pluginDir, entry.path, `${fieldName}.path`);
   validateDeclaredScriptFile(pluginDir, relativePath, `${fieldName}.path`);
-  if (runner === 'auto' && relativePath && !isAutoRunnablePath(relativePath)) {
-    error(`${fieldName}.path uses runner "auto" but has no supported extension (${[...SCRIPT_AUTO_EXTENSIONS].join(', ')})`);
-  }
   if (options.requireNodePath && relativePath && !isNodeRunnablePath(relativePath)) {
     error(`${fieldName}.path must use a Node runnable extension (.js, .mjs, or .cjs)`);
   }
@@ -1757,58 +1743,6 @@ function validateScriptEntry(pluginDir, value, fieldName, options = {}) {
   }
 
   return runner && relativePath ? { runner, path: relativePath } : null;
-}
-
-function validateLifecycleDefinition(pluginDir, value, fieldName, runtimeEntries) {
-  if (typeof value === 'string') {
-    const relativePath = normalizePluginScriptPath(pluginDir, value, fieldName);
-    validateDeclaredScriptFile(pluginDir, relativePath, fieldName);
-    if (relativePath && !isAutoRunnablePath(relativePath)) {
-      error(`${fieldName} uses runner "auto" but has no supported extension (${[...SCRIPT_AUTO_EXTENSIONS].join(', ')})`);
-    }
-    if (relativePath && isNodeRunnablePath(relativePath)) {
-      runtimeEntries.push({ path: relativePath, fieldName });
-    }
-    return { default: relativePath ? { runner: 'auto', path: relativePath } : null };
-  }
-
-  const selector = expectRecord(value, fieldName);
-  if (!selector) return {};
-  if ('runner' in selector || 'path' in selector || 'command' in selector) {
-    error(`${fieldName} must declare lifecycle scripts under OS selectors`);
-  }
-  for (const selectorName of Object.keys(selector)) {
-    if (!SCRIPT_OS_SELECTORS.has(selectorName)) {
-      error(`${fieldName} has unknown OS selector "${selectorName}"`);
-    }
-  }
-
-  const normalized = {};
-  for (const [selectorName, entryValue] of Object.entries(selector)) {
-    const entry = validateScriptEntry(
-      pluginDir,
-      entryValue,
-      `${fieldName}.${selectorName}`,
-    );
-    if (entry) {
-      normalized[selectorName] = entry;
-      if (entry.runner === 'node' || (entry.runner === 'auto' && isNodeRunnablePath(entry.path))) {
-        runtimeEntries.push({ path: entry.path, fieldName: `${fieldName}.${selectorName}.path` });
-      }
-    }
-  }
-
-  const orders = {
-    linux: ['linux', 'unix', 'default'],
-    darwin: ['darwin', 'unix', 'default'],
-    win32: ['win32', 'windows', 'default'],
-  };
-  for (const [osName, order] of Object.entries(orders)) {
-    if (!order.some((selectorName) => normalized[selectorName])) {
-      error(`${fieldName} must include an entry that resolves on ${osName}`);
-    }
-  }
-  return normalized;
 }
 
 function isNonRegistryDependencySpecifier(specifier) {
@@ -3053,15 +2987,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
 
   const scripts = expectRecord(manifest.scripts, 'scripts');
   if (!scripts) return null;
-  validateAllowedKeys(scripts, 'scripts', ['timeoutMs', 'lifecycle', 'helpers', 'node', 'artifacts', 'tests']);
-  if (
-    scripts.timeoutMs !== undefined &&
-    (!Number.isInteger(scripts.timeoutMs) ||
-      scripts.timeoutMs < SCRIPT_TIMEOUT_MIN_MS ||
-      scripts.timeoutMs > SCRIPT_TIMEOUT_MAX_MS)
-  ) {
-    error(`scripts.timeoutMs must be an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS}`);
-  }
+  validateAllowedKeys(scripts, 'scripts', ['postApply', 'helpers', 'node', 'artifacts', 'tests']);
 
   const runtimeNodeEntries = [];
   let artifactRenderEntry = null;
@@ -3080,22 +3006,20 @@ function validateScriptsLightweight(pluginDir, manifest) {
     }
   }
 
-  if (scripts.lifecycle !== undefined) {
-    const lifecycle = expectRecord(scripts.lifecycle, 'scripts.lifecycle');
-    if (lifecycle) {
-      validateAllowedKeys(lifecycle, 'scripts.lifecycle', [...SCRIPT_LIFECYCLE_EVENTS]);
-      for (const [eventName, definition] of Object.entries(lifecycle)) {
-        if (!SCRIPT_LIFECYCLE_EVENTS.has(eventName)) {
-          error(`scripts.lifecycle has unsupported event "${eventName}"`);
-          continue;
-        }
-        validateLifecycleDefinition(
-          pluginDir,
-          definition,
-          `scripts.lifecycle.${eventName}`,
-          runtimeNodeEntries,
-        );
+  if (scripts.postApply !== undefined) {
+    const postApply = expectRecord(scripts.postApply, 'scripts.postApply');
+    if (postApply) {
+      validateAllowedKeys(postApply, 'scripts.postApply', ['path', 'timeoutMs']);
+      const postApplyPath = normalizePluginScriptPath(pluginDir, postApply.path, 'scripts.postApply.path');
+      validateDeclaredScriptFile(pluginDir, postApplyPath, 'scripts.postApply.path');
+      if (postApplyPath && !isNodeRunnablePath(postApplyPath)) {
+        error('scripts.postApply.path must use a Node runnable extension (.js, .mjs, or .cjs)');
       }
+      if (postApply.timeoutMs !== undefined && (!Number.isInteger(postApply.timeoutMs)
+        || postApply.timeoutMs < SCRIPT_TIMEOUT_MIN_MS || postApply.timeoutMs > SCRIPT_TIMEOUT_MAX_MS)) {
+        error(`scripts.postApply.timeoutMs must be an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS}`);
+      }
+      if (postApplyPath) runtimeNodeEntries.push({ path: postApplyPath, fieldName: 'scripts.postApply.path' });
     }
   }
 

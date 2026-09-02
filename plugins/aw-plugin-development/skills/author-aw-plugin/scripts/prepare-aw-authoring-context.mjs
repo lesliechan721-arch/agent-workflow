@@ -6,7 +6,7 @@ import process from 'node:process';
 
 const COMPONENT_TYPES = new Set([
   'manifest', 'skill', 'extension', 'slash-command', 'mcp', 'app', 'dynamic-artifact',
-  'config-helper', 'lifecycle', 'node-build', 'readme', 'eval-assets',
+  'config-helper', 'post-apply', 'node-build', 'readme', 'eval-assets',
 ]);
 const OPERATIONS = new Set(['create', 'change', 'remove']);
 const PRODUCTS = new Set(['CODEX', 'CLAUDE']);

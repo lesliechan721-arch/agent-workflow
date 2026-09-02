@@ -246,7 +246,7 @@ test('Eval suites are minimal, distinct, and structurally observable', async () 
   }
 });
 
-test('public Catalog commands auto-discover a Workspace and build schema 6', async () => {
+test('public Catalog commands auto-discover a Workspace and build schema 7', async () => {
   const document = await readCaseDocument('author-aw-catalog', 'behavior');
   const evalCase = document.cases.find((entry) => entry.id === 'maintain-plugin-and-aggregate');
   assert.ok(evalCase);
@@ -268,10 +268,10 @@ test('public Catalog commands auto-discover a Workspace and build schema 6', asy
     const snapshotPath = path.join(root, '.aw', 'catalog');
     const validation = await runCli(['catalog', 'validate', snapshotPath, '--json'], root);
     assert.equal(validation.exitCode, 0, validation.stderr);
-    assert.equal(parseSingleJson(validation.stdout, 'schema 6 validation').ok, true);
+    assert.equal(parseSingleJson(validation.stdout, 'schema 7 validation').ok, true);
     const manifest = JSON.parse(await readFile(path.join(snapshotPath, 'catalog-manifest.json'), 'utf8'));
-    assert.equal(manifest.schemaVersion, 6);
-    assert.deepEqual(manifest.requires.aw.capabilities, ['aw.catalog-snapshot.v6']);
+    assert.equal(manifest.schemaVersion, 7);
+    assert.deepEqual(manifest.requires.aw.capabilities, ['aw.catalog-snapshot.v7']);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -344,7 +344,7 @@ test('Author safe-delete fixture preserves the canonical handoff boundary', asyn
     const postDeleteStatus = trace.lastIndexOf('catalog status');
     assert.deepEqual(trace.slice(postDeleteStatus + 1), ['catalog build', 'catalog validate']);
     const manifest = JSON.parse(await readFile(path.join(root, '.aw', 'catalog', 'catalog-manifest.json'), 'utf8'));
-    assert.equal(manifest.schemaVersion, 6);
+    assert.equal(manifest.schemaVersion, 7);
     assert.deepEqual(manifest.entries, []);
   } finally {
     await Promise.all([

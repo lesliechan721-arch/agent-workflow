@@ -15,7 +15,8 @@ async function catalogJournalState() {
       config.workspaceRoot,
       '.aw',
       'publish',
-      `${descriptor.candidates.catalog}.json`,
+      descriptor.candidates.catalog,
+      'journal.json',
     ), 'utf8'));
     return attempt.state;
   } catch (error) {

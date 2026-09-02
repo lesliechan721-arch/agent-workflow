@@ -16,22 +16,13 @@ import {
 } from './state-paths.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
+  SHARED_OWNER_TOKEN_PREFIX,
   parseSharedOwnerToken,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   SKILL_OWNER_MARKER,
 } from './ownership.js';
-import {
-  createLifecycleProjectLocationKey,
-  inspectLifecycleActiveSnapshotForInventory,
-} from './lifecycle-active-store.js';
-import {
-  CodexNativeResidueProbeError,
-  discoverCodexNativeResidueNames,
-  inspectCodexNativeResidue,
-} from '../commands/rebuild-integration.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
-import { readPluginManifest } from './manifest.js';
 import { readStrictNamespacedMarketplaceRoot } from './local-marketplace.js';
 import type { PlatformName, Scope } from '../types.js';
 
@@ -40,8 +31,6 @@ export type CatalogSourceReferenceKind =
   | 'namespacedOwner'
   | 'legacyConfig'
   | 'namespacedConfig'
-  | 'legacyLifecycle'
-  | 'namespacedLifecycle'
   | 'legacyMarketplace'
   | 'namespacedMarketplace';
 
@@ -55,7 +44,6 @@ export interface CatalogSourceReference {
   platform?: string;
   scope?: string;
   projectKey?: string | null;
-  lifecycleMetadataIntegrityDigest?: string;
   pluginVersion?: string;
 }
 
@@ -114,7 +102,6 @@ function claudeConsumersFromInstalled(
   value: Record<string, unknown> | null,
   marketplaceName: string,
   currentProject: string,
-  includeHistoricalProjects: boolean,
 ): NativeMarketplaceConsumer[] {
   const output: NativeMarketplaceConsumer[] = [];
   if (value !== null && !isRecord(value)) {
@@ -156,7 +143,7 @@ function claudeConsumersFromInstalled(
           ? canonicalizePathThroughExistingAncestorSync(item.projectPath)
           : null
         : undefined;
-      if (!includeHistoricalProjects && scope === 'project' && projectKey !== currentProject) continue;
+      if (scope === 'project' && projectKey !== currentProject) continue;
       const pluginName = typeof item.name === 'string'
         ? item.name
         : pluginNameFromMarketplaceId(key, marketplaceName) ?? key;
@@ -263,26 +250,6 @@ function inventoryErrorRelevance(
     if (pathSegmentsWithin(path.join(root, '.agent-workflows'), location) !== null) {
       return { global: false, scope: 'project' };
     }
-  }
-  const lifecycle = pathSegmentsWithin(path.join(awHome, 'lifecycle-active'), location);
-  if (lifecycle?.[0]) {
-    const platform = lifecycle[1] === 'codex' || lifecycle[1] === 'claude'
-      ? lifecycle[1]
-      : undefined;
-    const scope = lifecycle[2] === 'user' || lifecycle[2] === 'project'
-      ? lifecycle[2]
-      : undefined;
-    const pluginName = platform && scope && lifecycle.length >= 5
-      && (scope === 'project' || lifecycle[3] === 'user')
-      ? lifecycle[4]
-      : undefined;
-    return {
-      global: false,
-      sourceId: lifecycle[0],
-      ...(pluginName ? { pluginName } : {}),
-      ...(platform ? { platform } : {}),
-      ...(scope ? { scope } : {}),
-    };
   }
   return { global: true };
 }
@@ -454,7 +421,7 @@ async function inventoryPluginConfigRoots(options: {
     env: options.env,
     cwd: options.cwd,
   })) {
-    const projectConfigRoot = await inventoryCanonicalDescendantDirectory({
+    const projectRoot = await inventoryCanonicalDescendantDirectory({
       root: rawRepoRoot,
       segments: ['.agent-workflows', 'plugin-config'],
       errors: options.errors,
@@ -462,7 +429,7 @@ async function inventoryPluginConfigRoots(options: {
       env: options.env,
       cwd: options.cwd,
     });
-    if (projectConfigRoot) roots.push(projectConfigRoot);
+    if (projectRoot) roots.push(projectRoot);
   }
   return roots;
 }
@@ -610,22 +577,13 @@ function ownerReferenceFromRaw(
   entryPath: string,
   raw: Record<string, unknown> | null,
 ): CatalogSourceReference | null {
-  if (raw?.schemaVersion === 1 && raw.owner === 'agent-workflows') {
-    return {
-      kind: 'legacyOwner',
-      location: entryPath,
-      ...(typeof raw.plugin === 'string' ? { pluginName: raw.plugin } : {}),
-      ...(typeof raw.platform === 'string' ? { platform: raw.platform } : {}),
-      ...(typeof raw.scope === 'string' ? { scope: raw.scope } : {}),
-    };
-  }
-  if (raw?.schemaVersion === 2 && raw.owner === 'agent-workflows'
-    && typeof raw.sourceId === 'string') {
+  if (raw?.schemaVersion === 3 && raw.owner === 'agent-workflows'
+    && typeof raw.sourceId === 'string'
+    && raw.pluginId === `${raw.sourceId}/${raw.plugin}`) {
     return {
       kind: 'namespacedOwner',
       location: entryPath,
       sourceId: raw.sourceId,
-      ...(typeof raw.sourceIdentity === 'string' ? { sourceIdentity: raw.sourceIdentity } : {}),
       ...(typeof raw.plugin === 'string' ? { pluginName: raw.plugin } : {}),
       ...(typeof raw.platform === 'string' ? { platform: raw.platform } : {}),
       ...(typeof raw.scope === 'string' ? { scope: raw.scope } : {}),
@@ -682,7 +640,7 @@ async function readOwnedHeaderReference(
     return null;
   }
   return ownerReferenceFromRaw(filePath, {
-    schemaVersion: parsed.identity.sourceId === undefined ? 1 : 2,
+    schemaVersion: 3,
     ...parsed.identity,
   });
 }
@@ -840,7 +798,6 @@ function sharedOwnerTokenReferences(
       kind: 'namespacedOwner',
       location: filePath,
       sourceId: identity.sourceId,
-      sourceIdentity: identity.sourceIdentity,
       pluginName: identity.plugin,
       platform: identity.platform,
       scope: identity.scope,
@@ -851,7 +808,7 @@ function sharedOwnerTokenReferences(
 
 async function codexSharedOwnerReferences(
   filePath: string,
-  scope: 'user' | 'project',
+  _scope: 'user' | 'project',
   errors: CatalogSourceInventoryError[],
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -865,27 +822,17 @@ async function codexSharedOwnerReferences(
   ];
   const references = sharedOwnerTokenReferences(
     filePath,
-    ownerValues.map((entry) => entry.value).filter((value) => value.startsWith('aw-owner-v2:')),
+    ownerValues.map((entry) => entry.value).filter((value) => value.startsWith(SHARED_OWNER_TOKEN_PREFIX)),
     errors,
     env,
     cwd,
   );
-  for (const { value, location } of scope === 'user' ? ownerValues : []) {
-    if (value.startsWith('aw-owner-v2:') || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)) continue;
-    references.push({
-      kind: 'legacyOwner',
-      location,
-      pluginName: value,
-      platform: 'codex',
-      scope,
-    });
-  }
   return references;
 }
 
 async function claudeSharedOwnerReferences(
   filePath: string,
-  scope: 'user' | 'project',
+  _scope: 'user' | 'project',
   errors: CatalogSourceInventoryError[],
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -896,21 +843,11 @@ async function claudeSharedOwnerReferences(
   const keys = Object.keys(permissions);
   const references = sharedOwnerTokenReferences(
     filePath,
-    keys.filter((token) => token.startsWith('aw-owner-v2:')),
+    keys.filter((token) => token.startsWith(SHARED_OWNER_TOKEN_PREFIX)),
     errors,
     env,
     cwd,
   );
-  for (const key of keys) {
-    if (key.startsWith('aw-owner-v2:') || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(key)) continue;
-    references.push({
-      kind: 'legacyOwner',
-      location: filePath,
-      pluginName: key,
-      platform: 'claude',
-      scope,
-    });
-  }
   return references;
 }
 
@@ -1072,7 +1009,6 @@ async function oldMarketplaceReferences(
         installed,
         'aw',
         path.normalize(canonicalProjectRoot),
-        false,
       )) {
         output.push({ kind: 'legacyMarketplace', location: claudeInstalledPath, ...consumer });
       }
@@ -1147,17 +1083,20 @@ function registeredMarketplaceRoots(
 export async function inventoryCatalogSourceReferences(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  includeHistoricalProjects?: boolean;
-  includeOrphanedCodexNativeResidue?: boolean;
-  codexNativeResidueTargets?: ReadonlyArray<{
-    sourceId?: string;
-    pluginName: string;
-  }>;
 }): Promise<CatalogSourceReferenceInventory> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
   const references: CatalogSourceReference[] = [];
   const errors: CatalogSourceInventoryError[] = [];
+  const canonicalProjectRoot = await inventoryRead({
+    operation: () => fs.realpath(resolveRepoRootSync(options.cwd)),
+    absent: path.resolve(resolveRepoRootSync(options.cwd)),
+    errors,
+    location: resolveRepoRootSync(options.cwd),
+    kind: 'projectRootRead',
+    env,
+    cwd: options.cwd,
+  });
   const legacyConfig = await inventoryLegacyConfigReferences(options);
   references.push(...legacyConfig.references);
   errors.push(...legacyConfig.errors);
@@ -1218,156 +1157,7 @@ export async function inventoryCatalogSourceReferences(options: {
           kind: 'namespacedConfig',
           location: configPath,
           sourceId: sourceEntry.name,
-          sourceIdentity: value.sourceIdentity,
           pluginName: pluginEntry.name,
-        });
-      }
-    }
-  }
-  const lifecycleRoot = path.join(awHome, 'lifecycle-active');
-  const lifecycleSources = await inventoryCanonicalDirectoryEntries({
-    errors, location: lifecycleRoot, kind: 'lifecycleDirectoryRead', env, cwd: options.cwd,
-  });
-  for (const platform of ['codex', 'claude']) {
-    const legacyRoot = path.join(lifecycleRoot, platform);
-    if (!lifecycleSources.some((entry) => entry.name === platform)) continue;
-    const legacyEntries = await inventoryCanonicalDirectoryEntries({
-      errors, location: legacyRoot, kind: 'lifecycleNamespaceValidation', env, cwd: options.cwd,
-    });
-    if (legacyEntries.length > 0) {
-      references.push({ kind: 'legacyLifecycle', location: legacyRoot });
-    }
-  }
-  const canonicalProjectRoot = await inventoryRead({
-    operation: () => fs.realpath(resolveRepoRootSync(options.cwd)),
-    absent: path.resolve(resolveRepoRootSync(options.cwd)), errors,
-    location: resolveRepoRootSync(options.cwd), kind: 'projectRootRead', env, cwd: options.cwd,
-  });
-  const projectLocationKey = createLifecycleProjectLocationKey(canonicalProjectRoot);
-  for (const sourceEntry of lifecycleSources) {
-    if (sourceEntry.name === 'codex' || sourceEntry.name === 'claude') continue;
-    const sourceLifecycleRoot = path.join(lifecycleRoot, sourceEntry.name);
-    if (!await inventoryCanonicalDirectory({
-      errors,
-      location: sourceLifecycleRoot,
-      kind: 'lifecycleNamespaceValidation',
-      env,
-      cwd: options.cwd,
-    })) continue;
-    const relevantRoots: string[] = [];
-    for (const platform of ['codex', 'claude']) {
-      const userRoot = await inventoryCanonicalDescendantDirectory({
-        root: sourceLifecycleRoot,
-        segments: [platform, 'user', 'user'],
-        errors,
-        kind: 'lifecycleDirectoryRead',
-        env,
-        cwd: options.cwd,
-      });
-      if (userRoot) relevantRoots.push(userRoot);
-      const projectRoot = await inventoryCanonicalDescendantDirectory({
-        root: sourceLifecycleRoot,
-        segments: [platform, 'project'],
-        errors,
-        kind: 'lifecycleDirectoryRead',
-        env,
-        cwd: options.cwd,
-      });
-      if (!projectRoot) continue;
-      if (options.includeHistoricalProjects) {
-        const projectLocations = await inventoryRead({
-          operation: () => fs.readdir(projectRoot, { withFileTypes: true }),
-          absent: [], errors, location: projectRoot, kind: 'lifecycleDirectoryRead', env, cwd: options.cwd,
-        });
-        for (const location of projectLocations) {
-          const projectLocationRoot = path.join(projectRoot, location.name);
-          if (await inventoryCanonicalDirectory({
-            errors,
-            location: projectLocationRoot,
-            kind: 'lifecycleLocationValidation',
-            env,
-            cwd: options.cwd,
-          })) relevantRoots.push(projectLocationRoot);
-        }
-      } else {
-        const projectLocationRoot = path.join(projectRoot, projectLocationKey);
-        if (await inventoryCanonicalDirectory({
-          errors,
-          location: projectLocationRoot,
-          kind: 'lifecycleLocationValidation',
-          env,
-          cwd: options.cwd,
-        })) relevantRoots.push(projectLocationRoot);
-      }
-    }
-    for (const relevantRoot of relevantRoots) {
-      const pluginEntries = await inventoryRead({
-        operation: () => fs.readdir(relevantRoot, { withFileTypes: true }),
-        absent: [], errors, location: relevantRoot, kind: 'lifecycleDirectoryRead', env, cwd: options.cwd,
-      });
-      const parts = path.relative(sourceLifecycleRoot, relevantRoot).split(path.sep);
-      const platform = parts[0];
-      const scope = parts[1];
-      if ((platform !== 'codex' && platform !== 'claude')
-        || (scope !== 'user' && scope !== 'project')) continue;
-      for (const pluginEntry of pluginEntries) {
-        const pluginName = pluginEntry.name;
-        const pluginRoot = path.join(relevantRoot, pluginName);
-        if (!await inventoryCanonicalDirectory({
-          errors,
-          location: pluginRoot,
-          kind: 'lifecyclePluginRootValidation',
-          env,
-          cwd: options.cwd,
-        })) continue;
-        const metadataPath = path.join(relevantRoot, pluginName, 'active', 'metadata.json');
-        const raw = await inventoryRead({
-          operation: () => fs.readJson(metadataPath), absent: null, errors,
-          location: metadataPath, kind: 'lifecycleMetadataRead', env, cwd: options.cwd,
-        }) as Record<string, unknown> | null;
-        if (!raw) continue;
-        if (raw.schemaVersion !== 2 || typeof raw.sourceIdentity !== 'string') {
-          errors.push(inventoryError(
-            new Error('Lifecycle active metadata is not valid schema 2 state.'),
-            metadataPath,
-            'lifecycleMetadataValidation',
-            env,
-            options.cwd,
-          ));
-          continue;
-        }
-        const snapshot = await inventoryRead({
-          operation: () => inspectLifecycleActiveSnapshotForInventory({
-            sourceId: sourceEntry.name,
-            sourceIdentity: raw.sourceIdentity as string,
-            pluginName,
-            platform,
-            scope,
-            cwd: scope === 'project' && typeof raw.projectKey === 'string'
-              ? raw.projectKey
-              : options.cwd,
-            env,
-            loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-          }),
-          absent: null,
-          errors,
-          location: metadataPath,
-          kind: 'lifecycleSnapshotValidation',
-          env,
-          cwd: options.cwd,
-        });
-        if (!snapshot) continue;
-        references.push({
-          kind: 'namespacedLifecycle',
-          location: snapshot.activeRoot,
-          sourceId: snapshot.metadata.sourceId,
-          sourceIdentity: snapshot.metadata.sourceIdentity,
-          pluginName: snapshot.metadata.pluginName,
-          platform: snapshot.metadata.platform,
-          scope: snapshot.metadata.scope,
-          projectKey: snapshot.metadata.projectKey,
-          lifecycleMetadataIntegrityDigest: snapshot.metadata.metadataIntegrityDigest,
-          pluginVersion: snapshot.metadata.pluginVersion,
         });
       }
     }
@@ -1391,6 +1181,11 @@ export async function inventoryCatalogSourceReferences(options: {
   const codexConfig = await inventoryRead({
     operation: () => readCodexConfigFile(codexConfigPath), absent: null, errors,
     location: codexConfigPath, kind: 'nativeStateRead', env, cwd: options.cwd,
+  });
+  const projectCodexConfigPath = path.join(resolveRepoRootSync(options.cwd), '.codex', 'config.toml');
+  const projectCodexConfig = await inventoryRead({
+    operation: () => readCodexConfigFile(projectCodexConfigPath), absent: null, errors,
+    location: projectCodexConfigPath, kind: 'nativeStateRead', env, cwd: options.cwd,
   });
   const userClaudeSettingsPath = path.join(getClaudeHome(env), 'settings.json');
   const userClaudeSettings = await inventoryRead({
@@ -1425,6 +1220,18 @@ export async function inventoryCatalogSourceReferences(options: {
       marketplaceName: pluginId.slice(separator + 1),
       platform: 'codex',
       scope: 'user',
+    });
+  }
+  for (const pluginId of Object.keys(projectCodexConfig?.snapshot.plugins ?? {})) {
+    const separator = pluginId.lastIndexOf('@');
+    if (separator <= 0 || separator === pluginId.length - 1) continue;
+    references.push({
+      kind: 'namespacedMarketplace',
+      location: projectCodexConfigPath,
+      pluginName: pluginId.slice(0, separator),
+      marketplaceName: pluginId.slice(separator + 1),
+      platform: 'codex',
+      scope: 'project',
     });
   }
   for (const [location, registrations] of [
@@ -1521,80 +1328,14 @@ export async function inventoryCatalogSourceReferences(options: {
       && !codexMarketplace.sourcePointsToManifest
       && path.normalize(codexMarketplace.source ?? '') === path.normalize(marketplaceRoot);
     const consumers: NativeMarketplaceConsumer[] = [];
-    if (options.includeOrphanedCodexNativeResidue === true
-      && marketplaceName !== null
-      && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
-      let residueNames: string[] = [];
-      try {
-        residueNames = await discoverCodexNativeResidueNames({
-          cwd: options.cwd,
-          env,
-          marketplaceName,
-          marketplaceRoot,
-        });
-      } catch (error) {
-        const residueError = error instanceof CodexNativeResidueProbeError ? error : null;
-        const pluginName = residueError?.pluginName;
-        errors.push(inventoryError(
-          error,
-          residueError?.location ?? configPath,
-          'nativeStateRead',
-          env,
-          options.cwd,
-          {
-            global: false,
-            sourceId: sourceEntry.name,
-            ...(pluginName ? { pluginName } : {}),
-            platform: 'codex',
-            scope: 'user',
-          },
-        ));
-      }
-      for (const pluginName of residueNames) {
-        consumers.push({ pluginName, platform: 'codex', scope: 'user' });
-      }
-    } else if (marketplaceName !== null
-      && (strictRoot !== null || (canonicalRoot && codexMarketplaceIsCanonical))) {
-      const exactPluginNames = [...new Set((options.codexNativeResidueTargets ?? []).flatMap((target) =>
-        (target.sourceId === undefined || target.sourceId === sourceEntry.name)
-          ? [target.pluginName]
-          : []))];
-      for (const pluginName of exactPluginNames) {
-        try {
-          const residue = await inspectCodexNativeResidue({
-            cwd: options.cwd,
-            env,
-            pluginName,
-            marketplaceName,
-            marketplaceRoot,
-          });
-          if (residue.state === 'present') {
-            consumers.push({ pluginName, platform: 'codex', scope: 'user' });
-          } else if (residue.state === 'foreign') {
-            throw new Error('Codex native residue has foreign or incomplete identity evidence.');
-          }
-        } catch (error) {
-          errors.push(inventoryError(
-            error,
-            path.join(getCodexHome(env), 'plugins', 'cache', marketplaceName, pluginName),
-            'nativeStateRead',
-            env,
-            options.cwd,
-            {
-              global: false,
-              sourceId: sourceEntry.name,
-              pluginName,
-              platform: 'codex',
-              scope: 'user',
-            },
-          ));
-        }
-      }
-    }
     if (marketplaceName !== null && (strictRoot !== null || codexMarketplaceIsCanonical)) {
       for (const pluginId of Object.keys(codexConfig?.snapshot.plugins ?? {})) {
         const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);
         if (pluginName) consumers.push({ pluginName, platform: 'codex', scope: 'user' });
+      }
+      for (const pluginId of Object.keys(projectCodexConfig?.snapshot.plugins ?? {})) {
+        const pluginName = pluginNameFromMarketplaceId(pluginId, marketplaceName);
+        if (pluginName) consumers.push({ pluginName, platform: 'codex', scope: 'project' });
       }
     }
     if (marketplaceName !== null) {
@@ -1607,7 +1348,6 @@ export async function inventoryCatalogSourceReferences(options: {
           claudeInstalled,
           marketplaceName,
           path.normalize(canonicalProjectRoot),
-          options.includeHistoricalProjects === true,
         ));
       } catch (error) {
         errors.push(inventoryError(
@@ -1664,7 +1404,7 @@ export class LegacyCatalogStateUnsupportedError extends Error {
   readonly inventory: CatalogSourceReferenceInventory;
 
   constructor(inventory: CatalogSourceReferenceInventory) {
-    super('legacyStateUnsupported: legacy owner, config, lifecycle, or marketplace state must be migrated before catalog source identity changes.');
+    super('legacyStateUnsupported: legacy owner or config state is unsupported. Use a new AW_HOME, or cleanup with the old CLI first.');
     this.name = 'LegacyCatalogStateUnsupportedError';
     this.inventory = inventory;
   }

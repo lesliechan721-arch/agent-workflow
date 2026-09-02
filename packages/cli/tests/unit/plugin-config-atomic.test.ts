@@ -42,6 +42,26 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
+  it('writes the exact schema 3 namespaced envelope with source identity', async () => {
+    const fixture = await makeFixture();
+    const options = {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'a'.repeat(64)}`,
+      pluginName: 'demo',
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    await writePluginConfigStore({ ...options, values: { enabled: true } });
+    await expect(fs.readJson(resolvePluginConfigStorePath(options))).resolves.toEqual({
+      schemaVersion: 3,
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
+      pluginName: options.pluginName,
+      values: { enabled: true },
+    });
+  });
+
   it('reads and lists user config without creating config state', async () => {
     const fixture = await makeFixture();
     const options = {
@@ -506,24 +526,23 @@ describe('plugin config atomic writes', () => {
     await writePluginConfigStore({ ...options, values: { old: true } });
     const filePath = resolvePluginConfigStorePath(options);
     const parentPath = path.dirname(filePath);
-    const originalLstat = fs.lstat.bind(fs);
-    let reportSymlinkParent = false;
-    vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
-      const stats = await originalLstat(candidate);
-      if (reportSymlinkParent && path.resolve(String(candidate)) === path.resolve(parentPath)) {
-        const changed = Object.create(stats) as typeof stats;
-        Object.defineProperty(changed, 'isSymbolicLink', { value: () => true });
-        return changed;
-      }
-      return stats;
-    });
-    setAtomicConfigBeforeRenameHookForTests(async () => {
-      reportSymlinkParent = true;
+    const movedParent = `${parentPath}-moved`;
+    const externalParent = path.join(fixture.root, 'external-parent-swap');
+    await fs.ensureDir(externalParent);
+    let movedTemporaryPath = '';
+    let externalSameNamePath = '';
+    setAtomicConfigBeforeRenameHookForTests(async (_targetPath, temporaryPath) => {
+      await fs.rename(parentPath, movedParent);
+      await fs.symlink(externalParent, parentPath);
+      movedTemporaryPath = path.join(movedParent, path.basename(temporaryPath));
+      externalSameNamePath = path.join(externalParent, path.basename(temporaryPath));
+      await fs.outputFile(externalSameNamePath, '{"external":true}\n');
     });
 
     await expect(writePluginConfigStore({ ...options, values: { changed: true } }))
-      .rejects.toThrow('symbolic link');
-    await expect(fs.readJson(filePath)).resolves.toEqual({ old: true });
-    expect((await fs.readdir(parentPath)).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+      .rejects.toThrow('real directory');
+    await expect(fs.readFile(externalSameNamePath, 'utf8')).resolves.toBe('{"external":true}\n');
+    await expect(fs.pathExists(movedTemporaryPath)).resolves.toBe(true);
+    await expect(fs.readJson(path.join(movedParent, 'config.json'))).resolves.toEqual({ old: true });
   });
 });

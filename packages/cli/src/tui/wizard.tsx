@@ -30,7 +30,6 @@ type Page = 'platform' | 'scope' | 'plugins' | 'key' | 'value' | 'confirm' | 'bu
 function commandLabel(command: CommandWizardRequest<unknown>['command']): string {
   const labels: Record<CommandWizardRequest<unknown>['command'], string> = {
     install: '安装',
-    upgrade: '升级',
     reinstall: '重装',
     uninstall: '卸载',
     cleanup: '清理',

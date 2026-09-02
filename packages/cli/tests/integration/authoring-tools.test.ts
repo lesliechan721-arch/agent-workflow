@@ -2472,6 +2472,7 @@ describe('authoring tools', () => {
   it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
     tempDirs.push(tempRoot);
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
 
     const helperPath = path.join(
       repoRoot(),
@@ -2483,7 +2484,6 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
-    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
@@ -2505,7 +2505,12 @@ describe('authoring tools', () => {
       values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
-      plugin: { name: 'context-helper', sourceId: 'team', sourceIdentity },
+      plugin: {
+        name: 'context-helper',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/context-helper',
+      },
       config: {
         values: {
           apiKey: 'context-secret',
@@ -2556,7 +2561,6 @@ describe('authoring tools', () => {
     expect(payload).toMatchObject({
       pluginName: 'context-helper',
       sourceId: 'team',
-      sourceIdentity,
       pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
@@ -2740,7 +2744,6 @@ describe('authoring tools', () => {
     expect(payload).toMatchObject({
       pluginName: 'config-demo',
       sourceId,
-      sourceIdentity,
       pluginId: `${sourceId}/config-demo`,
     });
     expect(payload.values).toMatchObject({
@@ -2926,7 +2929,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('scaffolds config helper, lifecycle, config schema, and plugin script tests on demand', async () => {
+  it('scaffolds config helper, postApply, config schema, and plugin script tests on demand', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-scripts-'));
     tempDirs.push(tempRoot);
 
@@ -2942,10 +2945,10 @@ describe('authoring tools', () => {
         initScriptPath,
         'script-ready',
         '--description',
-        'Plugin with AW config helper and lifecycle scripts.',
+        'Plugin with AW config helper and postApply script.',
         '--no-skills',
         '--with-config-api',
-        '--with-lifecycle',
+        '--with-post-apply',
         '--workspace-root',
         tempRepo,
       ],
@@ -2960,11 +2963,7 @@ describe('authoring tools', () => {
     const manifest = await fs.readJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       scripts: {
-        lifecycle: {
-          install: './scripts/lifecycle.mjs',
-          upgrade: './scripts/lifecycle.mjs',
-          uninstall: './scripts/lifecycle.mjs',
-        },
+        postApply: { path: './scripts/postApply.mjs' },
         helpers: {
           config: './scripts/aw-config.mjs',
         },
@@ -2983,7 +2982,7 @@ describe('authoring tools', () => {
       },
     });
     await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'aw-config.mjs'))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'lifecycle.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'postApply.mjs'))).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
     ).resolves.toBe(true);
@@ -3143,11 +3142,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.txt',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3178,13 +3173,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'auto', path: './scripts/lifecycle.py' },
-            darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
-            win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.py' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3205,7 +3194,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('runner "auto"'),
+      stdout: expect.stringContaining('scripts.postApply.path must use a Node runnable extension'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3214,11 +3203,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        lifecycle: {
-          install: {
-            linux: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          },
-        },
+        postApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3232,15 +3217,6 @@ describe('authoring tools', () => {
       },
     }, { spaces: 2 });
 
-    await expect(
-      execFileAsync('node', [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.lifecycle.install must include an entry that resolves on win32'),
-    });
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3430,9 +3406,7 @@ describe('authoring tools', () => {
       'import-scan-test',
       createBaseManifest('import-scan-test', {
         scripts: {
-          lifecycle: {
-            install: './scripts/entry.mjs',
-          },
+          postApply: { path: './scripts/entry.mjs' },
         },
       }),
       {

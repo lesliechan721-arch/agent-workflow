@@ -15,13 +15,12 @@ function capture() {
   };
 }
 
-describe('CLI entry v4', () => {
+describe('CLI entry v5', () => {
   it('publishes the write commands plus sync, status, and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
     for (const command of [
       'install',
-      'upgrade',
       'reinstall',
       'uninstall',
       'cleanup',
@@ -50,31 +49,25 @@ describe('CLI entry v4', () => {
     expect(JSON.parse(conflict.stdout())).toEqual({
       ok: false,
       command: 'sync',
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       overallState: 'failed',
-      warnings: [],
-      errors: [{
-        code: 'syncSelectorConflict',
+      changes: [],
+      targetResults: [{
+        target: {
+          pluginName: 'demo',
+          pluginId: 'official/demo',
+          sourceId: 'official',
+          platform: 'codex',
+          scope: 'project',
+        },
+        action: 'sync',
+        state: 'failed',
         message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
-      }],
-      layers: {
-        projectIntent: [{
-          pluginId: 'official/demo', platform: 'codex', scope: 'project',
-          relation: 'requested', action: 'keep', requiredBy: [],
-        }],
-        userIntent: [],
-        sharedCodexNative: [],
-        userActivation: [],
-        projectActivation: [],
-        awExtensions: [],
-      },
-      targets: [{
-        pluginName: 'demo',
-        pluginId: 'official/demo',
-        sourceId: 'official',
-        platform: 'codex',
-        scope: 'project',
-        status: 'failed',
+        errorCode: 'syncSelectorConflict',
+        relation: 'requested',
+        requiredBy: [],
+        changes: [],
+        recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
         cleanupAttempted: false,
         actions: [],
         removed: [],
@@ -82,8 +75,12 @@ describe('CLI entry v4', () => {
         residual: [],
         quarantined: [],
         failures: [],
-        desired: { scope: 'project', relation: 'requested' },
-        recovery: ['remove either plugin selectors or --all, then rerun sync'],
+      }],
+      warnings: [],
+      recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
+      errors: [{
+        code: 'syncSelectorConflict',
+        message: 'syncSelectorConflict: Plugin selectors and --all are mutually exclusive.',
       }],
     });
 
@@ -98,7 +95,7 @@ describe('CLI entry v4', () => {
     });
   });
 
-  it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'])(
+  it.each(['install', 'reinstall', 'uninstall', 'cleanup'])(
     'publishes managed Codex authorization on %s',
     async (command) => {
       const output = capture();
@@ -240,7 +237,6 @@ describe('CLI entry v4', () => {
 
   it.each([
     ['install'],
-    ['upgrade'],
     ['uninstall'],
     ['reinstall'],
     ['cleanup'],
@@ -275,15 +271,6 @@ describe('CLI entry v4', () => {
     expect(output.stderr()).not.toContain('\u001B[');
   });
 
-  it('rejects upgrade --all with explicit plugins before execution', async () => {
-    const output = capture();
-    expect(await runCli([
-      'upgrade', 'git-commit', '--all', '--platform', 'codex',
-    ], { interactive: false, io: output.io })).toBe(1);
-    expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain('不能同时使用插件名和 `--all`');
-  });
-
   it.each([
     { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install', jsonReceipt: true },
     { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set', jsonReceipt: false },
@@ -294,7 +281,7 @@ describe('CLI entry v4', () => {
       expect(JSON.parse(output.stdout())).toMatchObject({
         ok: false,
         command: 'install',
-        receiptSchemaVersion: 5,
+        receiptSchemaVersion: 6,
         overallState: 'failed',
         errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
       });

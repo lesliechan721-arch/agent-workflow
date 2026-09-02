@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { validatePluginManifest } from '../../src/utils/manifest.js';
-import { validateCatalogManifestV6 } from '../../src/utils/catalog-manifest-v6.js';
+import { validateCatalogManifestV7 } from '../../src/utils/catalog-manifest-v7.js';
 
 const marketplace = {
   category: 'workflow',
@@ -62,12 +62,12 @@ describe('plugin manifest dependencies contract', () => {
     }).dependencies).toBeUndefined();
   });
 
-  it('accepts dependencies in catalog v5 entries', () => {
-    expect(validateCatalogManifestV6({
-      schemaVersion: 6,
+  it('accepts dependencies in catalog v7 entries', () => {
+    expect(validateCatalogManifestV7({
+      schemaVersion: 7,
       catalogVersion: '1.0.0',
       channel: 'latest',
-      requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
       marketplace: {
         owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
         interface: { displayName: 'Fixture Marketplace' },

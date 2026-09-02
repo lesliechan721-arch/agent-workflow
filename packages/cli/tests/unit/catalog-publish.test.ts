@@ -20,6 +20,7 @@ const descriptor = {
   tag: 'catalog-v1.2.3',
   snapshotDigest: `sha256:${'3'.repeat(64)}`,
 };
+const expectedCommit = '4'.repeat(40);
 
 describe('public Catalog Git publication safety', () => {
   it('removes repository and config namespace injection while preserving Git authentication inputs', () => {
@@ -49,26 +50,28 @@ describe('public Catalog Git publication safety', () => {
       .toBe('example.invalid:catalog.git');
   });
 
-  it('limits the authorized plan identity to source, remote, refs, and snapshot', () => {
+  it('binds the authorized plan identity to the descriptor and expected commit', () => {
     expect(Object.keys(descriptor).sort()).toEqual([
       'branch', 'parent', 'remote', 'schemaVersion', 'snapshotDigest', 'sourceHead', 'tag',
       'workspaceIdentity',
     ]);
-    expect(catalogPublicationPlanDigest(descriptor)).toMatch(/^sha256:[0-9a-f]{64}$/u);
-    expect(catalogPublicationPlanDigest({ ...descriptor, branch: 'catalog/beta' }))
-      .not.toBe(catalogPublicationPlanDigest(descriptor));
+    expect(catalogPublicationPlanDigest(descriptor, expectedCommit)).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(catalogPublicationPlanDigest({ ...descriptor, branch: 'catalog/beta' }, expectedCommit))
+      .not.toBe(catalogPublicationPlanDigest(descriptor, expectedCommit));
+    expect(catalogPublicationPlanDigest(descriptor, '5'.repeat(40)))
+      .not.toBe(catalogPublicationPlanDigest(descriptor, expectedCommit));
   });
 
   it.each(['prepared', 'uncertain', 'published'] as const)(
     'validates the version-scoped %s recovery journal',
     (state) => {
       const base = {
-        schemaVersion: 1 as const,
+        schemaVersion: 2 as const,
         state,
-        planDigest: catalogPublicationPlanDigest(descriptor),
+        planDigest: catalogPublicationPlanDigest(descriptor, expectedCommit),
         descriptor,
-        expectedCommit: '4'.repeat(40),
-        repository: state === 'published' ? null : '1.2.3.repo',
+        expectedCommit,
+        repository: state === 'published' ? null : 'repository',
         display: { catalogVersion: '1.2.3', channel: 'latest' as const, pluginCount: 2 },
         preparedAt: '2026-08-31T00:00:00.000Z',
       };
@@ -84,12 +87,27 @@ describe('public Catalog Git publication safety', () => {
   it('rejects authorization expansion and damaged repository binding', () => {
     const expandedDescriptor = { ...descriptor, catalogVersion: '1.2.3' };
     const journal = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       state: 'prepared',
-      planDigest: catalogPublicationPlanDigest(descriptor),
+      planDigest: catalogPublicationPlanDigest(descriptor, expectedCommit),
       descriptor: expandedDescriptor,
-      expectedCommit: '4'.repeat(40),
+      expectedCommit,
       repository: '../unbound.repo',
+      display: { catalogVersion: '1.2.3', channel: 'latest', pluginCount: 2 },
+      preparedAt: '2026-08-31T00:00:00.000Z',
+    };
+    expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
+      .toThrow('publication journal is damaged');
+  });
+
+  it('rejects a changed expected commit under the original authorization digest', () => {
+    const journal = {
+      schemaVersion: 2,
+      state: 'prepared',
+      planDigest: catalogPublicationPlanDigest(descriptor, expectedCommit),
+      descriptor,
+      expectedCommit: '5'.repeat(40),
+      repository: 'repository',
       display: { catalogVersion: '1.2.3', channel: 'latest', pluginCount: 2 },
       preparedAt: '2026-08-31T00:00:00.000Z',
     };

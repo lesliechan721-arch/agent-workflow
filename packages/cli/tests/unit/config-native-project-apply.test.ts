@@ -6,14 +6,32 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const inspectRebuildTarget = vi.hoisted(() => vi.fn(async () => ({
-  target: {},
-  inspection: { state: 'present', components: [], errors: [] },
+const statusCommandV7 = vi.hoisted(() => vi.fn(async () => ({
+  payload: {
+    targets: [{
+      pluginName: 'claude-native-only',
+      pluginId: 'claude-native-only',
+      sourceId: 'fixture',
+      sourceIdentity: 'identity:fixture',
+      platform: 'claude' as const,
+      scope: 'project' as const,
+      cwd: '/workspace',
+      state: 'ready' as const,
+      components: [{
+        kind: 'intent' as const,
+        key: 'desired',
+        state: 'desired',
+        metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+      }],
+      reasons: [],
+      recoveryActions: [],
+    }],
+  },
 })));
 
-vi.mock('../../src/commands/rebuild-integration.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/commands/rebuild-integration.js')>(),
-  inspectRebuildTarget,
+vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
+  statusCommandV7,
 }));
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
@@ -128,18 +146,6 @@ describe('Claude project native-only config apply', () => {
     ['project' as const, ['project']],
   ])('applies a %s config write to the visible current-project native target', async (scope, expectedScopes) => {
     const fixture = await createFixture();
-    const projectPath = await fs.realpath(fixture.cwd);
-    await fs.outputJson(path.join(fixture.env.AW_CLAUDE_HOME!, 'plugins', 'known_marketplaces.json'), {
-      marketplaces: { aw: { installLocation: fixture.env.AW_HOME } },
-    });
-    await fs.outputJson(path.join(fixture.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json'), {
-      plugins: {
-        'claude-native-only@aw': [{
-          name: 'claude-native-only', marketplace: 'aw', scope: 'project',
-          projectPath, version: '1.0.0',
-        }],
-      },
-    });
     const nativeCliRunner = createNativeRunner();
     const reinstallCommandImpl = createReinstallMock();
 
@@ -156,6 +162,7 @@ describe('Claude project native-only config apply', () => {
     expect(receipt.overallState).toBe('succeeded');
     expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(expectedScopes);
     expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
+    expect(statusCommandV7).toHaveBeenCalledWith(expect.objectContaining({ nativeCliRunner }));
     expect(reinstallCommandImpl).toHaveBeenCalledTimes(1);
     expect(reinstallCommandImpl).toHaveBeenCalledWith(
       ['claude-native-only'],

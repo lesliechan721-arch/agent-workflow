@@ -24,7 +24,7 @@ export interface CatalogPublicationDisplayMetadata {
 }
 
 interface CatalogPublicationJournalBase {
-  schemaVersion: 1;
+  schemaVersion: 2;
   planDigest: string;
   descriptor: CatalogPublicationDescriptor;
   expectedCommit: string;
@@ -67,20 +67,30 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function catalogPublicationPlanDigest(descriptor: CatalogPublicationDescriptor): string {
-  return digest(canonicalJson(descriptor));
+export function catalogPublicationPlanDigest(
+  descriptor: CatalogPublicationDescriptor,
+  expectedCommit: string,
+): string {
+  return digest(canonicalJson({ descriptor, expectedCommit }));
+}
+
+export function catalogPublicationDirectoryPath(workspaceRoot: string, catalogVersion: string): string {
+  return path.join(workspaceRoot, '.aw', 'publish', catalogVersion);
 }
 
 export function catalogPublicationJournalPath(workspaceRoot: string, catalogVersion: string): string {
-  return path.join(workspaceRoot, '.aw', 'publish', `${catalogVersion}.json`);
+  return path.join(catalogPublicationDirectoryPath(workspaceRoot, catalogVersion), 'journal.json');
 }
 
-export function catalogPublicationRepositoryName(catalogVersion: string): string {
-  return `${catalogVersion}.repo`;
+export function catalogPublicationRepositoryName(): string {
+  return 'repository';
 }
 
 export function catalogPublicationRepositoryPath(workspaceRoot: string, catalogVersion: string): string {
-  return path.join(workspaceRoot, '.aw', 'publish', catalogPublicationRepositoryName(catalogVersion));
+  return path.join(
+    catalogPublicationDirectoryPath(workspaceRoot, catalogVersion),
+    catalogPublicationRepositoryName(),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -141,10 +151,10 @@ export function parseCatalogPublicationJournal(
   if (!isRecord(value) || !isCatalogPublicationDescriptor(value.descriptor)) {
     throw new Error(`Catalog ${catalogVersion} publication journal is damaged. Increase the Catalog version.`);
   }
-  const commonValid = value.schemaVersion === 1
+  const commonValid = value.schemaVersion === 2
     && isDigest(value.planDigest)
-    && value.planDigest === catalogPublicationPlanDigest(value.descriptor)
     && isCommit(value.expectedCommit)
+    && value.planDigest === catalogPublicationPlanDigest(value.descriptor, value.expectedCommit)
     && (value.repository === null || typeof value.repository === 'string')
     && isDisplayMetadata(value.display)
     && value.display.catalogVersion === catalogVersion
@@ -168,7 +178,7 @@ export function parseCatalogPublicationJournal(
     throw new Error(`Catalog ${catalogVersion} publication journal is damaged. Increase the Catalog version.`);
   }
   if (value.state !== 'published'
-    && value.repository !== catalogPublicationRepositoryName(catalogVersion)) {
+    && value.repository !== catalogPublicationRepositoryName()) {
     throw new Error(`Catalog ${catalogVersion} publication journal is damaged. Increase the Catalog version.`);
   }
   return value as unknown as CatalogPublicationJournal;
@@ -178,7 +188,16 @@ export async function readCatalogPublicationJournal(
   filePath: string,
   catalogVersion: string,
 ): Promise<CatalogPublicationJournal | null> {
-  if (!(await fs.pathExists(filePath))) return null;
+  let stats;
+  try {
+    stats = await fs.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Catalog ${catalogVersion} publication journal is damaged. Increase the Catalog version.`);
+  }
   try {
     return parseCatalogPublicationJournal(await fs.readJson(filePath), catalogVersion);
   } catch (error) {
@@ -189,10 +208,82 @@ export async function readCatalogPublicationJournal(
   }
 }
 
+export interface LocatedCatalogPublicationJournal {
+  catalogVersion: string;
+  journalPath: string;
+  journal: CatalogPublicationJournal;
+}
+
+const CATALOG_VERSION_DIRECTORY = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/u;
+
+export async function findCatalogPublicationJournalByPlanDigest(
+  workspaceRoot: string,
+  planDigest: string,
+): Promise<LocatedCatalogPublicationJournal> {
+  const publishRoot = path.join(workspaceRoot, '.aw', 'publish');
+  let entries;
+  try {
+    entries = await fs.readdir(publishRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(
+        'No schema v2 Catalog publication journal matches the authorized plan digest. '
+        + 'The journal is missing or damaged, or the digest is unauthorized. Increase the Catalog version or run catalog publish plan.',
+      );
+    }
+    throw error;
+  }
+  const matches: Array<{ catalogVersion: string; journalPath: string; value: unknown }> = [];
+  for (const entry of entries) {
+    if (!CATALOG_VERSION_DIRECTORY.test(entry.name)) continue;
+    const directoryPath = path.join(publishRoot, entry.name);
+    const directoryStats = await fs.lstat(directoryPath);
+    if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) {
+      throw new Error(`Catalog ${entry.name} publication state directory is damaged. Increase the Catalog version.`);
+    }
+    const journalPath = path.join(directoryPath, 'journal.json');
+    let journalStats;
+    try {
+      journalStats = await fs.lstat(journalPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    if (!journalStats.isFile() || journalStats.isSymbolicLink()) {
+      throw new Error(`Catalog ${entry.name} publication journal is damaged. Increase the Catalog version.`);
+    }
+    let value: unknown;
+    try {
+      value = await fs.readJson(journalPath);
+    } catch {
+      continue;
+    }
+    if (isRecord(value) && value.schemaVersion === 2 && value.planDigest === planDigest) {
+      matches.push({ catalogVersion: entry.name, journalPath, value });
+    }
+  }
+  if (matches.length === 0) {
+    throw new Error(
+      'No schema v2 Catalog publication journal matches the authorized plan digest. '
+      + 'The journal is missing or damaged, or the digest is unauthorized. Increase the Catalog version or run catalog publish plan.',
+    );
+  }
+  if (matches.length !== 1) {
+    throw new Error(
+      'Multiple schema v2 Catalog publication journals match the authorized plan digest. Increase the Catalog version.',
+    );
+  }
+  const match = matches[0]!;
+  return {
+    catalogVersion: match.catalogVersion,
+    journalPath: match.journalPath,
+    journal: parseCatalogPublicationJournal(match.value, match.catalogVersion),
+  };
+}
+
 export async function writeCatalogPublicationJournalAtomic(
   filePath: string,
   journal: CatalogPublicationJournal,
-  exclusive = false,
 ): Promise<void> {
   await fs.ensureDir(path.dirname(filePath));
   const temporary = path.join(
@@ -204,12 +295,7 @@ export async function writeCatalogPublicationJournalAtomic(
     mode: 0o600,
   });
   try {
-    if (exclusive) {
-      await fs.link(temporary, filePath);
-      await fs.remove(temporary);
-    } else {
-      await fs.rename(temporary, filePath);
-    }
+    await fs.rename(temporary, filePath);
   } catch (error) {
     await fs.remove(temporary);
     throw error;

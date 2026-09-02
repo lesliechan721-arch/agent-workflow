@@ -30,7 +30,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
   'aw.plugin-config.v2',
-  'aw.plugin-lifecycle.v1',
+  'aw.plugin-post-apply.v1',
   'aw.dynamic-artifacts.v2',
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',
@@ -42,7 +42,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.catalog-dev-source.v1',
   'aw.catalog-publication.v1',
   'aw.review-publication.v1',
-  'aw.catalog-snapshot.v6',
+  'aw.catalog-snapshot.v7',
   'aw.self-check.v1',
 ] as const satisfies readonly RegisteredAwCapabilityId[]
 

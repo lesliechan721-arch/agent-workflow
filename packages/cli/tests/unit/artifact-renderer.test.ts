@@ -542,17 +542,6 @@ describe('artifact renderer runtime', () => {
     expect(installResult.context.changedConfigKeys).toEqual([]);
     expect(installResult.plan.artifacts[0]?.content).toContain('scope=user');
 
-    const upgradeResult = await runArtifactRenderer({
-      event: 'upgrade',
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd,
-      commandEnv: env,
-    });
-    expect(upgradeResult.context.changedConfigKeys).toEqual([]);
-    expect(upgradeResult.plan.version).toBe(2);
-
     const refreshResult = await runArtifactRenderer({
       event: 'refresh',
       plugin,
@@ -590,7 +579,7 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       commandEnv: env,
-    })).rejects.toThrow('only supports install, upgrade, refresh, and materialize events');
+    })).rejects.toThrow('only supports install, refresh, and materialize events');
   });
 
   it('fails when stdout is not JSON and redacts sensitive diagnostics', async () => {
