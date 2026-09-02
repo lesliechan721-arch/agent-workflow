@@ -61,21 +61,43 @@ export function resolvePluginScriptTimeoutMs(options: { cliTimeoutMs?: number; m
   return value;
 }
 
+function collectScalarLeafTokens(value: unknown): string[] {
+  if (typeof value === 'string') return value === '' ? [] : [value];
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+  if (value === null || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(collectScalarLeafTokens);
+}
+
 export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>): string[] {
   return Object.entries(manifest.config?.fields ?? {}).flatMap(([key, field]) => {
     const value = values[key];
     if (value === undefined) return [];
-    if (field.sensitive) return typeof value === 'object' ? Object.values(value).map(String) : [String(value)];
+    if (field.sensitive) return collectScalarLeafTokens(value);
     if (field.type !== 'object' || typeof value !== 'object') return [];
     return Object.entries(value).flatMap(([property, childValue]) => {
       const child = field.properties?.[property]
         ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
-      return child?.sensitive ? [String(childValue)] : [];
+      return child?.sensitive ? collectScalarLeafTokens(childValue) : [];
     });
-  }).filter(Boolean);
+  });
 }
 export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
-  let output = redactString(value); for (const sensitiveValue of sensitiveValues) output = output.split(sensitiveValue).join('[REDACTED]'); return output;
+  let output = redactString(value);
+  for (const sensitiveValue of sensitiveValues) {
+    if (sensitiveValue === '') continue;
+    if (sensitiveValue.length >= 8 && !/^(?:true|false|-?\d+(?:\.\d+)?)$/u.test(sensitiveValue)) {
+      output = output.split(sensitiveValue).join('[REDACTED]');
+      continue;
+    }
+    const escaped = sensitiveValue.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const numeric = /^-?\d+(?:\.\d+)?$/u.test(sensitiveValue);
+    const boundary = numeric ? '\\p{L}\\p{N}_.+-' : '\\p{L}\\p{N}_';
+    output = output.replace(
+      new RegExp(`(?<![${boundary}])${escaped}(?![${boundary}])`, 'gu'),
+      '[REDACTED]',
+    );
+  }
+  return output;
 }
 export function summarizePluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
   return redactPluginScriptOutput(value.slice(0, OUTPUT_LIMIT).trim(), sensitiveValues);

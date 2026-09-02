@@ -36,6 +36,7 @@ import {
 } from '../../src/utils/plugin-config-write.js';
 import {
   readPluginConfigStore,
+  resetPluginConfigStore,
   resolveConfigRead,
   resolvePluginConfigStorePath,
   writePluginConfigStore,
@@ -408,7 +409,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall.mock.calls.map((call) => call[1].scope)).toEqual(['user', 'user']);
   });
 
-  it.each(['set', 'unset', 'reset'] as const)(
+  it.each(['set', 'unset'] as const)(
     'does not mutate project config when the inherited user store is invalid during %s',
     async (action) => {
       const fixture = await createFixture();
@@ -460,6 +461,42 @@ describe('config write full reinstall apply', () => {
       expect(reinstall).not.toHaveBeenCalled();
     },
   );
+
+  it('resets project config even when the inherited user store is invalid', async () => {
+    const fixture = await createFixture();
+    const projectPath = resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'safe' },
+    });
+    await fs.outputFile(resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    }), '{invalid');
+
+    await expect(resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      apply: false,
+    })).resolves.toMatchObject({
+      deleted: true,
+      resetDisposition: 'deletedFile',
+    });
+    await expect(fs.pathExists(projectPath)).resolves.toBe(false);
+  });
 
   it('resets an invalid project store after the inherited user store is ready', async () => {
     const fixture = await createFixture();
@@ -1330,6 +1367,148 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     }))).toMatchObject({ exists: false, values: {} });
+  });
+
+  it('unlinks a final config symlink without changing its target', async () => {
+    const fixture = await createFixture('symlink-reset');
+    const configPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'symlink-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    });
+    const targetPath = path.join(fixture.root, 'symlink-target.json');
+    await fs.outputFile(targetPath, 'keep');
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.symlink(targetPath, configPath);
+
+    await expect(resetPluginConfigStore({
+      sourceId: 'team', pluginName: 'symlink-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    })).resolves.toMatchObject({
+      existed: true,
+      deleted: true,
+      resetDisposition: 'unlinkedSymlink',
+    });
+    await expect(fs.pathExists(configPath)).resolves.toBe(false);
+    await expect(fs.readFile(targetPath, 'utf8')).resolves.toBe('keep');
+  });
+
+  it('quarantines a final config directory without recursively deleting it', async () => {
+    const fixture = await createFixture('directory-reset');
+    const configPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'directory-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    });
+    await fs.outputFile(path.join(configPath, 'retained.txt'), 'keep');
+
+    const receipt = await resetPluginConfigStore({
+      sourceId: 'team', pluginName: 'directory-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    });
+    expect(receipt).toMatchObject({
+      existed: true,
+      deleted: true,
+      resetDisposition: 'quarantinedDirectory',
+      quarantineBasename: expect.stringMatching(/^config\.broken-.*\.json$/u),
+    });
+    expect(receipt.quarantineBasename).not.toContain(path.sep);
+    await expect(fs.readFile(
+      path.join(path.dirname(configPath), receipt.quarantineBasename!, 'retained.txt'),
+      'utf8',
+    )).resolves.toBe('keep');
+  });
+
+  it('is idempotent when the final config target is absent', async () => {
+    const fixture = await createFixture('absent-reset');
+    const options = {
+      sourceId: 'team', pluginName: 'absent-reset', scope: 'user' as const, cwd: fixture.cwd, env: fixture.env,
+    };
+    await expect(resetPluginConfigStore(options)).resolves.toMatchObject({
+      existed: false, deleted: false, resetDisposition: 'absent',
+    });
+    await expect(resetPluginConfigStore(options)).resolves.toMatchObject({
+      existed: false, deleted: false, resetDisposition: 'absent',
+    });
+  });
+
+  it('rejects a final special node with a stable relative target message', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await createFixture('special-reset');
+    const configPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'special-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    });
+    await fs.ensureDir(path.dirname(configPath));
+    await execFileAsync('mkfifo', [configPath]);
+
+    const error = await resetPluginConfigStore({
+      sourceId: 'team', pluginName: 'special-reset', scope: 'user', cwd: fixture.cwd, env: fixture.env,
+    }).catch((failure: unknown) => failure as Error & { code?: string });
+    expect(error).toMatchObject({ code: 'configResetTargetUnsupported' });
+    expect(error.message).toContain('user/plugin-config/team/special-reset/config.json');
+    expect(error.message).not.toContain(fixture.root);
+    expect(await fs.lstat(configPath)).toMatchObject({});
+  });
+
+  it('redacts sensitive values and absolute config paths from apply target failures', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    const secret = 'plain-sensitive-leaf';
+    const configPath = resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const debugEvents: unknown[] = [];
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: secret } },
+      rebuildRuntime: {
+        debugLogger: { log: (value) => { debugEvents.push(value); } },
+      },
+      reinstallCommandImpl: async (_plugins, _options, runtime) => {
+        await runtime.debugLogger?.log({ message: `debug ${secret} at ${configPath}` });
+        throw new Error(`target rejected ${secret} at ${configPath}`);
+      },
+    });
+    const projected = JSON.stringify(receipt);
+    expect(projected).not.toContain(secret);
+    expect(projected).not.toContain(configPath);
+    expect(projected).toContain('user/plugin-config/configurable-plugin/config.json');
+    expect(JSON.stringify(debugEvents)).not.toContain(secret);
+    expect(JSON.stringify(debugEvents)).not.toContain(configPath);
+  });
+
+  it('redacts short secrets only from free-text debug fields', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    const debugEvents: unknown[] = [];
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: 'a' } },
+      rebuildRuntime: {
+        debugLogger: { log: (value) => { debugEvents.push(value); } },
+      },
+      reinstallCommandImpl: async (_plugins, _options, runtime) => {
+        await runtime.debugLogger?.log({
+          type: 'a',
+          commandName: 'a',
+          key: 'a',
+          message: 'a',
+        } as never);
+        throw new Error('target rejected a but ordinary data stays intact');
+      },
+    });
+
+    expect(debugEvents).toEqual([{
+      type: 'a',
+      commandName: 'a',
+      key: 'a',
+      message: '[REDACTED]',
+    }]);
+    expect(JSON.stringify(receipt)).toContain('ordinary data stays intact');
+    expect(JSON.stringify(receipt)).not.toContain('rejected a but');
   });
 
   it.each([

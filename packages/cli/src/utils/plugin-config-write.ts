@@ -23,12 +23,19 @@ import {
   coercePluginConfigUpdates,
   patchPluginConfigStore,
   readPluginConfigStore,
+  readNamespacedPluginConfigStoreIdentity,
   resetPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
   resolvePluginConfigSchemaAccess,
   summarizeEffectivePluginConfig,
+  type PluginConfigValue,
 } from './plugin-config.js';
+import {
+  collectSensitivePluginConfigValues,
+  redactPluginScriptOutput,
+} from './plugin-scripts.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from './paths.js';
 import {
   withAwHomeMutationLock,
@@ -67,6 +74,8 @@ export interface ResetPluginConfigWriteReceipt {
   schema?: ConfigSchemaEvidence;
   existed: boolean;
   deleted: boolean;
+  resetDisposition: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
+  quarantineBasename?: string;
   removedKeys: string[];
   effective?: ReturnType<typeof summarizeEffectivePluginConfig>;
   configWrite: 'succeeded';
@@ -207,8 +216,73 @@ async function reinstallVisibleTargets(options: {
     ? options.plugin.pluginId!
     : options.plugin.manifest.name;
 
+  const sanitizeFailure = async (
+    message: string,
+    target: ReceiptTargetIdentity,
+  ): Promise<string> => {
+    let sensitiveValues: string[] = [];
+    try {
+      const effective = await resolveEffectivePluginConfig({
+        ...(options.plugin.sourceId ? {
+          sourceId: options.plugin.sourceId,
+          sourceIdentity: options.plugin.sourceIdentity,
+        } : {}),
+        pluginName: options.plugin.manifest.name,
+        manifest: options.plugin.manifest,
+        targetScope: target.scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
+    } catch {
+      // Generic credential redaction and known config paths still apply.
+    }
+    let sanitized = redactPluginScriptOutput(message, sensitiveValues);
+    for (const scope of ['user', 'project'] as const) {
+      const configPath = resolvePluginConfigStorePath({
+        sourceId: options.plugin.sourceId,
+        pluginName: options.plugin.manifest.name,
+        scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      const safeTarget = `${scope}/plugin-config/${[
+        options.plugin.sourceId,
+        options.plugin.manifest.name,
+        'config.json',
+      ].filter(Boolean).join('/')}`;
+      sanitized = sanitized.split(configPath).join(safeTarget);
+    }
+    return sanitized;
+  };
+  const sanitizeProjection = async (
+    value: unknown,
+    target: ReceiptTargetIdentity,
+    freeText = false,
+  ): Promise<unknown> => {
+    if (typeof value === 'string') return freeText ? sanitizeFailure(value, target) : value;
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((entry) => sanitizeProjection(entry, target, freeText)));
+    }
+    return Object.fromEntries(await Promise.all(
+      Object.entries(value as Record<string, unknown>).map(async ([key, entry]) => [
+        key,
+        await sanitizeProjection(
+          entry,
+          target,
+          typeof entry === 'string'
+            ? /^(?:message|error|stack|stdout|stderr|output|warning)$/u.test(key)
+            : Array.isArray(entry) && /^(?:messages|warnings)$/u.test(key),
+        ),
+      ]),
+    ));
+  };
+
   for (const target of discovered.targets) {
     try {
+      const debugLogger = options.rebuildRuntime?.debugLogger;
+      const reporter = options.rebuildRuntime?.reporter;
       const result = await reinstall(
         [selector],
         {
@@ -220,17 +294,36 @@ async function reinstallVisibleTargets(options: {
           ...options.rebuildRuntime,
           env: options.env,
           nativeCliRunner,
+          ...(debugLogger ? {
+            debugLogger: {
+              ...debugLogger,
+              log: async (value) => debugLogger.log(await sanitizeProjection(value, target) as never),
+            },
+          } : {}),
+          ...(reporter ? {
+            reporter: {
+              event: async (value) => reporter.event(await sanitizeProjection(value, target) as never),
+              notice: async (value) => reporter.notice(await sanitizeProjection(value, target) as never),
+            },
+          } : {}),
         },
       );
       if (result.overallState === 'failed') runtimeFailed = true;
-      targetResults.push(...result.targetResults);
+      targetResults.push(...await Promise.all(result.targetResults.map(async (entry) => ({
+        ...entry,
+        ...(entry.message ? { message: await sanitizeFailure(entry.message, entry.target) } : {}),
+      }))));
     } catch (error) {
       runtimeFailed = true;
+      const message = await sanitizeFailure(
+        error instanceof Error ? error.message : String(error),
+        target,
+      );
       targetResults.push({
         target,
         action: 'reinstall',
         state: 'failed',
-        message: error instanceof Error ? error.message : String(error),
+        message,
       });
     }
   }
@@ -564,11 +657,63 @@ export async function applyPluginConfigWrite(
     token: options.awHomeMutationToken,
     action: async (awHomeMutationToken) => {
       await options.reviewPreflight?.();
-      return applyPluginConfigWriteUnlocked({
-        ...options,
-        awHomeMutationToken,
-        rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
-      });
+      try {
+        return await applyPluginConfigWriteUnlocked({
+          ...options,
+          awHomeMutationToken,
+          rebuildRuntime: { ...options.rebuildRuntime, awHomeMutationToken },
+        });
+      } catch (error) {
+        let sensitiveValues = options.plugin
+          ? collectSensitivePluginConfigValues(
+              options.plugin.manifest,
+              (options.request.updates ?? {}) as Record<string, PluginConfigValue>,
+            )
+          : [];
+        if (options.plugin) {
+          try {
+            const effective = await resolveEffectivePluginConfig({
+              ...(options.plugin.sourceId ? {
+                sourceId: options.plugin.sourceId,
+                sourceIdentity: options.plugin.sourceIdentity,
+              } : {}),
+              pluginName: options.plugin.manifest.name,
+              manifest: options.plugin.manifest,
+              targetScope: options.scope,
+              cwd: options.cwd,
+              env: options.env,
+            });
+            sensitiveValues = [
+              ...sensitiveValues,
+              ...collectSensitivePluginConfigValues(options.plugin.manifest, effective.values),
+            ];
+          } catch {
+            // Requested sensitive values and generic credential redaction remain available.
+          }
+        }
+        let message = redactPluginScriptOutput(
+          error instanceof Error ? error.message : String(error),
+          sensitiveValues,
+        );
+        for (const scope of ['user', 'project'] as const) {
+          const configPath = resolvePluginConfigStorePath({
+            sourceId: options.plugin?.sourceId,
+            pluginName: requestedPluginName,
+            scope,
+            cwd: options.cwd,
+            env: options.env,
+          });
+          message = message.split(configPath).join(`${scope}/plugin-config/${[
+            options.plugin?.sourceId,
+            requestedPluginName,
+            'config.json',
+          ].filter(Boolean).join('/')}`);
+        }
+        const safeError = new Error(message) as Error & { code?: string };
+        const code = (error as { code?: unknown }).code;
+        safeError.code = typeof code === 'string' ? code : 'configApplyFailed';
+        throw safeError;
+      }
     },
   });
 }
@@ -602,32 +747,43 @@ async function resetPluginConfigWithHelperUnlocked(
     cwd: options.cwd,
     env: options.env,
   }) : undefined;
-  const configIdentity = options.plugin?.sourceId ? {
+  let configIdentity = options.plugin?.sourceId ? {
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
   } : options.sourceId ? {
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
   } : {};
-  if (options.scope === 'project' && schemaAccess?.plugin?.manifest.config?.fields) {
-    const userStore = await readPluginConfigStore({
+  if (options.sourceId && !options.sourceIdentity) {
+    try {
+      const identity = await readNamespacedPluginConfigStoreIdentity({
+        sourceId: options.sourceId,
+        pluginName,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      if (identity) configIdentity = {
+        sourceId: options.sourceId,
+        sourceIdentity: identity.sourceIdentity,
+      };
+    } catch {
+      // Reset does not require a readable or valid envelope.
+    }
+  }
+  let removedKeys: string[] = [];
+  try {
+    const store = await readPluginConfigStore({
       ...configIdentity,
       pluginName,
-      scope: 'user',
+      scope: options.scope,
       cwd: options.cwd,
       env: options.env,
-      schema: schemaAccess.plugin.manifest.config.fields,
     });
-    assertReadyPluginConfigStore(userStore);
+    removedKeys = collectRemovedConfigKeys(store.values);
+  } catch {
+    // Reset is the final recovery boundary and does not require a readable store.
   }
-  const store = await readPluginConfigStore({
-    ...configIdentity,
-    pluginName,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const removedKeys = collectRemovedConfigKeys(store.values);
   const warnings: string[] = [];
 
   const reset = await resetPluginConfigStore({
@@ -646,14 +802,24 @@ async function resetPluginConfigWithHelperUnlocked(
   let effective: ReturnType<typeof summarizeEffectivePluginConfig> | undefined;
   if (schemaAccess?.plugin) {
     if (schemaAccess.plugin.manifest.config?.fields) {
-      effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
-        ...configIdentity,
-        pluginName,
-        manifest: schemaAccess.plugin.manifest,
-        targetScope: options.scope,
-        cwd: options.cwd,
-        env: options.env,
-      }));
+      try {
+        effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
+          ...configIdentity,
+          pluginName,
+          manifest: schemaAccess.plugin.manifest,
+          targetScope: options.scope,
+          cwd: options.cwd,
+          env: options.env,
+        }));
+      } catch {
+        if (options.apply !== false) {
+          applied = {
+            overallState: 'partial',
+            targetResults: [],
+            applySkippedReason: 'invalidConfig',
+          };
+        }
+      }
     }
     if (reset.deleted && effective && effective.issues.length > 0) {
       applied = {
@@ -661,7 +827,7 @@ async function resetPluginConfigWithHelperUnlocked(
         targetResults: [],
         applySkippedReason: 'invalidConfig',
       };
-    } else if (reset.deleted && options.apply !== false) {
+    } else if (reset.deleted && options.apply !== false && applied.applySkippedReason !== 'invalidConfig') {
       const discovered = await resolveConfigApplyTargets({
         plugin: schemaAccess.plugin,
         scope: options.scope,
@@ -707,6 +873,8 @@ async function resetPluginConfigWithHelperUnlocked(
     ...(schemaAccess?.schema ? { schema: schemaAccess.schema } : {}),
     existed: reset.existed,
     deleted: reset.deleted,
+    resetDisposition: reset.resetDisposition,
+    ...(reset.quarantineBasename ? { quarantineBasename: reset.quarantineBasename } : {}),
     removedKeys,
     ...(effective ? { effective } : {}),
     configWrite: 'succeeded',

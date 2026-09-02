@@ -82,7 +82,6 @@ import {
   findConfigFieldEntry,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
-  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
@@ -104,7 +103,10 @@ import {
   withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
-import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
+import {
+  sanitizeCatalogSourceError,
+  sanitizeCatalogSourceErrorMessage,
+} from './utils/catalog-public-error.js';
 import { catalogGenerationErrorCode } from './utils/catalog-generation-error.js';
 import {
   resolveCatalogOperationContext,
@@ -674,37 +676,10 @@ async function resolveStoredConfigResetIdentity(options: {
 }): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity?: string }> {
   const parsed = parsePluginId(options.selector);
   if (parsed.sourceId) {
-    let sourceIdentity: string | undefined;
-    let exists = false;
-    try {
-      const located = await readNamespacedPluginConfigStoreIdentity({
-        sourceId: parsed.sourceId,
-        pluginName: parsed.pluginName,
-        scope: options.scope,
-        cwd: options.context.cwd,
-        env: options.context.env,
-      });
-      sourceIdentity = located?.sourceIdentity;
-      exists = located !== null;
-    } catch {
-      const store = await readPluginConfigStore({
-        sourceId: parsed.sourceId,
-        sourceIdentity: `sha256:${'0'.repeat(64)}`,
-        pluginName: parsed.pluginName,
-        scope: options.scope,
-        cwd: options.context.cwd,
-        env: options.context.env,
-      });
-      exists = store.exists;
-    }
-    if (!exists) {
-      throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
-    }
     return {
       pluginName: parsed.pluginName,
       pluginId: options.selector,
       sourceId: parsed.sourceId,
-      ...(sourceIdentity ? { sourceIdentity } : {}),
     };
   }
   const matches = (await listNamespacedPluginConfigStores({
@@ -2326,7 +2301,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     json: boolean,
     error: unknown,
   ): void => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactString(sanitizeCatalogSourceErrorMessage(
+      error instanceof Error ? error.message : String(error),
+      env,
+      [cwd],
+    ));
     const generationCode = catalogGenerationErrorCode(error);
     const code = generationCode === 'catalogGenerationUnavailable'
       || generationCode === 'catalogGenerationSourceMissing'
@@ -3314,7 +3293,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               scope: selectedScope,
               cwd: context.cwd,
               env: context.env,
-            });
+            }).catch(() => []);
             const resetReceipt = await resetPluginConfigWithHelper({
               sourceId: located.sourceId,
               sourceIdentity: located.sourceIdentity,

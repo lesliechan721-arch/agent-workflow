@@ -164,6 +164,24 @@ export interface ResetPluginConfigStoreReceipt extends PluginConfigStoreReceipt 
   storeKind: 'user' | 'project';
   existed: boolean;
   deleted: boolean;
+  resetDisposition: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
+  quarantineBasename?: string;
+}
+
+export class PluginConfigResetError extends Error {
+  readonly code: 'configResetFailed' | 'configResetTargetUnsupported';
+  readonly osCode?: string;
+
+  constructor(
+    code: 'configResetFailed' | 'configResetTargetUnsupported',
+    message: string,
+    osCode?: string,
+  ) {
+    super(`${code}: ${message}`);
+    this.name = 'PluginConfigResetError';
+    this.code = code;
+    this.osCode = osCode;
+  }
 }
 
 export interface PluginConfigStoreTarget {
@@ -1069,36 +1087,113 @@ export async function resetPluginConfigStore(options: {
   env?: NodeJS.ProcessEnv;
   reviewPreflight?: () => Promise<void> | void;
 }): Promise<ResetPluginConfigStoreReceipt> {
-  await assertNoLegacyConfigCoexistence(options);
   const filePath = resolvePluginConfigStorePath({
     ...options,
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  const existed = await withConfigFileMutation({
-    filePath,
-    allowedRoot,
-    action: async () => {
-      await options.reviewPreflight?.();
-      const target = await lstatIfExists(filePath);
-      if (!target) return false;
-      if (!target.isFile() || target.isSymbolicLink()) {
-        throw new Error(`Config target must be a regular file: ${filePath}`);
+  const publicTarget = `${options.scope}/plugin-config/${[
+    options.sourceId,
+    options.pluginName,
+    CONFIG_FILE,
+  ].filter(Boolean).join('/')}`;
+  const { root, candidate } = assertConfigPathBoundary(allowedRoot, filePath);
+  let current = root;
+  try {
+    for (const segment of path.relative(root, path.dirname(candidate)).split(path.sep).filter(Boolean)) {
+      const stats = await lstatIfExists(current);
+      if (!stats) {
+        return {
+          pluginName: options.pluginName,
+          scope: options.scope,
+          storeKind: options.scope,
+          path: filePath,
+          existed: false,
+          deleted: false,
+          resetDisposition: 'absent',
+        };
       }
-      return atomicRemoveConfigFile({ filePath, allowedRoot });
-    },
-  });
-
-  return {
-    pluginName: options.pluginName,
-    scope: options.scope,
-    storeKind: options.scope === 'user'
-      ? 'user'
-      : 'project',
-    path: filePath,
-    existed,
-    deleted: existed,
-  };
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new PluginConfigResetError(
+          'configResetTargetUnsupported',
+          `${publicTarget} has an unsafe ancestor. Repair it manually, then retry config reset.`,
+        );
+      }
+      current = path.join(current, segment);
+    }
+    const parentStats = await lstatIfExists(current);
+    if (!parentStats) {
+      return {
+        pluginName: options.pluginName,
+        scope: options.scope,
+        storeKind: options.scope,
+        path: filePath,
+        existed: false,
+        deleted: false,
+        resetDisposition: 'absent',
+      };
+    }
+    if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+      throw new PluginConfigResetError(
+        'configResetTargetUnsupported',
+        `${publicTarget} has an unsafe ancestor. Repair it manually, then retry config reset.`,
+      );
+    }
+    await options.reviewPreflight?.();
+    const target = await lstatIfExists(filePath);
+    if (!target) {
+      return {
+        pluginName: options.pluginName,
+        scope: options.scope,
+        storeKind: options.scope,
+        path: filePath,
+        existed: false,
+        deleted: false,
+        resetDisposition: 'absent',
+      };
+    }
+    if (target.isFile() || target.isSymbolicLink()) {
+      await assertNoConfigSymlink(allowedRoot, path.dirname(filePath));
+      await nodeFs.unlink(filePath);
+      return {
+        pluginName: options.pluginName,
+        scope: options.scope,
+        storeKind: options.scope,
+        path: filePath,
+        existed: true,
+        deleted: true,
+        resetDisposition: target.isSymbolicLink() ? 'unlinkedSymlink' : 'deletedFile',
+      };
+    }
+    if (target.isDirectory()) {
+      const timestamp = new Date().toISOString().replace(/[-:]/gu, '').replace(/\..*$/u, '');
+      const quarantineBasename = `config.broken-${timestamp}-${crypto.randomUUID()}.json`;
+      await assertNoConfigSymlink(allowedRoot, path.dirname(filePath));
+      await nodeFs.rename(filePath, path.join(path.dirname(filePath), quarantineBasename));
+      return {
+        pluginName: options.pluginName,
+        scope: options.scope,
+        storeKind: options.scope,
+        path: filePath,
+        existed: true,
+        deleted: true,
+        resetDisposition: 'quarantinedDirectory',
+        quarantineBasename,
+      };
+    }
+    throw new PluginConfigResetError(
+      'configResetTargetUnsupported',
+      `${publicTarget} is a special filesystem node. Move it manually, then retry config reset.`,
+    );
+  } catch (error) {
+    if (error instanceof PluginConfigResetError) throw error;
+    const osCode = (error as NodeJS.ErrnoException).code;
+    throw new PluginConfigResetError(
+      'configResetFailed',
+      `Cannot reset ${publicTarget}${osCode ? ` (${osCode})` : ''}. Fix filesystem access, then retry config reset.`,
+      osCode,
+    );
+  }
 }
 
 export async function resetPluginConfigStores(options: {
@@ -1139,6 +1234,7 @@ export async function resetPluginConfigStores(options: {
       path: target.path,
       existed: existing[index]!,
       deleted,
+      resetDisposition: deleted ? 'deletedFile' : 'absent',
     });
   }
   return receipts;

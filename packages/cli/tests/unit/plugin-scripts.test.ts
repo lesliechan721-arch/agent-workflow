@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
+  redactPluginScriptOutput,
   runPostApplyScript,
   type PluginProcessRunner,
   type PluginScriptInvocation,
@@ -47,6 +48,15 @@ afterEach(async () => {
 });
 
 describe('postApply script', () => {
+  it('redacts short sensitive scalar tokens only at token boundaries', () => {
+    expect(redactPluginScriptOutput(
+      'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
+      ['a', '1', 'true', 'long-secret-value'],
+    )).toBe(
+      '[REDACTED] [REDACTED] [REDACTED] [REDACTED] cat 10 1.5 -1 untrue command:start',
+    );
+  });
+
   it('uses only user config for a user target', async () => {
     const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
     const sourceIdentity = `sha256:${'4'.repeat(64)}`;
@@ -136,6 +146,59 @@ describe('postApply script', () => {
       artifacts: [],
       runner,
     })).rejects.toThrow('postApply timed out. stderr: [REDACTED]');
+  });
+
+  it('redacts every scalar leaf of a top-level sensitive object from stderr', async () => {
+    const plugin = await createPlugin();
+    const sourceIdentity = `sha256:${'8'.repeat(64)}`;
+    plugin.sourceIdentity = sourceIdentity;
+    plugin.manifest.config = {
+      fields: {
+        credentials: {
+          type: 'object',
+          sensitive: true,
+          properties: {
+            token: { type: 'string' },
+            account: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+    };
+    const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId,
+      sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: plugin.rootDir,
+      env,
+      values: { credentials: { token: 'object-secret', account: 'private-account' } },
+    });
+    const runner: PluginProcessRunner = {
+      async run() {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: '',
+          stderr: 'object-secret private-account',
+          timedOut: false,
+        };
+      },
+    };
+
+    const error = await runPostApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env }),
+      artifacts: [],
+      runner,
+    }).catch((failure: unknown) => failure as Error);
+    expect(error.message).not.toContain('object-secret');
+    expect(error.message).not.toContain('private-account');
+    expect(error.message).toContain('[REDACTED] [REDACTED]');
   });
 
   it('reports a non-zero exit without persisting failure state', async () => {

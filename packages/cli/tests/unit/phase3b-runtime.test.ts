@@ -339,10 +339,6 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'other', sourceIdentity: `sha256:${'c'.repeat(64)}`, pluginName: 'demo', scope: 'user',
       cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { retained: true },
     });
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true });
-
     const ambiguous = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: ambiguous.io, interactive: false,
@@ -351,12 +347,24 @@ describe('phase 3B namespaced runtime stores', () => {
       errors: [expect.objectContaining({ code: 'configTargetAmbiguous' })],
     });
 
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }), '{invalid');
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ ok: true, changed: true });
+
     const reset = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: reset.io, interactive: false,
     })).toBe(0);
     expect(JSON.parse(reset.readStdout())).toMatchObject({
-      ok: true, pluginId: 'team/demo', deleted: true, removedKeys: ['mode'],
+      ok: true,
+      pluginId: 'team/demo',
+      deleted: true,
+      removedKeys: [],
+      resetDisposition: 'deletedFile',
     });
     await expect(readPluginConfigStore({
       sourceId: 'other', sourceIdentity: `sha256:${'c'.repeat(64)}`, pluginName: 'demo', scope: 'user',
