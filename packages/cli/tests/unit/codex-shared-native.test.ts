@@ -229,6 +229,20 @@ describe('codex-shared-native', () => {
     });
   });
 
+  it('reports payload damage before render drift when independent bytes also changed', () => {
+    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
+    expect(inspectCodexSharedNative(evidence({
+      expectedPayloadDigest: otherDigest('f'),
+      expectedProjection: createCodexNativeRenderProjection({
+        ...projectionInput(),
+        sourceIdentity: otherDigest('f'),
+      }),
+      projectionReceipt: { state: 'present', receipt },
+    }))).toMatchObject({
+      state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
+    });
+  });
+
   it('classifies direct render-input drift as replaceable render drift', () => {
     const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
     const expectedProjection = {
@@ -301,6 +315,39 @@ describe('codex-shared-native', () => {
     });
     expect(inspectCodexSharedNative(evidence({
       expectedProjection,
+      projectionReceipt: { state: 'present', receipt: foreignReceipt },
+    }))).toMatchObject({
+      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+    });
+    expect(inspectCodexSharedNative(evidence({
+      expectedProjectionRequired: true,
+      expectedProjection: undefined,
+      expectedPayloadDigest: undefined,
+      expectedProjectionIdentity: {
+        logicalPluginId: 'official/demo',
+        strategy: 'shared-user',
+      },
+      projectionReceipt: { state: 'present', receipt: foreignReceipt },
+    }))).toMatchObject({
+      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+    });
+    expect(inspectCodexSharedNative(evidence({
+      expectedProjectionRequired: true,
+      expectedProjection: undefined,
+      expectedPayloadDigest: undefined,
+      expectedProjectionIdentity: {
+        logicalPluginId: 'official/demo',
+        strategy: 'shared-user',
+      },
+      pluginListEntries: [{ pluginId: 'demo@aw-team', version: '1.0.0', enabled: true }],
+      manifest: {
+        state: 'present',
+        identity: 'demo',
+        version: '1.0.0',
+        payloadDigest: digest,
+        payloadPath: '/codex/plugins/cache/aw-team/demo/1.0.0',
+        pathSafe: true,
+      },
       projectionReceipt: { state: 'present', receipt: foreignReceipt },
     }))).toMatchObject({
       state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',

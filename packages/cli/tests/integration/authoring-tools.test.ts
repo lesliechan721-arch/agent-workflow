@@ -4493,6 +4493,25 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('native dynamic Skill "review" conflicts with a static Skill'),
     });
+
+    delete manifest.skills;
+    delete manifest.artifacts.targets[0].sourceDirs;
+    manifest.artifacts.targets.push({
+      ...manifest.artifacts.targets[0],
+      scopes: ['project'],
+      skillKey: 'other-review',
+    });
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate codex-native artifact id "review" in the shared projection'),
+    });
+
+    manifest.artifacts.targets[1].id = 'other-review';
+    manifest.artifacts.targets[1].skillKey = 'review';
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate codex-native skillKey "review" in the shared projection'),
+    });
   });
 
   it('validate_plugin.mjs rejects dynamic role metadata and missing Codex invocation policy', async () => {

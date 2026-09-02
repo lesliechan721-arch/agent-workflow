@@ -1833,7 +1833,7 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each(['project', 'user'] as const)(
-    'rejects unsupported native dynamic Skill materialization before %s config or AW direct writes',
+    'keeps native dynamic Skill materialization out of %s AW direct planning',
     async (scope) => {
       const isolation = getCurrentSourceTestIsolation();
       const pluginRoot = path.join(isolation.layout.rootDir, `native-dynamic-${scope}`);
@@ -1890,27 +1890,86 @@ describe('rebuild adapter integration', () => {
           'config.json',
         ), '{invalid project config');
       }
+      const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => ({
+        exitCode: 0,
+        stdout: invocation.args.includes('--version')
+          ? 'codex-cli 0.200.0'
+          : invocation.args.includes('--json') ? '{"installed":[],"available":[]}' : '',
+        stderr: '',
+      }));
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({
           env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('native CLI must not run'); },
+          nativeCliRunner,
         }),
       });
 
-      await expect(integration.buildTarget({
+      const target = await integration.buildTarget({
         plugin,
         platform: 'codex',
         scope,
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      })).rejects.toThrow(
-        'codexNativeMaterializationUnsupported: Native materialization is not supported for artifact "native-skill".',
-      );
+      });
+      expect(target.requiresNative).toBe(true);
+      expect(target.artifacts.some((artifact) =>
+        artifact.target === 'codex.skill' && artifact.artifactKey === 'native-skill')).toBe(false);
+      expect(target.desiredOwnedComponents?.some((component) =>
+        component.kind === 'skill-directory'
+        && component.identity.artifactKey === 'native-skill')).toBe(false);
       expect(await fs.pathExists(rendererMarker)).toBe(false);
       expect(await fs.pathExists(scope === 'project'
         ? path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'native-skill')
         : path.join(isolation.layout.codexHomeDir, 'skills', 'native-skill'))).toBe(false);
+
+      const userSkillsRoot = path.join(isolation.layout.codexHomeDir, 'skills');
+      const projectSkillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+      const oppositeScope = scope === 'project' ? 'user' : 'project';
+      const oppositeSkillsRoot = oppositeScope === 'user' ? userSkillsRoot : projectSkillsRoot;
+      const oppositeLegacySkillRoot = path.join(oppositeSkillsRoot, 'native-skill');
+      await fs.outputFile(path.join(oppositeLegacySkillRoot, 'SKILL.md'), 'legacy owned\n');
+      await writeSkillOwnerMarker({
+        skillRoot: oppositeLegacySkillRoot,
+        allowedRoot: oppositeSkillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: 'team',
+          pluginId: plugin.pluginId!,
+          plugin: plugin.manifest.name,
+          artifactKey: 'native-skill',
+          platform: 'codex',
+          scope: oppositeScope,
+        },
+      });
+      const failedAfterCleanup = await executeRebuildOperation({
+        command: 'install',
+        target,
+        driver: integration.driver,
+      });
+      expect(failedAfterCleanup.status).toBe('failed');
+      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(false);
+
+      const userLegacySkillRoot = path.join(userSkillsRoot, 'native-skill');
+      const projectLegacySkillRoot = path.join(projectSkillsRoot, 'native-skill');
+      const userForeignPath = path.join(userLegacySkillRoot, 'user-foreign.txt');
+      const projectForeignPath = path.join(projectLegacySkillRoot, 'project-foreign.txt');
+      await fs.outputFile(userForeignPath, 'user foreign\n');
+      await fs.outputFile(projectForeignPath, 'project foreign\n');
+      nativeCliRunner.mockClear();
+      const blocked = await executeRebuildOperation({
+        command: 'install',
+        target,
+        driver: integration.driver,
+      });
+      expect(blocked).toMatchObject({
+        status: 'failed',
+        error: { phase: 'preflight.inspect' },
+      });
+      await expect(fs.readFile(userForeignPath, 'utf8')).resolves.toBe('user foreign\n');
+      await expect(fs.readFile(projectForeignPath, 'utf8')).resolves.toBe('project foreign\n');
+      expect(nativeCliRunner.mock.calls.some(([invocation]) =>
+        invocation.args.includes('add') || invocation.args.includes('remove'))).toBe(false);
 
       const inspection = await integration.buildTarget({
         plugin,
@@ -1923,7 +1982,7 @@ describe('rebuild adapter integration', () => {
       });
       expect(inspection.artifacts.some((artifact) =>
         artifact.target === 'codex.skill' && artifact.artifactKey === 'native-skill')).toBe(false);
-      expect(inspection.ownedComponents.some((component) =>
+      expect(inspection.desiredOwnedComponents?.some((component) =>
         component.kind === 'skill-directory'
         && component.identity.artifactKey === 'native-skill')).toBe(false);
     },

@@ -2279,6 +2279,8 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
     .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, pluginDir))
     .filter(Boolean);
   const idsBySurfaceScope = new Map();
+  const nativeIds = new Map();
+  const nativeSkillKeys = new Map();
   for (const [declarationIndex, declaration] of declarations.entries()) {
     for (const scope of declaration.scopes) {
       const surface = declaration.platform ?? declaration.distribution;
@@ -2290,6 +2292,24 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
         );
       } else {
         idsBySurfaceScope.set(key, declarationIndex);
+      }
+    }
+    if (declaration.delivery?.mode === 'codex-native') {
+      const existingId = nativeIds.get(declaration.id);
+      if (existingId !== undefined) {
+        error(
+          `artifacts.targets has duplicate codex-native artifact id "${declaration.id}" in the shared projection at targets[${existingId}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        nativeIds.set(declaration.id, declarationIndex);
+      }
+      const existingSkillKey = nativeSkillKeys.get(declaration.skillKey);
+      if (existingSkillKey !== undefined) {
+        error(
+          `artifacts.targets has duplicate codex-native skillKey "${declaration.skillKey}" in the shared projection at targets[${existingSkillKey}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        nativeSkillKeys.set(declaration.skillKey, declarationIndex);
       }
     }
   }

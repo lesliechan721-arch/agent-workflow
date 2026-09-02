@@ -1822,17 +1822,22 @@ export async function statusCommandV7(options: {
                       activations: {},
                     };
                 let residueFailed = false;
+                const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+                  target.platform === 'codex'
+                  && target.target === 'codex.skill'
+                  && target.delivery?.mode === 'codex-native');
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
                       desiredVersion: entry.version,
-                      inspectionMode: 'shallow',
+                      inspectionMode: hasNativeRenderTargets ? 'payload' : 'shallow',
                       cwd: options.cwd,
                       env,
                       marketplaceName,
                       marketplaceRoot,
                       nativeCliRunner,
                       pluginRegistration,
+                      ...(hasNativeRenderTargets ? { nativeRenderPlugin: plugin } : {}),
                     }).catch(() => {
                       residueFailed = true;
                       return undefined;

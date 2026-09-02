@@ -2,7 +2,7 @@
 
 先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。`artifacts.targets` 是静态能力真值；renderer 只根据当前 context 返回 `ArtifactPlan`，plan 由 `aw plugin validate` 验证，不直接写平台文件。
 
-renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。`requestedArtifactIds` 是非空、无重复且按 manifest 顺序规范化的本次请求；renderer 只对这些 ID 各返回一个 artifact。同一 surface 与 scope 内的 target ID 必须唯一；不同 surface 或不重叠 scope 可复用 ID。user target 使用按 `default < user` 合并并验证的有效配置；project target 使用按 `default < user < project` 合并并验证的有效配置。敏感标量或 object child 不能进入输出或诊断。
+renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。`requestedArtifactIds` 是非空、无重复且按 manifest 顺序规范化的本次请求；renderer 只对这些 ID 各返回一个 artifact。同一 surface 与 scope 内的 target ID 必须唯一；不同 surface 或不重叠 scope 可复用 ID。例外是 `codex-native` shared projection：其 target ID 与 Skill key 在整个 projection 内分别全局唯一。user target 使用按 `default < user` 合并并验证的有效配置；project target 使用按 `default < user < project` 合并并验证的有效配置。敏感标量或 object child 不能进入输出或诊断。
 
 Skill target 先合并声明的 `sourceDirs`，再用 `content.files` 覆盖安全的 UTF-8 相对文件。最终 tree 必须保留平台原生调用元数据和 README。role、instruction 和 Skill 的静态 key 必须与 plan 一致。
 

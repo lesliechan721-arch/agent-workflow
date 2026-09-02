@@ -70,7 +70,10 @@ import {
   withResolvedMultiSourceCatalog,
   type DesiredArtifactSelection,
 } from '../utils/multi-source-catalog.js';
-import { calculateCodexSharedNativePayloadDigest } from '../utils/catalog-digests.js';
+import {
+  calculateCodexNativeRenderPayloadDigest,
+  calculateCodexSharedNativePayloadDigest,
+} from '../utils/catalog-digests.js';
 import {
   resolveCatalogOperationContext,
   type CatalogOperationContext,
@@ -2454,25 +2457,19 @@ export async function runRebuildCommand(options: {
           const surface = analyzeCodexSurface(entry.plugin.manifest);
           const marketplaceName = marketplaceNameFor(entry, 'codex', planned.resolvedScope);
           const codexPluginId = `${entry.plugin.manifest.name}@${marketplaceName}`;
-          const contentDigest = await calculateCodexSharedNativePayloadDigest(entry.plugin.rootDir);
+          const hasNativeRenderTargets = (entry.plugin.manifest.artifacts?.targets ?? []).some((target) =>
+            target.platform === 'codex'
+            && target.target === 'codex.skill'
+            && target.delivery?.mode === 'codex-native');
+          const staticContentDigest = hasNativeRenderTargets
+            ? undefined
+            : await calculateCodexSharedNativePayloadDigest(entry.plugin.rootDir);
           const desiredScopes = desiredScopesForEntry(entry);
-          catalogClosure.push({
-            pluginId: entry.pluginId,
-            pluginName: entry.plugin.manifest.name,
-            codexPluginId,
-            version: entry.plugin.manifest.version,
-            payloadDigest: contentDigest,
-            relation: planned.relation,
-            resolvedScope: planned.resolvedScope,
-            desiredScopes,
-            intentScopes: intentScopesForEntry(entry),
-            surface,
-          });
           const sharedInspection = surface.nativeKinds.length > 0
             ? await inspectCodexSharedNativeLive({
                 pluginName: entry.plugin.manifest.name,
                 desiredVersion: entry.plugin.manifest.version,
-                expectedPayloadDigest: contentDigest,
+                ...(staticContentDigest ? { expectedPayloadDigest: staticContentDigest } : {}),
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
                 marketplaceName,
@@ -2486,8 +2483,24 @@ export async function runRebuildCommand(options: {
                 ...(plannedCodexRegistrations.get(codexPluginId)
                   ? { pluginRegistration: plannedCodexRegistrations.get(codexPluginId)! }
                   : {}),
+                ...(hasNativeRenderTargets ? { nativeRenderPlugin: entry.plugin } : {}),
               })
             : undefined;
+          const contentDigest = sharedInspection?.expectedPayloadDigest
+            ?? staticContentDigest
+            ?? await calculateCodexNativeRenderPayloadDigest(entry.plugin.rootDir);
+          catalogClosure.push({
+            pluginId: entry.pluginId,
+            pluginName: entry.plugin.manifest.name,
+            codexPluginId,
+            version: entry.plugin.manifest.version,
+            payloadDigest: contentDigest,
+            relation: planned.relation,
+            resolvedScope: planned.resolvedScope,
+            desiredScopes,
+            intentScopes: intentScopesForEntry(entry),
+            surface,
+          });
           const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
             ?? { state: 'missing' };
           const projectionEntries: Array<{

@@ -1991,6 +1991,8 @@ function normalizeArtifacts(
 
         const seenIdsBySurfaceScope = new Set<string>();
         const seenSkillOwners = new Set<string>();
+        const seenNativeIds = new Set<string>();
+        const seenNativeSkillKeys = new Set<string>();
         return targetsInput.map((entry, index) => {
           const target = normalizeArtifactTargetEntry(
             pluginRoot,
@@ -2018,6 +2020,20 @@ function normalizeArtifacts(
               }
               seenSkillOwners.add(ownerKey);
             }
+          }
+          if (target.delivery?.mode === 'codex-native') {
+            if (seenNativeIds.has(target.id)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate codex-native artifact id "${target.id}" in the shared projection.`,
+              );
+            }
+            if (target.skillKey && seenNativeSkillKeys.has(target.skillKey)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate codex-native skillKey "${target.skillKey}" in the shared projection.`,
+              );
+            }
+            seenNativeIds.add(target.id);
+            if (target.skillKey) seenNativeSkillKeys.add(target.skillKey);
           }
           return target;
         });

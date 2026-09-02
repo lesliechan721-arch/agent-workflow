@@ -280,6 +280,7 @@ export async function writeArtifactRendererContext(options: {
   event: ArtifactRenderEvent;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  configScope?: Scope;
   cwd: string;
   commandEnv: NodeJS.ProcessEnv;
   changedConfigKeys?: string[];
@@ -305,7 +306,7 @@ export async function writeArtifactRendererContext(options: {
     sourceIdentity: options.sourceIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
-    scope: options.scope,
+    scope: options.configScope ?? options.scope,
     cwd: options.cwd,
     env: options.commandEnv,
   });
@@ -508,6 +509,7 @@ export async function runArtifactRenderer(options: {
   plugin: PluginMeta;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  configScope?: Scope;
   cwd: string;
   commandEnv?: NodeJS.ProcessEnv;
   changedConfigKeys?: string[];
@@ -536,6 +538,7 @@ export async function runArtifactRenderer(options: {
     event,
     platform: options.platform,
     scope: options.scope,
+    ...(options.configScope ? { configScope: options.configScope } : {}),
     cwd: options.cwd,
     commandEnv,
     changedConfigKeys,
