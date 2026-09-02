@@ -23,6 +23,7 @@ import {
   catalogSourceStatusCommand,
   syncCatalogSourceCommand,
 } from './commands/catalog-generation.js';
+import { catalogStorePrune, catalogStoreStatus } from './commands/catalog-store.js';
 import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
@@ -184,6 +185,15 @@ import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 
 export type { CliIo } from './commands/runtime.js';
+export type {
+  CatalogStoreEntryCategory,
+  CatalogStoreEntryStatus,
+  CatalogStoreInspectionEntry,
+  CatalogStorePruneFailureResult,
+  CatalogStorePruneResult,
+  CatalogStoreStatusFailureResult,
+  CatalogStoreStatusResult,
+} from './commands/catalog-store.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
 
 function createDefaultIo(): CliIo {
@@ -2684,6 +2694,91 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         else writeLine(io.stdout, `Catalog source ${id} removed.`);
       } catch (error) {
         await writeCatalogSourceFailure('catalog:source:remove', id, rawOptions.json === true, error);
+      }
+    });
+
+  const catalogStore = catalog
+    .command('store')
+    .description('Inspect or prune the immutable Catalog store');
+
+  catalogStore
+    .command('status')
+    .option('-j, --json', 'print Catalog store status as JSON', false)
+    .action(async (rawOptions: { json?: boolean }) => {
+      try {
+        const result = await catalogStoreStatus({ env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else if (result.entries.length === 0) {
+          writeLine(io.stdout, 'Catalog store is empty.');
+        } else {
+          for (const entry of result.entries) {
+            const bytes = entry.reclaimableBytes === null ? 'unknown bytes' : `${entry.reclaimableBytes} bytes`;
+            writeLine(io.stdout, `${entry.storeKey}: ${entry.category}, ${entry.status}, ${entry.reason}, ${bytes}`);
+          }
+          writeLine(io.stdout, `Reclaimable: ${result.totals.reclaimableEntries} item(s).`);
+        }
+      } catch (error) {
+        const failure = sanitizeCatalogSourceError(error, env);
+        const message = redactString(failure.message);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          catalogStoreSchemaVersion: 1,
+          command: 'catalog:store:status',
+          ok: false,
+          entries: [],
+          errors: [{ code: catalogGenerationErrorCode(error), message }],
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalogStore
+    .command('prune')
+    .option('--dry-run', 'inspect reclaimable items without deleting them', false)
+    .option('-y, --yes', 'delete items classified as safely reclaimable', false)
+    .option('-j, --json', 'print the prune receipt as JSON', false)
+    .action(async (rawOptions: { dryRun?: boolean; yes?: boolean; json?: boolean }) => {
+      const dryRun = rawOptions.yes !== true;
+      try {
+        if (rawOptions.dryRun === true && rawOptions.yes === true) {
+          throw Object.assign(new Error('catalog store prune cannot combine `--dry-run` and `--yes`.'), {
+            code: 'invalidArguments',
+          });
+        }
+        const result = await catalogStorePrune({ dryRun, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else if (dryRun) {
+          writeLine(io.stdout, `Dry run: ${result.entries.filter((entry) => entry.status === 'reclaimable').length} item(s) are reclaimable.`);
+          writeLine(io.stdout, 'Run `aw catalog store prune --yes` to delete them.');
+        } else {
+          writeLine(io.stdout, `Deleted ${result.deleted.length} Catalog store item(s) (${result.deletedBytes} bytes).`);
+          if (result.errors.length > 0) writeLine(io.stderr, `${result.errors.length} item(s) could not be deleted and were retained.`);
+        }
+        commandExitState.exitCode = result.ok ? 0 : 1;
+      } catch (error) {
+        const failure = sanitizeCatalogSourceError(error, env);
+        const message = redactString(failure.message);
+        const explicitCode = (error as { code?: unknown }).code;
+        const code = typeof explicitCode === 'string'
+          ? explicitCode
+          : catalogGenerationErrorCode(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          catalogStoreSchemaVersion: 1,
+          command: 'catalog:store:prune',
+          ok: false,
+          overallState: 'failed',
+          dryRun,
+          entries: [],
+          deleted: [],
+          retained: [],
+          errors: [{ code, message }],
+          reclaimableBytes: null,
+          deletedBytes: 0,
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
       }
     });
 

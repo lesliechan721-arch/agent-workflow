@@ -85,9 +85,15 @@ aw catalog source sync <id> --yes --json
 aw catalog source sync <id> --check --json
 aw catalog source sync <id> --replace-damaged --yes --json
 aw catalog source status <id> --json
+
+aw catalog store status --json
+aw catalog store prune --json
+aw catalog store prune --yes --json
 ```
 
 `sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`，JSON receipt 包含脱敏的 source impact。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。候选删除插件、使插件新出现能力不兼容、改变依赖，或传递影响这些插件的现有引用时，sync 需要 `--yes`；清单或旧 manifest 不可读时影响为 unknown，也需要确认。`catalog source add/update` 只改 source config；remove 有引用或清单不完整时需要 `--yes`。普通 Git 激活只接受更高 Catalog version；相同 version 不同 digest 和较低 version 都拒绝。明确修改 source config 后的 sync 可确认这些关系。Path source 允许内容变化。
+
+Store prune 是显式恢复工具，不是自动 GC。默认命令和 `--dry-run` 都只预览；只有 `--yes` 删除。它保留所有 Active，保留 30 天内的非 Active 正式 entry，并保留 24 小时内的 staging、replacement 和 quarantine。老 quarantine 只有在可以确定对应 canonical key，且该正式 entry 完整健康时才删除。损坏 state、未知目录、符号链接、unsafe node、验证失败和 foreign 内容全部 fail closed。实际删除与 Active activation 共享现有 AW_HOME mutation lock，并在锁内重读。部分删除失败会保留 residue，并可再次运行 prune；被删除的非 Active 弱 snapshot 可通过 source sync 重建。
 
 Active store 损坏时，Git source 使用当前 transport 配置获取 `Active.resolvedCommit`，并只在 logical identity、snapshot digest、manifest digest 和 commit 全部匹配时修复旧 key；source config 不变。CLI 修复后继续普通 sync，TUI 修复成功后停止。旧 commit 不可取得，或 Path 当前内容不是旧 key 时，命令返回 replace-required。只有 `--replace-damaged --yes` 或 TUI 的独立替换 Review 可以使用已绑定的当前候选。替换执行前重查 source config、候选、Active 和旧 entry 仍损坏；它只跳过无法完成的旧版本比较，未经已验证的 source config 变化仍不能改变 logical identity。
 

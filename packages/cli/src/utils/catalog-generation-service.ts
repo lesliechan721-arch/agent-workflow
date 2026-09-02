@@ -54,6 +54,7 @@ export interface CatalogGenerationServiceRuntime {
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   afterCandidateResolved?: () => Promise<void>;
+  afterRecoveryStorePublished?: () => Promise<void>;
 }
 
 export interface CatalogGenerationProbeResult {
@@ -763,6 +764,12 @@ async function activateResolvedCandidate(options: {
     token: options.token,
     signal: options.signal,
     action: async () => {
+      const lockedStore = await readCatalogStoreEntry({
+        logicalIdentity: store.metadata.logicalIdentity,
+        snapshotDigest: store.metadata.snapshotDigest,
+        env: options.env,
+      });
+      assertStoreMatchesCandidate(options.sourceId, lockedStore, candidate);
       const source = await assertCurrentSource({
         sourceId: options.sourceId,
         candidate,
@@ -946,10 +953,17 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
       resolution: resolved.resolution, env, signal: options.signal,
     });
     assertStoreMatchesCandidate(options.sourceId, store, resolved.candidate);
+    await options.runtime?.afterRecoveryStorePublished?.();
     return withAwHomeMutationLock({
       env,
       signal: options.signal,
       action: async () => {
+        const lockedStore = await readCatalogStoreEntry({
+          logicalIdentity: store.metadata.logicalIdentity,
+          snapshotDigest: store.metadata.snapshotDigest,
+          env,
+        });
+        assertStoreMatchesCandidate(options.sourceId, lockedStore, resolved!.candidate);
         const source = await assertCurrentSource({
           sourceId: options.sourceId,
           candidate: resolved!.candidate,

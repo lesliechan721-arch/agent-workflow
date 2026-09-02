@@ -12,6 +12,7 @@ import {
   probeCatalogSourceFreshness,
   probeCatalogSourceGeneration,
   readCatalogGenerationStatus,
+  recoverCatalogGenerationStateAndActivate,
   repairCatalogSourceGeneration,
   syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
@@ -739,6 +740,39 @@ describe('Catalog Active store and state', () => {
       logicalIdentity: result.active!.logicalIdentity,
       snapshotDigest: result.active!.snapshotDigest,
     });
+  });
+
+  it('does not recover invalid state when the published store disappears before the lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('invalid-state-store-race');
+    await createCatalogSnapshotFixture(sourceRoot);
+    await configurePathSource(sourceRoot);
+    const reviewed = await probeCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const invalidState = '{ invalid state\n';
+    await fs.outputFile(statePath, invalidState);
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: reviewed.candidate.logicalIdentity,
+      snapshotDigest: reviewed.candidate.snapshotDigest,
+      env: isolation.env,
+    });
+
+    await expect(recoverCatalogGenerationStateAndActivate({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      expectedCandidate: reviewed.candidate,
+      env: isolation.env,
+      runtime: {
+        afterRecoveryStorePublished: async () => {
+          await fs.remove(location.entryDir);
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+
+    await expect(fs.readFile(statePath, 'utf8')).resolves.toBe(invalidState);
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(false);
   });
 
   it('does not hold the AW_HOME mutation lock while a provider is waiting', async () => {
