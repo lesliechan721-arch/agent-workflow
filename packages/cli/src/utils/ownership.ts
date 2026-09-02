@@ -550,6 +550,74 @@ function publicOwner(identity: OwnerIdentity): string {
   return identity.pluginId ?? identity.plugin;
 }
 
+function forceArtifactBasenameMatches(component: Extract<OwnedComponent, OwnedPathComponent>): boolean {
+  const basename = path.basename(component.path);
+  if (component.kind === 'skill-directory') return basename === component.identity.artifactKey;
+  const stem = basename.replace(/\.[^.]+$/u, '');
+  const slug = (value: string) => value.trim().toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  return stem === component.identity.artifactKey
+    || stem === `aw-${slug(component.identity.plugin)}-${slug(component.identity.artifactKey)}`;
+}
+
+async function inspectForceExclusivePathAt(
+  component: Extract<OwnedComponent, OwnedPathComponent>,
+  actualPath: string,
+  canonicalPath: boolean,
+): Promise<ComponentProbe> {
+  validateOwnerIdentity(component.identity);
+  if (canonicalPath && !forceArtifactBasenameMatches(component)) {
+    return foreignProbe(component, 'ownerMismatch');
+  }
+  try {
+    await assertNoSymlinkInPath(component.allowedRoot, actualPath);
+  } catch (error) {
+    if (error instanceof OwnershipSymlinkError) return foreignProbe(component, 'typeMismatch');
+    throw error;
+  }
+  const stats = await fs.lstat(actualPath).catch((error: unknown) => {
+    if (isMissing(error)) return null;
+    throw error;
+  });
+  if (!stats) return { state: 'absent' };
+  if (component.kind === 'skill-directory') {
+    if (!stats.isDirectory()) return foreignProbe(component, 'typeMismatch');
+    const markerPath = path.join(actualPath, SKILL_OWNER_MARKER);
+    try {
+      await assertNoSymlinkInPath(component.allowedRoot, markerPath);
+    } catch (error) {
+      if (error instanceof OwnershipSymlinkError) return foreignProbe(component, 'typeMismatch');
+      throw error;
+    }
+    try {
+      const marker = await readMarkerAt(markerPath);
+      if (!marker) return { state: 'present' };
+      return identitiesEqual(marker, component.identity)
+        ? { state: 'present' }
+        : foreignProbe(component, 'ownerMismatch', publicOwner(marker));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code) throw error;
+      return { state: 'present' };
+    }
+  }
+  if (!stats.isFile()) return foreignProbe(component, 'typeMismatch');
+  const raw = await fs.readFile(actualPath, 'utf8').catch((error: unknown) => {
+    if (isMissing(error)) return null;
+    throw error;
+  });
+  if (raw === null) return { state: 'absent' };
+  try {
+    const parsed = parseOwnedTextHeader(raw);
+    if (!parsed) return { state: 'present' };
+    return identitiesEqual(parsed.identity, component.identity)
+      ? { state: 'present' }
+      : foreignProbe(component, 'ownerMismatch', publicOwner(parsed.identity));
+  } catch {
+    return { state: 'present' };
+  }
+}
+
 function foreignProbe(
   component: OwnedComponent,
   reason: ArtifactCollisionEvidence['reason'],
@@ -608,13 +676,16 @@ export async function inspectOwnedComponents(options: {
   nativeProbe?: NativeOwnershipProbe;
   executor?: OwnedComponentExecutor;
   verifyHealth?: boolean;
+  forceExclusive?: boolean;
 }): Promise<OwnershipInspection> {
   const components: OwnedComponentInspection[] = [];
   const errors: OwnershipError[] = [];
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const result = await inspectComponent(component, options.nativeProbe, options.executor);
+      const result = await (options.forceExclusive && 'path' in component
+        ? inspectForceExclusivePathAt(component, component.path, true)
+        : inspectComponent(component, options.nativeProbe, options.executor));
       let probe = result.state;
       let healthDiagnostic: string | undefined;
       if (
@@ -672,6 +743,7 @@ async function cleanupPathComponent(options: {
   result: CleanupResult;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
   executor?: OwnedComponentExecutor;
+  forceExclusive?: boolean;
 }): Promise<void> {
   const { component, result } = options;
   const label = componentLabel(component);
@@ -705,7 +777,9 @@ async function cleanupPathComponent(options: {
 
   let verified: OwnedProbeResult;
   try {
-    verified = (await inspectPathAt(component, quarantinePath, false, options.executor)).state;
+    verified = (await (options.forceExclusive
+      ? inspectForceExclusivePathAt(component, quarantinePath, false)
+      : inspectPathAt(component, quarantinePath, false, options.executor))).state;
   } catch (error) {
     result.failures.push({
       label,
@@ -763,6 +837,7 @@ export async function cleanupOwnedComponents(options: {
   executor?: OwnedComponentExecutor;
   beforeMutation?: (component: OwnedComponent) => Promise<void>;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+  forceExclusive?: boolean;
 }): Promise<CleanupResult> {
   const result: CleanupResult = {
     removed: [],
@@ -776,7 +851,9 @@ export async function cleanupOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const probe = (await inspectComponent(component, options.nativeProbe, options.executor)).state;
+      const probe = (await (options.forceExclusive && 'path' in component
+        ? inspectForceExclusivePathAt(component, component.path, true)
+        : inspectComponent(component, options.nativeProbe, options.executor))).state;
       probes.set(component, probe);
       if (probe === 'absent') pushUnique(result.absent, label);
       if (probe === 'foreign' || probe === 'partial') pushUnique(result.residual, label);
@@ -802,6 +879,7 @@ export async function cleanupOwnedComponents(options: {
         result,
         afterQuarantine: options.afterQuarantine,
         executor: options.executor,
+        forceExclusive: options.forceExclusive,
       });
       continue;
     }

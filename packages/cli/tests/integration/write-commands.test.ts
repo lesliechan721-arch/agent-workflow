@@ -431,7 +431,10 @@ describe('five namespaced write commands', () => {
       }, runtime);
 
       expect(normal.overallState, JSON.stringify(normal.rebuildResults)).toBe('succeeded');
-      expect(forced.overallState, JSON.stringify(forced.rebuildResults)).toBe('succeeded');
+      expect(forced).toMatchObject({
+        overallState: 'failed',
+        targetResults: [expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' })],
+      });
       await expect(fs.readFile(foreignRole, 'utf8')).resolves.toBe('foreign = true\n');
       await expect(readCodexConfigFile(sharedConfig)).resolves.toMatchObject({
         snapshot: { mcpServers: { foreign: { value: { command: 'foreign' } } } },
@@ -4011,7 +4014,7 @@ describe('five namespaced write commands', () => {
 
     expect(result.overallState).toBe('failed');
     expect(result.targetResults).toEqual([
-      expect.objectContaining({ errorCode: 'stateInventoryFailed' }),
+      expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' }),
     ]);
     for (const [directory] of fixtures) {
       await expect(fs.pathExists(path.join(skillsRoot, directory))).resolves.toBe(true);
@@ -4536,7 +4539,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.stat(targetPath)).resolves.toMatchObject({ mtimeMs: beforeMtime });
   });
 
-  it('executes force cleanup through the reviewed TUI runtime', async () => {
+  it('rejects shared-only force cleanup through the reviewed TUI runtime', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-force-cleanup-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -4567,7 +4570,10 @@ describe('five namespaced write commands', () => {
 
     const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof cleanupWriteCommand>>;
 
-    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result).toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' })],
+    });
     await expect(statusCommandV7({
       plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
       cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
@@ -4767,7 +4773,7 @@ describe('five namespaced write commands', () => {
     expect(removedRoot.overallState, JSON.stringify(removedRoot.rebuildResults)).toBe('succeeded');
   });
 
-  it('force cleanup removes selected output while retaining dependency placement for reinstall', async () => {
+  it('force cleanup preserves a shared-only dependency placement', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'force-dependency-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -4794,13 +4800,16 @@ describe('five namespaced write commands', () => {
     const removed = await cleanupWriteCommand(['team/leaf'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
     }, runtime);
-    expect(removed.overallState, JSON.stringify(removed.rebuildResults)).toBe('succeeded');
+    expect(removed).toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' })],
+    });
 
     const partial = await statusCommandV7({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, platform: 'codex', scope: 'project',
     });
     expect(partial.payload.targets.find((target) => target.pluginId === 'team/root')).toMatchObject({
-      components: expect.arrayContaining([
+      components: expect.not.arrayContaining([
         expect.objectContaining({ kind: 'dependency', key: 'team/leaf', state: 'absent' }),
       ]),
     });
@@ -5484,16 +5493,13 @@ describe('five namespaced write commands', () => {
     30_000,
   );
 
-  it.each([false, true])(
-    'returns idempotent success for a source-deleted target with no live match (force=%s)',
-    async (force) => {
+  it('returns idempotent success for a source-deleted target with no live match', async () => {
       const isolation = await configureCatalog();
 
       const result = await cleanupWriteCommand(['removed/demo'], {
         cwd: isolation.layout.fixtureCwd,
         platform: 'codex',
         scope: 'user',
-        force,
       }, { env: isolation.env });
 
       expect(result).toMatchObject({
@@ -5501,8 +5507,27 @@ describe('five namespaced write commands', () => {
         targetResults: [],
         rebuildResults: [],
       });
-    },
-  );
+  });
+
+  it('returns typed recovery when markerless force cleanup has no local Active bundle', async () => {
+    const isolation = await configureCatalog();
+    const result = await cleanupWriteCommand(['removed/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+      force: true,
+    }, { env: isolation.env });
+
+    expect(result.targetResults).toEqual([
+      expect.objectContaining({
+        errorCode: 'forceCleanupPathUnavailable',
+        recoveryActions: [
+          'restore the local Active bundle and retry cleanup --force',
+          'inspect and remove only the exact expected output manually',
+        ],
+      }),
+    ]);
+  });
 
   it('cleans stale Codex config while preserving cache payload after official absence', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -5744,8 +5769,16 @@ describe('five namespaced write commands', () => {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force,
       }, runtime);
 
-      expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-      await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain('demo.');
+      if (force) {
+        expect(result).toMatchObject({
+          overallState: 'failed',
+          targetResults: [expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' })],
+        });
+        await expect(fs.readFile(configPath, 'utf8')).resolves.toContain('demo.');
+      } else {
+        expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+        await expect(fs.readFile(configPath, 'utf8')).resolves.not.toContain('demo.');
+      }
     },
   );
 
@@ -5831,8 +5864,44 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(skillsRoot, 'second-demo'))).resolves.toBe(true);
   });
 
-  it('force cleanup preserves marker-only Codex project Skill directories', async () => {
-    const isolation = await configureCatalog();
+  it('force cleanup removes only the exact Active-planned markerless Codex project Skill', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'force-shallow-source');
+    const configureForceManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        postApply: { path: './scripts/post-apply.mjs' },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'damaged-demo', platform: 'codex', scopes: ['project'],
+        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'damaged-demo',
+      }] };
+    };
+    const forcePlugin = {
+      name: 'demo',
+      configureManifest: configureForceManifest,
+    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [forcePlugin, { name: 'unrelated' }]);
+    await writeDynamicSkillRenderer({
+      pluginRoot: path.join(sourceRoot, 'plugins', 'demo'),
+      skillKey: 'damaged-demo',
+      fail: true,
+    });
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'post-apply.mjs'),
+      "throw new Error('force cleanup must not run postApply');\n",
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [forcePlugin, { name: 'unrelated' }]);
+    const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: sourceSnapshot.digest,
+      env: isolation.env,
+    });
     const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'damaged-demo');
     const otherSkillsRoot = path.join(isolation.env.AW_CLAUDE_HOME!, 'skills');
@@ -5865,16 +5934,67 @@ describe('five namespaced write commands', () => {
     });
     await fs.ensureDir(linkedSkillRoot);
     await fs.symlink(externalMarker, path.join(linkedSkillRoot, '.agent-workflows-owner.json'));
+    const sharedConfig = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    await applyCodexConfigTransactionFile(sharedConfig, {
+      upsertPluginActivations: { 'demo@aw': true },
+    });
+
+    const blockedReinstall = await reinstallWriteCommand(['local/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, { env: isolation.env });
+    expect(blockedReinstall.targetResults).toEqual([
+      expect.objectContaining({
+        errorCode: 'exclusiveOwnerEvidenceInvalid',
+        recoveryActions: [
+          'run aw cleanup local/demo --platform codex --scope project --force',
+          'then run aw reinstall local/demo --platform codex --scope project',
+        ],
+      }),
+    ]);
+    const blockedReceipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('reinstall', blockedReinstall);
+    expect(blockedReceipt.recoveryActions).toEqual([
+      'run aw cleanup local/demo --platform codex --scope project --force',
+      'then run aw reinstall local/demo --platform codex --scope project',
+    ]);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+    const activeState = await fs.readJson(path.join(isolation.env.AW_HOME!, 'catalog-state.json')) as {
+      sources: { local: { active: { logicalIdentity: string; snapshotDigest: string } } };
+    };
+    const activeStore = resolveCatalogStoreLocation({
+      ...activeState.sources.local.active,
+      env: isolation.env,
+    });
+    await fs.outputFile(
+      path.join(activeStore.snapshotRoot, 'plugins', 'unrelated', '.agents-plugin', 'plugin.json'),
+      '{damaged unrelated bundle\n',
+    );
 
     const removeObsoleteInstallationContracts = vi.fn(async () => undefined);
     const codexManagerPreviewer = vi.fn(async () => ({ state: 'requires-install' as const }));
     const codexManagerResolver = vi.fn(async () => ({
       kind: 'system' as const, version: '0.200.0', command: 'codex', argsPrefix: [],
     }));
+    let providerCalls = 0;
+    const forceRuntime = {
+      env: isolation.env,
+      catalogGenerationRuntime: {
+        providers: {
+          path: async (...args: Parameters<typeof catalogPathProviderInternal.resolve>) => {
+            providerCalls += 1;
+            return catalogPathProviderInternal.resolve(...args);
+          },
+          git: async () => {
+            providerCalls += 1;
+            throw new Error('force cleanup must not invoke the Catalog provider');
+          },
+        },
+      },
+    };
     const preview = await cleanupWriteCommand(['local/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
     }, {
-      env: isolation.env,
+      ...forceRuntime,
       previewOperationPlan: true,
       removeObsoleteInstallationContracts,
       codexManagerPreviewer,
@@ -5885,6 +6005,15 @@ describe('five namespaced write commands', () => {
     expect(removeObsoleteInstallationContracts).not.toHaveBeenCalled();
     expect(codexManagerPreviewer).not.toHaveBeenCalled();
     expect(codexManagerResolver).not.toHaveBeenCalled();
+    expect(providerCalls).toBe(0);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'render-count-demo.txt')))
+      .resolves.toBe(false);
+    expect(preview.operationPlan?.actions).toEqual([
+      expect.objectContaining({
+        kind: 'removeOwnedArtifact',
+        path: expect.stringMatching(/[\\/]\.agents[\\/]skills[\\/]damaged-demo$/u),
+      }),
+    ]);
     await expect(fs.readJson(path.join(skillRoot, '.agent-workflows-owner.json')))
       .resolves.toEqual(damagedOwner);
     await expect(fs.pathExists(otherSkillRoot)).resolves.toBe(true);
@@ -5893,19 +6022,46 @@ describe('five namespaced write commands', () => {
     expect((await fs.lstat(path.join(linkedSkillRoot, '.agent-workflows-owner.json'))).isSymbolicLink())
       .toBe(true);
     await expect(fs.pathExists(externalMarker)).resolves.toBe(true);
+    await expect(readCodexConfigFile(sharedConfig)).resolves.toMatchObject({
+      snapshot: { plugins: { 'demo@aw': { enabled: true } } },
+    });
+
+    const reviewedEvidence = preview.offlineCleanupPlans?.[0];
+    expect(reviewedEvidence).toBeDefined();
+    await fs.outputJson(path.join(skillRoot, '.agent-workflows-owner.json'), {
+      schemaVersion: 3,
+      owner: 'agent-workflows',
+      sourceId: 'foreign',
+      pluginId: 'foreign/demo',
+      plugin: 'demo',
+      artifactKey: 'damaged-demo',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const stale = await cleanupWriteCommand(['local/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
+    }, { ...forceRuntime, expectedOfflineCleanupEvidence: reviewedEvidence });
+    expect(stale.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'operationReviewStale' }),
+    ]);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+    await fs.outputJson(path.join(skillRoot, '.agent-workflows-owner.json'), damagedOwner);
 
     const result = await cleanupWriteCommand(['local/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
-    }, { env: isolation.env });
+    }, forceRuntime);
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
     await expect(fs.pathExists(otherSkillRoot)).resolves.toBe(true);
     await expect(fs.readFile(path.join(invalidSkillRoot, '.agent-workflows-owner.json'), 'utf8'))
       .resolves.toBe('{invalid\n');
     expect((await fs.lstat(path.join(linkedSkillRoot, '.agent-workflows-owner.json'))).isSymbolicLink())
       .toBe(true);
     await expect(fs.pathExists(externalMarker)).resolves.toBe(true);
+    expect(providerCalls).toBe(0);
+    await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'render-count-demo.txt')))
+      .resolves.toBe(false);
   });
 
   it('invalid shared config does not authorize marker-only Codex project recovery', async () => {
@@ -5932,7 +6088,117 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
   });
 
-  it('does not block force cleanup when obsolete contract directory removal fails', async () => {
+  it('attributes damaged dependency owner evidence to the exact source, platform, and scope target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'reinstall-exact-owner-source');
+    const configureLeaf = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
+        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-name',
+      }] };
+    };
+    const definitions = [
+      { name: 'leaf', configureManifest: configureLeaf },
+      {
+        name: 'root', dependencies: ['leaf'],
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+    ];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await writeDynamicSkillRenderer({
+      pluginRoot: path.join(sourceRoot, 'plugins', 'leaf'),
+      skillKey: 'shared-name',
+    });
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: sourceSnapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    const exactInstalled = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(exactInstalled.overallState, JSON.stringify(exactInstalled)).toBe('succeeded');
+
+    const damagedRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'shared-name');
+    await fs.outputJson(path.join(damagedRoot, '.agent-workflows-owner.json'), {
+      schemaVersion: 2,
+      owner: 'agent-workflows',
+      sourceId: 'team',
+      pluginId: 'team/leaf',
+      plugin: 'leaf',
+      artifactKey: 'shared-name',
+      platform: 'codex',
+      scope: 'project',
+    });
+    const distractors = [
+      {
+        root: path.join(isolation.env.AW_CODEX_HOME!, 'skills', 'shared-name'),
+        sourceId: 'other', platform: 'codex' as const, scope: 'user' as const,
+      },
+      {
+        root: path.join(isolation.env.AW_CLAUDE_HOME!, 'skills', 'shared-name'),
+        sourceId: 'team', platform: 'claude' as const, scope: 'user' as const,
+      },
+    ];
+    for (const distractor of distractors) {
+      await fs.ensureDir(distractor.root);
+      await writeSkillOwnerMarker({
+        skillRoot: distractor.root,
+        allowedRoot: path.dirname(distractor.root),
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: distractor.sourceId,
+          pluginId: `${distractor.sourceId}/leaf`,
+          plugin: 'leaf',
+          artifactKey: 'shared-name',
+          platform: distractor.platform,
+          scope: distractor.scope,
+        },
+      });
+    }
+
+    const result = await reinstallWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({
+          pluginId: 'team/leaf', platform: 'codex', scope: 'project',
+        }),
+        errorCode: 'exclusiveOwnerEvidenceInvalid',
+        recoveryActions: [
+          'run aw cleanup team/leaf --platform codex --scope project --force',
+          'then run aw reinstall team/leaf --platform codex --scope project',
+        ],
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/root' }),
+        errorCode: 'dependencyInstallFailed',
+      }),
+    ]));
+    expect(result.targetResults.filter((target) => target.recoveryActions)).toHaveLength(1);
+    for (const distractor of distractors) {
+      await expect(fs.pathExists(distractor.root)).resolves.toBe(true);
+    }
+  });
+
+  it('does not touch obsolete contract state during markerless force recovery', async () => {
     const isolation = await configureCatalog();
     const baseRuntime = {
       env: isolation.env,
@@ -5953,10 +6219,10 @@ describe('five namespaced write commands', () => {
       },
     });
 
-    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    expect(result.warnings).toEqual([
-      expect.stringContaining('obsoleteContractsCleanupFailed'),
+    expect(result.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' }),
     ]);
+    expect(result.warnings).toEqual([]);
     await expect(fs.pathExists(obsolete)).resolves.toBe(true);
   });
 

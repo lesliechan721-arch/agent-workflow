@@ -50,6 +50,7 @@ export interface DesiredTarget {
   operationActions?: readonly OperationAction[];
   catalog?: CatalogResolution;
   postApplySource: PluginMeta;
+  forceExclusiveCleanup?: boolean;
 }
 
 export interface RebuildAction {
@@ -381,6 +382,10 @@ function validateDesiredTarget(target: DesiredTarget): void {
   }
 
   const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
+  if (target.forceExclusiveCleanup && target.ownedComponents.some((component) =>
+    component.kind !== 'skill-directory' && component.kind !== 'owned-text-file')) {
+    throw new Error('Force cleanup only supports exclusive skill directories and owned text files.');
+  }
   nativeCount = desiredComponents.filter((component) => component.kind === 'native-plugin').length;
 
   if (target.requiresNative ? nativeCount !== 1 : nativeCount !== 0) {
@@ -480,6 +485,7 @@ async function cleanupOwned(
     executor: driver.ownership,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
+    forceExclusive: target.forceExclusiveCleanup,
   });
 }
 
