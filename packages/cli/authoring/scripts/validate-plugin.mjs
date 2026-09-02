@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   getPluginAuthoringAcceptedValues as getCorePluginAuthoringAcceptedValues,
   getSkillFrontmatterCapabilityRegistry,
+  normalizePluginConfigDefinition,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
@@ -147,10 +148,6 @@ const DEFAULT_SLASH_COMMANDS_DIR = 'slash-commands';
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
 const SCRIPT_TIMEOUT_MAX_MS = 300000;
-const CONFIG_FIELD_TYPES = new Set(getPluginAuthoringAcceptedValues(
-  'config',
-  'config.schema.<key>.type',
-));
 const ARTIFACT_TARGETS = new Set(getPluginAuthoringAcceptedValues(
   'artifacts',
   'artifacts.targets[].target',
@@ -1946,255 +1943,22 @@ function listFilesRecursive(rootDir) {
   return output;
 }
 
-function validateConfigValueLightweight(field, value, fieldName) {
-  if (!isRecord(field) || !CONFIG_FIELD_TYPES.has(field.type)) return;
-  if (field.type === 'string' || field.type === 'file' || field.type === 'directory') {
-    validateManifestString(value, fieldName);
-    return;
-  }
-  if (field.type === 'boolean') {
-    if (typeof value !== 'boolean') {
-      error(`${fieldName} must be a boolean`);
-    }
-    return;
-  }
-  if (field.type === 'number') {
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      error(`${fieldName} must be a finite number`);
-      return;
-    }
-    if (typeof field.min === 'number' && value < field.min) {
-      error(`${fieldName} must be greater than or equal to ${field.min}`);
-    }
-    if (typeof field.max === 'number' && value > field.max) {
-      error(`${fieldName} must be less than or equal to ${field.max}`);
-    }
-    return;
-  }
-  if (field.type === 'enum') {
-    if (typeof value !== 'string' || !Array.isArray(field.values) || !field.values.includes(value)) {
-      error(`${fieldName} must be one of config schema values`);
-    }
-  }
-}
-
-function validateConfigPresentationLightweight(presentation, schema) {
-  if (presentation === undefined) return;
-  const root = expectRecord(presentation, 'config.presentation');
-  if (!root) return;
-  validateAllowedKeys(root, 'config.presentation', ['groups', 'fields', 'presets']);
-  const schemaKeys = new Set(Object.keys(schema));
-
-  if (root.groups !== undefined) {
-    if (!Array.isArray(root.groups)) {
-      error('config.presentation.groups must be an array');
-    } else {
-      const groupIds = new Set();
-      const groupedFields = new Set();
-      root.groups.forEach((rawGroup, index) => {
-        const fieldName = `config.presentation.groups[${index}]`;
-        const group = expectRecord(rawGroup, fieldName);
-        if (!group) return;
-        validateAllowedKeys(group, fieldName, ['id', 'title', 'description', 'fields', 'advanced']);
-        const validId = validateManifestString(group.id, `${fieldName}.id`);
-        const id = validId ? group.id : null;
-        if (id && groupIds.has(id)) {
-          error(`${fieldName}.id has duplicate group id "${id}"`);
-        } else if (id) {
-          groupIds.add(id);
-        }
-        validateManifestString(group.title, `${fieldName}.title`);
-        if (group.description !== undefined) {
-          validateManifestString(group.description, `${fieldName}.description`);
-        }
-        if (group.advanced !== undefined && typeof group.advanced !== 'boolean') {
-          error(`${fieldName}.advanced must be a boolean`);
-        }
-        if (!Array.isArray(group.fields)) {
-          error(`${fieldName}.fields must be an array`);
-          return;
-        }
-        group.fields.forEach((key, fieldIndex) => {
-          const keyFieldName = `${fieldName}.fields[${fieldIndex}]`;
-          const validKey = validateManifestString(key, keyFieldName);
-          if (!validKey) return;
-          if (!schemaKeys.has(key)) {
-            error(`${keyFieldName} references unknown config key "${key}"`);
-          }
-          if (groupedFields.has(key)) {
-            error(`${keyFieldName} assigns config key "${key}" to more than one group`);
-          } else {
-            groupedFields.add(key);
-          }
-        });
-      });
-    }
-  }
-
-  if (root.fields !== undefined) {
-    const fields = expectRecord(root.fields, 'config.presentation.fields');
-    if (fields) {
-      for (const [key, rawField] of Object.entries(fields)) {
-        const fieldName = `config.presentation.fields.${key}`;
-        const schemaField = schema[key];
-        if (!schemaKeys.has(key)) {
-          error(`config.presentation.fields references unknown config key "${key}"`);
-        }
-        const field = expectRecord(rawField, fieldName);
-        if (!field) continue;
-        validateAllowedKeys(field, fieldName, [
-          'valueLabels',
-          'recommendedValue',
-          'placeholder',
-          'unit',
-          'advanced',
-        ]);
-        if (field.placeholder !== undefined) {
-          validateManifestString(field.placeholder, `${fieldName}.placeholder`);
-        }
-        if (field.unit !== undefined) {
-          validateManifestString(field.unit, `${fieldName}.unit`);
-        }
-        if (field.advanced !== undefined && typeof field.advanced !== 'boolean') {
-          error(`${fieldName}.advanced must be a boolean`);
-        }
-        if (field.valueLabels !== undefined) {
-          const labels = expectRecord(field.valueLabels, `${fieldName}.valueLabels`);
-          if (isRecord(schemaField) && schemaField.type !== 'enum') {
-            error(`${fieldName}.valueLabels is only supported for enum config`);
-          }
-          if (labels) {
-            for (const [token, label] of Object.entries(labels)) {
-              if (!isRecord(schemaField) || !Array.isArray(schemaField.values) || !schemaField.values.includes(token)) {
-                error(`${fieldName}.valueLabels references unknown enum token "${token}"`);
-              }
-              validateManifestString(label, `${fieldName}.valueLabels.${token}`);
-            }
-          }
-        }
-        if (field.recommendedValue !== undefined) {
-          validateConfigValueLightweight(
-            schemaField,
-            field.recommendedValue,
-            `${fieldName}.recommendedValue`,
-          );
-        }
-      }
-    }
-  }
-
-  if (root.presets !== undefined) {
-    if (!Array.isArray(root.presets)) {
-      error('config.presentation.presets must be an array');
-    } else {
-      const presetIds = new Set();
-      root.presets.forEach((rawPreset, index) => {
-        const fieldName = `config.presentation.presets[${index}]`;
-        const preset = expectRecord(rawPreset, fieldName);
-        if (!preset) return;
-        validateAllowedKeys(preset, fieldName, ['id', 'title', 'description', 'values']);
-        const validId = validateManifestString(preset.id, `${fieldName}.id`);
-        const id = validId ? preset.id : null;
-        if (id && presetIds.has(id)) {
-          error(`${fieldName}.id has duplicate preset id "${id}"`);
-        } else if (id) {
-          presetIds.add(id);
-        }
-        validateManifestString(preset.title, `${fieldName}.title`);
-        if (preset.description !== undefined) {
-          validateManifestString(preset.description, `${fieldName}.description`);
-        }
-        const values = expectRecord(preset.values, `${fieldName}.values`);
-        if (!values) return;
-        for (const [key, value] of Object.entries(values)) {
-          if (!schemaKeys.has(key)) {
-            error(`${fieldName}.values references unknown config key "${key}"`);
-            continue;
-          }
-          const schemaField = schema[key];
-          if (isRecord(schemaField)
-            && (schemaField.sensitive === true
-              || schemaField.type === 'file'
-              || schemaField.type === 'directory')) {
-            error(`${fieldName}.values.${key} cannot contain sensitive, file, or directory config values`);
-            continue;
-          }
-          validateConfigValueLightweight(schemaField, value, `${fieldName}.values.${key}`);
-        }
-      });
-    }
-  }
-}
-
 function validateConfigSchemaLightweight(config) {
   if (config === undefined) return;
-  const configRoot = expectRecord(config, 'config');
-  if (!configRoot) return;
-  validateAllowedKeys(configRoot, 'config', ['schema', 'presentation']);
-  const schema = expectRecord(configRoot.schema, 'config.schema');
-  if (!schema) return;
-  for (const [key, rawField] of Object.entries(schema)) {
-    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
-      error(`config.schema has invalid key "${key}"`);
-    }
-    const fieldName = `config.schema.${key}`;
-    const field = expectRecord(rawField, fieldName);
-    if (!field) continue;
-    validateAllowedKeys(field, fieldName, [
-      'type',
-      'title',
-      'description',
-      'default',
-      'required',
-      'sensitive',
-      'values',
-      'min',
-      'max',
-    ]);
-    if (typeof field.type !== 'string' || !CONFIG_FIELD_TYPES.has(field.type)) {
-      error(`${fieldName}.type must be string, number, boolean, enum, file, or directory`);
-    }
-    if (field.required !== undefined && typeof field.required !== 'boolean') {
-      error(`${fieldName}.required must be a boolean`);
-    }
-    if (field.sensitive !== undefined && typeof field.sensitive !== 'boolean') {
-      error(`${fieldName}.sensitive must be a boolean`);
-    }
-    if (field.values !== undefined) {
-      if (field.type !== 'enum' || !Array.isArray(field.values) || field.values.length === 0) {
-        error(`${fieldName}.values is only supported for enum config and must be non-empty`);
-      }
-    } else if (field.type === 'enum') {
-      error(`${fieldName}.values is required for enum config`);
-    }
-    if (field.type !== 'number' && (field.min !== undefined || field.max !== undefined)) {
-      error(`${fieldName}.min/max are only supported for number config`);
-    }
-    if (field.min !== undefined && typeof field.min !== 'number') {
-      error(`${fieldName}.min must be a number`);
-    }
-    if (field.max !== undefined && typeof field.max !== 'number') {
-      error(`${fieldName}.max must be a number`);
-    }
-    if (typeof field.min === 'number' && typeof field.max === 'number' && field.min > field.max) {
-      error(`${fieldName}.min must be less than or equal to max`);
-    }
+  try {
+    normalizePluginConfigDefinition(config);
+  } catch (validationError) {
+    error(validationError instanceof Error ? validationError.message : String(validationError));
   }
-  validateConfigPresentationLightweight(configRoot.presentation, schema);
 }
 
 function configSchemaKeys(manifest) {
-  const schema = manifest.config?.schema;
+  const schema = manifest.config?.fields;
   return isRecord(schema) ? new Set(Object.keys(schema)) : new Set();
 }
 
-function configSchemaField(manifest, key) {
-  const field = manifest.config?.schema?.[key];
-  return isRecord(field) ? field : null;
-}
-
 function defaultConfigValues(manifest) {
-  const schema = manifest.config?.schema;
+  const schema = manifest.config?.fields;
   const values = {};
   if (!isRecord(schema)) return values;
   for (const [key, field] of Object.entries(schema)) {
@@ -2374,13 +2138,6 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     if (!schemaKeys.has(refreshKey)) {
       error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
       continue;
-    }
-    const field = configSchemaField(manifest, refreshKey);
-    if (
-      scopes.includes('project') &&
-      (field?.type === 'file' || field?.type === 'directory')
-    ) {
-      error(`${fieldName}.refreshKeys[${refreshIndex}]: project-scope repo-visible artifacts cannot depend on "${field.type}" config key "${refreshKey}"; use a portable string key or keep the path in user/project local config for lifecycle/helper code.`);
     }
   }
 
@@ -2809,7 +2566,7 @@ function validateRenderedSkillTree(options) {
     error(`${fieldName} final file tree must contain a non-empty README.md`);
   }
 
-  const sensitiveValues = Object.entries(manifest.config?.schema ?? {})
+  const sensitiveValues = Object.entries(manifest.config?.fields ?? {})
     .filter(([, field]) => isRecord(field) && field.sensitive === true)
     .map(([key, field]) => Object.prototype.hasOwnProperty.call(field, 'default')
       ? String(field.default)
@@ -3093,7 +2850,7 @@ function runArtifactRendererFixture(
           config: {
             mode: 'artifact-render',
             targetScope: scope,
-            schema: manifest.config?.schema ?? {},
+            schema: manifest.config?.fields ?? {},
             values,
             sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
             issues: [],

@@ -1,5 +1,4 @@
 import type { PlatformName, Scope } from '../types.js';
-import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 
 export type PortableBlockerCode =
   | 'requiredConfigMissing'
@@ -18,6 +17,12 @@ export type CatalogActivationBlockReason =
   | 'writeProgress'
   | 'sourceMutationProgress'
   | 'refreshProgress';
+
+export interface ConfigInvalidStoreEvidence {
+  scope: Scope;
+  code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
+  pathSummary: string;
+}
 
 export type TuiRoute =
   | { name: 'home' }
@@ -63,25 +68,36 @@ export type TuiRoute =
   | {
       name: 'configFields';
       pluginId: string;
-      layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope | 'effective' };
     }
   | {
       name: 'configFieldEditor';
       pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope };
       fieldKey: string;
-      editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
+      editor: 'boolean' | 'number' | 'string' | 'object';
+      mode?: 'choices' | 'custom';
+    }
+  | {
+      name: 'configObjectPropertyEditor';
+      pluginId: string;
+      layer: { scope: Scope };
+      fieldKey: string;
+      propertyKey?: string;
+      dynamic: boolean;
+      stage: 'key' | 'action' | 'choices' | 'custom';
     }
   | {
       name: 'configFieldAction';
       pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope };
       fieldKey: string;
     }
   | {
       name: 'configUnavailable';
       pluginId: string;
-      layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer?: { scope: Scope };
+      invalidStores?: ConfigInvalidStoreEvidence[];
       diagnosticCode?: string;
       diagnosticStage?: string;
     }

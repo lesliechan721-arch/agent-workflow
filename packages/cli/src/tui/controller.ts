@@ -21,7 +21,6 @@ import type {
   StatusV7PluginSummary,
   StatusTargetRevision,
 } from '../commands/status-v6.js';
-import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
@@ -55,6 +54,7 @@ import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
   type CatalogActivationBlockReason,
+  type ConfigInvalidStoreEvidence,
   type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
@@ -113,7 +113,6 @@ export type OperationIntent =
       kind: 'configSave';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
       apply: boolean;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
@@ -124,14 +123,21 @@ export type OperationIntent =
         title: string;
         before: string;
         after: string;
+        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
       }>;
     }
   | {
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
-      changes?: Array<{ key: string; title: string; before: string; after: string }>;
+      expectedStoreState?: 'invalid';
+      changes?: Array<{
+        key: string;
+        title: string;
+        before: string;
+        after: string;
+        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
+      }>;
     }
   | {
       kind: 'sourceMutation';
@@ -186,7 +192,6 @@ export interface OperationEvidence {
   };
   config?: {
     scope: Scope;
-    projectLayer: ProjectConfigStoreLayer;
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
@@ -450,17 +455,17 @@ export interface TuiControllerDependencies {
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
   getConfigPage?: (
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
   getConfigResetAvailability?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigResetAvailability>;
   logError?: (
@@ -476,6 +481,8 @@ export interface TuiControllerDependencies {
 
 export interface ConfigResetAvailability {
   exists: boolean;
+  state: 'missing' | 'ready' | 'invalid';
+  invalidCode?: ConfigInvalidStoreEvidence['code'];
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
   storeDigest?: string;
@@ -531,6 +538,18 @@ export class TuiOperationBlockedError extends Error {
     super(message);
     this.name = 'TuiOperationBlockedError';
     this.code = code;
+  }
+}
+
+export class TuiConfigInvalidStoreError extends Error {
+  readonly code = 'invalidConfigStores';
+  readonly evidence: ConfigInvalidStoreEvidence[];
+
+  constructor(evidence: ConfigInvalidStoreEvidence[]) {
+    super('One or more plugin config stores are invalid.');
+    this.name = 'TuiConfigInvalidStoreError';
+    this.evidence = structuredClone(evidence).sort((left, right) =>
+      (left.scope === 'user' ? 0 : 1) - (right.scope === 'user' ? 0 : 1));
   }
 }
 
@@ -1152,7 +1171,7 @@ export class TuiController {
     this.#router.push({
       name: 'configFields',
       pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     this.#publish();
   }
@@ -1679,7 +1698,7 @@ export class TuiController {
 
   async getConfigGroups(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigGroupViewModel[]> {
     if (!this.dependencies.getConfigGroups) {
       throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
@@ -1693,7 +1712,7 @@ export class TuiController {
 
   async getConfigPage(
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
     if (!this.dependencies.getConfigPage) {
@@ -1711,7 +1730,7 @@ export class TuiController {
 
   async getConfigResetAvailability(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigResetAvailability> {
     if (!this.dependencies.getConfigResetAvailability) {
       throw new TuiOperationBlockedError(

@@ -20,6 +20,7 @@ import {
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -230,7 +231,7 @@ describe('multi-source read commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
     await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { schema: { rules: { type: 'string', title: '规则', required: true } } };
+      manifest.config = { fields: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -243,7 +244,8 @@ describe('multi-source read commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(missing.pluginSummaries[0]?.configIssues).toEqual([
-      { type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
+      { scope: 'user', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
+      { scope: 'project', type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
     ]);
     expect(JSON.parse(missing.output)).not.toHaveProperty('pluginSummaries');
 
@@ -254,6 +256,7 @@ describe('multi-source read commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
     });
     expect(unreadable.pluginSummaries[0]?.configDiagnostic).toEqual({
+      scope: 'user',
       code: 'configReadFailed',
       message: '插件设置当前不可读。未读取或显示设置值。',
     });
@@ -563,6 +566,43 @@ describe('multi-source read commands', () => {
     })).toBe(1);
     expect(blocked.readStdout()).toBe('');
     expect(blocked.readStderr()).toContain('legacyStateUnsupported');
+  });
+
+  it('keeps source identity when reading a stored-only plugin config', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('stored-only-config');
+    await createCatalogSnapshotFixture(sourceRoot, 'other');
+    const source = { id: 'good', type: 'path', primary: true, path: sourceRoot } as const;
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'stored' },
+    });
+    const captured = createCapturedCliIo();
+
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(captured.readStdout())).toMatchObject({
+      pluginId: 'good/demo',
+      sourceId: 'good',
+      sourceIdentity,
+      fields: [expect.objectContaining({ key: 'mode', effectiveValue: '[redacted]' })],
+    });
   });
 
   it('uses qualified plugin IDs in the multi-source console writes', async () => {
@@ -1004,7 +1044,7 @@ describe('multi-source read commands', () => {
     });
 
     const config = createCapturedCliIo();
-    expect(await runCli(['config', 'set', 'good/demo', 'key', 'value', '--json'], {
+    expect(await runCli(['config', 'set', 'good/demo', 'key', '--value-json', '"value"', '--json'], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       io: config.io,
@@ -1256,7 +1296,7 @@ describe('multi-source read commands', () => {
         [],
         'demo\n',
         (manifest) => {
-          manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
+          manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
         },
       );
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -1386,7 +1426,7 @@ describe('multi-source read commands', () => {
       [],
       'demo\n',
       (manifest) => {
-        manifest.config = { schema: { mode: { type: 'string', default: 'fast' } } };
+        manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
       },
     );
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);

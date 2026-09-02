@@ -11,6 +11,7 @@ import {
   PLUGIN_MANIFEST_SCHEMA_VERSION,
   SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION,
 } from './manifest.js';
+import { normalizePluginConfigDefinition } from './plugin-config.js';
 
 import type {
   CatalogMarketplaceIdentity,
@@ -1253,14 +1254,6 @@ function ensureBoolean(value: unknown, fieldName: string): boolean {
   return value;
 }
 
-function ensureFiniteNumber(value: unknown, fieldName: string): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error(`Invalid ${fieldName}: expected a number.`);
-  }
-
-  return value;
-}
-
 function normalizeScriptTimeout(value: unknown, fieldName: string): number {
   if (
     typeof value !== 'number' ||
@@ -1572,338 +1565,6 @@ function normalizePluginScripts(
   return output;
 }
 
-function validateConfigKey(key: string, fieldName: string): void {
-  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) {
-    throw new Error(`Invalid ${fieldName}: config key "${key}" is not valid.`);
-  }
-}
-
-function validateConfigDefault(
-  type: string,
-  value: unknown,
-  values: string[] | undefined,
-  min: number | undefined,
-  max: number | undefined,
-  fieldName: string,
-): string | number | boolean {
-  if (type === 'string' || type === 'file' || type === 'directory') {
-    return ensureString(value, fieldName);
-  }
-  if (type === 'boolean') {
-    return ensureBoolean(value, fieldName);
-  }
-  if (type === 'number') {
-    const numberValue = ensureFiniteNumber(value, fieldName);
-    if (min !== undefined && numberValue < min) {
-      throw new Error(`Invalid ${fieldName}: default is smaller than min.`);
-    }
-    if (max !== undefined && numberValue > max) {
-      throw new Error(`Invalid ${fieldName}: default is greater than max.`);
-    }
-    return numberValue;
-  }
-  if (type === 'enum') {
-    const enumValue = ensureString(value, fieldName);
-    if (!values?.includes(enumValue)) {
-      throw new Error(`Invalid ${fieldName}: enum default must be one of values.`);
-    }
-    return enumValue;
-  }
-
-  throw new Error(`Invalid ${fieldName}: unsupported config type "${type}".`);
-}
-
-function normalizePluginConfigPresentation(
-  value: unknown,
-  schema: PluginConfigSchema['schema'],
-  fieldName: string,
-): NonNullable<PluginConfigSchema['presentation']> {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['groups', 'fields', 'presets']);
-  const schemaKeys = new Set(Object.keys(schema));
-  const presentation: NonNullable<PluginConfigSchema['presentation']> = {};
-
-  if (input.groups !== undefined) {
-    if (!Array.isArray(input.groups)) {
-      throw new Error(`Invalid ${fieldName}.groups: expected an array.`);
-    }
-    const groupIds = new Set<string>();
-    const groupedFields = new Set<string>();
-    presentation.groups = input.groups.map((rawGroup, index) => {
-      const groupFieldName = `${fieldName}.groups[${index}]`;
-      const group = assertObject(rawGroup, groupFieldName);
-      assertAllowedKeys(group, groupFieldName, [
-        'id',
-        'title',
-        'description',
-        'fields',
-        'advanced',
-      ]);
-      const id = ensureString(group.id, `${groupFieldName}.id`);
-      if (groupIds.has(id)) {
-        throw new Error(`Invalid ${groupFieldName}.id: duplicate group id "${id}".`);
-      }
-      groupIds.add(id);
-      const fields = ensureStringArray(group.fields, `${groupFieldName}.fields`);
-      for (const [fieldIndex, key] of fields.entries()) {
-        if (!schemaKeys.has(key)) {
-          throw new Error(
-            `Invalid ${groupFieldName}.fields[${fieldIndex}]: unknown config key "${key}".`,
-          );
-        }
-        if (groupedFields.has(key)) {
-          throw new Error(
-            `Invalid ${groupFieldName}.fields[${fieldIndex}]: config key "${key}" is assigned to more than one group.`,
-          );
-        }
-        groupedFields.add(key);
-      }
-      return {
-        id,
-        title: ensureString(group.title, `${groupFieldName}.title`),
-        description:
-          group.description === undefined
-            ? undefined
-            : ensureString(group.description, `${groupFieldName}.description`),
-        fields,
-        advanced:
-          group.advanced === undefined
-            ? undefined
-            : ensureBoolean(group.advanced, `${groupFieldName}.advanced`),
-      };
-    });
-  }
-
-  if (input.fields !== undefined) {
-    const fieldsInput = assertObject(input.fields, `${fieldName}.fields`);
-    presentation.fields = {};
-    for (const [key, rawPresentationField] of Object.entries(fieldsInput)) {
-      if (!schemaKeys.has(key)) {
-        throw new Error(`Invalid ${fieldName}.fields: unknown config key "${key}".`);
-      }
-      const presentationFieldName = `${fieldName}.fields.${key}`;
-      const presentationField = assertObject(rawPresentationField, presentationFieldName);
-      assertAllowedKeys(presentationField, presentationFieldName, [
-        'valueLabels',
-        'recommendedValue',
-        'placeholder',
-        'unit',
-        'advanced',
-      ]);
-      const schemaField = schema[key]!;
-      let valueLabels: Record<string, string> | undefined;
-      if (presentationField.valueLabels !== undefined) {
-        if (schemaField.type !== 'enum') {
-          throw new Error(
-            `Invalid ${presentationFieldName}.valueLabels: valueLabels are only supported for enum config.`,
-          );
-        }
-        const labelsInput = assertObject(
-          presentationField.valueLabels,
-          `${presentationFieldName}.valueLabels`,
-        );
-        valueLabels = {};
-        for (const [token, rawLabel] of Object.entries(labelsInput)) {
-          if (!schemaField.values?.includes(token)) {
-            throw new Error(
-              `Invalid ${presentationFieldName}.valueLabels: unknown enum token "${token}".`,
-            );
-          }
-          valueLabels[token] = ensureString(
-            rawLabel,
-            `${presentationFieldName}.valueLabels.${token}`,
-          );
-        }
-      }
-      presentation.fields[key] = {
-        valueLabels,
-        recommendedValue:
-          presentationField.recommendedValue === undefined
-            ? undefined
-            : validateConfigDefault(
-                schemaField.type,
-                presentationField.recommendedValue,
-                schemaField.values,
-                schemaField.min,
-                schemaField.max,
-                `${presentationFieldName}.recommendedValue`,
-              ),
-        placeholder:
-          presentationField.placeholder === undefined
-            ? undefined
-            : ensureString(presentationField.placeholder, `${presentationFieldName}.placeholder`),
-        unit:
-          presentationField.unit === undefined
-            ? undefined
-            : ensureString(presentationField.unit, `${presentationFieldName}.unit`),
-        advanced:
-          presentationField.advanced === undefined
-            ? undefined
-            : ensureBoolean(presentationField.advanced, `${presentationFieldName}.advanced`),
-      };
-    }
-  }
-
-  if (input.presets !== undefined) {
-    if (!Array.isArray(input.presets)) {
-      throw new Error(`Invalid ${fieldName}.presets: expected an array.`);
-    }
-    const presetIds = new Set<string>();
-    presentation.presets = input.presets.map((rawPreset, index) => {
-      const presetFieldName = `${fieldName}.presets[${index}]`;
-      const preset = assertObject(rawPreset, presetFieldName);
-      assertAllowedKeys(preset, presetFieldName, ['id', 'title', 'description', 'values']);
-      const id = ensureString(preset.id, `${presetFieldName}.id`);
-      if (presetIds.has(id)) {
-        throw new Error(`Invalid ${presetFieldName}.id: duplicate preset id "${id}".`);
-      }
-      presetIds.add(id);
-      const valuesInput = assertObject(preset.values, `${presetFieldName}.values`);
-      const values: Record<string, string | number | boolean> = {};
-      for (const [key, rawValue] of Object.entries(valuesInput)) {
-        const schemaField = schema[key];
-        if (!schemaField) {
-          throw new Error(`Invalid ${presetFieldName}.values: unknown config key "${key}".`);
-        }
-        if (schemaField.sensitive === true
-          || schemaField.type === 'file'
-          || schemaField.type === 'directory') {
-          throw new Error(
-            `Invalid ${presetFieldName}.values.${key}: presets cannot contain sensitive, file, or directory config values.`,
-          );
-        }
-        values[key] = validateConfigDefault(
-          schemaField.type,
-          rawValue,
-          schemaField.values,
-          schemaField.min,
-          schemaField.max,
-          `${presetFieldName}.values.${key}`,
-        );
-      }
-      return {
-        id,
-        title: ensureString(preset.title, `${presetFieldName}.title`),
-        description:
-          preset.description === undefined
-            ? undefined
-            : ensureString(preset.description, `${presetFieldName}.description`),
-        values,
-      };
-    });
-  }
-
-  return presentation;
-}
-
-function normalizePluginConfigSchema(value: unknown, fieldName: string): PluginConfigSchema {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['schema', 'presentation']);
-
-  const schemaInput = assertObject(input.schema, `${fieldName}.schema`);
-  const schema: PluginConfigSchema['schema'] = {};
-  const supportedTypes = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
-
-  for (const [key, rawField] of Object.entries(schemaInput)) {
-    validateConfigKey(key, `${fieldName}.schema`);
-    const schemaFieldName = `${fieldName}.schema.${key}`;
-    const configField = assertObject(rawField, schemaFieldName);
-    assertAllowedKeys(configField, schemaFieldName, [
-      'type',
-      'title',
-      'description',
-      'default',
-      'required',
-      'sensitive',
-      'values',
-      'min',
-      'max',
-    ]);
-
-    const type = ensureString(configField.type, `${schemaFieldName}.type`);
-    if (!supportedTypes.has(type)) {
-      throw new Error(`Invalid ${schemaFieldName}.type: expected string, number, boolean, enum, file, or directory.`);
-    }
-
-    const required =
-      configField.required === undefined
-        ? undefined
-        : ensureBoolean(configField.required, `${schemaFieldName}.required`);
-    const sensitive =
-      configField.sensitive === undefined
-        ? undefined
-        : ensureBoolean(configField.sensitive, `${schemaFieldName}.sensitive`);
-    const values =
-      configField.values === undefined
-        ? undefined
-        : ensureStringArray(configField.values, `${schemaFieldName}.values`);
-    if (type !== 'enum' && values !== undefined) {
-      throw new Error(`Invalid ${schemaFieldName}.values: values are only supported for enum config.`);
-    }
-    if (type === 'enum' && (!values || values.length === 0)) {
-      throw new Error(`Invalid ${schemaFieldName}.values: enum config requires at least one value.`);
-    }
-    if (values && new Set(values).size !== values.length) {
-      throw new Error(`Invalid ${schemaFieldName}.values: enum values must be unique.`);
-    }
-
-    const min =
-      configField.min === undefined
-        ? undefined
-        : ensureFiniteNumber(configField.min, `${schemaFieldName}.min`);
-    const max =
-      configField.max === undefined
-        ? undefined
-        : ensureFiniteNumber(configField.max, `${schemaFieldName}.max`);
-    if (type !== 'number' && (min !== undefined || max !== undefined)) {
-      throw new Error(`Invalid ${schemaFieldName}: min/max are only supported for number config.`);
-    }
-    if (min !== undefined && max !== undefined && min > max) {
-      throw new Error(`Invalid ${schemaFieldName}: min must be less than or equal to max.`);
-    }
-
-    schema[key] = {
-      type: type as PluginConfigSchema['schema'][string]['type'],
-      title:
-        configField.title === undefined
-          ? undefined
-          : ensureString(configField.title, `${schemaFieldName}.title`),
-      description:
-        configField.description === undefined
-          ? undefined
-          : ensureString(configField.description, `${schemaFieldName}.description`),
-      default:
-        configField.default === undefined
-          ? undefined
-          : validateConfigDefault(
-              type,
-              configField.default,
-              values,
-              min,
-              max,
-              `${schemaFieldName}.default`,
-            ),
-      required,
-      sensitive,
-      values,
-      min,
-      max,
-    };
-  }
-
-  return {
-    schema,
-    presentation:
-      input.presentation === undefined
-        ? undefined
-        : normalizePluginConfigPresentation(
-            input.presentation,
-            schema,
-            `${fieldName}.presentation`,
-          ),
-  };
-}
-
 const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
@@ -2051,7 +1712,7 @@ function normalizeArtifactRefreshKeys(
   schema: PluginConfigSchema | undefined,
 ): string[] {
   const refreshKeys = ensureStringArray(value, fieldName);
-  const schemaKeys = new Set(Object.keys(schema?.schema ?? {}));
+  const schemaKeys = new Set(Object.keys(schema?.fields ?? {}));
   const normalized: string[] = [];
 
   for (const [index, key] of refreshKeys.entries()) {
@@ -2982,7 +2643,7 @@ export function validatePluginManifest(
   }
 
   if (input.config !== undefined) {
-    manifest.config = normalizePluginConfigSchema(input.config, 'config');
+    manifest.config = normalizePluginConfigDefinition(input.config, 'config');
   }
 
   if (input.artifacts !== undefined) {

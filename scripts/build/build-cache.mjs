@@ -32,6 +32,7 @@ const INPUT_PATHS = [
   'packages/cli/vitest.config.ts',
   'packages/cli/src',
   'packages/cli/scripts',
+  'packages/cli/authoring',
   'plugins',
   '.changes',
 ];

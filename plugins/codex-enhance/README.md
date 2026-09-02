@@ -33,16 +33,15 @@ fork、响应式等待和条件清理策略。
 
 ```bash
 aw config list codex-enhance -s user
-aw config set codex-enhance standardModel gpt-5.6-terra -s user
-aw config set codex-enhance standardReasoningEffort high -s user
-aw config set codex-enhance exploreMinimumInitialWaitMinutes 15 -s user
-aw config set codex-enhance subagentMinimumInitialWaitMinutes 15 -s user
+aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
+aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
+aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
 ```
 
 配置界面按 `codex-explore` 和 `codex-subagent-guide`
-分组。每个探索深度和通用任务类型都可以独立配置模型与推理强度。两个技能也分别使用自己的首次响应式等待窗口下限。
+分组。七个角色分别使用 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile`。每个 profile 必须一次提供完整的 `model` 与 `reasoningEffort`；user 或 project 层写入会完整覆盖继承的 profile，不合并单个属性。两个技能也分别使用自己的首次响应式等待窗口下限。
 
-旧的 `minimumInitialWaitMinutes` 不再生效。升级后，按需分别设置上面的两个等待窗口配置。
+旧 store 和旧配置 key 不会自动迁移或删除。升级后，按需设置新 profile 和两个等待窗口；无效配置层使用显式 config reset 恢复，旧的 AW-owned 输出可通过 cleanup 后重新安装恢复。
 
 ## 典型用法
 

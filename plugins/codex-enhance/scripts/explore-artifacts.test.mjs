@@ -32,24 +32,21 @@ const expectedRoles = [
   {
     id: 'codex-explore-quick-role',
     key: 'codex-explore-quick',
-    modelKey: 'quickModel',
-    effortKey: 'quickReasoningEffort',
+    profileKey: 'quickProfile',
     model: 'gpt-5.6-luna',
     effort: 'medium',
   },
   {
     id: 'codex-explore-standard-role',
     key: 'codex-explore-standard',
-    modelKey: 'standardModel',
-    effortKey: 'standardReasoningEffort',
+    profileKey: 'standardProfile',
     model: 'gpt-5.6-luna',
     effort: 'high',
   },
   {
     id: 'codex-explore-deep-role',
     key: 'codex-explore-deep',
-    modelKey: 'deepModel',
-    effortKey: 'deepReasoningEffort',
+    profileKey: 'deepProfile',
     model: 'gpt-5.6-luna',
     effort: 'xhigh',
   },
@@ -60,12 +57,9 @@ const expectedRoles = [
 ];
 
 const exploreConfigKeys = [
-  'quickModel',
-  'quickReasoningEffort',
-  'standardModel',
-  'standardReasoningEffort',
-  'deepModel',
-  'deepReasoningEffort',
+  'quickProfile',
+  'standardProfile',
+  'deepProfile',
   'exploreMinimumInitialWaitMinutes',
 ];
 
@@ -134,10 +128,7 @@ function assertRoleArtifact(plan, expected) {
   assert.equal(role.target, 'codex.agentRole');
   assert.equal(role.state, 'present');
   assert.equal(role.roleKey, expected.key);
-  assert.deepEqual(
-    role.refreshKeys,
-    expected.modelKey ? [expected.modelKey, expected.effortKey] : [],
-  );
+  assert.deepEqual(role.refreshKeys, expected.profileKey ? [expected.profileKey] : []);
   assert.equal(role.content.roleFile.name, expected.key);
   assert.equal(role.content.roleFile.model, expected.model);
   assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
@@ -246,8 +237,10 @@ async function testConfigSourcesAndManifestDefaults() {
       renderConfig: {
         values: {
           exploreMinimumInitialWaitMinutes: 20,
-          standardModel: 'configured-standard',
-          standardReasoningEffort: 'max',
+          standardProfile: {
+            model: 'configured-standard',
+            reasoningEffort: 'max',
+          },
         },
       },
     }),
@@ -284,12 +277,27 @@ async function testStaticManifestContract() {
 
   assert.equal(manifest.name, 'codex-enhance');
   for (const key of exploreConfigKeys) {
-    assert.ok(Object.hasOwn(manifest.config.schema, key), `Missing explore config key ${key}`);
+    assert.ok(Object.hasOwn(manifest.config.fields, key), `Missing explore config key ${key}`);
   }
-  for (const role of expectedRoles.filter((entry) => entry.modelKey)) {
-    assert.equal(manifest.config.schema[role.modelKey].default, role.model);
-    assert.equal(manifest.config.schema[role.effortKey].default, role.effort);
-    assert.deepEqual(manifest.config.schema[role.effortKey].values, [
+  for (const role of expectedRoles.filter((entry) => entry.profileKey)) {
+    const profile = manifest.config.fields[role.profileKey];
+    assert.equal(profile.type, 'object');
+    assert.equal(profile.required, true);
+    assert.equal(profile.additionalProperties, false);
+    assert.deepEqual(profile.default, {
+      model: role.model,
+      reasoningEffort: role.effort,
+    });
+    assert.deepEqual(Object.keys(profile.properties), ['model', 'reasoningEffort']);
+    assert.deepEqual(profile.properties.model, {
+      type: 'string',
+      required: true,
+      validation: { minLength: 1 },
+    });
+    assert.equal(profile.properties.reasoningEffort.type, 'string');
+    assert.equal(profile.properties.reasoningEffort.required, true);
+    assert.equal(profile.properties.reasoningEffort.choices.allowCustom, false);
+    assert.deepEqual(profile.properties.reasoningEffort.choices.presets.map((preset) => preset.value), [
       'low',
       'medium',
       'high',
@@ -297,10 +305,42 @@ async function testStaticManifestContract() {
       'max',
       'ultra',
     ]);
+    assert.deepEqual(
+      profile.properties.reasoningEffort.choices.presets,
+      profile.properties.reasoningEffort.choices.presets.map(({ value }) => ({
+        id: value,
+        title: value,
+        value,
+      })),
+    );
+    assert.equal(Object.hasOwn(profile, 'choices'), false);
   }
-  assert.equal(manifest.config.schema.exploreMinimumInitialWaitMinutes.default, 10);
-  assert.equal(manifest.config.schema.subagentMinimumInitialWaitMinutes.default, 10);
-  assert.equal(Object.hasOwn(manifest.config.schema, 'minimumInitialWaitMinutes'), false);
+  assert.equal(manifest.config.fields.exploreMinimumInitialWaitMinutes.default, 10);
+  assert.equal(manifest.config.fields.subagentMinimumInitialWaitMinutes.default, 10);
+  assert.deepEqual(manifest.config.fields.exploreMinimumInitialWaitMinutes.validation, {
+    integer: true,
+    minimum: 1,
+    maximum: 60,
+  });
+  assert.deepEqual(manifest.config.fields.subagentMinimumInitialWaitMinutes.validation, {
+    integer: true,
+    minimum: 1,
+    maximum: 60,
+  });
+  assert.equal(Object.hasOwn(manifest.config.fields, 'minimumInitialWaitMinutes'), false);
+  for (const profileKey of [
+    'simpleTaskProfile',
+    'generalTaskProfile',
+    'complexTaskProfile',
+    'advancedTaskProfile',
+  ]) {
+    assert.deepEqual(
+      manifest.config.fields[profileKey].properties.reasoningEffort.choices.presets.map(
+        (preset) => preset.value,
+      ),
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+    );
+  }
   assert.deepEqual(
     manifest.config.presentation.groups.map((group) => ({
       id: group.id,
@@ -314,14 +354,10 @@ async function testStaticManifestContract() {
       {
         id: 'codex-subagent-guide',
         fields: [
-          'simpleTaskModel',
-          'simpleTaskReasoningEffort',
-          'generalTaskModel',
-          'generalTaskReasoningEffort',
-          'complexTaskModel',
-          'complexTaskReasoningEffort',
-          'advancedTaskModel',
-          'advancedTaskReasoningEffort',
+          'simpleTaskProfile',
+          'generalTaskProfile',
+          'complexTaskProfile',
+          'advancedTaskProfile',
           'subagentMinimumInitialWaitMinutes',
         ],
       },
@@ -349,7 +385,7 @@ async function testStaticManifestContract() {
       ...expectedRoles.map((role) => ({
         id: role.id,
         target: 'codex.agentRole',
-        refreshKeys: role.modelKey ? [role.modelKey, role.effortKey] : [],
+        refreshKeys: role.profileKey ? [role.profileKey] : [],
         key: role.key,
       })),
     ],

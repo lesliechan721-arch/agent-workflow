@@ -20,10 +20,11 @@ import type {
   PluginConfigValue,
 } from './plugin-config.js';
 import {
-  coercePluginConfigValue,
+  assertReadyPluginConfigStore,
+  collectProjectArtifactConfigBoundaryIssues,
   readPluginConfigStore,
-  resolveProjectArtifactRenderConfig,
-  resolveAwProjectRoot,
+  resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
 } from './plugin-config.js';
 import {
   buildNodeScriptInvocation,
@@ -46,11 +47,11 @@ export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 export interface ResolvedArtifactRenderConfig {
   mode: 'artifact-render';
   targetScope: Scope;
-  schema?: PluginConfigSchema['schema'];
+  schema?: PluginConfigSchema['fields'];
   values: Record<string, PluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
-  stores: Record<Scope, PluginConfigStore>;
+  stores: Partial<Record<Scope, PluginConfigStore>>;
 }
 
 export interface ArtifactRendererContext {
@@ -67,7 +68,7 @@ export interface ArtifactRendererContext {
   config: {
     mode: 'artifact-render';
     targetScope: Scope;
-    schema?: PluginConfigSchema['schema'];
+    schema?: PluginConfigSchema['fields'];
     values: Record<string, PluginConfigValue>;
     sources: Record<string, PluginConfigSource>;
     issues: PluginConfigIssue[];
@@ -160,47 +161,6 @@ function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
   return value as ArtifactRenderEvent;
 }
 
-function createIssueMap(): Map<string, PluginConfigIssue> {
-  return new Map<string, PluginConfigIssue>();
-}
-
-async function applyArtifactConfigLayer(options: {
-  values: Record<string, PluginConfigValue>;
-  sources: Record<string, PluginConfigSource>;
-  invalidIssues: Map<string, PluginConfigIssue>;
-  schema: PluginConfigSchema['schema'];
-  entries: Record<string, unknown>;
-  source: PluginConfigSource;
-  projectRoot: string;
-}): Promise<void> {
-  for (const [key, field] of Object.entries(options.schema)) {
-    if (!Object.hasOwn(options.entries, key)) {
-      continue;
-    }
-
-    try {
-      const coerced = await coercePluginConfigValue({
-        key,
-        field,
-        value: options.entries[key],
-        projectRoot: options.projectRoot,
-      });
-      options.values[key] = coerced;
-      options.sources[key] = options.source;
-      options.invalidIssues.delete(key);
-    } catch (error) {
-      delete options.values[key];
-      options.sources[key] = options.source;
-      options.invalidIssues.set(key, {
-        type: 'invalid-config',
-        key,
-        source: options.source,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-}
-
 export async function resolveArtifactRenderConfig(options: {
   sourceId?: string;
   sourceIdentity?: string;
@@ -211,50 +171,28 @@ export async function resolveArtifactRenderConfig(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedArtifactRenderConfig> {
   const pluginName = options.pluginName ?? options.manifest.name;
-  if (options.scope === 'project') {
-    const projectConfig = await resolveProjectArtifactRenderConfig({
-      sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
-      pluginName,
-      manifest: options.manifest,
-      cwd: options.cwd,
-      env: options.env,
-    });
-    return {
-      mode: 'artifact-render',
-      targetScope: options.scope,
-      schema: Object.keys(projectConfig.schema).length > 0 ? projectConfig.schema : undefined,
-      values: projectConfig.values,
-      sources: projectConfig.sources,
-      issues: projectConfig.issues,
-      stores: {
-        user: projectConfig.stores.user,
-        project: projectConfig.stores.project,
-      },
-    };
-  }
-  const schema = options.manifest.config?.schema;
-  const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [userStore, projectStore] = await Promise.all([
-    readPluginConfigStore({
+  const schema = options.manifest.config?.fields;
+  if (!schema) {
+    const userStore = await readPluginConfigStore({
       sourceId: options.sourceId,
       sourceIdentity: options.sourceIdentity,
       pluginName,
       scope: 'user',
       cwd: options.cwd,
       env: options.env,
-    }),
-    readPluginConfigStore({
-      sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
-      pluginName,
-      scope: 'project',
-      cwd: options.cwd,
-      env: options.env,
-    }),
-  ]);
-
-  if (!schema) {
+    });
+    const projectStore = options.scope === 'user'
+      ? undefined
+      : await readPluginConfigStore({
+          sourceId: options.sourceId,
+          sourceIdentity: options.sourceIdentity,
+          pluginName,
+          scope: 'project',
+          cwd: options.cwd,
+          env: options.env,
+        });
+    assertReadyPluginConfigStore(userStore);
+    if (projectStore) assertReadyPluginConfigStore(projectStore);
     return {
       mode: 'artifact-render',
       targetScope: options.scope,
@@ -264,67 +202,35 @@ export async function resolveArtifactRenderConfig(options: {
       issues: [],
       stores: {
         user: userStore,
-        project: projectStore,
+        ...(projectStore ? { project: projectStore } : {}),
       },
     };
   }
 
-  const values: Record<string, PluginConfigValue> = {};
-  const sources: Record<string, PluginConfigSource> = {};
-  const invalidIssues = createIssueMap();
-
-  for (const key of Object.keys(schema)) {
-    sources[key] = 'missing';
-  }
-
-  for (const [key, field] of Object.entries(schema)) {
-    if (field.default === undefined) {
-      continue;
-    }
-    await applyArtifactConfigLayer({
-      values,
-      sources,
-      invalidIssues,
-      schema: { [key]: field },
-      entries: { [key]: field.default },
-      source: 'default',
-      projectRoot,
-    });
-  }
-
-  await applyArtifactConfigLayer({
-    values,
-    sources,
-    invalidIssues,
-    schema,
-    entries: userStore.values,
-    source: 'user',
-    projectRoot,
+  const effective = await resolveEffectivePluginConfig({
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+    pluginName,
+    manifest: options.manifest,
+    targetScope: options.scope,
+    cwd: options.cwd,
+    env: options.env,
   });
-
-  const issues = [...invalidIssues.values()];
-  for (const [key, field] of Object.entries(schema)) {
-    if (field.required && values[key] === undefined) {
-      issues.push({
-        type: 'missing-required',
-        key,
-        source: sources[key],
-        message: `Config "${key}" is required.`,
-      });
-    }
-  }
 
   return {
     mode: 'artifact-render',
     targetScope: options.scope,
     schema,
-    values,
-    sources,
-    issues,
-    stores: {
-      user: userStore,
-      project: projectStore,
-    },
+    values: effective.values,
+    sources: effective.sources,
+    issues: [
+      ...effective.issues,
+      ...collectProjectArtifactConfigBoundaryIssues({
+        schema,
+        projectStore: effective.stores.project,
+      }),
+    ],
+    stores: effective.stores,
   };
 }
 
@@ -474,8 +380,20 @@ export async function writeArtifactRendererContext(options: {
       claudeHome: artifactRendererClaudeHome(options.commandEnv),
       manifestPath: options.target.manifestPath,
       configStores: {
-        user: config.stores.user.path,
-        project: config.stores.project.path,
+        user: resolvePluginConfigStorePath({
+          sourceId: options.sourceId,
+          pluginName: options.target.sourceManifest.name,
+          scope: 'user',
+          cwd: options.cwd,
+          env: options.commandEnv,
+        }),
+        project: resolvePluginConfigStorePath({
+          sourceId: options.sourceId,
+          pluginName: options.target.sourceManifest.name,
+          scope: 'project',
+          cwd: options.cwd,
+          env: options.commandEnv,
+        }),
       },
     },
     renderer: {
@@ -619,6 +537,11 @@ export async function runArtifactRenderer(options: {
   });
 
   try {
+    if (writtenContext.context.config.issues.length > 0) {
+      throw new Error(
+        `Invalid AW config for ${writtenContext.context.plugin.name}: ${writtenContext.context.config.issues.map((issue) => `${issue.key} (${issue.type})`).join(', ')}.`,
+      );
+    }
     await fs.ensureDir(path.join(writtenContext.tempDir, 'home'));
     await fs.ensureDir(path.join(writtenContext.tempDir, 'tmp'));
     const timeoutMs = resolvePluginScriptTimeoutMs({
