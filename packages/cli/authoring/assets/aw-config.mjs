@@ -729,8 +729,11 @@ function supportedValue(value) {
 function validateValues(values, schema) {
   if (!isRecord(values)) fail('invalidValues: Store values must be an object.');
   for (const [key, value] of Object.entries(values)) {
+    if (isDangerousConfigKey(key)) {
+      fail(`dangerousKey: Config "${key}" is not allowed.`);
+    }
     if (!supportedValue(value)) fail(`invalidValues: Config "${key}" has an unsupported value.`);
-    const field = schema[key];
+    const field = Object.hasOwn(schema, key) ? schema[key] : undefined;
     if (!field) continue;
     const issues = validatePluginConfigValue(field, value, key);
     if (issues.length > 0) fail(`invalidValues: ${formatPluginConfigIssue(issues[0])}`);

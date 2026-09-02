@@ -309,6 +309,27 @@ describe('command runtime', () => {
     expect(output.join('')).toContain('Retries（当前：1）');
   });
 
+  it('returns the actual boolean from a closed legacy prompt enum', async () => {
+    const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
+    const prompt = createReadlinePrompt({
+      input: Readable.from(['1\n']),
+      outputSink: { isTTY: true, write: vi.fn() },
+    });
+
+    await expect(prompt.configurePlugin!({
+      pluginName: 'boolean-plugin',
+      schema: {
+        enabled: { type: 'boolean', required: true, enum: [true] },
+      },
+      initialScope: 'user',
+      allowedScopes: ['user'],
+    })).resolves.toMatchObject({
+      updates: { enabled: true },
+      updatedKeys: ['enabled'],
+      cancelled: false,
+    });
+  });
+
   it('maps menu shortcuts to stable navigation results while preserving text input', async () => {
     const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
     const createPrompt = (answer: string) => createReadlinePrompt({

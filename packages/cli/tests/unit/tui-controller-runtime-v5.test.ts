@@ -905,6 +905,43 @@ describe('TUI controller runtime scope conflict validation', () => {
     runtimeMocks.resetPluginConfigWithHelper.mockReset();
   });
 
+  it('allows an offline reset Review when its Catalog source appears later', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'configReset' as const,
+      pluginId: 'late/demo',
+      scope: 'user' as const,
+      projectLayer: 'shared' as const,
+    };
+    const signal = new AbortController().signal;
+    const evidence = await dependencies.prepareReviewEvidence!(intent, signal, () => {});
+    expect(evidence.source).toBeUndefined();
+
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'late-reset-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'late', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
+      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+    });
+
+    await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
+      configWrite: 'succeeded',
+    });
+  });
+
   it.each([
     ['symbolicLink', 'unlinkedSymlink'],
     ['directory', 'quarantinedDirectory'],

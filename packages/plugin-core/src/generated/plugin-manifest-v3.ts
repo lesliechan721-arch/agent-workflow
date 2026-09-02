@@ -20,7 +20,7 @@ export type Capabilities = string[]
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
  */
-export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField) | undefined
+export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configObjectField".
@@ -30,12 +30,12 @@ export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectFi
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalar".
  */
-export type ConfigScalar = (string | number | boolean) | undefined
+export type ConfigScalar = (string | number | boolean)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarChildField".
  */
-export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChildField | ConfigBooleanChildField) | undefined
+export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChildField | ConfigBooleanChildField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarDynamicField".
@@ -142,10 +142,10 @@ agentOverrides?: PlatformOverrides
  */
 export interface PlatformOverrides {
 claude?: ({
-[k: string]: unknown | undefined
+[k: string]: unknown
 } | null)
 codex?: ({
-[k: string]: unknown | undefined
+[k: string]: unknown
 } | null)
 }
 /**
@@ -237,7 +237,7 @@ export interface BuildConfig {
 cacheable?: true
 templates?: {
 vars: {
-[k: string]: PlatformTemplateValue | undefined
+[k: string]: PlatformTemplateValue
 }
 include: StringArray
 }
@@ -254,7 +254,7 @@ userConfig?: unknown
 channels?: unknown
 }
 codex?: {
-[k: string]: unknown | undefined
+[k: string]: unknown
 }
 }
 runtimeExports?: {
@@ -357,7 +357,7 @@ args?: StringArray
  */
 export interface Config {
 fields: {
-[k: string]: ConfigField | undefined
+[k: string]: ConfigField
 }
 presentation?: {
 groups?: {
@@ -496,13 +496,13 @@ type: "object"
 title?: string
 description?: string
 default?: {
-[k: string]: ConfigScalar | undefined
+[k: string]: ConfigScalar
 }
 required?: boolean
 sensitive?: boolean
 choices?: ConfigObjectChoices
 properties: {
-[k: string]: ConfigScalarChildField | undefined
+[k: string]: ConfigScalarChildField
 }
 additionalProperties?: false
 validation?: ConfigObjectValidation
@@ -524,7 +524,7 @@ id: string
 title: string
 description?: string
 value: {
-[k: string]: ConfigScalar | undefined
+[k: string]: ConfigScalar
 }
 recommended?: true
 }
@@ -584,7 +584,7 @@ type: "object"
 title?: string
 description?: string
 default?: {
-[k: string]: ConfigScalar | undefined
+[k: string]: ConfigScalar
 }
 required?: boolean
 sensitive?: boolean

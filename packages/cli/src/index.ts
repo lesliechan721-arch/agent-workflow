@@ -88,6 +88,7 @@ import {
 } from './utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
+  buildConfigMutationReceipt,
   describeResetAffectedFields,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
@@ -118,6 +119,7 @@ import {
 } from './utils/aw-home-mutation-lock.js';
 import type {
   ConfigFieldEntry,
+  ConfigMutationCommand,
   PlatformName,
   PlatformSelection,
   Scope,
@@ -388,6 +390,132 @@ function writeCommandFailureReceipt(
         scope: request.scope,
       };
     })),
+  }));
+}
+
+interface PreparsedConfigMutationJsonRequest {
+  command: ConfigMutationCommand;
+  plugin?: string;
+}
+
+function scanConfigMutationShortOptions(
+  token: string,
+  command: ConfigMutationCommand,
+): { json: boolean; consumesNextValue: boolean } {
+  if (!/^-[^-].*/u.test(token)) return { json: false, consumesNextValue: false };
+  let json = false;
+
+  for (let index = 1; index < token.length; index += 1) {
+    const option = token[index]!;
+    if (option === 's') {
+      return {
+        json,
+        consumesNextValue: index === token.length - 1,
+      };
+    }
+    if (option === 'j') {
+      json = true;
+      continue;
+    }
+    if (option === 'v' || option === 'D' || (option === 'y' && command === 'config:reset')) {
+      continue;
+    }
+    break;
+  }
+
+  return { json, consumesNextValue: false };
+}
+
+function jsonConfigMutationRequest(argv: string[]): PreparsedConfigMutationJsonRequest | null {
+  if (argv[0] !== 'config' || !['set', 'unset', 'reset'].includes(argv[1] ?? '')) {
+    return null;
+  }
+  const command = `config:${argv[1]}` as ConfigMutationCommand;
+  let json = false;
+  let plugin: string | undefined;
+  const valueOptions = new Set(['--scope', '--value-json', '--preset', '--log-file']);
+
+  for (let index = 2; index < argv.length; index += 1) {
+    const token = argv[index]!;
+    if (token === '--') break;
+    if (valueOptions.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (token === '--json') {
+      json = true;
+      continue;
+    }
+    const shortOptions = scanConfigMutationShortOptions(token, command);
+    if (shortOptions.json) json = true;
+    if (shortOptions.consumesNextValue) index += 1;
+    if (token.startsWith('-')) continue;
+    plugin ??= token;
+  }
+
+  if (!json) return null;
+  return {
+    command,
+    ...(plugin ? { plugin } : {}),
+  };
+}
+
+function configMutationFailure(
+  error: unknown,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): { code: string; message: string } {
+  if (error instanceof CommanderError) {
+    return {
+      code: 'invalidArguments',
+      message: 'error: invalid config mutation arguments',
+    };
+  }
+  const message = catalogPublicationFailure({
+    error,
+    env,
+    sensitiveRoots: [cwd],
+  }).message;
+  if (message.includes('Usage:')) return { code: 'invalidArguments', message };
+  const generationCode = catalogGenerationErrorCode(error);
+  if (generationCode === 'catalogGenerationUnavailable'
+    || generationCode === 'catalogGenerationSourceMissing') {
+    return { code: 'catalogSourceUnavailable', message };
+  }
+  if (generationCode !== 'catalogGenerationFailed') return { code: generationCode, message };
+  const explicitCode = (error as { code?: unknown })?.code;
+  if (typeof explicitCode === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(explicitCode)) {
+    return { code: explicitCode, message };
+  }
+  if (message.includes('legacyStateUnsupported')) return { code: 'legacyStateUnsupported', message };
+  if (message.includes('sourceChanged')) return { code: 'sourceChanged', message };
+  if (message.includes('sourceMissing')) return { code: 'sourceMissing', message };
+  if (message.startsWith('Cannot resolve required catalog sources:')) {
+    return { code: 'catalogSourceUnavailable', message };
+  }
+  const prefix = message.match(/^([A-Za-z][A-Za-z0-9]*):/u)?.[1];
+  return { code: prefix ?? 'configMutationFailed', message };
+}
+
+function writeConfigMutationFailureReceipt(
+  write: (text: string) => void,
+  request: PreparsedConfigMutationJsonRequest,
+  failure: { code: string; message: string },
+): void {
+  let plugin: string | undefined;
+  try {
+    if (request.plugin) {
+      parsePluginId(request.plugin);
+      plugin = request.plugin;
+    }
+  } catch {
+    // Do not echo an invalid selector from raw argv in an early failure receipt.
+  }
+  writeJsonReceipt(write, buildConfigMutationReceipt(request.command, {
+    ok: false,
+    overallState: 'failed',
+    ...(plugin ? { plugin } : {}),
+    errors: [failure],
   }));
 }
 
@@ -2296,41 +2424,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   };
 
   const writeConfigMutationFailure = (
-    command: 'config:set' | 'config:unset' | 'config:reset',
+    command: ConfigMutationCommand,
     plugin: string | undefined,
     json: boolean,
     error: unknown,
   ): void => {
-    const message = redactString(sanitizeCatalogSourceErrorMessage(
-      error instanceof Error ? error.message : String(error),
-      env,
-      [cwd],
-    ));
-    const generationCode = catalogGenerationErrorCode(error);
-    const code = generationCode === 'catalogGenerationUnavailable'
-      || generationCode === 'catalogGenerationSourceMissing'
-      ? 'catalogSourceUnavailable'
-      : generationCode !== 'catalogGenerationFailed'
-        ? generationCode
-        : message.includes('legacyStateUnsupported')
-      ? 'legacyStateUnsupported'
-      : message.includes('sourceChanged')
-        ? 'sourceChanged'
-        : message.includes('sourceMissing')
-          ? 'sourceMissing'
-          : message.startsWith('Cannot resolve required catalog sources:')
-            ? 'catalogSourceUnavailable'
-            : message.split(':', 1)[0] || 'configMutationFailed';
-    if (json && !message.includes('Usage:')) {
-      writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 5,
+    const failure = configMutationFailure(error, env, cwd);
+    if (json) {
+      writeConfigMutationFailureReceipt(io.stdout, {
         command,
-        ok: false,
-        overallState: 'failed',
         ...(plugin ? { plugin } : {}),
-        errors: [{ code, message }],
-      });
+      }, failure);
     }
+    const message = json
+      ? failure.message
+      : redactString(sanitizeCatalogSourceErrorMessage(
+          error instanceof Error ? error.message : String(error),
+          env,
+          [cwd],
+        ));
     writeLine(io.stderr, message);
     commandExitState.exitCode = 1;
   };
@@ -3087,10 +3199,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
         });
-        return {
+        return buildConfigMutationReceipt('config:set', {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 5,
-          command: 'config:set',
           ...writeReceipt,
           plugin: plugin.manifest.name,
           pluginName: plugin.manifest.name,
@@ -3105,7 +3215,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             action: 'set' as const,
             scope,
           }],
-        };
+        });
             },
           );
         });
@@ -3177,10 +3287,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
         });
-        return {
+        return buildConfigMutationReceipt('config:unset', {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 5,
-          command: 'config:unset',
           ...writeReceipt,
           plugin: plugin.manifest.name,
           pluginName: plugin.manifest.name,
@@ -3197,7 +3305,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             action: 'unset' as const,
             scope,
           }],
-        };
+        });
             },
           );
         if (pluginName && key) {
@@ -3306,10 +3414,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               pluginError,
               apply: rawOptions.apply === true,
             });
-            return {
+            return buildConfigMutationReceipt('config:reset', {
               ok: resetReceipt.overallState === 'succeeded',
-              receiptSchemaVersion: 5,
-              command: 'config:reset',
               ...resetReceipt,
               plugin: located.pluginName,
               pluginName: located.pluginName,
@@ -3317,7 +3423,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               sourceId: located.sourceId,
               ...(located.sourceIdentity ? { sourceIdentity: located.sourceIdentity } : {}),
               affectedFields,
-            };
+            });
           };
           let resetStarted = false;
           try {
@@ -3514,6 +3620,7 @@ export async function runCli(
     ? argv[2] as 'activate' | 'status' | 'deactivate'
     : null;
   const jsonWriteRequest = jsonWriteCommandRequest(argv);
+  const jsonConfigMutation = jsonConfigMutationRequest(argv);
 
   try {
     const authoringScriptByCommand: Record<string, string> = {
@@ -3578,7 +3685,8 @@ export async function runCli(
         io,
       });
     }
-    if (argv.some((token) => token === '--subdir' || token.startsWith('--subdir='))
+    if (!jsonConfigMutation
+      && argv.some((token) => token === '--subdir' || token.startsWith('--subdir='))
       && argv.includes('--no-subdir')) {
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
@@ -3633,8 +3741,16 @@ export async function runCli(
       return await runActionWithContext(context, () => runConsoleController(context));
     }
     let catalogPublicationActionStarted = false;
+    let configMutationActionStarted = false;
     const programIo = jsonCatalogDevCommand || jsonWriteRequest
       ? { ...io, stderr: () => undefined }
+      : jsonConfigMutation
+        ? {
+            ...io,
+            stderr: (text: string) => {
+              if (configMutationActionStarted) io.stderr(text);
+            },
+          }
       : jsonAuthoringCommand === 'catalog:publish'
         ? {
             ...io,
@@ -3657,6 +3773,11 @@ export async function runCli(
     if (jsonAuthoringCommand === 'catalog:publish') {
       program.hook('preAction', () => {
         catalogPublicationActionStarted = true;
+      });
+    }
+    if (jsonConfigMutation) {
+      program.hook('preAction', () => {
+        configMutationActionStarted = true;
       });
     }
     await program.parseAsync(['node', 'aw', ...argv]);
@@ -3687,6 +3808,23 @@ export async function runCli(
     }
     if (jsonWriteRequest) {
       writeCommandFailureReceipt(io.stdout, jsonWriteRequest, error);
+      return 1;
+    }
+    if (jsonConfigMutation) {
+      if (error instanceof CommanderError && error.exitCode === 0) return 0;
+      const failure = configMutationFailure(
+        error,
+        options.env ?? process.env,
+        options.cwd ?? process.cwd(),
+      );
+      writeConfigMutationFailureReceipt(
+        io.stdout,
+        error instanceof CommanderError
+          ? { command: jsonConfigMutation.command }
+          : jsonConfigMutation,
+        failure,
+      );
+      writeLine(io.stderr, failure.message);
       return 1;
     }
     if (jsonAuthoringCommand === 'catalog:publish' && error instanceof CommanderError) {

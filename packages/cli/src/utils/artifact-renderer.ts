@@ -34,6 +34,7 @@ import {
   resolveBundledPluginFilePath,
   resolvePluginScriptTimeoutMs,
   summarizePluginScriptOutput,
+  truncatePluginScriptOutput,
   type PluginProcessRunner,
   type PluginProcessResult,
   type PluginScriptInvocation,
@@ -482,13 +483,20 @@ function assertRefreshKeysForEvent(
 async function runArtifactRendererProcess(options: {
   invocation: PluginScriptInvocation;
   timeoutMs: number;
+  sensitiveValues: readonly string[];
   signal?: AbortSignal;
   runner?: PluginProcessRunner;
 }): Promise<PluginProcessResult> {
-  return (options.runner ?? defaultPluginProcessRunner).run(options.invocation, {
+  const runOptions = {
     timeoutMs: options.timeoutMs,
     ...(options.signal ? { signal: options.signal } : {}),
-  });
+  };
+  return options.runner
+    ? options.runner.run(options.invocation, runOptions)
+    : defaultPluginProcessRunner.run(options.invocation, {
+        ...runOptions,
+        sensitiveValues: options.sensitiveValues,
+      });
 }
 
 export async function runArtifactRenderer(options: {
@@ -563,6 +571,7 @@ export async function runArtifactRenderer(options: {
     const result = await runArtifactRendererProcess({
       invocation,
       timeoutMs,
+      sensitiveValues: writtenContext.sensitiveValues,
       signal: options.signal,
       runner: options.runner,
     });
@@ -586,7 +595,7 @@ export async function runArtifactRenderer(options: {
       );
     }
 
-    const rawStdout = result.stdout.trim();
+    const rawStdout = truncatePluginScriptOutput(result.stdout).trim();
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawStdout);

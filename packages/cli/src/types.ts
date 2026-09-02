@@ -298,6 +298,19 @@ export interface ConfigReceiptFieldEntry {
   valueState?: ConfigValueState;
 }
 
+export const CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION = 6;
+
+export type ConfigMutationCommand = 'config:set' | 'config:unset' | 'config:reset';
+
+export interface ConfigMutationReceiptBase<
+  Command extends ConfigMutationCommand = ConfigMutationCommand,
+> {
+  receiptSchemaVersion: typeof CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION;
+  command: Command;
+  ok: boolean;
+  overallState: RebuildReceiptOverallState;
+}
+
 export interface ConfigSchemaEvidence {
   source: 'currentCatalog';
   identity: string;

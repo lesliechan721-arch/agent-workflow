@@ -9,6 +9,7 @@ import {
   matchPluginConfigPreset,
   redactPluginConfigValue,
   stablePluginConfigStringify,
+  validatePluginConfigDocument,
   validatePluginConfigValue as validateCorePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
 
@@ -53,6 +54,7 @@ type PluginConfigStorePathAccess = 'read' | 'write';
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
+  code?: string;
   key: string;
   source?: PluginConfigSource;
   message: string;
@@ -225,7 +227,7 @@ export interface PluginConfigFormFieldModel {
   required: boolean;
   sensitive: boolean;
   defaultValue?: string | number | boolean;
-  enumValues?: Array<string | number>;
+  enumValues?: Array<string | number | boolean>;
   min?: number;
   max?: number;
   configured: boolean;
@@ -511,7 +513,7 @@ function createConfigSchemaEvidenceFromCurrentCatalog(
 }
 
 function getStoreEntries(values: Record<string, unknown>): Record<string, unknown> {
-  return { ...values };
+  return Object.fromEntries(Object.entries(values));
 }
 
 export function assertSafePluginConfigSegment(pluginName: string): string {
@@ -696,7 +698,7 @@ function validateStoreValues(options: {
       options.rawDigest,
     );
   }
-  const values: Record<string, PluginConfigValue> = {};
+  const values = Object.create(null) as Record<string, PluginConfigValue>;
   const issues: string[] = [];
   for (const [key, value] of Object.entries(options.values)) {
     if (!isPluginConfigValue(value)) {
@@ -1449,6 +1451,7 @@ export async function resolveEffectivePluginConfig(options: {
   const sources: Record<string, PluginConfigSource> = {};
   const fieldStates: Record<string, PluginConfigFieldState> = {};
   const ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[] = [];
+  const dangerousKeyIssues: PluginConfigIssue[] = [];
   const schemaKeys = new Set(Object.keys(schema));
 
   for (const key of schemaKeys) {
@@ -1478,13 +1481,26 @@ export async function resolveEffectivePluginConfig(options: {
       ];
   for (const [scope, store] of layers) {
     const plainEntries = getStoreEntries(store.values);
+    const source = sourceForStoreLayer(scope);
+    const dangerousIssues = new Map(validatePluginConfigDocument(
+      { fields: schema },
+      plainEntries,
+    ).filter((issue) => issue.code === 'dangerousKey')
+      .map((issue) => [issue.path.field, issue] as const));
     for (const key of Object.keys(plainEntries)) {
       if (!schemaKeys.has(key)) {
-        ignoredUnknownKeys.push({
-          scope,
-          source: sourceForStoreLayer(scope),
-          key,
-        });
+        const dangerousIssue = dangerousIssues.get(key);
+        if (dangerousIssue) {
+          dangerousKeyIssues.push({
+            type: 'invalid-config',
+            code: dangerousIssue.code,
+            key,
+            source,
+            message: formatPluginConfigIssue(dangerousIssue),
+          });
+        } else {
+          ignoredUnknownKeys.push({ scope, source, key });
+        }
       }
     }
     await applyConfigLayer({
@@ -1494,12 +1510,14 @@ export async function resolveEffectivePluginConfig(options: {
       fieldStates,
       schema,
       entries: plainEntries,
-      source: sourceForStoreLayer(scope),
+      source,
     });
   }
 
-  const issues = Object.values(fieldStates).flatMap((state) =>
-    state.invalidOverride?.issues ?? []);
+  const issues = [
+    ...Object.values(fieldStates).flatMap((state) => state.invalidOverride?.issues ?? []),
+    ...dangerousKeyIssues,
+  ];
   for (const [key, field] of Object.entries(schema)) {
     if (field.required && values[key] === undefined && !fieldStates[key]?.invalidOverride) {
       issues.push({
@@ -1738,10 +1756,15 @@ function configFieldProjection(options: {
 }): Pick<ConfigFieldEntry, 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'> {
   const source = options.source ?? 'missing';
   const issues = options.issues ?? [];
+  const presetSensitive = options.field.sensitive === true
+    || (options.field.type === 'object'
+      && (Object.values(options.field.properties ?? {}).some((child) => child.sensitive === true)
+        || (options.field.additionalProperties !== false
+          && options.field.additionalProperties?.sensitive === true)));
   return {
     value: options.value === undefined ? null : redactValue(options.field, options.value),
     source,
-    matchedPreset: options.value === undefined
+    matchedPreset: options.value === undefined || presetSensitive
       ? null
       : matchPluginConfigPreset(options.field, options.value)?.id ?? null,
     valid: issues.length === 0,
@@ -2112,6 +2135,23 @@ export function createPluginConfigSchemaIdentity(
   return `${manifest.name}:${hash}`;
 }
 
+function cliConfigPromptEnumValues(
+  field: Exclude<PluginConfigSchemaField, { type: 'object' }>,
+): Array<string | number | boolean> | undefined {
+  if (!field.choices) return undefined;
+  const values: Array<string | number | boolean> = field.choices.presets
+    .map((preset) => preset.value);
+  if (field.type !== 'boolean') {
+    return field.choices.allowCustom ? undefined : values;
+  }
+  if (field.choices.allowCustom) {
+    for (const value of [true, false]) {
+      if (!values.includes(value)) values.push(value);
+    }
+  }
+  return values;
+}
+
 export function toCliConfigPromptSchema(schema: PluginConfigSchema['fields']): CliConfigPromptSchema {
   const promptSchema: CliConfigPromptSchema = {};
   for (const [key, field] of Object.entries(schema)) {
@@ -2123,9 +2163,7 @@ export function toCliConfigPromptSchema(schema: PluginConfigSchema['fields']): C
       required: field.required,
       sensitive: field.sensitive,
       default: field.default,
-      enum: field.type !== 'boolean' && field.choices?.allowCustom === false
-        ? field.choices.presets.map((preset) => preset.value)
-        : undefined,
+      enum: cliConfigPromptEnumValues(field),
       min: field.type === 'number' ? field.validation?.minimum : undefined,
       max: field.type === 'number' ? field.validation?.maximum : undefined,
     };
@@ -2160,9 +2198,7 @@ export function createPluginConfigFormModel(options: {
       required: field.required === true,
       sensitive: field.sensitive === true,
       defaultValue: field.default,
-      enumValues: field.type !== 'boolean' && field.choices?.allowCustom === false
-        ? field.choices.presets.map((preset) => preset.value)
-        : undefined,
+      enumValues: cliConfigPromptEnumValues(field),
       min: field.type === 'number' ? field.validation?.minimum : undefined,
       max: field.type === 'number' ? field.validation?.maximum : undefined,
       configured: options.effective.values[key] !== undefined,

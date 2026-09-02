@@ -31,7 +31,7 @@ describe('config mutation runtime entry', () => {
 
     expect(exitCode).toBe(1);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       command: `config:${command}`,
       ok: false,
       overallState: 'failed',

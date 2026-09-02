@@ -315,6 +315,12 @@ export interface ConfigPageViewModel {
   storedCount: number;
 }
 
+export function configObjectHasSensitiveChild(field: PluginConfigSchemaField): boolean {
+  if (field.type !== 'object') return false;
+  return Object.values(field.properties ?? {}).some((property) => property.sensitive === true)
+    || (field.additionalProperties !== false && field.additionalProperties?.sensitive === true);
+}
+
 export type UserIssueCategory =
   | 'incompleteInstallation'
   | 'artifactCollision'
@@ -1768,6 +1774,10 @@ function displayConfigValue(options: {
     && options.value !== null
     && !Array.isArray(options.value)) {
     const object = options.value as PluginConfigObject;
+    if (configObjectHasSensitiveChild(options.field)) {
+      const count = Object.keys(object).length;
+      return `已设置 · ${count === 0 ? '空对象' : `${count} 项`}`;
+    }
     const preset = matchPluginConfigPreset(options.field, object);
     const keys = Object.keys(object).sort((left, right) => left.localeCompare(right, 'en'));
     const keySummary = keys.length === 0
@@ -1865,7 +1875,7 @@ export function buildConfigGroups(options: {
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
     const privateValue = schema.sensitive === true;
-    const choices = schema.type === 'boolean' ? undefined : schema.choices;
+    const choices = schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
     const selectedRawValue = effectivePage
       ? options.effectiveRawValues?.[key]
@@ -1981,7 +1991,8 @@ export function buildConfigGroups(options: {
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
       ...(choices ? { choices: choices.presets } : {}),
       allowCustom: choices?.allowCustom ?? true,
-      ...((selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null
+      ...(!privateValue && !configObjectHasSensitiveChild(schema)
+        && (selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null
         && matchPluginConfigPreset(schema, (selectedRawValue ?? selectedValue) as PluginConfigValue)
         ? { matchedPresetId: matchPluginConfigPreset(
             schema,

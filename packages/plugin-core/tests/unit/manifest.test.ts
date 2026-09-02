@@ -90,6 +90,36 @@ describe('plugin manifest v3 structure', () => {
         },
       },
     }],
+    ['undefined top-level field', { fields: { value: undefined } }],
+    ['undefined fixed property', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: { child: undefined },
+        },
+      },
+    }],
+    ['undefined object default value', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: {},
+          default: { child: undefined },
+        },
+      },
+    }],
+    ['undefined object preset value', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: {},
+          choices: {
+            allowCustom: false,
+            presets: [{ id: 'managed', title: 'Managed', value: { child: undefined } }],
+          },
+        },
+      },
+    }],
     ['dangerous top-level key', {
       fields: Object.fromEntries([['constructor', { type: 'string' }]]),
     }],

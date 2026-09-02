@@ -8206,6 +8206,7 @@ describe('five namespaced write commands', () => {
     expect(set).toMatchObject({
       exitCode: 0,
       payload: {
+        receiptSchemaVersion: 6,
         configWrite: 'succeeded',
         overallState: 'succeeded',
         targetResults: [expect.objectContaining({ state: 'completed' })],
@@ -8220,7 +8221,7 @@ describe('five namespaced write commands', () => {
     ]);
     expect(unset).toMatchObject({
       exitCode: 0,
-      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+      payload: { receiptSchemaVersion: 6, configWrite: 'succeeded', overallState: 'succeeded' },
     });
     expect((await readStore()).values).toEqual({});
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
@@ -8231,7 +8232,12 @@ describe('five namespaced write commands', () => {
     ]);
     expect(reset).toMatchObject({
       exitCode: 0,
-      payload: { configWrite: 'succeeded', overallState: 'succeeded', deleted: true },
+      payload: {
+        receiptSchemaVersion: 6,
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        deleted: true,
+      },
     });
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
@@ -8251,7 +8257,7 @@ describe('five namespaced write commands', () => {
     expect(partial).toMatchObject({
       exitCode: 1,
       payload: {
-        receiptSchemaVersion: 5,
+        receiptSchemaVersion: 6,
         configWrite: 'succeeded',
         overallState: 'partial',
         applySkippedReason: 'invalidConfig',

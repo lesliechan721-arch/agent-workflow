@@ -612,13 +612,33 @@ export function operationEvidenceFingerprint(evidence: OperationEvidence): strin
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
   if (evidence.resetTarget) {
     return crypto.createHash('sha256')
-      .update(JSON.stringify(stableValue(evidence.resetTarget)))
+      .update(JSON.stringify(stableValue({
+        resetTarget: evidence.resetTarget,
+        ...(evidence.source ? { source: evidence.source } : {}),
+      })))
       .digest('hex');
   }
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue(staleEvidence)))
     .digest('hex');
+}
+
+export function operationEvidenceMatches(
+  expected: OperationEvidence,
+  current: OperationEvidence,
+): boolean {
+  if (expected.resetTarget && current.resetTarget) {
+    if (JSON.stringify(stableValue(expected.resetTarget))
+      !== JSON.stringify(stableValue(current.resetTarget))) {
+      return false;
+    }
+    if (!expected.source) return true;
+    return current.source !== undefined
+      && JSON.stringify(stableValue(expected.source))
+        === JSON.stringify(stableValue(current.source));
+  }
+  return operationEvidenceFingerprint(expected) === operationEvidenceFingerprint(current);
 }
 
 function sourceIdFromPluginId(pluginId: string): string {
@@ -2143,7 +2163,7 @@ export class TuiController {
         return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
+      if (!operationEvidenceMatches(ticket.evidence, current)) {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }

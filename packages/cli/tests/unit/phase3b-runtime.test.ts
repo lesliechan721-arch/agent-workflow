@@ -460,7 +460,7 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('emits config receipt 5 and keeps a namespaced store after its source is removed', async () => {
+  it('emits config receipt 6 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -482,6 +482,34 @@ describe('phase 3B namespaced runtime stores', () => {
               choices: {
                 allowCustom: false,
                 presets: [{ id: 'off', title: 'Off', value: false }],
+              },
+            },
+            secretMode: {
+              type: 'string',
+              sensitive: true,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'private', title: 'Private', value: 'secret-mode' }],
+              },
+            },
+            fixedSecret: {
+              type: 'object',
+              properties: {
+                token: { type: 'string', sensitive: true },
+                region: { type: 'string' },
+              },
+              additionalProperties: false,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'fixed', title: 'Fixed', value: { token: 'fixed-secret', region: 'west' } }],
+              },
+            },
+            kvSecret: {
+              type: 'object',
+              additionalProperties: { type: 'string', sensitive: true },
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'kv', title: 'KV', value: { account: 'kv-secret' } }],
               },
             },
           },
@@ -526,7 +554,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(0);
     const setReceipt = JSON.parse(setOutput.readStdout()) as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       command: 'config:set',
       pluginName: 'demo',
       pluginId: 'team/demo',
@@ -560,6 +588,21 @@ describe('phase 3B namespaced runtime stores', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).toMatchObject({ values: { mode: 'fast', enabled: false } });
+    for (const [key, preset] of [
+      ['secretMode', 'private'],
+      ['fixedSecret', 'fixed'],
+      ['kvSecret', 'kv'],
+    ] as const) {
+      const output = createCapturedCliIo();
+      expect(await runCli([
+        'config', 'set', 'team/demo', key, '--preset', preset, '--scope', 'user', '--json',
+      ], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      })).toBe(0);
+    }
     const getOutput = createCapturedCliIo();
     expect(await runCli(['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,
@@ -572,6 +615,36 @@ describe('phase 3B namespaced runtime stores', () => {
         key: 'mode', value: 'fast', source: 'user', matchedPreset: 'fast', valid: true, issues: [],
       }],
     });
+    for (const [key, value, secret] of [
+      ['secretMode', '[redacted]', 'secret-mode'],
+      ['fixedSecret', { token: '[redacted]', region: 'west' }, 'fixed-secret'],
+      ['kvSecret', { account: '[redacted]' }, 'kv-secret'],
+    ] as const) {
+      const output = createCapturedCliIo();
+      expect(await runCli(['config', 'get', 'team/demo', key, '--scope', 'user', '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      })).toBe(0);
+      const serialized = output.readStdout();
+      expect(JSON.parse(serialized)).toMatchObject({
+        fields: [{ key, value, matchedPreset: null, valid: true, issues: [] }],
+      });
+      expect(serialized).not.toContain(secret);
+    }
+    const listOutput = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'team/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: listOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(listOutput.readStdout()).fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'secretMode', matchedPreset: null }),
+      expect.objectContaining({ key: 'fixedSecret', matchedPreset: null }),
+      expect.objectContaining({ key: 'kvSecret', matchedPreset: null }),
+    ]));
     await fs.outputFile(stored.path, '{ invalid json');
     const unconfirmedReset = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--json'], {
@@ -589,7 +662,10 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
-      command: 'config:reset', configWrite: 'succeeded', deleted: true,
+      receiptSchemaVersion: 6,
+      command: 'config:reset',
+      configWrite: 'succeeded',
+      deleted: true,
     });
     await expect(fs.pathExists(stored.path)).resolves.toBe(false);
     const remainingNames = await fs.readdir(path.dirname(stored.path)).catch(() => []);

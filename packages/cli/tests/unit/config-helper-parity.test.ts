@@ -77,6 +77,57 @@ describe('generated aw-config helper', () => {
     }
   });
 
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'fails closed for the top-level dangerous key %s',
+    async (dangerousKey) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-dangerous-key-'));
+      try {
+        const contextPath = path.join(root, 'context.json');
+        const helperPath = path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs');
+        await fs.writeFile(contextPath, `${JSON.stringify({
+          plugin: { name: 'fixture-plugin' },
+          config: {
+            schema: { token: { type: 'string' } },
+            values: Object.fromEntries([[dangerousKey, 'dangerous']]),
+          },
+        }, null, 2)}\n`, 'utf8');
+
+        await expect(execFileAsync(process.execPath, [helperPath, 'json'], {
+          cwd: root,
+          env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, NODE_PATH: '' },
+        })).rejects.toMatchObject({
+          stderr: `[aw-config] dangerousKey: Config "${dangerousKey}" is not allowed.\n`,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('continues to filter an ordinary unknown top-level key', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-unknown-key-'));
+    try {
+      const contextPath = path.join(root, 'context.json');
+      const helperPath = path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs');
+      await fs.writeFile(contextPath, `${JSON.stringify({
+        plugin: { name: 'fixture-plugin' },
+        config: {
+          schema: { token: { type: 'string' } },
+          values: { token: 'kept', futureKey: 'ignored' },
+        },
+      }, null, 2)}\n`, 'utf8');
+
+      const result = await execFileAsync(process.execPath, [helperPath, 'json'], {
+        cwd: root,
+        env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, NODE_PATH: '' },
+      });
+      expect(JSON.parse(result.stdout).values).toEqual({ token: 'kept' });
+      expect(result.stderr).toBe('');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('redacts nested sensitive strings from get and JSON output', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-redaction-'));
     try {

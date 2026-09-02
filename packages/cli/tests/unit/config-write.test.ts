@@ -38,7 +38,9 @@ import {
   readPluginConfigStore,
   resetPluginConfigStore,
   resolveConfigRead,
+  resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
+  toCliConfigPromptSchema,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { buildConfigGroups, buildConfigPage } from '../../src/tui/model.js';
@@ -225,6 +227,101 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  it('keeps closed boolean choices in the legacy prompt enum projection', () => {
+    expect(toCliConfigPromptSchema({
+      enabled: {
+        type: 'boolean',
+        choices: {
+          allowCustom: false,
+          presets: [{ id: 'on', title: 'Only on', value: true, recommended: true }],
+        },
+      },
+      open: {
+        type: 'boolean',
+        choices: {
+          allowCustom: true,
+          presets: [{ id: 'on', title: 'On preset', value: true }],
+        },
+      },
+    })).toMatchObject({
+      enabled: { type: 'boolean', enum: [true] },
+      open: { type: 'boolean', enum: [true, false] },
+    });
+  });
+
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'preserves a top-level %s own key and blocks config apply as invalid',
+    async (dangerousKey) => {
+      const fixture = await createFixture();
+      const sourceIdentity = `sha256:${'d'.repeat(64)}`;
+      Object.assign(fixture.plugin, {
+        sourceId: 'official',
+        sourceIdentity,
+        pluginId: `official/${fixture.plugin.manifest.name}`,
+      });
+      const storeOptions = {
+        sourceId: 'official',
+        sourceIdentity,
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user' as const,
+        cwd: fixture.cwd,
+        env: fixture.env,
+      };
+      const filePath = resolvePluginConfigStorePath(storeOptions);
+      await fs.outputFile(filePath, `${JSON.stringify({
+        schemaVersion: 3,
+        sourceId: storeOptions.sourceId,
+        sourceIdentity,
+        pluginName: storeOptions.pluginName,
+        values: Object.fromEntries([[dangerousKey, 'preserved']]),
+      })}\n`);
+
+      const store = await readPluginConfigStore(storeOptions);
+      expect(store.state).toBe('ready');
+      expect(Object.hasOwn(store.values, dangerousKey)).toBe(true);
+      expect(store.values[dangerousKey]).toBe('preserved');
+
+      const effective = await resolveEffectivePluginConfig({
+        sourceId: storeOptions.sourceId,
+        sourceIdentity,
+        pluginName: storeOptions.pluginName,
+        manifest: fixture.plugin.manifest,
+        targetScope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      });
+      expect(effective.issues).toContainEqual(expect.objectContaining({
+        type: 'invalid-config',
+        code: 'dangerousKey',
+        key: dangerousKey,
+        source: 'user',
+      }));
+      expect(effective.ignoredUnknownKeys).not.toContainEqual(
+        expect.objectContaining({ key: dangerousKey }),
+      );
+
+      const reinstall = createReinstallMock();
+      const receipt = await applyPluginConfigWrite({
+        plugin: fixture.plugin,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        request: { updates: { token: 'saved' } },
+        reinstallCommandImpl: reinstall,
+      });
+
+      expect(receipt).toMatchObject({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+      });
+      const patchedStore = await readPluginConfigStore(storeOptions);
+      expect(Object.hasOwn(patchedStore.values, dangerousKey)).toBe(true);
+      expect(patchedStore.values[dangerousKey]).toBe('preserved');
+      expect(reinstall).not.toHaveBeenCalled();
+    },
+  );
+
   it('repairs one field while preserving another invalid field and skips apply', async () => {
     const fixture = await createFixture();
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;

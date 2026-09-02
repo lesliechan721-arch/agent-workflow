@@ -93,6 +93,7 @@ import {
   buildPlatformActions,
   buildPluginDetailActions,
   buildPluginPreviewActions,
+  configObjectHasSensitiveChild,
   hasInstalledPlacement,
   configValuesEqual,
 } from './model.js';
@@ -1395,6 +1396,8 @@ export function ConsoleAppV4(props: {
         ? undefined
         : activeField.definition.additionalProperties)
     : undefined;
+  const activePropertySensitive = activeField?.sensitive === true
+    || activePropertyDefinition?.sensitive === true;
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
     const draft = draftUpdates[activeField.key];
@@ -1414,7 +1417,7 @@ export function ConsoleAppV4(props: {
     const current = route.propertyKey !== undefined && activeObjectDraft
       ? activeObjectDraft[route.propertyKey]
       : undefined;
-    setInputValue(route.stage === 'key' || activePropertyDefinition?.sensitive
+    setInputValue(route.stage === 'key' || activePropertySensitive
       ? ''
       : current === undefined ? '' : String(current));
     setInputError(undefined);
@@ -1803,6 +1806,10 @@ export function ConsoleAppV4(props: {
         : '当前项目';
   const objectSummary = (field: ConfigFieldViewModel, value: PluginConfigObject): string => {
     if (field.sensitive) return '已设置';
+    if (configObjectHasSensitiveChild(field.definition)) {
+      const count = Object.keys(value).length;
+      return `已设置 · ${count === 0 ? '空对象' : `${count} 项`}`;
+    }
     const preset = field.choices?.find((choice) => configValuesEqual(choice.value, value));
     const keys = Object.keys(value).sort((left, right) => left.localeCompare(right, 'en'));
     const count = keys.length === 0
@@ -2082,8 +2089,7 @@ export function ConsoleAppV4(props: {
         updates: draftUpdates,
         removeKeys: draftRemoves,
         sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
-        privateKeys: fields.filter((field) => field.definition.type === 'object'
-          && Object.values(field.definition.properties ?? {}).some((child) => child.sensitive === true))
+        privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
           .map((field) => field.key),
         changes: configChanges(),
       });
@@ -3444,14 +3450,25 @@ export function ConsoleAppV4(props: {
         : '此字段只允许使用 manifest 方案。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
       const current = draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
+      const booleanCustomValues = activeField.type === 'boolean' && activeField.allowCustom
+        ? [true, false].filter((value) =>
+            !activeField.choices?.some((preset) => preset.value === value))
+        : [];
       actions = [
         ...(activeField.choices ?? []).map((preset) => ({
           label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
           description: preset.description,
-          selected: configValuesEqual(current, preset.value),
+          selected: !activeField.sensitive
+            && !configObjectHasSensitiveChild(activeField.definition)
+            && configValuesEqual(current, preset.value),
           run: () => { updateDraft(activeField.key, preset.value); back(); },
         })),
-        ...(activeField.allowCustom ? [{
+        ...booleanCustomValues.map((value) => ({
+          label: value ? '开启' : '关闭',
+          selected: !activeField.sensitive && current === value,
+          run: () => { updateDraft(activeField.key, value); back(); },
+        })),
+        ...(activeField.allowCustom && activeField.type !== 'boolean' ? [{
           label: '自定义…',
           description: activeField.type === 'object' ? '编辑固定属性和动态键值' : '输入自定义值',
           run: () => {
@@ -3466,7 +3483,7 @@ export function ConsoleAppV4(props: {
       title = `${activeField.title}？`;
       description = activeField.description ?? '选择开启或关闭。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
-      actions = [{ label: '开启', selected: draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false), run: () => { updateDraft(activeField.key, false); back(); } }];
+      actions = [{ label: '开启', selected: !activeField.sensitive && (draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true)), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: !activeField.sensitive && (draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false)), run: () => { updateDraft(activeField.key, false); back(); } }];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (route.editor === 'object' && activeField.definition.type === 'object' && activeObjectDraft) {
       const objectDefinition = activeField.definition;
@@ -3490,8 +3507,7 @@ export function ConsoleAppV4(props: {
         }
         if (activeField.sensitive || definition.sensitive) return '已设置';
         const value = activeObjectDraft[property]!;
-        const preset = definition.type === 'boolean' ? undefined
-          : definition.choices?.presets.find((choice) => choice.value === value);
+        const preset = definition.choices?.presets.find((choice) => choice.value === value);
         if (preset) return preset.title;
         if (typeof value === 'boolean') return value ? '开启' : '关闭';
         return String(value);
@@ -3618,16 +3634,34 @@ export function ConsoleAppV4(props: {
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
       const current = activeObjectDraft[property];
       actions = definition.type === 'boolean'
-        ? [true, false].map((value) => ({
-            label: value ? '开启' : '关闭',
-            selected: current === value,
-            run: () => { if (updateObjectProperty(property, value)) back(); },
-          }))
+        ? definition.choices
+          ? [
+              ...definition.choices.presets.map((preset) => ({
+                label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
+                description: preset.description,
+                selected: !activePropertySensitive && current === preset.value,
+                run: () => { if (updateObjectProperty(property, preset.value)) back(); },
+              })),
+              ...(definition.choices.allowCustom
+                ? [true, false]
+                  .filter((value) => !definition.choices!.presets.some((preset) => preset.value === value))
+                  .map((value) => ({
+                    label: value ? '开启' : '关闭',
+                    selected: !activePropertySensitive && current === value,
+                    run: () => { if (updateObjectProperty(property, value)) back(); },
+                  }))
+                : []),
+            ]
+          : [true, false].map((value) => ({
+              label: value ? '开启' : '关闭',
+              selected: !activePropertySensitive && current === value,
+              run: () => { if (updateObjectProperty(property, value)) back(); },
+            }))
         : [
             ...(definition.choices?.presets ?? []).map((preset) => ({
               label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
               description: preset.description,
-              selected: current === preset.value,
+              selected: !activePropertySensitive && current === preset.value,
               run: () => { if (updateObjectProperty(property, preset.value)) back(); },
             })),
             ...(definition.choices?.allowCustom ? [{
@@ -3640,10 +3674,10 @@ export function ConsoleAppV4(props: {
           ];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (property !== undefined && definition) {
-      title = definition.sensitive ? '输入敏感值' : `输入${propertyTitle}`;
-      description = inputError ?? (definition.sensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
+      title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
+      description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
       help = '输入 · Enter 使用 · Esc 取消';
-      content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={definition.sensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
+      content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activePropertySensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
     }
   } else if (route.name === 'configUnavailable') {
     const unavailablePluginName = plugin?.displayName ?? route.pluginId.split('/').at(-1) ?? route.pluginId;
@@ -5231,7 +5265,7 @@ export function ConsoleAppV4(props: {
       }
       if (key.return && route.stage === 'custom'
         && route.propertyKey !== undefined && activePropertyDefinition) {
-        if (activePropertyDefinition.sensitive && inputValue.length === 0) {
+        if (activePropertySensitive && inputValue.length === 0) {
           back();
           return;
         }

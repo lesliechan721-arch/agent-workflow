@@ -15,12 +15,15 @@ export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
 const OUTPUT_LIMIT = 64 * 1024;
+const TOKEN_BOUNDARY_LOOKAHEAD = 2;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
 export interface PluginProcessRunner {
   run(invocation: PluginScriptInvocation, options: { timeoutMs: number; signal?: AbortSignal }): Promise<PluginProcessResult>;
 }
+
+interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[] }
 
 export async function resolveBundledPluginFilePath(options: { bundleRoot: string; pluginRelativePath: string; fieldName: string }): Promise<string> {
   const bundleRoot = await fs.realpath(options.bundleRoot);
@@ -81,36 +84,89 @@ export function collectSensitivePluginConfigValues(manifest: NormalizedPluginMan
     });
   });
 }
-export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
-  let output = redactString(value);
-  for (const sensitiveValue of sensitiveValues) {
-    if (sensitiveValue === '') continue;
-    if (sensitiveValue.length >= 8 && !/^(?:true|false|-?\d+(?:\.\d+)?)$/u.test(sensitiveValue)) {
-      output = output.split(sensitiveValue).join('[REDACTED]');
-      continue;
+interface SensitiveTokenMatch { start: number; end: number }
+
+function findSensitiveTokenMatches(value: string, sensitiveValue: string, startLimit: number): SensitiveTokenMatch[] {
+  if (sensitiveValue === '') return [];
+  if (sensitiveValue.length >= 8 && !/^(?:true|false|-?\d+(?:\.\d+)?)$/u.test(sensitiveValue)) {
+    const matches: SensitiveTokenMatch[] = [];
+    for (let start = value.indexOf(sensitiveValue); start >= 0 && start < startLimit; start = value.indexOf(sensitiveValue, start + 1)) {
+      matches.push({ start, end: start + sensitiveValue.length });
     }
-    const escaped = sensitiveValue.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    const numeric = /^-?\d+(?:\.\d+)?$/u.test(sensitiveValue);
-    const boundary = numeric ? '\\p{L}\\p{N}_.+-' : '\\p{L}\\p{N}_';
-    output = output.replace(
-      new RegExp(`(?<![${boundary}])${escaped}(?![${boundary}])`, 'gu'),
-      '[REDACTED]',
-    );
+    return matches;
   }
-  return output;
-}
-export function summarizePluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
-  return redactPluginScriptOutput(value.slice(0, OUTPUT_LIMIT).trim(), sensitiveValues);
+  const escaped = sensitiveValue.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const numeric = /^-?\d+(?:\.\d+)?$/u.test(sensitiveValue);
+  const boundary = numeric ? '\\p{L}\\p{N}_.+-' : '\\p{L}\\p{N}_';
+  const pattern = new RegExp(`(?<![${boundary}])${escaped}(?![${boundary}])`, 'uy');
+  const matches: SensitiveTokenMatch[] = [];
+  for (let start = value.indexOf(sensitiveValue); start >= 0 && start < startLimit; start = value.indexOf(sensitiveValue, start + 1)) {
+    pattern.lastIndex = start;
+    if (pattern.test(value)) matches.push({ start, end: start + sensitiveValue.length });
+  }
+  return matches;
 }
 
-export const defaultPluginProcessRunner: PluginProcessRunner = {
-  run(invocation, options) {
-    return new Promise((resolve, reject) => {
+function collectMergedSensitiveTokenMatches(value: string, sensitiveValues: readonly string[], startLimit: number): SensitiveTokenMatch[] {
+  const matches = [...new Set(sensitiveValues)]
+    .filter((sensitiveValue) => sensitiveValue !== '')
+    .flatMap((sensitiveValue) => findSensitiveTokenMatches(value, sensitiveValue, startLimit))
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged: SensitiveTokenMatch[] = [];
+  for (const match of matches) {
+    const previous = merged.at(-1);
+    if (previous && match.start < previous.end) {
+      previous.end = Math.max(previous.end, match.end);
+    } else {
+      merged.push({ ...match });
+    }
+  }
+  return merged;
+}
+
+function redactSensitiveTokenWindow(value: string, sensitiveValues: readonly string[], windowEnd: number): string {
+  const matches = collectMergedSensitiveTokenMatches(value, sensitiveValues, windowEnd);
+  let output = '';
+  let offset = 0;
+  for (const match of matches) {
+    output += `${value.slice(offset, match.start)}[REDACTED]`;
+    offset = Math.min(match.end, windowEnd);
+  }
+  return output + value.slice(offset, windowEnd);
+}
+
+export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
+  return redactString(redactSensitiveTokenWindow(value, sensitiveValues, value.length));
+}
+export function truncatePluginScriptOutput(value: string): string {
+  return value.slice(0, OUTPUT_LIMIT);
+}
+export function summarizePluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
+  return redactString(redactSensitiveTokenWindow(
+    value,
+    sensitiveValues,
+    Math.min(value.length, OUTPUT_LIMIT),
+  )).trim();
+}
+
+function resolveOutputCaptureLimit(sensitiveValues: readonly string[]): number {
+  const maxSensitiveTokenLength = sensitiveValues.reduce(
+    (maximum, value) => Math.max(maximum, value.length),
+    0,
+  );
+  // One Unicode code point can require two UTF-16 code units for the trailing token-boundary check.
+  return OUTPUT_LIMIT + maxSensitiveTokenLength + TOKEN_BOUNDARY_LOOKAHEAD;
+}
+
+export const defaultPluginProcessRunner = {
+  run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
+    return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
       const marker = randomUUID();
       const child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
       child.stdin?.end(invocation.stdin ?? '');
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
+      const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
       let observation: ProcessTreeObservation | undefined; if (child.pid !== undefined) observation = observeProcessTree(child.pid, marker);
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
@@ -123,14 +179,14 @@ export const defaultPluginProcessRunner: PluginProcessRunner = {
         void Promise.resolve(termination).then(settle, settle);
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => { if (stdout.length < OUTPUT_LIMIT) stdout += chunk; });
-      child.stderr?.on('data', (chunk: string) => { if (stderr.length < OUTPUT_LIMIT) stderr += chunk; });
+      child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
+      child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
       child.on('error', (error) => { if (!settled && !terminating) { settled = true; cleanup(); reject(error); } });
       child.on('close', (exitCode, signal) => { if (!settled && !terminating) { settled = true; cleanup(); resolve({ exitCode, signal, stdout, stderr, timedOut }); } });
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();
     });
   },
-};
+} satisfies PluginProcessRunner;
 
 export interface PostApplyContextV1 {
   schemaVersion: 1;
@@ -166,8 +222,13 @@ export async function runPostApplyScript(options: {
   try {
     await fs.ensureDir(path.join(tempDir, 'home')); await fs.ensureDir(path.join(tempDir, 'tmp'));
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'postApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
-    const result = await (options.runner ?? defaultPluginProcessRunner).run(buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` }), { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) });
-    const stderr = summarizePluginScriptOutput(result.stderr, collectSensitivePluginConfigValues(options.plugin.manifest, effective.values));
+    const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
+    const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
+    const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
+    const result = options.runner
+      ? await options.runner.run(invocation, runOptions)
+      : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues });
+    const stderr = summarizePluginScriptOutput(result.stderr, sensitiveValues);
     if (result.timedOut) throw new Error(`postApply timed out. stderr: ${stderr}`);
     if (result.exitCode !== 0) throw new Error(`postApply failed with exit code ${result.exitCode}. stderr: ${stderr}`);
   } finally { await fs.remove(tempDir); }

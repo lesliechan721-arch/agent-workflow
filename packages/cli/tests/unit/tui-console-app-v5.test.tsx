@@ -729,7 +729,7 @@ function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPageViewMo
         inherited: true,
         configured: false,
         sourceLabel: '继承',
-        effectiveDisplayValue: '自定义 · 4 项（legacy、owner…）',
+        effectiveDisplayValue: '已设置 · 4 项',
         effectiveSourceLabel: '当前项目',
         effectiveValue: effective,
         draftValue: effective,
@@ -750,10 +750,10 @@ function configuredObjectPage(pluginId = 'team-tools/review-gate'): ConfigPageVi
   page.storedCount = 1;
   field.configured = true;
   field.inherited = false;
-  field.displayValue = '自定义 · 3 项（owner、region…）';
+  field.displayValue = '已设置 · 3 项';
   field.value = current;
   field.draftValue = current;
-  field.fallbackDisplayValue = '方案“服务方案” · 3 项（owner、region…）';
+  field.fallbackDisplayValue = '已设置 · 3 项';
   field.fallbackSourceLabel = '当前项目';
   field.fallbackObjectChanges = [
     { property: 'owner', before: 'Alice', after: 'Service' },
@@ -3423,6 +3423,83 @@ describe('ConsoleAppV4', () => {
     expect(invalidInstance.lastFrame()).toContain('bad');
   });
 
+  it('keeps top-level boolean presets closed or open and saves the actual value', async () => {
+    const page = configPage();
+    const field = page.groups[0]!.fields.find((candidate) => candidate.key === 'enabled')!;
+    field.definition = {
+      type: 'boolean',
+      choices: {
+        allowCustom: false,
+        presets: [{ id: 'on', title: '仅开启', value: true, recommended: true }],
+      },
+    };
+    field.choices = [{ id: 'on', title: '仅开启', value: true, recommended: true }];
+    field.allowCustom = false;
+    field.configured = false;
+    field.inherited = true;
+    delete field.value;
+    delete field.draftValue;
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'enabled',
+      editor: 'boolean',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('仅开启（推荐）');
+    expect(instance.lastFrame()).not.toContain('○ 关闭');
+    await input(instance, '\r', 's');
+    await nextTurn(4);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: { enabled: true },
+    }), evidence);
+
+    instance.unmount();
+    const openPage = configPage();
+    const openField = openPage.groups[0]!.fields.find((candidate) => candidate.key === 'enabled')!;
+    openField.definition = {
+      type: 'boolean',
+      choices: {
+        allowCustom: true,
+        presets: [{ id: 'on', title: '开启方案', value: true }],
+      },
+    };
+    openField.choices = [{ id: 'on', title: '开启方案', value: true }];
+    openField.allowCustom = true;
+    const open = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...openPage, pluginId, layer })),
+    });
+    open.push({ name: 'configFields', pluginId: openPage.pluginId, layer: { scope: 'user' } });
+    open.push({
+      name: 'configFieldEditor',
+      pluginId: openPage.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'enabled',
+      editor: 'boolean',
+      mode: 'choices',
+    });
+    const openInstance = render(<ConsoleAppV4 controller={open} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    const openFrame = openInstance.lastFrame() ?? '';
+    expect(openFrame).toContain('开启方案');
+    expect(openFrame).toContain('关闭');
+    expect(openFrame.match(/开启方案/gu)).toHaveLength(1);
+    expect(openFrame).not.toContain('自定义…');
+  });
+
   it('edits a mixed fixed and dynamic object from the effective seed and reviews one full top-level update', async () => {
     const page = objectConfigPage();
     const executeIntent = vi.fn().mockResolvedValue({
@@ -3547,7 +3624,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('3 个子项变化');
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
-    expect(instance.lastFrame()).toContain('方案“服务方案”');
+    expect(instance.lastFrame()).toContain('已设置 · 3 项');
+    expect(instance.lastFrame()).not.toContain('方案“服务方案”');
     expect(instance.lastFrame()).not.toContain('preset-secret');
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -3556,6 +3634,102 @@ describe('ConsoleAppV4', () => {
         settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
       },
     }), evidence);
+  });
+
+  it('does not show which object preset matches a sensitive child and still applies a selected preset', async () => {
+    const page = objectConfigPage();
+    const field = page.groups[0]!.fields[0]!;
+    const first = field.choices![0]!;
+    const second = {
+      ...first,
+      id: 'service-b',
+      title: '备用服务方案',
+      value: { owner: 'Service', region: 'west', token: 'other-preset-secret' },
+    };
+    field.choices = [first, second];
+    if (field.definition.type !== 'object' || !field.definition.choices) {
+      throw new Error('expected object choices fixture');
+    }
+    field.definition.choices.presets = [first, second];
+    field.draftValue = first.value;
+    field.effectiveValue = first.value;
+    field.effectiveDisplayValue = '已设置 · 3 项';
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    const editorFrame = instance.lastFrame() ?? '';
+    expect(editorFrame).toContain('○ 服务方案');
+    expect(editorFrame).toContain('○ 备用服务方案');
+    expect(editorFrame).not.toContain('● 服务方案');
+    expect(editorFrame).not.toContain('preset-secret');
+
+    await input(instance, '\u001B[B', '\r', 's');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
+    expect(value.snapshot.activeReview?.changes[0]?.description).not.toContain('服务方案');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: { settings: second.value },
+    }), evidence);
+  });
+
+  it('does not show which object preset matches sensitive additional properties', async () => {
+    const page = objectConfigPage();
+    const field = page.groups[0]!.fields[0]!;
+    if (field.definition.type !== 'object') throw new Error('expected object fixture');
+    const presets = [
+      { id: 'primary', title: '主账户', value: { account: 'secret-a' } },
+      { id: 'secondary', title: '备用账户', value: { account: 'secret-b' } },
+    ];
+    field.definition.properties = {};
+    field.definition.additionalProperties = { type: 'string', sensitive: true };
+    field.definition.choices = { allowCustom: true, presets };
+    field.choices = presets;
+    field.draftValue = presets[0]!.value;
+    field.effectiveValue = presets[0]!.value;
+    field.effectiveDisplayValue = '已设置 · 1 项';
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('已设置 · 1 项');
+    expect(instance.lastFrame()).not.toContain('主账户');
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    await nextTurn(2);
+    const editorFrame = instance.lastFrame() ?? '';
+    expect(editorFrame).toContain('○ 主账户');
+    expect(editorFrame).toContain('○ 备用账户');
+    expect(editorFrame).not.toContain('● 主账户');
+    expect(editorFrame).not.toContain('secret-a');
   });
 
   it('uses a closed child choice without a custom route', async () => {
@@ -3583,6 +3757,225 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it('saves a closed true-only fixed boolean child and offers only missing KV custom values', async () => {
+    const page = objectConfigPage();
+    const field = page.groups[0]!.fields[0]!;
+    if (field.definition.type !== 'object') throw new Error('expected object fixture');
+    field.definition.properties = {
+      enabled: {
+        type: 'boolean',
+        title: '启用模式',
+        choices: {
+          allowCustom: false,
+          presets: [{ id: 'on', title: '仅开启', value: true, recommended: true }],
+        },
+      },
+    };
+    field.definition.additionalProperties = false;
+    field.definition.validation = undefined;
+    field.choices = undefined;
+    field.allowCustom = true;
+    field.draftValue = {};
+    field.effectiveValue = {};
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      fieldKey: 'settings', editor: 'object', mode: 'custom',
+    });
+    value.push({
+      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      fieldKey: 'settings', propertyKey: 'enabled', dynamic: false, stage: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('仅开启（推荐）');
+    expect(instance.lastFrame()).not.toContain('○ 关闭');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', fieldKey: 'settings', editor: 'object',
+    });
+    expect(instance.lastFrame()).toContain('仅开启');
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFields', pluginId: page.pluginId,
+    });
+    await input(instance, 's');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'review' });
+    expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: { settings: { enabled: true } },
+    }), evidence);
+
+    instance.unmount();
+    const kvPage = objectConfigPage();
+    const kvField = kvPage.groups[0]!.fields[0]!;
+    if (kvField.definition.type !== 'object') throw new Error('expected object fixture');
+    kvField.definition.properties = {};
+    kvField.definition.additionalProperties = {
+      type: 'boolean',
+      choices: {
+        allowCustom: true,
+        presets: [{ id: 'on', title: 'KV 开启', value: true, recommended: true }],
+      },
+    };
+    kvField.draftValue = { flag: true };
+    kvField.effectiveValue = { flag: true };
+    const kv = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...kvPage, pluginId, layer })),
+    });
+    kv.push({ name: 'configFields', pluginId: kvPage.pluginId, layer: { scope: 'user' } });
+    kv.push({
+      name: 'configObjectPropertyEditor', pluginId: kvPage.pluginId, layer: { scope: 'user' },
+      fieldKey: 'settings', propertyKey: 'flag', dynamic: true, stage: 'choices',
+    });
+    const kvInstance = render(<ConsoleAppV4 controller={kv} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    const kvFrame = kvInstance.lastFrame() ?? '';
+    expect(kvFrame).toContain('KV 开启（推荐）');
+    expect(kvFrame).toContain('关闭');
+    expect(kvFrame).not.toContain('○ 开启');
+  });
+
+  it('hides existing string children when either the parent or child is sensitive', async () => {
+    const parentPage = objectConfigPage();
+    const parentField = parentPage.groups[0]!.fields[0]!;
+    parentField.sensitive = true;
+    parentField.draftValue = { owner: 'PARENT-SECRET', region: 'west' };
+    parentField.effectiveValue = parentField.draftValue;
+    const parent = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...parentPage, pluginId, layer })),
+    });
+    parent.push({ name: 'configFields', pluginId: parentPage.pluginId, layer: { scope: 'user' } });
+    const parentInstance = render(<ConsoleAppV4 controller={parent} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    parent.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: parentPage.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'owner',
+      dynamic: false,
+      stage: 'custom',
+    });
+    await nextTurn(2);
+    expect(parentInstance.lastFrame()).toContain('输入敏感值');
+    expect(parentInstance.lastFrame()).toContain('输入已隐藏');
+    expect(parentInstance.lastFrame()).not.toContain('PARENT-SECRET');
+
+    parentInstance.unmount();
+    const childPage = objectConfigPage();
+    const child = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...childPage, pluginId, layer })),
+    });
+    child.push({ name: 'configFields', pluginId: childPage.pluginId, layer: { scope: 'user' } });
+    const childInstance = render(<ConsoleAppV4 controller={child} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    child.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: childPage.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'token',
+      dynamic: false,
+      stage: 'custom',
+    });
+    await nextTurn(2);
+    expect(childInstance.lastFrame()).toContain('输入敏感值');
+    expect(childInstance.lastFrame()).not.toContain('SECRET-BYTES');
+  });
+
+  it('does not project sensitive boolean or preset values as the current child choice', async () => {
+    const page = objectConfigPage();
+    const field = page.groups[0]!.fields[0]!;
+    if (field.definition.type !== 'object') throw new Error('expected object fixture');
+    field.definition.properties = {
+      ...field.definition.properties,
+      enabled: {
+        type: 'boolean',
+        title: '启用',
+        sensitive: true,
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'on', title: '敏感开启', value: true },
+            { id: 'off', title: '敏感关闭', value: false },
+          ],
+        },
+      },
+      mode: {
+        type: 'string',
+        title: '模式',
+        sensitive: true,
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'fast', title: '快速方案', value: 'fast-secret' },
+            { id: 'safe', title: '安全方案', value: 'safe-secret' },
+          ],
+        },
+      },
+    };
+    field.draftValue = {
+      owner: 'Alice',
+      region: 'west',
+      token: 'SECRET-BYTES',
+      enabled: true,
+      mode: 'fast-secret',
+    };
+    field.effectiveValue = field.draftValue;
+
+    const booleanValue = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    booleanValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    booleanValue.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'enabled',
+      dynamic: false,
+      stage: 'choices',
+    });
+    const booleanInstance = render(<ConsoleAppV4 controller={booleanValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    const booleanFrame = booleanInstance.lastFrame() ?? '';
+    expect(booleanFrame).toContain('○ 敏感开启');
+    expect(booleanFrame).toContain('○ 敏感关闭');
+    expect(booleanFrame).not.toContain('● 敏感开启');
+
+    booleanInstance.unmount();
+    const choiceValue = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    choiceValue.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    choiceValue.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'mode',
+      dynamic: false,
+      stage: 'choices',
+    });
+    const choiceInstance = render(<ConsoleAppV4 controller={choiceValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    const choiceFrame = choiceInstance.lastFrame() ?? '';
+    expect(choiceFrame).toContain('○ 快速方案');
+    expect(choiceFrame).toContain('○ 安全方案');
+    expect(choiceFrame).not.toContain('● 快速方案');
+    expect(choiceFrame).not.toContain('fast-secret');
+  });
+
   it('reviews object unset with inherited preset and redacted child changes', async () => {
     const page = configuredObjectPage();
     const value = controller({
@@ -3598,7 +3991,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: '个人默认 · 删除 服务设置 中的值',
-        description: expect.stringContaining('方案“服务方案”'),
+        description: expect.stringContaining('已设置 · 3 项'),
       }),
     ]));
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
@@ -3624,7 +4017,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: '个人默认 · 服务设置',
-        description: expect.stringContaining('方案“服务方案”'),
+        description: expect.stringContaining('已设置 · 3 项'),
       }),
     ]));
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');

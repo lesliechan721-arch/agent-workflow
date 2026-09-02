@@ -57,6 +57,7 @@ import {
 } from '../commands/offline-cleanup-evidence.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
+  operationEvidenceMatches,
   operationEvidenceFingerprint,
   TuiConfigInvalidStoreError,
   TuiController,
@@ -777,7 +778,7 @@ export function createTuiControllerDependencies(
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
           env: context.env,
-          ...(sessionContextForPlugin(intent.pluginId)
+          ...(preparation && sessionContextForPlugin(intent.pluginId)
             ? { operationContext: sessionContextForPlugin(intent.pluginId)! }
             : {}),
           ...(signal ? { signal } : {}),
@@ -1883,7 +1884,7 @@ export function createTuiControllerDependencies(
             true,
           );
           if (intent.kind !== 'pluginWrite'
-            && operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
+            && !operationEvidenceMatches(expectedEvidence, currentEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
           const catalogOperation = catalogOperationByEvidence.get(currentEvidence);

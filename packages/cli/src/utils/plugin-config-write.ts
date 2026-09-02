@@ -6,15 +6,18 @@ import {
   statusTargetIntent,
 } from '../commands/status-v6.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
-import type {
-  ConfigReceiptFieldEntry,
-  ConfigSchemaEvidence,
-  PlatformName,
-  PluginMeta,
-  RebuildReceiptOverallState,
-  ReceiptTargetIdentity,
-  ReceiptTargetResult,
-  Scope,
+import {
+  CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION,
+  type ConfigReceiptFieldEntry,
+  type ConfigMutationCommand,
+  type ConfigMutationReceiptBase,
+  type ConfigSchemaEvidence,
+  type PlatformName,
+  type PluginMeta,
+  type RebuildReceiptOverallState,
+  type ReceiptTargetIdentity,
+  type ReceiptTargetResult,
+  type Scope,
 } from '../types.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
 import {
@@ -45,6 +48,20 @@ import {
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
   removeKeys?: string[];
+}
+
+export function buildConfigMutationReceipt<
+  Command extends ConfigMutationCommand,
+  Receipt extends Pick<ConfigMutationReceiptBase, 'ok' | 'overallState'>,
+>(
+  command: Command,
+  receipt: Receipt,
+): ConfigMutationReceiptBase<Command> & Receipt {
+  return {
+    ...receipt,
+    receiptSchemaVersion: CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION,
+    command,
+  };
 }
 
 export type ConfigApplySkippedReason =
