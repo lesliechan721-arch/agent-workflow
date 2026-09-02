@@ -269,6 +269,8 @@ export interface ConfigFieldViewModel {
   effectiveSourceLabel: string;
   fallbackDisplayValue?: string;
   fallbackSourceLabel?: string;
+  invalidOverrideIssue?: string;
+  invalidOverrideOwnedByLayer?: boolean;
   fallbackObjectChanges?: Array<{
     property: string;
     before: string;
@@ -1871,6 +1873,16 @@ export function buildConfigGroups(options: {
     const selectedStoredInvalid = !effectivePage
       && entry?.storedSourceLayer !== undefined
       && entry.storedValue === undefined;
+    const invalidOverrideSourceCandidate = selectedStoredInvalid
+      ? (effectivePage ? entry?.invalidOverride?.sourceLayer : options.read.scope)
+      : entry?.invalidOverride?.sourceLayer;
+    const invalidOverrideSource = invalidOverrideSourceCandidate === 'user'
+      || invalidOverrideSourceCandidate === 'project'
+      ? invalidOverrideSourceCandidate
+      : undefined;
+    const invalidOverride = invalidOverrideSource !== undefined;
+    const invalidOverrideOwnedByLayer = !effectivePage
+      && invalidOverrideSource === options.read.scope;
     const effectiveConfigured = effectiveEntry?.sourceLayer !== undefined
       && effectiveEntry.sourceLayer !== null
       && effectiveEntry.effectiveValue !== undefined
@@ -1922,6 +1934,14 @@ export function buildConfigGroups(options: {
           : effectiveEntry?.effectiveValue,
       }),
       effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
+      ...(invalidOverride ? {
+        invalidOverrideOwnedByLayer,
+        invalidOverrideIssue: invalidOverrideOwnedByLayer
+          ? schema.type === 'object'
+            ? `字段“${schema.title ?? key}”在本层的对象值无效。请修改或删除此字段。`
+            : `字段“${schema.title ?? key}”在本层的值无效。请修改或删除此字段。`
+          : `字段“${schema.title ?? key}”在${configSourceLabel(invalidOverrideSource ?? null)}中的值无效。请切换到该设置层修改或删除此字段。`,
+      } : {}),
       ...(!effectivePage && configured ? {
         fallbackDisplayValue: displayConfigValue({
           field: schema,
@@ -1949,7 +1969,7 @@ export function buildConfigGroups(options: {
       ...(!privateValue && effectiveEntry?.effectiveValue !== undefined && effectiveEntry.effectiveValue !== null
         ? { effectiveValue: effectiveEntry.effectiveValue as PluginConfigValue }
         : {}),
-      ...((effectivePage
+      ...(!privateValue && (effectivePage
         ? options.effectiveRawValues?.[key]
         : selectedRawValue ?? (schema.type === 'object' && !configured
           ? options.effectiveRawValues?.[key]

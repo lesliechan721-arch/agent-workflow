@@ -40,6 +40,8 @@ Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presen
 
 AW 只提供 `default < user < project` 两个持久写入层。Store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。字符串 validation format 只支持 `identifier`、`slug`、`semver`、`url`、`hostname` 和 `email`；Config 不提供文件系统 path、file 或 directory format，也不解析 realpath 或建立 project artifact path boundary。CLI 写入使用 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 只用于选择 manifest 中的实际值，store 不保存 preset ID。作者脚本使用 scaffolding 生成的独立 `scripts/aw-config.mjs`；不要维护第二份字段 validator。
 
+字段覆盖不符合当前 schema 时，AW 保留该层值供用户修改或 unset，但 runtime 不使用低层 fallback 继续运行；fallback 只用于解释删除后的恢复结果。结构损坏的 store 必须整层 reset。配置 receipt 的 `configWrite: succeeded` 只说明强配置已提交；`applySkippedReason: invalidConfig` 表示仍需修复或删除无效字段，平台 apply 失败也不会回滚已保存设置。reset receipt 用 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 说明实际处理结果，目录隔离只公开 basename。
+
 已安装 Author 在开始工作时运行 `aw self check --from <skill-root> --json`。CLI 优先读取同层 `aw-plugin-requirements.json` runtime receipt，再回退到 Manifest；`missingCapabilities` 非空时停止。`aw plugin requirements <plugin-directory> --json` 分开报告 declared、derived、detected 和 effective requirements。`requires.aw.capabilities` 只声明生产行为真正需要的最小集合，不能用 CLI 版本字符串替代 capability compatibility。
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。

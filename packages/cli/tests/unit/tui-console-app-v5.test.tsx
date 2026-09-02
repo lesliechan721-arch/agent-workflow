@@ -4032,11 +4032,10 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('重置个人默认设置层');
-    expect(instance.lastFrame()).toContain('查看安全路径摘要');
+    expect(instance.lastFrame()).not.toContain('查看安全路径摘要');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
     expect(instance.lastFrame()).not.toContain('/Users/private');
-    await input(instance, 'd');
     const technicalFrame = instance.lastFrame() ?? '';
     expect(technicalFrame).toContain('invalidJson');
     expect(technicalFrame).toContain('read-config');
@@ -4046,6 +4045,62 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
     expect(instance.lastFrame()).toContain('重置插件设置');
+  });
+
+  it('keeps one reset action when the other invalid layer inspection fails', async () => {
+    const value = controller({
+      getConfigResetAvailability: vi.fn(async (_pluginId, layer: { scope: 'user' | 'project' }) => {
+        if (layer.scope === 'user') throw new Error('unsafe user ancestor');
+        return {
+          exists: true,
+          state: 'invalid' as const,
+          sourceIdentityPresent: false,
+          targetKind: 'directory' as const,
+          resettable: true,
+          storeDigest: 'sha256:project',
+        };
+      }),
+    });
+    value.push({
+      name: 'configUnavailable',
+      pluginId: 'team-tools/review-gate',
+      invalidStores: [
+        { scope: 'user', code: 'invalidJson', pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json' },
+        { scope: 'project', code: 'invalidValues', pathSummary: '<project>/.agent-workflows/plugin-config/team-tools/review-gate/config.json' },
+      ],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).toContain('重置当前项目设置层');
+    expect(instance.lastFrame()).not.toContain('重置个人默认设置层');
+  });
+
+  it('shows a special reset target as manual recovery without an automatic action', async () => {
+    const value = controller({
+      getConfigResetAvailability: vi.fn().mockResolvedValue({
+        exists: true,
+        state: 'invalid',
+        sourceIdentityPresent: false,
+        targetKind: 'special',
+        resettable: false,
+        storeDigest: 'sha256:special',
+      }),
+    });
+    value.push({
+      name: 'configUnavailable',
+      pluginId: 'team-tools/review-gate',
+      invalidStores: [{
+        scope: 'user', code: 'invalidValues',
+        pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json',
+      }],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).toContain('个人默认设置层不能自动重置');
+    expect(instance.lastFrame()).toContain('特殊节点，请手动移动');
+    expect(instance.lastFrame()).not.toContain('重置个人默认设置层…');
   });
 
   it.each([
@@ -4212,6 +4267,36 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b', ...Array.from({ length: 3 }, () => '\u001B[B'), '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'note' });
     expect(instance.lastFrame()).toContain('▌');
+  });
+
+  it('does not present a user invalid override as a project-layer unset or fallback', async () => {
+    const page = configPage();
+    page.layer = { scope: 'project' };
+    page.storedCount = 0;
+    const inherited = page.groups[0]!.fields.find((field) => field.key === 'note')!;
+    inherited.invalidOverrideIssue = '字段“note”在个人默认中的值无效。请切换到该设置层修改或删除此字段。';
+    inherited.invalidOverrideOwnedByLayer = false;
+    inherited.effectiveDisplayValue = '值无效';
+    inherited.effectiveSourceLabel = '个人默认';
+    const value = controller({ getConfigPage: vi.fn().mockResolvedValue(page) });
+    value.push({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'project' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'));
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('在个人默认中的值无效');
+    expect(frame).toContain('切换到该设置层');
+    expect(frame).not.toContain('删除后恢复');
+    expect(frame).not.toContain('u 恢复继承');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', layer: { scope: 'project' }, fieldKey: 'note',
+    });
   });
 
   it.each([
@@ -4405,7 +4490,7 @@ describe('ConsoleAppV4', () => {
       fieldKey: 'note',
       editor: 'string',
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
     await input(instance, 'DRAFT-KEEP', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'), '\r');
     await nextTurn(3);
@@ -4414,10 +4499,16 @@ describe('ConsoleAppV4', () => {
 
     expect(value.snapshot.result).toMatchObject({ state: 'partial' });
     expect(value.snapshot.router.current.route.name).toBe('result');
-    expect(instance.lastFrame()).toContain('设置已保存，但部分应用失败');
+    expect(instance.lastFrame()).toContain('设置已保存，但插件内容重新应用失败或部分失败');
     expect(instance.lastFrame()).toContain('已完成');
     expect(instance.lastFrame()).toContain('失败');
+    expect(instance.lastFrame()).toContain('重试应用');
+    expect(instance.lastFrame()).toContain('cleanup');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     expect(screens).toContain('C15');
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('重试应用插件设置');
   });
 
   it('shows a saved invalid config as unapplied instead of an apply failure', async () => {
@@ -4452,6 +4543,45 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('设置已保存，但未应用');
     expect(instance.lastFrame()).toContain('当前配置仍无效');
     expect(instance.lastFrame()).not.toContain('部分应用失败');
+    expect(instance.lastFrame()).not.toContain('重试应用');
+    expect(instance.lastFrame()).not.toContain('cleanup');
+    expect(instance.lastFrame()).not.toContain('reinstall');
+    expect(instance.lastFrame()).not.toContain('sync');
+  });
+
+  it.each([
+    ['absent', '设置层原本不存在；没有删除内容', undefined],
+    ['deletedFile', '已删除设置文件', undefined],
+    ['unlinkedSymlink', '已解除设置路径符号链接；链接目标未修改', undefined],
+    ['quarantinedDirectory', '设置路径是目录；已隔离为 config.broken-safe.json', 'config.broken-safe.json'],
+  ] as const)('renders the safe %s reset result at 60x18', async (
+    resetDisposition,
+    expected,
+    quarantineBasename,
+  ) => {
+    const value = controller({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+        resetDisposition,
+        ...(quarantineBasename ? { quarantineBasename } : {}),
+      }),
+    });
+    const review = await value.buildOperationReview({
+      kind: 'configReset',
+      pluginId: 'team-tools/review-gate',
+      scope: 'user',
+      projectLayer: 'shared',
+    });
+    await value.executeOperation(review.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain(expected);
+    expect(frame).not.toContain('/Users/private');
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
   it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {

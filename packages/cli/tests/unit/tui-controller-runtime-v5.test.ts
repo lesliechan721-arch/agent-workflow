@@ -50,6 +50,7 @@ const runtimeMocks = vi.hoisted(() => ({
   preflightCatalogSourceMutation: vi.fn(),
   preparePortableInstall: vi.fn(),
   applyPluginConfigWrite: vi.fn(),
+  replayConfigRuntimeWrites: vi.fn(),
   resetPluginConfigWithHelper: vi.fn(),
 }));
 
@@ -78,6 +79,7 @@ vi.mock('../../src/portable/commands.js', async (importOriginal) => ({
 
 vi.mock('../../src/utils/plugin-config-write.js', () => ({
   applyPluginConfigWrite: runtimeMocks.applyPluginConfigWrite,
+  replayConfigRuntimeWrites: runtimeMocks.replayConfigRuntimeWrites,
   resetPluginConfigWithHelper: runtimeMocks.resetPluginConfigWithHelper,
 }));
 
@@ -608,6 +610,33 @@ describe('TUI controller runtime scope conflict validation', () => {
     }));
     projectOnly.dispose();
 
+    runtimeMocks.replayConfigRuntimeWrites.mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+      otherProjectsRequireReinstall: true,
+    });
+    const retry = await createController([userTarget, projectTarget]);
+    const retryReview = await retry.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      apply: true,
+      retryApply: true,
+    });
+    expect(impactTitles(retryReview)).toEqual([
+      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+    ]);
+    await expect(retry.executeOperation(retryReview.reviewToken))
+      .resolves.toMatchObject({ state: 'succeeded' });
+    expect(runtimeMocks.replayConfigRuntimeWrites).toHaveBeenCalledWith(expect.objectContaining({
+      applyTargets: [
+        expect.objectContaining({ platform: 'claude', scope: 'project' }),
+        expect.objectContaining({ platform: 'codex', scope: 'user' }),
+      ],
+    }));
+    retry.dispose();
+
     const drifting = await createController([userTarget, projectTarget]);
     const driftReview = await drifting.buildOperationReview({
       kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared', apply: true, updates: { mode: 'stale' },
@@ -729,38 +758,206 @@ describe('TUI controller runtime scope conflict validation', () => {
         expect.objectContaining({ scope: 'project', code: 'invalidJson' }),
       ],
     });
+    await fs.remove(sourceRoot);
+    await fs.remove(path.join(isolation.layout.awHomeDir, 'catalog-store'));
+    await expect(dependencies.getConfigResetAvailability!(
+      'team/demo',
+      { scope: 'user' },
+      new AbortController().signal,
+    )).resolves.toMatchObject({
+      exists: true,
+      state: 'invalid',
+      invalidCode: 'invalidJson',
+      sourceIdentityPresent: false,
+    });
   });
 
-  it('rejects config Review preparation without a loaded TUI session', async () => {
-    runtimeMocks.statusCommandV7.mockResolvedValue({
-      payload: {
-        catalog: {
-          configDigest: 'sha256:stale-config',
-          compositeDigest: 'sha256:stale-composite',
-        },
-        targets: [],
-      },
-      pluginSummaries: [],
-      targetRevisions: [],
-    });
+  it('keeps a schema-invalid project field editable with a redacted lower fallback', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-invalid-field-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = {
+        fields: {
+          mode: { type: 'string', title: 'Mode', default: 'safe' },
+          token: {
+            type: 'string', title: 'Token', sensitive: true,
+            validation: { pattern: '^valid$' },
+          },
+        },
+      };
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       interactive: false,
     }));
-    const stages: string[] = [];
+    const identity = (await dependencies.getConfigResetAvailability!(
+      'team/demo', { scope: 'user' }, new AbortController().signal,
+    )).sourceIdentity!;
+    const envelope = (values: Record<string, unknown>) => ({
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: identity,
+      pluginName: 'demo',
+      values,
+    });
+    await fs.outputJson(path.join(
+      isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
+    ), envelope({ token: 'lower-secret' }));
+    await fs.outputJson(path.join(
+      isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json',
+    ), envelope({ mode: 42, token: 'project-secret' }));
 
-    await expect(dependencies.prepareReviewEvidence!({
+    const page = await dependencies.getConfigPage!(
+      'team/demo', { scope: 'project' }, new AbortController().signal,
+    );
+    const fields = page.groups.flatMap((group) => group.fields);
+    expect(fields.find((field) => field.key === 'mode')).toMatchObject({
+      displayValue: '值无效',
+      invalidOverrideIssue: '字段“Mode”在本层的值无效。请修改或删除此字段。',
+      fallbackDisplayValue: 'safe',
+    });
+    expect(fields.find((field) => field.key === 'token')).toMatchObject({
+      displayValue: '值无效',
+      fallbackDisplayValue: '已设置',
+    });
+    expect(JSON.stringify(page)).not.toContain('lower-secret');
+    expect(JSON.stringify(page)).not.toContain('project-secret');
+
+    await fs.remove(path.join(
+      isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json',
+    ));
+    await fs.outputJson(path.join(
+      isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
+    ), envelope({ mode: 42, token: 'user-secret' }));
+    const projectPage = await dependencies.getConfigPage!(
+      'team/demo', { scope: 'project' }, new AbortController().signal,
+    );
+    const inheritedInvalid = projectPage.groups.flatMap((group) => group.fields)
+      .find((field) => field.key === 'mode');
+    expect(inheritedInvalid).toMatchObject({
+      configured: false,
+      invalidOverrideOwnedByLayer: false,
+      invalidOverrideIssue: '字段“Mode”在个人默认中的值无效。请切换到该设置层修改或删除此字段。',
+    });
+    expect(inheritedInvalid).not.toHaveProperty('fallbackDisplayValue');
+    expect(JSON.stringify(projectPage)).not.toContain('user-secret');
+  });
+
+  it('reviews and executes a real reset without a loaded Catalog session', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const storePath = path.join(
+      isolation.layout.awHomeDir, 'plugin-config', 'official', 'demo', 'config.json',
+    );
+    await fs.outputFile(storePath, '{invalid', 'utf8');
+    const actualWrites = await vi.importActual<typeof import('../../src/utils/plugin-config-write.js')>(
+      '../../src/utils/plugin-config-write.js',
+    );
+    runtimeMocks.resetPluginConfigWithHelper.mockImplementation(
+      actualWrites.resetPluginConfigWithHelper,
+    );
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        schemaVersion: 7,
+        catalog: {
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:offline-reset',
+          sources: [],
+        },
+        filters: { plugins: [], platform: 'all', cwd: isolation.layout.fixtureCwd },
+        targets: [],
+        errors: [],
+      },
+      pluginSummaries: [],
+      targetRevisions: [],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
       kind: 'configReset',
       pluginId: 'official/demo',
-      scope: 'user',
-      projectLayer: 'shared',
-    }, new AbortController().signal, (stage) => { stages.push(stage); }))
-      .rejects.toMatchObject({ code: 'operationReviewStale' });
+      scope: 'user' as const,
+      projectLayer: 'shared' as const,
+    } as const;
+    const controller = new TuiController(dependencies);
+    const review = await controller.buildOperationReview(intent);
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+      summary: { resetDisposition: 'deletedFile' },
+    });
 
-    expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
-    expect(stages).toEqual([]);
+    expect(runtimeMocks.statusCommandV7).toHaveBeenCalledOnce();
+    await expect(fs.pathExists(storePath)).resolves.toBe(false);
+    controller.dispose();
+    runtimeMocks.resetPluginConfigWithHelper.mockReset();
+  });
+
+  it.each([
+    ['symbolicLink', 'unlinkedSymlink'],
+    ['directory', 'quarantinedDirectory'],
+  ] as const)('reviews and executes a real %s reset target', async (targetKind, disposition) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const storePath = path.join(
+      isolation.layout.awHomeDir, 'plugin-config', 'offline', 'demo', 'config.json',
+    );
+    const preservedPath = path.join(isolation.layout.fixtureCwd, `preserved-${targetKind}`);
+    if (targetKind === 'symbolicLink') {
+      await fs.outputFile(preservedPath, 'preserved', 'utf8');
+      await fs.ensureSymlink(preservedPath, storePath);
+    } else {
+      await fs.outputFile(path.join(storePath, 'preserved.txt'), 'preserved', 'utf8');
+    }
+    const actualWrites = await vi.importActual<typeof import('../../src/utils/plugin-config-write.js')>(
+      '../../src/utils/plugin-config-write.js',
+    );
+    runtimeMocks.resetPluginConfigWithHelper.mockImplementation(
+      actualWrites.resetPluginConfigWithHelper,
+    );
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const signal = new AbortController().signal;
+    await expect(dependencies.getConfigResetAvailability!(
+      'offline/demo', { scope: 'user' }, signal,
+    )).resolves.toMatchObject({ exists: true, targetKind, resettable: true });
+    const intent = {
+      kind: 'configReset' as const,
+      pluginId: 'offline/demo',
+      scope: 'user' as const,
+      projectLayer: 'shared' as const,
+    };
+    const evidence = await dependencies.prepareReviewEvidence!(intent, signal, () => {});
+    const result = await dependencies.executeIntent(intent, evidence) as {
+      resetDisposition: string;
+      quarantineBasename?: string;
+    };
+
+    expect(result.resetDisposition).toBe(disposition);
+    await expect(fs.pathExists(storePath)).resolves.toBe(false);
+    if (targetKind === 'symbolicLink') {
+      await expect(fs.readFile(preservedPath, 'utf8')).resolves.toBe('preserved');
+    } else {
+      expect(result.quarantineBasename).toMatch(/^config\.broken-.*\.json$/u);
+      await expect(fs.readFile(path.join(
+        path.dirname(storePath), result.quarantineBasename!, 'preserved.txt',
+      ), 'utf8')).resolves.toBe('preserved');
+    }
+    runtimeMocks.resetPluginConfigWithHelper.mockReset();
   });
 
   it.each([
@@ -1140,12 +1337,10 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
   });
 
-  it('resets config without applying visible targets', async () => {
+  it('resets config without schema or applying visible targets', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-reset-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
-    });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -1201,7 +1396,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(runtimeMocks.resetPluginConfigWithHelper).toHaveBeenCalledWith(expect.objectContaining({
       apply: false,
-      applyTargets: [],
+      sourceId: 'team',
+      pluginName: 'demo',
     }));
   });
 

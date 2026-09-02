@@ -38,12 +38,14 @@ import {
 } from '../utils/multi-source-catalog.js';
 import {
   coercePluginConfigUpdates,
+  inspectPluginConfigResetTarget,
   readPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
 } from '../utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
+  replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
@@ -748,6 +750,75 @@ export function createTuiControllerDependencies(
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
   ): Promise<OperationEvidence> => {
+    if (intent.kind === 'configReset') {
+      const parsed = parsePluginId(intent.pluginId);
+      if (!parsed.sourceId || !parsed.pluginName) {
+        throw new TuiOperationBlockedError('invalidPluginId', '设置目标必须使用 canonical pluginId。');
+      }
+      await preparation?.reporter.emit('config');
+      const target = await inspectPluginConfigResetTarget({
+        sourceId: parsed.sourceId,
+        pluginName: parsed.pluginName,
+        scope: intent.scope,
+        cwd: context.cwd,
+        env: context.env,
+      });
+      signal?.throwIfAborted();
+      if (target.kind === 'special') {
+        throw new TuiOperationBlockedError(
+          'configResetTargetUnsupported',
+          '设置目标是特殊文件系统节点，不能自动重置。请手动移动后重试。',
+        );
+      }
+      let source: OperationEvidence['source'];
+      try {
+        const packageInfo = await readCliPackageInfo();
+        source = await withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: packageInfo.version,
+          env: context.env,
+          ...(sessionContextForPlugin(intent.pluginId)
+            ? { operationContext: sessionContextForPlugin(intent.pluginId)! }
+            : {}),
+          ...(signal ? { signal } : {}),
+          consume: async ({ plugin, source: resolvedSource }) =>
+            sourceEvidenceForPlugin(resolvedSource, plugin.manifest.name),
+        });
+      } catch {
+        source = undefined;
+      }
+      signal?.throwIfAborted();
+      const relevantTargets = sessionStatusResult
+        ? configAffectedStatusTargets(
+            sessionStatusResult.payload.targets,
+            intent.pluginId,
+            intent.scope,
+          )
+        : [];
+      await preparation?.reporter.emit('evidence');
+      return {
+        catalog: sessionStatusResult ? {
+          configDigest: sessionStatusResult.payload.catalog.configDigest,
+          compositeDigest: sessionStatusResult.payload.catalog.compositeDigest,
+        } : {
+          configDigest: 'config-reset-offline',
+          compositeDigest: 'config-reset-target',
+        },
+        ...(source ? { source } : {}),
+        config: {
+          scope: intent.scope,
+          storeDigest: target.fingerprint,
+          affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+        },
+        resetTarget: {
+          sourceId: parsed.sourceId,
+          pluginName: parsed.pluginName,
+          scope: intent.scope,
+          kind: target.kind,
+          fingerprint: target.fingerprint,
+        },
+      };
+    }
     if (intent.kind === 'catalogSourcesRecovery') {
       signal?.throwIfAborted();
       await preparation?.reporter.emit('validate');
@@ -1016,7 +1087,7 @@ export function createTuiControllerDependencies(
       if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
       return evidence;
     }
-    if (preparation && (intent.kind === 'configSave' || intent.kind === 'configReset')) {
+    if (preparation && intent.kind === 'configSave') {
       if (!sessionStatusResult || !catalogOperation) {
         throw operationReviewStale('当前 TUI session 没有可复用的设置证据。');
       }
@@ -1031,7 +1102,7 @@ export function createTuiControllerDependencies(
         cliVersion: packageInfo.version,
         configSnapshot,
         env: context.env,
-        operationContext: catalogOperation,
+        ...(catalogOperation ? { operationContext: catalogOperation } : {}),
         ...(signal ? { signal } : {}),
         consume: async ({ plugin, source }) => {
           if (!plugin.manifest.config) {
@@ -1056,8 +1127,10 @@ export function createTuiControllerDependencies(
         },
       });
       const store = await readPluginConfigStore({
-        sourceId: selected.source.sourceId,
-        sourceIdentity: selected.source.sourceIdentity,
+        sourceId: selected.source?.sourceId ?? parsePluginId(intent.pluginId).sourceId,
+        ...(selected.source?.sourceIdentity
+          ? { sourceIdentity: selected.source.sourceIdentity }
+          : {}),
         pluginName: selected.pluginName,
         scope: intent.scope,
         cwd: context.cwd,
@@ -1078,18 +1151,18 @@ export function createTuiControllerDependencies(
         catalog: {
           configDigest: sessionStatusResult.payload.catalog.configDigest,
           compositeDigest: sessionStatusResult.payload.catalog.compositeDigest,
-          generationSetDigest: catalogOperation.generationSetDigest,
+          ...(catalogOperation ? { generationSetDigest: catalogOperation.generationSetDigest } : {}),
         },
-        source: selected.source,
+        ...(selected.source ? { source: selected.source } : {}),
         targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
         config: {
           scope: intent.scope,
-          schemaIdentity: selected.source.manifestDigest,
+          ...(selected.source?.manifestDigest ? { schemaIdentity: selected.source.manifestDigest } : {}),
           storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
         },
       };
-      catalogOperationByEvidence.set(evidence, catalogOperation);
+      if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
       return evidence;
     }
     await preparation?.reporter.emit('status');
@@ -1277,10 +1350,10 @@ export function createTuiControllerDependencies(
     }
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
-    const evidenceTargets = intent.kind === 'configSave' || intent.kind === 'configReset'
+    const evidenceTargets = intent.kind === 'configSave'
       ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
       : status.payload.targets;
-    const evidenceRevisions = intent.kind === 'configSave' || intent.kind === 'configReset'
+    const evidenceRevisions = intent.kind === 'configSave'
       ? (status.targetRevisions ?? []).filter((revision) =>
           evidenceTargets.some((target) => target.platform === revision.platform
             && target.scope === revision.scope
@@ -1305,7 +1378,7 @@ export function createTuiControllerDependencies(
         evidenceRevisions,
       ),
     };
-    if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+    if (intent.kind === 'configSave') {
       const store = await readPluginConfigStore({
         sourceId: selected.source.sourceId,
         sourceIdentity: selected.source.sourceIdentity,
@@ -1572,40 +1645,65 @@ export function createTuiControllerDependencies(
       });
     },
     async getConfigResetAvailability(pluginId, layer, signal) {
-      const packageInfo = await readCliPackageInfo();
-      return withResolvedCatalogPlugin({
-        selector: pluginId,
-        cliVersion: packageInfo.version,
+      const parsed = parsePluginId(pluginId);
+      if (!parsed.sourceId || !parsed.pluginName) {
+        throw new TuiOperationBlockedError('invalidPluginId', '设置目标必须使用 canonical pluginId。');
+      }
+      let sourceIdentity: string | undefined;
+      try {
+        const packageInfo = await readCliPackageInfo();
+        sourceIdentity = await withResolvedCatalogPlugin({
+          selector: pluginId,
+          cliVersion: packageInfo.version,
+          env: context.env,
+          signal,
+          ...(sessionContextForPlugin(pluginId)
+            ? { operationContext: sessionContextForPlugin(pluginId)! }
+            : {}),
+          consume: async ({ source }) => source.sourceIdentity,
+        });
+      } catch {
+        sourceIdentity = undefined;
+      }
+      signal.throwIfAborted();
+      const target = await inspectPluginConfigResetTarget({
+        sourceId: parsed.sourceId,
+        pluginName: parsed.pluginName,
+        scope: layer.scope,
+        cwd: context.cwd,
         env: context.env,
-        signal,
-        ...(sessionContextForPlugin(pluginId)
-          ? { operationContext: sessionContextForPlugin(pluginId)! }
-          : {}),
-        consume: async ({ plugin, source }) => {
-          const store = await readPluginConfigStore({
-            sourceId: source.sourceId,
-            sourceIdentity: source.sourceIdentity,
-            pluginName: plugin.manifest.name,
-            scope: layer.scope,
-            cwd: context.cwd,
-            env: context.env,
-            schema: plugin.manifest.config?.fields,
-          });
-          signal.throwIfAborted();
-          return {
-            exists: store.exists,
-            state: store.state,
-            ...(store.invalidCode ? { invalidCode: store.invalidCode } : {}),
-            sourceIdentityPresent: true,
-            sourceIdentity: source.sourceIdentity,
-            storeDigest: digest({
-              exists: store.exists,
-              pluginId,
-              rawDigest: store.rawDigest,
-            }),
-          };
-        },
       });
+      signal.throwIfAborted();
+      if (target.kind === 'regularFile') {
+        const store = await readPluginConfigStore({
+          sourceId: parsed.sourceId,
+          ...(sourceIdentity ? { sourceIdentity } : {}),
+          pluginName: parsed.pluginName,
+          scope: layer.scope,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        signal.throwIfAborted();
+        return {
+          exists: store.exists,
+          state: store.state,
+          ...(store.invalidCode ? { invalidCode: store.invalidCode } : {}),
+          sourceIdentityPresent: sourceIdentity !== undefined,
+          ...(sourceIdentity ? { sourceIdentity } : {}),
+          targetKind: target.kind,
+          resettable: target.resettable,
+          storeDigest: target.fingerprint,
+        };
+      }
+      return {
+        exists: target.exists,
+        state: target.kind === 'absent' ? 'missing' as const : 'invalid' as const,
+        sourceIdentityPresent: sourceIdentity !== undefined,
+        ...(sourceIdentity ? { sourceIdentity } : {}),
+        targetKind: target.kind,
+        resettable: target.resettable,
+        storeDigest: target.fingerprint,
+      };
     },
     async executeIntent(intent, expectedEvidence, signal) {
       if (intent.kind === 'catalogSourcesRecovery') {
@@ -1845,6 +1943,23 @@ export function createTuiControllerDependencies(
           }
           if (intent.kind === 'configSave' || intent.kind === 'configReset') {
             const currentSource = currentEvidence.source;
+            if (intent.kind === 'configReset') {
+              const parsed = parsePluginId(intent.pluginId);
+              if (!parsed.sourceId || !parsed.pluginName) {
+                throw operationReviewStale('确认信息缺少 qualified 设置目标。');
+              }
+              return resetPluginConfigWithHelper({
+                sourceId: parsed.sourceId,
+                pluginName: parsed.pluginName,
+                scope: intent.scope,
+                cwd: context.cwd,
+                env: context.env,
+                nativeCliRunner: context.nativeCliRunner,
+                rebuildRuntime: { ...context, awHomeMutationToken },
+                awHomeMutationToken,
+                apply: false,
+              });
+            }
             if (!currentSource) {
               throw operationReviewStale('确认信息缺少来源身份。');
             }
@@ -1859,15 +1974,32 @@ export function createTuiControllerDependencies(
                   currentSource,
                   sourceEvidenceForPlugin(source, plugin.manifest.name),
                 );
-                const applyTargets = intent.kind === 'configSave' && intent.apply
+                const applyTargets = intent.apply
                   ? currentEvidence.config?.affectedTargets.map((target) => ({
                       pluginName: plugin.manifest.name,
                       platform: target.platform,
                       scope: target.scope,
                     })) ?? []
                   : [];
-                const result = intent.kind === 'configSave'
-                  ? await applyPluginConfigWrite({
+                const result = intent.retryApply
+                    ? await replayConfigRuntimeWrites({
+                        plugin,
+                        scope: intent.scope,
+                        cwd: context.cwd,
+                        env: context.env,
+                        nativeCliRunner: context.nativeCliRunner,
+                        rebuildRuntime: {
+                          ...context,
+                          awHomeMutationToken,
+                          ...(catalogOperation ? {
+                            catalogOperationContext: catalogOperation,
+                            expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
+                          } : {}),
+                        },
+                        awHomeMutationToken,
+                        applyTargets,
+                      })
+                    : await applyPluginConfigWrite({
                       plugin,
                       pluginName: plugin.manifest.name,
                       scope: intent.scope,
@@ -1885,26 +2017,7 @@ export function createTuiControllerDependencies(
                       awHomeMutationToken,
                       applyTargets,
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
-                    })
-                  : await resetPluginConfigWithHelper({
-                      plugin,
-                      pluginName: plugin.manifest.name,
-                      scope: intent.scope,
-                      cwd: context.cwd,
-                      env: context.env,
-                      nativeCliRunner: context.nativeCliRunner,
-                      rebuildRuntime: {
-                        ...context,
-                        awHomeMutationToken,
-                        ...(catalogOperation ? {
-                          catalogOperationContext: catalogOperation,
-                          expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
-                        } : {}),
-                      },
-                      awHomeMutationToken,
-                      applyTargets,
-                      apply: false,
-                    });
+                      });
                 return result;
               },
             });

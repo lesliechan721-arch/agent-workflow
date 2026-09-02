@@ -87,6 +87,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     return { title, description, primaryLabel: title, destructive };
   }
   if (intent.kind === 'configSave') {
+    if (intent.retryApply) {
+      return {
+        title: '重试应用插件设置',
+        description: '重新读取当前设置和安装证据；不会恢复或重写历史值。',
+        primaryLabel: '重试应用',
+        destructive: false,
+      };
+    }
     return {
       title: intent.apply ? '保存并应用插件设置' : '保存插件设置',
       description: intent.apply
@@ -437,6 +445,17 @@ function reviewChanges(
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
   const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
+  if (intent.retryApply) {
+    return [
+      ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
+        kind: 'change',
+        group: 'configImpact',
+        title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+      })) ?? []),
+      { kind: 'keep', group: 'preserved', title: `${layerLabel}中的当前值保持不变` },
+      { kind: 'keep', group: 'preserved', title: '不会恢复历史设置值' },
+    ];
+  }
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({

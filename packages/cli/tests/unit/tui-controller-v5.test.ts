@@ -3083,7 +3083,9 @@ describe('TUI v4 Review safety', () => {
       state: 'partial',
       summary: {
         code: 'operationPartial',
-        message: '操作只完成了一部分。',
+        message: '设置已保存，但插件内容重新应用失败或部分失败。',
+        configScope: 'user',
+        configApplyRetryAvailable: true,
         targets: [
           expect.objectContaining({ platform: 'codex', state: 'completed' }),
           expect.objectContaining({ platform: 'claude', state: 'failed' }),
@@ -3123,7 +3125,36 @@ describe('TUI v4 Review safety', () => {
         code: 'operationPartial',
         configApplied: false,
         configApplySkippedReason: 'invalidConfig',
+        configApplyRetryAvailable: false,
         message: '设置已保存，但没有应用。当前配置仍无效。',
+      },
+    });
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['deletedFile', undefined],
+    ['unlinkedSymlink', undefined],
+    ['quarantinedDirectory', 'config.broken-safe.json'],
+  ] as const)('projects the safe %s config reset disposition', async (resetDisposition, quarantineBasename) => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+        resetDisposition,
+        ...(quarantineBasename ? { quarantineBasename } : {}),
+      }),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+      summary: {
+        resetDisposition,
+        ...(quarantineBasename ? { quarantineBasename } : {}),
       },
     });
   });

@@ -88,6 +88,20 @@ export type PluginConfigStoreInvalidCode =
   | 'identityMismatch'
   | 'invalidValues';
 
+export type PluginConfigResetTargetKind =
+  | 'absent'
+  | 'regularFile'
+  | 'symbolicLink'
+  | 'directory'
+  | 'special';
+
+export interface PluginConfigResetTargetInspection {
+  exists: boolean;
+  kind: PluginConfigResetTargetKind;
+  resettable: boolean;
+  fingerprint: string;
+}
+
 export interface ResolvedEffectivePluginConfig {
   pluginName: string;
   projectRoot: string;
@@ -1194,6 +1208,76 @@ export async function resetPluginConfigStore(options: {
       osCode,
     );
   }
+}
+
+export async function inspectPluginConfigResetTarget(options: {
+  sourceId?: string;
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<PluginConfigResetTargetInspection> {
+  const filePath = resolvePluginConfigStorePath({
+    ...options,
+    ...(options.scope === 'project' ? { access: 'write' as const } : {}),
+  });
+  const allowedRoot = resolvePluginConfigAllowedRoot(options);
+  const publicTarget = `${options.scope}/plugin-config/${[
+    options.sourceId,
+    options.pluginName,
+    CONFIG_FILE,
+  ].filter(Boolean).join('/')}`;
+  const { root, candidate } = assertConfigPathBoundary(allowedRoot, filePath);
+  let current = root;
+  for (const segment of path.relative(root, path.dirname(candidate)).split(path.sep).filter(Boolean)) {
+    const stats = await lstatIfExists(current);
+    if (!stats) return resetTargetInspection('absent');
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new PluginConfigResetError(
+        'configResetTargetUnsupported',
+        `${publicTarget} has an unsafe ancestor. Repair it manually, then retry config reset.`,
+      );
+    }
+    current = path.join(current, segment);
+  }
+  const parentStats = await lstatIfExists(current);
+  if (!parentStats) return resetTargetInspection('absent');
+  if (parentStats.isSymbolicLink() || !parentStats.isDirectory()) {
+    throw new PluginConfigResetError(
+      'configResetTargetUnsupported',
+      `${publicTarget} has an unsafe ancestor. Repair it manually, then retry config reset.`,
+    );
+  }
+  const target = await lstatIfExists(filePath);
+  if (!target) return resetTargetInspection('absent');
+  const kind = target.isSymbolicLink() ? 'symbolicLink'
+    : target.isFile() ? 'regularFile'
+    : target.isDirectory() ? 'directory'
+    : 'special';
+  return resetTargetInspection(kind, target);
+}
+
+function resetTargetInspection(
+  kind: PluginConfigResetTargetKind,
+  stats?: fs.Stats,
+): PluginConfigResetTargetInspection {
+  const fingerprint = `sha256:${crypto.createHash('sha256').update(JSON.stringify({
+    kind,
+    ...(stats ? {
+      dev: stats.dev,
+      ino: stats.ino,
+      mode: stats.mode,
+      size: stats.size,
+      mtimeMs: stats.mtimeMs,
+      ctimeMs: stats.ctimeMs,
+    } : {}),
+  })).digest('hex')}`;
+  return {
+    exists: kind !== 'absent',
+    kind,
+    resettable: kind !== 'special',
+    fingerprint,
+  };
 }
 
 export async function resetPluginConfigStores(options: {
