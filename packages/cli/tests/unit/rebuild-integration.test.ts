@@ -400,6 +400,88 @@ describe('rebuild adapter integration', () => {
     });
   });
 
+  it.each([
+    { observation: 'absent', generic: 'absent', health: 'absent' },
+    { observation: 'unobserved', generic: 'partial', health: 'partial' },
+    { observation: 'failed', generic: 'error', health: 'error' },
+    { observation: 'installed-user-enabled', generic: 'present', health: 'present' },
+    { observation: 'installed-user-disabled', generic: 'present', health: 'partial' },
+    { observation: 'exact-installed-neutral-absent', generic: 'present', health: 'partial' },
+  ] as const)(
+    'maps $observation official evidence consistently for generic and health probes',
+    async ({ observation, generic, health }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(
+          repositoryRoot,
+          'packages/cli/tests/fixtures/codex-project-repo-managed/plugins/apps-only',
+        )],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'apps-only'), {
+        mode: 'bundle',
+      });
+      const pluginId = 'apps-only@aw';
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async (invocation) => {
+            if (observation === 'unobserved') {
+              throw Object.assign(new Error('missing Codex'), { code: 'ENOENT' });
+            }
+            if (observation === 'failed') {
+              return { exitCode: 1, stdout: '', stderr: 'list failed' };
+            }
+            const exact = invocation.cwd === isolation.layout.fixtureCwd;
+            const installed = observation.startsWith('installed')
+              || observation === 'exact-installed-neutral-absent';
+            const entries = installed
+              && (observation !== 'exact-installed-neutral-absent' || exact)
+              ? [{
+                  pluginId,
+                  installed: true,
+                  enabled: observation !== 'installed-user-disabled',
+                  version: plugin.manifest.version,
+                }]
+              : [];
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ installed: entries, available: [] }),
+              stderr: '',
+            };
+          },
+        }),
+      });
+      const target = await integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        readOnlyInspectionPlan: true,
+      });
+      const nativeComponent = target.ownedComponents.find((component) =>
+        component.kind === 'native-plugin');
+      expect(nativeComponent).toBeDefined();
+      const genericInspection = await inspectOwnedComponents({
+        components: [nativeComponent!],
+        nativeProbe: integration.driver.probeNative,
+      });
+      const healthInspection = await inspectOwnedComponents({
+        components: [nativeComponent!],
+        nativeProbe: integration.driver.probeNativeHealth,
+      });
+
+      expect(genericInspection.state).toBe(generic);
+      expect(healthInspection.state).toBe(health);
+      if (observation === 'failed') {
+        expect(genericInspection.errors[0]?.message).toContain('codexNativeObservationFailed');
+        expect(healthInspection.errors[0]?.message).toContain('codexNativeObservationFailed');
+      }
+    },
+  );
+
   it.skipIf(process.platform === 'win32')(
     'blocks an installed Codex plugin when its marketplace root is a symlink',
     async () => {
@@ -1538,6 +1620,13 @@ describe('rebuild adapter integration', () => {
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     await fs.ensureDir(isolation.layout.awHomeDir);
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [], available: [] }),
+          stderr: '',
+        };
+      }
       expect(invocation).toMatchObject({
         command: 'codex',
         args: ['plugin', 'marketplace', 'add', marketplaceRoot],
@@ -1573,6 +1662,78 @@ describe('rebuild adapter integration', () => {
     await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
   });
 
+  it.each([
+    ['failed', 'codexNativeObservationFailed'],
+    ['unobserved', 'codexNativeObservationUnavailable'],
+  ] as const)(
+    'fails a Codex native write before Skill, mirror, or native mutations when the recheck is %s',
+    async (observation, errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+        mode: 'bundle',
+      });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const calls: NativeCliInvocation[] = [];
+      let drifted = false;
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async (invocation) => {
+            calls.push(invocation);
+            if (!drifted) {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({ installed: [], available: [] }),
+                stderr: '',
+              };
+            }
+            if (observation === 'unobserved') {
+              throw Object.assign(new Error('Codex disappeared'), { code: 'ENOENT' });
+            }
+            return { exitCode: 1, stdout: '', stderr: 'list failed' };
+          },
+        }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity: TEST_SOURCE_IDENTITY,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+      });
+      const skillPaths = target.operationActions?.flatMap((action) =>
+        action.kind === 'writeOwnedArtifact' && action.artifactKind === 'skill-directory'
+          ? [action.path]
+          : []) ?? [];
+      const nativeComponent = target.ownedComponents.find((component) =>
+        component.kind === 'native-plugin');
+      expect(await inspectOwnedComponents({
+        components: [nativeComponent!],
+        nativeProbe: integration.driver.probeNative,
+      })).toMatchObject({ state: 'absent' });
+      drifted = true;
+
+      await expect(integration.driver.writeNative(target)).rejects.toThrow(errorCode);
+      expect(calls).toHaveLength(4);
+      expect(calls.every((invocation) =>
+        invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+      await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
+      for (const skillPath of skillPaths) {
+        await expect(fs.pathExists(skillPath)).resolves.toBe(false);
+      }
+    },
+  );
+
   it.each(['EACCES', 'EIO'] as const)(
     'fails a namespaced marketplace mirror on destination %s before replacing the old root',
     async (errorCode) => {
@@ -1594,8 +1755,15 @@ describe('rebuild adapter integration', () => {
         }),
         fs.outputFile(sentinelPath, 'retained\n'),
       ]);
-      const nativeCliRunner = vi.fn(async () => {
-        throw new Error('native runner must not run');
+      const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+        if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ installed: [], available: [] }),
+            stderr: '',
+          };
+        }
+        throw new Error('native mutation must not run');
       });
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
@@ -1626,7 +1794,7 @@ describe('rebuild adapter integration', () => {
       } finally {
         lstat.mockRestore();
       }
-      expect(nativeCliRunner).not.toHaveBeenCalled();
+      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('retained\n');
     },
   );
@@ -1662,7 +1830,16 @@ describe('rebuild adapter integration', () => {
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({
           env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('native install failed'); },
+          nativeCliRunner: async (invocation) => {
+            if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({ installed: [], available: [] }),
+                stderr: '',
+              };
+            }
+            throw new Error('native install failed');
+          },
         }),
       });
       const target = await integration.buildTarget({
@@ -1731,7 +1908,16 @@ describe('rebuild adapter integration', () => {
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({
           env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('native runner must not run'); },
+          nativeCliRunner: async (invocation) => {
+            if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({ installed: [], available: [] }),
+                stderr: '',
+              };
+            }
+            throw new Error('native runner must not run');
+          },
         }),
       });
       const target = await integration.buildTarget({
@@ -1834,8 +2020,15 @@ describe('rebuild adapter integration', () => {
       });
       const oldRootSnapshot = await snapshotRegularTree(marketplaceRoot);
 
-      const nativeCliRunner = vi.fn(async () => {
-        throw new Error('native runner must not run');
+      const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+        if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({ installed: [], available: [] }),
+            stderr: '',
+          };
+        }
+        throw new Error('native mutation must not run');
       });
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
@@ -1879,7 +2072,7 @@ describe('rebuild adapter integration', () => {
       expect(failure?.message).toContain(errorCode);
       expect(failure?.message).not.toContain(isolation.layout.awHomeDir);
       expect(failure?.message).not.toContain(marketplaceRoot);
-      expect(nativeCliRunner).not.toHaveBeenCalled();
+      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('old-generation\n');
       expect(await snapshotRegularTree(marketplaceRoot)).toEqual(oldRootSnapshot);
       await expect(readSkillOwnerMarker({
@@ -2309,10 +2502,10 @@ describe('rebuild adapter integration', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe(exactEnabled ? 'succeeded' : 'failed');
     if (!exactEnabled) {
       expect(result.failures).toEqual(expect.arrayContaining([
-        expect.objectContaining({ message: expect.stringContaining('codexProjectConfigNotEffective') }),
+        expect.objectContaining({ message: expect.stringContaining('codexActivationPostcheckFailed') }),
       ]));
     }
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(exactEnabled ? 6 : 4);
     expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
@@ -4257,7 +4450,14 @@ describe('rebuild adapter integration', () => {
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({
         env: isolation.env,
-        nativeCliRunner: async () => {
+        nativeCliRunner: async (invocation) => {
+          if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({ installed: [], available: [] }),
+              stderr: '',
+            };
+          }
           throw new Error('native runner must not run after manifest read failure');
         },
       }),
@@ -4369,10 +4569,29 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
     });
     const installedTarget = await build('install');
+    let reviewedSkillExecutions = 0;
+    let reviewedSkillActions = 0;
+    const countReviewedSkillWrites = (target: typeof installedTarget) => {
+      if (_kind !== 'static') return;
+      for (const action of target.operationActions ?? []) {
+        if (action.kind !== 'writeOwnedArtifact' || action.artifactKind !== 'skill-directory') continue;
+        const files = action.files;
+        reviewedSkillActions += 1;
+        Object.defineProperty(action, 'files', {
+          configurable: true,
+          get: () => {
+            reviewedSkillExecutions += 1;
+            return files;
+          },
+        });
+      }
+    };
+    countReviewedSkillWrites(installedTarget);
     expect((await executeRebuildOperation({
       command: 'install', target: installedTarget, driver: integration.driver,
     })).status).toBe('succeeded');
     const reinstallTarget = await build('reinstall');
+    countReviewedSkillWrites(reinstallTarget);
     const result = await executeRebuildOperation({
       command: 'reinstall', target: reinstallTarget, driver: integration.driver,
     });
@@ -4386,6 +4605,7 @@ describe('rebuild adapter integration', () => {
       return;
     }
     expect(requiredSkills.length).toBeGreaterThan(0);
+    expect(reviewedSkillExecutions).toBe(reviewedSkillActions);
     const cacheManifest = await fs.readJson(path.join(cacheRoot, '.codex-plugin', 'plugin.json'));
     const skillsRoot = cacheManifest.skills.replace(/^\.\//u, '');
     for (const artifact of requiredSkills) {

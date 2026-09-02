@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { CodexSharedNativeEvidence } from '../../src/utils/codex-shared-native.js';
 import { inspectCodexSharedNative } from '../../src/utils/codex-shared-native.js';
+import {
+  combineCodexNativePluginObservations,
+  type CodexNativePluginObservation,
+} from '../../src/utils/codex-native-observation.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 
@@ -40,6 +44,48 @@ function evidence(
 }
 
 describe('codex-shared-native', () => {
+  it.each([
+    [
+      [{ state: 'unobserved' }, { state: 'observed', value: 'absent' }],
+      { state: 'unobserved' },
+    ],
+    [
+      [{ state: 'observed', value: 'absent' }, { state: 'unobserved' }],
+      { state: 'unobserved' },
+    ],
+    [
+      [
+        { state: 'unobserved' },
+        {
+          state: 'observed', value: 'installed',
+          entry: { pluginId: 'demo@aw-team', enabled: true },
+        },
+      ],
+      {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', enabled: true },
+      },
+    ],
+    [
+      [
+        {
+          state: 'observed', value: 'installed',
+          entry: { pluginId: 'demo@aw-team', enabled: true },
+        },
+        { state: 'observed', value: 'absent' },
+      ],
+      {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', enabled: true },
+      },
+    ],
+  ] satisfies Array<[CodexNativePluginObservation[], CodexNativePluginObservation]>) (
+    'merges exact and neutral native observations without treating unknown evidence as absence',
+    (observations, expected) => {
+      expect(combineCodexNativePluginObservations(observations)).toEqual(expected);
+    },
+  );
+
   it('uses only the four shared-native states and keeps detail beside the state', () => {
     const cases = [
       [

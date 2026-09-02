@@ -26,7 +26,8 @@ export function combineCodexNativePluginObservations(
   const installed = observations.find((observation) =>
     observation.state === 'observed' && observation.value === 'installed');
   if (installed?.state === 'observed' && installed.value === 'installed') return installed;
-  if (observations.some((observation) => observation.state === 'observed')) {
+  if (observations.length > 0 && observations.every((observation) =>
+    observation.state === 'observed' && observation.value === 'absent')) {
     return { state: 'observed', value: 'absent' };
   }
   return { state: 'unobserved' };

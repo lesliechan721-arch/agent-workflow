@@ -251,6 +251,37 @@ export async function executeCodexReconcileActivations(options: {
       }
     }
   }
+
+  const observedActivationPluginIds = [...new Set(options.plans.flatMap((plan) =>
+    plan.postcheck.support === 'observed'
+      ? plan.postcheck.plugins.map((plugin) => plugin.codexPluginId)
+      : []))];
+  if (observedActivationPluginIds.length > 0) {
+    const manager = requireCodexManager(options.manager);
+    for (const pluginId of observedActivationPluginIds) {
+      const registration = await inspectCodexPluginRegistrationLive({
+        pluginId,
+        cwd: options.cwd,
+        env: options.env,
+        nativeCliRunner: options.runner,
+        manager,
+      });
+      const observedState = requireObservedCodexNativeState(
+        registration.observation,
+        'activation precheck',
+      );
+      if (!registration.observations.user || !registration.observations.project) {
+        throw new Error(
+          'codexNativeObservationUnavailable: activation precheck requires exact and neutral Codex plugin list evidence.',
+        );
+      }
+      if (observedState !== 'installed') {
+        throw new Error(
+          'codexNativeObservationFailed: activation precheck did not observe the installed Codex plugin.',
+        );
+      }
+    }
+  }
   for (const scope of ['user', 'project'] as const) {
     const enables = Object.fromEntries(Object.entries(byScope[scope].upserts)
       .filter(([, desired]) => desired));
@@ -321,11 +352,11 @@ export async function executeCodexReconcileActivations(options: {
     );
   }
 
-  const observedProjectChecks = options.plans.flatMap((plan) =>
+  const observedActivationChecks = options.plans.flatMap((plan) =>
     plan.postcheck.support === 'observed'
-      ? plan.postcheck.plugins.filter((plugin) => plugin.neutralCwdRequired)
+      ? plan.postcheck.plugins
       : []);
-  if (observedProjectChecks.length === 0) return;
+  if (observedActivationChecks.length === 0) return;
   const manager = requireCodexManager(options.manager);
   const neutralCwd = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-postcheck-'));
   try {
@@ -340,7 +371,7 @@ export async function executeCodexReconcileActivations(options: {
     ]);
     const ineffectivePlugins: string[] = [];
     const ineffectiveDetails: string[] = [];
-    for (const plugin of observedProjectChecks) {
+    for (const plugin of observedActivationChecks) {
       try {
         postcheckCodexProjectPluginActivation({
           pluginId: plugin.codexPluginId,
@@ -2369,10 +2400,19 @@ export interface CodexPluginRegistrationLiveInspection {
 function observedCodexNativeState(
   observation: CodexNativePluginObservation,
   operation: string,
-): 'present' | 'absent' {
+): 'present' | 'absent' | 'partial' {
   if (observation.state === 'observed') {
     return observation.value === 'installed' ? 'present' : 'absent';
   }
+  if (observation.state === 'unobserved') return 'partial';
+  throw new Error(`codexNativeObservationFailed: ${operation} requires Codex plugin list evidence.`);
+}
+
+function requireObservedCodexNativeState(
+  observation: CodexNativePluginObservation,
+  operation: string,
+): 'installed' | 'absent' {
+  if (observation.state === 'observed') return observation.value;
   const code = observation.state === 'failed'
     ? 'codexNativeObservationFailed'
     : 'codexNativeObservationUnavailable';
@@ -3643,6 +3683,7 @@ function createNativeDriver(options: {
   const runner = options.context.nativeCliRunner;
   const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
   const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
+  const completedNativeSkillWrites = new WeakSet<OperationAction>();
   const findTarget = (component: OwnedComponent): DesiredTarget => {
     const target = options.targets.find((entry) =>
       entry.identity.pluginName === component.identity.plugin
@@ -3878,6 +3919,26 @@ function createNativeDriver(options: {
   };
   return {
     ownership,
+    preflightMutation: async (target) => {
+      if (!target.codexNativeObservationExpectation) return;
+      const pluginId = `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`;
+      const registration = await inspectCodexPluginRegistrationLive({
+        pluginId,
+        cwd: target.identity.cwd,
+        env: options.context.env,
+        nativeCliRunner: runner,
+        manager: currentCodexManager(),
+      });
+      const observed = requireObservedCodexNativeState(
+        registration.observation,
+        'artifact write precheck',
+      );
+      if (target.codexNativeObservationExpectation === 'installed' && observed !== 'installed') {
+        throw new Error(
+          'codexNativeExpectedInstalled: artifact write precheck requires the reused Codex plugin to remain installed.',
+        );
+      }
+    },
     preflightMaterialize: async (target) => {
       if (target.identity.sourceId && options.context.expectedCatalogConfigDigest) {
         const current = await readCatalogSourcesConfigSnapshot(options.context.env);
@@ -3974,7 +4035,9 @@ function createNativeDriver(options: {
           manager: currentCodexManager(),
         });
         const nativeState = observedCodexNativeState(registration.observation, 'native health postcheck');
-        if (nativeState === 'absent') return 'absent';
+        if (nativeState !== 'present') return nativeState;
+        if (!registration.observations[target.identity.scope]
+          || registration.activations[target.identity.scope] !== true) return 'partial';
         const codexManager = currentCodexManager();
         if (target.identity.scope !== 'project' || !codexManager) return 'present';
         const userConfig = await readCodexConfigFile(
@@ -4108,21 +4171,26 @@ function createNativeDriver(options: {
               throw new Error(`Claude marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`);
             }
           }
+          const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
+          let codexRemovalRequired = false;
+          if (target.identity.platform === 'codex') {
+            const registration = await inspectCodexPluginRegistrationLive({
+              pluginId,
+              cwd: target.identity.cwd,
+              env: options.context.env,
+              nativeCliRunner: runner,
+              manager: currentCodexManager(),
+            });
+            codexRemovalRequired = requireObservedCodexNativeState(
+              registration.observation,
+              'native write precheck',
+            ) === 'installed';
+          }
           const mirrored = await mirrorCatalog(catalog, options.context.env, target.identity);
           mirrorTransactions.set(target, mirrored);
           const marketplaceRoot = mirrored.rootDir;
-          const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
           if (target.identity.platform === 'codex') {
-          const registration = await inspectCodexPluginRegistrationLive({
-            pluginId,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            nativeCliRunner: runner,
-            manager: currentCodexManager(),
-          });
-          const removalRequired = registration.observation.state === 'observed'
-            && registration.observation.value === 'installed';
-          if (removalRequired) {
+          if (codexRemovalRequired) {
             await runNativeCliChecked(
               buildCodexPluginRemoveInvocation(
                 requireCodexManager(currentCodexManager()),
@@ -4155,6 +4223,7 @@ function createNativeDriver(options: {
             && !path.relative(nativePluginRoot, action.path).startsWith('..'));
           for (const action of requiredSkillWrites) {
             await applyPlannedOperationAction(action);
+            completedNativeSkillWrites.add(action);
           }
           const skillsRelativeRoot = await ensureCodexActiveSkillsManifest({
             plugin: target.plugin,
@@ -4269,6 +4338,7 @@ function createNativeDriver(options: {
     },
     writeArtifacts: async (target) => {
       for (const operationAction of target.operationActions ?? []) {
+        if (completedNativeSkillWrites.has(operationAction)) continue;
         if (operationAction.kind === 'writeOwnedArtifact'
           || operationAction.kind === 'updateSharedConfig'
           || operationAction.kind === 'setActivation') {

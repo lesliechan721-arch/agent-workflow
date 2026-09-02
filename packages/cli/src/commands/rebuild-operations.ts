@@ -46,6 +46,7 @@ export interface DesiredTarget {
   optionalOwnedComponents?: readonly OwnedComponent[];
   requiresNative: boolean;
   writeNativeRequired?: boolean;
+  codexNativeObservationExpectation?: 'observed' | 'installed';
   artifacts: readonly GeneratedArtifact[];
   operationActions?: readonly OperationAction[];
   catalog?: CatalogResolution;
@@ -103,6 +104,7 @@ export interface RebuildPostApplyInvocation {
 
 export interface RebuildTargetDriver {
   ownership: OwnedComponentExecutor;
+  preflightMutation?(target: DesiredTarget): Promise<void>;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
   commitMaterialize?(target: DesiredTarget): Promise<void>;
   rollbackMaterialize?(target: DesiredTarget): Promise<void>;
@@ -468,6 +470,12 @@ function postcheckMessage(
     })));
     return inspection.errors.map((error) => `${error.label}: ${error.message}`).join('; ');
   }
+  if (invalid.some((component) =>
+    component.state === 'partial'
+    && component.component.kind === 'native-plugin'
+    && component.component.identity.platform === 'codex')) {
+    return 'codexActivationPostcheckFailed: Codex scope activation was not observed as enabled.';
+  }
   const diagnostics = invalid
     .map((component) => component.diagnostic)
     .filter((diagnostic): diagnostic is string => diagnostic !== undefined);
@@ -807,6 +815,18 @@ export async function executeRebuildOperation(options: {
   };
   try {
     validateDesiredTarget(options.target);
+  } catch (error) {
+    return failed(
+      options.command,
+      options.target,
+      accumulator,
+      'preflight',
+      errorMessage(error),
+    );
+  }
+
+  try {
+    await options.driver.preflightMutation?.(options.target);
   } catch (error) {
     return failed(
       options.command,

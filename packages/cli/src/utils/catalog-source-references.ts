@@ -605,6 +605,13 @@ async function readOwnedHeaderReference(
       'ownerHeaderPathValidation',
       env,
       cwd,
+      {
+        global: false,
+        ...(parsed.identity.sourceId ? { sourceId: parsed.identity.sourceId } : {}),
+        pluginName: parsed.identity.plugin,
+        platform: parsed.identity.platform,
+        scope: parsed.identity.scope,
+      },
     ));
     return null;
   }

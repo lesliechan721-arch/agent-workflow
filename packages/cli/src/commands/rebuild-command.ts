@@ -84,6 +84,7 @@ import {
   canonicalMarketplaceRegistrationNames,
   inventoryCatalogSourceReferences,
 } from '../utils/catalog-source-references.js';
+import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import {
   inspectOwnedComponents,
@@ -94,8 +95,12 @@ import {
 } from '../utils/ownership.js';
 import { resolveActiveCatalogPluginShallow } from '../utils/catalog-generation-resolver.js';
 import {
+  canonicalizePathThroughExistingAncestorSync,
   codexProjectConfigAliasesUserHome,
+  getClaudeHome,
+  getCodexHome,
   resolveCanonicalRepoProjectKey,
+  resolveRepoRootSync,
 } from '../utils/state-paths.js';
 import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
@@ -537,6 +542,9 @@ function failedResult(
 }
 
 function toTargetResult(result: RebuildResult): ReceiptTargetResult {
+  const errorPrefix = result.status === 'failed'
+    ? result.error.message.split(':', 1)[0]
+    : undefined;
   return {
     target: {
       pluginName: result.target.pluginName,
@@ -550,7 +558,12 @@ function toTargetResult(result: RebuildResult): ReceiptTargetResult {
     },
     action: result.command,
     state: result.status === 'succeeded' ? 'completed' : 'failed',
-    ...(result.status === 'failed' ? { message: result.error.message } : {}),
+    ...(result.status === 'failed' ? {
+      message: result.error.message,
+      errorCode: errorPrefix && /^[A-Za-z][A-Za-z0-9]*$/u.test(errorPrefix)
+        ? errorPrefix
+        : 'writeFailed',
+    } : {}),
   };
 }
 
@@ -1200,12 +1213,6 @@ async function cleanupOfflineOwnedComponents(options: {
   nativeCliRunner?: NativeCliRunner;
   codexManager?: RebuildExecutionContext['codexManager'];
 }): Promise<RebuildCommandResult> {
-  if (options.targets.some((target) => target.marketplaceIdentityUnresolved)) {
-    throw namespacedPreflightError(
-      'marketplaceIdentityUnavailable: Cannot uniquely recover the native marketplace name from live inventory or a canonical native registration path.',
-      options.targets,
-    );
-  }
   const results: RebuildResult[] = [];
   const warnings: string[] = [];
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
@@ -1238,15 +1245,7 @@ async function cleanupOfflineOwnedComponents(options: {
       : undefined;
     let activationDisposition: 'remove' | 'disable' = 'remove';
     if (activationAction && target.scope === 'user') {
-      const projectIntent = await readPluginIntentState({
-        scope: 'project',
-        cwd: options.cwd,
-        env: options.env,
-      });
-      const remainsDesired = projectIntent.roots.some((root) =>
-        root.pluginId === target.pluginId && root.platforms.includes('codex'))
-        ;
-      if (remainsDesired) activationDisposition = 'disable';
+      activationDisposition = 'disable';
     }
     const plugin = createSyntheticPlugin(target.pluginName, options.env);
     plugin.sourceId = target.sourceId;
@@ -1288,6 +1287,12 @@ async function cleanupOfflineOwnedComponents(options: {
       target: desired,
       driver: integration.driver,
     });
+    if (target.marketplaceIdentityUnresolved) {
+      result.residual.push('nativeMarketplaceIdentityUnresolved');
+      warnings.push(
+        `nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`,
+      );
+    }
     let finalResult = result;
     if (inventoryErrors.length > 0) {
       const message = 'stateInventoryResidual: Some weak state could not be verified. Retry cleanup, use cleanup --force only for exclusively owned damaged output, or run reinstall/sync to restore the target.';
@@ -1341,14 +1346,12 @@ async function previewOfflineOwnedComponents(options: {
   codexManagerPreviewer?: typeof previewCodexManager;
   onPreviewStage?: RebuildCommandRuntime['onPreviewStage'];
 }): Promise<RebuildCommandResult> {
-  if (options.targets.some((target) => target.marketplaceIdentityUnresolved)) {
-    throw namespacedPreflightError(
-      'marketplaceIdentityUnavailable: Cannot uniquely recover the native marketplace name from live inventory or a canonical native registration path.',
-      options.targets,
-    );
-  }
   await options.onPreviewStage?.('inventory');
   const preview = mergeRebuildCommandResults([]);
+  preview.warnings.push(...options.targets.flatMap((target) =>
+    target.marketplaceIdentityUnresolved
+      ? [`nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`]
+      : []));
   if (options.evidence) {
     preview.offlineCleanupPlans = options.evidence;
     preview.operationPlan = createOfflineCleanupOperationPlan(options.evidence);
@@ -1790,12 +1793,6 @@ export async function runRebuildCommand(options: {
     return mergeRebuildCommandResults([]);
   }
   if (options.command === 'cleanup') {
-    if (cleanupLiveTargets.some((target) => target.marketplaceIdentityUnresolved)) {
-      throw namespacedPreflightError(
-        'marketplaceIdentityUnavailable: Cannot uniquely recover the native marketplace name from live inventory or a canonical native registration path.',
-        cleanupLiveTargets,
-      );
-    }
     if (cleanupForce) {
       const requestedPlatforms = selectedPlatforms(options.commandOptions.platform);
       const cleanupSourceSnapshot = await readCatalogSourcesConfigSnapshot(runtimeEnv).catch(() => undefined);
@@ -1818,7 +1815,8 @@ export async function runRebuildCommand(options: {
           (error.kind === 'ownerMarkerRead'
             || error.kind === 'ownerMarkerValidation'
             || error.kind === 'ownerHeaderRead'
-            || error.kind === 'ownerHeaderValidation')
+            || error.kind === 'ownerHeaderParse'
+            || error.kind === 'ownerHeaderPathValidation')
           && !error.relevance.global
           && (error.relevance.sourceId === undefined || error.relevance.sourceId === sourceId)
           && (error.relevance.pluginName === undefined || error.relevance.pluginName === parsed.pluginName)
@@ -1838,7 +1836,7 @@ export async function runRebuildCommand(options: {
           })
         : { targets: [], evidence: [] };
       const forcePlan = await mergeForceCleanupPlans(livePlan, supplement);
-      const unresolvedTargets = requestedPluginNames.flatMap((selector) => {
+      const requestedTargets = requestedPluginNames.flatMap((selector) => {
         const parsed = parsePluginId(selector);
         const sourceId = parsed.sourceId ?? primarySource;
         return sourceId ? requestedPlatforms.map((platform) => ({
@@ -1850,6 +1848,10 @@ export async function runRebuildCommand(options: {
           scope: options.commandOptions.scope,
         })) : [];
       });
+      const unresolvedTargets = requestedTargets.filter((requested) => !forcePlan.targets.some((target) =>
+        target.identity.pluginId === requested.pluginId
+        && target.identity.platform === requested.platform
+        && target.identity.scope === requested.scope));
       if (expectedOfflineCleanup?.forceExclusive === true) {
         const actual = forcePlan.evidence.find((candidate) =>
           candidate.pluginId === expectedOfflineCleanup.pluginId
@@ -1862,10 +1864,16 @@ export async function runRebuildCommand(options: {
           );
         }
       }
-      if (forcePlan.targets.length === 0) {
+      if (unresolvedTargets.length > 0) {
         throw namespacedPreflightError(
           'forceCleanupPathUnavailable: No exact exclusive output is available from live evidence or the local Active shallow plan. Restore the local Active bundle, then retry cleanup --force, or inspect and remove the exact output manually.',
           unresolvedTargets,
+        );
+      }
+      if (forcePlan.targets.length === 0) {
+        throw namespacedPreflightError(
+          'forceCleanupPathUnavailable: No exact exclusive output is available from live evidence or the local Active shallow plan. Restore the local Active bundle, then retry cleanup --force, or inspect and remove the exact output manually.',
+          requestedTargets,
         );
       }
       const operationPlan = createOfflineCleanupOperationPlan(forcePlan.evidence);
@@ -1884,7 +1892,7 @@ export async function runRebuildCommand(options: {
           operationPlan,
         };
       }
-      const forceResults = await Promise.all(forcePlan.targets.map((target) => {
+      const forceResults = await Promise.all(forcePlan.targets.map(async (target) => {
         const integration = createRebuildIntegration({
           context: {
             env: runtimeEnv,
@@ -1894,13 +1902,25 @@ export async function runRebuildCommand(options: {
           },
         });
         const { finalizeCleanup: _finalizeCleanup, ...pathOnlyDriver } = integration.driver;
-        return executeRebuildOperation({ command: 'cleanup', target, driver: pathOnlyDriver });
+        const result = await executeRebuildOperation({ command: 'cleanup', target, driver: pathOnlyDriver });
+        if (cleanupLiveTargets.some((liveTarget) =>
+          liveTarget.marketplaceIdentityUnresolved
+          && liveTarget.pluginId === result.target.pluginId
+          && liveTarget.platform === result.target.platform
+          && liveTarget.scope === result.target.scope)) {
+          result.residual.push('nativeMarketplaceIdentityUnresolved');
+        }
+        return result;
       }));
+      const warnings = cleanupLiveTargets.flatMap((target) =>
+        target.marketplaceIdentityUnresolved
+          ? [`nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`]
+          : []);
       return leaseSafeRebuildResult({
         platforms: [...new Set(forceResults.map((entry) => entry.target.platform))],
         plugins: forceResults.filter((entry) => entry.status === 'succeeded')
           .map((entry) => entry.target.pluginName),
-        warnings: [],
+        warnings,
         rebuildResults: forceResults,
         targetResults: forceResults.map(toTargetResult),
         overallState: forceResults.every((entry) => entry.status === 'succeeded')
@@ -2216,13 +2236,51 @@ export async function runRebuildCommand(options: {
       const stateInventory = await readOrdinaryInventory();
       const assertWriteInventoryComplete = (
         inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
+        exactOwnedTextErrorLocations?: ReadonlySet<string>,
+        exactSkillMarkerErrorLocations?: ReadonlySet<string>,
       ): void => {
         if (options.command === 'cleanup') return;
+        const isExpectedOwnedTextHeaderError = (
+          error: (typeof inventory.errors)[number],
+        ): boolean => {
+          if (error.kind !== 'ownerHeaderParse'
+            && error.kind !== 'ownerHeaderPathValidation') return false;
+          if (exactOwnedTextErrorLocations === undefined) return true;
+          const relevance = error.relevance;
+          if (relevance.global || relevance.platform === undefined || relevance.scope === undefined) {
+            return false;
+          }
+          return [...exactOwnedTextErrorLocations].some((target) => {
+            const [sourceId, pluginName, platform, scope, location] = target.split('\0');
+            return (relevance.sourceId === undefined || relevance.sourceId === sourceId)
+              && (relevance.pluginName === undefined || relevance.pluginName === pluginName)
+              && relevance.platform === platform
+              && relevance.scope === scope
+              && error.location.replaceAll('\\', '/') === location;
+          });
+        };
+        const isExpectedSkillMarkerError = (
+          error: (typeof inventory.errors)[number],
+        ): boolean => {
+          if (error.kind !== 'ownerMarkerRead'
+            && error.kind !== 'ownerMarkerValidation') return false;
+          if (exactSkillMarkerErrorLocations === undefined) return true;
+          const relevance = error.relevance;
+          if (relevance.global || relevance.platform === undefined || relevance.scope === undefined) {
+            return false;
+          }
+          return exactSkillMarkerErrorLocations.has([
+            relevance.platform,
+            relevance.scope,
+            error.location.replaceAll('\\', '/'),
+          ].join('\0'));
+        };
         assertCatalogSourceInventoryComplete(options.command === 'reinstall'
           ? {
               ...inventory,
               errors: inventory.errors.filter((error) =>
-                error.kind !== 'ownerMarkerRead' && error.kind !== 'ownerMarkerValidation'),
+                !isExpectedSkillMarkerError(error)
+                && !isExpectedOwnedTextHeaderError(error)),
             }
           : inventory);
       };
@@ -2376,21 +2434,44 @@ export async function runRebuildCommand(options: {
         string,
         CodexPluginRegistrationLiveInspection
       >();
+      let plannedOwnedTextTargets = new Map<string, Set<string>>();
+      let plannedSkillMarkerTargets = new Map<string, Set<string>>();
+      const exactOwnedTextTargets = (plan: ReconcileOperationPlan): Set<string> => {
+        const output = new Set<string>();
+        for (const target of plan.targets) {
+          for (const location of plannedOwnedTextTargets.get([
+            target.pluginId, target.platform, target.resolvedScope,
+          ].join('\0')) ?? []) {
+            output.add([
+              target.pluginId.split('/', 1)[0],
+              target.pluginName,
+              target.platform,
+              target.resolvedScope,
+              location,
+            ].join('\0'));
+          }
+        }
+        return output;
+      };
+      const exactSkillMarkerTargets = (plan: ReconcileOperationPlan): Set<string> => {
+        const output = new Set<string>();
+        for (const target of plan.targets) {
+          for (const location of plannedSkillMarkerTargets.get([
+            target.pluginId, target.platform, target.resolvedScope,
+          ].join('\0')) ?? []) {
+            output.add([target.platform, target.resolvedScope, location].join('\0'));
+          }
+        }
+        return output;
+      };
       const createPlan = async (
         inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
         codexManager?: CodexManager,
       ): Promise<ReconcileOperationPlan> => {
         plannedCodexRegistrations = new Map();
+        plannedOwnedTextTargets = new Map();
+        plannedSkillMarkerTargets = new Map();
         assertWriteInventoryComplete(inventory);
-        const codexActivationSnapshots = executionSelections.some((selection) =>
-          selection.platform === 'codex')
-          ? Object.fromEntries(await Promise.all((['user', 'project'] as const).map(async (scope) => [
-              scope,
-              (await readCodexConfigFile(
-                resolveCodexPaths(options.commandOptions.cwd, scope, runtimeEnv).configTomlPath,
-              )).snapshot,
-            ] as const)))
-          : undefined;
         const targets: Array<{
           pluginId: string;
           pluginName: string;
@@ -2427,6 +2508,35 @@ export async function runRebuildCommand(options: {
               catalog: toCatalogResolution(entry.source),
               readOnlyInspectionPlan: true,
             });
+            const targetKey = [entry.pluginId, platform, scope].join('\0');
+            const ownedTextTargets = plannedOwnedTextTargets.get(targetKey) ?? new Set<string>();
+            const skillMarkerTargets = plannedSkillMarkerTargets.get(targetKey) ?? new Set<string>();
+            const rawRepoRoot = resolveRepoRootSync(options.commandOptions.cwd);
+            const sensitiveRoots = [
+              canonicalizePathThroughExistingAncestorSync(getCodexHome(runtimeEnv)),
+              canonicalizePathThroughExistingAncestorSync(getClaudeHome(runtimeEnv)),
+              canonicalizePathThroughExistingAncestorSync(rawRepoRoot),
+              getCodexHome(runtimeEnv),
+              getClaudeHome(runtimeEnv),
+              rawRepoRoot,
+            ];
+            for (const component of desired.ownedComponents) {
+              if (component.kind === 'owned-text-file') {
+                ownedTextTargets.add(sanitizeCatalogSourceErrorMessage(
+                  component.path,
+                  runtimeEnv,
+                  sensitiveRoots,
+                ).replaceAll('\\', '/'));
+              } else if (component.kind === 'skill-directory') {
+                skillMarkerTargets.add(sanitizeCatalogSourceErrorMessage(
+                  path.join(component.path, SKILL_OWNER_MARKER),
+                  runtimeEnv,
+                  sensitiveRoots,
+                ).replaceAll('\\', '/'));
+              }
+            }
+            plannedOwnedTextTargets.set(targetKey, ownedTextTargets);
+            plannedSkillMarkerTargets.set(targetKey, skillMarkerTargets);
             const result = await inspectOwnedComponents({
               components: desired.ownedComponents,
               executor: inspection.driver.ownership,
@@ -2489,14 +2599,14 @@ export async function runRebuildCommand(options: {
               || surface?.classification !== 'native'
               || options.command === 'cleanup'
               || options.command === 'uninstall') return inspected.state;
-            const nativePresent = inspected.components.some((component) =>
-              component.component.kind === 'native-plugin' && component.state === 'present');
-            return nativePresent
-              && codexRegistration?.observation.state === 'observed'
-              && codexRegistration.observation.value === 'installed'
-              && codexActivationSnapshots?.[scope].plugins[codexPluginId]?.enabled === true
-              ? 'present'
-              : 'absent';
+            if (!codexRegistration) return inspected.state;
+            if (codexRegistration.observation.state === 'failed') return 'error';
+            if (codexRegistration.observation.state === 'unobserved') return 'partial';
+            if (codexRegistration.observation.value === 'absent') return 'absent';
+            return codexRegistration.observations[scope]
+              && codexRegistration.activations[scope] === true
+              ? inspected.state
+              : 'partial';
           };
           const requestedPlacementState = placementState(
             requestedInspection,
@@ -2549,19 +2659,7 @@ export async function runRebuildCommand(options: {
               : options.command === 'reinstall' ? 'reinstall' : 'install'
             : options.command === 'reinstall' ? 'reinstall' : 'install';
           let errorCode: string | undefined;
-          const hasForeignCollision = [...requestedInspection.components, ...otherInspection.components]
-            .some((component) => component.collision !== undefined);
-          const hasInvalidExclusiveOwner = options.command === 'reinstall'
-            && requestedInspection.components.some((component) =>
-              (component.component.kind === 'skill-directory'
-                || component.component.kind === 'owned-text-file')
-              && component.collision?.reason === 'unownedContent');
-          if (dependencyEnabled && hasForeignCollision) {
-            action = 'block';
-            errorCode = hasInvalidExclusiveOwner
-              ? 'exclusiveOwnerEvidenceInvalid'
-              : 'artifactCollision';
-          } else if (dependencyEnabled
+          if (dependencyEnabled
             && platform === 'codex'
             && relation === 'requested'
             && surface?.scopeOverlap === 'aw-owned-conflict'
@@ -2585,18 +2683,18 @@ export async function runRebuildCommand(options: {
             action = 'block';
             errorCode = 'dependencyNotReady';
           }
-          if (!hasForeignCollision && relation === 'dependency'
+          if (relation === 'dependency'
             && requestedPlacementState === 'present'
             && otherPlacementState === 'present') {
             action = 'block';
             state = 'partial';
             errorCode = 'dependencyScopeConflict';
-          } else if (!hasForeignCollision && relation === 'dependency'
+          } else if (relation === 'dependency'
             && options.commandOptions.scope === 'project'
             && otherInspection.state === 'present') {
             resolvedScope = 'user';
             state = 'present';
-          } else if (!hasForeignCollision && relation === 'dependency'
+          } else if (relation === 'dependency'
             && options.commandOptions.scope === 'project'
             && (otherPlacementState === 'partial' || otherPlacementState === 'error')) {
             resolvedScope = 'user';
@@ -2605,7 +2703,7 @@ export async function runRebuildCommand(options: {
               action = 'block';
               errorCode = 'dependencyNotReady';
             }
-          } else if (!hasForeignCollision && relation === 'dependency'
+          } else if (relation === 'dependency'
             && options.commandOptions.scope === 'user'
             && otherPlacementState === 'error') {
             action = 'block';
@@ -2614,9 +2712,28 @@ export async function runRebuildCommand(options: {
           const resolvedInspection = resolvedScope === options.commandOptions.scope
             ? requestedInspection
             : otherInspection;
+          const collisionComponents = relation === 'dependency'
+            ? resolvedInspection.components
+            : [...requestedInspection.components, ...otherInspection.components];
+          const invalidOwnerComponents = relation === 'dependency'
+            ? resolvedInspection.components
+            : requestedInspection.components;
+          const hasForeignCollision = collisionComponents
+            .some((component) => component.collision !== undefined);
+          const hasInvalidExclusiveOwner = options.command === 'reinstall'
+            && invalidOwnerComponents.some((component) =>
+              (component.component.kind === 'skill-directory'
+                || component.component.kind === 'owned-text-file')
+              && component.collision?.reason === 'unownedContent');
           state = resolvedScope === options.commandOptions.scope
             ? requestedPlacementState
             : otherPlacementState;
+          if (dependencyEnabled && hasForeignCollision) {
+            action = 'block';
+            errorCode = hasInvalidExclusiveOwner
+              ? 'exclusiveOwnerEvidenceInvalid'
+              : 'artifactCollision';
+          }
           if (!hasForeignCollision && !errorCode && relation === 'dependency') {
             action = state === 'present' ? 'keep' : state === 'partial' ? 'reinstall' : 'install';
           }
@@ -3011,7 +3128,8 @@ export async function runRebuildCommand(options: {
             : []));
         if (preservedScopes.size === 0) return [codexPlan];
         const preservedNativePluginIds = new Set(catalogClosure.flatMap((target) =>
-          preservedScopes.get(target.pluginId) === 'user'
+          (options.command === 'install' || options.command === 'reinstall')
+          && preservedScopes.get(target.pluginId) === 'user'
           && liveEvidence.find((evidence) =>
             evidence.codexPluginId === target.codexPluginId)?.activations.user === true
             ? [target.pluginId]
@@ -3193,6 +3311,15 @@ export async function runRebuildCommand(options: {
               target.operationActions = target.operationActions?.filter((action) =>
                 action.kind !== 'setActivation');
               target.writeNativeRequired = writesSharedNative;
+              const hasExtensionMutation = codexPlans.some((codexPlan) => [
+                ...codexPlan.extensionWrites,
+                ...codexPlan.extensionRemovals,
+              ].some((action) =>
+                action.pluginId === entry.pluginId
+                && action.scope === planned.resolvedScope));
+              target.codexNativeObservationExpectation = preserveSharedNative && hasExtensionMutation
+                ? (plannedNative.action === 'reuse' ? 'installed' : 'observed')
+                : undefined;
               if (!writesSharedNative) {
                 const isSharedNativeComponent = (component: OwnedComponent) =>
                   component.kind === 'native-plugin'
@@ -3292,24 +3419,31 @@ export async function runRebuildCommand(options: {
           'dependency.plan',
           () => createPlan(stateInventory),
         );
+        assertWriteInventoryComplete(
+          stateInventory,
+          exactOwnedTextTargets(initialPlan),
+          exactSkillMarkerTargets(initialPlan),
+        );
         const provisionalCodexPlans = await createCodexPlans(initialPlan);
         const previewNeedsNativeMaterialization = provisionalCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
             action.action === 'install'
             || action.action === 'replace'
             || action.action === 'repair'));
-        const previewActivationOnlyProject = !previewNeedsNativeMaterialization
+        const previewActivationOnly = !previewNeedsNativeMaterialization
           && provisionalCodexPlans.some((plan) =>
-            plan.requirement.requiresProjectPluginContract
+            plan.postcheck.support === 'observed'
             && plan.postcheck.plugins.length > 0);
-        const previewConsumer = previewActivationOnlyProject
+        const previewActivationScope: Scope = provisionalCodexPlans.some((plan) =>
+          plan.requirement.requiresProjectPluginContract) ? 'project' : 'user';
+        const previewConsumer = previewActivationOnly
           ? await (
               options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
             )({
               cwd: options.commandOptions.cwd,
               env: runtimeEnv,
               runner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
-              operationRequirement: getCodexOperationRequirement('project'),
+              operationRequirement: getCodexOperationRequirement(previewActivationScope),
               requiresNativeMaterialization: false,
             })
           : undefined;
@@ -3382,24 +3516,31 @@ export async function runRebuildCommand(options: {
           'dependency.plan',
           () => createPlan(stateInventory),
         );
+        assertWriteInventoryComplete(
+          stateInventory,
+          exactOwnedTextTargets(lockedPlan),
+          exactSkillMarkerTargets(lockedPlan),
+        );
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
             action.action === 'install'
             || action.action === 'replace'
             || action.action === 'repair'));
-        const activationOnlyProjectOperation = !codexManagerRequired
+        const activationOnlyOperation = !codexManagerRequired
           && provisionalLockedCodexPlans.some((plan) =>
-            plan.requirement.requiresProjectPluginContract
+            plan.postcheck.support === 'observed'
             && plan.postcheck.plugins.length > 0);
-        const activationConsumer = activationOnlyProjectOperation
+        const activationScope: Scope = provisionalLockedCodexPlans.some((plan) =>
+          plan.requirement.requiresProjectPluginContract) ? 'project' : 'user';
+        const activationConsumer = activationOnlyOperation
           ? await (
               options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
             )({
               cwd: options.commandOptions.cwd,
               env: runtimeEnv,
               runner: executionContext.nativeCliRunner,
-              operationRequirement: getCodexOperationRequirement('project'),
+              operationRequirement: getCodexOperationRequirement(activationScope),
               requiresNativeMaterialization: false,
             })
           : undefined;
@@ -3441,6 +3582,11 @@ export async function runRebuildCommand(options: {
           : provisionalLockedCodexPlans;
         if (executionContext.codexManager) {
           lockedPlan = await createPlan(stateInventory, executionContext.codexManager);
+          assertWriteInventoryComplete(
+            stateInventory,
+            exactOwnedTextTargets(lockedPlan),
+            exactSkillMarkerTargets(lockedPlan),
+          );
           lockedCodexPlans = await createCodexPlans(
             lockedPlan,
             'observed',

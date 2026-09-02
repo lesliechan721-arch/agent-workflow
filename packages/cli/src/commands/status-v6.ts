@@ -1069,11 +1069,18 @@ export async function statusCommandV7(options: {
           ? inspectCodexRegistration(
             `${probe.pluginName}@${probe.marketplaceName}`,
             options.scope === undefined ? probe.scope : scopes[0]!,
-          ).then((registration) => registration.observation.state === 'observed'
-            && registration.observation.value === 'installed'
-            && registration.activations[probe.scope] === true
-            ? 'present' as const
-            : 'absent' as const)
+          ).then((registration) => {
+            if (registration.observation.state === 'failed') {
+              throw new Error(
+                'codexNativeObservationFailed: status requires Codex plugin list evidence.',
+              );
+            }
+            if (registration.observation.state === 'unobserved') return 'partial' as const;
+            if (registration.observation.value === 'absent') return 'absent' as const;
+            return registration.activations[probe.scope] === true
+              ? 'present' as const
+              : 'partial' as const;
+          })
         : Promise.resolve(ownerInventory.references.some((reference) =>
             (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
             && reference.sourceId === probe.sourceId
