@@ -803,8 +803,9 @@ describe('namespaced marketplace root', () => {
   );
 
   it('replays validated Codex user Skill owner overlays for multiple plugins', async () => {
-    const fixture = getCurrentSourceTestIsolation().layout.rootDir;
-    const sourceRoot = path.join(fixture, 'marketplaces', 'official');
+    const isolation = getCurrentSourceTestIsolation();
+    const fixture = isolation.layout.rootDir;
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
     const stagingRoot = path.join(fixture, 'staging');
     await createMarketplaceRoot(sourceRoot);
     for (const pluginName of ['demo', 'second']) {
@@ -867,5 +868,13 @@ describe('namespaced marketplace root', () => {
         scope: 'user',
       });
     }
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(inventory.references.filter((reference) =>
+      reference.kind === 'namespacedOwner'
+      && reference.location.startsWith(sourceRoot))).toEqual([]);
   });
 });

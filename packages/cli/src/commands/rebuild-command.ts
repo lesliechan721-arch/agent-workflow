@@ -33,6 +33,7 @@ import { resolveAwHome, resolveCodexPaths } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { analyzeCodexSurface } from '../utils/codex-surface-analysis.js';
+import { buildGeneratedName } from '../generators/shared.js';
 import {
   createCodexReconcilePlan,
   type CodexReconcilePlan,
@@ -370,11 +371,56 @@ function effectiveDependencyScopeOverrides(options: {
   ];
 }
 
+interface IntentCatalogDependencyEntry {
+  pluginId: string;
+  dependencyPluginIds: string[];
+}
+
+function pruneUnreachableDependencyScopeOverrides(
+  state: PluginIntentState,
+  catalogEntries: readonly IntentCatalogDependencyEntry[] | undefined,
+): PluginIntentState {
+  if (!catalogEntries || state.dependencyScopeOverrides.length === 0) return state;
+  const byId = new Map(catalogEntries.map((entry) => [entry.pluginId, entry]));
+  const reachable = new Set<string>();
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (pluginId: string, platform: PlatformName, root: boolean): boolean => {
+    const entry = byId.get(pluginId);
+    if (!entry || visiting.has(pluginId)) return false;
+    const visitKey = `${pluginId}\0${platform}`;
+    if (visited.has(visitKey)) {
+      if (!root) reachable.add(visitKey);
+      return true;
+    }
+    visiting.add(pluginId);
+    for (const dependencyPluginId of entry.dependencyPluginIds) {
+      if (!visit(dependencyPluginId, platform, false)) return false;
+    }
+    visiting.delete(pluginId);
+    visited.add(visitKey);
+    if (!root) reachable.add(visitKey);
+    return true;
+  };
+  for (const root of state.roots) {
+    for (const platform of root.platforms) {
+      visiting.clear();
+      if (!visit(root.pluginId, platform, true)) return state;
+    }
+  }
+  return canonicalizePluginIntentState({
+    ...state,
+    dependencyScopeOverrides: state.dependencyScopeOverrides.filter((override) =>
+      reachable.has(`${override.pluginId}\0${override.platform}`)),
+  });
+}
+
 function deriveDesiredIntentState(options: {
   command: RebuildCommand;
   state: PluginIntentState;
   selectedRoots: Array<{ pluginId: string; platforms: PlatformName[] }>;
   plan: ReconcileOperationPlan;
+  catalogEntries?: readonly IntentCatalogDependencyEntry[];
 }): PluginIntentState {
   let next = options.state;
   if (options.command === 'install') {
@@ -382,6 +428,7 @@ function deriveDesiredIntentState(options: {
     next = updateIntentOverrides({ state: next, plan: options.plan });
   } else if (options.command === 'uninstall') {
     for (const root of options.selectedRoots) next = removePluginIntentRootPlatforms(next, root);
+    next = pruneUnreachableDependencyScopeOverrides(next, options.catalogEntries);
   }
   return next;
 }
@@ -410,6 +457,7 @@ async function writeDesiredIntentSuperset(options: {
   plan: ReconcileOperationPlan;
   codexPlan?: CodexReconcilePlan;
   preserveOtherCodexScopeRootIds: ReadonlySet<string>;
+  catalogEntries: readonly IntentCatalogDependencyEntry[];
   env: NodeJS.ProcessEnv;
 }): Promise<Array<{
   location: { scope: Scope; cwd: string; env: NodeJS.ProcessEnv };
@@ -421,6 +469,7 @@ async function writeDesiredIntentSuperset(options: {
     state: await readPluginIntentState(location),
     selectedRoots: options.selectedRoots,
     plan: options.plan,
+    catalogEntries: options.catalogEntries,
   });
   const superset = next;
   await writePluginIntentState(location, superset);
@@ -892,6 +941,7 @@ function createRebuildOperationPlan(options: {
   catalogSources: readonly CatalogSourceResolution[];
   intentBeforeByScope: Record<Scope, PluginIntentState>;
   configDigests: OperationPlanEvidence['configDigests'];
+  catalogEntries: readonly IntentCatalogDependencyEntry[];
 }): OperationPlan {
   const selectedRoots = [...new Map(options.dependencyPlan.targets.flatMap((target) =>
     target.relation === 'requested'
@@ -909,6 +959,7 @@ function createRebuildOperationPlan(options: {
     state: intentBefore,
     selectedRoots,
     plan: options.dependencyPlan,
+    catalogEntries: options.catalogEntries,
   });
   const beforeDigest = calculatePluginIntentDigest(intentBefore);
   const afterDigest = calculatePluginIntentDigest(intentAfter);
@@ -1982,6 +2033,13 @@ export async function runRebuildCommand(options: {
           pluginId: formatPluginId({ sourceId: source.sourceId, pluginName: entry.name }),
         }));
       });
+      const intentCatalogEntries: IntentCatalogDependencyEntry[] = availableEntries.map((candidate) => ({
+        pluginId: candidate.pluginId,
+        dependencyPluginIds: candidate.entry.dependencies.map((dependency) => formatPluginId({
+          sourceId: candidate.source.sourceId,
+          pluginName: dependency,
+        })),
+      }));
       const selectedEntries = selectors.map((selector, index) => {
         const matches = availableEntries.filter((candidate) =>
           candidate.entry.name === selector.pluginName
@@ -2718,6 +2776,7 @@ export async function runRebuildCommand(options: {
           state: beforeByScope[currentScope],
           selectedRoots,
           plan,
+          catalogEntries: intentCatalogEntries,
         });
         if (options.command === 'install') {
           afterByScope[otherScope] = removeSelectedRootPlatformsFromOtherScope({
@@ -2880,15 +2939,35 @@ export async function runRebuildCommand(options: {
               state: component.state,
               collision: component.collision?.reason,
             })));
-            const projectionState = projected.some((component) => component.collision)
-              ? planned.action === 'block' ? 'absent' as const : 'foreign' as const
-              : projected.some((component) => component.state === 'partial'
-                || component.state === 'error')
-                ? 'drifted' as const
-                : projected.some((component) => component.state === 'present')
-                  ? 'present' as const
-                  : 'absent' as const;
             for (const component of surface.components.filter((candidate) => candidate.owner === 'aw')) {
+              const artifactKeys = new Set<string>();
+              if (component.key.startsWith('extensions.instructions:')) {
+                artifactKeys.add('developer-instructions');
+              } else if ((component.key.startsWith('extensions.permissions:')
+                || component.key.startsWith('extensions.agents:')) && component.name) {
+                artifactKeys.add(buildGeneratedName(entry.plugin.manifest.name, component.name));
+              } else if (component.key.startsWith('artifacts.targets:')) {
+                const targetId = component.key.slice('artifacts.targets:'.length);
+                const target = entry.plugin.manifest.artifacts?.targets?.find((candidate) =>
+                  candidate.id === targetId);
+                const artifactKey = target?.target === 'codex.developerInstructionsBlock'
+                  ? 'developer-instructions'
+                  : target?.skillKey ?? target?.roleKey;
+                if (artifactKey) artifactKeys.add(artifactKey);
+              }
+              const componentInspections = projected.filter((candidate) =>
+                artifactKeys.has(candidate.component.identity.artifactKey)
+                || (candidate.component.kind === 'shared-config'
+                  && candidate.component.locator.kind === 'codex-role-registration'
+                  && artifactKeys.has(candidate.component.locator.roleKey)));
+              const projectionState = componentInspections.some((candidate) => candidate.collision)
+                ? planned.action === 'block' ? 'absent' as const : 'foreign' as const
+                : componentInspections.length > 0
+                  && componentInspections.every((candidate) => candidate.state === 'present')
+                  ? 'present' as const
+                  : componentInspections.some((candidate) => candidate.state !== 'absent')
+                    ? 'drifted' as const
+                    : 'absent' as const;
               extensions.push({ componentKey: component.key, scope, state: projectionState });
             }
           }
@@ -3254,6 +3333,7 @@ export async function runRebuildCommand(options: {
             source.resolution ? [source.resolution] : []),
           intentBeforeByScope,
           configDigests: previewPreparation.configDigests,
+          catalogEntries: intentCatalogEntries,
         });
         if (initialCodexPlans.length > 0) preview.codexReconcilePlans = initialCodexPlans;
         if (initialCodexPlans.some((plan) => plan.sharedNativeActions.some((action) =>
@@ -3378,6 +3458,7 @@ export async function runRebuildCommand(options: {
             source.resolution ? [source.resolution] : []),
           intentBeforeByScope,
           configDigests: lockedPreparation.configDigests,
+          catalogEntries: intentCatalogEntries,
         });
         if (options.runtime?.expectedPlanFingerprint) {
           try {
@@ -3416,6 +3497,7 @@ export async function runRebuildCommand(options: {
             plan: lockedPlan,
             codexPlan: lockedCodexPlans[0],
             preserveOtherCodexScopeRootIds,
+            catalogEntries: intentCatalogEntries,
             env: runtimeEnv,
           });
         }

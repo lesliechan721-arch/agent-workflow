@@ -97,7 +97,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backupPath }));
   });
 
-  it('inventories canonical owner artifacts but ignores ordinary project Skill markers', async () => {
+  it('inventories canonical project owner artifacts but ignores ordinary project and marketplace Skill markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
@@ -179,11 +179,6 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(inventory.references).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'namespacedOwner', location: role, sourceId: 'team' }),
-      expect.objectContaining({
-        kind: 'namespacedOwner',
-        location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
-        sourceId: 'team',
-      }),
     ]));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backup }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: exampleMarker }));
@@ -191,6 +186,11 @@ describe('phase 3B namespaced runtime stores', () => {
       location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
     }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
+      sourceId: 'team',
+    }));
   });
 
   it('does not turn Codex cache residue into ordinary or orphan cleanup consumers', async () => {

@@ -6317,6 +6317,122 @@ describe('five namespaced write commands', () => {
     ]));
   });
 
+  it('prunes only dependency scope overrides unreachable from remaining roots', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'intent-prune-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'first-leaf' },
+      { name: 'second-leaf' },
+      { name: 'shared-leaf' },
+      { name: 'first-root', dependencies: ['first-leaf', 'shared-leaf'] },
+      { name: 'second-root', dependencies: ['second-leaf', 'shared-leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/first-root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      dependencyScopeOverrides: [
+        { pluginId: 'team/first-leaf', platform: 'codex', scope: 'user' },
+        { pluginId: 'team/shared-leaf', platform: 'codex', scope: 'user' },
+      ],
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(installWriteCommand(['team/second-root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      dependencyScopeOverrides: [
+        { pluginId: 'team/second-leaf', platform: 'codex', scope: 'user' },
+        { pluginId: 'team/shared-leaf', platform: 'codex', scope: 'user' },
+      ],
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    await expect(uninstallWriteCommand(['team/first-root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/second-root', platforms: ['codex'] }],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/second-leaf', platform: 'codex', scope: 'user' },
+        { pluginId: 'team/shared-leaf', platform: 'codex', scope: 'user' },
+      ],
+    });
+    await expect(readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ roots: [] });
+
+    await expect(uninstallWriteCommand(['team/second-root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ roots: [], dependencyScopeOverrides: [] });
+  });
+
+  it('reconciles Codex AW extensions from component-specific live evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'component-evidence-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => {
+        manifest.extensions = {
+          instructions: [{ name: 'guide', title: 'Guide', content: 'Guide.' }],
+          agents: [{ name: 'worker', description: 'Worker.', prompt: 'Work.' }],
+        };
+      },
+    }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const agentPath = path.join(
+      isolation.layout.fixtureCwd,
+      '.codex',
+      'agents',
+      'aw-demo-worker.toml',
+    );
+    await fs.remove(agentPath);
+
+    const synced = await syncWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(synced.overallState, JSON.stringify(synced.rebuildResults)).toBe('succeeded');
+    expect(synced.codexReconcilePlans?.[0]?.extensionWrites).toEqual([
+      expect.objectContaining({
+        componentKey: 'extensions.agents:worker', scope: 'project', action: 'write',
+      }),
+    ]);
+    expect(synced.codexReconcilePlans?.[0]?.extensionWrites).not.toContainEqual(
+      expect.objectContaining({ componentKey: 'extensions.instructions:guide' }),
+    );
+  });
+
   it.each(['uninstall', 'cleanup'] as const)(
     'applies the command-specific cross-scope policy for %s with a live project consumer',
     async (command) => {
