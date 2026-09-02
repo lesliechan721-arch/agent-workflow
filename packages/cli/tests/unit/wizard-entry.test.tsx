@@ -17,6 +17,7 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
     '../../src/commands/write-commands.js',
   ),
   ...mocks,
+  syncWriteCommand: mocks.installWriteCommand,
 }));
 
 describe('write command runtime entry', () => {
@@ -38,7 +39,6 @@ describe('write command runtime entry', () => {
 
   it.each([
     ['install', ['demo', '--platform', 'codex']],
-    ['upgrade', ['demo', '--platform', 'codex']],
     ['reinstall', ['demo', '--platform', 'codex']],
     ['uninstall', ['demo', '--platform', 'codex']],
     ['cleanup', ['demo', '--platform', 'codex', '--scope', 'user', '--force']],
@@ -62,13 +62,20 @@ describe('write command runtime entry', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(captured.readStdout())).toMatchObject({
-      receiptSchemaVersion: 5,
+    const receipt = JSON.parse(captured.readStdout());
+    expect(receipt).toMatchObject({
+      receiptSchemaVersion: 6,
       command,
       ok: true,
       overallState: 'succeeded',
+      changes: [],
+      targetResults: [],
+      recoveryActions: [],
+      warnings: [],
       errors: [],
     });
+    expect(receipt).not.toHaveProperty('layers');
+    expect(receipt).not.toHaveProperty('targets');
     expect(launch).not.toHaveBeenCalled();
     expect(helper).toHaveBeenCalledOnce();
     if (command === 'cleanup') {

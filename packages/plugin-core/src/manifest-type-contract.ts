@@ -1,4 +1,4 @@
-import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js';
+import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
 import type { PluginManifestSource } from './types.js';
 
 type Equal<Left, Right> =
@@ -9,7 +9,7 @@ type Equal<Left, Right> =
 type Assert<Condition extends true> = Condition;
 
 export type PluginManifestSourceMatchesGeneratedSchema = Assert<
-  Equal<PluginManifestSource, PluginManifestSourceV2>
+  Equal<PluginManifestSource, PluginManifestSourceV3>
 >;
 export type MarketplaceInstallationMatchesGeneratedSchema = Assert<
   Equal<

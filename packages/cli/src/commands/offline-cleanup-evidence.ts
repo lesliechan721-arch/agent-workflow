@@ -18,13 +18,12 @@ export interface OfflineCleanupTargetEvidence {
 }
 
 export interface OfflineCleanupPlanAction {
-  action: 'removeOwnedOutput' | 'removeNativeRegistration' | 'removeLifecycleSnapshot';
-  kind: 'namespacedOwner' | 'namespacedMarketplace' | 'namespacedLifecycle';
+  action: 'removeOwnedOutput' | 'removeNativeRegistration';
+  kind: 'namespacedOwner' | 'namespacedMarketplace';
   target: string;
   marketplaceName?: string;
   activationScope?: Scope;
   projectKey?: string | null;
-  lifecycleMetadataIntegrityDigest?: string;
   pluginVersion?: string;
 }
 
@@ -59,11 +58,11 @@ export function offlineCleanupEvidenceFromInventory(options: {
 }): OfflineCleanupTargetEvidence | null {
   const references = options.inventory.references.filter((reference) =>
     (reference.kind === 'namespacedOwner'
-      || reference.kind === 'namespacedMarketplace'
-      || reference.kind === 'namespacedLifecycle')
+      || reference.kind === 'namespacedMarketplace')
     && reference.pluginName === options.pluginName
     && reference.sourceId === options.sourceId
-    && reference.sourceIdentity === options.sourceIdentity
+    && (reference.kind === 'namespacedOwner'
+      || reference.sourceIdentity === options.sourceIdentity)
     && reference.platform === options.platform
     && reference.scope === options.scope);
   if (references.length === 0) return null;
@@ -86,16 +85,11 @@ export function offlineCleanupEvidenceFromInventory(options: {
     return [{
       action: reference.kind === 'namespacedOwner'
         ? 'removeOwnedOutput'
-        : reference.kind === 'namespacedMarketplace'
-          ? 'removeNativeRegistration'
-          : 'removeLifecycleSnapshot',
+        : 'removeNativeRegistration',
       kind: reference.kind as OfflineCleanupPlanAction['kind'],
       target: reference.location,
       ...(reference.marketplaceName ? { marketplaceName: reference.marketplaceName } : {}),
       ...(reference.projectKey !== undefined ? { projectKey: reference.projectKey } : {}),
-      ...(reference.lifecycleMetadataIntegrityDigest
-        ? { lifecycleMetadataIntegrityDigest: reference.lifecycleMetadataIntegrityDigest }
-        : {}),
       ...(reference.pluginVersion ? { pluginVersion: reference.pluginVersion } : {}),
     }];
   });

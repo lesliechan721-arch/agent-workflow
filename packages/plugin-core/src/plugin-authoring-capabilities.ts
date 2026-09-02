@@ -3,9 +3,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  PLUGIN_LIFECYCLE_EVENTS,
-  PLUGIN_LIFECYCLE_OS_SELECTORS,
-  PLUGIN_SCRIPT_RUNNERS,
   PLUGIN_SCRIPT_TIMEOUT_MAX_MS,
   PLUGIN_SCRIPT_TIMEOUT_MIN_MS,
 } from './plugin-script-contract.js'
@@ -18,7 +15,7 @@ export const PLUGIN_AUTHORING_CAPABILITY_SURFACES = [
   'slash-commands',
   'mcp-apps',
   'config',
-  'lifecycle',
+  'post-apply',
   'artifacts',
 ] as const
 
@@ -50,7 +47,7 @@ const registry = {
     manifest: {
       surface: 'manifest',
       entries: [
-        { field: 'schemaVersion', type: 'literal 2', required: true, acceptedValues: [2] },
+        { field: 'schemaVersion', type: 'literal 3', required: true, acceptedValues: [3] },
         { field: 'name', type: 'kebab-case string', required: true },
         { field: 'version', type: 'stable strict SemVer', required: true },
         { field: 'description', type: 'non-empty string', required: true },
@@ -143,15 +140,12 @@ const registry = {
         { field: 'config.presentation', type: 'groups/fields/presets object', required: false },
       ],
     },
-    lifecycle: {
-      surface: 'lifecycle',
+    'post-apply': {
+      surface: 'post-apply',
       entries: [
-        { field: 'scripts.lifecycle', type: 'event selector object', required: false, acceptedValues: PLUGIN_LIFECYCLE_EVENTS },
-        { field: 'scripts.lifecycle.<event>', type: 'string | OS selector object', required: false, acceptedValues: PLUGIN_LIFECYCLE_OS_SELECTORS },
-        { field: 'scripts.lifecycle.<event>.<selector>.runner', type: 'enum', required: true, acceptedValues: PLUGIN_SCRIPT_RUNNERS },
-        { field: 'scripts.lifecycle.<event>.<selector>.path', type: './ plugin-relative path', required: true },
-        { field: 'scripts.lifecycle.<event>.<selector>.args', type: 'string[]', required: false },
-        { field: 'scripts.timeoutMs', type: 'integer', required: false, acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}` },
+        { field: 'scripts.postApply', type: '{path,timeoutMs?}', required: false },
+        { field: 'scripts.postApply.path', type: './ Node path', required: true },
+        { field: 'scripts.postApply.timeoutMs', type: 'integer', required: false, acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}` },
         { field: 'scripts.helpers.config', type: './ Node path', required: false },
         { field: 'scripts.node.packageRoot', type: './ package directory path', required: false },
         { field: 'scripts.node.build', type: '{runner,path,args?}', required: false },

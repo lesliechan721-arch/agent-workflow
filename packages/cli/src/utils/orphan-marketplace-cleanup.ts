@@ -171,8 +171,6 @@ export async function cleanupOrphanNamespacedMarketplaceRoot(options: {
   const inventory = await inventoryCatalogSourceReferences({
     cwd: options.cwd,
     env: options.env,
-    includeHistoricalProjects: true,
-    includeOrphanedCodexNativeResidue: true,
   });
   try {
     assertCatalogSourceInventoryComplete(inventory);

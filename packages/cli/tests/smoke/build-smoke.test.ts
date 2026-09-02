@@ -117,7 +117,7 @@ describe('build smoke', () => {
       },
     }, { spaces: 2 });
     await fs.writeJson(manifestPath, {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'version-gate-smoke',
       version: '0.1.0',
       description: 'Baseline version gate smoke plugin.',
@@ -131,7 +131,7 @@ describe('build smoke', () => {
       },
       requires: {
         aw: {
-          capabilities: ['aw.plugin-manifest.v2'],
+          capabilities: ['aw.plugin-manifest.v3'],
         },
       },
     }, { spaces: 2 });
@@ -505,7 +505,7 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       catalogVersion: sourceMetadata.catalog.version,
       channel: String(sourceMetadata.catalog.version).includes('-') ? 'beta' : 'latest',
       release: { state: 'development' },
@@ -518,9 +518,9 @@ describe('build smoke', () => {
           contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }))),
     });
-    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v6']);
+    expect(catalogManifest.requires.aw.capabilities).toEqual(['aw.catalog-snapshot.v7']);
     expect(catalogManifest.entries.every((entry) =>
-      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v2'))).toBe(true);
+      entry.requires.aw.capabilities.includes('aw.plugin-manifest.v3'))).toBe(true);
     expect(catalogManifest).not.toHaveProperty('history');
     expect(catalogManifest).not.toHaveProperty('packages');
     expect((await fs.readdir(outputRoot)).sort()).toEqual([
@@ -618,7 +618,7 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and completely validates schema 6 from real build bundles', async () => {
+  it('materializes and completely validates schema 7 from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
     const { validateCatalogSnapshotComplete } = await importSmokeSnapshotModule<{
@@ -627,7 +627,7 @@ describe('build smoke', () => {
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
     const validated = await validateCatalogSnapshotComplete(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(6);
+    expect(validated.manifest.schemaVersion).toBe(7);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>
@@ -867,13 +867,8 @@ describe('build smoke', () => {
         },
       },
       scripts: {
-        lifecycle: {
-          install: {
-            default: {
-              runner: 'node',
-              path: './scripts/runtime.mjs',
-            },
-          },
+        postApply: {
+          path: './scripts/runtime.mjs',
         },
         node: {
           packageRoot: './scripts',

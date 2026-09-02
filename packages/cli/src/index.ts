@@ -28,7 +28,6 @@ import {
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
   uninstallWriteCommand as uninstallCommand,
-  upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
 import { syncCommand } from './commands/sync-command.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
@@ -52,7 +51,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV6 } from './commands/status-v6.js';
+import { loadConsoleItemsResult, statusCommandV7 } from './commands/status-v6.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
@@ -61,7 +60,6 @@ import {
   resolveConfigWriteScope,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
-  normalizeUpgradeCommandOptions,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -85,6 +83,7 @@ import {
   findConfigFieldEntry,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
+  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
@@ -103,7 +102,6 @@ import {
 import {
   parsePluginId,
   withResolvedCatalogPlugin,
-  withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
@@ -125,6 +123,7 @@ import type {
   PlatformName,
   PlatformSelection,
   PluginConfigSchemaField,
+  RebuildReceiptOverallState,
   Scope,
 } from './types.js';
 import {
@@ -158,7 +157,10 @@ import {
   runCatalogPublishApplyCommand,
   runCatalogPublishPlanCommand,
 } from './commands/catalog-publish.js';
-import { catalogPublicationFailure } from './commands/catalog-publication-inspection.js';
+import {
+  catalogPublicationFailure,
+  CatalogPublicationInspectionError,
+} from './commands/catalog-publication-inspection.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import {
   activateCatalogDevSource,
@@ -216,10 +218,7 @@ function resolveCliVersion(): string {
 function resolveCommandReceiptExitCode(
   result: CliCommandResult,
 ): number {
-  if (result.overallState === 'failed') {
-    return 1;
-  }
-  return 0;
+  return result.overallState === 'succeeded' ? 0 : 1;
 }
 
 interface RawDiagnosticsOptions {
@@ -234,6 +233,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueJson?: boolean;
   yes?: boolean;
   local?: boolean;
+  apply?: boolean;
 }
 
 type ReceiptWriteCommand = RebuildReceiptJson['command'];
@@ -343,7 +343,7 @@ function jsonWriteCommandRequest(argv: string[]): {
   scope: Scope;
 } | null {
   const command = argv[0];
-  if (!['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
+  if (!['install', 'reinstall', 'uninstall', 'cleanup', 'sync'].includes(command ?? '')) {
     return null;
   }
   const request = preparseWriteReceiptRequest(argv);
@@ -444,7 +444,7 @@ function toCliDiagnosticsOptions(
 
 type WriteWizardCommand = Extract<
   CommandWizardCommand,
-  'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup'
+  'install' | 'reinstall' | 'uninstall' | 'cleanup'
 >;
 
 function isWizardAvailable(
@@ -465,11 +465,10 @@ function optionTokens(flag: string, value: string | undefined): string[] {
 function writeCommandUsage(command: WriteWizardCommand): string {
   const cardinality = command === 'reinstall' || command === 'cleanup' ? '<plugin>' : '<plugin...>';
   const scope = command === 'cleanup' ? ' --scope <project|user>' : ' [--scope <project|user>]';
-  const all = command === 'upgrade' ? ' 或 aw upgrade --all --platform both --scope user' : '';
   return [
     `${command} 命令缺少必要参数。`,
     `Usage: aw ${command} ${cardinality} --platform <codex|claude|both>${scope}`,
-    `Example: aw ${command} example-plugin --platform codex --scope user${all}`,
+    `Example: aw ${command} example-plugin --platform codex --scope user`,
   ].join('\n');
 }
 
@@ -488,12 +487,6 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
   ].join('\n');
 }
 
-function assertUpgradeAllConflict(pluginNames: string[], all: boolean): void {
-  if (all && pluginNames.length > 0) {
-    throw new Error('upgrade 命令不能同时使用插件名和 `--all`。');
-  }
-}
-
 function equivalentWriteCommand(
   command: WriteWizardCommand,
   selection: CommandWizardSelection,
@@ -507,11 +500,9 @@ export function buildEquivalentWriteCommandTokens(
   selection: CommandWizardSelection,
   rawOptions: RawWriteWizardOptions,
 ): string[] {
-  const all = command === 'upgrade' && rawOptions.all === true;
   return [
     'aw',
     command,
-    ...(all ? ['--all'] : []),
     '--platform',
     selection.platform ?? 'both',
     '--scope',
@@ -523,7 +514,7 @@ export function buildEquivalentWriteCommandTokens(
       ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
-    ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
+    ...(selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
 }
 
@@ -662,7 +653,6 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
-    sourceIdentity: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -677,12 +667,8 @@ async function loadStoredConfigWizardCandidates(
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
-        sourceIdentity: store.sourceIdentity,
         keys: new Set<string>(),
       };
-      if (existing.sourceIdentity !== store.sourceIdentity) {
-        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
-      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -693,7 +679,6 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
-      sourceIdentity: store.sourceIdentity,
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
@@ -710,15 +695,15 @@ function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardSto
   ];
 }
 
-function overallResultState(value: { overallState: 'succeeded' | 'failed' }): 'succeeded' | 'failed' {
-  return value.overallState;
+function overallResultState(value: { overallState: RebuildReceiptOverallState }): 'succeeded' | 'failed' {
+  return value.overallState === 'succeeded' ? 'succeeded' : 'failed';
 }
 
 async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string }> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
   const stores = (await Promise.all(options.locations.map((location) =>
@@ -729,26 +714,62 @@ async function resolveStoredOnlyConfigIdentity(options: {
       ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
     })))).flat().filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
-  const identities = new Set(stores.map((store) => store.sourceIdentity));
-  if (identities.size !== 1) throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
-  const sourceIdentity = [...identities][0]!;
-  await withResolvedMultiSourceCatalog({
-    cliVersion: resolveCliVersion(),
-    sourceIds: [parsed.sourceId],
-    env: options.context.env,
-    consume: async (catalog) => {
-      const source = catalog.sources.find((entry) => entry.sourceId === parsed.sourceId);
-      if (!source?.resolution) throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
-      if (source.resolution.sourceIdentity !== sourceIdentity) {
-        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
-      }
-    },
-  });
   return {
     pluginName: parsed.pluginName,
     pluginId: options.selector,
     sourceId: parsed.sourceId,
-    sourceIdentity,
+  };
+}
+
+async function resolveStoredConfigResetIdentity(options: {
+  selector: string;
+  context: CliExecutionContext;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity?: string;
+}> {
+  const parsed = parsePluginId(options.selector);
+  if (parsed.sourceId) {
+    const located = await readNamespacedPluginConfigStoreIdentity({
+      sourceId: parsed.sourceId,
+      pluginName: parsed.pluginName,
+      scope: options.scope,
+      projectLayer: options.projectLayer,
+      cwd: options.context.cwd,
+      env: options.context.env,
+    });
+    if (!located) {
+      throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
+    }
+    return {
+      pluginName: parsed.pluginName,
+      pluginId: options.selector,
+      sourceId: parsed.sourceId,
+    };
+  }
+  const matches = (await listNamespacedPluginConfigStores({
+    cwd: options.context.cwd,
+    env: options.context.env,
+    scope: options.scope,
+    projectLayer: options.projectLayer,
+  })).filter((store) => store.pluginName === parsed.pluginName);
+  if (matches.length === 0) {
+    throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `configTargetAmbiguous: ${options.selector} exists in multiple source namespaces: ${matches.map((store) => store.pluginId).join(', ')}. Use a full pluginId.`,
+    );
+  }
+  const [match] = matches;
+  return {
+    pluginName: match!.pluginName,
+    pluginId: match!.pluginId,
+    sourceId: match!.sourceId,
   };
 }
 
@@ -761,7 +782,7 @@ async function resolveMultiSourceConfigRead(options: {
   pluginName: string;
   pluginId: string;
   sourceId: string;
-  sourceIdentity: string;
+  sourceIdentity?: string;
   result: Awaited<ReturnType<typeof resolveConfigRead>>;
 }> {
   const inventory = await inventoryLegacyConfigReferences({
@@ -810,7 +831,6 @@ async function resolveMultiSourceConfigRead(options: {
     });
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
-      sourceIdentity: stored.sourceIdentity,
       pluginName: stored.pluginName,
       plugin: null,
       scope: options.rawOptions.local
@@ -867,9 +887,7 @@ async function executeWriteCommand(
   const raw = { cwd: context.cwd, ...rawOptions };
   const commandOptions = normalizeWriteRequest(() => command === 'install'
     ? normalizeInstallCommandOptions(raw)
-    : command === 'upgrade'
-      ? normalizeUpgradeCommandOptions(raw)
-      : command === 'uninstall'
+    : command === 'uninstall'
         ? normalizeUninstallCommandOptions(raw)
         : command === 'cleanup'
           ? normalizeCleanupCommandOptions(raw)
@@ -886,7 +904,6 @@ async function executeWriteCommand(
   };
   switch (command) {
     case 'install': return installCommand(pluginNames, commandOptions, runtime);
-    case 'upgrade': return upgradeCommand(pluginNames, commandOptions, runtime);
     case 'uninstall': return uninstallCommand(pluginNames, commandOptions, runtime);
     case 'cleanup': return cleanupCommand(pluginNames, commandOptions, runtime);
     case 'reinstall': return reinstallCommand(pluginNames, commandOptions, runtime);
@@ -902,11 +919,7 @@ async function runWriteCommandAction(
   if ((command === 'cleanup' || command === 'reinstall') && pluginNames.length > 1) {
     throw new WriteCommandRequestError(`${command} 命令当前只支持单个插件目标。`);
   }
-  if (command === 'upgrade') {
-    normalizeWriteRequest(() => assertUpgradeAllConflict(pluginNames, rawOptions.all === true));
-  }
-
-  const missingPlugin = pluginNames.length === 0 && !(command === 'upgrade' && rawOptions.all === true);
+  const missingPlugin = pluginNames.length === 0;
   const missingPlatform = rawOptions.platform === undefined;
   const missingScope = command === 'cleanup' && rawOptions.scope === undefined;
   const missing = missingPlugin || missingPlatform || missingScope;
@@ -1115,7 +1128,7 @@ function writeConfigApplyNotice(
   write: (text: string) => void,
   receipt: {
     plugin: string;
-    overallState: 'succeeded' | 'failed';
+    overallState: RebuildReceiptOverallState;
     targetResults: Array<{
       target: { platform: string; scope: Scope };
       state: string;
@@ -1254,7 +1267,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | lifecycle | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | post-apply | artifacts')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1795,7 +1808,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
-    .option('--with-lifecycle', 'add a lifecycle script sample', false);
+    .option('--with-post-apply', 'add a Node postApply script sample', false);
 
   plugin
     .command('add-skill')
@@ -2025,7 +2038,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   catalog
     .command('validate')
-    .description('Validate a schema 6 Catalog snapshot')
+    .description('Validate a schema 7 Catalog snapshot')
     .argument('<snapshot-directory>', 'Catalog snapshot directory')
     .option('--json', 'emit one machine-readable JSON result', false)
     .action(async (snapshotDirectory: string, rawOptions: { json?: boolean }) => {
@@ -2539,6 +2552,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .addOption(new Option('--subdir <path>', 'update the Git catalog subdirectory'))
     .addOption(new Option('--no-subdir', 'remove the Git catalog subdirectory'))
+    .option('-y, --yes', 'confirm a source identity change', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
       git?: string;
@@ -2546,6 +2560,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string | false;
+      yes?: boolean;
       json?: boolean;
     }) => {
       try {
@@ -2582,6 +2597,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cliVersion: resolveCliVersion(),
           cwd,
           env,
+          requireIdentityChangeConfirmation: true,
+          confirmIdentityChange: rawOptions.yes === true,
         });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} updated.`);
@@ -2655,11 +2672,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   program
     .command('sync')
-    .description('Reconcile Codex actual state from existing desired intent')
+    .description('Reconcile actual state from existing desired intent')
     .argument('[plugins...]')
     .requiredOption('-s, --scope <scope>', 'project or user')
-    .requiredOption('-p, --platform <platform>', 'codex')
+    .requiredOption('-p, --platform <platform>', 'codex, claude, or both')
     .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
+    .option('--refresh', 'refresh only Catalog sources required by selected intent roots', false)
     .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print sync receipt as JSON', false)
@@ -2672,6 +2690,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope: string;
         platform: string;
         all?: boolean;
+        refresh?: boolean;
         yes?: boolean;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
@@ -2684,9 +2703,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform: rawOptions.platform,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
         }));
-      if (normalized.platform !== 'codex') {
-        throw new Error('syncPlatformUnsupported: sync requires --platform codex.');
-      }
       const syncPlatform = normalized.platform;
       const result = await runActionWithContext(context, () => syncCommand(
         plugins ?? [],
@@ -2696,6 +2712,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform: syncPlatform,
           scope: normalized.scope,
           all: rawOptions.all,
+          refresh: rawOptions.refresh,
+          cliVersion: resolveCliVersion(),
           yes: rawOptions.yes,
           json: rawOptions.json,
           interactive: context.interactive && context.isTty && !context.isCi,
@@ -2724,7 +2742,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       (value: string, previous: string[]) => [...previous, value],
       [],
     )
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-y, --yes', 'authorize shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -2766,7 +2784,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -2797,49 +2815,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
       commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
     });
-
-  program
-    .command('upgrade')
-    .argument('[plugins...]')
-    .option('-a, --all', 'upgrade all plugins', false)
-    .option('-s, --scope <scope>', 'project or user')
-    .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement', false)
-    .option('-j, --json', 'print receipt as JSON', false)
-    .option('-v, --verbose', 'show command diagnostics', false)
-    .option('-D, --debug', 'write debug diagnostics to a log file', false)
-    .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(
-      async (
-        plugins: string[],
-        rawOptions: {
-          all?: boolean;
-          scope?: string;
-          platform?: string;
-          scriptTimeout?: string;
-          allowManagedCodexInstall?: boolean;
-          yes?: boolean;
-          json?: boolean;
-        } & RawDiagnosticsOptions,
-      ) => {
-        const context = createActionContext('upgrade', rawOptions);
-        const outcome = await runActionWithContext(context, () =>
-          runWriteCommandAction('upgrade', plugins ?? [], rawOptions, context));
-        if (outcome.cancelled) return;
-        const receipt = outcome.result;
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('upgrade', receipt));
-        } else {
-          for (const line of renderRebuildReceipt('upgrade', receipt)) {
-            writeLine(io.stdout, line);
-          }
-        }
-        writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
-      },
-    );
 
   program
     .command('cleanup')
@@ -2876,7 +2851,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
       }
       writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = result.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = resolveCommandReceiptExitCode(result);
     });
 
   program
@@ -2884,7 +2859,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -3075,6 +3050,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('--value-json', 'parse value as a JSON literal', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3120,6 +3096,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           request: {
             updates: { [selectedKey]: inputValue },
           },
+          apply: rawOptions.apply === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3223,7 +3200,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   config
@@ -3232,6 +3209,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3280,6 +3258,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           request: {
             removeKeys: [selectedKey],
           },
+          apply: rawOptions.apply === true,
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3356,7 +3335,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   config
@@ -3364,6 +3343,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'reset only the current project local override layer', false)
+    .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3385,58 +3365,70 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
             );
           }
-          return withResolvedConfigMutationPlugin(
+          const located = await resolveStoredConfigResetIdentity({
+            selector: selectedPlugin,
             context,
-            selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        const affectedFields = await describeResetAffectedFields({
-          pluginName: plugin.manifest.name,
-          plugin,
-          scope: selectedScope,
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
-        });
-        const resetReceipt = await resetPluginConfigWithHelper({
-          pluginName: plugin.manifest.name,
-          scope: selectedScope,
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
-          nativeCliRunner: context.nativeCliRunner,
-          rebuildRuntime: {
-            ...context,
-            awHomeMutationToken,
-            catalogOperationContext,
-            expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
-          },
-          awHomeMutationToken,
-          plugin,
-        });
-        return {
-          ok: resetReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 5,
-          command: 'config:reset',
-          ...resetReceipt,
-          plugin: plugin.manifest.name,
-          pluginName: plugin.manifest.name,
-          pluginId,
-          sourceId: source.sourceId,
-          sourceIdentity: source.sourceIdentity,
-          affectedFields,
-        };
-            },
-          ).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('Catalog source')
-            || message.startsWith('Cannot resolve required catalog sources:')) {
-            throw new Error(`sourceMissing: ${selectedPlugin} source is unavailable; config store was not changed.`);
-          }
-          if (message.includes('does not exist in the required catalog source set')) {
-            throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" is unavailable; config store was not changed.`);
-          }
-          throw error;
+            scope: selectedScope,
+            projectLayer,
           });
+          const resetLocatedStore = async (
+            plugin: ResolvedCatalogPlugin['plugin'] | null,
+            pluginError: Error | null,
+          ) => {
+            const affectedFields = await describeResetAffectedFields({
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              pluginName: located.pluginName,
+              plugin,
+              pluginError,
+              scope: selectedScope,
+              projectLayer,
+              cwd: context.cwd,
+              env: context.env,
+            });
+            const resetReceipt = await resetPluginConfigWithHelper({
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              pluginName: located.pluginName,
+              scope: selectedScope,
+              projectLayer,
+              cwd: context.cwd,
+              env: context.env,
+              plugin,
+              pluginError,
+              apply: rawOptions.apply === true,
+            });
+            return {
+              ok: resetReceipt.overallState === 'succeeded',
+              receiptSchemaVersion: 5,
+              command: 'config:reset',
+              ...resetReceipt,
+              plugin: located.pluginName,
+              pluginName: located.pluginName,
+              pluginId: located.pluginId,
+              sourceId: located.sourceId,
+              sourceIdentity: located.sourceIdentity,
+              affectedFields,
+            };
+          };
+          let resetStarted = false;
+          try {
+            return await withResolvedCatalogPlugin({
+              selector: located.pluginId,
+              cliVersion: resolveCliVersion(),
+              env: context.env,
+              consume: async ({ plugin }) => {
+                resetStarted = true;
+                return resetLocatedStore(plugin, null);
+              },
+            });
+          } catch (error) {
+            if (resetStarted) throw error;
+            return resetLocatedStore(
+              null,
+              error instanceof Error ? error : new Error(String(error)),
+            );
+          }
         };
 
         const scope = resolveConfigWriteScope(rawOptions.scope);
@@ -3530,7 +3522,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         writeConfigApplyNotice(io.stderr, receipt);
       }
-      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
+      commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
     });
 
   program
@@ -3553,7 +3545,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommandV6({
+        () => statusCommandV7({
           plugins: plugins ?? [],
           cwd,
           env: context.env,
@@ -3721,11 +3713,20 @@ export async function runCli(
       }
       return await runActionWithContext(context, () => runConsoleController(context));
     }
+    let catalogPublicationActionStarted = false;
+    const programIo = jsonCatalogDevCommand || jsonWriteRequest
+      ? { ...io, stderr: () => undefined }
+      : jsonAuthoringCommand === 'catalog:publish'
+        ? {
+            ...io,
+            stderr: (text: string) => {
+              if (catalogPublicationActionStarted) io.stderr(text);
+            },
+          }
+        : io;
     const program = buildProgram({
       ...options,
-      io: jsonCatalogDevCommand || jsonWriteRequest
-        ? { ...io, stderr: () => undefined }
-        : io,
+      io: programIo,
       diagnostics: {
         ...options.diagnostics,
         metadata: {
@@ -3734,6 +3735,11 @@ export async function runCli(
         },
       },
     });
+    if (jsonAuthoringCommand === 'catalog:publish') {
+      program.hook('preAction', () => {
+        catalogPublicationActionStarted = true;
+      });
+    }
     await program.parseAsync(['node', 'aw', ...argv]);
     return (program as Command & {
       __awCommandExitState?: { exitCode: number };
@@ -3762,6 +3768,16 @@ export async function runCli(
     }
     if (jsonWriteRequest) {
       writeCommandFailureReceipt(io.stdout, jsonWriteRequest, error);
+      return 1;
+    }
+    if (jsonAuthoringCommand === 'catalog:publish' && error instanceof CommanderError) {
+      const failure = catalogPublicationFailure({
+        error: new CatalogPublicationInspectionError('invalidArguments', error.message),
+        env: options.env,
+        sensitiveRoots: [options.cwd ?? process.cwd()],
+      });
+      writeJsonReceipt(io.stdout, failure);
+      writeLine(io.stderr, failure.message);
       return 1;
     }
     if (jsonAuthoringCommand && !(error instanceof CommanderError)) {

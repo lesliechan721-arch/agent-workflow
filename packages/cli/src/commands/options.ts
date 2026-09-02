@@ -5,7 +5,6 @@ import type {
   PlatformSelection,
   Scope,
   StatusCommandOptions,
-  UpgradeCommandOptions,
 } from '../types.js';
 import { parsePluginId } from '../utils/multi-source-catalog.js';
 
@@ -30,10 +29,6 @@ export type RawCommandOptions = {
 export type RawInstallCommandOptions = RawCommandOptions & {
   dependencyScope?: string | string[];
   dependencyScopeOverrides?: InstallCommandOptions['dependencyScopeOverrides'];
-};
-
-export type RawUpgradeCommandOptions = RawCommandOptions & {
-  all?: boolean;
 };
 
 export type RawStatusCommandOptions = {
@@ -254,21 +249,6 @@ export function normalizeInstallCommandOptions(
     ...(normalizedDependencyScopeOverrides.length > 0
       ? { dependencyScopeOverrides: normalizedDependencyScopeOverrides }
       : {}),
-  };
-}
-
-export function normalizeUpgradeCommandOptions(
-  raw: RawUpgradeCommandOptions = {},
-  defaults: NormalizeCommandOptionsDefaults = {},
-): UpgradeCommandOptions {
-  return {
-    ...normalizeCommandOptions(raw, {
-      defaultScope: 'user',
-      requirePlatform: true,
-      missingPlatformMessage: 'upgrade 命令需要显式指定 `--platform codex|claude|both`。',
-      ...defaults,
-    }),
-    all: raw.all,
   };
 }
 

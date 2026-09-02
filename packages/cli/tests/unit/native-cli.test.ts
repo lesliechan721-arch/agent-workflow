@@ -28,7 +28,16 @@ import {
   type NativeCliInvocation,
   type NativeCliResult,
 } from '../../src/utils/native-cli.js';
+import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
+
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // This integration test requires permission to inspect the host process table.
+}
 
 function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
   return { stdout, stderr, exitCode };
@@ -679,7 +688,7 @@ describe('native-cli', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
     'terminates a detached inherited-output descendant after the root exits',
     async () => {
       let descendantPid: number | undefined;

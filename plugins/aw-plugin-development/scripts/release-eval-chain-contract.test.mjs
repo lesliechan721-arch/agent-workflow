@@ -109,16 +109,19 @@ exec "${process.execPath}" "${evalBin}" "$@"
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(plugin, 'README.md'), '# Demo Plugin\n');
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'demo-plugin',
     version: '1.0.0',
     description: 'Demo plugin.',
     artifacts: {
       targets: [{
         id: 'demo-codex',
+        platform: 'codex',
         target: 'codex.skill',
         skillKey: 'demo',
         scopes: ['project'],
+        states: ['present'],
+        refreshKeys: [],
         sourceDirs: ['./skills/demo'],
       }],
     },

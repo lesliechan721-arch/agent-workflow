@@ -1,4 +1,4 @@
-import type { PluginManifestSourceV2 } from './generated/plugin-manifest-v2.js';
+import type { PluginManifestSourceV3 } from './generated/plugin-manifest-v3.js';
 
 export type PlatformName = 'codex' | 'claude';
 export type DistributionName = 'agent-skills';
@@ -18,7 +18,7 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV2['interface']>;
+export type PluginInterfaceMeta = NonNullable<PluginManifestSourceV3['interface']>;
 
 export interface MarketplaceOwner { name: string; url: string }
 export interface MarketplaceInterfaceMeta { displayName: string }
@@ -27,9 +27,9 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
   catalog: { version: string };
 }
-export type MarketplacePolicy = PluginManifestSourceV2['marketplace']['policy'];
+export type MarketplacePolicy = PluginManifestSourceV3['marketplace']['policy'];
 export type MarketplaceAuthenticationPolicy = MarketplacePolicy['authentication'];
-export type PluginMarketplaceMeta = PluginManifestSourceV2['marketplace'];
+export type PluginMarketplaceMeta = PluginManifestSourceV3['marketplace'];
 
 export type TemplateValue = string | boolean;
 export interface TemplateVarByPlatform { claude: TemplateValue; codex: TemplateValue }
@@ -80,14 +80,7 @@ export interface BuildConfig {
   generatedSkillRuntimeFiles?: BuildConfigGeneratedSkillRuntimeFile[];
 }
 
-export type PluginLifecycleEvent = 'install' | 'upgrade' | 'uninstall';
-export type PluginLifecycleOsSelector = 'default' | 'unix' | 'windows' | 'linux' | 'darwin' | 'win32';
-export type PluginLifecycleRuntimeOs = 'linux' | 'darwin' | 'win32';
-export type PluginLifecycleScriptRunner = 'node' | 'sh' | 'bash' | 'pwsh' | 'powershell' | 'cmd' | 'auto';
-export interface PluginLifecycleScriptEntry { runner: PluginLifecycleScriptRunner; path: string; args?: string[] }
-export type PluginLifecycleScriptSelector = Partial<Record<PluginLifecycleOsSelector, PluginLifecycleScriptEntry>>;
-export type PluginLifecycleScriptDefinition = string | PluginLifecycleScriptSelector;
-export type PluginLifecycleScripts = Partial<Record<PluginLifecycleEvent, PluginLifecycleScriptSelector>>;
+export interface PluginPostApplyScript { path: string; timeoutMs?: number }
 export interface PluginScriptHelpersConfig { config: string }
 export interface PluginNodeBuildScript { runner: 'node'; path: string; args?: string[] }
 export interface PluginNodeScriptsConfig { packageRoot?: string; build?: PluginNodeBuildScript }
@@ -95,8 +88,7 @@ export interface PluginScriptTestsConfig { node?: string[] }
 export interface PluginArtifactRenderScriptEntry { runner: 'node'; path: string; args?: string[] }
 export interface PluginArtifactScriptsConfig { render?: PluginArtifactRenderScriptEntry }
 export interface PluginScriptsConfig {
-  timeoutMs?: number;
-  lifecycle?: PluginLifecycleScripts;
+  postApply?: PluginPostApplyScript;
   helpers?: PluginScriptHelpersConfig;
   node?: PluginNodeScriptsConfig;
   artifacts?: PluginArtifactScriptsConfig;
@@ -216,9 +208,9 @@ export interface PluginAgentSkillsDistribution { skills?: string }
 export interface PluginDistributionsConfig { agentSkills?: PluginAgentSkillsDistribution }
 export interface PluginRequirements { aw: { capabilities?: string[] } }
 
-export type PluginManifestSource = PluginManifestSourceV2;
+export type PluginManifestSource = PluginManifestSourceV3;
 export type NormalizedPluginManifest = Omit<
-  PluginManifestSourceV2,
+  PluginManifestSourceV3,
   'requires' | 'extensions' | 'artifacts' | 'buildConfig' | 'scripts' | 'config'
 > & {
   requires?: PluginRequirements;
@@ -251,7 +243,7 @@ export interface CatalogManifestEntry {
   dependencies: PluginId[]; requires: PluginRequirements;
   source: string; artifactDigest: string; manifestDigest: string;
 }
-export interface CatalogManifestV6Entry extends CatalogManifestEntry {
+export interface CatalogManifestV7Entry extends CatalogManifestEntry {
   name: PluginId;
   contentDigest: string;
 }
@@ -259,20 +251,20 @@ export interface CatalogMarketplaceIdentity {
   owner: MarketplaceOwner;
   interface: MarketplaceInterfaceMeta;
 }
-export type CatalogManifestV6Release =
+export type CatalogManifestV7Release =
   | { state: 'development' }
   | {
       state: 'published';
       sourceHead: string;
     };
-export interface CatalogManifestV6 {
-  schemaVersion: 6;
+export interface CatalogManifestV7 {
+  schemaVersion: 7;
   catalogVersion: string;
   channel: CatalogChannel;
   requires: PluginRequirements;
   marketplace: CatalogMarketplaceIdentity;
-  release: CatalogManifestV6Release;
-  entries: CatalogManifestV6Entry[];
+  release: CatalogManifestV7Release;
+  entries: CatalogManifestV7Entry[];
 }
 export interface PlatformPluginManifest {
   name: string; version: PluginVersion; description: string;

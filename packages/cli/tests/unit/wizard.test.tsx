@@ -53,9 +53,11 @@ describe('command wizard', () => {
       targets: [{
         pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
         pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture',
-        state,
-        components: [],
-        errors,
+        state: state === 'present' ? 'ready' as const
+          : state === 'partial' ? 'needsSync' as const : 'absent' as const,
+        components: [{ kind: 'ownership' as const, key: 'fixture', state }],
+        reasons: errors,
+        recoveryActions: [],
       }],
     });
     const selection = { plugins: [], platform: 'codex' as const, scope: 'user' as const };
@@ -67,7 +69,6 @@ describe('command wizard', () => {
       selection,
     )).toEqual({ selectable: false, reason: 'live status 不允许 install' });
     for (const [command, state] of [
-      ['upgrade', 'present'],
       ['reinstall', 'partial'],
     ] as const) {
       expect(writeCandidateEligibility(
@@ -103,9 +104,10 @@ describe('command wizard', () => {
         platform: 'codex' as const,
         scope: 'user' as const,
         cwd: '/fixture',
-        state,
-        components: [],
-        errors: [],
+        state: state === 'partial' ? 'needsSync' as const : 'blocked' as const,
+        components: [{ kind: 'ownership' as const, key: 'fixture', state }],
+        reasons: [],
+        recoveryActions: [],
       }],
     };
     const instance = render(<CommandWizard
@@ -153,7 +155,7 @@ describe('command wizard', () => {
     let nativeState: 'absent' | 'present' = 'absent';
     const target: DesiredTarget = {
       plugin,
-      lifecycleSource: plugin,
+      postApplySource: plugin,
       identity: {
         pluginName: 'real-chain',
         pluginVersion: '1.0.0',
@@ -183,7 +185,7 @@ describe('command wizard', () => {
         throw new Error(unsafeTuiText);
       },
       writeArtifacts: async () => undefined,
-      runLifecycle: async () => undefined,
+      runPostApply: async () => undefined,
     };
     const activeStore: RebuildActiveStore = {
       prepare: async () => ({}) as never,

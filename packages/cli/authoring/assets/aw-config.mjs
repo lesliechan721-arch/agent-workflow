@@ -10,7 +10,6 @@ const LOCAL_CONFIG_DIR = 'plugin-config.local';
 const CONFIG_FILE = 'config.json';
 const SUPPORTED_TYPES = new Set(['string', 'number', 'boolean', 'enum', 'file', 'directory']);
 const REDACTED = '[redacted]';
-const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -203,13 +202,11 @@ function readStore(filePath, identity) {
   const envelope = readJsonFile(filePath, 'plugin config store');
   if (
     !isRecord(envelope) ||
-    envelope.schemaVersion !== 2 ||
-    envelope.sourceId !== identity.sourceId ||
-    envelope.sourceIdentity !== identity.sourceIdentity ||
-    envelope.pluginName !== identity.pluginName ||
+    envelope.schemaVersion !== 3 ||
+    envelope.pluginId !== `${identity.sourceId}/${identity.pluginName}` ||
     !isRecord(envelope.values)
   ) {
-    fail('Plugin config store does not match its schema 2 source identity.');
+    fail('Plugin config store does not match its schema 3 plugin identity.');
   }
   return { path: filePath, exists: true, values: envelope.values };
 }
@@ -352,7 +349,6 @@ function resolveFromStores({ identity, schema, scope, stores, projectRoot }) {
   return {
     pluginName: identity.pluginName,
     sourceId: identity.sourceId,
-    sourceIdentity: identity.sourceIdentity,
     pluginId: `${identity.sourceId}/${identity.pluginName}`,
     scope,
     values: state.values,
@@ -382,20 +378,12 @@ function normalizeContextConfig(context) {
     context.plugin?.name || context.pluginName || context.config.pluginName || 'plugin',
   );
   const sourceId = context.plugin?.sourceId;
-  const sourceIdentity = context.plugin?.sourceIdentity;
-  if ((sourceId === undefined) !== (sourceIdentity === undefined)) {
-    fail('AW_PLUGIN_CONTEXT contains an incomplete source identity.');
-  }
   const identity = sourceId === undefined
     ? null
     : {
         pluginName,
         sourceId: safePluginSegment(sourceId),
-        sourceIdentity,
       };
-  if (identity && !SOURCE_IDENTITY_PATTERN.test(identity.sourceIdentity)) {
-    fail('AW_PLUGIN_CONTEXT contains an invalid source identity.');
-  }
   return { pluginName, schema, identity };
 }
 
@@ -425,7 +413,6 @@ function resolveFromContext(scope) {
       pluginName,
       ...(identity ? {
         sourceId: identity.sourceId,
-        sourceIdentity: identity.sourceIdentity,
         pluginId: `${identity.sourceId}/${pluginName}`,
       } : {}),
       scope,
@@ -451,7 +438,7 @@ function resolveFromContext(scope) {
     fail(`AW_PLUGIN_CONTEXT does not provide a ${scope} config store path.`);
   }
   if (!identity) {
-    fail('AW_PLUGIN_CONTEXT must provide a source identity for scoped config reads.');
+    fail('AW_PLUGIN_CONTEXT must provide a stable plugin identity for scoped config reads.');
   }
   const store = readStore(storePath, identity);
   return resolveFromStores({
@@ -477,17 +464,14 @@ function resolveFallback(scope) {
   }
   const marketplace = readJsonFile(path.join(marketplaceRoot, 'config.json'), 'marketplace config');
   const sourceId = safePluginSegment(marketplace.sourceId);
-  const sourceIdentity = marketplace.sourceIdentity;
   if (
     marketplace.schemaVersion !== 2 ||
     sourceId !== path.basename(marketplaceRoot) ||
-    typeof sourceIdentity !== 'string' ||
-    !SOURCE_IDENTITY_PATTERN.test(sourceIdentity) ||
     !['aw', `aw-${sourceId}`].includes(marketplace.marketplaceName)
   ) {
-    fail('Marketplace config does not contain a canonical schema 2 source identity.');
+    fail('Marketplace config does not contain a canonical source namespace.');
   }
-  const identity = { sourceId, sourceIdentity, pluginName };
+  const identity = { sourceId, pluginName };
   const cwd = process.cwd();
   const projectRoot = resolveAwProjectRoot(cwd);
   for (const legacyPath of [

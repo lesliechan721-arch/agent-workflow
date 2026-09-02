@@ -102,7 +102,7 @@ test('schema v3 publishes components without a release target field', async () =
     'app',
     'dynamic-artifact',
     'config-helper',
-    'lifecycle',
+    'post-apply',
     'node-build',
     'readme',
     'eval-assets',

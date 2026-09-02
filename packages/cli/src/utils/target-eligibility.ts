@@ -1,19 +1,27 @@
-import type { StatusV6Target } from '../commands/status-v6.js';
+import type { StatusV7Target } from '../commands/status-v6.js';
 import type {
   CommandWizardCommand,
   CommandWizardPluginCandidate,
   CommandWizardSelection,
 } from '../commands/wizard.js';
 
-export function targetCanBeUninstalled(state: StatusV6Target['state']): boolean {
-  return state === 'present' || state === 'partial';
+export function targetCanBeUninstalled(
+  targetOrState: StatusV7Target | StatusV7Target['state'],
+): boolean {
+  const state = typeof targetOrState === 'string' ? targetOrState : targetOrState.state;
+  if (state === 'ready' || state === 'needsSync' || state === 'orphaned') return true;
+  return typeof targetOrState !== 'string'
+    && state === 'blocked'
+    && targetOrState.components.some((component) =>
+      component.kind === 'ownership'
+      && (component.state === 'present' || component.state === 'partial'));
 }
 
 export function targetHasArtifactCollision(target: {
-  errors: ReadonlyArray<{ code: string; severity: 'warning' | 'blocking' }>;
+  reasons: ReadonlyArray<{ code: string; severity: 'warning' | 'blocking' }>;
 }): boolean {
-  return target.errors.some((error) =>
-    error.code === 'artifactCollision' && error.severity === 'blocking');
+  return target.reasons.some((reason) =>
+    reason.code === 'artifactCollision' && reason.severity === 'blocking');
 }
 
 export function writeCandidateEligibility(
@@ -29,10 +37,9 @@ export function writeCandidateEligibility(
   }
   const selectable = targets.every((target) => ({
     install: target.state === 'absent' && !targetHasArtifactCollision(target),
-    reinstall: (target.state === 'present' || target.state === 'partial')
+    reinstall: target.state === 'needsSync'
       && !targetHasArtifactCollision(target),
-    upgrade: target.state === 'present' && !targetHasArtifactCollision(target),
-    uninstall: targetCanBeUninstalled(target.state),
+    uninstall: targetCanBeUninstalled(target),
     cleanup: target.state !== 'absent',
     'config:list': false,
     'config:get': false,

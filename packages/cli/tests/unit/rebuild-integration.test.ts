@@ -8,12 +8,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createRebuildIntegration,
   discoverRebuildTargetNames,
+  inspectCodexSharedNativeLive,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { projectTargetRevision, statusCommandV6 } from '../../src/commands/status-v6.js';
+import { projectTargetRevision, statusCommandV7 } from '../../src/commands/status-v6.js';
 import {
   executeRebuildOperation,
-  type RebuildActiveStore,
 } from '../../src/commands/rebuild-operations.js';
 import { createCommandExecutionContext as createBaseCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { CatalogResolution, PluginMeta } from '../../src/types.js';
@@ -38,13 +38,9 @@ import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source
 import { preflightDesiredArtifactCollisions } from '../../src/utils/multi-source-catalog.js';
 import {
   createAwPluginRequirementsReceipt,
-  readPluginManifest,
+  readPluginManifest as readRawPluginManifest,
 } from '../../src/utils/manifest.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
-import {
-  prepareLifecycleActiveSnapshot,
-  promoteLifecycleActiveSnapshot,
-} from '../../src/utils/lifecycle-active-store.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
@@ -62,8 +58,20 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
+import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
+
+async function readPluginManifest(
+  ...args: Parameters<typeof readRawPluginManifest>
+): Promise<PluginMeta> {
+  const plugin = await readRawPluginManifest(...args);
+  plugin.sourceId = 'team';
+  plugin.sourceIdentity = TEST_SOURCE_IDENTITY;
+  plugin.pluginId = `team/${plugin.manifest.name}`;
+  return plugin;
+}
 
 function createCommandExecutionContext(
   options: Parameters<typeof createBaseCommandExecutionContext>[0],
@@ -171,13 +179,16 @@ async function writeClaudeNativeState(options: {
 
 function createClaudeCleanupPlugin(root: string, name: string): PluginMeta {
   return {
+    sourceId: 'team',
+    sourceIdentity: TEST_SOURCE_IDENTITY,
+    pluginId: `team/${name}`,
     rootDir: path.join(root, name),
     manifestPath: path.join(root, name, '.agents-plugin', 'plugin.json'),
     manifest: {
       name,
       version: '0.0.0',
       description: 'Claude cleanup fixture',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'test',
         strict: true,
@@ -274,6 +285,103 @@ async function writeClaudeGlobalConsumerState(options: {
 }
 
 describe('rebuild adapter integration', () => {
+  it('uses official exact and neutral Codex list evidence for shared registration', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = 'list-evidence';
+    const cacheRoot = path.join(
+      isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
+    );
+    await fs.outputJson(path.join(cacheRoot, 'plugin.json'), {
+      name: pluginName, version: '1.0.0',
+    });
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    const calls: NativeCliInvocation[] = [];
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName,
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(cacheRoot),
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async (invocation) => {
+        calls.push(invocation);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [{
+              pluginId: `${pluginName}@aw`, installed: true,
+              enabled: invocation.cwd === isolation.layout.fixtureCwd,
+              version: '1.0.0',
+            }],
+            available: [],
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: { state: 'usable', version: '1.0.0' },
+      activations: { user: false, project: true },
+    });
+    expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
+      isolation.layout.fixtureCwd,
+      isolation.env.TMPDIR,
+    ]));
+    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
+
+  it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName: 'unreadable-list',
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async (invocation) => {
+        calls.push(invocation);
+        return { exitCode: 0, stdout: '{invalid', stderr: '' };
+      },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: {
+        state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable',
+      },
+      activationObservations: { user: false, project: false },
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
+
+  it('uses the successful Codex list when the other inspection fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName: 'degraded-list',
+      desiredVersion: '1.0.0',
+      expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async (invocation) => invocation.cwd === isolation.layout.fixtureCwd
+        ? { exitCode: 1, stdout: '', stderr: 'project unavailable' }
+        : {
+            exitCode: 0,
+            stdout: JSON.stringify({ installed: [], available: [] }),
+            stderr: '',
+          },
+    });
+
+    expect(inspected).toMatchObject({
+      sharedNative: { state: 'missing' },
+      activationObservations: { user: true, project: false },
+    });
+  });
   it.each(['codex', 'claude'] as const)(
     'does not make an uninstalled %s target partial because the shared marketplace exists',
     async (platform) => {
@@ -343,7 +451,6 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     const inspected = await inspectOwnedComponents({
       components: target.ownedComponents,
@@ -410,6 +517,19 @@ describe('rebuild adapter integration', () => {
         await fs.remove(path.dirname(cacheRoot));
         await writeConfig();
       }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${plugin.manifest.name}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
       return {
         exitCode: 0,
         stdout: invocation.args[1] === 'list' && installed
@@ -437,14 +557,12 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command,
       catalog,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const installTarget = await build('install');
     const installedResult = await executeRebuildOperation({
       command: 'install',
       target: installTarget,
       driver: integration.driver,
-      activeStore,
     });
     expect(installedResult.status, JSON.stringify(installedResult.failures)).toBe('succeeded');
 
@@ -470,7 +588,6 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup',
       target: cleanupTarget,
       driver: integration.driver,
-      activeStore,
     });
     expect(cleanupResult.status, JSON.stringify(cleanupResult.failures)).toBe('succeeded');
     const recoveredInstallTarget = await build('install');
@@ -478,7 +595,6 @@ describe('rebuild adapter integration', () => {
       command: 'install',
       target: recoveredInstallTarget,
       driver: integration.driver,
-      activeStore,
     });
     expect(recoveredInstallResult.status, JSON.stringify(recoveredInstallResult.failures))
       .toBe('succeeded');
@@ -490,7 +606,6 @@ describe('rebuild adapter integration', () => {
       command: 'reinstall',
       target: reinstallTarget,
       driver: integration.driver,
-      activeStore,
     });
     expect(reinstalledResult.status, JSON.stringify(reinstalledResult.failures)).toBe('succeeded');
     for (const artifact of staticSkills) {
@@ -585,15 +700,15 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command,
         catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-        includeHistoricalLifecycleArtifacts: false,
       });
       const inspected = await inspectOwnedComponents({
         components: target.ownedComponents,
+        executor: integration.driver.ownership,
         nativeProbe: integration.driver.probeNative,
       });
       expect(inspected.state).toBe('absent');
       const result = await executeRebuildOperation({
-        command, target, driver: integration.driver, activeStore,
+        command, target, driver: integration.driver,
       });
       expect(result.status).toBe('failed');
       expect(result.failures.some((failure) => failure.message.includes('foreign source'))).toBe(true);
@@ -907,15 +1022,6 @@ describe('rebuild adapter integration', () => {
       nativeCliRunner: context.nativeCliRunner,
     })).resolves.toContain('disabled-native');
   });
-
-  const activeStore = {
-    prepare: async () => ({ status: 'not-required' }),
-    discard: async () => undefined,
-    promote: async () => null,
-    read: async () => null,
-    remove: async () => undefined,
-  } as unknown as RebuildActiveStore;
-
   it('plans Claude artifacts before writes and uses native marketplace/install/list ownership', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -923,13 +1029,16 @@ describe('rebuild adapter integration', () => {
     const pluginRoot = sourceRoot;
     await fs.ensureDir(pluginRoot);
     const plugin: PluginMeta = {
+      sourceId: 'team',
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+      pluginId: 'team/removed-plugin',
       rootDir: pluginRoot,
       manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'simple-plugin',
         version: '1.2.3',
         description: 'rebuild integration fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -991,7 +1100,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog,
-      includeHistoricalLifecycleArtifacts: true,
     });
     expect(target.artifacts).toHaveLength(1);
     expect(await fs.pathExists(target.artifacts[0]!.path)).toBe(false);
@@ -1000,7 +1108,6 @@ describe('rebuild adapter integration', () => {
       command: 'install',
       target,
       driver: integration.driver,
-      activeStore,
     });
 
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
@@ -1023,6 +1130,8 @@ describe('rebuild adapter integration', () => {
       allowedRoot: rulesDir,
       identity: {
         owner: 'agent-workflows',
+        sourceId: 'team',
+        pluginId: 'team/removed-plugin',
         plugin: 'removed-plugin',
         artifactKey: 'owned-rule',
         platform: 'codex',
@@ -1032,13 +1141,16 @@ describe('rebuild adapter integration', () => {
     });
     await fs.writeFile(foreignPath, 'foreign\n');
     const plugin: PluginMeta = {
+      sourceId: 'team',
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+      pluginId: 'team/removed-plugin',
       rootDir: '.',
       manifestPath: '.agents-plugin/plugin.json',
       manifest: {
         name: 'removed-plugin',
         version: '0.0.0',
         description: 'cleanup-only target',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'cleanup',
           strict: true,
@@ -1058,13 +1170,11 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: cwd, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: true,
     });
     const result = await executeRebuildOperation({
       command: 'cleanup',
       target,
       driver: integration.driver,
-      activeStore,
     });
 
     expect(result).toMatchObject({ status: 'succeeded' });
@@ -1072,226 +1182,20 @@ describe('rebuild adapter integration', () => {
     expect(await fs.readFile(foreignPath, 'utf8')).toBe('foreign\n');
   });
 
-  it('cleans historical Codex project MCP and Hook residue without restoring projection', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const plugin = await createCodexSharedConfigPlugin({
-      root: isolation.layout.rootDir,
-      name: 'historical-native-residue',
-    });
-    plugin.manifest.scripts = {
-      lifecycle: {
-        uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
-      },
-    };
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'uninstall.mjs'), 'process.exit(0);\n');
-    await fs.outputJson(plugin.manifestPath, plugin.manifest);
-    const configPath = path.join(cwd, '.codex', 'config.toml');
-    const hooksPath = path.join(cwd, '.codex', 'hooks.json');
-    const mcpArtifactKey = `mcp-${crypto.createHash('sha256').update('legacy-server').digest('hex').slice(0, 20)}`;
-    const mcpOwner = createSharedOwnerToken({
-      owner: 'agent-workflows',
-      plugin: plugin.manifest.name,
-      artifactKey: mcpArtifactKey,
-      platform: 'codex',
-      scope: 'project',
-    });
-    await applyCodexConfigTransactionFile(configPath, {
-      upsertMcpServers: {
-        'legacy-server': {
-          command: 'legacy-owned',
-          env: { AW_AGENT_WORKFLOWS_OWNER: mcpOwner },
-        },
-        foreign: { command: 'foreign' },
-      },
-    });
-    const hookIdentity = {
-      event: 'SessionStart',
-      command: renderOwnedTextFile('echo legacy-owned\n', {
-        owner: 'agent-workflows',
-        plugin: plugin.manifest.name,
-        artifactKey: 'legacy-hook',
-        platform: 'codex',
-        scope: 'project',
-      }),
-    };
-    const renderedHook = renderTrackedHookGroupIdentity(hookIdentity);
-    await fs.outputJson(hooksPath, {
-      hooks: {
-        SessionStart: [
-          { hooks: renderedHook.hooks },
-          { hooks: [{ type: 'command', command: 'echo foreign' }] },
-        ],
-      },
-    });
-    const loadPlugin = (bundleRoot: string) => readPluginManifest(bundleRoot, { mode: 'bundle' });
-    const prepared = await prepareLifecycleActiveSnapshot({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      artifacts: [
-        {
-          path: configPath,
-          kind: 'mcpServer',
-          platform: 'codex',
-          artifactKey: 'legacy-server',
-        },
-        {
-          path: hooksPath,
-          kind: 'hook',
-          platform: 'codex',
-          hookGroups: [hookIdentity],
-        },
-      ],
-      env: isolation.env,
-      loadPlugin,
-    });
-    expect(prepared.status).toBe('staged');
-    if (prepared.status !== 'staged') throw new Error('Expected staged active snapshot.');
-    await promoteLifecycleActiveSnapshot(prepared);
-
-    const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => { throw new Error('historical cleanup must not call native'); },
-      }),
-    });
-    const target = await integration.buildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      command: 'cleanup',
-      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: true,
-    });
-    expect(target.artifacts).toEqual([]);
-    const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
-    });
-    expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    const config = await readCodexConfigFile(configPath);
-    expect(config.snapshot.mcpServers['legacy-server']).toBeUndefined();
-    expect(config.snapshot.mcpServers.foreign).toBeDefined();
-    const hooks = await fs.readJson(hooksPath);
-    expect(hooks.hooks.SessionStart).toEqual([
-      { hooks: [{ type: 'command', command: 'echo foreign' }] },
-    ]);
-  });
-
-  it.each(['install', 'upgrade', 'reinstall'] as const)(
-    'does not touch historical Codex project MCP or Hook residue during %s',
-    async (command) => {
-      const isolation = getCurrentSourceTestIsolation();
-      const cwd = isolation.layout.fixtureCwd;
-      const plugin = await createCodexSharedConfigPlugin({
-        root: isolation.layout.rootDir,
-        name: `historical-residue-${command}`,
-      });
-      plugin.manifest.scripts = {
-        lifecycle: {
-          uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
-        },
-      };
-      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'uninstall.mjs'), 'process.exit(0);\n');
-      await fs.outputJson(plugin.manifestPath, plugin.manifest);
-      const configPath = path.join(cwd, '.codex', 'config.toml');
-      const hooksPath = path.join(cwd, '.codex', 'hooks.json');
-      const mcpOwner = createSharedOwnerToken({
-        owner: 'agent-workflows',
-        plugin: plugin.manifest.name,
-        artifactKey: `mcp-${crypto.createHash('sha256').update('legacy-server').digest('hex').slice(0, 20)}`,
-        platform: 'codex',
-        scope: 'project',
-      });
-      await applyCodexConfigTransactionFile(configPath, {
-        upsertMcpServers: {
-          'legacy-server': {
-            command: 'legacy-owned',
-            env: { AW_AGENT_WORKFLOWS_OWNER: mcpOwner },
-          },
-        },
-      });
-      const hookIdentity = {
-        event: 'SessionStart',
-        command: renderOwnedTextFile('echo legacy-owned\n', {
-          owner: 'agent-workflows',
-          plugin: plugin.manifest.name,
-          artifactKey: 'legacy-hook',
-          platform: 'codex',
-          scope: 'project',
-        }),
-      };
-      const renderedHook = renderTrackedHookGroupIdentity(hookIdentity);
-      await fs.outputJson(hooksPath, {
-        hooks: { SessionStart: [{ hooks: renderedHook.hooks }] },
-      });
-      const prepared = await prepareLifecycleActiveSnapshot({
-        plugin,
-        platform: 'codex',
-        scope: 'project',
-        cwd,
-        artifacts: [
-          {
-            path: configPath,
-            kind: 'mcpServer',
-            platform: 'codex',
-            artifactKey: 'legacy-server',
-          },
-          {
-            path: hooksPath,
-            kind: 'hook',
-            platform: 'codex',
-            hookGroups: [hookIdentity],
-          },
-        ],
-        env: isolation.env,
-        loadPlugin: (bundleRoot) => readPluginManifest(bundleRoot, { mode: 'bundle' }),
-      });
-      expect(prepared.status).toBe('staged');
-      if (prepared.status !== 'staged') throw new Error('Expected staged active snapshot.');
-      await promoteLifecycleActiveSnapshot(prepared);
-      const integration = createRebuildIntegration({
-        context: createCommandExecutionContext({
-          env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('project planning must not call native'); },
-        }),
-      });
-      const target = await integration.buildTarget({
-        plugin,
-        platform: 'codex',
-        scope: 'project',
-        cwd,
-        command,
-        catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-        includeHistoricalLifecycleArtifacts: true,
-      });
-
-      expect(target.ownedComponents.some((component) =>
-        'label' in component
-        && (component.label.includes('#mcp_servers.legacy-server')
-          || component.label === hooksPath))).toBe(false);
-      await integration.driver.writeArtifacts(target);
-      expect((await readCodexConfigFile(configPath)).snapshot.mcpServers['legacy-server'])
-        .toBeDefined();
-      await expect(fs.readJson(hooksPath)).resolves.toMatchObject({
-        hooks: { SessionStart: [{ hooks: renderedHook.hooks }] },
-      });
-    },
-  );
-
   it('inspects absent, partial, and present ownership without writing target files', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const plugin: PluginMeta = {
+      sourceId: 'team',
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+      pluginId: 'team/read-only-plugin',
       rootDir: path.join(isolation.layout.rootDir, 'read-only-plugin'),
       manifestPath: path.join(isolation.layout.rootDir, 'read-only-plugin', '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'read-only-plugin',
         version: '1.0.0',
         description: 'read-only inspection fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1336,6 +1240,8 @@ describe('rebuild adapter integration', () => {
       allowedRoot: configDir,
       identity: {
         owner: 'agent-workflows',
+        sourceId: 'team',
+        pluginId: 'team/read-only-plugin',
         plugin: 'read-only-plugin',
         artifactKey: 'aw-read-only-plugin-rule',
         platform: 'claude',
@@ -1377,65 +1283,6 @@ describe('rebuild adapter integration', () => {
     expect((await fs.stat(rulePath)).mtimeMs).toBe(beforeMtime);
   });
 
-  it('does not discover or inspect active-only lifecycle state', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const activeMetadataPath = path.join(
-      isolation.layout.awHomeDir,
-      'lifecycle-active',
-      'codex',
-      'project',
-      'active-only-location',
-      'active-only-plugin',
-      'active',
-      'metadata.json',
-    );
-    await fs.outputJson(activeMetadataPath, {
-      platform: 'codex',
-      scope: 'project',
-      pluginName: 'active-only-plugin',
-      projectKey: cwd,
-    });
-    const context = createCommandExecutionContext({
-      env: isolation.env,
-      nativeCliRunner: async () => { throw new Error('project discovery must not call native CLI'); },
-    });
-    await expect(discoverRebuildTargetNames({
-      cwd,
-      env: isolation.env,
-      platform: 'codex',
-      scope: 'project',
-      nativeCliRunner: context.nativeCliRunner,
-    })).resolves.not.toContain('active-only-plugin');
-
-    const plugin: PluginMeta = {
-      rootDir: '.',
-      manifestPath: '.agents-plugin/plugin.json',
-      manifest: {
-        name: 'active-only-plugin',
-        version: '1.0.0',
-        description: 'active-only inspection fixture',
-        schemaVersion: 2,
-        marketplace: {
-          category: 'test',
-          strict: true,
-          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-        },
-      },
-    };
-    const inspected = await inspectRebuildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      catalog: { rootDir: cwd, source: 'local' } as CatalogResolution,
-      context,
-    });
-    expect(inspected.inspection.state).toBe('absent');
-    expect(inspected.target.ownedComponents).toHaveLength(0);
-    expect(await fs.pathExists(activeMetadataPath)).toBe(true);
-  });
-
   it('uses a manifest-only inspection plan and never invokes the renderer', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -1453,7 +1300,7 @@ describe('rebuild adapter integration', () => {
         name: 'renderer-read-only',
         version: '1.0.0',
         description: 'renderer read-only fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1521,7 +1368,6 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
       readOnlyInspectionPlan: true,
     });
     const skillPaths = target.ownedComponents.flatMap((component) =>
@@ -1571,7 +1417,6 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
 
     await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
@@ -1617,7 +1462,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' },
-        includeHistoricalLifecycleArtifacts: false,
       });
       const realLstat = fs.lstat.bind(fs);
       const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
@@ -1683,7 +1527,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' },
-        includeHistoricalLifecycleArtifacts: false,
       });
       await expect(integration.driver.writeNative(target)).rejects.toThrow('native install failed');
       const backupName = (await fs.readdir(path.dirname(marketplaceRoot)))
@@ -1753,7 +1596,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' },
-        includeHistoricalLifecycleArtifacts: false,
       });
       const realMove = fs.move.bind(fs);
       const move = vi.spyOn(fs, 'move').mockImplementation(async (source, destination, options) => {
@@ -1860,7 +1702,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' },
-        includeHistoricalLifecycleArtifacts: false,
       });
       const unreadableRoot = directoryKind === 'plugins'
         ? path.join(marketplaceRoot, 'plugins')
@@ -1894,7 +1735,7 @@ describe('rebuild adapter integration', () => {
       await expect(readSkillOwnerMarker({
         skillRoot: overlayRoot,
         allowedRoot: skillsRoot,
-      })).resolves.toMatchObject({ sourceId: 'team', sourceIdentity, pluginId: 'team/ask-me' });
+      })).resolves.toMatchObject({ sourceId: 'team', pluginId: 'team/ask-me' });
       expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('.team-'))).toEqual([]);
       expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('team.backup-'))).toEqual([]);
     },
@@ -1909,7 +1750,7 @@ describe('rebuild adapter integration', () => {
         name: 'optional-plan',
         version: '1.0.0',
         description: 'optional planner fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -1980,7 +1821,6 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
       readOnlyInspectionPlan: true,
     });
     expect(target.desiredOwnedComponents).toEqual([]);
@@ -1998,6 +1838,8 @@ describe('rebuild adapter integration', () => {
       allowedRoot: isolation.layout.claudeHomeDir,
       identity: {
         owner: 'agent-workflows',
+        sourceId: 'team',
+        pluginId: 'team/owner-only',
         plugin: 'owner-only',
         artifactKey: 'owned',
         platform: 'claude',
@@ -2071,6 +1913,8 @@ describe('rebuild adapter integration', () => {
       allowedRoot: path.join(cwd, '.claude'),
       identity: {
         owner: 'agent-workflows',
+        sourceId: 'team',
+        pluginId: 'team/project-owner',
         plugin: 'project-owner',
         artifactKey: 'owner-rule',
         platform: 'claude',
@@ -2105,7 +1949,7 @@ describe('rebuild adapter integration', () => {
         name: 'symlink-boundary',
         version: '1.0.0',
         description: 'symlink boundary fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2126,7 +1970,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: cwd, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('符号链接');
     expect(await fs.readdir(outside)).toEqual([]);
   });
@@ -2149,7 +1992,7 @@ describe('rebuild adapter integration', () => {
         name: 'file-symlink-boundary',
         version: '1.0.0',
         description: 'file symlink boundary fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2170,7 +2013,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: cwd, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('符号链接');
     expect(await fs.readFile(outside, 'utf8')).toBe('foreign\n');
   });
@@ -2197,7 +2039,7 @@ describe('rebuild adapter integration', () => {
       name: 'project-skill-plugin',
       version: '1.0.0',
       description: 'project skill fixture',
-      schemaVersion: 2,
+      schemaVersion: 3,
       marketplace: {
         category: 'test',
         strict: true,
@@ -2224,7 +2066,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const skillRoot = path.join(cwd, '.agents', 'skills', 'repo-check');
     expect(target.requiresNative).toBe(true);
@@ -2242,7 +2083,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).resolves.toMatchObject({ requiresNative: true, writeNativeRequired: true });
   });
 
@@ -2311,11 +2151,10 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     expect(target).toMatchObject({ requiresNative: true, writeNativeRequired: false });
     const result = await executeRebuildOperation({
-      command: 'install', target, driver: integration.driver, activeStore,
+      command: 'install', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe(exactEnabled ? 'succeeded' : 'failed');
     if (!exactEnabled) {
@@ -2403,13 +2242,11 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
       command: 'install',
       target,
       driver: integration.driver,
-      activeStore,
     });
     if (extraPayload) {
       expect(result.status).toBe('failed');
@@ -2501,10 +2338,9 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const result = await executeRebuildOperation({
-        command: 'install', target, driver: integration.driver, activeStore,
+        command: 'install', target, driver: integration.driver,
       });
       expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
       const skillArtifact = target.artifacts.find((artifact) =>
@@ -2544,7 +2380,7 @@ describe('rebuild adapter integration', () => {
         name: 'foreign-collision-plugin',
         version: '1.0.0',
         description: 'foreign collision fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2566,7 +2402,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     expect(target.artifacts.some((artifact) => artifact.kind === 'skill')).toBe(false);
     expect(target.ownedComponents.some((component) =>
@@ -2607,7 +2442,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('roleNameConflict');
     expect(await fs.readFile(foreignRolePath, 'utf8')).toBe('name = "external-alias"\n');
 
@@ -2641,7 +2475,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('roleNameConflict');
   });
 
@@ -2655,7 +2488,7 @@ describe('rebuild adapter integration', () => {
         name: 'safety-plugin',
         version: '1.0.0',
         description: 'project safety fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2676,7 +2509,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install' as const,
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), '[broken');
     await expect(build()).resolves.toMatchObject({ requiresNative: false });
@@ -2716,13 +2548,11 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     await expect(executeRebuildOperation({
       command: 'install',
       target: foreignTarget,
       driver: integration.driver,
-      activeStore,
     })).resolves.toMatchObject({
       status: 'failed',
       error: { phase: 'preflight.inspect', message: expect.stringContaining('externalOwnershipPresent') },
@@ -2748,7 +2578,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).resolves.toMatchObject({ requiresNative: false });
 
     delete plugin.manifest.apps;
@@ -2793,7 +2622,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('roleNameConflict');
   });
 
@@ -2829,7 +2657,6 @@ describe('rebuild adapter integration', () => {
       scope: 'project' as const,
       cwd,
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     };
     const v1 = await integration.buildTarget({ ...common, plugin, command: 'install' });
     await integration.driver.writeArtifacts(v1);
@@ -2844,7 +2671,7 @@ describe('rebuild adapter integration', () => {
       ...plugin,
       manifest: { ...plugin.manifest, version: '2.0.0', extensions: undefined },
     };
-    const v2 = await integration.buildTarget({ ...common, plugin: v2Plugin, command: 'upgrade' });
+    const v2 = await integration.buildTarget({ ...common, plugin: v2Plugin, command: 'sync' });
     const staleIdentity = staleComponents[0]!.identity;
     const sameIdentity = (component: (typeof v2.ownedComponents)[number]) =>
       component.identity.plugin === staleIdentity.plugin
@@ -2868,10 +2695,9 @@ describe('rebuild adapter integration', () => {
     ].join('\n'));
     const before = await fs.readFile(staleArtifact.path, 'utf8');
     const result = await executeRebuildOperation({
-      command: 'upgrade',
+      command: 'sync',
       target,
       driver: integration.driver,
-      activeStore,
     });
     expect(result).toMatchObject({
       status: 'failed',
@@ -2883,13 +2709,17 @@ describe('rebuild adapter integration', () => {
   it('keeps current Claude permission overlaps without restoring later removals', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const settingsPath = path.join(isolation.layout.claudeHomeDir, 'settings.json');
+    const stalePermissionOwner = createSharedOwnerToken({
+      owner: 'agent-workflows', sourceId: 'team', pluginId: 'team/stale-permission',
+      plugin: 'stale-permission', artifactKey: 'permissions', platform: 'claude', scope: 'user',
+    });
     await fs.outputJson(settingsPath, {
       permissions: {
         allow: ['Manual', 'AddedLater', 'OldGenerated', 'RetainedOverlap', 'OtherGenerated'],
       },
       awGenerated: {
         permissions: {
-          'stale-permission': {
+          [stalePermissionOwner]: {
             allow: ['OldGenerated', 'RetainedOverlap', 'RemovedOverlap'], ask: [], deny: [],
           },
           other: { allow: ['OtherGenerated'], ask: [], deny: [] },
@@ -2900,13 +2730,16 @@ describe('rebuild adapter integration', () => {
       },
     });
     const plugin = {
+      sourceId: 'team',
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+      pluginId: 'team/stale-permission',
       rootDir: isolation.layout.rootDir,
       manifestPath: path.join(isolation.layout.rootDir, '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'stale-permission',
         version: '0.0.0',
         description: 'stale permission cleanup fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -2927,13 +2760,11 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
       command: 'cleanup',
       target,
       driver: integration.driver,
-      activeStore,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     const settings = await fs.readJson(settingsPath);
@@ -3011,10 +2842,9 @@ describe('rebuild adapter integration', () => {
         cwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const installedResult = await executeRebuildOperation({
-        command: 'install', target: installTarget, driver: integration.driver, activeStore,
+        command: 'install', target: installTarget, driver: integration.driver,
       });
       expect(installedResult.status, JSON.stringify(installedResult.failures)).toBe('succeeded');
 
@@ -3025,10 +2855,9 @@ describe('rebuild adapter integration', () => {
         cwd,
         command: 'uninstall',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const uninstalledResult = await executeRebuildOperation({
-        command: 'uninstall', target: uninstallTarget, driver: integration.driver, activeStore,
+        command: 'uninstall', target: uninstallTarget, driver: integration.driver,
       });
       expect(uninstalledResult.status, JSON.stringify(uninstalledResult.failures)).toBe('succeeded');
       expect(calls).toContain(`claude plugin uninstall ${plugin.manifest.name}@aw --scope ${scope}`);
@@ -3049,11 +2878,10 @@ describe('rebuild adapter integration', () => {
         cwd,
         command: 'cleanup',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const beforeForeignCalls = calls.length;
       const foreignResult = await executeRebuildOperation({
-        command: 'cleanup', target: foreignTarget, driver: integration.driver, activeStore,
+        command: 'cleanup', target: foreignTarget, driver: integration.driver,
       });
       expect(foreignResult.status).toBe('failed');
       expect(calls.slice(beforeForeignCalls)).not.toContain(
@@ -3113,13 +2941,11 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
       command: 'install',
       target,
       driver: integration.driver,
-      activeStore,
     });
     expect(result.status).toBe('failed');
     expect(result.cleanupAttempted).toBe(true);
@@ -3172,7 +2998,7 @@ describe('rebuild adapter integration', () => {
         name: pluginName,
         version: '0.0.0',
         description: 'native residue fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3187,10 +3013,9 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status).toBe('succeeded');
     expect(result.residual).toEqual([]);
@@ -3227,10 +3052,9 @@ describe('rebuild adapter integration', () => {
       plugin, platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status).toBe('succeeded');
     expect(result.residual).toEqual([]);
@@ -3272,7 +3096,7 @@ describe('rebuild adapter integration', () => {
         name: 'orphan-plugin',
         version: '0.0.0',
         description: 'orphan marketplace fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3290,10 +3114,9 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const first = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(first.status).toBe('succeeded');
     expect(calls).not.toContain('codex plugin marketplace remove aw');
@@ -3301,7 +3124,7 @@ describe('rebuild adapter integration', () => {
     otherInstalled = false;
     await writeMarketplace();
     const second = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(second.status, JSON.stringify(second.failures)).toBe('succeeded');
     expect(calls).not.toContain('codex plugin marketplace remove aw');
@@ -3355,6 +3178,22 @@ describe('rebuild adapter integration', () => {
         );
         await writeConfig();
       }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [
+              ...(installedA ? [{
+                pluginId: `${pluginA}@aw`, installed: true,
+                enabled: true, version: plugin.manifest.version,
+              }] : []),
+              { pluginId: `${pluginB}@aw`, installed: true, enabled: true, version: '1.0.0' },
+            ],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
     const integration = createRebuildIntegration({
@@ -3364,17 +3203,16 @@ describe('rebuild adapter integration', () => {
       plugin, platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
       command: 'reinstall',
       catalog: { rootDir: catalogRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'reinstall', target, driver: integration.driver, activeStore,
+      command: 'reinstall', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).not.toContain('codex plugin marketplace remove aw');
     expect(await fs.readFile(configPath, 'utf8')).toContain(`${pluginB}@aw`);
   });
 
-  it('scans and cleans the custom Codex user skills root from the platform manifest', async () => {
+  it('preserves the custom Codex user payload root from the platform manifest during cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginRoot = path.join(isolation.layout.rootDir, 'custom-root-plugin');
     const plugin = {
@@ -3384,7 +3222,7 @@ describe('rebuild adapter integration', () => {
         name: 'custom-root-plugin',
         version: '1.0.0',
         description: 'custom root fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,
@@ -3444,13 +3282,16 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(await fs.pathExists(skillRoot)).toBe(false);
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# Custom\n');
+    await expect(fs.readJson(path.join(skillRoot, '.agent-workflows-owner.json'))).resolves.toMatchObject({
+      owner: 'agent-workflows',
+      plugin: plugin.manifest.name,
+    });
   });
 
   it('does not materialize unsupported slash commands into a Codex project', async () => {
@@ -3478,13 +3319,11 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
       command: 'install',
       target,
       driver: integration.driver,
-      activeStore,
     });
     const generatedSkill = path.join(
       isolation.layout.fixtureCwd,
@@ -3520,7 +3359,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: fixturesRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       expect(target.artifacts.some((artifact) => artifact.kind === 'mcpServer')).toBe(false);
       expect(target.artifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
@@ -3555,7 +3393,6 @@ describe('rebuild adapter integration', () => {
       plugin, platform: 'codex', scope: 'project', cwd,
       command: 'install',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     expect(target.requiresNative).toBe(true);
     expect(target.artifacts.some((artifact) => artifact.kind === 'hook')).toBe(false);
@@ -3600,7 +3437,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: plugin.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     })));
     expect(targets.every((target) =>
       target.artifacts.every((artifact) => artifact.kind !== 'mcpServer'))).toBe(true);
@@ -3628,7 +3464,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: plugin.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     })));
     for (const target of instructionTargets) await integration.driver.writeArtifacts(target);
 
@@ -3658,13 +3493,11 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: plugins[0]!.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     await expect(executeRebuildOperation({
       command: 'cleanup',
       target: cleanupFirst,
       driver: integration.driver,
-      activeStore,
     })).resolves.toMatchObject({ status: 'succeeded' });
     expect(Object.keys((await readCodexConfigFile(configPath)).snapshot.developerInstructions.managedBlocks)
       .map((key) => parseSharedOwnerToken(key)?.pluginId)).toEqual(['second/same-shared']);
@@ -3690,7 +3523,6 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'install',
       catalog: { rootDir: plugin.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     })));
     for (const target of claudeTargets) await integration.driver.writeArtifacts(target);
     const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
@@ -3711,13 +3543,11 @@ describe('rebuild adapter integration', () => {
       cwd,
       command: 'cleanup',
       catalog: { rootDir: claudePlugins[0]!.rootDir, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     await expect(executeRebuildOperation({
       command: 'cleanup',
       target: claudeCleanup,
       driver: integration.driver,
-      activeStore,
     })).resolves.toMatchObject({ status: 'succeeded' });
     const afterClaudeCleanup = await fs.readJson(claudePaths.settingsPath) as {
       awGenerated: { permissions: Record<string, unknown> };
@@ -3744,10 +3574,10 @@ describe('rebuild adapter integration', () => {
     });
     const installTarget = await integration.buildTarget({
       plugin: v1, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
+      command: 'install', catalog,
     });
     const installed = await executeRebuildOperation({
-      command: 'install', target: installTarget, driver: integration.driver, activeStore,
+      command: 'install', target: installTarget, driver: integration.driver,
     });
     expect(installed.status, JSON.stringify(installed.failures)).toBe('succeeded');
 
@@ -3759,10 +3589,10 @@ describe('rebuild adapter integration', () => {
     });
     const reinstallTarget = await integration.buildTarget({
       plugin: v2, platform: 'codex', scope: 'project', cwd,
-      command: 'reinstall', catalog, includeHistoricalLifecycleArtifacts: false,
+      command: 'reinstall', catalog,
     });
     const reinstalled = await executeRebuildOperation({
-      command: 'reinstall', target: reinstallTarget, driver: integration.driver, activeStore,
+      command: 'reinstall', target: reinstallTarget, driver: integration.driver,
     });
     expect(reinstalled.status, JSON.stringify(reinstalled.failures)).toBe('succeeded');
     const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
@@ -3775,7 +3605,7 @@ describe('rebuild adapter integration', () => {
 
     const protectedTarget = await integration.buildTarget({
       plugin: v2, platform: 'codex', scope: 'project', cwd,
-      command: 'reinstall', catalog, includeHistoricalLifecycleArtifacts: false,
+      command: 'reinstall', catalog,
     });
     const foreignRolePath = path.join(path.dirname(rolePath), 'foreign-reinstall-role.toml');
     await fs.outputFile(foreignRolePath, 'description = "foreign role"\n');
@@ -3785,7 +3615,7 @@ describe('rebuild adapter integration', () => {
       },
     });
     const protectedResult = await executeRebuildOperation({
-      command: 'reinstall', target: protectedTarget, driver: integration.driver, activeStore,
+      command: 'reinstall', target: protectedTarget, driver: integration.driver,
     });
     expect(protectedResult.status).toBe('failed');
     expect((await readCodexConfigFile(configPath)).snapshot.agents['reinstall-role']?.configFile)
@@ -3810,7 +3640,7 @@ describe('rebuild adapter integration', () => {
     });
     const target = await integration.buildTarget({
       plugin: rolePlugin, platform: 'codex', scope: 'project', cwd,
-      command: 'install', catalog, includeHistoricalLifecycleArtifacts: false,
+      command: 'install', catalog,
     });
     await integration.driver.writeArtifacts(target);
     const cleanupTarget = await integration.buildTarget({
@@ -3819,7 +3649,7 @@ describe('rebuild adapter integration', () => {
         manifest: { ...rolePlugin.manifest, scripts: undefined, artifacts: undefined },
       },
       platform: 'codex', scope: 'project', cwd,
-      command: 'cleanup', catalog, includeHistoricalLifecycleArtifacts: false,
+      command: 'cleanup', catalog,
     });
     const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
     const foreignRolePath = path.join(path.dirname(configPath), 'agents', 'foreign-role.toml');
@@ -3837,7 +3667,9 @@ describe('rebuild adapter integration', () => {
     });
     const conditionalComponents = cleanupTarget.ownedComponents
       .filter((component) => component.kind === 'shared-config');
-    for (const component of conditionalComponents) await component.remove();
+    for (const component of conditionalComponents) {
+      await integration.driver.ownership.removeShared(component);
+    }
 
     const config = await readCodexConfigFile(configPath);
     const env = config.snapshot.mcpServers['conditional-server']?.value?.env as Record<string, unknown>;
@@ -3874,7 +3706,7 @@ describe('rebuild adapter integration', () => {
       const catalog = { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution;
       const v1 = await integration.buildTarget({
         plugin: base, platform: 'codex', scope: 'project', cwd,
-        command, catalog, includeHistoricalLifecycleArtifacts: false,
+        command, catalog,
       });
       const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
       expect(v1.requiresNative).toBe(true);
@@ -3920,7 +3752,6 @@ describe('rebuild adapter integration', () => {
         cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       expect(target.artifacts.some((artifact) =>
         artifact.kind === 'mcpServer' || artifact.kind === 'hook')).toBe(false);
@@ -3934,9 +3765,8 @@ describe('rebuild adapter integration', () => {
           platform: 'codex',
           scope: 'project',
           cwd: isolation.layout.fixtureCwd,
-          command: 'upgrade',
+          command: 'sync',
           catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-          includeHistoricalLifecycleArtifacts: true,
         });
         await integration.driver.writeArtifacts(repeatTarget);
       }
@@ -3962,108 +3792,6 @@ describe('rebuild adapter integration', () => {
     const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
     expect(codexConfig).not.toContain('实施前需求检查');
     expect(codexConfig).toContain('[agents.codex-subagent-simple]');
-  });
-
-  it('passes historical artifacts and the CLI timeout to the renderer', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const cwd = isolation.layout.fixtureCwd;
-    const pluginRoot = path.join(isolation.layout.rootDir, 'renderer-contract');
-    const manifest = {
-      name: 'renderer-contract',
-      version: '1.0.0',
-      description: 'renderer contract fixture',
-      schemaVersion: 2,
-      marketplace: {
-        category: 'test',
-        strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
-      },
-      scripts: {
-        timeoutMs: 10_000,
-        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
-        lifecycle: {
-          upgrade: { default: { runner: 'node', path: './scripts/upgrade.mjs' } },
-          uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
-        },
-      },
-      artifacts: {
-        targets: [{
-          id: 'instruction',
-          platform: 'codex',
-          scopes: ['project'],
-          target: 'codex.developerInstructionsBlock',
-          states: ['present', 'disabled'],
-          refreshKeys: [],
-          requiresCodexProjectConfig: true,
-        }],
-      },
-    };
-    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), manifest);
-    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
-      'import { readFile } from "node:fs/promises";',
-      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      'const present = context.previousArtifacts.length > 0;',
-      'console.log(JSON.stringify({ version: 2, artifacts: [{',
-      '  id: "instruction", kind: "instruction", platform: "codex",',
-      '  target: "codex.developerInstructionsBlock", state: present ? "present" : "disabled",',
-      '  refreshKeys: [], ...(present ? { content: "Previous artifacts were passed." } : {})',
-      '}] }));',
-    ].join('\n'));
-    await fs.outputFile(path.join(pluginRoot, 'scripts', 'upgrade.mjs'), 'export default true;\n');
-    await fs.outputFile(path.join(pluginRoot, 'scripts', 'uninstall.mjs'), 'export default true;\n');
-    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    const loadPlugin = (bundleRoot: string) => readPluginManifest(bundleRoot, { mode: 'bundle' });
-    const prepared = await prepareLifecycleActiveSnapshot({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      artifacts: [{
-        path: path.join(cwd, '.codex', 'config.toml'),
-        kind: 'instruction',
-        platform: 'codex',
-        id: 'instruction',
-        target: 'codex.developerInstructionsBlock',
-        state: 'present',
-      }],
-      env: isolation.env,
-      loadPlugin,
-    });
-    expect(prepared.status).toBe('staged');
-    if (prepared.status !== 'staged') throw new Error('Expected staged active snapshot.');
-    await promoteLifecycleActiveSnapshot(prepared);
-    const context = createCommandExecutionContext({
-      env: isolation.env,
-      nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
-    });
-    const integration = createRebuildIntegration({ context, scriptTimeoutMs: 5_000 });
-    const target = await integration.buildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      command: 'upgrade',
-      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: true,
-    });
-    expect(target.artifacts).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'instruction', state: 'present' }),
-    ]));
-
-    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
-      'await new Promise((resolve) => setTimeout(resolve, 100));',
-      'console.log(JSON.stringify({ version: 2, artifacts: [] }));',
-    ].join('\n'));
-    const timeoutIntegration = createRebuildIntegration({ context, scriptTimeoutMs: 1 });
-    await expect(timeoutIntegration.buildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      command: 'upgrade',
-      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: true,
-    })).rejects.toThrow(/timeout|超时/iu);
   });
 
   it('discovers a safe Codex manifest-only native residue', async () => {
@@ -4218,10 +3946,9 @@ describe('rebuild adapter integration', () => {
         plugin, platform: 'codex', scope: 'user', cwd: isolation.layout.fixtureCwd,
         command: 'install',
         catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const result = await executeRebuildOperation({
-        command: 'install', target, driver: integration.driver, activeStore,
+        command: 'install', target, driver: integration.driver,
       });
       expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
       await expect(fs.readJson(path.join(
@@ -4303,7 +4030,6 @@ describe('rebuild adapter integration', () => {
       cwd: isolation.layout.fixtureCwd,
       command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
 
     const write = integration.driver.writeNative(target);
@@ -4376,6 +4102,19 @@ describe('rebuild adapter integration', () => {
         ].join('\n'));
         await fs.remove(path.join(isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName));
       }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${pluginName}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
       return {
         exitCode: 0,
         stdout: invocation.args[1] === 'list' && installed ? `${pluginName}@aw\n` : '',
@@ -4389,15 +4128,14 @@ describe('rebuild adapter integration', () => {
       plugin, platform: 'codex' as const, scope: 'user' as const,
       cwd: isolation.layout.fixtureCwd, command,
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const installedTarget = await build('install');
     expect((await executeRebuildOperation({
-      command: 'install', target: installedTarget, driver: integration.driver, activeStore,
+      command: 'install', target: installedTarget, driver: integration.driver,
     })).status).toBe('succeeded');
     const reinstallTarget = await build('reinstall');
     const result = await executeRebuildOperation({
-      command: 'reinstall', target: reinstallTarget, driver: integration.driver, activeStore,
+      command: 'reinstall', target: reinstallTarget, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     const requiredSkills = reinstallTarget.artifacts.filter((artifact) =>
@@ -4431,7 +4169,7 @@ describe('rebuild adapter integration', () => {
           name: 'corrupted-owned',
           version: '1.0.0',
           description: 'corrupted owned fixture',
-          schemaVersion: 2,
+          schemaVersion: 3,
           marketplace: {
             category: 'test', strict: true,
             policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
@@ -4457,10 +4195,9 @@ describe('rebuild adapter integration', () => {
         cwd,
         command: 'cleanup',
         catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-        includeHistoricalLifecycleArtifacts: false,
       });
       const result = await executeRebuildOperation({
-        command: 'cleanup', target, driver: integration.driver, activeStore,
+        command: 'cleanup', target, driver: integration.driver,
       });
       expect(result.status).toBe('failed');
       expect(result.residual).toContain(targetPath);
@@ -4507,7 +4244,7 @@ describe('rebuild adapter integration', () => {
       manifestPath: path.join(isolation.layout.rootDir, 'removed-claude', '.agents-plugin', 'plugin.json'),
       manifest: {
         name: 'removed-claude', version: '0.0.0', description: 'removed catalog fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test', strict: true,
           policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
@@ -4532,10 +4269,9 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'project', cwd, command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).toContain('claude plugin uninstall removed-claude@aw --scope project');
@@ -4605,10 +4341,9 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).toContain(`claude plugin uninstall ${pluginName}@aw --scope user`);
@@ -4657,10 +4392,9 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).not.toContain('claude plugin marketplace remove aw');
@@ -4715,11 +4449,10 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
 
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
 
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
@@ -4793,17 +4526,16 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'reinstall',
       catalog: { rootDir: catalogRoot, source: 'local' },
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'reinstall', target, driver: integration.driver, activeStore,
+      command: 'reinstall', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).not.toContain('claude plugin marketplace remove aw');
     expect((await fs.readJson(paths.installedPluginsPath)).plugins[`${pluginB}@aw`]).toHaveLength(1);
   });
 
-  it('removes the Claude marketplace only after the last canonical consumer is uninstalled', async () => {
+  it('preserves the shared Claude marketplace after the last current consumer is uninstalled', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const pluginName = 'last-claude';
@@ -4844,16 +4576,13 @@ describe('rebuild adapter integration', () => {
     const target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const result = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(calls).toContain('claude plugin marketplace remove aw');
-    expect(calls.indexOf('claude plugin uninstall last-claude@aw --scope user')).toBeLessThan(
-      calls.indexOf('claude plugin marketplace remove aw'),
-    );
+    expect(calls).toContain('claude plugin uninstall last-claude@aw --scope user');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
   });
 
   it('reports malformed Claude native JSON and rejects an installed version mismatch', async () => {
@@ -4879,10 +4608,9 @@ describe('rebuild adapter integration', () => {
     let target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const malformed = await executeRebuildOperation({
-      command: 'cleanup', target, driver: integration.driver, activeStore,
+      command: 'cleanup', target, driver: integration.driver,
     });
     expect(malformed.status).toBe('failed');
     expect(malformed.failures.some((failure) => failure.message.includes('installed_plugins'))).toBe(true);
@@ -4918,10 +4646,9 @@ describe('rebuild adapter integration', () => {
     target = await integration.buildTarget({
       plugin, platform: 'claude', scope: 'user', cwd, command: 'install',
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
-      includeHistoricalLifecycleArtifacts: false,
     });
     const mismatch = await executeRebuildOperation({
-      command: 'install', target, driver: integration.driver, activeStore,
+      command: 'install', target, driver: integration.driver,
     });
     expect(mismatch.status).toBe('failed');
     expect(mismatch.failures.some((failure) => failure.message.includes('versions=9.9.9'))).toBe(true);

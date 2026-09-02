@@ -155,15 +155,11 @@ export interface CliPrompt {
     defaultValue?: 'user' | 'project';
   }) => Promise<'user' | 'project' | string>;
   selectPlugins?: (options: {
-    command: 'install' | 'uninstall' | 'upgrade';
+    command: 'install' | 'uninstall';
     candidates: CliPromptCandidate[];
     defaultValues?: string[];
     allowMultiple: boolean;
   }) => Promise<string[]>;
-  selectUpgradeMode?: (options: {
-    canUpgradeAll: boolean;
-    candidates: CliPromptCandidate[];
-  }) => Promise<'all' | 'select' | string>;
   configurePlugin?: (options: CliConfigPromptOptions) => Promise<CliConfigPromptResult>;
 }
 
@@ -369,7 +365,6 @@ function createUnavailablePrompt(): CliPrompt {
     selectPlatform: unavailable,
     selectScope: unavailable,
     selectPlugins: unavailable,
-    selectUpgradeMode: unavailable,
     configurePlugin: unavailable,
   };
 }
@@ -750,29 +745,16 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
       }));
       return allowMultiple
         ? unwrapPromptResult(await multiSelect({
-            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            message: `选择要${command === 'install' ? '安装' : '卸载'}的插件`,
             choices,
             defaultValues,
           }))
         : [unwrapPromptResult(await select({
-            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
+            message: `选择要${command === 'install' ? '安装' : '卸载'}的插件`,
             choices,
             defaultValue: defaultValues?.[0],
           }))];
     },
-    selectUpgradeMode: async ({ canUpgradeAll }) =>
-      unwrapPromptResult(await select({
-        message: '选择升级方式',
-        choices: [
-          {
-            value: 'all',
-            label: '全部可升级插件',
-            disabled: canUpgradeAll ? undefined : '当前存在需要显式处理的插件，不能使用全部升级',
-          },
-          { value: 'select', label: '手动选择插件' },
-        ],
-        defaultValue: canUpgradeAll ? 'all' : 'select',
-      })),
     configurePlugin: async (configOptions) => {
       const selectedScope = configOptions.allowedScopes.length > 1
         ? unwrapPromptResult(await select({

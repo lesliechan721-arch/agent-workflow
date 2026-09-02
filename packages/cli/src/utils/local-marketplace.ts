@@ -353,7 +353,6 @@ export async function replayNamespacedCodexSkillOverlays(options: {
         expectedIdentity: {
           owner: 'agent-workflows',
           sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity,
           pluginId: `${options.sourceId}/${pluginName}`,
           plugin: pluginName,
           artifactKey: entry.name,

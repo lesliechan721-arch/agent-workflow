@@ -18,7 +18,6 @@ import {
   validateSourcePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
-  resolveLifecycleScriptForOs,
   scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from '../../src/utils/plugin-script-contract.js';
@@ -159,7 +158,7 @@ describe('manifest utils', () => {
       },
     });
     expect(plugin.manifest.marketplace.policy.products).toBeUndefined();
-    expect(plugin.manifest.schemaVersion).toBe(2);
+    expect(plugin.manifest.schemaVersion).toBe(3);
     expect(plugin.manifest.extensions?.hooks?.[0]).toMatchObject({
       event: 'before_tool',
       matcher: 'Bash',
@@ -385,14 +384,7 @@ describe('manifest utils', () => {
     const manifest = await readFixturePluginManifest(repoRoot);
     await writeScriptFixture(pluginRoot);
     manifest.scripts = {
-      timeoutMs: 45_000,
-      lifecycle: {
-        install: './scripts/lifecycle.mjs',
-        uninstall: {
-          unix: { runner: 'sh', path: './scripts/uninstall.sh' },
-          windows: { runner: 'powershell', path: './scripts/uninstall.ps1' },
-        },
-      },
+      postApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
       helpers: {
         config: './scripts/aw-config.cjs',
       },
@@ -484,15 +476,7 @@ describe('manifest utils', () => {
 
     const plugin = await readPluginManifest(pluginRoot);
     expect(plugin.manifest.scripts).toMatchObject({
-      timeoutMs: 45_000,
-      lifecycle: {
-        install: {
-          default: {
-            runner: 'auto',
-            path: './scripts/lifecycle.mjs',
-          },
-        },
-      },
+      postApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
       helpers: {
         config: './scripts/aw-config.cjs',
       },
@@ -554,115 +538,31 @@ describe('manifest utils', () => {
     expect(platformManifest.config).toBeUndefined();
   });
 
-  it('resolves lifecycle OS selectors with narrow, wide, and default priority', () => {
-    const selector = {
-      default: { runner: 'node', path: './scripts/default.mjs' },
-      unix: { runner: 'sh', path: './scripts/unix.sh' },
-      windows: { runner: 'powershell', path: './scripts/windows.ps1' },
-      linux: { runner: 'bash', path: './scripts/linux.sh' },
-      darwin: { runner: 'node', path: './scripts/darwin.mjs' },
-      win32: { runner: 'cmd', path: './scripts/windows.cmd' },
-    } as const;
-
-    expect(resolveLifecycleScriptForOs(selector, 'linux')?.path).toBe('./scripts/linux.sh');
-    expect(resolveLifecycleScriptForOs({ unix: selector.unix, default: selector.default }, 'linux')?.path).toBe('./scripts/unix.sh');
-    expect(resolveLifecycleScriptForOs({ default: selector.default }, 'linux')?.path).toBe('./scripts/default.mjs');
-    expect(resolveLifecycleScriptForOs(selector, 'darwin')?.path).toBe('./scripts/darwin.mjs');
-    expect(resolveLifecycleScriptForOs({ unix: selector.unix, default: selector.default }, 'darwin')?.path).toBe('./scripts/unix.sh');
-    expect(resolveLifecycleScriptForOs(selector, 'win32')?.path).toBe('./scripts/windows.cmd');
-    expect(resolveLifecycleScriptForOs({ windows: selector.windows, default: selector.default }, 'win32')?.path).toBe('./scripts/windows.ps1');
-  });
-
-  it('rejects unsafe lifecycle, helper, timeout, and node package script declarations', async () => {
+  it('rejects legacy lifecycle, shell, selector, shorthand, and extra postApply fields', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
     await writeScriptFixture(pluginRoot);
 
-    manifest.scripts = {
-      lifecycle: {
-        install: {
-          linux: { runner: 'deno', path: './scripts/lifecycle.mjs' },
-          darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
-        },
-      },
-      helpers: {
-        config: './scripts/aw-config.cjs',
-      },
-    };
+    manifest.scripts = { lifecycle: { install: './scripts/lifecycle.mjs' } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/lifecycle/install/linux/runner');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts must NOT have additional properties');
 
-    manifest.scripts = {
-      lifecycle: {
-        install: {
-          unix: { runner: 'sh', path: './scripts/uninstall.sh' },
-        },
-      },
-      helpers: {
-        config: './scripts/aw-config.cjs',
-      },
-    };
+    manifest.scripts = { postApply: './scripts/lifecycle.mjs' };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('no lifecycle entry resolves on win32');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must be object');
 
-    manifest.scripts = {
-      timeoutMs: 999,
-      helpers: {
-        config: './scripts/aw-config.cjs',
-      },
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected an integer between 1000 and 300000');
-
-    manifest.scripts = {
-      lifecycle: {
-        install: './scripts/lifecycle.mjs --flag',
-      },
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('inline command strings are not allowed');
-
-    manifest.scripts = {
-      lifecycle: {
-        install: {
-          linux: { runner: 'auto', path: './scripts/lifecycle.py' },
-          darwin: { runner: 'node', path: './scripts/lifecycle.mjs' },
-          win32: { runner: 'node', path: './scripts/lifecycle.mjs' },
-        },
-      },
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('runner "auto" requires');
-
-    manifest.scripts = {
-      helpers: {
-        config: './scripts/uninstall.sh',
-      },
-    };
+    manifest.scripts = { postApply: { path: './scripts/uninstall.sh' } };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('Node runnable file extension');
 
-    manifest.scripts = {
-      node: {
-        packageRoot: './scripts',
-        build: {
-          runner: 'bash',
-          path: './scripts/build.mjs',
-        },
-      },
-    };
+    manifest.scripts = { postApply: { path: './scripts/lifecycle.mjs', runner: 'node' } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected "node"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must NOT have additional properties');
 
-    manifest.scripts = {
-      helpers: {
-        config: '/tmp/aw-config.mjs',
-      },
-    };
+    manifest.scripts = { postApply: { path: './scripts/lifecycle.mjs', linux: {} } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('absolute paths are not allowed');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must NOT have additional properties');
   });
 
   it('rejects unsafe artifact renderer script declarations', async () => {
@@ -680,7 +580,7 @@ describe('manifest utils', () => {
       },
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('expected "node"');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must be equal to constant');
 
     manifest.scripts = {
       artifacts: {
@@ -1954,7 +1854,7 @@ describe('manifest utils', () => {
     const fixtureManifest = await readFixturePluginManifest(repoRoot);
     const pluginRoot = path.join(repoRoot, 'portable-inventory');
     const manifest = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'portable-inventory',
       version: '1.0.0',
       description: 'Portable inventory fixture.',

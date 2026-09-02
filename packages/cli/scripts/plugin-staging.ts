@@ -20,7 +20,7 @@ export type {
   CatalogRuntimeImportResolver,
 } from '../src/utils/catalog-runtime-projection.js';
 export {
-  buildLifecycleSpawnEnv,
+  buildPluginScriptSpawnEnv,
   calculateFileDigest,
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
@@ -61,7 +61,7 @@ import {
 } from '../src/utils/bundle-layout.js';
 import type {
   CatalogChannel,
-  CatalogManifestV6,
+  CatalogManifestV7,
   MarketplaceManifest,
 } from '../src/types.js';
 import {
@@ -69,11 +69,11 @@ import {
   resolvePluginsFromCatalog,
 } from '../src/utils/manifest.js';
 import {
-  createCatalogManifestV6,
-  createCatalogManifestV6Entry,
-  CATALOG_SCHEMA_6_CAPABILITY,
-  validateCatalogManifestV6,
-} from '../src/utils/catalog-manifest-v6.js';
+  createCatalogManifestV7,
+  createCatalogManifestV7Entry,
+  CATALOG_SCHEMA_7_CAPABILITY,
+  validateCatalogManifestV7,
+} from '../src/utils/catalog-manifest-v7.js';
 import { validateCatalogSnapshotComplete } from '../src/utils/catalog-snapshot.js';
 import { validatePluginMetaDependencyGraph } from '../src/utils/plugin-dependencies.js';
 import { readJsonFile } from '../src/utils/json.js';
@@ -94,11 +94,11 @@ export interface CatalogStageOptions {
 }
 
 export interface CatalogStageResult {
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   canonicalManifestPath: string;
 }
 
-export { CATALOG_SCHEMA_6_CAPABILITY };
+export { CATALOG_SCHEMA_7_CAPABILITY };
 
 function detectCatalogChannel(version: string): CatalogChannel {
   return version.includes('-') ? 'beta' : 'latest';
@@ -134,14 +134,14 @@ export async function stageCatalogArtifacts(
   }
   const plugins = sourcePlugins;
   const entries = await Promise.all(plugins.map((plugin) =>
-    createCatalogManifestV6Entry(
+    createCatalogManifestV7Entry(
       plugin,
       path.join(options.outputRoot, 'plugins', plugin.manifest.name),
     )));
   const marketplace = await readJsonFile<MarketplaceManifest>(
     path.join(options.outputRoot, '.agents', 'plugins', 'marketplace.json'),
   );
-  const manifest = createCatalogManifestV6({
+  const manifest = createCatalogManifestV7({
     catalogVersion,
     channel,
     marketplace: {
@@ -150,7 +150,7 @@ export async function stageCatalogArtifacts(
     },
     requires: {
       aw: {
-        capabilities: [CATALOG_SCHEMA_6_CAPABILITY],
+        capabilities: [CATALOG_SCHEMA_7_CAPABILITY],
       },
     },
     release: { state: 'development' },
@@ -172,8 +172,8 @@ export async function stageCatalogArtifacts(
 
 export async function readStagedCatalogManifest(
   outputRoot: string,
-): Promise<CatalogManifestV6> {
-  return validateCatalogManifestV6(
+): Promise<CatalogManifestV7> {
+  return validateCatalogManifestV7(
     await readJsonFile<unknown>(path.join(outputRoot, CATALOG_MANIFEST_FILENAME)),
   );
 }

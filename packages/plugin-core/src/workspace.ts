@@ -30,8 +30,8 @@ import {
 import type { ReservedImportRegistry } from './manifest-contract.js';
 import type {
   CatalogChannel,
-  CatalogManifestV6,
-  CatalogManifestV6Entry,
+  CatalogManifestV7,
+  CatalogManifestV7Entry,
   MarketplaceSourceMeta,
   MarketplaceManifest,
   PluginMeta,
@@ -678,7 +678,7 @@ async function validateBundleRuntimeRequirementsReceipts(
 
 function normalizeCatalogRelease(
   raw: unknown,
-): CatalogManifestV6['release'] {
+): CatalogManifestV7['release'] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('Invalid catalog manifest release: expected an object.');
   }
@@ -762,11 +762,11 @@ export async function buildCatalogWorkspace(options: {
           .sort((left, right) => left.manifest.name.localeCompare(right.manifest.name))
           .map((plugin) => expectedCatalogEntry(plugin, plugin.rootDir)),
       );
-      const manifest: CatalogManifestV6 = {
-        schemaVersion: 6,
+      const manifest: CatalogManifestV7 = {
+        schemaVersion: 7,
         catalogVersion,
         channel,
-        requires: { aw: { capabilities: ['aw.catalog-snapshot.v6'] } },
+        requires: { aw: { capabilities: ['aw.catalog-snapshot.v7'] } },
         marketplace: {
           owner: catalogWorkspace.metadata.owner,
           interface: catalogWorkspace.metadata.interface,
@@ -835,8 +835,8 @@ function resolvePublishedPluginVersions(options: {
   channel: CatalogChannel;
   plugins: readonly PluginMeta[];
   contentDigests: ReadonlyMap<string, string>;
-  previous: CatalogManifestV6 | null;
-  previousPluginEntries: readonly CatalogManifestV6Entry[];
+  previous: CatalogManifestV7 | null;
+  previousPluginEntries: readonly CatalogManifestV7Entry[];
 }): Record<string, string> {
   const previousEntries = new Map(options.previousPluginEntries.map((entry) => [entry.name, entry]));
   for (const entry of options.previous?.entries ?? []) previousEntries.set(entry.name, entry);
@@ -894,7 +894,7 @@ function resolvePublishedPluginVersions(options: {
 
 export async function validatePublishedCatalogSnapshot(snapshotDirectory: string): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   snapshotDigest: string;
 }> {
   const validation = await validateCatalogSnapshotComplete(snapshotDirectory);
@@ -909,7 +909,7 @@ export async function preparePublishedCatalogWorkspace(options: {
   sourceHead: string;
   outputPath?: string;
   previousSnapshotRoot?: string;
-  historicalPluginEntries?: readonly CatalogManifestV6Entry[];
+  historicalPluginEntries?: readonly CatalogManifestV7Entry[];
   adapter: CatalogWorkspaceBuildAdapter;
   reservedImports?: ReservedImportRegistry;
 }): Promise<{
@@ -977,7 +977,7 @@ export async function preparePublishedCatalogWorkspace(options: {
       channel,
       entries,
     };
-    const manifest: CatalogManifestV6 = {
+    const manifest: CatalogManifestV7 = {
       ...manifestWithoutRelease,
       release: {
         state: 'published',
@@ -1141,7 +1141,7 @@ async function validateCatalogSnapshotTransportInternal(
   snapshotDirectory: string,
 ): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   snapshotDigest: string;
 }> {
   const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot');
@@ -1180,9 +1180,9 @@ async function validateCatalogSnapshotTransportInternal(
   await readRegularJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), 'Codex marketplace');
   await readRegularJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), 'Claude marketplace');
   const snapshotDigest = await digestDirectory(rootDir);
-  const manifest = normalizeCatalogManifestV6(await readRegularJson(
+  const manifest = normalizeCatalogManifestV7(await readRegularJson(
     path.join(rootDir, CATALOG_MANIFEST_FILENAME),
-    'Catalog manifest v6',
+    'Catalog manifest v7',
   ));
   const normalizedEntries = manifest.entries;
   const marketplaceIdentity = manifest.marketplace;
@@ -1290,19 +1290,19 @@ function validateCatalogGeneratedOutputMarker(raw: unknown): {
   };
 }
 
-function normalizeCatalogManifestV6(rawValue: unknown): CatalogManifestV6 {
+function normalizeCatalogManifestV7(rawValue: unknown): CatalogManifestV7 {
   if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
-    throw new Error('Invalid catalog manifest v6: expected an object.');
+    throw new Error('Invalid catalog manifest v7: expected an object.');
   }
   const raw = rawValue as Record<string, unknown>;
   const allowedManifestKeys = new Set([
     'schemaVersion', 'catalogVersion', 'channel', 'requires', 'marketplace', 'release', 'entries',
   ]);
   for (const key of Object.keys(raw)) if (!allowedManifestKeys.has(key)) throw new Error(`Invalid catalog manifest: unknown field ${JSON.stringify(key)}.`);
-  if (raw.schemaVersion !== 6) throw new Error('Invalid catalog manifest schemaVersion: expected 6.');
-  const base = normalizeCatalogManifestBase(raw, 'catalog manifest v6');
-  if (!(base.requires.aw.capabilities ?? []).includes('aw.catalog-snapshot.v6')) {
-    throw new Error('Invalid catalog manifest requires.aw.capabilities: expected aw.catalog-snapshot.v6.');
+  if (raw.schemaVersion !== 7) throw new Error('Invalid catalog manifest schemaVersion: expected 7.');
+  const base = normalizeCatalogManifestBase(raw, 'catalog manifest v7');
+  if (!(base.requires.aw.capabilities ?? []).includes('aw.catalog-snapshot.v7')) {
+    throw new Error('Invalid catalog manifest requires.aw.capabilities: expected aw.catalog-snapshot.v7.');
   }
   const marketplaceIdentity = normalizeCatalogMarketplaceIdentity(raw.marketplace);
   if (!Array.isArray(raw.entries)) throw new Error('Invalid catalog manifest entries: expected an array.');
@@ -1318,7 +1318,7 @@ function normalizeCatalogManifestV6(rawValue: unknown): CatalogManifestV6 {
     delete copy.contentDigest;
     return copy;
   });
-  const normalizedEntries = normalizeCatalogManifestEntries(entriesWithoutContentDigest, base, 'catalog manifest v6')
+  const normalizedEntries = normalizeCatalogManifestEntries(entriesWithoutContentDigest, base, 'catalog manifest v7')
     .map((entry, index) => ({ ...entry, contentDigest: contentDigests[index]! }));
   const pluginNames = normalizedEntries.map((entry, index) => {
     if (typeof entry.name !== 'string') throw new Error(`Invalid catalog manifest entries[${index}].name.`);
@@ -1331,7 +1331,7 @@ function normalizeCatalogManifestV6(rawValue: unknown): CatalogManifestV6 {
   if (pluginNames.join('\0') !== [...pluginNames].sort().join('\0')) throw new Error('Invalid catalog manifest entries: expected stable name order.');
   const release = normalizeCatalogRelease(raw.release);
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     catalogVersion: base.catalogVersion,
     channel: base.channel,
     requires: base.requires,
@@ -1344,7 +1344,7 @@ function normalizeCatalogManifestV6(rawValue: unknown): CatalogManifestV6 {
 export async function validatePublishedCatalogSnapshotMetadata(snapshotDirectory: string): Promise<{
   rootDir: string;
   workspaceIdentity: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
 }> {
   const rootDir = await assertDirectoryWithoutSymlinks(snapshotDirectory, 'Catalog snapshot metadata');
   const [marker, manifest] = await Promise.all([
@@ -1354,8 +1354,8 @@ export async function validatePublishedCatalogSnapshotMetadata(snapshotDirectory
     ).then(validateCatalogGeneratedOutputMarker),
     readRegularJson(
       path.join(rootDir, CATALOG_MANIFEST_FILENAME),
-      'Catalog manifest v6',
-    ).then(normalizeCatalogManifestV6),
+      'Catalog manifest v7',
+    ).then(normalizeCatalogManifestV7),
   ]);
   if (manifest.release.state !== 'published') {
     throw new Error('Published Catalog snapshot must have release.state published.');
@@ -1365,7 +1365,7 @@ export async function validatePublishedCatalogSnapshotMetadata(snapshotDirectory
 
 export async function validateCatalogSnapshotTransport(snapshotDirectory: string): Promise<{
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   snapshotDigest: string;
 }> {
   return validateCatalogSnapshotTransportInternal(snapshotDirectory);
@@ -1373,7 +1373,7 @@ export async function validateCatalogSnapshotTransport(snapshotDirectory: string
 
 type CatalogSnapshotValidationResult = {
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   snapshotDigest: string;
 };
 

@@ -4,11 +4,13 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { PlatformName, Scope, SourceIdentity } from '../types.js';
+import { atomicReplaceSafeFile } from './safe-fs.js';
+
+import type { PlatformName, Scope } from '../types.js';
 
 export const SKILL_OWNER_MARKER = '.agent-workflows-owner.json';
 export const OWNED_TEXT_HEADER_PREFIX = '# agent-workflows-owner: ';
-export const SHARED_OWNER_TOKEN_PREFIX = 'aw-owner-v2:';
+export const SHARED_OWNER_TOKEN_PREFIX = 'aw-owner-v3:';
 
 export type OwnershipState = 'present' | 'absent' | 'partial';
 export type OwnershipInspectionState = OwnershipState | 'error';
@@ -22,7 +24,6 @@ export interface TargetIdentity {
 export interface OwnerIdentity extends TargetIdentity {
   owner: 'agent-workflows';
   sourceId?: string;
-  sourceIdentity?: SourceIdentity;
   pluginId?: string;
   plugin: string;
   artifactKey: string;
@@ -30,7 +31,6 @@ export interface OwnerIdentity extends TargetIdentity {
 
 export function createSharedOwnerToken(identity: OwnerIdentity): string {
   validateOwnerIdentity(identity);
-  if (!identity.sourceId) return identity.plugin;
   return `${SHARED_OWNER_TOKEN_PREFIX}${Buffer.from(createSkillOwnerMarkerContent(identity)).toString('base64url')}`;
 }
 
@@ -43,15 +43,38 @@ export function parseSharedOwnerToken(value: string): OwnerIdentity | null {
     throw new Error('Shared owner token is invalid.');
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-    || (parsed as { schemaVersion?: unknown }).schemaVersion !== 2) {
-    throw new Error('Shared owner token must contain schema 2 identity.');
+    || (parsed as { schemaVersion?: unknown }).schemaVersion !== 3) {
+    throw new Error('Shared owner token must contain schema 3 identity.');
   }
   return parseOwnerIdentity(parsed, 'Shared owner token');
 }
 
-export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 1 | 2 };
+export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 3 };
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
+
+export type OwnedSharedLocator =
+  | { kind: 'claude-permissions'; settingsPath: string; ownerKey: string }
+  | { kind: 'codex-instruction'; configPath: string; ownerKey: string }
+  | {
+      kind: 'codex-activation';
+      configPath: string;
+      codexPluginId: string;
+      desired: boolean;
+      disposition?: 'remove' | 'disable';
+    }
+  | { kind: 'legacy-codex-mcp'; configPath: string; serverKey: string; ownerKey: string }
+  | { kind: 'legacy-codex-hook'; hooksPath: string; serializedIdentity: string }
+  | {
+      kind: 'codex-role-registration';
+      configPath: string;
+      roleKey: string;
+      rolePath: string;
+      fileIdentity: OwnerIdentity;
+    }
+  | { kind: 'codex-marketplace'; marketplaceName: string; marketplaceRoot: string; desired: boolean }
+  | { kind: 'claude-marketplace'; marketplaceName: string; marketplaceRoot: string; desired: boolean }
+  | { kind: 'corrupted'; message: string };
 
 interface OwnedPathComponent {
   path: string;
@@ -62,17 +85,16 @@ interface OwnedPathComponent {
 export type OwnedComponent =
   | ({
       kind: 'skill-directory';
-      validateHealth?: () => Promise<void>;
+      validateHealth?: boolean;
       // A pristine markerless catalog tree is absent, not deletion-authorized ownership.
-      unownedIsPristine?: (actualPath: string) => Promise<boolean>;
+      pristineTree?: Array<{ relativePath: string; contentDigest: string }>;
     } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
       kind: 'managed-block' | 'shared-config';
       identity: OwnerIdentity;
       label: string;
-      inspect: () => Promise<OwnedProbeResult>;
-      remove: () => Promise<void>;
+      locator: OwnedSharedLocator;
     }
   | {
       kind: 'native-plugin';
@@ -114,6 +136,22 @@ export type NativeOwnershipRemove = (
   component: Extract<OwnedComponent, { kind: 'native-plugin' }>,
 ) => Promise<void>;
 
+export interface OwnedComponentExecutor {
+  inspectShared(component: Extract<OwnedComponent, {
+    kind: 'managed-block' | 'shared-config';
+  }>): Promise<OwnedProbeResult>;
+  removeShared(component: Extract<OwnedComponent, {
+    kind: 'managed-block' | 'shared-config';
+  }>): Promise<void>;
+  validateSkillDirectory?(component: Extract<OwnedComponent, {
+    kind: 'skill-directory';
+  }>): Promise<void>;
+  skillDirectoryMatchesPristineTree?(options: {
+    actualPath: string;
+    files: ReadonlyArray<{ relativePath: string; contentDigest: string }>;
+  }): Promise<boolean>;
+}
+
 export interface CleanupFailure extends OwnershipError {
   phase: 'probe' | 'mutation' | 'verify' | 'remove' | 'post-probe';
   quarantinePath?: string;
@@ -128,14 +166,6 @@ export interface CleanupResult {
 }
 
 class OwnershipSymlinkError extends Error {}
-
-let atomicReplaceBeforeRenameHookForTests: (() => Promise<void>) | undefined;
-
-export function setAtomicReplaceBeforeRenameHookForTests(
-  hook: (() => Promise<void>) | undefined,
-): void {
-  atomicReplaceBeforeRenameHookForTests = hook;
-}
 
 function isMissing(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
@@ -164,18 +194,12 @@ export function validateOwnerIdentity(identity: OwnerIdentity): void {
   }
   assertSafeOwnershipSegment(identity.plugin, 'Owner identity.plugin');
   assertSafeOwnershipSegment(identity.artifactKey, 'Owner identity.artifactKey');
-  const sourceFields = [identity.sourceId, identity.sourceIdentity, identity.pluginId];
+  const sourceFields = [identity.sourceId, identity.pluginId];
   if (sourceFields.some((value) => value !== undefined)) {
     if (sourceFields.some((value) => typeof value !== 'string' || value.length === 0)) {
       throw new Error('Owner identity source fields must be present together.');
     }
     assertSafeOwnershipSegment(identity.sourceId!, 'Owner identity.sourceId');
-    if (!/^sha256:[0-9a-f]{64}$/u.test(identity.sourceIdentity!)) {
-      throw new Error('Owner identity.sourceIdentity must be a SHA-256 digest.');
-    }
-    if (identity.sourceIdentity === `sha256:${'0'.repeat(64)}`) {
-      throw new Error('Owner identity.sourceIdentity must not be the all-zero placeholder.');
-    }
     if (identity.pluginId !== `${identity.sourceId}/${identity.plugin}`) {
       throw new Error('Owner identity.pluginId must be the canonical sourceId/plugin name.');
     }
@@ -191,7 +215,6 @@ export function validateOwnerIdentity(identity: OwnerIdentity): void {
 function identitiesEqual(left: OwnerIdentity, right: OwnerIdentity): boolean {
   return left.owner === right.owner &&
     left.sourceId === right.sourceId &&
-    left.sourceIdentity === right.sourceIdentity &&
     left.pluginId === right.pluginId &&
     left.plugin === right.plugin &&
     left.artifactKey === right.artifactKey &&
@@ -201,15 +224,11 @@ function identitiesEqual(left: OwnerIdentity, right: OwnerIdentity): boolean {
 
 function markerFromIdentity(identity: OwnerIdentity): SkillOwnerMarker {
   validateOwnerIdentity(identity);
-  const namespaced = identity.sourceId !== undefined;
   return {
-    schemaVersion: namespaced ? 2 : 1,
+    schemaVersion: 3,
     owner: identity.owner,
-    ...(namespaced ? {
-      sourceId: identity.sourceId,
-      sourceIdentity: identity.sourceIdentity,
-      pluginId: identity.pluginId,
-    } : {}),
+    sourceId: identity.sourceId,
+    pluginId: identity.pluginId,
     plugin: identity.plugin,
     artifactKey: identity.artifactKey,
     platform: identity.platform,
@@ -226,7 +245,6 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
     'schemaVersion',
     'owner',
     'sourceId',
-    'sourceIdentity',
     'pluginId',
     'plugin',
     'artifactKey',
@@ -236,23 +254,16 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     throw new Error(`${label} 包含未知字段。`);
   }
-  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
-    throw new Error(`${label}.schemaVersion 不受支持。`);
-  }
-  if (record.schemaVersion === 2 && (
+  if (record.schemaVersion !== 3 || (
     typeof record.sourceId !== 'string'
-    || typeof record.sourceIdentity !== 'string'
     || typeof record.pluginId !== 'string'
   )) {
-    throw new Error(`${label}.schemaVersion 必须是 1，或提供完整 schema 2 source identity。`);
+    throw new Error(`${label} must use schema 3 stable plugin identity. This beta hard cut requires a new AW_HOME, or cleanup with the old CLI first.`);
   }
   const identity = {
     owner: record.owner,
-    ...(record.schemaVersion === 2 ? {
-      sourceId: record.sourceId,
-      sourceIdentity: record.sourceIdentity,
-      pluginId: record.pluginId,
-    } : {}),
+    sourceId: record.sourceId,
+    pluginId: record.pluginId,
     plugin: record.plugin,
     artifactKey: record.artifactKey,
     platform: record.platform,
@@ -299,79 +310,19 @@ async function assertNoSymlinkInPath(allowedRoot: string, candidatePath: string)
   }
 }
 
-interface DirectoryIdentity {
-  dev: number;
-  ino: number;
-  realPath: string;
-}
-
-async function readDirectoryIdentity(directoryPath: string): Promise<DirectoryIdentity> {
-  const stats = await fs.lstat(directoryPath);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new OwnershipSymlinkError(`Ownership 稳定目录必须是真实目录：${directoryPath}`);
-  }
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    realPath: await fs.realpath(directoryPath),
-  };
-}
-
-function assertStableDirectory(
-  label: string,
-  before: DirectoryIdentity,
-  after: DirectoryIdentity,
-): void {
-  if (before.dev !== after.dev || before.ino !== after.ino || before.realPath !== after.realPath) {
-    throw new Error(`${label} identity 在 atomic rename 前发生变化。`);
-  }
-}
-
-function assertRealDirectoryBoundary(root: DirectoryIdentity, parent: DirectoryIdentity): void {
-  const relative = path.relative(root.realPath, parent.realPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error('Ownership parent realpath 不在 allowedRoot realpath 内。');
-  }
-}
-
 async function atomicReplaceFile(options: {
   path: string;
   allowedRoot: string;
   content: string;
 }): Promise<void> {
-  await assertNoSymlinkInPath(options.allowedRoot, options.path);
-  await fs.ensureDir(path.dirname(options.path));
-  await assertNoSymlinkInPath(options.allowedRoot, options.path);
-  const rootIdentity = await readDirectoryIdentity(path.resolve(options.allowedRoot));
-  const parentIdentity = await readDirectoryIdentity(path.dirname(path.resolve(options.path)));
-  assertRealDirectoryBoundary(rootIdentity, parentIdentity);
-  const temporaryPath = path.join(
-    path.dirname(options.path),
-    `.${path.basename(options.path)}.owner-${process.pid}-${crypto.randomUUID()}`,
-  );
-  assertPathBoundary(options.allowedRoot, temporaryPath);
-  let handle: nodeFs.FileHandle | undefined;
-  try {
-    handle = await nodeFs.open(temporaryPath, 'wx', 0o666);
-    await handle.writeFile(options.content, 'utf8');
-    await handle.close();
-    handle = undefined;
-    await atomicReplaceBeforeRenameHookForTests?.();
-    // Threat model: this blocks pre-existing symlinks/hardlinks, traversal, and callers that use
-    // this API concurrently. Node has no portable dirfd/openat/renameat2 sequence, so this does not
-    // claim to stop a process with the same file permissions from swapping a directory after this
-    // final check and before rename; that process can already edit or delete the user's files.
-    await assertNoSymlinkInPath(options.allowedRoot, options.path);
-    const currentRootIdentity = await readDirectoryIdentity(path.resolve(options.allowedRoot));
-    const currentParentIdentity = await readDirectoryIdentity(path.dirname(path.resolve(options.path)));
-    assertRealDirectoryBoundary(currentRootIdentity, currentParentIdentity);
-    assertStableDirectory('allowedRoot', rootIdentity, currentRootIdentity);
-    assertStableDirectory('parent', parentIdentity, currentParentIdentity);
-    await nodeFs.rename(temporaryPath, options.path);
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await nodeFs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await atomicReplaceSafeFile({
+    filePath: options.path,
+    allowedRoot: options.allowedRoot,
+    content: options.content,
+    mode: 0o666,
+    label: 'Ownership path',
+    temporaryTag: 'owner',
+  });
 }
 
 export async function assertOwnedSkillPath(options: {
@@ -448,16 +399,6 @@ export async function readSkillOwnerMarker(options: {
   if (marker.artifactKey !== path.basename(options.skillRoot)) {
     throw new Error('Skill owner marker artifactKey 与目录名不一致。');
   }
-  if (options.expectedIdentity?.sourceId !== undefined && marker.schemaVersion === 1) {
-    throw new Error('legacyStateUnsupported: schema 1 owner marker is not supported.');
-  }
-  if (
-    options.expectedIdentity?.sourceId !== undefined
-    && marker.sourceId === options.expectedIdentity.sourceId
-    && marker.sourceIdentity !== options.expectedIdentity.sourceIdentity
-  ) {
-    throw new Error('sourceChanged: owner source identity does not match the configured source.');
-  }
   if (options.expectedIdentity && !identitiesEqual(marker, options.expectedIdentity)) {
     throw new Error('Skill owner marker identity 与目标 identity 不匹配。');
   }
@@ -505,16 +446,6 @@ export function parseOwnedTextHeader(
     throw new Error('Owner header 不是有效 JSON。');
   }
   const identity = parseOwnerIdentity(parsed, 'Owner header');
-  if (expectedIdentity?.sourceId !== undefined && identity.sourceId === undefined) {
-    throw new Error('legacyStateUnsupported: schema 1 owner header is not supported.');
-  }
-  if (
-    expectedIdentity?.sourceId !== undefined
-    && identity.sourceId === expectedIdentity.sourceId
-    && identity.sourceIdentity !== expectedIdentity.sourceIdentity
-  ) {
-    throw new Error('sourceChanged: owner source identity does not match the configured source.');
-  }
   if (expectedIdentity && !identitiesEqual(identity, expectedIdentity)) {
     throw new Error('Owner header identity 与目标 identity 不匹配。');
   }
@@ -543,6 +474,7 @@ async function inspectPathAt(
   component: Extract<OwnedComponent, OwnedPathComponent>,
   actualPath: string,
   canonicalPath: boolean,
+  executor?: OwnedComponentExecutor,
 ): Promise<ComponentProbe> {
   try {
     await assertNoSymlinkInPath(component.allowedRoot, actualPath);
@@ -572,7 +504,13 @@ async function inspectPathAt(
       return foreignProbe(component, 'unownedContent');
     }
     if (!marker) {
-      return await component.unownedIsPristine?.(actualPath)
+      const pristine = component.pristineTree && executor?.skillDirectoryMatchesPristineTree
+        ? await executor.skillDirectoryMatchesPristineTree({
+            actualPath,
+            files: component.pristineTree,
+          })
+        : false;
+      return pristine
         ? { state: 'absent' }
         : foreignProbe(component, 'unownedContent');
     }
@@ -650,22 +588,25 @@ function validateNativePlugin(component: Extract<OwnedComponent, { kind: 'native
 async function inspectComponent(
   component: OwnedComponent,
   nativeProbe?: NativeOwnershipProbe,
+  executor?: OwnedComponentExecutor,
 ): Promise<ComponentProbe> {
   validateOwnerIdentity(component.identity);
-  if ('path' in component) return inspectPathAt(component, component.path, true);
+  if ('path' in component) return inspectPathAt(component, component.path, true, executor);
   if (component.kind === 'native-plugin') {
     validateNativePlugin(component);
     if (!nativeProbe) throw new Error('Native ownership inspection 缺少 nativeProbe。');
     const state = await nativeProbe(component);
     return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
   }
-  const state = await component.inspect();
+  if (!executor) throw new Error('Shared ownership inspection 缺少 executor。');
+  const state = await executor.inspectShared(component);
   return state === 'foreign' ? foreignProbe(component, 'ownerMismatch') : { state };
 }
 
 export async function inspectOwnedComponents(options: {
   components: readonly OwnedComponent[];
   nativeProbe?: NativeOwnershipProbe;
+  executor?: OwnedComponentExecutor;
   verifyHealth?: boolean;
 }): Promise<OwnershipInspection> {
   const components: OwnedComponentInspection[] = [];
@@ -673,17 +614,20 @@ export async function inspectOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const result = await inspectComponent(component, options.nativeProbe);
+      const result = await inspectComponent(component, options.nativeProbe, options.executor);
       let probe = result.state;
       let healthDiagnostic: string | undefined;
       if (
         options.verifyHealth
         && probe === 'present'
         && component.kind === 'skill-directory'
-        && component.validateHealth
+        && component.validateHealth === true
       ) {
         try {
-          await component.validateHealth();
+          if (!options.executor?.validateSkillDirectory) {
+            throw new Error('Skill health inspection 缺少 executor。');
+          }
+          await options.executor.validateSkillDirectory(component);
         } catch (error) {
           probe = 'partial';
           healthDiagnostic = errorMessage(error);
@@ -727,6 +671,7 @@ async function cleanupPathComponent(options: {
   component: Extract<OwnedComponent, OwnedPathComponent>;
   result: CleanupResult;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+  executor?: OwnedComponentExecutor;
 }): Promise<void> {
   const { component, result } = options;
   const label = componentLabel(component);
@@ -760,7 +705,7 @@ async function cleanupPathComponent(options: {
 
   let verified: OwnedProbeResult;
   try {
-    verified = (await inspectPathAt(component, quarantinePath, false)).state;
+    verified = (await inspectPathAt(component, quarantinePath, false, options.executor)).state;
   } catch (error) {
     result.failures.push({
       label,
@@ -802,7 +747,7 @@ async function cleanupPathComponent(options: {
   }
 
   try {
-    const after = await inspectComponent(component);
+    const after = await inspectComponent(component, undefined, options.executor);
     if (after.state === 'absent') pushUnique(result.removed, label);
     else pushUnique(result.residual, label);
   } catch (error) {
@@ -815,6 +760,7 @@ export async function cleanupOwnedComponents(options: {
   components: readonly OwnedComponent[];
   nativeProbe?: NativeOwnershipProbe;
   nativeRemove?: NativeOwnershipRemove;
+  executor?: OwnedComponentExecutor;
   beforeMutation?: (component: OwnedComponent) => Promise<void>;
   afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
 }): Promise<CleanupResult> {
@@ -830,7 +776,7 @@ export async function cleanupOwnedComponents(options: {
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const probe = (await inspectComponent(component, options.nativeProbe)).state;
+      const probe = (await inspectComponent(component, options.nativeProbe, options.executor)).state;
       probes.set(component, probe);
       if (probe === 'absent') pushUnique(result.absent, label);
       if (probe === 'foreign' || probe === 'partial') pushUnique(result.residual, label);
@@ -855,6 +801,7 @@ export async function cleanupOwnedComponents(options: {
         component,
         result,
         afterQuarantine: options.afterQuarantine,
+        executor: options.executor,
       });
       continue;
     }
@@ -867,7 +814,8 @@ export async function cleanupOwnedComponents(options: {
         }
         await options.nativeRemove(component);
       } else {
-        await component.remove();
+        if (!options.executor) throw new Error('Shared ownership cleanup 缺少 executor。');
+        await options.executor.removeShared(component);
       }
     } catch (error) {
       result.failures.push({ label, phase: 'remove', message: errorMessage(error) });
@@ -876,7 +824,7 @@ export async function cleanupOwnedComponents(options: {
     }
 
     try {
-      const after = await inspectComponent(component, options.nativeProbe);
+      const after = await inspectComponent(component, options.nativeProbe, options.executor);
       if (after.state === 'absent') pushUnique(result.removed, label);
       else pushUnique(result.residual, label);
     } catch (error) {

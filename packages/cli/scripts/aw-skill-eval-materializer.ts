@@ -301,7 +301,6 @@ async function materializeProfile(options: {
         rootDir: prepared.bundleRoot,
         source: 'local',
       },
-      includeHistoricalLifecycleArtifacts: false,
     });
     await integration.driver.writeArtifacts(target);
   }

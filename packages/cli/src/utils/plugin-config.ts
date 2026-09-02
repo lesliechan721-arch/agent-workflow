@@ -27,6 +27,11 @@ import {
   resolveAwHome,
   resolveRepoRootSync,
 } from './paths.js';
+import {
+  assertRealFileParentWithinRoot,
+  assertSafeFileMutationPath,
+  atomicReplaceSafeFile,
+} from './safe-fs.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
@@ -55,10 +60,8 @@ export interface PluginConfigStore {
 }
 
 interface NamespacedPluginConfigEnvelope {
-  schemaVersion: 2;
-  sourceId: string;
-  sourceIdentity: string;
-  pluginName: string;
+  schemaVersion: 3;
+  pluginId: string;
   values: Record<string, unknown>;
 }
 
@@ -238,12 +241,6 @@ export interface ResolvedPluginConfigSchemaAccess {
 const CONFIG_DIR = 'plugin-config';
 const CONFIG_FILE = 'config.json';
 
-interface ConfigDirectoryIdentity {
-  dev: number;
-  ino: number;
-  realPath: string;
-}
-
 let atomicConfigBeforeRenameHookForTests:
   | ((targetPath: string, temporaryPath: string) => Promise<void>)
   | undefined;
@@ -346,40 +343,6 @@ async function inspectConfigInventoryStoreRoot(
   return true;
 }
 
-async function readConfigDirectoryIdentity(
-  directoryPath: string,
-): Promise<ConfigDirectoryIdentity> {
-  const stats = await fs.lstat(directoryPath);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new Error(`Config parent must be a real directory: ${directoryPath}`);
-  }
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    realPath: await fs.realpath(directoryPath),
-  };
-}
-
-function assertConfigDirectoryStable(
-  label: string,
-  before: ConfigDirectoryIdentity,
-  after: ConfigDirectoryIdentity,
-): void {
-  if (before.dev !== after.dev || before.ino !== after.ino || before.realPath !== after.realPath) {
-    throw new Error(`${label} identity changed before atomic config replacement.`);
-  }
-}
-
-function assertRealConfigBoundary(
-  root: ConfigDirectoryIdentity,
-  parent: ConfigDirectoryIdentity,
-): void {
-  const relative = path.relative(root.realPath, parent.realPath);
-  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-    throw new Error('Config parent realpath escapes its allowed root.');
-  }
-}
-
 async function prepareConfigFileParent(filePath: string, allowedRoot: string): Promise<void> {
   assertConfigPathBoundary(allowedRoot, filePath);
   await assertNoConfigSymlink(allowedRoot, filePath);
@@ -403,67 +366,15 @@ export async function atomicReplaceConfigFile(options: {
   content: string;
   mode?: number;
 }): Promise<void> {
-  await prepareConfigFileParent(options.filePath, options.allowedRoot);
-  const rootPath = path.resolve(options.allowedRoot);
-  const parentPath = path.dirname(path.resolve(options.filePath));
-  const rootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const parentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(rootIdentity, parentIdentity);
-
-  const currentTarget = await lstatIfExists(options.filePath);
-  if (currentTarget && (!currentTarget.isFile() || currentTarget.isSymbolicLink())) {
-    throw new Error(`Config target must be a regular file: ${options.filePath}`);
-  }
-  const temporaryPath = path.join(
-    parentPath,
-    `.${path.basename(options.filePath)}.tmp-${process.pid}-${crypto.randomUUID()}`,
-  );
-  assertConfigPathBoundary(options.allowedRoot, temporaryPath);
-  let handle: nodeFs.FileHandle | undefined;
-  try {
-    handle = await nodeFs.open(
-      temporaryPath,
-      'wx',
-      options.mode ?? (currentTarget ? currentTarget.mode & 0o777 : 0o600),
-    );
-    await handle.writeFile(options.content, 'utf8');
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-
-    await atomicConfigBeforeRenameHookForTests?.(options.filePath, temporaryPath);
-    await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-    const currentRootIdentity = await readConfigDirectoryIdentity(rootPath);
-    const currentParentIdentity = await readConfigDirectoryIdentity(parentPath);
-    assertRealConfigBoundary(currentRootIdentity, currentParentIdentity);
-    assertConfigDirectoryStable('Config allowed root', rootIdentity, currentRootIdentity);
-    assertConfigDirectoryStable('Config parent', parentIdentity, currentParentIdentity);
-    const targetBeforeRename = await lstatIfExists(options.filePath);
-    if (targetBeforeRename && (!targetBeforeRename.isFile() || targetBeforeRename.isSymbolicLink())) {
-      throw new Error(`Config target must be a regular file: ${options.filePath}`);
-    }
-
-    await nodeFs.rename(temporaryPath, options.filePath);
-    // rename is the commit point. Diagnostics and durability work after it are best effort,
-    // because reporting failure here would leave the new generation on disk without giving
-    // the caller a safe way to restore the old generation.
-    await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
-    await (async () => {
-      const finalTarget = await fs.lstat(options.filePath);
-      if (!finalTarget.isFile() || finalTarget.isSymbolicLink()) {
-        throw new Error('Atomic config replacement produced an invalid target.');
-      }
-      if (await fs.readFile(options.filePath, 'utf8') !== options.content) {
-        throw new Error('Atomic config replacement content differs from the committed content.');
-      }
-    })().catch(() => undefined);
-    const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
-    await directoryHandle?.sync().catch(() => undefined);
-    await directoryHandle?.close().catch(() => undefined);
-  } finally {
-    await handle?.close().catch(() => undefined);
-    await nodeFs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await atomicReplaceSafeFile({
+    ...options,
+    label: 'Config path',
+    temporaryTag: 'tmp',
+    beforeRename: atomicConfigBeforeRenameHookForTests,
+    afterRename: async (targetPath) => {
+      await atomicConfigAfterRenameHookForTests?.(targetPath).catch(() => undefined);
+    },
+  });
 }
 
 export async function atomicRemoveConfigFile(options: {
@@ -471,11 +382,16 @@ export async function atomicRemoveConfigFile(options: {
   allowedRoot: string;
 }): Promise<boolean> {
   await prepareConfigFileParent(options.filePath, options.allowedRoot);
-  const rootPath = path.resolve(options.allowedRoot);
-  const parentPath = path.dirname(path.resolve(options.filePath));
-  const rootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const parentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(rootIdentity, parentIdentity);
+  await assertSafeFileMutationPath({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
+  await assertRealFileParentWithinRoot({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
   const currentTarget = await lstatIfExists(options.filePath);
   if (!currentTarget) return false;
   if (!currentTarget.isFile() || currentTarget.isSymbolicLink()) {
@@ -483,12 +399,16 @@ export async function atomicRemoveConfigFile(options: {
   }
 
   await atomicConfigBeforeRenameHookForTests?.(options.filePath, options.filePath);
-  await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-  const currentRootIdentity = await readConfigDirectoryIdentity(rootPath);
-  const currentParentIdentity = await readConfigDirectoryIdentity(parentPath);
-  assertRealConfigBoundary(currentRootIdentity, currentParentIdentity);
-  assertConfigDirectoryStable('Config allowed root', rootIdentity, currentRootIdentity);
-  assertConfigDirectoryStable('Config parent', parentIdentity, currentParentIdentity);
+  await assertSafeFileMutationPath({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
+  await assertRealFileParentWithinRoot({
+    filePath: options.filePath,
+    allowedRoot: options.allowedRoot,
+    label: 'Config path',
+  });
   const targetBeforeRemove = await lstatIfExists(options.filePath);
   if (!targetBeforeRemove) return false;
   if (!targetBeforeRemove.isFile() || targetBeforeRemove.isSymbolicLink()) {
@@ -497,9 +417,6 @@ export async function atomicRemoveConfigFile(options: {
 
   await nodeFs.unlink(options.filePath);
   await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
-  const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
-  await directoryHandle?.sync().catch(() => undefined);
-  await directoryHandle?.close().catch(() => undefined);
   return true;
 }
 
@@ -673,18 +590,14 @@ async function readStoreFile(filePath: string): Promise<Record<string, unknown>>
 async function readNamespacedStoreFile(options: {
   filePath: string;
   sourceId: string;
-  sourceIdentity: string;
   pluginName: string;
 }): Promise<Record<string, unknown>> {
   const raw = await fs.readJson(options.filePath) as unknown;
-  if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)) {
-    throw new Error(`legacyStateUnsupported: invalid or legacy plugin config store "${options.filePath}".`);
+  if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)) {
+    throw new Error(`legacyStateUnsupported: plugin config store "${options.filePath}" is not schema 3. This beta hard cut requires a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.`);
   }
-  if (raw.sourceId !== options.sourceId || raw.pluginName !== options.pluginName) {
+  if (raw.pluginId !== `${options.sourceId}/${options.pluginName}`) {
     throw new Error('Plugin config target identity does not match its namespaced path.');
-  }
-  if (raw.sourceIdentity !== options.sourceIdentity) {
-    throw new Error('sourceChanged: plugin config source identity does not match the configured source.');
   }
   return raw.values;
 }
@@ -696,12 +609,9 @@ function namespacedConfigContent(options: {
   values: Record<string, unknown>;
 }): string {
   if (!options.sourceId) return `${JSON.stringify(options.values, null, 2)}\n`;
-  if (!options.sourceIdentity) throw new Error('sourceIdentity is required for namespaced plugin config.');
   const envelope: NamespacedPluginConfigEnvelope = {
-    schemaVersion: 2,
-    sourceId: options.sourceId,
-    sourceIdentity: options.sourceIdentity,
-    pluginName: options.pluginName,
+    schemaVersion: 3,
+    pluginId: `${options.sourceId}/${options.pluginName}`,
     values: options.values,
   };
   return `${JSON.stringify(envelope, null, 2)}\n`;
@@ -744,7 +654,6 @@ export async function readPluginConfigStore(options: {
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
   if (options.sourceId) {
-    if (!options.sourceIdentity) throw new Error('sourceIdentity is required for namespaced plugin config.');
     const legacyPath = resolvePluginConfigStorePath({
       pluginName: options.pluginName,
       scope: options.scope,
@@ -772,7 +681,6 @@ export async function readPluginConfigStore(options: {
       ? await readNamespacedStoreFile({
           filePath,
           sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity!,
           pluginName: options.pluginName,
         })
       : await readStoreFile(filePath),
@@ -786,20 +694,19 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
-}): Promise<{ sourceIdentity: string; store: PluginConfigStore } | null> {
+}): Promise<{ pluginId: string; store: PluginConfigStore } | null> {
   const filePath = resolvePluginConfigStorePath({
     ...options,
     ...(options.scope === 'project' ? { access: 'read' as const } : {}),
   });
   if (!await inspectConfigReadTarget(resolvePluginConfigAllowedRoot(options), filePath)) return null;
   const raw = await fs.readJson(filePath) as unknown;
-  if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
-    || raw.sourceId !== options.sourceId || raw.pluginName !== options.pluginName
-    || typeof raw.sourceIdentity !== 'string') {
-    throw new Error('legacyStateUnsupported: invalid namespaced plugin config store.');
+  if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)
+    || raw.pluginId !== `${options.sourceId}/${options.pluginName}`) {
+    throw new Error('legacyStateUnsupported: namespaced plugin config must use schema 3. Use a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.');
   }
   return {
-    sourceIdentity: raw.sourceIdentity,
+    pluginId: raw.pluginId,
     store: { path: filePath, exists: true, values: raw.values },
   };
 }
@@ -860,7 +767,6 @@ export async function listPluginConfigStorePluginNames(options: {
 
 export interface NamespacedPluginConfigStoreInventoryEntry {
   sourceId: string;
-  sourceIdentity: string;
   pluginName: string;
   pluginId: string;
   values: Record<string, unknown>;
@@ -907,14 +813,12 @@ export async function listNamespacedPluginConfigStores(options: {
       const filePath = path.join(storeRoot, sourceId, pluginName, CONFIG_FILE);
       if (!await inspectConfigReadTarget(storeRoot, filePath)) continue;
       const raw = await fs.readJson(filePath) as unknown;
-      if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
-        || raw.sourceId !== sourceId || raw.pluginName !== pluginName
-        || typeof raw.sourceIdentity !== 'string') {
-        throw new Error(`legacyStateUnsupported: invalid namespaced plugin config store "${filePath}".`);
+      if (!isRecord(raw) || raw.schemaVersion !== 3 || !isRecord(raw.values)
+        || raw.pluginId !== `${sourceId}/${pluginName}`) {
+        throw new Error(`legacyStateUnsupported: plugin config store "${filePath}" must use schema 3. Use a new AW_HOME, or cleanup with the old CLI before rebuilding strong config.`);
       }
       output.push({
         sourceId,
-        sourceIdentity: raw.sourceIdentity,
         pluginName,
         pluginId: `${sourceId}/${pluginName}`,
         values: raw.values,
@@ -988,7 +892,6 @@ export async function patchPluginConfigStore(options: {
           ? await readNamespacedStoreFile({
               filePath,
               sourceId: options.sourceId,
-              sourceIdentity: options.sourceIdentity!,
               pluginName: options.pluginName,
             })
           : await readStoreFile(filePath)
@@ -1049,13 +952,9 @@ export async function resetPluginConfigStore(options: {
         throw new Error(`Config target must be a regular file: ${filePath}`);
       }
       if (options.sourceId) {
-        if (!options.sourceIdentity) {
-          throw new Error('sourceIdentity is required for namespaced plugin config.');
-        }
         await readNamespacedStoreFile({
           filePath,
           sourceId: options.sourceId,
-          sourceIdentity: options.sourceIdentity,
           pluginName: options.pluginName,
         });
       } else {
@@ -1105,13 +1004,9 @@ export async function resetPluginConfigStores(options: {
       throw new Error(`Config target must be a regular file: ${target.path}`);
     }
     if (options.sourceId) {
-      if (!options.sourceIdentity) {
-        throw new Error('sourceIdentity is required for namespaced plugin config.');
-      }
       await readNamespacedStoreFile({
         filePath: target.path,
         sourceId: options.sourceId,
-        sourceIdentity: options.sourceIdentity,
         pluginName: options.pluginName,
       });
     } else {

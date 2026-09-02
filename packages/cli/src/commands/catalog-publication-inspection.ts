@@ -13,7 +13,7 @@ import {
   readCatalogWorkspace,
   validatePublishedCatalogSnapshot,
   validatePublishedCatalogSnapshotMetadata,
-  type CatalogManifestV6Entry,
+  type CatalogManifestV7Entry,
   type CatalogWorkspace,
   type CatalogWorkspaceBuildAdapter,
 } from '@lesliechan721/aw-plugin-core';
@@ -373,9 +373,9 @@ async function findPreviousPluginEntriesInFirstParentHistory(options: {
   workspaceIdentity: string;
   temporaryRoot: string;
   env: NodeJS.ProcessEnv;
-}): Promise<CatalogManifestV6Entry[]> {
+}): Promise<CatalogManifestV7Entry[]> {
   const missing = new Set(options.pluginNames);
-  const found = new Map<string, CatalogManifestV6Entry>();
+  const found = new Map<string, CatalogManifestV7Entry>();
   const historyRoot = path.join(options.temporaryRoot, 'history-metadata');
   let commit = options.tipCommit;
   while (missing.size > 0) {
@@ -557,7 +557,7 @@ export async function prepareCatalogPublicationInspection(options: {
     const tagAvailable = !initialRefs.has(tagRef) && !initialRefs.has(`${tagRef}^{}`);
     const parent = initialRefs.get(branchRef) ?? null;
     let previousSnapshotRoot: string | undefined;
-    let historicalPluginEntries: CatalogManifestV6Entry[] = [];
+    let historicalPluginEntries: CatalogManifestV7Entry[] = [];
     if (parent) {
       await publicationGit(repositoryRoot, [
         'fetch', '--quiet', '--no-tags', 'publish', `${branchRef}:refs/aw/catalog-parent`,

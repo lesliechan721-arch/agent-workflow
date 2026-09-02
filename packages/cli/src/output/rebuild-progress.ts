@@ -6,19 +6,12 @@ const ACTION_LABELS: Record<RebuildActionName, string> = {
   'stale.cleanup': '清理过期组件',
   'native.write': '写入平台插件',
   'artifacts.write': '写入插件文件',
-  'active.prepare': '准备生命周期快照',
-  'active.discard': '丢弃生命周期快照',
-  'lifecycle.install': '运行安装生命周期',
-  'lifecycle.upgrade': '运行升级生命周期',
-  'lifecycle.uninstall': '运行卸载生命周期',
-  'active.promote': '启用生命周期快照',
+  postApply: '运行 postApply',
   'postcheck.inspect': '检查写入结果',
   'marketplace.commit': '提交 marketplace generation',
   'marketplace.rollback': '回滚 marketplace generation',
   'recovery.cleanup': '清理失败写入',
   'cleanup.owned': '清理 AW 组件',
-  'active.read': '读取生命周期快照',
-  'active.remove': '删除生命周期快照',
 };
 
 const SAFE_PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;

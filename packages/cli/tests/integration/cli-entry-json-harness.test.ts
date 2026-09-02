@@ -60,17 +60,52 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON Status v6 and Receipt v5 harness', () => {
+describe('CLI JSON Status v7 and Receipt v6 harness', () => {
   it.each([
-    ['install', 'add', '-jy'],
-    ['upgrade', 'keep', '-jy'],
-    ['reinstall', 'keep', '-jy'],
-    ['uninstall', 'remove', '-j'],
-    ['cleanup', 'keep', '-j'],
-    ['sync', 'keep', '-jy'],
-  ] as const)('emits one exact Receipt v5 when %s short options fail during Commander parsing', async (
+    [['catalog', 'publish', 'apply', '--json'], "error: required option '--expected-plan-digest <sha256>' not specified"],
+    [[
+      'catalog', 'publish', 'apply', '--json',
+      '--expected-plan-digest', `sha256:${'a'.repeat(64)}`,
+      '--unknown',
+    ], "error: unknown option '--unknown'"],
+  ] as const)('uses the flat Catalog publication failure contract for %j', async (argv, message) => {
+    const result = await runCliEntry([...argv]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toEqual({
+      ok: false,
+      code: 'invalidArguments',
+      message,
+    });
+    expect(result.stderr).toBe(`${message}\n`);
+  });
+
+  it('redacts Catalog publication argument errors on stdout and stderr', async () => {
+    const sensitivePath = '/Users/alice/private';
+    const result = await runCliEntry([
+      'catalog', 'publish', 'apply', '--json',
+      '--expected-plan-digest', `sha256:${'a'.repeat(64)}`,
+      `--unknown=${sensitivePath}`,
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toEqual({
+      ok: false,
+      code: 'invalidArguments',
+      message: "error: unknown option '--unknown=[private-path]'",
+    });
+    expect(result.stderr).toBe("error: unknown option '--unknown=[private-path]'\n");
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(sensitivePath);
+  });
+
+  it.each([
+    ['install', '-jy'],
+    ['reinstall', '-jy'],
+    ['uninstall', '-j'],
+    ['cleanup', '-j'],
+    ['sync', '-jy'],
+  ] as const)('emits one exact Receipt v6 when %s short options fail during Commander parsing', async (
     command,
-    action,
     jsonOption,
   ) => {
     const result = await runCliEntry([
@@ -82,30 +117,25 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     expect(result.parseJsonStdout()).toEqual({
       ok: false,
       command,
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       overallState: 'failed',
-      layers: {
-        projectIntent: [{
+      changes: [],
+      targetResults: [{
+        target: {
+          pluginName: 'git-commit',
           pluginId: 'official/git-commit',
+          sourceId: 'official',
           platform: 'codex',
           scope: 'project',
-          relation: 'requested',
-          action,
-          requiredBy: [],
-        }],
-        userIntent: [],
-        sharedCodexNative: [],
-        userActivation: [],
-        projectActivation: [],
-        awExtensions: [],
-      },
-      targets: [{
-        pluginName: 'git-commit',
-        pluginId: 'official/git-commit',
-        sourceId: 'official',
-        platform: 'codex',
-        scope: 'project',
-        status: 'failed',
+        },
+        action: command,
+        state: 'failed',
+        message: "error: unknown option '--unknown'",
+        errorCode: 'invalidArguments',
+        relation: 'requested',
+        requiredBy: [],
+        changes: [],
+        recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
         cleanupAttempted: false,
         actions: [],
         removed: [],
@@ -113,10 +143,9 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
         residual: [],
         quarantined: [],
         failures: [],
-        desired: { scope: 'project', relation: 'requested' },
-        recovery: [`correct the ${command} request and retry`],
       }],
       warnings: [],
+      recoveryActions: ['run sync', 'run reinstall', 'run cleanup for AW-owned residue'],
       errors: [{ code: 'invalidArguments', message: "error: unknown option '--unknown'" }],
     });
   });
@@ -130,18 +159,19 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     expect(result.stderr).toBe('');
     expect(result.parseJsonStdout()).toMatchObject({
       errors: [{ code: 'invalidArguments' }],
-      layers: {
-        projectIntent: [expect.objectContaining({
+      receiptSchemaVersion: 6,
+      targetResults: [expect.objectContaining({
+        action: 'install',
+        state: 'failed',
+        target: expect.objectContaining({
           pluginId: 'official/git-commit', platform: 'claude', scope: 'project',
-        })],
-      },
-      targets: [expect.objectContaining({ platform: 'claude', scope: 'project' })],
+        }),
+      })],
     });
   });
 
   it.each([
     [['install', 'official/git-commit', '-sproject', '-pinvalid', '-j'], 'invalidArguments'],
-    [['upgrade', 'official/git-commit', '--all', '-p', 'codex', '--json'], 'invalidArguments'],
     [['sync', 'official/git-commit', '-p', 'claude', '--json'], 'invalidArguments'],
   ] as const)('uses a stable early failure code for %j', async (argv, code) => {
     const result = await runCliEntry([...argv]);
@@ -150,18 +180,21 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     expect(result.stderr).toBe('');
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       overallState: 'failed',
       errors: [{ code, message: expect.any(String) }],
-      layers: {
-        projectIntent: expect.any(Array),
-        userIntent: expect.any(Array),
-        sharedCodexNative: [],
-        userActivation: [],
-        projectActivation: [],
-        awExtensions: [],
-      },
+      changes: expect.any(Array),
+      targetResults: expect.any(Array),
+      recoveryActions: expect.any(Array),
     });
+  });
+
+  it('does not expose the removed public upgrade command', async () => {
+    const result = await runCliEntry(['upgrade', 'official/git-commit', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain("unknown command 'upgrade'");
   });
 
   it('publishes the runtime plugin capability contract with isolated stdout', async () => {
@@ -182,14 +215,14 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     });
   });
 
-  it('keeps exact status v6 JSON on stdout', async () => {
+  it('keeps exact status v7 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
     vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV6: vi.fn(async () => {
+      statusCommandV7: vi.fn(async () => {
         const payload = {
-          schemaVersion: 6,
+          schemaVersion: 7,
           catalog: {
             primarySourceId: 'official',
             configDigest: 'sha256:config',
@@ -211,20 +244,31 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
             platform: 'codex',
             scope: 'project',
             cwd: tempDir,
-            desired: { enabled: true, scopes: ['project'], relation: 'root' },
-            actual: { state: 'drifted' },
-            state: 'partial',
-            components: [],
-            errors: [],
-            recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+            state: 'needsSync',
+            components: [
+              {
+                kind: 'intent',
+                key: 'desired',
+                state: 'desired',
+                metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+              },
+              { kind: 'ownership', key: 'aw', state: 'partial' },
+            ],
+            reasons: [{
+              code: 'codexExtensionDrift',
+              message: 'codexExtensionDrift: extension drift requires repair.',
+              severity: 'warning',
+            }],
+            recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
           }],
           errors: [],
         };
         return {
           output: JSON.stringify(payload),
           payload,
-          plugins: [],
+          pluginSummaries: [],
           hasErrors: false,
+          targetRevisions: [],
         };
       }),
     }));
@@ -236,7 +280,7 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
       catalog: {
         primarySourceId: 'official', configDigest: 'sha256:config',
         compositeDigest: 'sha256:composite', sources: [],
@@ -248,9 +292,20 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
         pluginName: 'git-commit', pluginId: 'official/git-commit', sourceId: 'official',
         sourceIdentity: 'sha256:source', version: '1.0.0', platform: 'codex',
         scope: 'project', cwd: tempDir,
-        desired: { enabled: true, scopes: ['project'], relation: 'root' },
-        actual: { state: 'drifted' }, state: 'partial', components: [], errors: [],
-        recovery: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+        state: 'needsSync',
+        components: [
+          {
+            kind: 'intent', key: 'desired', state: 'desired',
+            metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+          },
+          { kind: 'ownership', key: 'aw', state: 'partial' },
+        ],
+        reasons: [{
+          code: 'codexExtensionDrift',
+          message: 'codexExtensionDrift: extension drift requires repair.',
+          severity: 'warning',
+        }],
+        recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
       }],
       errors: [],
     });
@@ -262,7 +317,7 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
     vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV6: vi.fn(async () => {
+      statusCommandV7: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));
@@ -278,15 +333,11 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
   });
 
   it.each([
-    ['install', 'add'],
-    ['upgrade', 'keep'],
-    ['reinstall', 'keep'],
-    ['uninstall', 'remove'],
-    ['cleanup', 'keep'],
-  ] as const)('emits a namespaced successful %s receipt with the explicit desired intent', async (
-    command,
-    intentAction,
-  ) => {
+    'install',
+    'reinstall',
+    'uninstall',
+    'cleanup',
+  ] as const)('emits a namespaced successful %s receipt with the requested target', async (command) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-v3-'));
     tempDirs.push(tempDir);
     const result = {
@@ -296,10 +347,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
       rebuildResults: [],
       targetResults: [],
       overallState: 'succeeded',
-      layers: {
-        projectIntent: [], userIntent: [], sharedCodexNative: [],
-        userActivation: [], projectActivation: [], awExtensions: [],
-      },
       receiptTargets: [{
         pluginName: 'git-commit',
         pluginId: 'official/git-commit',
@@ -310,7 +357,6 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     };
     const commands = {
       installWriteCommand: vi.fn(async () => result),
-      upgradeWriteCommand: vi.fn(async () => result),
       reinstallWriteCommand: vi.fn(async () => result),
       uninstallWriteCommand: vi.fn(async () => result),
       cleanupWriteCommand: vi.fn(async () => result),
@@ -325,28 +371,40 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
       { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
     );
     expect(success.exitCode).toBe(0);
-    expect(success.parseJsonStdout()).toMatchObject({
+    const receipt = success.parseJsonStdout();
+    expect(receipt).toMatchObject({
       ok: true,
       command,
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       overallState: 'succeeded',
-      layers: {
-        projectIntent: [expect.objectContaining({
-          pluginId: 'official/git-commit', action: intentAction,
-        })],
-      },
-      targets: [{
-        pluginName: 'git-commit',
-        pluginId: 'official/git-commit',
-        sourceId: 'official',
-        platform: 'codex',
-        scope: 'project',
-        status: 'succeeded',
-        desired: { scope: 'project', relation: 'requested' },
-        recovery: [],
+      changes: [command],
+      targetResults: [{
+        target: {
+          pluginName: 'git-commit',
+          pluginId: 'official/git-commit',
+          sourceId: 'official',
+          platform: 'codex',
+          scope: 'project',
+        },
+        action: command,
+        state: 'completed',
+        relation: 'requested',
+        requiredBy: [],
+        changes: [command],
+        recoveryActions: [],
+        cleanupAttempted: false,
+        actions: [],
+        removed: [],
+        absent: [],
+        residual: [],
+        quarantined: [],
+        failures: [],
       }],
+      recoveryActions: [],
       errors: [],
     });
+    expect(receipt).not.toHaveProperty('layers');
+    expect(receipt).not.toHaveProperty('targets');
     expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
   });
 
@@ -376,12 +434,16 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       errors: [{ code }],
-      targets: [{
-        pluginId: 'official/demo',
-        recovery: [
+      receiptSchemaVersion: 6,
+      targetResults: [{
+        target: { pluginId: 'official/demo' },
+        recoveryActions: [
           'upgrade or repair the official system Codex CLI, then retry the original operation',
         ],
       }],
+      recoveryActions: [
+        'upgrade or repair the official system Codex CLI, then retry the original operation',
+      ],
     });
     expect(installWriteCommand).toHaveBeenCalledOnce();
   });
@@ -401,7 +463,7 @@ describe('CLI JSON Status v6 and Receipt v5 harness', () => {
       receiptSchemaVersion: 5,
       plugin: 'git-commit',
       overallState: 'failed',
-      errors: [expect.objectContaining({ code: 'sourceMissing' })],
+      errors: [expect.objectContaining({ code: 'configStoreMissing' })],
     });
   });
 });

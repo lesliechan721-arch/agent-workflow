@@ -3,7 +3,7 @@ import type {
   ArtifactState,
   ArtifactTarget,
   CatalogChannel,
-  CatalogManifestV6,
+  CatalogManifestV7,
   CatalogSourceId,
   CliVersion,
   DistributionName,
@@ -11,7 +11,6 @@ import type {
   ManagedArtifactId,
   PlatformName,
   PluginId,
-  PluginLifecycleEvent,
   PluginVersion,
   Scope,
   SourceIdentity,
@@ -25,29 +24,22 @@ export type PlatformSelection = PlatformName | 'both';
 export type CommandAction =
   | 'install'
   | 'uninstall'
-  | 'upgrade'
-  | 'upgradeAll'
   | 'reinstall'
   | 'cleanup'
   | 'config'
   | 'status';
-export type RebuildCommand = 'install' | 'upgrade' | 'cleanup' | 'reinstall' | 'uninstall';
+export type RebuildCommand = 'install' | 'sync' | 'cleanup' | 'reinstall' | 'uninstall';
 export type RebuildActionName =
   | 'preflight.inspect'
   | 'stale.cleanup'
   | 'native.write'
   | 'artifacts.write'
-  | 'active.prepare'
-  | 'active.discard'
-  | `lifecycle.${PluginLifecycleEvent}`
-  | 'active.promote'
+  | 'postApply'
   | 'postcheck.inspect'
   | 'marketplace.commit'
   | 'marketplace.rollback'
   | 'recovery.cleanup'
   | 'cleanup.owned'
-  | 'active.read'
-  | 'active.remove';
 export type RebuildActionEventData =
   | {
       name: RebuildActionName;
@@ -88,6 +80,7 @@ export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
+export type RebuildReceiptOverallState = ReceiptOverallState | 'partial';
 
 export type CatalogGitRefPolicy =
   | { type: 'explicit'; ref: string }
@@ -127,7 +120,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
   manifestDigest: string;
   snapshotDigest: string;
   transport: 'git' | 'path';
@@ -215,7 +208,7 @@ export interface CatalogGenerationSetSource {
   snapshotDigest: string;
   storeKey: string;
   snapshotPath: string;
-  manifest: CatalogManifestV6;
+  manifest: CatalogManifestV7;
 }
 
 export interface CatalogGenerationSet {
@@ -263,6 +256,9 @@ export interface ReceiptTargetResult {
   state: TargetWriteState;
   message?: string;
   errorCode?: string;
+  relation?: 'requested' | 'dependency';
+  requiredBy?: string[];
+  recoveryActions?: string[];
 }
 
 export interface ConfigFieldEntry {
@@ -470,10 +466,6 @@ export interface DependencyScopeSelector {
 
 export interface InstallCommandOptions extends CommandOptions {
   dependencyScopeOverrides?: DependencyScopeSelector[];
-}
-
-export interface UpgradeCommandOptions extends CommandOptions {
-  all?: boolean;
 }
 
 export interface StatusCommandOptions {

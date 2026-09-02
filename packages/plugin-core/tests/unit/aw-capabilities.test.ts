@@ -25,7 +25,7 @@ afterEach(async () => {
 
 function manifest(overrides: Record<string, unknown> = {}): NormalizedPluginManifest {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'example',
     version: '1.0.0',
     description: 'Example.',
@@ -89,15 +89,15 @@ describe('AW capability contracts', () => {
         }],
       },
       config: { schema: {} },
-      scripts: { lifecycle: { install: { default: { runner: 'node', path: './scripts/install.mjs' } } } },
+      scripts: { postApply: { path: './scripts/post-apply.mjs' } },
       artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', states: ['present'], refreshKeys: [] }] },
       distributions: { agentSkills: { skills: './portable' } },
     }))).toEqual([
       'aw.dynamic-artifacts.v2',
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v1',
-      'aw.plugin-lifecycle.v1',
-      'aw.plugin-manifest.v2',
+      'aw.plugin-manifest.v3',
+      'aw.plugin-post-apply.v1',
       'aw.plugin-skills.v1',
       'aw.portable-skills.v1',
       'aw.runtime-imports.v1',
@@ -257,13 +257,13 @@ describe('AW capability contracts', () => {
         skills: './skills',
         requires: { aw: { capabilities: ['aw.future-feature.v3'] } },
       }),
-      implementedCapabilities: ['aw.plugin-manifest.v2', 'aw.plugin-skills.v1'],
+      implementedCapabilities: ['aw.plugin-manifest.v3', 'aw.plugin-skills.v1'],
     })
 
     expect(result.detected).toEqual(['aw.catalog-publication.v1'])
     expect(result.effective).toEqual([
       'aw.future-feature.v3',
-      'aw.plugin-manifest.v2',
+      'aw.plugin-manifest.v3',
       'aw.plugin-skills.v1',
     ])
     expect(result.unsupportedByCurrentAw).toEqual(['aw.future-feature.v3'])

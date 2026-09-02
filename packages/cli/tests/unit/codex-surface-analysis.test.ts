@@ -10,7 +10,7 @@ function manifest(
   overrides: Partial<NormalizedPluginManifest> = {},
 ): NormalizedPluginManifest {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'surface-fixture',
     version: '1.0.0',
     description: 'Surface fixture.',
@@ -89,7 +89,7 @@ describe('codex-surface-analysis', () => {
       .toMatchObject({ owner: 'aw', dynamic: true, name: 'generated-review' });
   });
 
-  it('treats config and lifecycle local-state contracts as AW-owned evidence', () => {
+  it('treats config as AW-owned evidence and postApply as target-local behavior', () => {
     const configOnly = analyzeCodexSurface(manifest({
       config: { schema: { mode: { type: 'string' } } },
     }));
@@ -115,21 +115,19 @@ describe('codex-surface-analysis', () => {
       scopeOverlap: 'aw-owned-conflict',
     });
 
-    const nativeAndLifecycle = analyzeCodexSurface(manifest({
+    const nativeAndPostApply = analyzeCodexSurface(manifest({
       skills: './skills',
       scripts: {
-        lifecycle: {
-          install: { default: { runner: 'node', path: './install.mjs' } },
-        },
+        postApply: { path: './post-apply.mjs' },
       },
     }));
-    expect(nativeAndLifecycle).toMatchObject({
+    expect(nativeAndPostApply).toMatchObject({
       ok: true,
       nativeKinds: ['skill'],
-      extensionKinds: ['lifecycle'],
-      classification: 'mixed',
-      deliveryOwner: 'split',
-      scopeOverlap: 'aw-owned-conflict',
+      extensionKinds: [],
+      classification: 'native',
+      deliveryOwner: 'codex-native',
+      scopeOverlap: 'native-compatible',
     });
 
     expect(analyzeCodexSurface(manifest())).toMatchObject({

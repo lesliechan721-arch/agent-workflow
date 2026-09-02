@@ -70,7 +70,7 @@ function parseStrictSemVer(value, fieldName) {
 
 function buildPluginManifest(pluginName, version, description, displayName, shortDescription, opts) {
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: pluginName,
     version,
     description,
@@ -131,15 +131,11 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
     };
   }
 
-  if (opts.withConfigApi || opts.withLifecycle) {
+  if (opts.withConfigApi || opts.withPostApply) {
     manifest.scripts = {
-      ...(opts.withLifecycle
+      ...(opts.withPostApply
         ? {
-            lifecycle: {
-              install: './scripts/lifecycle.mjs',
-              upgrade: './scripts/lifecycle.mjs',
-              uninstall: './scripts/lifecycle.mjs',
-            },
+            postApply: { path: './scripts/postApply.mjs' },
           }
         : {}),
       ...(opts.withConfigApi
@@ -176,22 +172,12 @@ function renderAppJson() {
 `;
 }
 
-function renderLifecycleMjs() {
-  return `import { readFile } from 'node:fs/promises';
-
-async function readAwContext() {
-  const contextPath = process.env.AW_PLUGIN_CONTEXT;
-  if (!contextPath) {
-    throw new Error('AW_PLUGIN_CONTEXT is required for lifecycle scripts.');
-  }
-  return JSON.parse(await readFile(contextPath, 'utf8'));
-}
-
-const context = await readAwContext();
-const event = context.event ?? 'unknown';
+function renderPostApplyMjs() {
+  return `let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const context = JSON.parse(input);
 const pluginName = context.plugin?.name ?? context.pluginName ?? 'plugin';
-
-console.log(\`[\${pluginName}] lifecycle \${event} completed.\`);
+console.log(\`[\${pluginName}] postApply completed.\`);
 `;
 }
 
@@ -229,30 +215,31 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
 });
 `
     : '';
-  const lifecycleTest = opts.withLifecycle
+  const postApplyTest = opts.withPostApply
     ? `
-test('lifecycle script accepts AW_PLUGIN_CONTEXT', async () => {
-  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-lifecycle-'));
+test('postApply script accepts JSON context from stdin', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-postApply-'));
   const contextPath = join(tempDir, 'context.json');
   await writeFile(contextPath, JSON.stringify({
-    event: 'install',
-    plugin: { name: '${pluginName}' },
-    config: { values: {}, sources: {}, schema: {} },
-    paths: { configStores: {} }
+    schemaVersion: 1,
+    plugin: { pluginId: 'official/${pluginName}', name: '${pluginName}', version: '0.1.0', rootDir: tempDir },
+    target: { platform: 'codex', scope: 'project', projectRoot: tempDir },
+    config: { values: {} },
+    components: []
   }), 'utf8');
 
-  const lifecyclePath = join(dirname(fileURLToPath(import.meta.url)), 'lifecycle.mjs');
-  const { stdout } = await execFileAsync(process.execPath, [lifecyclePath], {
+  const postApplyPath = join(dirname(fileURLToPath(import.meta.url)), 'postApply.mjs');
+  const { stdout } = await execFileAsync(process.execPath, [postApplyPath], {
     cwd: tempDir,
-    env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath }
+    input: await readFile(contextPath, 'utf8')
   });
-  assert.match(stdout, /lifecycle install completed/);
+  assert.match(stdout, /postApply completed/);
 });
 `
     : '';
 
   return `import { execFile } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -261,7 +248,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
-${configTest}${lifecycleTest}`;
+${configTest}${postApplyTest}`;
 }
 
 function printUsage() {
@@ -283,7 +270,7 @@ Options:
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
   --with-config-api             Add AW config schema, standard config helper, and Node script test.
-  --with-lifecycle              Add Node lifecycle script sample and Node script test.
+  --with-post-apply              Add Node postApply script sample and Node script test.
   -h, --help                    Show this help message.
 
 Note:
@@ -317,7 +304,7 @@ function parseArgs(argv) {
     withMcp: false,
     withApps: false,
     withConfigApi: false,
-    withLifecycle: false,
+    withPostApply: false,
     noSkills: false,
     skillInvocation: 'model',
   };
@@ -342,8 +329,8 @@ function parseArgs(argv) {
       options.withConfigApi = true;
       continue;
     }
-    if (arg === '--with-lifecycle') {
-      options.withLifecycle = true;
+    if (arg === '--with-post-apply') {
+      options.withPostApply = true;
       continue;
     }
     if (arg === '--no-skills') {
@@ -462,7 +449,7 @@ function main() {
       withMcp: args.withMcp,
       withApps: args.withApps,
       withConfigApi: args.withConfigApi,
-      withLifecycle: args.withLifecycle,
+      withPostApply: args.withPostApply,
       noSkills: args.noSkills,
       initialSkillName,
     },
@@ -549,16 +536,16 @@ function main() {
     writeText(helperPath, fs.readFileSync(helperTemplatePath, 'utf8'));
     createdPaths.push(helperPath);
   }
-  if (args.withLifecycle) {
-    const lifecyclePath = path.join(pluginRoot, 'scripts', 'lifecycle.mjs');
-    writeText(lifecyclePath, renderLifecycleMjs());
-    createdPaths.push(lifecyclePath);
+  if (args.withPostApply) {
+    const postApplyPath = path.join(pluginRoot, 'scripts', 'postApply.mjs');
+    writeText(postApplyPath, renderPostApplyMjs());
+    createdPaths.push(postApplyPath);
   }
-  if (args.withConfigApi || args.withLifecycle) {
+  if (args.withConfigApi || args.withPostApply) {
     const testPath = path.join(pluginRoot, 'scripts', 'generated-script.test.mjs');
     writeText(testPath, renderGeneratedScriptTest(pluginName, {
       withConfigApi: args.withConfigApi,
-      withLifecycle: args.withLifecycle,
+      withPostApply: args.withPostApply,
     }));
     createdPaths.push(testPath);
   }
