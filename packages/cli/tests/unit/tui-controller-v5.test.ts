@@ -1654,6 +1654,15 @@ describe('TUI Catalog freshness session overlay', () => {
         payload: status(),
         pluginSummaries: summaries(['official', 'demo']),
         sourceDetails: [sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+        catalogGenerations: [{
+          sourceId: 'official',
+          sourceType: 'git',
+          state: 'ready',
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest', requestedRef: 'a'.repeat(40),
+            resolvedCommit: 'a'.repeat(40), storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
       }),
       probeCatalogFreshness,
     }));
@@ -1678,6 +1687,16 @@ describe('TUI Catalog freshness session overlay', () => {
       payload: status(),
       pluginSummaries: summaries(['official', 'demo']),
       sourceDetails: [detail],
+      ...(detail.explicitRef ? {
+        catalogGenerations: [{
+          sourceId: 'official', sourceType: 'git' as const, state: 'ready' as const,
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest' as const,
+            requestedRef: detail.explicitRef, resolvedCommit: detail.explicitRef,
+            storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
+      } : {}),
     };
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(loaded),
@@ -1701,15 +1720,35 @@ describe('TUI Catalog freshness session overlay', () => {
     controller.dispose();
   });
 
-  it('marks a 64-character commit without Active fixed and never calls its automatic provider', async () => {
-    const probeCatalogFreshness = vi.fn();
+  it.each([
+    ['activationRequired', { state: 'activationRequired' as const }],
+    ['repairRequired', {
+      state: 'repairRequired' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+    ['configMismatch', {
+      state: 'configMismatch' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+  ])('probes an exact commit once when generation state is %s', async (_label, generation) => {
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
         payload: status(),
         pluginSummaries: summaries(['official', 'demo']),
         sourceDetails: [sourceDetail('official', { explicitRef: 'b'.repeat(64) })],
         catalogGenerations: [{
-          sourceId: 'official', sourceType: 'git', state: 'activationRequired',
+          sourceId: 'official', sourceType: 'git', ...generation,
         }],
       }),
       probeCatalogFreshness,
@@ -1717,9 +1756,11 @@ describe('TUI Catalog freshness session overlay', () => {
 
     await controller.load();
     await nextTurn();
-    expect(controller.getCatalogGeneration('official')?.active).toBeUndefined();
-    expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
-    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    expect(probeCatalogFreshness).toHaveBeenCalledWith(
+      'official', { fullValidation: false }, expect.any(AbortSignal),
+    );
     controller.dispose();
   });
 

@@ -4221,6 +4221,59 @@ describe('ConsoleAppV4', () => {
     instance.unmount();
   });
 
+  it('shows no-Active capability diagnostics without offering an activation action', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.map((source) => {
+      if (source.id !== 'team-tools') return source;
+      const { resolvedCommit: _resolvedCommit, catalogVersion: _catalogVersion,
+        channel: _channel, freshness: _freshness, ...rest } = source;
+      return { ...rest, error: 'unavailable', errorCode: 'catalogSourceUnavailable' };
+    });
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools' ? {
+        sourceId: 'team-tools', sourceType: 'git' as const,
+        state: 'activationRequired' as const,
+        errorCode: 'catalogGenerationUnavailable',
+      } : generation);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('这个来源没有可用 Active Catalog');
+    expect(detail).toContain('编辑来源…');
+    expect(detail).toContain('重新检查');
+    expect(detail).toContain('完整验证');
+    expect(detail).not.toContain('获取并启用');
+    expect(detail).not.toContain('启用并设为主来源');
+    expect(detail).not.toContain('当前 Active Catalog 保持不变');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain('awCapabilityUnsupported');
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
+  });
+
   it('never echoes Git credentials or query tokens while S06 is receiving input', async () => {
     const value = controller();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);

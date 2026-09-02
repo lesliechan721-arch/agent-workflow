@@ -500,16 +500,37 @@ function sourceDiagnostic(
       },
     };
   }
+  if (freshness?.state === 'incompatible') {
+    const hasActive = generation?.active !== undefined;
+    return {
+      severity: 'error',
+      title: '候选 Catalog 不兼容',
+      userMessage: hasActive
+        ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力。普通更新已阻止，当前 Active Catalog 保持不变。`
+        : `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力。这个来源没有可用 Active Catalog。`,
+      impact: [
+        { state: 'blocked', message: '不能直接切换到这个候选。' },
+        ...(hasActive ? [{ state: 'preserved' as const, message: '当前 Active Catalog 和插件浏览仍可用。' }] : []),
+      ],
+      nextStep: '升级 AW 到支持候选能力的版本，或编辑来源后重新验证。',
+      technical: {
+        code: safeDiagnosticCode(freshness.errorCode, 'catalogincompatible'),
+        stage: 'compare-candidate',
+        sourceId,
+        ...(freshness.missingCapabilities?.length ? {
+          context: [{ key: 'compatibility' as const, value: freshness.missingCapabilities.join('、') }],
+        } : {}),
+        checks: ['检查缺少的 Catalog capability。', '升级 AW 后执行完整验证。'],
+      },
+    };
+  }
   if (!unavailable && (freshness?.state === 'versionConflict'
-    || freshness?.state === 'rollbackDetected'
-    || freshness?.state === 'incompatible')) {
+    || freshness?.state === 'rollbackDetected')) {
     return {
       severity: 'error',
       title: freshness.state === 'versionConflict' ? 'Catalog 版本冲突'
-        : freshness.state === 'rollbackDetected' ? '检测到 Catalog 回退' : '候选 Catalog 不兼容',
-      userMessage: freshness.state === 'incompatible'
-        ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力。普通更新已阻止，当前 Active Catalog 保持不变。`
-        : '普通更新已阻止。当前 Active Catalog 保持不变。',
+        : '检测到 Catalog 回退',
+      userMessage: '普通更新已阻止。当前 Active Catalog 保持不变。',
       impact: [
         { state: 'blocked', message: '不能直接切换到这个候选。' },
         { state: 'preserved', message: '当前 Active Catalog 和插件浏览仍可用。' },
@@ -519,9 +540,6 @@ function sourceDiagnostic(
         code: safeDiagnosticCode(freshness.errorCode, `catalog${freshness.state}`),
         stage: 'compare-candidate',
         sourceId,
-        ...(freshness.state === 'incompatible' && freshness.missingCapabilities?.length ? {
-          context: [{ key: 'compatibility' as const, value: freshness.missingCapabilities.join('、') }],
-        } : {}),
         checks: ['检查当前版本和候选版本。', '检查来源 ref 和 Catalog logical identity。'],
       },
     };
@@ -3248,8 +3266,10 @@ export function ConsoleAppV4(props: {
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = freshness?.state === 'incompatible' && activeVersion
-      ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；Active Catalog ${activeVersion} 仍可浏览和使用。`
+    description = freshness?.state === 'incompatible'
+      ? activeVersion
+        ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；Active Catalog ${activeVersion} 仍可浏览和使用。`
+        : `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；这个来源没有可用 Active Catalog。`
       : freshness?.state === 'checkFailed' && activeVersion
       ? `更新检查失败，但 Active Catalog ${activeVersion} 仍可浏览和使用。`
       : freshness?.state === 'updateAvailable'
@@ -3265,7 +3285,8 @@ export function ConsoleAppV4(props: {
           : logicalIdentityChanged ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
-    const generationAction: ActionItem[] = logicalIdentityChanged ? []
+    const generationAction: ActionItem[] = logicalIdentityChanged
+      || freshness?.state === 'incompatible' && generationState !== 'ready' ? []
       : generationState === 'repairRequired' ? [{
           label: '重新下载旧版本并精确修复',
           description: '使用 Active 的精确 commit；成功后保持当前 Active 并停止',
@@ -3324,7 +3345,7 @@ export function ConsoleAppV4(props: {
     actions = [
       ...generationAction,
       { label: '编辑来源…', description: '修改前先 Review；默认保存并启用', run: () => go({ name: 'sourceEdit' as const, sourceId: route.sourceId }) },
-      {
+      ...(freshness?.state === 'incompatible' && generationState !== 'ready' ? [] : [{
         label: generationState === 'ready' ? '设为主来源…' : '启用并设为主来源…',
         description: generationState === 'ready' ? '只改变默认 marketplace' : '先启用确认的候选，再设为主来源',
         disabled: detail?.primary ? '当前已经是主来源'
@@ -3339,7 +3360,7 @@ export function ConsoleAppV4(props: {
               sourceId: route.sourceId,
               setPrimaryAfterActivation: true,
             }),
-      },
+      }]),
       { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
       { label: '技术详情', description: '查看脱敏错误代码和 Active 证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
       ...(generationState !== 'ready'

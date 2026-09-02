@@ -914,7 +914,9 @@ export class TuiController {
           generationState: generation?.state,
           generationErrorCode: generation?.errorCode,
         }),
-        fixedCommit: detail?.type === 'git'
+        fixedCommit: generation?.state === 'ready'
+          && generation.active !== undefined
+          && detail?.type === 'git'
           && detail.refPolicy === 'explicit'
           && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(detail.explicitRef ?? ''),
       };
