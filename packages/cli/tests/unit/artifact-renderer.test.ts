@@ -20,6 +20,7 @@ import {
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
+const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -212,7 +213,7 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       `writeFileSync(${JSON.stringify(started)}, String(process.pid));`,
       'setInterval(() => {}, 1000);',
@@ -249,7 +250,7 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });',
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       'setInterval(() => {}, 1000);',
     ].join('\n'));
