@@ -147,6 +147,25 @@ describe('Catalog Workspace development source', () => {
     expect(repeated).toMatchObject({ ok: true, state: 'completed', snapshot: { action: 'built' } });
   });
 
+  it('returns partial when final status no longer proves the synced snapshot ready', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const result = await activateCatalogDevSource({
+      cwd: workspaceRoot,
+      cliVersion: '1.0.0',
+      env,
+      runtime: {
+        afterSync: () => fs.remove(path.join(workspaceRoot, '.aw', 'catalog', '.aw-generated.json')),
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'partial',
+      active: { ready: false },
+      errors: [{ code: 'activeNotReady' }],
+    });
+  });
+
   it('protects the managed source from public update and remove commands', async () => {
     const { workspaceRoot, env } = await fixture();
     const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);

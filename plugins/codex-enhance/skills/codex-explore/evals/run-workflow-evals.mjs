@@ -1,22 +1,18 @@
-import { createHash } from 'node:crypto';
 import {
   readFile,
-  readdir,
-  readlink,
-  rm,
 } from 'node:fs/promises';
-import path from 'node:path';
-import process from 'node:process';
 
 import {
-  collectFinalAgentResults,
-  createProviderOutput,
-  createEvalWorkspace,
+  EXPLORE_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
   inspectExploreRoleContract,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 function nonEmptyStrings(value) {
   return (
@@ -80,6 +76,12 @@ function validateCase(entry, index) {
     !expected ||
     expected.spawn_count !== 1 ||
     typeof expected.agent_type !== 'string' ||
+    (expected.target_skill_loaded !== undefined && expected.target_skill_loaded !== true) ||
+    (expected.clean_context_leaf_delegation !== undefined &&
+      expected.clean_context_leaf_delegation !== true) ||
+    (expected.clean_context_leaf_delegation === true &&
+      (!nonEmptyStrings(expected.leaf_terminal_includes_all) ||
+        !nonEmptyStrings(expected.leaf_terminal_patterns))) ||
     !nonEmptyStrings(expected.final_message_includes_all) ||
     !nonEmptyStrings(expected.final_message_patterns) ||
     !nonEmptyStrings(expected.delegated_source_prefixes) ||
@@ -95,45 +97,10 @@ function validateCase(entry, index) {
   for (const pattern of expected.final_message_patterns) {
     new RegExp(pattern, 'iu');
   }
-  return entry;
-}
-
-async function collectFiles(root, relativeDir, snapshot) {
-  const entries = await readdir(path.join(root, relativeDir), {
-    withFileTypes: true,
-  });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const relativePath = path.join(relativeDir, entry.name);
-    const absolutePath = path.join(root, relativePath);
-    if (entry.isDirectory()) {
-      await collectFiles(root, relativePath, snapshot);
-    } else if (entry.isSymbolicLink()) {
-      snapshot[relativePath] = `symlink:${await readlink(absolutePath)}`;
-    } else if (entry.isFile()) {
-      snapshot[relativePath] = createHash('sha256')
-        .update(await readFile(absolutePath))
-        .digest('hex');
-    }
+  for (const pattern of expected.leaf_terminal_patterns ?? []) {
+    new RegExp(pattern, 'iu');
   }
-}
-
-export async function captureWorkspaceSnapshot(root) {
-  const snapshot = {};
-  await collectFiles(root, '', snapshot);
-  return snapshot;
-}
-
-export function diffWorkspaceSnapshots(before, after) {
-  const beforePaths = new Set(Object.keys(before));
-  const afterPaths = new Set(Object.keys(after));
-  return {
-    added: [...afterPaths].filter((entry) => !beforePaths.has(entry)).sort(),
-    removed: [...beforePaths].filter((entry) => !afterPaths.has(entry)).sort(),
-    modified: [...beforePaths]
-      .filter((entry) => afterPaths.has(entry) && before[entry] !== after[entry])
-      .sort(),
-  };
+  return entry;
 }
 
 function unchanged(changes) {
@@ -144,17 +111,39 @@ function unchanged(changes) {
 
 function waitTimedOut(call) {
   if (call?.output && typeof call.output === 'object') {
-    return call.output.timed_out === true;
+    return call.output.timed_out === true ||
+      call.output.timedOut === true ||
+      call.output.status === 'timeout' ||
+      call.output.status === 'timed_out';
   }
   return typeof call?.output === 'string' && /timed[ _-]?out/i.test(call.output);
 }
 
-function hasFinalAgentResult(call) {
+function spawnedTaskIdentity(call) {
+  return call?.output?.task_name ??
+    call?.output?.thread_id ??
+    call?.output?.threadId ??
+    call?.output?.agent_id ??
+    call?.output?.agentId ??
+    null;
+}
+
+function callLinksChild(call, childId) {
+  if (typeof childId !== 'string' || childId === '') return false;
+  return call?.linked_thread_id === childId ||
+    (call?.output?.status &&
+      typeof call.output.status === 'object' &&
+      !Array.isArray(call.output.status) &&
+      Object.hasOwn(call.output.status, childId));
+}
+
+function terminalText(call, childId) {
   if (
     call?.tool === 'agent_message' &&
-    call.output?.message_type === 'FINAL_ANSWER'
+    call.output?.message_type === 'FINAL_ANSWER' &&
+    callLinksChild(call, childId)
   ) {
-    return true;
+    return call.output.payload;
   }
   if (
     call?.tool !== 'wait_agent' ||
@@ -162,14 +151,50 @@ function hasFinalAgentResult(call) {
     typeof call.output.status !== 'object' ||
     Array.isArray(call.output.status)
   ) {
-    return false;
+    return null;
   }
-  return Object.values(call.output.status).some(
-    (status) =>
-      status &&
-      typeof status === 'object' &&
-      typeof status.completed === 'string',
-  );
+  return call.output.status[childId]?.completed ?? null;
+}
+
+function boundTerminalTexts(calls, childId) {
+  return [...new Set((Array.isArray(calls) ? calls : [])
+    .map((call) => terminalText(call, childId))
+    .filter((value) => typeof value === 'string' && value.trim() !== '')
+    .map((value) => value.trim()))];
+}
+
+function linkedTerminal(call) {
+  if (
+    call?.tool !== 'agent_message' ||
+    call.output?.message_type !== 'FINAL_ANSWER' ||
+    typeof call?.linked_thread_id !== 'string' ||
+    call.linked_thread_id === '' ||
+    typeof call.output?.payload !== 'string' ||
+    call.output.payload.trim() === ''
+  ) {
+    return null;
+  }
+  return {
+    childId: call.linked_thread_id,
+    text: call.output.payload.trim(),
+  };
+}
+
+function linkedTerminalState(calls) {
+  const terminals = [...new Map((Array.isArray(calls) ? calls : [])
+    .map((call, index) => ({ index, terminal: linkedTerminal(call) }))
+    .filter((entry) => entry.terminal !== null)
+    .map((entry) => [
+      `${entry.terminal.childId}\0${entry.terminal.text}`,
+      entry,
+    ])).values()];
+  const childIds = new Set(terminals.map((entry) => entry.terminal.childId));
+  return {
+    childId: childIds.size === 1 ? terminals[0]?.terminal.childId ?? null : null,
+    indexes: terminals.map((entry) => entry.index),
+    terminalCount: terminals.length,
+    childCount: childIds.size,
+  };
 }
 
 export function evaluateLifecycleTrace(calls, contract) {
@@ -182,6 +207,10 @@ export function evaluateLifecycleTrace(calls, contract) {
     (call, index) => call?.tool === tool ? [index] : [],
   );
   const spawnIndexes = indexes('spawn_agent');
+  const firstSpawn = spawnIndexes[0];
+  const targetTaskIdentity = Number.isInteger(firstSpawn)
+    ? spawnedTaskIdentity(timeline[firstSpawn])
+    : null;
   const waitIndexes = indexes('wait_agent');
   const probeIndexes = indexes('send_message');
   const statusIndexes = timeline.flatMap(
@@ -194,16 +223,20 @@ export function evaluateLifecycleTrace(calls, contract) {
   );
   const followupIndexes = indexes('followup_task');
   const closeIndexes = indexes('close_agent');
-  const resultIndexes = timeline.flatMap(
-    (call, index) => hasFinalAgentResult(call) ? [index] : [],
-  );
+  const terminalState = linkedTerminalState(timeline);
+  const resultIndexes = terminalState.indexes;
   const retrySpawnIndexes = spawnIndexes.slice(1);
   const recoveryIndexes = [...followupIndexes, ...retrySpawnIndexes].sort(
     (left, right) => left - right,
   );
 
   add('trace_present', timeline.length > 0, `calls=${timeline.length}`);
-  const firstSpawn = spawnIndexes[0];
+  add(
+    'target_child',
+    typeof targetTaskIdentity === 'string' && targetTaskIdentity !== '' &&
+      terminalState.childCount === 1 && terminalState.terminalCount === 1,
+    `task=${targetTaskIdentity ?? 'missing'} linked_child=${terminalState.childId ?? 'missing'} terminals=${terminalState.terminalCount}`,
+  );
   const firstWait = waitIndexes.find((index) => index > firstSpawn);
   add(
     'wait_after_spawn',
@@ -308,9 +341,10 @@ export function evaluateLifecycleTrace(calls, contract) {
 export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
   const timeline = Array.isArray(calls) ? calls : [];
   const firstSpawn = timeline.findIndex((call) => call?.tool === 'spawn_agent');
-  const firstFinalResult = timeline.findIndex(
-    (call, index) => index > firstSpawn && hasFinalAgentResult(call),
-  );
+  const terminalState = linkedTerminalState(timeline);
+  const firstFinalResult = terminalState.childCount === 1 && terminalState.terminalCount === 1
+    ? terminalState.indexes[0]
+    : -1;
   const normalizedPrefixes = delegatedSourcePrefixes.map((prefix) =>
     prefix.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, ''));
   const readableArguments = (call) => {
@@ -346,9 +380,6 @@ export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
         normalized.includes(`/${prefix}/`);
     });
   const duplicateCalls = timeline.flatMap((call, index) => {
-    if (index <= firstSpawn || index >= firstFinalResult) {
-      return [];
-    }
     const argumentsToCheck = readableArguments(call);
     return normalizedPrefixes.some((prefix) =>
       argumentsToCheck.some((value) => referencesPrefix(value, prefix)))
@@ -370,6 +401,71 @@ export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
       duplicate_calls: duplicateCalls,
     }),
   };
+}
+
+function distinctPatternLineIndexes(value, patterns) {
+  const lines = value.split(/\r?\n/u);
+  const candidates = patterns.map((pattern) => lines.flatMap(
+    (line, index) => new RegExp(pattern, 'iu').test(line) ? [index] : [],
+  ));
+  const assign = (patternIndex, used, selected) => {
+    if (patternIndex === candidates.length) return selected;
+    for (const lineIndex of candidates[patternIndex]) {
+      if (used.has(lineIndex)) continue;
+      const result = assign(
+        patternIndex + 1,
+        new Set([...used, lineIndex]),
+        [...selected, lineIndex],
+      );
+      if (result !== null) return result;
+    }
+    return null;
+  };
+  return assign(0, new Set(), []);
+}
+
+function textMatchesContract(value, includesAll, patterns) {
+  return includesAll.every((text) => value.includes(text)) &&
+    distinctPatternLineIndexes(value, patterns) !== null;
+}
+
+function evaluateCleanContextLeafDelegation(run, expected) {
+  const spawn = run.spawn_calls?.[0];
+  const spawnIdentity = spawnedTaskIdentity(spawn);
+  const child = (run.leaf_trace?.child_threads ?? []).find((entry) =>
+    entry?.agent_role === expected.agent_type &&
+    (entry.initial_opaque_link?.linkedCallId === spawn?.call_id ||
+      (typeof entry.initial_user_message === 'string' &&
+        entry.initial_user_message === spawn?.arguments?.message) ||
+      (spawn?.output?.task_name === undefined && entry.thread_id === spawnIdentity)));
+  const terminalResults = boundTerminalTexts(run.leaf_tool_calls, child?.thread_id);
+  const cleanContext = spawn?.arguments?.fork_context === false ||
+    spawn?.arguments?.fork_turns === 'none';
+  const noOverrides = ['model', 'reasoning_effort', 'reasoningEffort'].every(
+    (key) => !Object.hasOwn(spawn?.arguments ?? {}, key),
+  );
+  return [
+    {
+      name: 'leaf:target_child',
+      passed: child !== undefined,
+      evidence: `expected_role=${expected.agent_type} child=${child?.thread_id ?? 'missing'}`,
+    },
+    {
+      name: 'leaf:clean_context',
+      passed: cleanContext && noOverrides,
+      evidence: `fork_context=${String(spawn?.arguments?.fork_context)} fork_turns=${String(spawn?.arguments?.fork_turns)} model_override=${!noOverrides}`,
+    },
+    {
+      name: 'leaf:terminal_result',
+      passed: terminalResults.length === 1 &&
+        textMatchesContract(
+          terminalResults[0] ?? '',
+          expected.leaf_terminal_includes_all,
+          expected.leaf_terminal_patterns,
+        ),
+      evidence: `distinct_non_empty_results=${terminalResults.length}`,
+    },
+  ];
 }
 
 export function evaluateWorkflowRun(run, expected) {
@@ -396,7 +492,22 @@ export function evaluateWorkflowRun(run, expected) {
       passed: finalMessage.trim() !== '',
       evidence: `characters=${[...finalMessage].length}`,
     },
+    {
+      name: 'engine_cleanup_confirmed',
+      passed: run.cleanup_confirmed === true,
+      evidence: `confirmed=${run.cleanup_confirmed === true}`,
+    },
   ];
+  if (expected.target_skill_loaded === true) {
+    assertions.push({
+      name: 'target_skill_loaded',
+      passed: run.loaded === true,
+      evidence: `loaded=${run.loaded === true}`,
+    });
+  }
+  if (expected.clean_context_leaf_delegation === true) {
+    assertions.push(...evaluateCleanContextLeafDelegation(run, expected));
+  }
   for (const text of expected.final_message_includes_all) {
     assertions.push({
       name: `final_message_includes:${text}`,
@@ -409,6 +520,17 @@ export function evaluateWorkflowRun(run, expected) {
       name: `final_message_pattern:${pattern}`,
       passed: new RegExp(pattern, 'iu').test(finalMessage),
       evidence: `pattern=${JSON.stringify(pattern)}`,
+    });
+  }
+  if (expected.clean_context_leaf_delegation === true) {
+    const finalPatternLineIndexes = distinctPatternLineIndexes(
+      finalMessage,
+      expected.final_message_patterns,
+    );
+    assertions.push({
+      name: 'final_message_distinct_pattern_lines',
+      passed: finalPatternLineIndexes !== null,
+      evidence: `line_indexes=${JSON.stringify(finalPatternLineIndexes)}`,
     });
   }
   assertions.push({
@@ -512,46 +634,45 @@ export function workflowEvalRunCase(entry) {
   };
 }
 
-export async function runEvalProvider(input) {
-  const entry = validateCase(input.case, 0);
-  if (entry.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
-  const workspace = await createEvalWorkspace({ sourceRoot: input.workspacePath });
-  try {
-    const roleContract = await inspectExploreRoleContract(workspace.root);
-    const before = await captureWorkspaceSnapshot(workspace.root);
-    const evidence = await runCodexOnce(workspace, workflowEvalRunCase(entry), {
-      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-      model: process.env.AW_SKILL_EVAL_CODEX_MODEL,
-      sandboxMode: 'workspace-write',
-      captureTrace: true,
-      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-    });
-    const after = await captureWorkspaceSnapshot(workspace.root);
-    const run = {
-      ...evidence,
-      role_contract: roleContract,
-      leaf_results: collectFinalAgentResults(evidence.collaboration_timeline),
-      workspace_changes: diffWorkspaceSnapshots(before, after),
-    };
-    const evaluation = evaluateWorkflowRun(run, entry.expected);
-    return createProviderOutput({
-      providerId: 'codex-explore-workflow',
-      graderId: 'codex-explore-workflow-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+export async function prepareWorkflow(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  await setupTriggerWorkspace({ workspaceRoot: input.paths.workspace });
+  return {
+    version: 1,
+    prompt: entry.prompt,
+    sandbox: 'read-only',
+    model: entry.parent_model ?? null,
+    developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace),
+    multiAgent: workflowProfile(entry),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeWorkflow(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  const [evidence, modelOutput, roleContract] = await Promise.all([
+    readWorkflowEvidence(input.paths.evidence),
+    readFile(input.paths.modelOutput, 'utf8'),
+    inspectExploreRoleContract(input.paths.workspace),
+  ]);
+  if (modelOutput.trim() === '') throw new Error('model-output.txt must not be empty.');
+  const run = evidenceRun(evidence);
+  run.final_message = modelOutput.trimEnd();
+  run.role_contract = roleContract;
+  const evaluation = evaluateWorkflowRun(run, entry.expected);
+  return {
+    passed: evaluation.passed,
+    score: evaluation.passed ? 1 : 0,
+    details: {
+      caseId: entry.id,
+      variant: input.variant,
+      complete: !run.execution_error,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareWorkflow,
+  grade: gradeWorkflow,
+});

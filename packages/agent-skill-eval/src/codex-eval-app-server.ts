@@ -133,6 +133,11 @@ export interface AppServerRunEvidence {
     }>;
     answers: Record<string, string[]>;
   }>;
+  fallbackUserReplies?: Array<{
+    step: number;
+    eventTraceIndex: number;
+    answers: string[];
+  }>;
   finalMessages: string[];
   usage: unknown;
   workspaceChanges: string[];
@@ -1237,6 +1242,7 @@ async function runConversationOnce(options: {
   const diagnostics: string[] = [];
   const scriptedReplyMismatches: string[] = [];
   const questions: AppServerRunEvidence['questions'] = [];
+  const fallbackUserReplies: NonNullable<AppServerRunEvidence['fallbackUserReplies']> = [];
   const finalMessages: string[] = [];
   const eventTrace: unknown[] = [];
   let usage: unknown = null;
@@ -1480,6 +1486,11 @@ async function runConversationOnce(options: {
           `Final-answer fallback step ${replyStep + 1} cannot observe structured questions: expected_question_count=${scripted.expectedQuestionCount}, but answers_by_index contains ${scripted.answersByIndex.length} answer(s).`,
         );
       }
+      fallbackUserReplies.push({
+        step: replyStep,
+        eventTraceIndex: eventTrace.length,
+        answers: [...scripted.answersByIndex],
+      });
       replyStep += 1;
       nextTurnText = finalAnswerReplyText(scripted);
     }
@@ -1530,6 +1541,7 @@ async function runConversationOnce(options: {
       scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
+      fallbackUserReplies,
       finalMessages,
       usage,
       workspaceChanges,
@@ -1557,6 +1569,7 @@ async function runConversationOnce(options: {
       scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
+      fallbackUserReplies,
       finalMessages,
       usage,
       workspaceChanges: [],

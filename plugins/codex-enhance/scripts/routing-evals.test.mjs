@@ -4,12 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  earlyStopReason,
-  extractExecToolCalls,
-  readSpawnCallsFromRollouts,
-  removeEvalDirectory,
-} from '../skills/codex-subagent-guide/evals/eval-harness.mjs';
-import {
   evaluateRoutingRun,
   routingRunCase,
 } from '../skills/codex-subagent-guide/evals/run-routing-evals.mjs';
@@ -19,9 +13,9 @@ import routingCorpusDocument from '../skills/codex-subagent-guide/evals/provider
 async function testProviderManifestComposition() {
   const manifest = routingManifestDocument;
   assert.equal(manifest.version, 1);
-  const customProcessSuites = manifest.suites.filter((suite) => suite.kind === 'custom-process');
+  const workflowSuites = manifest.suites.filter((suite) => suite.kind === 'codex-workflow');
   assert.deepEqual(
-    customProcessSuites.map((suite) => suite.id),
+    workflowSuites.map((suite) => suite.id),
     ['routing', 'lifecycle', 'lifecycle-timeout'],
   );
   const commands = new Map([
@@ -29,8 +23,8 @@ async function testProviderManifestComposition() {
     ['lifecycle', ['node', 'run-lifecycle-evals.mjs']],
     ['lifecycle-timeout', ['node', 'run-lifecycle-evals.mjs']],
   ]);
-  for (const suite of customProcessSuites) {
-    assert.equal(suite.kind, 'custom-process');
+  for (const suite of workflowSuites) {
+    assert.equal(suite.kind, 'codex-workflow');
     assert.equal(Object.hasOwn(suite, 'entry'), false);
     assert.equal(Object.hasOwn(suite, 'supports'), false);
     assert.equal(Object.hasOwn(suite, 'suiteTimeoutMs'), false);
@@ -40,15 +34,16 @@ async function testProviderManifestComposition() {
     assert.equal(suite.cases.startsWith('./'), false);
     const provider = suite.provider;
     assert.ok(provider && typeof provider === 'object');
-    assert.equal(provider.type, 'custom-process');
+    assert.equal(provider.type, 'codex-workflow');
     assert.deepEqual(provider.command, commands.get(suite.id));
+    assert.deepEqual(provider.allowedModels, ['gpt-5.6-luna']);
     for (const field of ['id', 'entry', 'assets', 'credentialEnvironment', 'capabilities', 'describe']) {
       assert.equal(Object.hasOwn(provider, field), false);
     }
   }
 
   assert.equal(routingCorpusDocument.version, 1);
-  assert.equal(routingCorpusDocument.suite.kind, 'custom-process');
+  assert.equal(routingCorpusDocument.suite.kind, 'codex-workflow');
   assert.equal(routingCorpusDocument.suite.unitUnderTest, 'codex-subagent-guide');
   assert.ok(Array.isArray(routingCorpusDocument.cases));
   assert.ok(routingCorpusDocument.cases.length > 0);
@@ -285,21 +280,6 @@ function testMechanicalAssertions() {
     load_evidence: null,
   };
   assert.equal(evaluateRoutingRun(explicitlyInjected, expected, 'with_skill').passed, true);
-  assert.equal(
-    earlyStopReason(
-      { stop_on_spawn: true },
-      { spawned: true, spawnCalls: [] },
-    ),
-    null,
-  );
-  assert.equal(
-    earlyStopReason(
-      { stop_on_spawn: true },
-      { spawned: true, spawnCalls: [{ arguments: { message: 'verify' } }] },
-    ),
-    'spawn_observed',
-  );
-
   const inheritedWrongly = {
     ...passingRun,
     spawn_calls: [{ arguments: { message: 'verify', fork_turns: '2' } }],
@@ -338,8 +318,6 @@ function testMechanicalAssertions() {
 async function main() {
   await testProviderManifestComposition();
   testProviderCaseComposition();
-  await testRolloutArgumentEvidence();
-  await testEvalDirectoryCleanupContract();
   testMechanicalAssertions();
   console.log('routing eval tests passed');
 }

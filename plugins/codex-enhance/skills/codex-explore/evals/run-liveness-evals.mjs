@@ -1,25 +1,24 @@
 import {
   mkdir,
   readFile,
-  rm,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
-import process from 'node:process';
 
 import {
-  createProviderOutput,
-  createEvalWorkspace,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  EXPLORE_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
 import {
-  captureWorkspaceSnapshot,
-  diffWorkspaceSnapshots,
   evaluateLifecycleTrace,
   evaluateParentScopeIsolation,
 } from './run-workflow-evals.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 function nonEmptyStrings(value) {
   return (
@@ -184,6 +183,11 @@ export function evaluateLivenessRun(run, expected, probeEnabled) {
       evidence: JSON.stringify(run.workspace_changes),
     },
     {
+      name: 'engine_cleanup_confirmed',
+      passed: run.cleanup_confirmed === true,
+      evidence: `confirmed=${run.cleanup_confirmed === true}`,
+    },
+    {
       name: 'materialized_probe_policy',
       passed: probeEnabled === expected.lifecycle.allow_liveness_probe,
       evidence: JSON.stringify({
@@ -241,55 +245,55 @@ export function evaluateLivenessRun(run, expected, probeEnabled) {
   };
 }
 
-export async function runEvalProvider(input) {
-  const entry = validateCase(input.case, 0);
-  if (entry.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
-  const workspace = await createEvalWorkspace({ sourceRoot: input.workspacePath });
-  try {
-    await setupLivenessWorkspace(workspace.root);
-    const probeEnabled = input.skillMode !== 'without-skill' &&
-      (await readFile(workspace.skillPath, 'utf8')).includes('status=progress');
-    const before = await captureWorkspaceSnapshot(workspace.root);
-    const evidence = await runCodexOnce(workspace, {
-      query: entry.prompt,
-      parent_model: entry.parent_model,
-      explicit_skill: true,
-      should_load_skill: true,
-      should_spawn_agent: true,
-      wait_for_completion: true,
-      codex_config: entry.codex_config,
-    }, {
-      codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-      model: process.env.AW_SKILL_EVAL_CODEX_MODEL,
-      sandboxMode: 'workspace-write',
-      captureTrace: true,
-      sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-    });
-    const after = await captureWorkspaceSnapshot(workspace.root);
-    const run = {
-      ...evidence,
-      probe_enabled: probeEnabled,
-      workspace_changes: diffWorkspaceSnapshots(before, after),
-    };
-    const evaluation = evaluateLivenessRun(run, entry.expected, probeEnabled);
-    return createProviderOutput({
-      providerId: 'codex-explore-liveness',
-      graderId: 'codex-explore-liveness-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error && evaluation.complete,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+export async function prepareLiveness(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  await setupTriggerWorkspace({ workspaceRoot: input.paths.workspace });
+  await setupLivenessWorkspace(input.paths.workspace);
+  return {
+    version: 1,
+    prompt: entry.prompt,
+    sandbox: 'workspace-write',
+    model: entry.parent_model ?? null,
+    developerInstructions: EXPLORE_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace),
+    multiAgent: workflowProfile(entry),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeLiveness(input) {
+  const entry = validateCase(legacyCase(input.case), 0);
+  const [evidence, modelOutput] = await Promise.all([
+    readWorkflowEvidence(input.paths.evidence),
+    readFile(input.paths.modelOutput, 'utf8'),
+  ]);
+  if (modelOutput.trim() === '') throw new Error('model-output.txt must not be empty.');
+  const skillPath = path.join(
+    input.paths.workspace,
+    '.agents',
+    'skills',
+    'codex-explore',
+    'SKILL.md',
+  );
+  const probeEnabled = input.variant !== 'without-skill'
+    && (await readFile(skillPath, 'utf8')).includes('status=progress');
+  const run = evidenceRun(evidence);
+  run.final_message = modelOutput.trimEnd();
+  run.probe_enabled = probeEnabled;
+  const evaluation = evaluateLivenessRun(run, entry.expected, probeEnabled);
+  const passed = evaluation.complete && evaluation.passed;
+  return {
+    passed,
+    score: passed ? 1 : 0,
+    details: {
+      caseId: entry.id,
+      variant: input.variant,
+      complete: evaluation.complete,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareLiveness,
+  grade: gradeLiveness,
+});

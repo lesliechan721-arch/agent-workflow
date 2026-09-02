@@ -88,8 +88,10 @@ it('publishes the built public CLI Catalog through an arbitrary branch and Git p
     workspaceRoot,
     '.aw',
     'publish',
-    '91.0.0.json',
+    '91.0.0',
+    'journal.json',
   ))).resolves.toMatchObject({
+    schemaVersion: 2,
     state: 'published',
     repository: null,
     descriptor: {

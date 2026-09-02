@@ -16,6 +16,14 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
+async function waitForAll(tasks: readonly Promise<unknown>[]): Promise<void> {
+  const results = await Promise.allSettled(tasks);
+  const firstRejection = results.find((result) => result.status === 'rejected');
+  if (firstRejection?.status === 'rejected') {
+    throw firstRejection.reason;
+  }
+}
+
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
@@ -1217,7 +1225,7 @@ describe('authoring tools', () => {
       currentVersion: '0.1.1',
       productionChanged: true,
     });
-  });
+  }, 30_000);
 
   externalPluginRootTest('rejects add-skill path redirection without changing external bytes', async () => {
     const cases = [
@@ -1229,7 +1237,7 @@ describe('authoring tools', () => {
       'skill-target-file',
       'skill-target-directory',
     ] as const;
-    for (const pathCase of cases) {
+    await waitForAll(cases.map(async (pathCase) => {
       const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-add-skill-${pathCase}-`));
       tempDirs.push(tempRoot);
       const workspaceRoot = path.join(tempRoot, 'workspace');
@@ -1311,7 +1319,7 @@ describe('authoring tools', () => {
       expect(pluginEntries.some((entry) => entry.startsWith('.aw-add-skill-'))).toBe(false);
       const manifestEntries = await fs.readdir(path.join(pluginRoot, '.agents-plugin')).catch(() => []);
       expect(manifestEntries.some((entry) => entry.includes('.aw-tmp-'))).toBe(false);
-    }
+    }));
   });
 
   externalPluginRootTest('rejects the removed plugin-root option', async () => {
@@ -3565,153 +3573,158 @@ describe('authoring tools', () => {
       throw new Error(`${output.stdout ?? ''}${output.stderr ?? ''}`);
     });
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
-
-    await fs.writeFile(path.join(pluginDir, 'portable-skills', 'README.md'), '# Invalid root file\n');
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('直接子节点必须是普通目录'),
-    });
-    await fs.remove(path.join(pluginDir, 'portable-skills', 'README.md'));
-
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-
-    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), '{{unresolvedRuntime}}\n', 'utf8');
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('final file tree contains an unresolved template'),
-    });
-    await fs.writeFile(path.join(pluginDir, 'dynamic-runtime.txt'), 'dynamic runtime projection\n', 'utf8');
-
-    const importedFinalTreeManifest = structuredClone(manifest);
-    importedFinalTreeManifest.buildConfig.skillRuntimeFiles[1] = {
-      skill: 'portable-dynamic',
-      target: 'references/dynamic.txt',
-      distributions: ['agent-skills'],
-      import: { plugin: 'portable-provider', export: 'unsafe-runtime' },
-    };
-    await fs.writeFile(
-      path.join(tempRoot, 'plugins', 'portable-provider', 'unsafe-runtime.txt'),
-      '{{unresolvedProviderTemplate}}\n',
-      'utf8',
-    );
-    await fs.writeJson(manifestPath, importedFinalTreeManifest, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('final file tree contains an unresolved template'),
-    });
-    await fs.writeFile(
-      path.join(tempRoot, 'plugins', 'portable-provider', 'unsafe-runtime.txt'),
-      'safe runtime bytes\n',
-      'utf8',
-    );
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-
-    for (const reference of [
-      { plugin: 'missing-provider', export: 'registry' },
-      { plugin: 'portable-provider', export: 'missing-export' },
-    ]) {
-      const unresolvedManifest = structuredClone(manifest);
-      unresolvedManifest.artifacts.targets[0].runtimeImports[0] = {
-        name: 'registry',
-        ...reference,
-      };
-      await fs.writeJson(manifestPath, unresolvedManifest, { spaces: 2 });
-      const failure = await runValidatePlugin(pluginDir).catch((error: unknown) => error as { stdout: string });
-      expect(failure.stdout).toContain('Cannot resolve artifacts target');
-      expect(failure.stdout).not.toContain(tempRoot);
-      expect(failure.stdout).not.toContain(providerBytes.trim());
+    const scenarios = [
+      'portable-root-file',
+      'unresolved-runtime',
+      'unresolved-provider-runtime',
+      'missing-provider',
+      'missing-export',
+      'import-collision',
+      'missing-distribution',
+      'portable-only',
+      'native-capability',
+      'invalid-distribution',
+      'uppercase-skill-key',
+      'wrong-skill-name',
+    ] as const;
+    const scenarioRoots = new Map<string, string>();
+    for (const scenario of scenarios) {
+      const scenarioRoot = path.join(tempRoot, 'scenarios', scenario);
+      scenarioRoots.set(scenario, scenarioRoot);
     }
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await waitForAll([...scenarioRoots.values()].map((scenarioRoot) =>
+      runGit(tempRoot, ['clone', '--shared', tempRoot, scenarioRoot])));
+    const scenarioPlugin = (scenario: typeof scenarios[number]) => path.join(
+      scenarioRoots.get(scenario)!,
+      'plugins',
+      'portable-authoring',
+    );
+    const scenarioManifest = (scenario: typeof scenarios[number]) => path.join(
+      scenarioPlugin(scenario),
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const withNativeCapability = (state: 'disabled' | 'present') => ({
+      ...manifest,
+      extensions: {},
+      artifacts: {
+        targets: [...manifest.artifacts.targets, {
+          id: 'native-capability',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.developerInstructionsBlock',
+          states: [state],
+          refreshKeys: [],
+        }],
+      },
+    });
 
-    const importCollisionManifest = structuredClone(manifest);
-    importCollisionManifest.buildConfig.skillRuntimeFiles[0] = {
-      skill: 'portable-static',
-      target: 'references/runtime.txt',
-      distributions: ['agent-skills'],
-      import: { plugin: 'portable-provider', export: 'registry' },
+    await waitForAll([
+      fs.writeFile(
+        path.join(scenarioPlugin('portable-root-file'), 'portable-skills', 'README.md'),
+        '# Invalid root file\n',
+      ),
+      fs.writeFile(
+        path.join(scenarioPlugin('unresolved-runtime'), 'dynamic-runtime.txt'),
+        '{{unresolvedRuntime}}\n',
+      ),
+      (async () => {
+        const importedFinalTreeManifest = structuredClone(manifest);
+        importedFinalTreeManifest.buildConfig.skillRuntimeFiles[1] = {
+          skill: 'portable-dynamic',
+          target: 'references/dynamic.txt',
+          distributions: ['agent-skills'],
+          import: { plugin: 'portable-provider', export: 'unsafe-runtime' },
+        };
+        await waitForAll([
+          fs.writeFile(
+            path.join(scenarioRoots.get('unresolved-provider-runtime')!, 'plugins', 'portable-provider', 'unsafe-runtime.txt'),
+            '{{unresolvedProviderTemplate}}\n',
+          ),
+          fs.writeJson(scenarioManifest('unresolved-provider-runtime'), importedFinalTreeManifest, { spaces: 2 }),
+        ]);
+      })(),
+      ...([
+        ['missing-provider', { plugin: 'missing-provider', export: 'registry' }],
+        ['missing-export', { plugin: 'portable-provider', export: 'missing-export' }],
+      ] as const).map(async ([scenario, reference]) => {
+        const unresolvedManifest = structuredClone(manifest);
+        unresolvedManifest.artifacts.targets[0].runtimeImports[0] = { name: 'registry', ...reference };
+        await fs.writeJson(scenarioManifest(scenario), unresolvedManifest, { spaces: 2 });
+      }),
+      (async () => {
+        const importCollisionManifest = structuredClone(manifest);
+        importCollisionManifest.buildConfig.skillRuntimeFiles[0] = {
+          skill: 'portable-static',
+          target: 'references/runtime.txt',
+          distributions: ['agent-skills'],
+          import: { plugin: 'portable-provider', export: 'registry' },
+        };
+        await waitForAll([
+          fs.writeFile(
+            path.join(scenarioPlugin('import-collision'), 'portable-skills', 'portable-static', 'references'),
+            'file blocks imported child\n',
+          ),
+          fs.writeJson(scenarioManifest('import-collision'), importCollisionManifest, { spaces: 2 }),
+        ]);
+      })(),
+      (async () => {
+        const withoutDistribution = structuredClone(manifest);
+        delete withoutDistribution.distributions;
+        await fs.writeJson(scenarioManifest('missing-distribution'), withoutDistribution, { spaces: 2 });
+      })(),
+      fs.writeJson(scenarioManifest('portable-only'), withNativeCapability('disabled'), { spaces: 2 }),
+      fs.writeJson(scenarioManifest('native-capability'), withNativeCapability('present'), { spaces: 2 }),
+      fs.writeJson(scenarioManifest('invalid-distribution'), {
+        ...manifest,
+        buildConfig: {
+          skillRuntimeFiles: [{
+            ...manifest.buildConfig.skillRuntimeFiles[0],
+            distributions: ['native'],
+          }],
+        },
+      }, { spaces: 2 }),
+      (async () => {
+        const uppercaseDynamicKey = structuredClone(manifest);
+        uppercaseDynamicKey.artifacts.targets[0].skillKey = 'Foo';
+        await fs.writeJson(scenarioManifest('uppercase-skill-key'), uppercaseDynamicKey, { spaces: 2 });
+      })(),
+      fs.writeFile(
+        path.join(scenarioPlugin('wrong-skill-name'), 'portable-skills', 'portable-static', 'SKILL.md'),
+        '---\nname: wrong-name\ndescription: Invalid portable Skill.\n---\n',
+      ),
+    ]);
+
+    const expectFailure = async (scenario: typeof scenarios[number], diagnostic: string) => {
+      await expect(runValidatePlugin(scenarioPlugin(scenario))).rejects.toMatchObject({
+        stdout: expect.stringContaining(diagnostic),
+      });
     };
-    await fs.writeFile(
-      path.join(pluginDir, 'portable-skills', 'portable-static', 'references'),
-      'file blocks imported child\n',
-      'utf8',
-    );
-    await fs.writeJson(manifestPath, importCollisionManifest, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('final file tree path "references" conflicts with "references/runtime.txt"'),
-    });
-    await fs.remove(path.join(pluginDir, 'portable-skills', 'portable-static', 'references'));
-
-    const withoutDistribution = structuredClone(manifest);
-    delete withoutDistribution.distributions;
-    await fs.writeJson(manifestPath, withoutDistribution, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('agent-skills targets require distributions.agentSkills'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      extensions: {},
-      artifacts: {
-        targets: [...manifest.artifacts.targets, {
-          id: 'native-capability',
-          platform: 'codex',
-          scopes: ['user'],
-          target: 'codex.developerInstructionsBlock',
-          states: ['disabled'],
-          refreshKeys: [],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('portable-only plugins are not supported'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      extensions: {},
-      artifacts: {
-        targets: [...manifest.artifacts.targets, {
-          id: 'native-capability',
-          platform: 'codex',
-          scopes: ['user'],
-          target: 'codex.developerInstructionsBlock',
-          states: ['present'],
-          refreshKeys: [],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir, ['--json'])).resolves.toMatchObject({
-      stdout: expect.stringContaining('"ok": true'),
-    });
-
-    await fs.writeJson(manifestPath, {
-      ...manifest,
-      buildConfig: {
-        skillRuntimeFiles: [{
-          ...manifest.buildConfig.skillRuntimeFiles[0],
-          distributions: ['native'],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('/buildConfig/skillRuntimeFiles/0/distributions/0'),
-    });
-
-    const uppercaseDynamicKey = structuredClone(manifest);
-    uppercaseDynamicKey.artifacts.targets[0].skillKey = 'Foo';
-    await fs.writeJson(manifestPath, uppercaseDynamicKey, { spaces: 2 });
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('ASCII lowercase hyphen-case'),
-    });
-
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await fs.writeFile(
-      path.join(pluginDir, 'portable-skills', 'portable-static', 'SKILL.md'),
-      '---\nname: wrong-name\ndescription: Invalid portable Skill.\n---\n',
-      'utf8',
-    );
-    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('name 必须与 Skill 目录一致'),
-    });
-  });
+    await waitForAll([
+      expectFailure('portable-root-file', '直接子节点必须是普通目录'),
+      expectFailure('unresolved-runtime', 'final file tree contains an unresolved template'),
+      expectFailure('unresolved-provider-runtime', 'final file tree contains an unresolved template'),
+      ...(['missing-provider', 'missing-export'] as const).map(async (scenario) => {
+        const failure = await runValidatePlugin(scenarioPlugin(scenario))
+          .catch((error: unknown) => error as { stdout: string });
+        expect(failure.stdout).toContain('Cannot resolve artifacts target');
+        expect(failure.stdout).not.toContain(tempRoot);
+        expect(failure.stdout).not.toContain(scenarioRoots.get(scenario)!);
+        expect(failure.stdout).not.toContain(providerBytes.trim());
+      }),
+      expectFailure('import-collision', 'final file tree path "references" conflicts with "references/runtime.txt"'),
+      expectFailure('missing-distribution', 'agent-skills targets require distributions.agentSkills'),
+      expectFailure('portable-only', 'portable-only plugins are not supported'),
+      expect(runValidatePlugin(scenarioPlugin('native-capability'), ['--json'])).resolves.toMatchObject({
+        stdout: expect.stringContaining('"ok": true'),
+      }),
+      expectFailure('invalid-distribution', '/buildConfig/skillRuntimeFiles/0/distributions/0'),
+      expectFailure('uppercase-skill-key', 'ASCII lowercase hyphen-case'),
+      expectFailure('wrong-skill-name', 'name 必须与 Skill 目录一致'),
+    ]);
+  }, 30_000);
 
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
@@ -3794,17 +3807,11 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'omitted-products'),
       { products: null },
     );
-    await expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
 
     const emptyProducts = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'empty-products'),
       { products: [] },
     );
-    await expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
 
     const rendererOnlyClaude = await writeSourcePlugin(
       path.join(tempRoot, 'renderer-only-claude'),
@@ -3849,18 +3856,26 @@ describe('authoring tools', () => {
     expect(await fs.readdir(path.join(rendererOnlyClaude.pluginDir, 'skills'))).toEqual([
       'common-skill',
     ]);
-    await expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
     const claudeOnly = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'claude-only-products'),
       { products: ['claude'] },
     );
-    await expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'artifacts.targets[0].platform requires CODEX support',
-      ),
-    });
+    await waitForAll([
+      expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      }),
+      expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      }),
+      expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      }),
+      expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining(
+          'artifacts.targets[0].platform requires CODEX support',
+        ),
+      }),
+    ]);
 
     const dynamicCodex = await writeSourcePlugin(
       path.join(tempRoot, 'codex-dynamic'),
@@ -4032,168 +4047,181 @@ describe('authoring tools', () => {
     });
 
     const dynamicClaudeManifest = await fs.readJson(dynamicClaude.manifestPath);
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [{
-          ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: [
-            './skills/claude-dynamic',
-            './skills/claude-dynamic',
-          ],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('sourceDirs must not contain duplicate directories'),
-    });
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [{
-          ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: [
-            './skills/claude-dynamic',
-            './skills/claude-dynamic/../claude-dynamic',
-          ],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('sourceDirs must not contain duplicate directories'),
-    });
-    await fs.writeJson(dynamicClaude.manifestPath, dynamicClaudeManifest, { spaces: 2 });
-
-    const dynamicClaudeSource = path.join(
-      dynamicClaude.pluginDir,
+    const variantNames = [
+      'duplicate-source',
+      'normalized-duplicate-source',
+      'missing-skill',
+      'path-collision',
+      'missing-skill-root',
+      'author-only-source',
+      'runtime-evals-source',
+      'symlink-source',
+      'duplicate-owner',
+    ] as const;
+    const variantRoots = new Map<string, string>();
+    await waitForAll(variantNames.map(async (name) => {
+      const pluginDir = path.join(tempRoot, 'claude-dynamic-variants', name, 'claude-dynamic');
+      await fs.copy(dynamicClaude.pluginDir, pluginDir);
+      variantRoots.set(name, pluginDir);
+    }));
+    const variantManifestPath = (name: typeof variantNames[number]) => path.join(
+      variantRoots.get(name)!,
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const variantSource = (name: typeof variantNames[number]) => path.join(
+      variantRoots.get(name)!,
       'skills',
       'claude-dynamic',
     );
-    const skillPath = path.join(dynamicClaudeSource, 'SKILL.md');
-    const skillContent = await fs.readFile(skillPath);
-    await fs.remove(skillPath);
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('final file tree must contain a non-empty SKILL.md'),
-    });
-
-    await fs.writeFile(skillPath, skillContent);
-    await fs.outputFile(path.join(dynamicClaudeSource, 'references'), 'static file\n');
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('final file tree path "references" conflicts with "references/runtime.md"'),
-    });
-    await fs.remove(path.join(dynamicClaudeSource, 'references'));
-
-    await fs.ensureDir(path.join(dynamicClaudeSource, 'evals'));
-    await fs.writeJson(dynamicClaude.manifestPath, {
+    const manifestWithSources = (sourceDirs: string[]) => ({
       ...dynamicClaudeManifest,
       artifacts: {
         targets: [{
           ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: ['./skills/claude-dynamic/assets'],
+          sourceDirs,
         }],
       },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'sourceDirs must include "./skills/claude-dynamic" so README.md is published',
-      ),
     });
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [{
-          ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: [
-            './skills/claude-dynamic',
-            './skills/claude-dynamic/evals',
-          ],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('must not point inside an author-only Skill directory'),
-    });
-    await fs.outputFile(
-      path.join(dynamicClaudeSource, 'references', 'evals', 'contract.md'),
-      '# Runtime eval contract\n',
-    );
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [{
-          ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: [
-            './skills/claude-dynamic',
-            './skills/claude-dynamic/references/evals',
-          ],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-    await fs.writeJson(dynamicClaude.manifestPath, dynamicClaudeManifest, { spaces: 2 });
+    const expectVariantFailure = async (
+      name: typeof variantNames[number],
+      diagnostic: string,
+    ) => {
+      await expect(runValidatePlugin(variantRoots.get(name)!)).rejects.toMatchObject({
+        stdout: expect.stringContaining(diagnostic),
+      });
+    };
 
-    const sourceLink = path.join(dynamicClaudeSource, 'source-link');
-    await fs.symlink('.', sourceLink);
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [{
-          ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: ['./skills/claude-dynamic/source-link'],
-        }],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('Invalid plugin input tree: symbolic links are not supported'),
-    });
-    await fs.remove(sourceLink);
-
-    await fs.writeJson(dynamicClaude.manifestPath, {
-      ...dynamicClaudeManifest,
-      artifacts: {
-        targets: [
-          dynamicClaudeManifest.artifacts.targets[0],
-          {
-            ...dynamicClaudeManifest.artifacts.targets[0],
-            id: 'claude-dynamic-skill-copy',
+    await waitForAll([
+      (async () => {
+        await fs.writeJson(variantManifestPath('duplicate-source'), manifestWithSources([
+          './skills/claude-dynamic',
+          './skills/claude-dynamic',
+        ]), { spaces: 2 });
+        await expectVariantFailure('duplicate-source', 'sourceDirs must not contain duplicate directories');
+      })(),
+      (async () => {
+        await fs.writeJson(variantManifestPath('normalized-duplicate-source'), manifestWithSources([
+          './skills/claude-dynamic',
+          './skills/claude-dynamic/../claude-dynamic',
+        ]), { spaces: 2 });
+        await expectVariantFailure('normalized-duplicate-source', 'sourceDirs must not contain duplicate directories');
+      })(),
+      (async () => {
+        await fs.remove(path.join(variantSource('missing-skill'), 'SKILL.md'));
+        await expectVariantFailure('missing-skill', 'final file tree must contain a non-empty SKILL.md');
+      })(),
+      (async () => {
+        await fs.outputFile(path.join(variantSource('path-collision'), 'references'), 'static file\n');
+        await expectVariantFailure(
+          'path-collision',
+          'final file tree path "references" conflicts with "references/runtime.md"',
+        );
+      })(),
+      (async () => {
+        await waitForAll([
+          fs.ensureDir(path.join(variantSource('missing-skill-root'), 'evals')),
+          fs.writeJson(
+            variantManifestPath('missing-skill-root'),
+            manifestWithSources(['./skills/claude-dynamic/assets']),
+            { spaces: 2 },
+          ),
+        ]);
+        await expectVariantFailure(
+          'missing-skill-root',
+          'sourceDirs must include "./skills/claude-dynamic" so README.md is published',
+        );
+      })(),
+      (async () => {
+        await waitForAll([
+          fs.ensureDir(path.join(variantSource('author-only-source'), 'evals')),
+          fs.writeJson(
+            variantManifestPath('author-only-source'),
+            manifestWithSources(['./skills/claude-dynamic', './skills/claude-dynamic/evals']),
+            { spaces: 2 },
+          ),
+        ]);
+        await expectVariantFailure('author-only-source', 'must not point inside an author-only Skill directory');
+      })(),
+      (async () => {
+        await waitForAll([
+          fs.ensureDir(path.join(variantSource('runtime-evals-source'), 'evals')),
+          fs.outputFile(
+            path.join(variantSource('runtime-evals-source'), 'references', 'evals', 'contract.md'),
+            '# Runtime eval contract\n',
+          ),
+          fs.writeJson(
+            variantManifestPath('runtime-evals-source'),
+            manifestWithSources([
+              './skills/claude-dynamic',
+              './skills/claude-dynamic/references/evals',
+            ]),
+            { spaces: 2 },
+          ),
+        ]);
+        await expect(runValidatePlugin(variantRoots.get('runtime-evals-source')!)).resolves.toMatchObject({
+          stdout: expect.stringContaining('[PASS] All checks passed.'),
+        });
+      })(),
+      (async () => {
+        await waitForAll([
+          fs.symlink('.', path.join(variantSource('symlink-source'), 'source-link')),
+          fs.writeJson(
+            variantManifestPath('symlink-source'),
+            manifestWithSources(['./skills/claude-dynamic/source-link']),
+            { spaces: 2 },
+          ),
+        ]);
+        await expectVariantFailure(
+          'symlink-source',
+          'Invalid plugin input tree: symbolic links are not supported',
+        );
+      })(),
+      (async () => {
+        await fs.writeJson(variantManifestPath('duplicate-owner'), {
+          ...dynamicClaudeManifest,
+          artifacts: {
+            targets: [
+              dynamicClaudeManifest.artifacts.targets[0],
+              {
+                ...dynamicClaudeManifest.artifacts.targets[0],
+                id: 'claude-dynamic-skill-copy',
+              },
+            ],
           },
-        ],
-      },
-    }, { spaces: 2 });
-    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('duplicate skill ownership "claude:user:claude-dynamic"'),
-    });
+        }, { spaces: 2 });
+        await expectVariantFailure(
+          'duplicate-owner',
+          'duplicate skill ownership "claude:user:claude-dynamic"',
+        );
+      })(),
+    ]);
   });
 
   it('validate_plugin.mjs rejects dynamic role metadata and missing Codex invocation policy', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-role-'));
     tempDirs.push(tempRoot);
 
-    const missingRole = await writeDynamicArtifactPlugin(
-      path.join(tempRoot, 'missing-role'),
-      { includeRoleKey: false },
-    );
-    await expect(runValidatePlugin(missingRole.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('codex.agentRole targets must declare a static roleKey'),
-    });
-
-    const mismatchedRole = await writeDynamicArtifactPlugin(
-      path.join(tempRoot, 'mismatched-role'),
-      { rendererRoleKey: 'other-explorer' },
-    );
-    await expect(runValidatePlugin(mismatchedRole.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('expected "codex-explorer" from static metadata'),
-    });
-
-    const missingPolicy = await writeDynamicArtifactPlugin(
-      path.join(tempRoot, 'missing-policy'),
-      { omitCodexInvocationPolicy: true },
-    );
-    await expect(runValidatePlugin(missingPolicy.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('[missing-policy]'),
-    });
+    await waitForAll([
+      writeDynamicArtifactPlugin(
+        path.join(tempRoot, 'missing-role'),
+        { includeRoleKey: false },
+      ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('codex.agentRole targets must declare a static roleKey'),
+      })),
+      writeDynamicArtifactPlugin(
+        path.join(tempRoot, 'mismatched-role'),
+        { rendererRoleKey: 'other-explorer' },
+      ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('expected "codex-explorer" from static metadata'),
+      })),
+      writeDynamicArtifactPlugin(
+        path.join(tempRoot, 'missing-policy'),
+        { omitCodexInvocationPolicy: true },
+      ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('[missing-policy]'),
+      })),
+    ]);
   });
 
   it('validate_plugin.mjs accepts native hooks and rejects hook contract mistakes', async () => {
@@ -4440,7 +4468,7 @@ describe('authoring tools', () => {
       },
     ];
 
-    for (const testCase of cases) {
+    await waitForAll(cases.map(async (testCase) => {
       const { pluginDir } = await writeSourcePlugin(
         tempRoot,
         testCase.name,
@@ -4468,7 +4496,7 @@ describe('authoring tools', () => {
           stdout: expect.stringContaining('[PASS] All checks passed.'),
         });
       }
-    }
+    }));
   });
 
   it('validate_plugin.mjs validates public slashCommands source contracts', async () => {

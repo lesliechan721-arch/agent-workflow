@@ -47,7 +47,9 @@
         "./scripts/liveness-evals.test.mjs",
         "./scripts/subagent-trigger-evals.test.mjs",
         "./scripts/routing-evals.test.mjs",
-        "./scripts/lifecycle-evals.test.mjs"
+        "./scripts/lifecycle-evals.test.mjs",
+        "./skills/codex-explore/evals/provider-contract.test.mjs",
+        "./skills/codex-subagent-guide/evals/provider-contract.test.mjs"
       ]
     }
   },

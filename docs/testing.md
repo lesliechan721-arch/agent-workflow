@@ -4,6 +4,12 @@
 
 `pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
 
+日常开发使用以下三个入口：
+
+- 快速反馈：`pnpm test:unit:fast`，运行 command options、command receipt、hooks contract、platform support 和 template engine 五个稳定文件。
+- 修改范围验证：`pnpm --filter @lesliechan721/aw test tests/unit/<file>.test.ts`；将路径替换为本次修改直接影响的 unit 或 integration 文件，必要时再用 `-t <name>` 缩小到用例。
+- 交付验证：按下方 Validation Matrix 运行所需的完整命令；默认 unit 和 integration 全量入口是 `pnpm test`。Performance、smoke 和需要 single worker 的锁测试继续使用各自的专用 Vitest 配置。
+
 ## Test Layers
 
 | 层 | 命令 | 责任 |
@@ -30,8 +36,11 @@
 | `pnpm test:smoke:publish:release` | 构造 prepared descriptor 并调用 publisher，校验 `Eval → Core → CLI → CLI tag → Catalog`、显式轴和不确定远端失败 |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
+| `pnpm test:smoke:ask-me-browser` | 使用 Playwright Chromium 驱动真实 `decision-prototype` Review `start/wait` 会话，校验预览、标注、反馈校验、键盘提交和会话清理 |
 | `pnpm test:qualification:codex-project-native:harness` | 使用 fake executable 验证 qualification harness 的解析、隔离、脱敏、精确版本门禁和 schema；不提供 native 支持证据 |
 | `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
+
+首次运行 browser smoke 前，使用 `pnpm --filter @lesliechan721/aw exec playwright install chromium` 安装与当前 Playwright 版本匹配的 Chromium。browser smoke 属于完整 `pnpm test:smoke`，但不属于 `plugin:test` 或 `release:verify:cli:core`。
 
 `release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 
@@ -142,6 +151,7 @@ Performance gate 必须校验摘要名称集合。缺少、重复或未知名称
 ## Test Isolation
 
 - 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
+- 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
 - 平台命令使用 fake native runner。
 - 需要进程树检查的测试在允许 POSIX/Windows 进程检查的环境运行。
 - 测试结束后清理自己的临时目录和 mock。

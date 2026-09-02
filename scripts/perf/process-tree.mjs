@@ -334,6 +334,14 @@ export function runProcessTree(options, dependencies = {}) {
     DEFAULT_DESCENDANT_MONITOR_INTERVAL_MS;
   const taskkillTimeoutMs = options.taskkillTimeoutMs ?? TASKKILL_TIMEOUT_MS;
 
+  if (options.signal?.aborted) {
+    return Promise.reject(
+      options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Process-tree run aborted.'),
+    );
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(options.command, options.args ?? [], {
       cwd: options.cwd,
@@ -350,10 +358,15 @@ export function runProcessTree(options, dependencies = {}) {
     let stderr = '';
     let settled = false;
     let timedOut = false;
+    let aborted = false;
     let closing = false;
     let childClosed = false;
     let monitorTimer;
     let monitorInFlight = Promise.resolve();
+    let resolveChildClose;
+    const childClose = new Promise((resolveClose) => {
+      resolveChildClose = resolveClose;
+    });
 
     const delay = (milliseconds) => new Promise((resolveDelay) => {
       const timer = setTimeout(() => {
@@ -365,13 +378,14 @@ export function runProcessTree(options, dependencies = {}) {
     const stopMonitoring = () => {
       clearTimeout(monitorTimer);
     };
-    const finish = (error) => {
+    const finish = (error, result) => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeoutTimer);
       stopMonitoring();
+      options.signal?.removeEventListener('abort', abortRun);
       for (const timer of delayTimers) {
         clearTimeout(timer);
       }
@@ -385,7 +399,7 @@ export function runProcessTree(options, dependencies = {}) {
       if (error) {
         reject(error);
       } else {
-        resolve({ stdout, stderr });
+        resolve(result ?? { stdout, stderr });
       }
     };
     const captureSnapshot = async () => {
@@ -424,7 +438,7 @@ export function runProcessTree(options, dependencies = {}) {
         observedDescendants.set(identityKey(identity), identity);
       }
     };
-    const rememberWindowsSnapshot = (snapshot) => {
+    const rememberCurrentRootSnapshot = (snapshot) => {
       if (!rootIdentity) {
         if (childClosed || childHasExited(child) || !snapshot.rootIdentity) {
           return false;
@@ -446,11 +460,7 @@ export function runProcessTree(options, dependencies = {}) {
       monitorTimer = setTimeout(() => {
         monitorInFlight = captureSnapshot().then((snapshot) => {
           if (snapshot) {
-            if (platform === 'win32') {
-              rememberWindowsSnapshot(snapshot);
-            } else {
-              rememberSnapshot(snapshot);
-            }
+            rememberCurrentRootSnapshot(snapshot);
           }
           scheduleMonitor(snapshot ? monitorIntervalMs : Math.max(monitorIntervalMs, 1_000));
         }).catch(() => scheduleMonitor(Math.max(monitorIntervalMs, 1_000)));
@@ -548,17 +558,18 @@ export function runProcessTree(options, dependencies = {}) {
       } else {
         await cleanupPosixAfterClose();
       }
-      if (code !== 0) {
+      if (code !== 0 && !options.allowNonZeroExitCode) {
         throw new Error(
           `${options.label} failed with exit code ${code ?? 'null'}${signal ? ` and signal ${signal}` : ''}.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
         );
       }
+      return { stdout, stderr, exitCode: code, signal };
     };
-    const cleanupAfterTimeout = async () => {
+    const cleanupRunningTree = async () => {
       if (platform === 'win32') {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
-          rememberWindowsSnapshot(termSnapshot);
+          rememberCurrentRootSnapshot(termSnapshot);
           const currentRoot = termSnapshot.identitiesByPid.get(child.pid);
           if (!childHasExited(child) && sameIdentity(rootIdentity, currentRoot)) {
             const succeeded = await runWindowsSignal(child.pid, false);
@@ -574,7 +585,7 @@ export function runProcessTree(options, dependencies = {}) {
         await delay(terminationGraceMs);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
-          rememberWindowsSnapshot(killSnapshot);
+          rememberCurrentRootSnapshot(killSnapshot);
           const currentRoot = killSnapshot.identitiesByPid.get(child.pid);
           if (!childHasExited(child) && sameIdentity(rootIdentity, currentRoot)) {
             const succeeded = await runWindowsSignal(child.pid, true);
@@ -590,7 +601,7 @@ export function runProcessTree(options, dependencies = {}) {
       } else {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
-          rememberSnapshot(termSnapshot);
+          rememberCurrentRootSnapshot(termSnapshot);
           signalPosixIdentities({
             child,
             observedDescendants,
@@ -600,13 +611,17 @@ export function runProcessTree(options, dependencies = {}) {
             includeRoot: true,
             killProcess,
           });
+          if (!sameIdentity(rootIdentity, termSnapshot.identitiesByPid.get(child.pid)) &&
+              !childHasExited(child)) {
+            killDirectChild(child, 'SIGTERM');
+          }
         } else {
           killDirectChild(child, 'SIGTERM');
         }
         await delay(terminationGraceMs);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
-          rememberSnapshot(killSnapshot);
+          rememberCurrentRootSnapshot(killSnapshot);
           const killResult = signalPosixIdentities({
             child,
             observedDescendants,
@@ -626,14 +641,32 @@ export function runProcessTree(options, dependencies = {}) {
         }
       }
       await delay(cleanupSettleMs);
-      if (platform !== 'win32' && !childHasExited(child)) {
+      if (platform === 'win32') {
+        const finalSnapshot = await captureSnapshot();
+        if (!finalSnapshot) {
+          throw new Error(`${options.label} cleanup could not verify Windows process-tree termination.`);
+        }
+        const rootRemains = sameIdentity(
+          rootIdentity,
+          finalSnapshot.identitiesByPid.get(child.pid),
+        );
+        const descendantsRemain = collectMatchingDescendants(
+          observedDescendants,
+          finalSnapshot,
+        ).length > 0;
+        if (!childHasExited(child) || rootRemains || descendantsRemain) {
+          throw new Error(`${options.label} cleanup could not confirm Windows process-tree termination.`);
+        }
+      } else if (!childHasExited(child)) {
         killDirectChild(child, 'SIGKILL');
         await delay(cleanupSettleMs);
       }
       if (platform !== 'win32' && observedDescendants.size > 0) {
         const verificationSnapshot = await captureVerificationSnapshot();
+        if (!verificationSnapshot) {
+          throw new Error(`${options.label} cleanup could not verify descendant termination.`);
+        }
         if (
-          verificationSnapshot &&
           collectMatchingDescendants(observedDescendants, verificationSnapshot).length > 0
         ) {
           signalPosixIdentities({
@@ -646,14 +679,28 @@ export function runProcessTree(options, dependencies = {}) {
             killProcess,
           });
           await delay(cleanupSettleMs);
-          await captureVerificationSnapshot();
+          let finalSnapshot = await captureVerificationSnapshot();
+          if (finalSnapshot &&
+              collectMatchingDescendants(observedDescendants, finalSnapshot).length > 0) {
+            await delay(cleanupSettleMs);
+            finalSnapshot = await captureVerificationSnapshot();
+          }
+          if (!finalSnapshot ||
+              collectMatchingDescendants(observedDescendants, finalSnapshot).length > 0) {
+            throw new Error(`${options.label} cleanup could not confirm descendant termination.`);
+          }
         }
       }
+    };
+
+    const cleanupAfterTimeout = async () => {
+      await cleanupRunningTree();
       throw new ProcessTreeTimeoutError(options.label, options.timeoutMs, stdout, stderr);
     };
 
-    const timeoutTimer = setTimeout(() => {
+    const timeoutTimer = options.timeoutMs == null ? undefined : setTimeout(() => {
       timedOut = true;
+      closing = true;
       stopMonitoring();
       void cleanupAfterTimeout().then(
         () => finish(new ProcessTreeTimeoutError(options.label, options.timeoutMs, stdout, stderr)),
@@ -661,31 +708,54 @@ export function runProcessTree(options, dependencies = {}) {
       );
     }, options.timeoutMs);
 
+    const abortRun = () => {
+      if (settled || closing) {
+        return;
+      }
+      aborted = true;
+      closing = true;
+      clearTimeout(timeoutTimer);
+      stopMonitoring();
+      const reason = options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Process-tree run aborted.');
+      void cleanupRunningTree().then(() => finish(reason), finish);
+    };
+    options.signal?.addEventListener('abort', abortRun, { once: true });
+
     scheduleMonitor();
     child.stdout.on('data', (chunk) => {
       const text = String(chunk);
-      stdout += text;
+      if (options.captureOutput !== false) {
+        stdout += text;
+      }
       options.onStdout?.(text);
     });
     child.stderr.on('data', (chunk) => {
       const text = String(chunk);
-      stderr += text;
+      if (options.captureOutput !== false) {
+        stderr += text;
+      }
       options.onStderr?.(text);
     });
     child.once('error', (error) => {
-      if (!timedOut) {
+      if (!timedOut && !aborted) {
         finish(new Error(`${options.label} failed to start: ${error.message}`));
       }
     });
-    child.once('close', (code, signal) => {
+    child.once('close', resolveChildClose);
+    child.once('exit', (code, signal) => {
       childClosed = true;
-      if (timedOut || settled) {
+      if (timedOut || aborted || settled) {
         return;
       }
       closing = true;
       clearTimeout(timeoutTimer);
       stopMonitoring();
-      void cleanupAfterClose(code, signal).then(() => finish(), finish);
+      void cleanupAfterClose(code, signal).then(async (result) => {
+        await childClose;
+        finish(undefined, { ...result, stdout, stderr });
+      }, finish);
     });
   });
 }

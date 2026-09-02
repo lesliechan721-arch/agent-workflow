@@ -83,6 +83,7 @@ export interface CatalogDevDeactivateReceipt {
 export type CatalogDevSourceRuntime = {
   sourceRuntime?: CatalogSourceCommandRuntime;
   beforeSync?: () => Promise<void> | void;
+  afterSync?: () => Promise<void> | void;
 };
 
 function managedSources(sources: CatalogSource[], workspaceIdentity: string): PathCatalogSource[] {
@@ -294,9 +295,24 @@ export async function activateCatalogDevSource(options: {
       sourceCommitted = true;
     }
     await options.runtime?.beforeSync?.();
-    const synced = await syncCatalogSourceCommand({
+    await syncCatalogSourceCommand({
       sourceId: selectedId, cliVersion: options.cliVersion, env: options.env,
     });
+    await options.runtime?.afterSync?.();
+    const finalStatus = await getCatalogDevSourceStatus({
+      cwd: options.cwd,
+      workspaceRoot: workspace.workspaceRoot,
+      cliVersion: options.cliVersion,
+      env: options.env,
+    });
+    if (
+      !finalStatus.ok
+      || !finalStatus.ready
+      || finalStatus.active.snapshotDigest !== snapshotDigest
+    ) throw new CatalogDevSourceError(
+      'activeNotReady',
+      'Catalog development source sync completed, but final Active status is not ready.',
+    );
     const configured = (await readCatalogSourcesConfigSnapshot(options.env)).config.sources
       .find((source) => source.id === selectedId)!;
     return {
@@ -304,7 +320,7 @@ export async function activateCatalogDevSource(options: {
       workspaceIdentity: workspace.workspaceIdentity,
       snapshot: { action: snapshotAction, digest: snapshotDigest },
       source: { id: selectedId, action: sourceAction, primary: configured.primary },
-      active: { ready: true, snapshotDigest: synced.active?.snapshotDigest ?? synced.resolution.snapshotDigest },
+      active: { ready: true, snapshotDigest: finalStatus.active.snapshotDigest },
       recovery: [], errors: [],
     };
   } catch (error) {

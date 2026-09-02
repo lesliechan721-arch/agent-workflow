@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_EVAL_PROVIDER_IDS,
   assertProcessTreeInspectionAvailable,
+  cleanCodexEvalRuntimeConfig,
   createConversationGraderPrompt,
   doctorEvalProviders,
   EvalProviderExecutionError,
@@ -16,10 +17,12 @@ import {
   resolveCodexEvalRuntimeConfig,
   runBuiltinEvalProvider,
   type AppServerRunEvidence,
+  type BuiltinEvalProviderDependencies,
   type CodexEvalTransport,
   type BuiltinEvalProviderRunInput,
   type TriggerRunEvidence,
 } from '../../dist/index.js'
+import { conversationModelOutputOf } from '../../dist/providers.js'
 
 const roots: string[] = []
 
@@ -189,6 +192,7 @@ function conversationEvidence(
     scriptedReplyMismatches: [],
     durationMs: 1,
     questions: [],
+    fallbackUserReplies: [],
     finalMessages: ['model answer'],
     usage: { inputTokens: 10, outputTokens: 4 },
     workspaceChanges: [],
@@ -202,7 +206,17 @@ function conversationEvidence(
 
 function conversationCaseValue(): Record<string, unknown> {
   return {
-    value: { id: 'case-1' },
+    value: {
+      id: 'case-1',
+      prompt: 'Inspect the workspace.',
+      scripted_replies: [],
+      expected_output: 'Report the result.',
+      sandbox: 'read-only',
+      review: {
+        checks: ['Returns the result.'],
+        workspace_unchanged: true,
+      },
+    },
     skillName: 'fixture-skill',
     skillNames: ['fixture-skill'],
     isolation: 'standard',
@@ -345,6 +359,275 @@ describe('built-in Eval provider registry', () => {
     })
     await expect(readFile(path.join(paths.outputDir, 'grader-output.txt'), 'utf8'))
       .resolves.toBe('{"passed":true,"score":0.8,"details":{"reason":"meets checks"}}')
+  })
+
+  it('passes the full spec timeout to the production conversation evaluation boundary', async () => {
+    const paths = await runRoot()
+    const sourceEnv = { OPENAI_API_KEY: 'fake-key' }
+    const runConversationProviderCase = vi.fn(async (
+      options: Parameters<NonNullable<
+        BuiltinEvalProviderDependencies['runConversationProviderCase']
+      >>[0],
+    ) => conversationEvidence({
+      finalMessages: options.skillName === '__eval_grader__'
+        ? ['{"passed":true,"score":1}']
+        : ['model answer'],
+    }))
+    await runBuiltinEvalProvider(
+      'codex-conversation',
+      { ...input(paths, conversationCaseValue()), timeoutMs: 300_000 },
+      {
+        sourceEnv,
+        codexRuntime: cleanCodexEvalRuntimeConfig(sourceEnv),
+        runConversationProviderCase,
+      },
+    )
+
+    expect(runConversationProviderCase).toHaveBeenCalledTimes(2)
+    const evaluationInput = runConversationProviderCase.mock.calls[0]![0]
+    expect(evaluationInput.skillName).toBe('fixture-skill')
+    expect(evaluationInput.timeoutMs).toBeGreaterThan(299_000)
+    expect(evaluationInput.timeoutMs).toBeLessThanOrEqual(300_000)
+  })
+
+  it('strictly parses only the production grader final answer and redacts it', async () => {
+    const paths = await runRoot()
+    const secret = 'production-grader-secret'
+    const sourceEnv = { OPENAI_API_KEY: secret }
+    const finalOutput = JSON.stringify({
+      passed: true,
+      score: 1,
+      details: { note: secret },
+    })
+    let graderPrompt = ''
+    const runConversationProviderCase = vi.fn(async (
+      options: Parameters<NonNullable<
+        BuiltinEvalProviderDependencies['runConversationProviderCase']
+      >>[0],
+    ) => {
+      if (options.skillName !== '__eval_grader__') {
+        return conversationEvidence({
+          eventTrace: [{
+            method: 'item/completed',
+            params: {
+              item: { type: 'agentMessage', phase: 'commentary', text: 'candidate commentary' },
+            },
+          }],
+          finalMessages: ['candidate final'],
+        })
+      }
+      graderPrompt = options.evalCase.prompt
+      return conversationEvidence({
+        eventTrace: [{
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'commentary', text: 'grading commentary' },
+          },
+        }, {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'final_answer', text: finalOutput },
+          },
+        }],
+        finalMessages: [finalOutput],
+      })
+    })
+
+    const result = await runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      {
+        sourceEnv,
+        codexRuntime: cleanCodexEvalRuntimeConfig(sourceEnv),
+        runConversationProviderCase,
+      },
+    )
+
+    expect(graderPrompt).toContain('candidate commentary')
+    expect(graderPrompt).toContain('candidate final')
+    expect(result.grade).toEqual({
+      passed: true,
+      score: 1,
+      details: { note: '[redacted]' },
+    })
+    expect(JSON.stringify(result)).not.toContain(secret)
+    await expect(readFile(path.join(paths.outputDir, 'grader-output.txt'), 'utf8'))
+      .resolves.toBe('{"passed":true,"score":1,"details":{"note":"[redacted]"}}')
+  })
+
+  it.each([
+    { name: 'zero', finals: [] },
+    { name: 'multiple', finals: ['{"passed":true,"score":1}', '{"passed":false,"score":0}'] },
+  ])('fails closed when the production grader emits $name final answers', async ({ finals }) => {
+    const paths = await runRoot()
+    const sourceEnv = { OPENAI_API_KEY: 'fake-key' }
+    const runConversationProviderCase = vi.fn(async (
+      options: Parameters<NonNullable<
+        BuiltinEvalProviderDependencies['runConversationProviderCase']
+      >>[0],
+    ) => options.skillName !== '__eval_grader__'
+      ? conversationEvidence()
+      : conversationEvidence({
+          eventTrace: [{
+            method: 'item/completed',
+            params: {
+              item: { type: 'agentMessage', phase: 'commentary', text: 'grading commentary' },
+            },
+          }, ...finals.map((text) => ({
+            method: 'item/completed',
+            params: { item: { type: 'agentMessage', phase: 'final_answer', text } },
+          }))],
+          finalMessages: finals,
+        }))
+
+    await expect(runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      {
+        sourceEnv,
+        codexRuntime: cleanCodexEvalRuntimeConfig(sourceEnv),
+        runConversationProviderCase,
+      },
+    )).rejects.toMatchObject({
+      name: 'EvalProviderExecutionError',
+      providerId: 'codex-conversation',
+      stage: 'grader',
+      message: expect.stringContaining(
+        `grader must emit exactly one final answer; received ${finals.length}.`,
+      ),
+    } satisfies Partial<EvalProviderExecutionError>)
+  })
+
+  it('gives the grader redacted user-visible turns in their real order only', async () => {
+    const paths = await runRoot()
+    const secret = 'secret-token'
+    const internalReasoning = `internal reasoning with ${secret}`
+    const toolDetails = `node internal-tool.js --token ${secret}`
+    const before = `BEFORE the question. ${secret}`
+    const after = 'AFTER the question.'
+    const interimFinal = 'INTERIM FINAL.'
+    const final = 'FINAL answer.'
+    const evidence = conversationEvidence({
+      eventTrace: [
+        {
+          method: 'item/completed',
+          params: {
+            item: {
+              type: 'agentMessage',
+              phase: 'commentary',
+              text: before,
+            },
+          },
+        },
+        {
+          method: 'item/completed',
+          params: { item: { type: 'reasoning', text: internalReasoning } },
+        },
+        {
+          method: 'item/completed',
+          params: { item: { type: 'commandExecution', command: toolDetails } },
+        },
+        { method: 'item/tool/requestUserInput', id: 'request-1', params: {} },
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'commentary', text: after },
+          },
+        },
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'final_answer', text: interimFinal },
+          },
+        },
+        {
+          method: 'item/completed',
+          params: {
+            item: { type: 'agentMessage', phase: 'final_answer', text: final },
+          },
+        },
+      ],
+      questions: [{
+        requestId: 'request-1',
+        step: 0,
+        questions: [{
+          id: 'scope',
+          header: 'Scope',
+          question: 'Which scope should I use?',
+          options: [
+            { label: 'Project', description: 'Change this project only.' },
+            { label: 'User', description: 'Change the user configuration.' },
+          ],
+        }, {
+          id: 'mode',
+          header: 'Mode',
+          question: 'Which mode should I use?',
+          options: null,
+        }],
+        answers: {
+          scope: ['Use project scope.'],
+          mode: [`Careful ${secret}`],
+        },
+      }],
+      fallbackUserReplies: [{
+        step: 1,
+        eventTraceIndex: 6,
+        answers: ['Continue after the first final answer.'],
+      }],
+      finalMessages: [interimFinal, final],
+    })
+    let prompt = ''
+    await runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      { sourceEnv: { OPENAI_API_KEY: secret }, transport: {
+        runTrigger: vi.fn(async () => { throw new Error('not used') }),
+        runConversation: vi.fn(async () => ({
+          evidence,
+          modelOutput: conversationModelOutputOf(evidence),
+          usage: null,
+        })),
+        runGrader: vi.fn(async (graderInput) => {
+          prompt = graderInput.prompt
+          return {
+            output: '{"passed":true,"score":1}',
+            usage: null,
+            mechanicalPassed: true,
+          }
+        }),
+      } },
+    )
+
+    const beforeIndex = prompt.indexOf('BEFORE the question.')
+    const questionIndex = prompt.indexOf('Header: Scope')
+    const firstAnswerIndex = prompt.indexOf('- Use project scope.')
+    const secondQuestionIndex = prompt.indexOf('Header: Mode')
+    const secondAnswerIndex = prompt.indexOf('- Careful [redacted]')
+    const afterIndex = prompt.indexOf(after)
+    const interimFinalIndex = prompt.indexOf(interimFinal)
+    const finalIndex = prompt.indexOf(final)
+    const fallbackReplyIndex = prompt.indexOf('Continue after the first final answer.')
+    expect(beforeIndex).toBeGreaterThanOrEqual(0)
+    expect(questionIndex).toBeGreaterThan(beforeIndex)
+    expect(firstAnswerIndex).toBeGreaterThan(questionIndex)
+    expect(secondQuestionIndex).toBeGreaterThan(firstAnswerIndex)
+    expect(secondAnswerIndex).toBeGreaterThan(secondQuestionIndex)
+    expect(afterIndex).toBeGreaterThan(secondAnswerIndex)
+    expect(interimFinalIndex).toBeGreaterThan(afterIndex)
+    expect(fallbackReplyIndex).toBeGreaterThan(interimFinalIndex)
+    expect(finalIndex).toBeGreaterThan(fallbackReplyIndex)
+    expect(prompt).toContain('request_user_input step 1:')
+    expect(prompt).toContain('Question: Which scope should I use?')
+    expect(prompt).toContain('- Project: Change this project only.')
+    expect(prompt).toContain('- User: Change the user configuration.')
+    expect(prompt).toContain('Question: Which mode should I use?')
+    expect(prompt).toContain('user reply step 2:')
+    expect(prompt.match(/INTERIM FINAL\./gu)).toHaveLength(1)
+    expect(prompt.match(/FINAL answer\./gu)).toHaveLength(1)
+    expect(prompt.match(/Continue after the first final answer\./gu)).toHaveLength(1)
+    expect(prompt).not.toContain(internalReasoning)
+    expect(prompt).not.toContain(toolDetails)
+    expect(prompt).not.toContain(secret)
   })
 
   it('keeps untrusted candidate instructions inside data delimiters', async () => {
@@ -597,6 +880,44 @@ describe('built-in Eval provider registry', () => {
       assertions: ['approved'],
     }), { transport })).rejects.toMatchObject({ stage: 'evaluation' })
     expect(runGrader).not.toHaveBeenCalled()
+    await expect(readFile(path.join(paths.outputDir, 'provider-evidence.json'), 'utf8'))
+      .resolves.toContain('"complete": false')
+    await expect(readFile(path.join(paths.outputDir, 'provider-trace.json'), 'utf8'))
+      .resolves.toBe('[]\n')
+    await expect(access(path.join(paths.outputDir, 'grader-output.txt')))
+      .rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('preserves an incomplete evaluation error when artifact writing fails', async () => {
+    const paths = await runRoot()
+    await mkdir(path.join(paths.outputDir, 'provider-trace.json'))
+    const runGrader = vi.fn(async () => ({
+      output: '{"passed":true,"score":1}',
+      usage: null,
+      mechanicalPassed: true,
+    }))
+    await expect(runBuiltinEvalProvider(
+      'codex-conversation',
+      input(paths, conversationCaseValue()),
+      { transport: {
+        runTrigger: vi.fn(async () => { throw new Error('not used') }),
+        runConversation: vi.fn(async () => ({
+          evidence: conversationEvidence({
+            complete: false,
+            diagnostics: ['evaluation timed out after 2000ms'],
+          }),
+          modelOutput: '',
+          usage: null,
+        })),
+        runGrader,
+      } },
+    )).rejects.toMatchObject({
+      stage: 'evaluation',
+      message: expect.stringContaining('evaluation timed out after 2000ms'),
+    })
+    expect(runGrader).not.toHaveBeenCalled()
+    await expect(readFile(path.join(paths.outputDir, 'provider-evidence.json'), 'utf8'))
+      .resolves.toContain('"complete": false')
   })
 
   it('reports a grader timeout as execution failure', async () => {
@@ -1541,10 +1862,11 @@ describe('custom process provider', () => {
 
 describe('provider doctor', () => {
   it('reports cleanup only after a live sentinel probe and immediately releases it', async () => {
+    const { root } = await runRoot()
     let marker = ''
     let stopped = false
     const result = await doctorEvalProviders({
-      sourceEnv: { PATH: path.join(path.sep, 'fake') },
+      sourceEnv: { CODEX_HOME: root, PATH: path.join(path.sep, 'fake') },
       platform: 'linux',
       canAccess: async () => false,
       processTree: {
@@ -1573,9 +1895,11 @@ describe('provider doctor', () => {
   })
 
   it('reports registry, runtime, credential names, and cleanup without secret values or artifacts', async () => {
+    const { root } = await runRoot()
     const secret = 'doctor-secret-value'
     const result = await doctorEvalProviders({
       sourceEnv: {
+        CODEX_HOME: root,
         PATH: path.join(path.sep, 'fake'),
         OPENAI_API_KEY: secret,
       },
@@ -1599,11 +1923,124 @@ describe('provider doctor', () => {
     expect(JSON.stringify(result)).not.toContain(secret)
   })
 
+  it('uses the clean OpenAI auth fallback when user config is absent', async () => {
+    const { root } = await runRoot()
+
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root },
+      platform: 'linux',
+      canAccess: async () => false,
+      checkCleanup: async () => true,
+    })
+
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'openai',
+      credentialSource: 'openai-auth',
+    })
+  })
+
+  it('reports the same inherited custom provider descriptor as eval run without embedded secrets', async () => {
+    const { root } = await runRoot()
+    const endpoint = 'https://private-doctor.invalid/v1'
+    const secret = 'embedded-doctor-secret'
+    await writeFile(path.join(root, 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'name = "Custom"',
+      `base_url = ${JSON.stringify(endpoint)}`,
+      `experimental_bearer_token = ${JSON.stringify(secret)}`,
+    ].join('\n'))
+    const sourceEnv = { CODEX_HOME: root }
+
+    const [runtime, result] = await Promise.all([
+      resolveCodexEvalRuntimeConfig({ sourceEnv, inheritUserConfig: true }),
+      doctorEvalProviders({
+        sourceEnv,
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+    ])
+
+    expect(result.codex.runtimeConfig).toEqual({
+      model: runtime.model,
+      modelProvider: runtime.modelProvider,
+      credentialSource: runtime.credentialSource,
+    })
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'custom',
+      credentialSource: 'embedded',
+    })
+    expect(JSON.stringify(result)).not.toContain(endpoint)
+    expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('uses eval-run model resolution precedence for source environment and explicit options', async () => {
+    const { root } = await runRoot()
+    const sourceEnv = {
+      CODEX_HOME: root,
+      AW_SKILL_EVAL_CODEX_MODEL: 'environment-model',
+    }
+    const [runRuntime, environmentResult, explicitResult] = await Promise.all([
+      resolveCodexEvalRuntimeConfig({
+        sourceEnv,
+        inheritUserConfig: true,
+        modelOverride: sourceEnv.AW_SKILL_EVAL_CODEX_MODEL,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+      doctorEvalProviders({
+        sourceEnv,
+        model: 'explicit-model',
+        platform: 'linux',
+        canAccess: async () => false,
+        checkCleanup: async () => true,
+      }),
+    ])
+
+    expect(environmentResult.codex.runtimeConfig.model).toBe(runRuntime.model)
+    expect(environmentResult.codex.runtimeConfig.model).toBe('environment-model')
+    expect(explicitResult.codex.runtimeConfig.model).toBe('explicit-model')
+  })
+
+  it('reports custom provider environment presence without its value', async () => {
+    const { root } = await runRoot()
+    const secret = 'custom-environment-secret'
+    await writeFile(path.join(root, 'config.toml'), [
+      'model_provider = "custom-env"',
+      '[model_providers.custom-env]',
+      'name = "Custom Environment"',
+      'env_key = "CUSTOM_PROVIDER_VALUE"',
+    ].join('\n'))
+
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root, CUSTOM_PROVIDER_VALUE: secret },
+      platform: 'linux',
+      canAccess: async () => false,
+      checkCleanup: async () => true,
+    })
+
+    expect(result.codex.runtimeConfig).toMatchObject({
+      modelProvider: 'custom-env',
+      credentialSource: 'environment',
+    })
+    expect(result.credentials).toContainEqual({
+      name: 'CUSTOM_PROVIDER_VALUE',
+      present: true,
+    })
+    expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
   it('does not report provider control values as credentials', async () => {
+    const { root } = await runRoot()
     const result = await doctorEvalProviders({
       sourceEnv: {
         HOME: '/home/control',
-        CODEX_HOME: '/codex/control',
+        CODEX_HOME: root,
         NODE_EXTRA_CA_CERTS: '/cert/control.pem',
         AW_SKILL_EVAL_CODEX_BIN: '/bin/control',
         AW_SKILL_EVAL_CODEX_MODEL: 'model-control',

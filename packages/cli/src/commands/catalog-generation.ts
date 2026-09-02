@@ -3,7 +3,6 @@ import {
   syncCatalogSourceGeneration,
   type CatalogGenerationServiceRuntime,
 } from '../utils/catalog-generation-service.js';
-import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 
 export async function syncCatalogSourceCommand(options: {
   sourceId: string;
@@ -14,10 +13,7 @@ export async function syncCatalogSourceCommand(options: {
   runtime?: CatalogGenerationServiceRuntime;
 }): Promise<Awaited<ReturnType<typeof syncCatalogSourceGeneration>>> {
   const env = options.env ?? process.env;
-  return withAwHomeMutationLock({
-    env,
-    action: () => syncCatalogSourceGeneration({ ...options, env }),
-  });
+  return syncCatalogSourceGeneration({ ...options, env });
 }
 
 export async function catalogSourceStatusCommand(options: {

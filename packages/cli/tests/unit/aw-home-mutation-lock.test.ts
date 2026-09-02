@@ -75,6 +75,32 @@ describe('AW_HOME mutation lock', () => {
     await first;
   });
 
+  it('cancels a caller that is waiting for the mutation lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const env = { ...isolation.env, AW_HOME: path.join(isolation.env.AW_HOME!, 'cancel') };
+    const firstEntered = deferred();
+    const releaseFirst = deferred();
+    const first = withAwHomeMutationLock({
+      env,
+      action: async () => {
+        firstEntered.resolve();
+        await releaseFirst.promise;
+      },
+    });
+    await firstEntered.promise;
+    const controller = new AbortController();
+    const waiting = withAwHomeMutationLock({
+      env,
+      signal: controller.signal,
+      action: async () => undefined,
+    });
+
+    controller.abort();
+    await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
+    releaseFirst.resolve();
+    await first;
+  });
+
   it('allows explicit nested reuse and rejects invalid, wrong-root, and expired tokens', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const firstEnv = { ...isolation.env, AW_HOME: path.join(isolation.env.AW_HOME!, 'first') };

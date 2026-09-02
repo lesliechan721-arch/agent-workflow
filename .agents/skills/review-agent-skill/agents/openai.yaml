@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review Agent Skill"
-  short_description: "只读评审一个 Agent Skill 包的边界、控制与证据"
-  default_prompt: "使用 $review-agent-skill 评审当前单个 Skill。"
-
-policy:
-  allow_implicit_invocation: true

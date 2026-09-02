@@ -2875,6 +2875,13 @@ describe('five namespaced write commands', () => {
     expect(controller.snapshot.viewModel?.dependencyOverviews.find((entry) =>
       entry.pluginId === 'team/root')?.dependencies.find((entry) =>
         entry.pluginId === 'team/future')).toMatchObject({ aggregateStatus: 'unavailable' });
+    for (let attempt = 0; attempt < 100
+      && ['notChecked', 'checking'].includes(controller.getCatalogFreshness('team')?.state ?? 'notChecked');
+      attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(controller.getCatalogFreshness('team')?.state).toBe('current');
+    controller.dispose();
   });
 
   it('reports an unsupported direct dependency as a stable dependency root', async () => {
@@ -3233,12 +3240,13 @@ describe('five namespaced write commands', () => {
     setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
     let status;
     let issues: ReturnType<TuiController['listUserIssues']>;
+    let controller: TuiController | undefined;
     try {
       status = await statusCommandV7({
         cwd: isolation.layout.fixtureCwd, env: statusEnv,
         cliVersion: '1.0.0', platform: 'codex', json: true,
       });
-      const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
         cwd: isolation.layout.fixtureCwd,
         env: statusEnv,
         nativeCliRunner: runtime.nativeCliRunner,
@@ -3247,6 +3255,7 @@ describe('five namespaced write commands', () => {
       await controller.load();
       issues = controller.listUserIssues();
     } finally {
+      controller?.dispose();
       setNativeCliRunnerOverrideForTests(null);
     }
     const toolkit = status.payload.targets.find((target) =>

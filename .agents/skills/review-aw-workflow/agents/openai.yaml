@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review AW Workflow"
-  short_description: "只读评审有界的跨 AW 插件工作流、依赖关系与最小架构边界"
-  default_prompt: "使用 $review-aw-workflow 审核当前跨插件工作流。"
-
-policy:
-  allow_implicit_invocation: true

@@ -61,7 +61,7 @@ workflow suite 保留 V1/V2 两个无并行本地工作的关键路径用例，�
 
 V1 用例显式使用支持直接工具调用且未固定 V2 的父模型；只设置 `features.multi_agent_v2.enabled=false` 不足以覆盖父模型自带的 V2 声明。
 
-runner 从父会话 rollout 的原始 function call 与 output 中提取 collaboration timeline。真实 smoke 覆盖正常完成路径；主动探测、恢复超限和过早清理由合成 timeline 单元测试覆盖。它不声称证明 Codex 内部消息投递语义或未出现在 timeline 中的主代理读取行为。
+Engine 为每个 attempt 启动一个 app-server root，并从脱敏 rollout 生成 `workflow-evidence.json`、`workflow-trace.json` 和 `model-output.txt`。adapter 的 prepare 只生成有界 `CodexWorkflowRequest v1`；grade 只读取 normalized evidence 和本 suite 所需的 model output。真实 smoke 覆盖正常完成路径；主动探测、恢复超限和过早清理由合成 timeline 单元测试覆盖。它不声称证明 Codex 内部消息投递语义或未出现在 normalized evidence 中的主代理读取行为。
 
 该 runner 使用 `workspace-write` 观察只读提示词是否被遵守；workspace diff 只证明本次 Eval 的最终文件没有变化，不证明权限隔离。
 
@@ -71,7 +71,7 @@ aw skill eval prepare codex-enhance codex-explore --suite workflow --profile pro
 
 ## 叶子输出合同
 
-`output-contract` suite 使用同一 workflow provider，但只评估叶子结果 handoff。它从 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录实际 materialized 的四个 Explore role 文件摘要。
+`output-contract` suite 使用同一 Engine-owned workflow provider，但只评估叶子结果 handoff。grade 从 normalized leaf calls 的 V2 `FINAL_ANSWER` envelope 或 V1 `wait_agent.status.completed` 取得子代理最终文本，并记录 attempt workspace 内实际 materialized 的四个 Explore role 文件摘要。
 
 六个用例分别覆盖：同源多个 direct finding、单个 finding 的多来源定位、inference 的直接依据、conflict 双方证据、blocked 和 insufficient。每个用例要求初次叶子结果足够，不允许 recovery。状态、来源和证据类型是正确性门禁；叶子字符数、父 turn usage 和端到端时间只作诊断。
 
@@ -94,7 +94,7 @@ role 输出合同不在 Skill target digest 中。因此不得把 `--previous-ve
 aw skill eval prepare codex-enhance codex-explore --suite liveness --profile project-short-wait --runs 3 --output /tmp/aw-eval-specs/codex-explore-liveness --json
 ```
 
-provider artifact 按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。叶子工具证据只接受 child rollout 与父 thread 的直接关联；child rollout 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。
+Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、termination、token usage、thread lineage 和 cleanup 确认。叶子工具证据只接受 normalized child calls 与父 thread 的直接关联；child evidence 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。
 
 2026-08-10 的 Variant A 基线中，两个 V2 场景共 6 次运行均发送一次 probe，6 次都得到可接受终态，但 0 次收到 `progress` 或 `blocked`，未达到保留门槛。Variant B 的两个 V2 场景各 3/3 接受，probe 和状态消息均为 0；真实 V1 补充运行也取得可接受终态且没有 probe。该历史结果解释当前 Variant B 的来源，但不替代当前版本执行结果。
 
@@ -107,7 +107,7 @@ provider artifact 按用例保留 accepted、probe、`progress` / `blocked`、du
 - schema 隐藏覆盖字段时预设 role 仍可启动，用户显式字段则阻断。
 - 无效显式值不删除字段、不切换预设后重试。
 
-runner 对每次运行的原始 `spawn_agent` 参数执行机械断言：
+grade 对 Engine normalized evidence 中保留的原始 `spawn_agent` arguments、output 和 status 执行机械断言：
 
 ```bash
 aw skill eval prepare codex-enhance codex-explore --suite model-selection --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-model-selection --json

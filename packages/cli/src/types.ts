@@ -177,6 +177,15 @@ export interface CatalogGenerationSyncEvidence {
   snapshotDigest: string;
 }
 
+export interface CatalogGenerationCandidateEvidence extends CatalogGenerationSyncEvidence {
+  sourceConfigFingerprint: string;
+}
+
+export interface CatalogGenerationCandidateComparison {
+  matches: boolean;
+  changedFields: Array<keyof CatalogGenerationCandidateEvidence>;
+}
+
 export interface CatalogGenerationSyncResult {
   catalogGenerationSchemaVersion: 1;
   sourceId: CatalogSourceId;

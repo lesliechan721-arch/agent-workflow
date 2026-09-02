@@ -31,6 +31,10 @@ import {
 } from './providers.js'
 import { resolveCodexEvalRuntimeConfig } from './codex-eval-runtime-config.js'
 import { ProviderProcessCleanupError } from './process.js'
+import {
+  executeCodexWorkflowProvider,
+  type CodexWorkflowExecutorOptions,
+} from './codex-workflow.js'
 import { computeCanonicalDirectoryDigest, computeSkillDigest } from './runtime-skill.js'
 import {
   parseSelectedCases,
@@ -50,6 +54,9 @@ export interface RunEvalSpecOptions {
     dependencies?: BuiltinEvalProviderDependencies,
   ) => Promise<EvalProviderRunResult>
   executeCustomProvider?: (options: CustomProcessExecutorOptions) => Promise<EvalProviderRunResult>
+  executeCodexWorkflowProvider?: (
+    options: CodexWorkflowExecutorOptions,
+  ) => Promise<EvalProviderRunResult>
 }
 
 export interface RunEvalSpecResult {
@@ -512,6 +519,7 @@ export async function runEvalSpec(
         let usage: EvalResultRun['usage'] = null
         let grade: EvalResultRun['grade'] = null
         let error: EvalResultRun['error'] = null
+        let artifacts: EvalResultRun['artifacts']
         let runOutput = path.join(
           calculated.paths.outputDir,
           'runs',
@@ -549,17 +557,37 @@ export async function runEvalSpec(
                 { ...input, evalRoot: prepared.attemptRoot },
                 builtinProviderDependencies,
               )
-            : await (options.executeCustomProvider ?? executeCustomProcessProvider)({
-                command: calculated.spec.provider.command as [string, ...string[]],
-                evalRoot: prepared.attemptRoot,
-                input,
-                sourceEnv,
-                codexRuntime: runtime,
-              })
+            : calculated.spec.provider.type === 'custom-process'
+              ? await (options.executeCustomProvider ?? executeCustomProcessProvider)({
+                  command: calculated.spec.provider.command as [string, ...string[]],
+                  evalRoot: prepared.attemptRoot,
+                  input,
+                  sourceEnv,
+                  codexRuntime: runtime,
+                })
+              : await (options.executeCodexWorkflowProvider ?? executeCodexWorkflowProvider)({
+                  provider: {
+                    ...calculated.spec.provider,
+                    command: calculated.spec.provider.command as [string, ...string[]],
+                  },
+                  evalRoot: prepared.attemptRoot,
+                  input,
+                  sourceEnv,
+                  codexRuntime: runtime,
+                  codexBin: builtinProviderDependencies.codexBin,
+                })
           if (options.signal?.aborted) throw abortError()
           const sanitized = redactValue(providerResult, secrets())
           usage = sanitized.usage === null ? null : { ...sanitized.usage }
           grade = sanitized.grade
+          artifacts = typeof calculated.spec.provider === 'object'
+            && calculated.spec.provider.type === 'codex-workflow'
+            && sanitized.artifacts
+            ? [
+                ...sanitized.artifacts.map((artifact) => ({ ...artifact })),
+                { path: 'provider-result.json', role: 'result' },
+              ]
+            : undefined
           await writeFile(
             path.join(prepared.runOutput, 'provider-result.json'),
             `${JSON.stringify(sanitized, null, 2)}\n`,
@@ -570,12 +598,17 @@ export async function runEvalSpec(
           status = isTimeout(caught) ? 'timeout' : 'failed'
           usage = null
           grade = null
+          artifacts = undefined
           error = { message: redactText(caught instanceof Error ? caught.message : String(caught), secrets()) || 'Provider failed.' }
           if (
             options.signal?.aborted
             || caught instanceof BoundInputChangedError
             || isCleanupFailure(caught)
             || status === 'timeout'
+            || (
+              typeof calculated.spec.provider === 'object'
+              && calculated.spec.provider.type === 'codex-workflow'
+            )
           ) stop = true
         }
         try {
@@ -585,6 +618,7 @@ export async function runEvalSpec(
           status = 'failed'
           usage = null
           grade = null
+          artifacts = undefined
           error = { message: redactText((changed as Error).message, secrets()) }
           stop = true
         }
@@ -598,6 +632,7 @@ export async function runEvalSpec(
           usage,
           grade,
           error,
+          ...(artifacts ? { artifacts } : {}),
         })
         if (stop) break
       }
@@ -612,6 +647,7 @@ export async function runEvalSpec(
     last.status = 'failed'
     last.usage = null
     last.grade = null
+    delete last.artifacts
     last.error = { message: redactText((changed as Error).message, secrets()) }
   }
   if (options.signal?.aborted && runs.length > 0) {
@@ -619,6 +655,7 @@ export async function runEvalSpec(
     last.status = 'failed'
     last.usage = null
     last.grade = null
+    delete last.artifacts
     last.error = { message: abortError().message }
   }
   const result: EvalResult = {

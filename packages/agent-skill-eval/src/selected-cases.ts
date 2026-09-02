@@ -6,7 +6,11 @@ import {
 } from './codex-eval-cases.js'
 import type { ValidationResult } from './types.js'
 
-export type SelectedCaseSuiteKind = 'trigger' | 'conversation' | 'custom-process'
+export type SelectedCaseSuiteKind =
+  | 'trigger'
+  | 'conversation'
+  | 'custom-process'
+  | 'codex-workflow'
 
 export interface SelectedCaseSuite {
   kind: SelectedCaseSuiteKind
@@ -223,8 +227,15 @@ function parseSuite(value: unknown): SelectedCaseSuite {
     ['kind', 'unitUnderTest', 'participants', 'policy', 'runtime'],
     'selected cases.suite',
   )
-  if (suite.kind !== 'trigger' && suite.kind !== 'conversation' && suite.kind !== 'custom-process') {
-    throw new Error('selected cases.suite.kind must be trigger, conversation, or custom-process.')
+  if (
+    suite.kind !== 'trigger'
+    && suite.kind !== 'conversation'
+    && suite.kind !== 'custom-process'
+    && suite.kind !== 'codex-workflow'
+  ) {
+    throw new Error(
+      'selected cases.suite.kind must be trigger, conversation, custom-process, or codex-workflow.',
+    )
   }
   const result: SelectedCaseSuite = {
     kind: suite.kind,

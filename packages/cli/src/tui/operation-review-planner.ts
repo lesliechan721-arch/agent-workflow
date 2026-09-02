@@ -19,7 +19,7 @@ function pluginNameFromId(pluginId: string): string {
   return separator < 0 ? pluginId : pluginId.slice(separator + 1);
 }
 
-function operationLabels(intent: OperationIntent): {
+function operationLabels(intent: OperationIntent, evidence?: OperationEvidence): {
   title: string;
   description: string;
   primaryLabel: string;
@@ -104,6 +104,24 @@ function operationLabels(intent: OperationIntent): {
     } as const;
     const [title, description, primaryLabel, destructive] = labels[intent.action];
     return { title, description, primaryLabel, destructive };
+  }
+  if (intent.kind === 'catalogGeneration') {
+    if (intent.action === 'update' && evidence?.catalogGeneration?.exactRepair) {
+      return {
+        title: '验证并精确修复 Catalog',
+        description: '候选与当前 Active store key 相同。精确替换损坏条目，并把 Active 来源证据对齐当前配置。',
+        primaryLabel: '验证并精确修复',
+        destructive: false,
+      };
+    }
+    const labels = {
+      activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
+      update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
+      repair: ['重新下载并修复 Catalog', '只修复这个来源的 Active 条目，不删除其他 digest。', '重新下载并修复'],
+      recoverState: ['恢复 Catalog 状态并启用', '重建无效 generation state，并只激活已确认的目标来源。来源配置和 Catalog store 保持不变。', '恢复状态并启用'],
+    } as const;
+    const [title, description, primaryLabel] = labels[intent.action];
+    return { title, description, primaryLabel, destructive: false };
   }
   throw plannerError(
     'operationNotImplemented',
@@ -318,6 +336,66 @@ function reviewChanges(
     if (intent.action === 'remove') changes.push({ kind: 'keep', title: '保留其他来源' });
     return changes;
   }
+  if (intent.kind === 'catalogGeneration') {
+    const generation = evidence?.catalogGeneration;
+    if (!generation) {
+      throw plannerError('catalogGenerationUnavailable', '缺少 Catalog 候选证据。');
+    }
+    return [
+      ...(generation.previousActive ? [{
+        kind: 'keep' as const,
+        title: generation.previousActiveVersion
+          ? `当前 Active Catalog ${generation.previousActiveVersion}` : '当前 Active',
+        description: `${generation.previousActive.resolvedCommit.slice(0, 8)} · ${generation.previousActive.snapshotDigest.slice(0, 15)}`,
+      }] : []),
+      {
+        kind: intent.action === 'activate' ? 'add' as const : 'change' as const,
+        title: generation.exactRepair
+          ? `精确修复候选 Catalog ${generation.candidate.catalogVersion}`
+          : `候选 Catalog ${generation.candidate.catalogVersion}`,
+        description: `${generation.candidate.resolvedCommit.slice(0, 8)} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
+      },
+      ...(generation.exactRepair ? [{
+        kind: 'change' as const,
+        title: '精确替换损坏的 Active 条目',
+        description: 'logical identity 和 snapshot digest 保持不变；来源 fingerprint 与 provenance 对齐当前配置。',
+      }] : []),
+      ...(generation.sourceMutation ? [{
+        kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
+        title: generation.sourceMutation.action === 'add' ? '保存来源配置'
+          : 'url' in generation.sourceMutation.update ? 'Git URL'
+            : 'path' in generation.sourceMutation.update ? '本地目录'
+              : 'refPolicy' in generation.sourceMutation.update
+                && generation.sourceMutation.update.refPolicy ? 'Git ref policy'
+                : 'subdir' in generation.sourceMutation.update
+                  && generation.sourceMutation.update.subdir !== undefined ? 'Catalog 子目录'
+                  : '更新来源配置',
+        description: `${generation.configDigest.slice(0, 8)} → ${generation.proposedConfigDigest?.slice(0, 8) ?? '未知'}`,
+      }] : []),
+      ...(generation.explicitSourceChange && generation.candidateRelation === 'rollbackDetected' ? [{
+        kind: 'warning' as const,
+        title: '显式来源切换将降低 Catalog 版本',
+        description: `${generation.previousActiveVersion ?? '当前版本'} → ${generation.candidate.catalogVersion}`,
+      }] : generation.explicitSourceChange && generation.candidateRelation === 'versionConflict' ? [{
+        kind: 'warning' as const,
+        title: '显式来源切换包含同版本不同内容',
+        description: `${generation.candidate.catalogVersion} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
+      }] : generation.explicitSourceChange && generation.candidateRelation === 'incompatible' ? [{
+        kind: 'warning' as const,
+        title: '显式来源切换将改变 Catalog logical identity',
+        description: '确认前请核对新来源身份和候选摘要。',
+      }] : []),
+      { kind: 'keep', title: '不会升级已安装 Plugin' },
+      { kind: 'keep', title: intent.action === 'recoverState'
+        ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
+      { kind: 'keep', title: '失败时保留旧 Active' },
+      ...(intent.action === 'recoverState' ? [{
+        kind: 'warning' as const,
+        title: '无效 state 中的其他 Active 指针不会被信任或保留',
+        description: '其他来源配置和 store 内容不会删除；可分别重新启用。',
+      }] : []),
+    ];
+  }
   if (intent.kind !== 'configSave') {
     throw plannerError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
@@ -392,6 +470,12 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
   }
+  if (evidence.catalogGeneration) {
+    const generation = evidence.catalogGeneration;
+    details.push(`候选版本：${generation.candidate.catalogVersion}`);
+    details.push(`候选 commit：${short(generation.candidate.resolvedCommit)}`);
+    details.push(`候选 digest：${short(generation.candidate.snapshotDigest)}`);
+  }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
     details.push(`Materialization：${short(evidence.portable.materializationDigest)}`);
@@ -421,7 +505,7 @@ export function buildOperationReviewProjection(options: {
   dependencyOverview?: PluginDependencyOverviewViewModel;
 }): OperationReviewProjection {
   const { intent, evidence } = options;
-  const labels = operationLabels(intent);
+  const labels = operationLabels(intent, evidence);
   const requiresConfirmation = (evidence.codexReconcilePlans ?? []).some((plan) =>
     plan.review.requiresConfirmation);
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>

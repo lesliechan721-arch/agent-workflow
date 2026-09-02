@@ -157,6 +157,7 @@ import {
   runCatalogPublishApplyCommand,
   runCatalogPublishPlanCommand,
 } from './commands/catalog-publish.js';
+import { catalogPublicationFailure } from './commands/catalog-publication-inspection.js';
 import { getCatalogStatus, renderCatalogStatus } from './commands/catalog-status.js';
 import {
   activateCatalogDevSource,
@@ -2107,16 +2108,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, `Parent: ${result.parent ?? '<root>'}`);
           writeLine(io.stdout, `Tag: refs/tags/${result.tag}`);
           writeLine(io.stdout, `Snapshot digest: ${result.snapshotDigest}`);
+          writeLine(io.stdout, `Expected commit: ${result.expectedCommit}`);
           writeLine(io.stdout, `Plan digest: ${result.planDigest}`);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (rawOptions.json) writeJsonReceipt(io.stdout, {
-          command: 'catalog:publish:plan',
-          ok: false,
-          errors: [{ message }],
+        const failure = catalogPublicationFailure({
+          error,
+          env,
+          sensitiveRoots: [
+            cwd,
+            ...(rawOptions.workspaceRoot ? [path.resolve(cwd, rawOptions.workspaceRoot)] : []),
+          ],
         });
-        writeLine(io.stderr, message);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, failure);
+        writeLine(io.stderr, failure.message);
         commandExitState.exitCode = 1;
       }
     });
@@ -2168,13 +2173,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           writeLine(io.stdout, `Add it as a source: aw catalog source add <id> --git ${result.fetchUrl} --ref refs/heads/${result.branch}`);
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (rawOptions.json) writeJsonReceipt(io.stdout, {
-          command: 'catalog:publish:apply',
-          ok: false,
-          errors: [{ message }],
+        const failure = catalogPublicationFailure({
+          error,
+          env,
+          sensitiveRoots: [
+            cwd,
+            ...(rawOptions.workspaceRoot ? [path.resolve(cwd, rawOptions.workspaceRoot)] : []),
+          ],
         });
-        writeLine(io.stderr, message);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, failure);
+        writeLine(io.stderr, failure.message);
         commandExitState.exitCode = 1;
       }
     });

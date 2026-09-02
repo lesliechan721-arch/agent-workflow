@@ -148,7 +148,7 @@ export function buildAllowedLifecycleActions(
 
 export function selectLifecycleRetryAction(options: {
   operationKind: 'pluginWrite' | 'configSave' | 'configReset'
-    | 'portableInstall' | 'sourceMutation' | undefined;
+    | 'portableInstall' | 'sourceMutation' | 'catalogGeneration' | undefined;
   originalAction?: LifecycleActionId;
   target: LifecycleTargetFacts;
 }): AllowedLifecycleAction | undefined {

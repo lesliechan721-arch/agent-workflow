@@ -1,13 +1,15 @@
-import { rm } from 'node:fs/promises';
-import process from 'node:process';
+import { readFile } from 'node:fs/promises';
 
 import {
-  createProviderOutput,
-  createEvalWorkspace,
-  PROVIDER_CREDENTIAL_ENVIRONMENT,
-  runCodexOnce,
-} from './eval-harness.mjs';
-import { runCustomProcessMain } from './custom-process-protocol.mjs';
+  ROOT_DEVELOPER_INSTRUCTIONS,
+  evidenceRun,
+  legacyCase,
+  readWorkflowEvidence,
+  runCodexWorkflowAdapterMain,
+  workflowProfile,
+  workflowRoles,
+} from './codex-workflow-adapter.mjs';
+import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
 const BLOCK_REASON_MARKER = /^ROUTING_BLOCK_REASON=([a-z_]+)$/gmu;
@@ -16,10 +18,12 @@ const BLOCK_REASONS = new Set([
   'preset_role_unavailable',
   'routing_override_conflict',
 ]);
-const ROUTING_ONLY_INSTRUCTION = [
-  '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。',
-  '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。',
-].join('');
+const ROUTING_SCOPE_INSTRUCTION =
+  '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。';
+const ROUTING_END_INSTRUCTION =
+  '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。';
+const ROUTING_FINAL_INSTRUCTION =
+  '若发起委派，在 spawn_agent 返回后输出固定单行最终确认 `ROUTING_SPAWNED`，然后立即结束当前回复；不要等待或清理子代理。';
 
 function validateExpected(expected, label) {
   if (!expected || typeof expected !== 'object' || Array.isArray(expected)) {
@@ -153,7 +157,14 @@ export function routingRunCase(entry, profile, variant) {
     ].join('')
     : '';
   return {
-    query: [entry.prompt, ROUTING_ONLY_INSTRUCTION, blockReasonInstruction]
+    query: [
+      entry.prompt,
+      ROUTING_SCOPE_INSTRUCTION,
+      entry.id === 'simple_preset_fresh-v2'
+        ? ROUTING_FINAL_INSTRUCTION
+        : ROUTING_END_INSTRUCTION,
+      blockReasonInstruction,
+    ]
       .filter(Boolean)
       .join('\n\n'),
     explicit_skill: true,
@@ -211,57 +222,53 @@ function validateProviderRoutingCase(entry) {
   return entry;
 }
 
-export async function runEvalProvider(input) {
-  const entry = validateProviderRoutingCase(input.case);
-  if (entry.id !== input.caseId) {
-    throw new Error('Provider case id does not match input.caseId.');
-  }
+export async function prepareRouting(input) {
+  const entry = validateProviderRoutingCase(legacyCase(input.case));
   const profile = entry.runtimeProfile;
-  const variant = input.skillMode === 'without-skill' ? 'without_skill' : 'with_skill';
-  const workspace = await createEvalWorkspace({
-    sourceRoot: input.workspacePath,
-    withSkill: variant === 'with_skill',
+  const variant = input.variant === 'without-skill' ? 'without_skill' : 'with_skill';
+  await setupTriggerWorkspace({
+    workspaceRoot: input.paths.workspace,
+    evalCase: { workspace_fixture: 'default' },
   });
-  try {
-    let run;
-    try {
-      run = await runCodexOnce(
-        workspace,
-        routingRunCase(entry, profile, variant),
-        {
-          profile,
-          codexBin: process.env.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
-          model: process.env.AW_SKILL_EVAL_CODEX_MODEL ?? 'gpt-5.6-luna',
-          captureTrace: true,
-          sensitiveEnvironmentNames: PROVIDER_CREDENTIAL_ENVIRONMENT,
-        },
-      );
-    } catch (error) {
-      run = thrownExecutionError(error);
-    }
-    const evaluation = evaluateRoutingRun(
-      run,
-      entry.expected[profile],
-      variant,
-    );
-    return createProviderOutput({
-      providerId: 'codex-subagent-routing',
-      graderId: 'codex-subagent-routing-mechanical',
-      run,
-      result: {
-        caseId: input.caseId,
-        sourceCaseId: entry.sourceCaseId,
-        runtimeProfile: profile,
-        configuration: input.configuration,
-        skillMode: input.skillMode,
-        complete: !run.execution_error,
-        ...evaluation,
-      },
-      outputDir: input.outputDir,
-    });
-  } finally {
-    await rm(workspace.root, { recursive: true, force: true });
-  }
+  const runCase = routingRunCase(entry, profile, variant);
+  return {
+    version: 1,
+    prompt: runCase.query,
+    sandbox: 'read-only',
+    model: 'gpt-5.6-luna',
+    developerInstructions: ROOT_DEVELOPER_INSTRUCTIONS,
+    roles: await workflowRoles(input.paths.workspace, runCase.omit_roles),
+    multiAgent: workflowProfile(profile),
+  };
 }
 
-await runCustomProcessMain(import.meta.url, runEvalProvider);
+export async function gradeRouting(input) {
+  const entry = validateProviderRoutingCase(legacyCase(input.case));
+  const profile = entry.runtimeProfile;
+  const variant = input.variant === 'without-skill' ? 'without_skill' : 'with_skill';
+  const [evidence, modelOutput] = await Promise.all([
+    readWorkflowEvidence(input.paths.evidence),
+    readFile(input.paths.modelOutput, 'utf8'),
+  ]);
+  if (modelOutput.trim() === '') throw new Error('model-output.txt must not be empty.');
+  const run = evidenceRun(evidence, input.case, input.variant);
+  run.final_message = modelOutput.trimEnd();
+  const evaluation = evaluateRoutingRun(run, entry.expected[profile], variant);
+  return {
+    passed: evaluation.passed,
+    score: evaluation.passed ? 1 : 0,
+    details: {
+      caseId: entry.id,
+      sourceCaseId: entry.sourceCaseId,
+      runtimeProfile: profile,
+      variant: input.variant,
+      complete: !run.execution_error,
+      ...evaluation,
+    },
+  };
+}
+
+await runCodexWorkflowAdapterMain(import.meta.url, {
+  prepare: prepareRouting,
+  grade: gradeRouting,
+});

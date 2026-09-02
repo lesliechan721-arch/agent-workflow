@@ -42,11 +42,11 @@ snapshot v7 的 release metadata 只含 `state` 和 `sourceHead`。生成 snapsh
 
 Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publication journal。
 
-- Plugin beta 和 stable 都只使用目标 branch 的上一份 manifest 作为唯一相邻基线。beta 没有上一份 manifest，或 stable base 提高时，使用 `beta.1`。
+- Plugin beta 和 stable 使用每个当前 Plugin 在目标 branch 的 first-parent 发布历史中最近的 manifest entry。tip 缺少 Plugin 时，plan 按需回溯。没有历史基线，或 stable base 提高时，使用 `beta.1`。
 - stable base 相同且 `contentDigest` 相同时，复用现有 beta；contentDigest 改变时使用下一个 `beta.N`。
 - stable base 降低时拒绝。
-- Stable 只对上一份 manifest 仍存在的同名 Plugin 检查 version 和 `contentDigest`：contentDigest 改变但 version 没有提高时拒绝；version 降低也拒绝。
-- Plugin 移除后重新加入时，不保留历史。
+- Stable 对最近历史 entry 检查 version 和 `contentDigest`：contentDigest 改变但 version 没有提高时拒绝；version 降低也拒绝。
+- Plugin 移除后重新加入时，继续使用删除前的最近历史基线。
 
 ## 发布计划、授权和恢复
 
@@ -61,17 +61,23 @@ aw catalog publish apply --workspace-root "$workspace" \
   --expected-plan-digest <planDigest> --yes --json
 ```
 
-plan 从已提交 source HEAD 的隔离 Git repo 验证插件、构建和 snapshot。它返回并要求授权 Workspace identity、source HEAD、remote identity、branch、parent、tag 和 snapshot digest。`apply` 在远端写入前再次核验这些身份。
+plan 从已提交 source HEAD 的隔离 Git repo 验证插件、构建和 snapshot。它返回 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest 和 `expectedCommit`。`planDigest` 授权 canonical `{ descriptor, expectedCommit }`。snapshot marker 的 Workspace identity 也必须与 descriptor 一致；marker 不进入 snapshot digest。
 
-publication journal 是 version-scoped 强恢复和门禁状态，状态为 `prepared`、`uncertain` 或 `published`。隔离 repo 是 pending plan 的可重建暂存 artifact，但同版本恢复依赖它。对于 `prepared` 或 `uncertain`，journal 或 repo 任一缺失或损坏时，停止并提高 Catalog version；不得盲目重建或复用该版本。`published` journal 缺失时，远端 immutable tag 仍占用版本。首次远端写入前保存已验证隔离 repo；成功后删除 repo 并保留 JSON journal。相同 journal plan 和版本可对账或续跑；不同 plan 必须提高 Catalog version。journal 是恢复记录，不是跨系统补偿。
+publication journal 使用 schema v2 `.aw/publish/<version>/journal.json`；pending repo 是同目录的 `repository/`。新 plan 在同父隐藏 temp 目录写完并完整核验后，原子 rename 为正式版本目录。失败不占用正式目录；并发等价 plan 幂等返回，不同 plan 必须提高 Catalog version。旧 `<version>.json` 和 `<version>.repo` 不进入 discovery。
+
+`apply` 只用授权 digest 在 `.aw/publish/*/journal.json` 中唯一定位 journal，不需要 Catalog version 参数。它重新检查当前 Workspace identity、所选 remote 的 identity digest、branch、授权摘要、pending repo 和远端 refs。它不要求当前 source HEAD、clean state 或 metadata version 与 plan 相同，也不重新 build 或 validate source。remote alias 可变化，但 remote identity 和 branch 必须相同。
+
+对于 `prepared` 或 `uncertain`，journal 或 repo 任一缺失或损坏时，停止并提高 Catalog version；不得盲目重建或复用该版本。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先原子写 `published` journal，再尽力删除 `repository/`。清理失败返回 published success 和稳定 warning；损坏 residue 不覆盖远端成功事实。相同 journal plan 可对账或续跑；不同 plan 必须提高 Catalog version。journal 是恢复记录，不是跨系统补偿。
 
 publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push 和 post-verify。branch 与 tag 都正确时成功；两者都不存在时 atomic push；只有一个缺失时只补该 ref；任一冲突时停止。
+
+`plan --json` 和 `apply --json` 失败时只输出 `{ "ok": false, "code": "<稳定错误码>", "message": "<脱敏说明>" }`，并以退出码 1 结束。`CatalogPublicationInspectionError` 保留其稳定 code；其它 journal、repository 或 remote 失败使用 `catalogPublicationFailed`。JSON 和普通 stderr 都不包含 Workspace、AW_HOME、publication repository、临时目录的绝对路径，也不包含 remote credential、query 或 hash。
 
 `owner.url` 的 host 为 `example.invalid` 时，publish plan 和 apply 以 `catalogMetadataIncomplete` 阻断。先修复 `plugins/marketplace-source.json`，再重新生成 plan。
 
 ## Source consumption 和信任
 
-消费端只保存 `catalog-sources.json`、`catalog-state.json` 和内容寻址的 `catalog-store/<logicalIdentity>/<snapshotDigest>/{metadata.json,snapshot/**}`。state 中每个 source 只有 `Active` 和 `lastSync`。普通命令只读 Active store，完全离线；没有 Active 时运行 sync。
+消费端只保存 `catalog-sources.json`、`catalog-state.json` 和内容寻址的 `catalog-store/<logicalIdentitySha256>/<snapshotDigest>/{metadata.json,snapshot/**}`。metadata 保存原始 logical identity。state 中每个 source 只有 `Active` 和 `lastSync`。普通命令只读 Active store，完全离线；没有 Active 时运行 sync。
 
 ```bash
 aw catalog source sync <id> --json
@@ -79,7 +85,7 @@ aw catalog source sync <id> --check --json
 aw catalog source status <id> --json
 ```
 
-`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。精确 repair 只接受与强 Active state 相同的 logical identity 和 snapshot digest；update 与损坏 Active 同 key 时，可在确认后精确替换该条目。只有完整匹配的 metadata 和 snapshot 才提供可信旧版本；任一不完整时不作 rollback/version-conflict 结论。旧版本不可用且候选 key 不同时，普通恢复/update 在 store 或 state 写入前阻止，用户必须明确编辑真实 source，或 remove 后 add。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
 
 当前 Workspace 的 development source 使用：
 

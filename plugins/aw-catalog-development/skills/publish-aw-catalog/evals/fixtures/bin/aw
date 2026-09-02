@@ -91,7 +91,7 @@ function baseReceipt(repositoryPath) {
     snapshotDigest,
     planDigest,
     descriptor,
-    journalPath: path.join(root, '.aw', 'publish', '0.4.0.json'),
+    journalPath: path.join(root, '.aw', 'publish', '0.4.0', 'journal.json'),
     repositoryPath,
   };
 }
@@ -151,7 +151,7 @@ if (args[0] === 'catalog' && args[1] === 'publish' && args[2] === 'plan') {
   emit({
     command: 'catalog:publish:plan',
     state,
-    ...baseReceipt(path.join(root, '.aw', 'publish', '0.4.0.repo')),
+    ...baseReceipt(path.join(root, '.aw', 'publish', '0.4.0', 'repository')),
   });
   process.exit(0);
 }
@@ -204,6 +204,7 @@ if (args[0] === 'catalog' && args[1] === 'publish' && args[2] === 'apply') {
     commit: expectedCommit,
     reconciliation,
     ...baseReceipt(null),
+    warnings: [],
   });
   process.exit(0);
 }

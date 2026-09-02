@@ -27,6 +27,7 @@ export interface EvalResultRun {
   usage: Record<string, unknown> | null
   grade: EvalGrade | null
   error: EvalRunError | null
+  artifacts?: Array<{ path: string; role: string }>
 }
 
 export interface EvalResultSummary {
@@ -122,6 +123,26 @@ export async function validateEvalResult(
     } else {
       if (run.grade !== null) errors.push(`run ${index} has status ${run.status} but includes a grade`)
       if (run.error === null) errors.push(`run ${index} has status ${run.status} but has no error`)
+    }
+    if (
+      typeof result.provider === 'object'
+      && result.provider.type === 'codex-workflow'
+      && run.status === 'completed'
+    ) {
+      if (run.usage === null) errors.push(`run ${index} codex-workflow has no usage evidence`)
+      const expected = [
+        { path: 'workflow-evidence.json', role: 'evidence' },
+        { path: 'workflow-trace.json', role: 'trace' },
+        { path: 'model-output.txt', role: 'output' },
+        { path: 'provider-result.json', role: 'result' },
+      ]
+      if (
+        !run.artifacts
+        || stable([...run.artifacts].sort((left, right) => left.path.localeCompare(right.path)))
+          !== stable(expected.sort((left, right) => left.path.localeCompare(right.path)))
+      ) errors.push(`run ${index} codex-workflow artifacts are incomplete`)
+    } else if (run.artifacts !== undefined) {
+      errors.push(`run ${index} must not include codex-workflow artifacts`)
     }
   }
   const summary = computeEvalResultSummary(result.runs)

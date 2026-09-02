@@ -56,6 +56,20 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": true
+    },
+    {
+      "id": "decision-experience-composed",
+      "kind": "conversation",
+      "cases": "decision-experience-composition-cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
