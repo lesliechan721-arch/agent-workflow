@@ -611,6 +611,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       displayValue: '未设置',
       required: false,
       sensitive: false,
+      writable: true,
       dirty: false,
       inherited: true,
       configured: false,
@@ -725,6 +726,7 @@ function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPageViewMo
         displayValue: '继承',
         required: true,
         sensitive: false,
+        writable: true,
         dirty: false,
         inherited: true,
         configured: false,
@@ -4212,6 +4214,30 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b', ...Array.from({ length: 3 }, () => '\u001B[B'), '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'configFieldEditor', fieldKey: 'note' });
     expect(instance.lastFrame()).toContain('▌');
+  });
+
+  it('hides user-only fields from project editing and deletion', async () => {
+    const page = configPage();
+    const userOnly = page.groups[0]!.fields[0]!;
+    userOnly.title = '仅个人字段';
+    userOnly.writable = false;
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({
+      name: 'configFields',
+      pluginId: page.pluginId,
+      layer: { scope: 'project', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).not.toContain('仅个人字段');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).not.toMatchObject({
+      name: 'configFieldAction',
+      fieldKey: userOnly.key,
+    });
   });
 
   it.each([

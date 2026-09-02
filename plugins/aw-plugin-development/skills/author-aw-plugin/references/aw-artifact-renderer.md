@@ -6,6 +6,8 @@ renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`a
 
 Skill target 先合并声明的 `sourceDirs`，再用 `content.files` 覆盖安全的 UTF-8 相对文件。最终 tree 必须保留平台原生调用元数据和 README。role、instruction 和 Skill 的静态 key 必须与 plan 一致。
 
+`codex.skill` target 按 live capability receipt 显式选择 delivery。native delivery 的 refresh key 只能引用 user-only config field，且 native dynamic Skill 不能与静态 Skill 同名。其它 target 不声明 delivery。
+
 renderer stdout 只包含 JSON plan；诊断写 stderr，且不得泄露敏感值。相同输入必须产生相同 plan。缺失声明 target、额外 target、路径逃逸、直接写盘或部分输出都必须失败。
 
 ## Portable Agent Skills distribution

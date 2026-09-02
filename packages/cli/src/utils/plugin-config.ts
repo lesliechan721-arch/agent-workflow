@@ -632,6 +632,7 @@ function validateStoreValues(options: {
   filePath: string;
   values: unknown;
   schema?: PluginConfigSchema['fields'];
+  scope?: Scope;
 }): PluginConfigStore {
   if (!isRecord(options.values)) {
     return invalidStore(options.filePath, 'invalidValues', 'The values field must be an object.');
@@ -645,6 +646,10 @@ function validateStoreValues(options: {
     }
     const field = options.schema?.[key];
     if (field) {
+      if (options.scope && !field.writableLayers.includes(options.scope)) {
+        issues.push(`Config "${key}" is not writable in the ${options.scope} layer.`);
+        continue;
+      }
       const fieldIssues = validateCorePluginConfigValue(field, value, key);
       issues.push(...fieldIssues.map(formatPluginConfigIssue));
     }
@@ -658,10 +663,11 @@ function validateStoreValues(options: {
 async function readStoreFile(
   filePath: string,
   schema?: PluginConfigSchema['fields'],
+  scope?: Scope,
 ): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
-  return validateStoreValues({ filePath, values: parsed.value, schema });
+  return validateStoreValues({ filePath, values: parsed.value, schema, scope });
 }
 
 async function readNamespacedStoreFile(options: {
@@ -670,6 +676,7 @@ async function readNamespacedStoreFile(options: {
   sourceIdentity: string;
   pluginName: string;
   schema?: PluginConfigSchema['fields'];
+  scope?: Scope;
 }): Promise<PluginConfigStore> {
   const parsed = await parseStoreJson(options.filePath);
   if (parsed.state === 'invalidJson') return parsed.store;
@@ -696,6 +703,7 @@ async function readNamespacedStoreFile(options: {
     filePath: options.filePath,
     values: raw.values,
     schema: options.schema,
+    scope: options.scope,
   });
 }
 
@@ -782,8 +790,9 @@ export async function readPluginConfigStore(options: {
         sourceIdentity: options.sourceIdentity!,
         pluginName: options.pluginName,
         schema: options.schema,
+        scope: options.scope,
       })
-    : readStoreFile(filePath, options.schema);
+    : readStoreFile(filePath, options.schema, options.scope);
 }
 
 export async function readNamespacedPluginConfigStoreIdentity(options: {
@@ -1003,8 +1012,9 @@ export async function patchPluginConfigStore(options: {
               sourceIdentity: options.sourceIdentity!,
               pluginName: options.pluginName,
               schema: options.schema,
+              scope: options.scope,
             })
-          : await readStoreFile(filePath, options.schema)
+          : await readStoreFile(filePath, options.schema, options.scope)
         : readyStore(filePath, {});
       assertReadyPluginConfigStore(current);
       if (options.requireExistingRemoveKeys) {
@@ -1736,7 +1746,7 @@ async function buildManifestFieldEntries(options: {
       title: field.title ?? key,
       kind: 'manifest',
       reserved: false,
-      writable: true,
+      writable: options.scope === 'effective' || field.writableLayers.includes(options.scope),
       valueState: 'default',
       effectiveValue: null,
       sourceLayer: null,

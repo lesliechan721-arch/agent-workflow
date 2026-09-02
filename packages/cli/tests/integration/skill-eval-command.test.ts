@@ -96,8 +96,8 @@ async function createWorkspace(): Promise<{
   pluginManifest.dependencies = ['participant-plugin']
   pluginManifest.config = {
     fields: {
-      mode: { type: 'string', default: 'default-mode' },
-      token: { type: 'string', sensitive: true },
+      mode: { type: 'string', writableLayers: ['project'], default: 'default-mode' },
+      token: { type: 'string', writableLayers: ['project'], sensitive: true },
     },
   }
   await fs.writeJson(manifestPath, pluginManifest, { spaces: 2 })

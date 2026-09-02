@@ -368,6 +368,12 @@ async function applyPluginConfigWriteUnlocked(
     if (!schema[key]) throw new Error(`Unknown config key "${key}".`);
   }
 
+  for (const key of [...Object.keys(requestedUpdates), ...requestedRemoveKeys]) {
+    if (!schema[key]?.writableLayers.includes(options.scope)) {
+      throw new Error(`Config field "${key}" is not writable in the ${options.scope} layer.`);
+    }
+  }
+
   const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
   const store = await readPluginConfigStore({
     ...configIdentity,

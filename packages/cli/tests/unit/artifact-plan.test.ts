@@ -41,14 +41,17 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
       fields: {
         enableLightweightInstruction: {
           type: 'boolean',
+          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
@@ -169,6 +172,7 @@ function createSkillManifest(): PluginManifestSource {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: ['explorerModel', 'modelReasoningEffort'],

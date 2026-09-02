@@ -51,15 +51,16 @@ describe('plugin manifest v3 structure', () => {
   })
 
   it.each([
-    ['array default', { fields: { value: { type: 'string', default: [] } } }],
-    ['null default', { fields: { value: { type: 'string', default: null } } }],
+    ['array default', { fields: { value: { type: 'string', writableLayers: ['user'], default: [] } } }],
+    ['null default', { fields: { value: { type: 'string', writableLayers: ['user'], default: null } } }],
     ['closed top-level scalar choices without presets', {
-      fields: { value: { type: 'string', choices: { allowCustom: false, presets: [] } } },
+      fields: { value: { type: 'string', writableLayers: ['user'], choices: { allowCustom: false, presets: [] } } },
     }],
     ['closed fixed child choices without presets', {
       fields: {
         value: {
           type: 'object',
+          writableLayers: ['user'],
           properties: { child: { type: 'string', choices: { allowCustom: false, presets: [] } } },
         },
       },
@@ -68,6 +69,7 @@ describe('plugin manifest v3 structure', () => {
       fields: {
         value: {
           type: 'object',
+          writableLayers: ['user'],
           additionalProperties: { type: 'number', choices: { allowCustom: false, presets: [] } },
         },
       },
@@ -76,13 +78,14 @@ describe('plugin manifest v3 structure', () => {
       fields: {
         value: {
           type: 'object',
+          writableLayers: ['user'],
           properties: { nested: { type: 'object', additionalProperties: false } },
         },
       },
     }],
-    ['missing object shape', { fields: { value: { type: 'object' } } }],
+    ['missing object shape', { fields: { value: { type: 'object', writableLayers: ['user'] } } }],
     ['removed presentation fields', {
-      fields: { value: { type: 'string' } },
+      fields: { value: { type: 'string', writableLayers: ['user'] } },
       presentation: { fields: {} },
     }],
   ])('rejects invalid Config v2 structure: %s', (_label, config) => {
@@ -97,7 +100,7 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       config: {
         fields: {
-          value: { type: 'string', choices: { allowCustom: true, presets: [] } },
+          value: { type: 'string', writableLayers: ['user'], choices: { allowCustom: true, presets: [] } },
         },
       },
     }))).not.toThrow()
@@ -108,10 +111,11 @@ describe('plugin manifest v3 structure', () => {
       schemaVersion: 3,
       config: {
         fields: {
-          certificate: { type: 'string', validation: { format: 'file' } },
-          workspace: { type: 'string', validation: { format: 'directory' } },
+          certificate: { type: 'string', writableLayers: ['user'], validation: { format: 'file' } },
+          workspace: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'directory' } },
           locations: {
             type: 'object',
+            writableLayers: ['user', 'project'],
             properties: {
               certificate: { type: 'string', validation: { format: 'file' } },
             },
@@ -120,6 +124,70 @@ describe('plugin manifest v3 structure', () => {
         },
       },
     }))).not.toThrow()
+  })
+
+  it('requires valid top-level writable layers without adding them to object children', () => {
+    const configField = (writableLayers: unknown) => manifest({
+      schemaVersion: 3,
+      config: { fields: { value: { type: 'string', writableLayers } } },
+    })
+    expect(() => assertPluginManifestStructure(configField(undefined))).toThrow(PluginManifestStructureError)
+    expect(() => assertPluginManifestStructure(configField([]))).toThrow(PluginManifestStructureError)
+    expect(() => assertPluginManifestStructure(configField(['user', 'user']))).toThrow(PluginManifestStructureError)
+    expect(() => assertPluginManifestStructure(configField(['machine']))).toThrow(PluginManifestStructureError)
+    expect(() => assertPluginManifestStructure(manifest({
+      schemaVersion: 3,
+      config: {
+        fields: {
+          value: {
+            type: 'object',
+            writableLayers: ['user', 'project'],
+            properties: { child: { type: 'string' } },
+          },
+        },
+      },
+    }))).not.toThrow()
+  })
+
+  it('enforces codex.skill delivery and native refresh key layers', () => {
+    const target = {
+      id: 'dynamic', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+      states: ['present'], refreshKeys: ['userOnly'], skillKey: 'dynamic',
+    }
+    const config = {
+      fields: {
+        userOnly: { type: 'string', writableLayers: ['user'] },
+        shared: { type: 'string', writableLayers: ['user', 'project'] },
+      },
+    }
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config, artifacts: { targets: [target] },
+    }))).toThrow(/delivery/u)
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{ ...target, delivery: { mode: 'aw-extension' } }] },
+    }))).not.toThrow()
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{ ...target, delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }] },
+    }))).not.toThrow()
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{
+        ...target,
+        refreshKeys: ['shared'],
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+      }] },
+    }))).toThrow(/writableLayers \["user"\]/u)
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{
+        ...target,
+        target: 'claude.skill',
+        platform: 'claude',
+        delivery: { mode: 'aw-extension' },
+      }] },
+    }))).toThrow(/additional properties/u)
   })
 
   it('fails closed for reserved imports and accepts only injected exports', () => {

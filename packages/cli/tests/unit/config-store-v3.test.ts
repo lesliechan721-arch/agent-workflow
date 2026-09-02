@@ -17,6 +17,7 @@ const config = normalizePluginConfigDefinition({
   fields: {
     connection: {
       type: 'object',
+      writableLayers: ['user', 'project'],
       properties: {
         'display-name': { type: 'string' },
         region: { type: 'string' },

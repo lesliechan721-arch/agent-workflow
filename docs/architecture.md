@@ -34,6 +34,8 @@
 - renderer 只返回 `ArtifactPlan`，不直接写平台文件。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
+- Manifest v3 的 `config.fields.*.writableLayers` 是字段写入层真值。顶层字段必须显式声明非空、无重复的 `user|project` 集合；对象 child 继承该集合。配置只在声明层写入。
+- Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只允许 user-only 字段，且不能与静态 Codex Skill 同名。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。

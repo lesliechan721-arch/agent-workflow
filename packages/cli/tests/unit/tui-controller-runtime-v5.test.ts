@@ -414,7 +414,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -501,7 +501,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-targets-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -603,7 +603,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-invalid-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1119,7 +1119,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-reset-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({

@@ -1763,6 +1763,7 @@ describe('rebuild adapter integration', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               states: ['present', 'disabled'],
               refreshKeys: [],
               skillKey: 'optional-skill',
@@ -1791,6 +1792,7 @@ describe('rebuild adapter integration', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               states: ['disabled'],
               refreshKeys: [],
               skillKey: 'disabled-only',
@@ -1829,6 +1831,103 @@ describe('rebuild adapter integration', () => {
     expect(target.optionalOwnedComponents?.map((component) => component.identity.artifactKey))
       .not.toContain('disabled-only');
   });
+
+  it.each(['project', 'user'] as const)(
+    'rejects unsupported native dynamic Skill materialization before %s config or AW direct writes',
+    async (scope) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const pluginRoot = path.join(isolation.layout.rootDir, `native-dynamic-${scope}`);
+      const rendererMarker = path.join(pluginRoot, 'renderer-ran');
+      const plugin = {
+        sourceId: 'team',
+        sourceIdentity: TEST_SOURCE_IDENTITY,
+        pluginId: `team/native-dynamic-${scope}`,
+        rootDir: pluginRoot,
+        manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+        manifest: {
+          name: `native-dynamic-${scope}`,
+          version: '1.0.0',
+          description: 'Native dynamic materialization fixture.',
+          schemaVersion: 3,
+          marketplace: {
+            category: 'test',
+            strict: true,
+            policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+          },
+          config: {
+            fields: { mode: { type: 'string', writableLayers: ['user'] } },
+          },
+          scripts: {
+            artifacts: { render: { runner: 'node', path: './render.mjs' } },
+          },
+          artifacts: {
+            targets: [{
+              id: 'native-skill',
+              platform: 'codex',
+              target: 'codex.skill',
+              delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+              scopes: [scope],
+              states: ['present'],
+              refreshKeys: ['mode'],
+              skillKey: 'native-skill',
+            }],
+          },
+        },
+      } as PluginMeta;
+      await fs.outputFile(plugin.manifestPath, `${JSON.stringify(plugin.manifest)}\n`);
+      await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+        "import fs from 'node:fs';",
+        `fs.writeFileSync(${JSON.stringify(rendererMarker)}, 'ran');`,
+        "console.log(JSON.stringify({ version: 2, artifacts: [] }));",
+      ].join('\n'));
+      if (scope === 'project') {
+        await fs.outputFile(path.join(
+          isolation.layout.fixtureCwd,
+          '.agent-workflows',
+          'plugin-config',
+          'team',
+          plugin.manifest.name,
+          'config.json',
+        ), '{invalid project config');
+      }
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('native CLI must not run'); },
+        }),
+      });
+
+      await expect(integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope,
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+      })).rejects.toThrow(
+        'codexNativeMaterializationUnsupported: Native materialization is not supported for artifact "native-skill".',
+      );
+      expect(await fs.pathExists(rendererMarker)).toBe(false);
+      expect(await fs.pathExists(scope === 'project'
+        ? path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'native-skill')
+        : path.join(isolation.layout.codexHomeDir, 'skills', 'native-skill'))).toBe(false);
+
+      const inspection = await integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope,
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+        readOnlyInspectionPlan: true,
+      });
+      expect(inspection.artifacts.some((artifact) =>
+        artifact.target === 'codex.skill' && artifact.artifactKey === 'native-skill')).toBe(false);
+      expect(inspection.ownedComponents.some((component) =>
+        component.kind === 'skill-directory'
+        && component.identity.artifactKey === 'native-skill')).toBe(false);
+    },
+  );
 
   it('does not call native list during Claude owner discovery', async () => {
     const isolation = getCurrentSourceTestIsolation();

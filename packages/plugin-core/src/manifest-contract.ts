@@ -1727,6 +1727,29 @@ function normalizeArtifactRefreshKeys(
   return normalized;
 }
 
+function normalizeCodexSkillDelivery(
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginArtifactTargetDefinition['delivery']> {
+  const input = assertObject(value, fieldName);
+  const mode = ensureString(input.mode, `${fieldName}.mode`);
+  if (mode === 'aw-extension') {
+    assertAllowedKeys(input, fieldName, ['mode']);
+    return { mode };
+  }
+  if (mode === 'codex-native') {
+    assertAllowedKeys(input, fieldName, ['mode', 'identity', 'renderProfile']);
+    if (input.identity !== 'shared') {
+      throw new Error(`Invalid ${fieldName}.identity: expected "shared".`);
+    }
+    if (input.renderProfile !== 'user') {
+      throw new Error(`Invalid ${fieldName}.renderProfile: expected "user".`);
+    }
+    return { mode, identity: 'shared', renderProfile: 'user' };
+  }
+  throw new Error(`Invalid ${fieldName}.mode: expected "codex-native" or "aw-extension".`);
+}
+
 function normalizeDynamicArtifactKind(value: unknown, fieldName: string): DynamicArtifactKind {
   const kind = ensureString(value, fieldName);
   if (!DYNAMIC_ARTIFACT_KINDS.has(kind as DynamicArtifactKind)) {
@@ -1780,6 +1803,7 @@ function normalizeArtifactTargetEntry(
     'projectManagedKind',
     'states',
     'refreshKeys',
+    'delivery',
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
@@ -1792,6 +1816,12 @@ function normalizeArtifactTargetEntry(
   validateArtifactId(id, `${fieldName}.id`);
 
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
+  const delivery = target === 'codex.skill'
+    ? normalizeCodexSkillDelivery(input.delivery, `${fieldName}.delivery`)
+    : undefined;
+  if (target !== 'codex.skill' && input.delivery !== undefined) {
+    throw new Error(`Invalid ${fieldName}.delivery: delivery is only supported for codex.skill targets.`);
+  }
   const portable = target === 'agent-skills.skill';
   const platform = portable ? undefined : normalizePlatformName(input.platform, `${fieldName}.platform`);
   const distribution = portable
@@ -1903,6 +1933,18 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
+  const refreshKeys = normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema);
+  if (delivery?.mode === 'codex-native') {
+    for (const [index, key] of refreshKeys.entries()) {
+      const writableLayers = schema?.fields[key]?.writableLayers;
+      if (writableLayers?.length !== 1 || writableLayers[0] !== 'user') {
+        throw new Error(
+          `Invalid ${fieldName}.refreshKeys[${index}]: native delivery requires a config field with writableLayers ["user"].`,
+        );
+      }
+    }
+  }
+
   return {
     id,
     platform,
@@ -1912,7 +1954,8 @@ function normalizeArtifactTargetEntry(
     kind,
     projectManagedKind,
     states: normalizeArtifactStates(input.states, `${fieldName}.states`),
-    refreshKeys: normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema),
+    refreshKeys,
+    delivery,
     requiresCodexProjectConfig:
       input.requiresCodexProjectConfig === undefined
         ? undefined
@@ -1925,7 +1968,7 @@ function normalizeArtifactTargetEntry(
       `${fieldName}.runtimeImports`,
       reservedImports,
     ),
-  };
+  } as PluginArtifactTargetDefinition;
 }
 
 function normalizeArtifacts(
@@ -2783,6 +2826,18 @@ async function validateSourceSkillInventory(
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
+  for (const [index, target] of (manifest.artifacts?.targets ?? []).entries()) {
+    if (
+      target.target === 'codex.skill'
+      && target.delivery?.mode === 'codex-native'
+      && target.skillKey
+      && staticSkillNameSet.has(target.skillKey)
+    ) {
+      throw new Error(
+        `Invalid artifacts.targets[${index}].skillKey: native dynamic Skill "${target.skillKey}" conflicts with a static Skill of the same name.`,
+      );
+    }
+  }
   const portableSkillsRoot = manifest.distributions?.agentSkills?.skills
     ? path.join(pluginRoot, stripDotSlash(manifest.distributions.agentSkills.skills))
     : null;

@@ -34,12 +34,14 @@ describe('generated aw-config helper', () => {
       fields: {
         mode: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           validation: { minLength: 2 },
         },
-        certificate: { type: 'string', validation: { format: 'file' } },
-        workspace: { type: 'string', validation: { format: 'directory' } },
+        certificate: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'file' } },
+        workspace: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'directory' } },
         credentials: {
           type: 'object',
+          writableLayers: ['user', 'project'],
           properties: {
             token: { type: 'string', required: true, sensitive: true },
             retries: { type: 'number', validation: { integer: true, minimum: 0 } },
@@ -48,6 +50,7 @@ describe('generated aw-config helper', () => {
         },
         locations: {
           type: 'object',
+          writableLayers: ['user', 'project'],
           properties: {
             certificate: { type: 'string', validation: { format: 'file' } },
           },
@@ -55,6 +58,7 @@ describe('generated aw-config helper', () => {
         },
         labels: {
           type: 'object',
+          writableLayers: ['user', 'project'],
           properties: { 'fixed-key': { type: 'string' } },
           additionalProperties: { type: 'string' },
           validation: { key: { format: 'identifier' } },
@@ -98,6 +102,7 @@ describe('generated aw-config helper', () => {
           schema: {
             credentials: {
               type: 'object',
+              writableLayers: ['user', 'project'],
               properties: {
                 token: { type: 'string', required: true, sensitive: true },
                 endpoint: { type: 'string' },

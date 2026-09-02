@@ -1945,6 +1945,7 @@ export function ConsoleAppV4(props: {
       const next = { ...current };
       for (const [key, value] of Object.entries(preset.values)) {
         const field = fields.get(key);
+        if (!field?.writable) continue;
         if (field?.configured && configValuesEqual(field.draftValue ?? field.value, value)) delete next[key];
         else next[key] = value;
       }
@@ -2091,7 +2092,7 @@ export function ConsoleAppV4(props: {
     const field = currentConfigPage.groups.flatMap((group) => group.fields)
       .find((candidate) => candidate.key === pendingLayerFieldKey);
     setPendingLayerFieldKey(undefined);
-    if (!field) return;
+    if (!field?.writable) return;
     const layer = { scope: route.layer.scope as Scope };
     props.controller.push(field.configured ? {
       name: 'configFieldAction',
@@ -3275,7 +3276,7 @@ export function ConsoleAppV4(props: {
                 })
               : () => applyConfigPreset(currentConfigPage, preset.id),
           }))
-        : (activeGroup?.fields ?? []).map((field) => ({
+        : (activeGroup?.fields ?? []).filter((field) => readonly || field.writable).map((field) => ({
             label: field.title,
             description: readonly
               ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
@@ -5132,8 +5133,9 @@ export function ConsoleAppV4(props: {
           return;
         }
         const keyIssues = activeField.definition.validation?.key
-          ? validatePluginConfigValue({
+            ? validatePluginConfigValue({
               type: 'object',
+              writableLayers: activeField.definition.writableLayers,
               additionalProperties: { type: 'string' },
               validation: { key: activeField.definition.validation.key },
             }, { [propertyKey]: 'value' }, activeField.key)

@@ -546,7 +546,7 @@ describe('build smoke', () => {
     const manifest = await fs.readJson(manifestPath);
     manifest.config = {
       fields: {
-        mode: { type: 'string', default: 'standard' },
+        mode: { type: 'string', writableLayers: ['user', 'project'], default: 'standard' },
       },
     };
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });

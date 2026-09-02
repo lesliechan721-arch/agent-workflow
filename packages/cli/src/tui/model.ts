@@ -261,6 +261,7 @@ export interface ConfigFieldViewModel {
   displayValue: string;
   required: boolean;
   sensitive: boolean;
+  writable: boolean;
   dirty: boolean;
   inherited: boolean;
   configured: boolean;
@@ -1906,6 +1907,7 @@ export function buildConfigGroups(options: {
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
+      writable: entry?.writable ?? effectivePage,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
       configured,

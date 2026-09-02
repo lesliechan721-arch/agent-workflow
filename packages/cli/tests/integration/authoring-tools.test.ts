@@ -241,10 +241,12 @@ async function writeDynamicArtifactPlugin(
       fields: {
         enableInstruction: {
           type: 'boolean',
+          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
       },
@@ -1058,6 +1060,7 @@ describe('authoring tools', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               states: ['present'],
               refreshKeys: [],
               skillKey: 'repo-report',
@@ -2521,9 +2524,10 @@ describe('authoring tools', () => {
           mode: 'project',
         },
         schema: {
-          apiKey: { type: 'string', required: true, sensitive: true },
+          apiKey: { type: 'string', writableLayers: ['user', 'project'], required: true, sensitive: true },
           mode: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             default: 'standard',
             choices: {
               allowCustom: false,
@@ -2637,9 +2641,10 @@ describe('authoring tools', () => {
       },
       config: {
         fields: {
-          token: { type: 'string', sensitive: true, required: true },
+          token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, required: true },
           mode: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             default: 'standard',
             choices: {
               allowCustom: false,
@@ -2651,12 +2656,14 @@ describe('authoring tools', () => {
           },
           configFile: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             default: './config.txt',
             validation: { format: 'path' },
           },
-          constructor: { type: 'string', default: 'declared-constructor' },
+          constructor: { type: 'string', writableLayers: ['user', 'project'], default: 'declared-constructor' },
           metadata: {
             type: 'object',
+            writableLayers: ['user', 'project'],
             properties: Object.fromEntries([
               ['__proto__', { type: 'string' }],
               ['constructor', { type: 'string' }],
@@ -2664,6 +2671,7 @@ describe('authoring tools', () => {
           },
           labels: {
             type: 'object',
+            writableLayers: ['user', 'project'],
             additionalProperties: { type: 'string' },
           },
         },
@@ -2975,6 +2983,7 @@ describe('authoring tools', () => {
         fields: {
           apiKey: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             required: true,
             sensitive: true,
           },
@@ -3151,6 +3160,7 @@ describe('authoring tools', () => {
         fields: {
           badMin: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             min: 1,
           },
         },
@@ -3182,6 +3192,7 @@ describe('authoring tools', () => {
         fields: {
           goodKey: {
             type: 'string',
+            writableLayers: ['user', 'project'],
           },
         },
       },
@@ -3212,6 +3223,7 @@ describe('authoring tools', () => {
         fields: {
           goodKey: {
             type: 'string',
+            writableLayers: ['user', 'project'],
           },
         },
       },
@@ -3246,6 +3258,7 @@ describe('authoring tools', () => {
     const fields = {
       mode: {
         type: 'string',
+        writableLayers: ['user', 'project'],
         choices: {
           allowCustom: false,
           presets: [
@@ -3256,21 +3269,26 @@ describe('authoring tools', () => {
       },
       limit: {
         type: 'number',
+        writableLayers: ['user', 'project'],
         validation: { minimum: 1, maximum: 20 },
       },
       trace: {
         type: 'boolean',
+        writableLayers: ['user', 'project'],
       },
       token: {
         type: 'string',
+        writableLayers: ['user', 'project'],
         sensitive: true,
       },
       rules: {
         type: 'string',
+        writableLayers: ['user', 'project'],
         validation: { format: 'path' },
       },
       workspace: {
         type: 'string',
+        writableLayers: ['user', 'project'],
         validation: { format: 'path' },
       },
     };
@@ -3673,7 +3691,9 @@ describe('authoring tools', () => {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
         },
         config: {
-          fields: { variant: { type: 'string', default: 'standard' } },
+          fields: {
+            variant: { type: 'string', writableLayers: ['user', 'project'], default: 'standard' },
+          },
         },
         artifacts: {
           targets: [{
@@ -4067,6 +4087,7 @@ describe('authoring tools', () => {
             platform: 'codex',
             scopes: ['project'],
             target: 'codex.skill',
+            delivery: { mode: 'aw-extension' },
             projectManagedKind: 'skill',
             states: ['present'],
             refreshKeys: [],
@@ -4359,6 +4380,55 @@ describe('authoring tools', () => {
         );
       })(),
     ]);
+  });
+
+  it('validate_plugin.mjs enforces native Codex Skill config and identity contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-dynamic-contract-'));
+    tempDirs.push(tempRoot);
+    const fixture = await writeSourcePlugin(
+      tempRoot,
+      'native-dynamic-contract',
+      createBaseManifest('native-dynamic-contract', {
+        skills: './skills',
+        config: {
+          fields: {
+            mode: { type: 'string', writableLayers: ['user', 'project'] },
+          },
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        artifacts: {
+          targets: [{
+            id: 'review',
+            platform: 'codex',
+            target: 'codex.skill',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            scopes: ['user'],
+            states: ['present'],
+            refreshKeys: ['mode'],
+            skillKey: 'review',
+            sourceDirs: ['./skills/review'],
+          }],
+        },
+      }),
+      {
+        'skills/review/SKILL.md': '---\nname: review\ndescription: Review.\n---\nReview.\n',
+        'skills/review/README.md': '# Review\n',
+        'scripts/render.mjs': 'process.stdout.write(JSON.stringify({version:2,artifacts:[]}));\n',
+      },
+    );
+
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('native delivery requires a config field with writableLayers ["user"]'),
+    });
+
+    const manifest = await fs.readJson(fixture.manifestPath);
+    manifest.config.fields.mode.writableLayers = ['user'];
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('native dynamic Skill "review" conflicts with a static Skill'),
+    });
   });
 
   it('validate_plugin.mjs rejects dynamic role metadata and missing Codex invocation policy', async () => {

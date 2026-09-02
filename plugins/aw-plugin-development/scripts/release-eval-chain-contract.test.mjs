@@ -118,6 +118,7 @@ exec "${process.execPath}" "${evalBin}" "$@"
         id: 'demo-codex',
         platform: 'codex',
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         skillKey: 'demo',
         scopes: ['project'],
         states: ['present'],

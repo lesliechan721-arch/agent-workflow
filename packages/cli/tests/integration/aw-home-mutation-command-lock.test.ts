@@ -100,6 +100,7 @@ function configureDemoManifest(manifest: PluginMeta['manifest']): void {
     fields: {
       mode: {
         type: 'string',
+        writableLayers: ['user', 'project'],
         choices: {
           allowCustom: false,
           presets: [

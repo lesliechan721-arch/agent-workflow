@@ -129,6 +129,7 @@ const registry = {
       entries: [
         { field: 'config.fields', type: 'field map', required: 'with config' },
         { field: 'config.fields.<key>.type', type: 'enum', required: true, acceptedValues: ['string', 'number', 'boolean', 'object'] },
+        { field: 'config.fields.<key>.writableLayers', type: 'non-empty unique enum[]', required: true, acceptedValues: ['user', 'project'] },
         { field: 'config.fields.<key>.title', type: 'string', required: false },
         { field: 'config.fields.<key>.description', type: 'string', required: false },
         { field: 'config.fields.<key>.default', type: 'string|number|boolean|object', required: false },
@@ -172,6 +173,10 @@ const registry = {
         { field: 'artifacts.targets[].scopes', type: 'unique enum[]', required: true, acceptedValues: ['user', 'project'] },
         { field: 'artifacts.targets[].states', type: 'unique enum[]', required: true, acceptedValues: ['present', 'disabled'] },
         { field: 'artifacts.targets[].refreshKeys', type: 'unique config key[]', required: true },
+        { field: 'artifacts.targets[].delivery', type: 'codex.skill delivery union', required: 'for codex.skill' },
+        { field: 'artifacts.targets[].delivery.mode', type: 'enum', required: 'with delivery', acceptedValues: ['codex-native', 'aw-extension'] },
+        { field: 'artifacts.targets[].delivery.identity', type: 'literal shared', required: 'when delivery.mode is codex-native', acceptedValues: ['shared'] },
+        { field: 'artifacts.targets[].delivery.renderProfile', type: 'literal user', required: 'when delivery.mode is codex-native', acceptedValues: ['user'] },
         { field: 'artifacts.targets[].requiresCodexProjectConfig', type: 'boolean', required: false },
         { field: 'artifacts.targets[].roleKey', type: 'stable role key', required: 'for codex.agentRole' },
         { field: 'artifacts.targets[].skillKey', type: 'stable Skill key', required: 'for Skill targets' },

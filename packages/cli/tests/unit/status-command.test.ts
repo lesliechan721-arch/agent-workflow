@@ -216,14 +216,14 @@ describe('status v7 current behavior', () => {
     });
   });
 
-  it('reports a mixed user/project intent as an extension conflict with two recovery actions', async () => {
+  it('does not treat mixed-scope config inputs as a Codex extension conflict', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-conflict-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.apps = './.app.json';
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {
@@ -239,27 +239,12 @@ describe('status v7 current behavior', () => {
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      state: 'blocked',
-      reasons: expect.arrayContaining([expect.objectContaining({ code: 'codexExtensionScopeConflict' })]),
-      recoveryActions: [
-        expect.objectContaining({
-          command: 'uninstall',
-          scope: 'user',
-          description: expect.stringContaining(
-            'aw uninstall local/demo --platform codex --scope user',
-          ),
-        }),
-        expect.objectContaining({
-          command: 'uninstall',
-          scope: 'project',
-          description: expect.stringContaining(
-            'aw uninstall local/demo --platform codex --scope project',
-          ),
-        }),
-      ],
+      state: 'needsSync',
+      reasons: [],
+      recoveryActions: [expect.objectContaining({ command: 'sync' })],
     })]);
-    expect(statusTargetExtensions(result.payload.targets[0]!)).toMatchObject({ state: 'conflict' });
-    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(true);
+    expect(statusTargetExtensions(result.payload.targets[0]!)).toBeUndefined();
+    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
   });
 
   it('recovers a dependency scope conflict through its desired roots', async () => {
@@ -438,6 +423,7 @@ describe('status v7 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
@@ -700,6 +686,7 @@ describe('status v7 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: [],

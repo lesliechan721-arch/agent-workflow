@@ -34,6 +34,8 @@ aw plugin capabilities --surface manifest --json
 
 Manifest 配置只使用 `config.fields` 定义字段，并可用 `config.presentation.groups` 定义字段分组。字段类型只允许 `string`、`number`、`boolean` 和 `object`。配置值只允许标量或一层标量对象；数组、`null` 和嵌套对象无效。旧的 `config.schema`、`enum`、`file`、`directory`、`presentation.fields`、`presentation.presets`、`valueLabels` 和 `recommendedValue` 都无效。
 
+每个顶层字段必须显式声明非空、无重复的 `writableLayers`，值只允许 `user` 和 `project`。对象 child 继承顶层字段的层合同，不能声明自己的 `writableLayers`。CLI 只允许在字段声明的层执行 set 或 unset。
+
 `string` 可用 `minLength`、`maxLength`、`pattern` 和 `identifier|slug|semver|url|hostname|email|path|file|directory` 格式校验。`number` 可用 `integer`、`minimum`、`maximum` 和 `multipleOf`。非 boolean 字段可声明 `choices: { allowCustom, presets }`。每个 preset 使用稳定 `id`、显示 `title` 和实际 `value`；同一字段最多一个 preset 可设 `recommended: true`。`allowCustom: false` 时，default 和写入值必须与一个 preset 的实际值相同。sensitive 字段不能声明 choices。
 
 `object` 可声明固定 `properties` 和标量 `additionalProperties`。固定 child 用 `required: true` 表示必填；所有 child 都不能声明 default，动态 child 也不能声明 required。`validation` 支持 `minProperties`、`maxProperties` 和复用 string 校验的 `key`。对象最多有 32 个属性。Core 提供稳定对象序列化、preset 匹配、结构化校验 issue 和一层 sensitive child 脱敏；CLI 和控制台支持标量及一层 object 的完整编辑。
@@ -98,6 +100,8 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 每个 `buildConfig.runtimeExports[]` 必须使用 `{ name, source, requires: { aw: { capabilities: [] } } }`。Provider 作者显式声明该 export 的完整 runtime capability 集合；空数组合法。Core 只规范化、排序、去重并计算稳定 capability set digest，不扫描 export 内容推断 metadata。`skillRuntimeFiles.import` 和 artifact `runtimeImports` 把实际使用 export 的 capability 合并到 consumer 最终 bundle、Catalog entry 和每个 Skill receipt；`buildImports` 不传播。Consumer 自有 `skillRuntimeFiles.source` 和 `generatedSkillRuntimeFiles` 继续由顶层 `requires.aw.capabilities` 负责。
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
+
+每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。native target 的 `refreshKeys` 只能引用 `writableLayers: ["user"]` 的字段；空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。
 
 插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
 

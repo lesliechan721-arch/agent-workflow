@@ -214,6 +214,22 @@ function requireCodexManager(manager: CodexManager | undefined): CodexManager {
   return manager;
 }
 
+function assertCodexNativeMaterializationSupported(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+}): void {
+  const nativeTarget = options.plugin.manifest.artifacts?.targets?.find((target) =>
+    target.platform === 'codex'
+    && target.target === 'codex.skill'
+    && target.delivery?.mode === 'codex-native'
+    && target.scopes.includes(options.scope));
+  if (nativeTarget) {
+    throw new Error(
+      `codexNativeMaterializationUnsupported: Native materialization is not supported for artifact "${nativeTarget.id}".`,
+    );
+  }
+}
+
 export async function executeCodexReconcileActivations(options: {
   plans: readonly CodexReconcilePlan[];
   cwd: string;
@@ -1919,7 +1935,9 @@ async function buildInspectionWrites(options: {
     : path.join(repoRoot, '.agents', 'skills');
   for (const target of targets) {
     const state = target.states.includes('present') ? 'present' : 'disabled';
-    if (target.target === 'codex.skill' && target.skillKey) {
+    if (target.target === 'codex.skill'
+      && target.delivery?.mode === 'aw-extension'
+      && target.skillKey) {
       const skillPath = path.join(dynamicSkillRoot, target.skillKey);
       const component = pathComponent({
         kind: 'skill-directory',
@@ -4298,6 +4316,10 @@ export function createRebuildIntegration(options: {
         input = { ...input, cwd: canonicalRepoRoot };
       }
       if (materializing && input.platform === 'codex') {
+        assertCodexNativeMaterializationSupported({
+          plugin: input.plugin,
+          scope: input.scope,
+        });
         await preflightCodexWriteSafety({
           plugin: input.plugin,
           scope: input.scope,

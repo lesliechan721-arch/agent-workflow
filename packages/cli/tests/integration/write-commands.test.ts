@@ -452,7 +452,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Warm.' }],
       };
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -537,7 +537,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Changed.' }],
       };
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     });
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
@@ -565,7 +565,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'transport', title: 'Transport', content: 'Transport.' }],
       };
-      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
     };
     await Promise.all([
       createCatalogSnapshotFixture(httpsRoot, 'demo', [], 'https\n', configureManifest),
@@ -701,8 +701,8 @@ describe('five namespaced write commands', () => {
         };
         manifest.config = {
           fields: {
-            oldMode: { type: 'string', title: 'oldMode' },
-            ...(field === 'oldMode' ? {} : { [field]: { type: 'string', title: field } }),
+            oldMode: { type: 'string', writableLayers: ['user', 'project'], title: 'oldMode' },
+            ...(field === 'oldMode' ? {} : { [field]: { type: 'string', writableLayers: ['user', 'project'], title: field } }),
           },
         };
       });
@@ -876,7 +876,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'target-scoped', title: 'Target scoped', content: 'Target scoped.' }],
       };
-      manifest.config = { fields: { mode: { type: 'string', default: 'default' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'default' } } };
     });
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -3557,7 +3557,7 @@ describe('five namespaced write commands', () => {
         dependencies: ['leaf'],
         configureManifest: (manifest) => {
           manifest.config = {
-            fields: { mode: { type: 'string', default: 'safe' } },
+            fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'safe' } },
           };
         },
       },
@@ -3665,7 +3665,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey,
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey,
         }],
       };
     };
@@ -3741,7 +3741,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
         fields: {
-          mode: { type: 'string', default: 'safe' },
+          mode: { type: 'string', writableLayers: ['user', 'project'], default: 'safe' },
         },
       };
       manifest.scripts = {
@@ -3847,7 +3847,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['user'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
         }],
       };
     };
@@ -3927,7 +3927,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'leaf-skill',
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'leaf-skill',
         }],
       };
     };
@@ -4177,7 +4177,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present', 'disabled'], refreshKeys: [],
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present', 'disabled'], refreshKeys: [],
           skillKey: 'shared-skill',
         }],
       };
@@ -4235,7 +4235,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey,
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey,
         }],
       };
     };
@@ -4299,7 +4299,7 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-removal-config-source');
     const configure = (manifest: PluginMeta['manifest']) => {
       manifest.marketplace.policy.products = ['CODEX'];
-      manifest.config = { fields: { mode: { type: 'string', required: true } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], required: true } } };
     };
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'cleanup-target', configureManifest: configure },
@@ -4689,7 +4689,7 @@ describe('five namespaced write commands', () => {
         manifest.extensions = {
           instructions: [{ name: 'review', title: 'Review', content }],
         };
-        manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+        manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
       },
     );
     await writeSource('review B');
@@ -6462,6 +6462,7 @@ describe('five namespaced write commands', () => {
         fields: {
           level: {
             type: 'string',
+            writableLayers: ['user', 'project'],
             title: '审查级别',
             choices: {
               allowCustom: false,
@@ -6471,9 +6472,9 @@ describe('five namespaced write commands', () => {
               ],
             },
           },
-          count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
-          token: { type: 'string', sensitive: true, title: '令牌' },
-          rules: { type: 'string', validation: { format: 'path' }, title: '规则文件' },
+          count: { type: 'number', writableLayers: ['user', 'project'], validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
+          token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, title: '令牌' },
+          rules: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'path' }, title: '规则文件' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
@@ -6617,12 +6618,13 @@ describe('five namespaced write commands', () => {
           platform,
           scopes: ['project'],
           target: `${platform}.skill`,
+          ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' as const } } : {}),
           states: ['present'],
           refreshKeys: [],
           skillKey: 'review',
         })),
       };
-      manifest.config = { fields: { mode: { type: 'string', title: '模式' } } };
+      manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: '模式' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -6790,6 +6792,7 @@ describe('five namespaced write commands', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'review',
@@ -7170,7 +7173,7 @@ describe('five namespaced write commands', () => {
       createCatalogSnapshotFixture(dualRoot, 'config-dual', [], 'dual\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
         manifest.config = {
-          fields: { mode: { type: 'string', default: 'safe' } },
+          fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'safe' } },
         };
         manifest.scripts = {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
@@ -7181,6 +7184,7 @@ describe('five namespaced write commands', () => {
             platform,
             scopes: ['project'],
             target: `${platform}.skill`,
+            ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' as const } } : {}),
             states: ['present'],
             refreshKeys: ['mode'],
             skillKey: 'mode-skill',
@@ -7484,7 +7488,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'config-native', [], 'config\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.config = {
-        fields: { mode: { type: 'string', default: 'safe' } },
+        fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'safe' } },
       };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -8064,7 +8068,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
         fields: {
-          mode: { type: 'string', default: 'safe' },
+          mode: { type: 'string', writableLayers: ['user', 'project'], default: 'safe' },
         },
       };
       manifest.scripts = {

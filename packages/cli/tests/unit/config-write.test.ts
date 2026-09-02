@@ -109,9 +109,10 @@ async function createFixture(
     },
     config: {
       fields: {
-        token: { type: 'string', sensitive: true },
+        token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true },
         mode: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [
@@ -121,10 +122,11 @@ async function createFixture(
           },
           default: 'safe',
         },
-        workspace: { type: 'string', sensitive: true, validation: { format: 'directory' } },
-        certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
+        workspace: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, validation: { format: 'directory' } },
+        certificate: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, validation: { format: 'file' } },
         presetCertificate: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           validation: { format: 'file' },
           choices: {
             allowCustom: true,
@@ -133,12 +135,13 @@ async function createFixture(
         },
         locations: {
           type: 'object',
+          writableLayers: ['user', 'project'],
           properties: {
             certificate: { type: 'string', sensitive: true, validation: { format: 'file' } },
           },
           additionalProperties: { type: 'string', sensitive: true, validation: { format: 'directory' } },
         },
-        genericPath: { type: 'string', validation: { format: 'path' } },
+        genericPath: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'path' } },
       },
     },
     ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
@@ -149,6 +152,7 @@ async function createFixture(
               id: 'dynamic-skill',
               platform: 'codex',
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               kind: 'skill',
               scopes: ['user'],
               states: ['present'],
@@ -487,6 +491,22 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(read)).not.toContain('private-token');
   });
 
+  it('projects field layer writability into the TUI view model', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config!.fields.mode.writableLayers = ['user'];
+    const read = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    const groups = buildConfigGroups({ schema: fixture.plugin.manifest.config!, read });
+    expect(groups.flatMap((group) => group.fields).find((field) => field.key === 'mode'))
+      .toMatchObject({ writable: false });
+  });
+
   it('resolves submitted file and directory formats without exposing sensitive paths', async () => {
     const fixture = await createFixture();
     const nestedCwd = path.join(fixture.cwd, 'nested');
@@ -619,6 +639,27 @@ describe('config write full reinstall apply', () => {
     expect((await readPluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
       scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
+  it('rejects writes outside a field writable layer', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config!.fields.mode.writableLayers = ['user'];
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      apply: false,
+    })).rejects.toThrow('Config field "mode" is not writable in the project layer.');
+
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
       cwd: fixture.cwd,
       env: fixture.env,
     })).exists).toBe(false);
@@ -1250,8 +1291,8 @@ describe('config write full reinstall apply', () => {
 
   it('keeps user and project values separate and applies project precedence', async () => {
     const fixture = await createFixture();
-    fixture.plugin.manifest.config!.fields.label = { type: 'string' };
-    fixture.plugin.manifest.config!.fields.count = { type: 'number' };
+    fixture.plugin.manifest.config!.fields.label = { type: 'string', writableLayers: ['user', 'project'] };
+    fixture.plugin.manifest.config!.fields.count = { type: 'number', writableLayers: ['user', 'project'] };
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
       scope: 'user',
@@ -1328,8 +1369,8 @@ describe('config write full reinstall apply', () => {
 
   it('keeps missing optional and required fields unset through the real read-to-page projection', async () => {
     const fixture = await createFixture();
-    fixture.plugin.manifest.config!.fields.optional = { type: 'string' };
-    fixture.plugin.manifest.config!.fields.required = { type: 'string', required: true };
+    fixture.plugin.manifest.config!.fields.optional = { type: 'string', writableLayers: ['user', 'project'] };
+    fixture.plugin.manifest.config!.fields.required = { type: 'string', writableLayers: ['user', 'project'], required: true };
 
     const effectiveRead = await resolveConfigRead({
       pluginName: fixture.plugin.manifest.name,

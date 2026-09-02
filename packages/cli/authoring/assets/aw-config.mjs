@@ -372,6 +372,8 @@ function normalizeScalarField(value, path, options) {
         throw new Error(`Invalid ${path}.type: expected string, number, or boolean.`);
     }
     const allowed = ['type', 'title', 'description', 'sensitive'];
+    if (options.requireWritableLayers)
+        allowed.push('writableLayers');
     if (options.allowDefault)
         allowed.push('default');
     if (options.allowRequired)
@@ -380,6 +382,9 @@ function normalizeScalarField(value, path, options) {
         allowed.push('choices', 'validation');
     assertAllowedKeys(input, path, allowed);
     const common = {
+        ...(options.requireWritableLayers
+            ? { writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`) }
+            : {}),
         title: optionalText(input.title, `${path}.title`),
         description: optionalText(input.description, `${path}.description`),
         required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
@@ -420,6 +425,22 @@ function normalizeScalarField(value, path, options) {
         default: defaultValue,
     };
 }
+function normalizeWritableLayers(value, path) {
+    if (!Array.isArray(value) || value.length === 0) {
+        throw new Error(`Invalid ${path}: expected a non-empty array.`);
+    }
+    const layers = [];
+    for (const [index, layer] of value.entries()) {
+        if (layer !== 'user' && layer !== 'project') {
+            throw new Error(`Invalid ${path}[${index}]: expected "user" or "project".`);
+        }
+        if (layers.includes(layer)) {
+            throw new Error(`Invalid ${path}[${index}]: duplicate writable layer "${layer}".`);
+        }
+        layers.push(layer);
+    }
+    return layers;
+}
 function assertChoices(definition, path) {
     if (definition.sensitive === true && definition.type !== 'boolean' && definition.choices !== undefined) {
         throw new Error(`Invalid ${path}.choices: sensitive config cannot declare choices.`);
@@ -451,6 +472,7 @@ function normalizeObjectField(value, path) {
     const input = asObject(value, path);
     assertAllowedKeys(input, path, [
         'type',
+        'writableLayers',
         'title',
         'description',
         'default',
@@ -516,6 +538,7 @@ function normalizeObjectField(value, path) {
     }
     return {
         type: 'object',
+        writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`),
         title: optionalText(input.title, `${path}.title`),
         description: optionalText(input.description, `${path}.description`),
         default: input.default,
@@ -544,6 +567,7 @@ export function normalizePluginConfigDefinition(value, path = 'config') {
             : normalizeScalarField(rawField, `${path}.fields.${field}`, {
                 allowDefault: true,
                 allowRequired: true,
+                requireWritableLayers: true,
             });
         assertChoices(definition, `${path}.fields.${field}`);
         if (definition.default !== undefined) {

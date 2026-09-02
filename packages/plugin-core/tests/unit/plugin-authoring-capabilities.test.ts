@@ -45,16 +45,25 @@ describe('plugin authoring capability structure registry', () => {
       }))
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.validation.format'))
       .toEqual(schema.$defs.configStringValidation.properties.format.enum)
+    expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.writableLayers'))
+      .toEqual(schema.$defs.configWritableLayers.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].distributions'))
       .toEqual([schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.distributions.items.const])
-    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target'))
-      .toEqual(schema.$defs.artifactTarget.properties.target.enum)
+    expect([...getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].target')].sort())
+      .toEqual(schema.$defs.artifactTarget.oneOf.flatMap(
+        (entry: { properties: { target: { const?: string; enum?: string[] } } }) =>
+          entry.properties.target.enum ?? [entry.properties.target.const!],
+      ).sort())
     expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].scopes'))
-      .toEqual(schema.$defs.artifactTarget.properties.scopes.items.enum)
+      .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.scopes.items.enum)
     expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].states'))
-      .toEqual(schema.$defs.artifactTarget.properties.states.items.enum)
+      .toEqual(schema.$defs.artifactTarget.oneOf[0].properties.states.items.enum)
+    expect(getPluginAuthoringAcceptedValues('artifacts', 'artifacts.targets[].delivery.mode'))
+      .toEqual(schema.$defs.codexSkillDelivery.oneOf.map(
+        (entry: { properties: { mode: { const: string } } }) => entry.properties.mode.const,
+      ))
   })
 
   it('publishes postApply timeout and hook values from their Core contracts', () => {
@@ -72,6 +81,19 @@ describe('plugin authoring capability structure registry', () => {
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ field: 'artifacts.targets[].id', required: true }),
         expect.objectContaining({ field: 'artifacts.targets[].refreshKeys', required: true }),
+        expect.objectContaining({ field: 'artifacts.targets[].delivery', required: 'for codex.skill' }),
+        {
+          field: 'artifacts.targets[].delivery.identity',
+          type: 'literal shared',
+          required: 'when delivery.mode is codex-native',
+          acceptedValues: ['shared'],
+        },
+        {
+          field: 'artifacts.targets[].delivery.renderProfile',
+          type: 'literal user',
+          required: 'when delivery.mode is codex-native',
+          acceptedValues: ['user'],
+        },
         expect.objectContaining({ field: 'artifacts.targets[].skillKey', required: 'for Skill targets' }),
       ]))
   })

@@ -53,24 +53,29 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
       fields: {
         token: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           sensitive: true,
         },
         credentials: {
           type: 'object',
+          writableLayers: ['user', 'project'],
           properties: {
             accessKey: { type: 'string', sensitive: true },
           },
         },
         enableLightweightInstruction: {
           type: 'boolean',
+          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
@@ -396,10 +401,12 @@ describe('artifact renderer runtime', () => {
     const manifest = createManifest();
     manifest.config!.fields.sharedFile = {
       type: 'string',
+      writableLayers: ['user', 'project'],
       validation: { format: 'file' },
     };
     manifest.config!.fields.locations = {
       type: 'object',
+      writableLayers: ['user', 'project'],
       properties: {
         certificate: { type: 'string', validation: { format: 'file' } },
         label: { type: 'string' },
@@ -474,6 +481,7 @@ describe('artifact renderer runtime', () => {
     const manifest = createManifest();
     manifest.config!.fields.locations = {
       type: 'object',
+      writableLayers: ['user', 'project'],
       properties: {
         certificate: { type: 'string', validation: { format: 'file' } },
       },

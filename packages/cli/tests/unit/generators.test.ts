@@ -454,6 +454,7 @@ describe('local-plugin generator', () => {
           platform: 'codex',
           scopes: ['user', 'project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
@@ -585,6 +586,7 @@ describe('local-plugin generator', () => {
         platform: 'codex',
         scopes: ['user'],
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -615,6 +617,7 @@ describe('local-plugin generator', () => {
       fields: {
         explorerModel: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
       },
@@ -626,6 +629,7 @@ describe('local-plugin generator', () => {
           platform: 'codex',
           scopes: ['user'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: ['explorerModel'],

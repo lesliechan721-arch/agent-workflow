@@ -13,8 +13,8 @@ import type {
   DeveloperInstructionsBlockArtifact,
   PlatformName,
   DistributionName,
+  NormalizedPluginManifest,
   PluginArtifactTargetDefinition,
-  PluginManifestSource,
   Scope,
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
@@ -131,7 +131,7 @@ function resolvePlanObject(plan: unknown): ArtifactPlan {
 }
 
 function getDeclaredTargets(options: {
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   platform: PlatformName | DistributionName;
   scope: Scope;
 }): Map<string, PluginArtifactTargetDefinition> {
@@ -525,7 +525,7 @@ function artifactSortKey(artifact: ValidatedArtifactPlanArtifact): [number, stri
 }
 
 function resolveDigestSalt(options: {
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   rendererDigest?: string;
   manifestDigest?: string;
 }): string {
@@ -560,7 +560,7 @@ export function createArtifactConfigDigest(options: {
 
 export function validateArtifactPlan(options: {
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   plan: unknown;
   platform: PlatformName | DistributionName;
   scope: Scope;

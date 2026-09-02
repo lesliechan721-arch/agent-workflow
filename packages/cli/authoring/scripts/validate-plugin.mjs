@@ -2047,6 +2047,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     'projectManagedKind',
     'states',
     'refreshKeys',
+    'delivery',
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
@@ -2060,6 +2061,27 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     error(`${fieldName}.target: unsupported artifact target "${artifactTarget}"`);
   }
   const portable = artifactTarget === 'agent-skills.skill';
+  let delivery;
+  if (artifactTarget === 'codex.skill') {
+    delivery = expectRecord(target.delivery, `${fieldName}.delivery`);
+    if (delivery) {
+      if (delivery.mode === 'aw-extension') {
+        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode']);
+      } else if (delivery.mode === 'codex-native') {
+        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode', 'identity', 'renderProfile']);
+        if (delivery.identity !== 'shared') {
+          error(`${fieldName}.delivery.identity: expected "shared"`);
+        }
+        if (delivery.renderProfile !== 'user') {
+          error(`${fieldName}.delivery.renderProfile: expected "user"`);
+        }
+      } else {
+        error(`${fieldName}.delivery.mode: expected "codex-native" or "aw-extension"`);
+      }
+    }
+  } else if (target.delivery !== undefined) {
+    error(`${fieldName}.delivery: delivery is only supported for codex.skill targets`);
+  }
   const platform = portable || target.platform === undefined
     ? undefined
     : validateManifestString(target.platform, `${fieldName}.platform`);
@@ -2138,6 +2160,12 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     if (!schemaKeys.has(refreshKey)) {
       error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
       continue;
+    }
+    if (delivery?.mode === 'codex-native') {
+      const writableLayers = manifest.config.fields[refreshKey]?.writableLayers;
+      if (!Array.isArray(writableLayers) || writableLayers.length !== 1 || writableLayers[0] !== 'user') {
+        error(`${fieldName}.refreshKeys[${refreshIndex}]: native delivery requires a config field with writableLayers ["user"]`);
+      }
     }
   }
 
@@ -2236,6 +2264,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     projectManagedKind,
     states,
     refreshKeys,
+    delivery,
     roleKey,
     skillKey,
     sourceDirs,
@@ -2258,6 +2287,18 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
   const declarations = artifacts.targets
     .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir))
     .filter(Boolean);
+  const staticSkillNames = new Set(collectDeclaredSkillNames(pluginDir, manifest).static);
+  for (const [index, declaration] of declarations.entries()) {
+    if (
+      declaration.target === 'codex.skill'
+      && declaration.delivery?.mode === 'codex-native'
+      && staticSkillNames.has(declaration.skillKey)
+    ) {
+      error(
+        `artifacts.targets[${index}].skillKey: native dynamic Skill "${declaration.skillKey}" conflicts with a static Skill of the same name`,
+      );
+    }
+  }
   const owners = new Map();
   for (const declaration of declarations) {
     if (

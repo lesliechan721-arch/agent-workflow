@@ -319,7 +319,7 @@ describe('phase 3B namespaced runtime stores', () => {
     await Promise.all([
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
       createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+        manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -463,6 +463,7 @@ describe('phase 3B namespaced runtime stores', () => {
           fields: {
             mode: {
               type: 'string',
+              writableLayers: ['user', 'project'],
               title: 'Mode',
               choices: {
                 allowCustom: false,

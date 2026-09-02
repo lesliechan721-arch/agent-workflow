@@ -80,6 +80,7 @@ async function createFixture(): Promise<{
       fields: {
         mode: {
           type: 'string',
+          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [

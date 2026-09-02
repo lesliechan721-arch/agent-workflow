@@ -36,7 +36,7 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
       },
       scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
       ...(options.sensitiveDefault ? {
-        config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
+        config: { fields: { token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, default: options.sensitiveDefault } } },
       } : {}),
     },
   };

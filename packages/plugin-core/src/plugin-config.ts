@@ -321,7 +321,10 @@ function validateObjectField(
     checkChoices
     && issues.length === 0
     && fieldDefinition.choices?.allowCustom === false
-    && matchPluginConfigPreset(fieldDefinition, input as PluginConfigObject) === undefined
+    && matchPluginConfigPreset(
+      fieldDefinition as PluginConfigSchemaField,
+      input as PluginConfigObject,
+    ) === undefined
   ) {
     issues.push(createIssue('choice', field, 'Expected a declared preset value.'))
   }
@@ -489,7 +492,7 @@ function normalizeChoices<Value extends PluginConfigValue>(
 function normalizeScalarField(
   value: unknown,
   path: string,
-  options: { allowDefault: boolean; allowRequired: boolean },
+  options: { allowDefault: boolean; allowRequired: boolean; requireWritableLayers?: boolean },
 ): PluginConfigScalarField | PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField {
   const input = asObject(value, path)
   const type = nonEmptyString(input.type, `${path}.type`)
@@ -497,11 +500,15 @@ function normalizeScalarField(
     throw new Error(`Invalid ${path}.type: expected string, number, or boolean.`)
   }
   const allowed = ['type', 'title', 'description', 'sensitive']
+  if (options.requireWritableLayers) allowed.push('writableLayers')
   if (options.allowDefault) allowed.push('default')
   if (options.allowRequired) allowed.push('required')
   if (type !== 'boolean') allowed.push('choices', 'validation')
   assertAllowedKeys(input, path, allowed)
   const common = {
+    ...(options.requireWritableLayers
+      ? { writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`) }
+      : {}),
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
     required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
@@ -543,6 +550,26 @@ function normalizeScalarField(
   }
 }
 
+function normalizeWritableLayers(
+  value: unknown,
+  path: string,
+): ['user' | 'project', ...Array<'user' | 'project'>] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`Invalid ${path}: expected a non-empty array.`)
+  }
+  const layers: Array<'user' | 'project'> = []
+  for (const [index, layer] of value.entries()) {
+    if (layer !== 'user' && layer !== 'project') {
+      throw new Error(`Invalid ${path}[${index}]: expected "user" or "project".`)
+    }
+    if (layers.includes(layer)) {
+      throw new Error(`Invalid ${path}[${index}]: duplicate writable layer "${layer}".`)
+    }
+    layers.push(layer)
+  }
+  return layers as ['user' | 'project', ...Array<'user' | 'project'>]
+}
+
 function assertChoices(
   definition: PluginConfigSchemaField,
   path: string,
@@ -572,10 +599,16 @@ function assertChoices(
   }
 }
 
-function normalizeObjectField(value: unknown, path: string): PluginConfigObjectField {
+function normalizeObjectField(
+  value: unknown,
+  path: string,
+): PluginConfigObjectField & {
+  writableLayers: ['user' | 'project', ...Array<'user' | 'project'>]
+} {
   const input = asObject(value, path)
   assertAllowedKeys(input, path, [
     'type',
+    'writableLayers',
     'title',
     'description',
     'default',
@@ -644,6 +677,7 @@ function normalizeObjectField(value: unknown, path: string): PluginConfigObjectF
   }
   return {
     type: 'object',
+    writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`),
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
     default: input.default as PluginConfigObject | undefined,
@@ -676,7 +710,8 @@ export function normalizePluginConfigDefinition(
       : normalizeScalarField(rawField, `${path}.fields.${field}`, {
           allowDefault: true,
           allowRequired: true,
-        }) as PluginConfigScalarField
+          requireWritableLayers: true,
+        }) as PluginConfigSchemaField
     assertChoices(definition, `${path}.fields.${field}`)
     if (definition.default !== undefined) {
       const issues = validatePluginConfigValue(definition, definition.default, field)

@@ -50,7 +50,7 @@ describe('codex-surface-analysis', () => {
   it('keeps renderer output and instruction, permission, and agent extensions AW-owned', () => {
     const analysis = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { fields: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
       scripts: {
         artifacts: { render: { runner: 'node', path: './render.mjs' } },
       },
@@ -64,6 +64,7 @@ describe('codex-surface-analysis', () => {
           id: 'dynamic-skill',
           platform: 'codex',
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           kind: 'skill',
           projectManagedKind: 'skill',
           scopes: ['project', 'user'],
@@ -80,7 +81,8 @@ describe('codex-surface-analysis', () => {
     expect(analysis).toMatchObject({
       ok: true,
       nativeKinds: ['skill'],
-      extensionKinds: ['skill', 'instruction', 'permission', 'agent', 'config'],
+      configInputs: ['mode'],
+      extensionKinds: ['skill', 'instruction', 'permission', 'agent'],
       classification: 'mixed',
       deliveryOwner: 'split',
       scopeOverlap: 'aw-owned-conflict',
@@ -89,30 +91,32 @@ describe('codex-surface-analysis', () => {
       .toMatchObject({ owner: 'aw', dynamic: true, name: 'generated-review' });
   });
 
-  it('treats config as AW-owned evidence and postApply as target-local behavior', () => {
+  it('treats config as input and postApply as target-local behavior', () => {
     const configOnly = analyzeCodexSurface(manifest({
-      config: { fields: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
     }));
     expect(configOnly).toMatchObject({
       ok: true,
       nativeKinds: [],
-      extensionKinds: ['config'],
-      classification: 'aw-extension',
-      deliveryOwner: 'aw',
-      scopeOverlap: 'aw-owned-conflict',
+      configInputs: ['mode'],
+      extensionKinds: [],
+      classification: 'empty',
+      deliveryOwner: 'none',
+      scopeOverlap: 'none',
     });
 
     const nativeAndConfig = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { fields: { mode: { type: 'string' } } },
+      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
     }));
     expect(nativeAndConfig).toMatchObject({
       ok: true,
       nativeKinds: ['skill'],
-      extensionKinds: ['config'],
-      classification: 'mixed',
-      deliveryOwner: 'split',
-      scopeOverlap: 'aw-owned-conflict',
+      configInputs: ['mode'],
+      extensionKinds: [],
+      classification: 'native',
+      deliveryOwner: 'codex-native',
+      scopeOverlap: 'native-compatible',
     });
 
     const nativeAndPostApply = analyzeCodexSurface(manifest({
@@ -162,6 +166,7 @@ describe('codex-surface-analysis', () => {
           id: 'dynamic-skill',
           platform: 'codex',
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           kind: 'skill',
           projectManagedKind: 'skill',
           scopes: ['project'],
@@ -191,6 +196,7 @@ describe('codex-surface-analysis', () => {
           id: 'dynamic-skill',
           platform: 'codex',
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           kind: 'skill',
           projectManagedKind: 'skill',
           scopes: ['project'],
@@ -212,5 +218,104 @@ describe('codex-surface-analysis', () => {
     expect(() => assertCodexSurfaceSupported(analysis)).toThrow(
       expect.objectContaining({ code: 'codexSurfaceNativeIdentityMissing' }),
     );
+  });
+
+  it('classifies native dynamic skills as Codex-owned native output', () => {
+    const analysis = analyzeCodexSurface(manifest({
+      artifacts: {
+        targets: [{
+          id: 'native-dynamic',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          kind: 'skill',
+          projectManagedKind: 'skill',
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-dynamic',
+        }],
+      },
+    }));
+
+    expect(analysis).toMatchObject({
+      ok: true,
+      nativeKinds: ['skill'],
+      extensionKinds: [],
+      classification: 'native',
+      deliveryOwner: 'codex-native',
+    });
+    expect(analysis.components).toContainEqual(expect.objectContaining({
+      owner: 'codex-native',
+      dynamic: true,
+      scopes: ['user'],
+      name: 'native-dynamic',
+    }));
+  });
+
+  it('allows differently named native and AW dynamic skills', () => {
+    const analysis = analyzeCodexSurface(manifest({
+      artifacts: {
+        targets: [{
+          id: 'native-dynamic',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-review',
+        }, {
+          id: 'extension-dynamic',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'extension-review',
+        }],
+      },
+    }));
+
+    expect(analysis).toMatchObject({
+      ok: true,
+      classification: 'mixed',
+      missingNativeIdentityKinds: [],
+      collisions: [],
+    });
+  });
+
+  it('rejects the same name for native and AW dynamic skills', () => {
+    const analysis = analyzeCodexSurface(manifest({
+      artifacts: {
+        targets: [{
+          id: 'native-dynamic',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'review',
+        }, {
+          id: 'extension-dynamic',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'review',
+        }],
+      },
+    }));
+
+    expect(analysis).toMatchObject({
+      ok: false,
+      errorCode: 'codexSurfaceOwnerCollision',
+      collisions: [{ kind: 'skill', name: 'review', owners: ['codex-native', 'aw'] }],
+      missingNativeIdentityKinds: [],
+    });
   });
 });
