@@ -24,6 +24,8 @@ import {
   type DiagnosticImpactEntryViewModel,
   type DiagnosticSummaryViewModel,
 } from './diagnostics.js';
+import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 
 export type SourceHealthState = 'ready' | 'unavailable';
 
@@ -191,7 +193,7 @@ export interface SourceTabViewModel {
   label: string;
   count?: number;
   primary: boolean;
-  state: 'ready' | 'error';
+  state: 'ready' | 'checking' | 'update' | 'recovery' | 'error';
 }
 
 export interface SourceDetailViewModel {
@@ -219,6 +221,9 @@ export interface HomeSummaryViewModel {
   issueCount: number;
   sourceCount: number;
   unavailableSourceCount: number;
+  catalogUpdateCount: number;
+  catalogRecoveryCount: number;
+  catalogCheckingCount: number;
 }
 
 export interface ConfigFieldViewModel {
@@ -823,10 +828,19 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 function sourceState(
   source: StatusV6Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
+  freshness?: CatalogSourceFreshnessViewModel,
+  generation?: CatalogSourceGenerationViewModel,
 ): SourceTabViewModel['state'] {
-  if (health?.state === 'ready') return 'ready';
   if (health?.state === 'unavailable') return 'error';
   if (source.error) return 'error';
+  if (generation?.state && generation.state !== 'ready') return 'recovery';
+  if (freshness?.state === 'checking') return 'checking';
+  if (freshness?.state === 'updateAvailable'
+    || freshness?.state === 'localChangesAvailable') return 'update';
+  if (freshness?.state === 'versionConflict'
+    || freshness?.state === 'rollbackDetected'
+    || freshness?.state === 'incompatible') return 'recovery';
+  if (freshness?.state === 'checkFailed') return 'error';
   return 'ready';
 }
 
@@ -1550,6 +1564,8 @@ export function buildTuiViewModel(options: {
   targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
+  catalogFreshness?: ReadonlyMap<string, CatalogSourceFreshnessViewModel>;
+  catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
 }): TuiViewModel {
@@ -1631,7 +1647,12 @@ export function buildTuiViewModel(options: {
     label: source.id,
     count: plugins.filter((plugin) => plugin.sourceId === source.id).length,
     primary: source.primary,
-    state: sourceState(source, options.sourceHealth?.get(source.id)),
+    state: sourceState(
+      source,
+      options.sourceHealth?.get(source.id),
+      options.catalogFreshness?.get(source.id),
+      options.catalogGenerations?.get(source.id),
+    ),
   }));
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
     .filter((health) => health.state === 'unavailable')
@@ -1698,7 +1719,12 @@ export function buildTuiViewModel(options: {
       installedPlugins: pluginsWithAttention.filter(hasInstalledPlacement).length,
       issueCount: issues.length,
       sourceCount: sourceTabs.length,
-      unavailableSourceCount: sourceTabs.filter((source) => source.state === 'error').length,
+      unavailableSourceCount: options.status.catalog.sources.filter((source) => source.error
+        || options.sourceHealth?.get(source.id)?.state === 'unavailable').length,
+      catalogUpdateCount: sourceTabs.filter((source) => source.state === 'update').length,
+      catalogRecoveryCount: sourceTabs.filter((source) => source.state === 'recovery'
+        || source.state === 'error').length,
+      catalogCheckingCount: sourceTabs.filter((source) => source.state === 'checking').length,
     },
   };
 }

@@ -28,7 +28,10 @@ const payload: StatusV6Payload = {
   errors: [],
 };
 
-function dependencies(loadStatus: TuiControllerDependencies['loadStatus']): TuiControllerDependencies {
+function dependencies(
+  loadStatus: TuiControllerDependencies['loadStatus'],
+  overrides: Partial<TuiControllerDependencies> = {},
+): TuiControllerDependencies {
   return {
     loadStatus,
     captureEvidence: async () => ({
@@ -38,11 +41,12 @@ function dependencies(loadStatus: TuiControllerDependencies['loadStatus']): TuiC
       },
     }),
     executeIntent: async () => undefined,
+    ...overrides,
   };
 }
 
 describe('TUI Active Catalog session', () => {
-  it('shows the sync recovery command when a source has no Active snapshot', async () => {
+  it('shows the in-TUI activation action when a source has no Active snapshot', async () => {
     const controller = new TuiController(dependencies(async () => ({
       payload,
       pluginSummaries: [],
@@ -50,7 +54,6 @@ describe('TUI Active Catalog session', () => {
         sourceId: 'official',
         sourceType: 'git',
         errorCode: 'catalogGenerationUnavailable',
-        syncInstruction: 'aw catalog source sync official',
       }],
       sourceDetails: [{
         id: 'official',
@@ -69,7 +72,8 @@ describe('TUI Active Catalog session', () => {
     await controller.load();
     controller.push({ name: 'sourceDetail', sourceId: 'official' });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(instance.lastFrame()).toContain('aw catalog source sync official');
+    expect(instance.lastFrame()).toContain('获取并启用');
+    expect(instance.lastFrame()).not.toContain('aw catalog source sync official');
   });
 
   it('reloads the TUI explicitly without any refresh dependency', async () => {
@@ -78,5 +82,84 @@ describe('TUI Active Catalog session', () => {
     await controller.load();
     await controller.reloadCatalog({ sourceId: 'official' });
     expect(loadStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a checked candidate update without replacing the current Active', async () => {
+    const readyPayload: StatusV6Payload = {
+      ...payload,
+      catalog: {
+        ...payload.catalog,
+        sources: [{
+          id: 'official',
+          identity: 'identity:official',
+          type: 'git',
+          primary: true,
+          requestedRef: 'refs/heads/catalog/latest',
+          resolvedCommit: 'a'.repeat(40),
+          catalogVersion: '1.0.0',
+          channel: 'latest',
+          freshness: 'active',
+        }],
+      },
+    };
+    const controller = new TuiController(dependencies(async () => ({
+      payload: readyPayload,
+      pluginSummaries: [],
+      catalogGenerations: [{
+        sourceId: 'official',
+        sourceType: 'git',
+        state: 'ready',
+        active: {
+          catalogVersion: '1.0.0',
+          channel: 'latest',
+          requestedRef: 'refs/heads/catalog/latest',
+          resolvedCommit: 'a'.repeat(40),
+          storeKey: 'identity/current',
+          digestShort: 'aaaaaaaa',
+        },
+      }],
+      sourceDetails: [{
+        id: 'official',
+        type: 'git',
+        primary: true,
+        locationSummary: 'https://example.invalid/catalog.git',
+        refPolicy: 'explicit',
+        explicitRef: 'refs/heads/catalog/latest',
+        pluginCount: 0,
+        sourceIdentity: 'identity:official',
+        requestedRef: 'refs/heads/catalog/latest',
+        resolvedCommit: 'a'.repeat(40),
+        catalogVersion: '1.0.0',
+        channel: 'latest',
+        configDigest: readyPayload.catalog.configDigest,
+      }],
+    }), {
+      probeCatalogFreshness: async () => ({
+        sourceId: 'official',
+        state: 'updateAvailable',
+        activeVersion: '1.0.0',
+        candidate: {
+          sourceConfigFingerprint: `sha256:${'1'.repeat(64)}`,
+          sourceIdentity: `sha256:${'2'.repeat(64)}`,
+          logicalIdentity: 'official',
+          requestedRef: 'refs/heads/catalog/latest',
+          resolvedCommit: 'b'.repeat(40),
+          catalogVersion: '2.0.0',
+          channel: 'latest',
+          manifestDigest: `sha256:${'3'.repeat(64)}`,
+          snapshotDigest: `sha256:${'4'.repeat(64)}`,
+        },
+      }),
+    }));
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    await controller.load();
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.push({ name: 'sourceDetail', sourceId: 'official' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(instance.lastFrame()).toContain('当前使用 1.0.0；候选版本 2.0.0 可更新');
+    expect(instance.lastFrame()).toContain('更新到 2.0.0');
+    expect(controller.getCatalogGeneration('official')?.active?.catalogVersion).toBe('1.0.0');
+    controller.dispose();
   });
 });

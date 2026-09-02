@@ -47,6 +47,30 @@ const evidence: OperationEvidence = {
   targetFingerprint: 'sha256:target',
 };
 
+function evidenceForIntent(intent: OperationIntent): OperationEvidence {
+  if (intent.kind !== 'catalogGeneration') return evidence;
+  return {
+    ...evidence,
+    catalogGeneration: {
+      action: intent.action,
+      candidate: {
+        sourceConfigFingerprint: 'sha256:source-config',
+        sourceIdentity: `identity:${intent.sourceId}`,
+        logicalIdentity: `workspace:${intent.sourceId}`,
+        catalogVersion: '2.4.0',
+        channel: 'latest',
+        requestedRef: 'catalog/stable',
+        resolvedCommit: 'abc123',
+        manifestDigest: 'sha256:manifest',
+        snapshotDigest: 'sha256:snapshot',
+      },
+      configDigest: 'sha256:config',
+      proposedConfigDigest: 'sha256:proposed-config',
+      ...(intent.sourceMutation ? { sourceMutation: intent.sourceMutation } : {}),
+    },
+  };
+}
+
 function target(options: {
   pluginName: string;
   sourceId?: string;
@@ -347,7 +371,7 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
   return new TuiController({
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
     inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
-    captureEvidence: vi.fn().mockResolvedValue(evidence),
+    captureEvidence: vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent)),
     executeIntent: vi.fn().mockResolvedValue({
       overallState: 'succeeded',
       targetResults: [
@@ -2172,7 +2196,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
-    for (const [index, label] of ['重新加载 TUI', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
+    for (const [index, label] of ['重新检查', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
       if (index > 0) await input(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
@@ -2214,8 +2238,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     const unavailableDefault = unavailableInstance.lastFrame() ?? '';
     expect(unavailableDefault).toContain('来源没有可用 Active');
-    expect(unavailableDefault).toContain('aw catalog source sync research');
-    expect(unavailableDefault).toContain('重新加载 TUI');
+    expect(unavailableDefault).toContain('获取并启用');
+    expect(unavailableDefault).not.toContain('aw catalog source sync research');
     expect(unavailableDefault).not.toContain('catalogSourceUnavailable');
     for (const privateText of ['native stderr', 'bearer-secret', 'alice', 'url-secret', 'query-secret',
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {
@@ -2357,7 +2381,7 @@ describe('ConsoleAppV4', () => {
     const productFrame = instance.lastFrame() ?? '';
     expect(productFrame).toContain('当前无法取得可信的字段定义');
     expect(productFrame).toContain('已保存的设置保持不变');
-    expect(productFrame).toContain('aw catalog source sync team-tools');
+    expect(productFrame).toContain('获取或修复来源');
     expect(productFrame).not.toContain('configReadFailed');
     expect(productFrame).not.toContain('config-secret');
     await input(instance, '\u001B[B');
@@ -3383,7 +3407,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
     expect(unavailableScreens).toContain('C17');
     expect(unavailableInstance.lastFrame()).toContain('Manifest 或来源不可用');
-    expect(unavailableInstance.lastFrame()).toContain('aw catalog source sync team-tools');
+    expect(unavailableInstance.lastFrame()).toContain('获取或修复来源');
     expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
     expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
     await input(unavailableInstance, '\r');
@@ -3811,10 +3835,10 @@ describe('ConsoleAppV4', () => {
     await confirmReview(instance, value);
     await nextTurn(5);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'sourceMutation',
-      action: 'add',
+      kind: 'catalogGeneration',
+      action: 'activate',
       sourceId: 'team-b2',
-    }), expect.anything());
+    }), expect.anything(), expect.any(AbortSignal));
     expect(screens).toContain('S12');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
@@ -3855,7 +3879,7 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('discards an edit-source Review and returns to the original source detail', async () => {
+  it('backs from an edit-source Review to the submitted source draft', async () => {
     const value = controller();
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
@@ -3865,11 +3889,10 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S15');
 
-    await input(instance, 'b', '\u001B[B', '\r');
+    await input(instance, 'b');
 
     expect(value.snapshot.router).toMatchObject({
-      depth: 2,
-      current: { route: { name: 'sourceDetail', sourceId: 'team-tools' } },
+      current: { route: { name: 'sourceAdd' } },
     });
     expect(value.snapshot.activeReview).toBeUndefined();
   });

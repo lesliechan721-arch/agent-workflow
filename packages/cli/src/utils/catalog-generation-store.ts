@@ -56,18 +56,7 @@ function logicalIdentitySegment(value: string): string {
   if (typeof value !== 'string' || value.trim() === '' || value !== value.trim()) {
     throw metadataError('Invalid Catalog logical identity.');
   }
-  try {
-    if (value === '.') return '%2E';
-    if (value === '..') return '%2E%2E';
-    const segment = encodeURIComponent(value);
-    if (segment === '.' || segment === '..' || /[\\/]/u.test(segment)) {
-      throw metadataError('Invalid Catalog logical identity.');
-    }
-    return segment;
-  } catch (error) {
-    if (error instanceof CatalogGenerationError) throw error;
-    throw metadataError('Invalid Catalog logical identity.', error);
-  }
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function resolveStrictStoreDescendant(storeRootDir: string, ...segments: string[]): string {
@@ -150,6 +139,42 @@ function parseMetadata(value: unknown): CatalogGenerationMetadataV1 {
   return value as unknown as CatalogGenerationMetadataV1;
 }
 
+async function readMetadataAtLocation(
+  location: CatalogStoreLocation,
+): Promise<CatalogGenerationMetadataV1> {
+  try {
+    const stat = await fs.lstat(location.entryDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat?.isDirectory() || stat.isSymbolicLink()) {
+      throw metadataError('Catalog store entry is missing or unsafe.');
+    }
+    const metadataStat = await fs.lstat(location.metadataPath).catch(
+      (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error),
+    );
+    if (!metadataStat?.isFile() || metadataStat.isSymbolicLink()) {
+      throw metadataError('Catalog store metadata is missing or unsafe.');
+    }
+    const metadata = parseMetadata(await fs.readJson(location.metadataPath));
+    if (createCatalogStoreKey(metadata.logicalIdentity, metadata.snapshotDigest) !== location.storeKey) {
+      throw metadataError('Catalog store metadata does not match its immutable identity.');
+    }
+    return metadata;
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw metadataError('Catalog store metadata is unreadable.', error);
+  }
+}
+
+export async function readCatalogStoreMetadata(options: {
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<CatalogGenerationMetadataV1> {
+  return readMetadataAtLocation(resolveCatalogStoreLocation(options));
+}
+
 export async function readCatalogSnapshotLogicalIdentity(snapshotRoot: string): Promise<string> {
   try {
     const markerPath = path.join(snapshotRoot, '.aw-generated.json');
@@ -177,23 +202,11 @@ async function validateEntry(options: {
   location: CatalogStoreLocation;
 }): Promise<CatalogStoreEntry> {
   try {
-    const stat = await fs.lstat(options.location.entryDir).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (!stat?.isDirectory() || stat.isSymbolicLink()) throw metadataError('Catalog store entry is missing or unsafe.');
-    const metadataStat = await fs.lstat(options.location.metadataPath).catch(
-      (error: NodeJS.ErrnoException) => error.code === 'ENOENT' ? null : Promise.reject(error),
-    );
-    if (!metadataStat?.isFile() || metadataStat.isSymbolicLink()) {
-      throw metadataError('Catalog store metadata is missing or unsafe.');
-    }
-    const metadata = parseMetadata(await fs.readJson(options.location.metadataPath));
+    const metadata = await readMetadataAtLocation(options.location);
     const validation = await validateCatalogSnapshotTransport(options.location.snapshotRoot)
       .catch((error: unknown) => { throw metadataError('Catalog store snapshot is damaged.', error); });
     if (
-      createCatalogStoreKey(metadata.logicalIdentity, metadata.snapshotDigest) !== options.location.storeKey
-      || validation.manifestDigest !== metadata.manifestDigest
+      validation.manifestDigest !== metadata.manifestDigest
       || validation.snapshotDigest !== metadata.snapshotDigest
       || validation.manifest.catalogVersion !== metadata.catalogVersion
       || validation.manifest.channel !== metadata.channel
@@ -298,4 +311,104 @@ export async function readCatalogStoreEntry(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<CatalogStoreEntry> {
   return validateEntry({ location: resolveCatalogStoreLocation(options) });
+}
+
+export async function replaceDamagedCatalogStoreEntry(options: {
+  resolution: CatalogSourceResolution;
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<CatalogStoreEntry> {
+  const location = resolveCatalogStoreLocation(options);
+  const stagingDir = resolveStrictStoreDescendant(
+    location.logicalIdentityDirectory,
+    `.replacement-${crypto.randomUUID()}.tmp`,
+  );
+  const quarantineDir = resolveStrictStoreDescendant(
+    location.logicalIdentityDirectory,
+    `.quarantine-${crypto.randomUUID()}.tmp`,
+  );
+  let quarantined = false;
+  try {
+    await ensureRegularDirectoryPath(location.storeRootDir, 'Catalog store');
+    await ensureRegularDirectoryPath(location.logicalIdentityDirectory, 'Catalog logical identity store');
+    await fs.mkdir(stagingDir);
+    const snapshotRoot = path.join(stagingDir, 'snapshot');
+    await fs.copy(options.resolution.rootDir, snapshotRoot, {
+      dereference: false,
+      preserveTimestamps: true,
+      filter: () => {
+        options.signal?.throwIfAborted();
+        return true;
+      },
+    });
+    const validation = await validateCatalogSnapshotTransport(snapshotRoot);
+    if (
+      validation.manifestDigest !== options.resolution.manifestDigest
+      || validation.snapshotDigest !== options.snapshotDigest
+      || await readCatalogSnapshotLogicalIdentity(snapshotRoot) !== options.logicalIdentity
+    ) throw new CatalogGenerationError({
+      code: 'catalogGenerationPublishFailed',
+      sourceId: options.resolution.sourceId,
+      message: `Catalog source "${options.resolution.sourceId}" changed before store repair. Run source sync again.`,
+    });
+    const metadata: CatalogGenerationMetadataV1 = {
+      schemaVersion: 1,
+      logicalIdentity: options.logicalIdentity,
+      catalogVersion: validation.manifest.catalogVersion,
+      channel: validation.manifest.channel,
+      manifestDigest: validation.manifestDigest,
+      snapshotDigest: validation.snapshotDigest,
+      requiredAwCapabilities: normalizeAwCapabilities(validation.manifest.requires.aw.capabilities ?? []),
+    };
+    await fs.writeFile(
+      path.join(stagingDir, CATALOG_STORE_METADATA_FILE),
+      `${JSON.stringify(metadata, null, 2)}\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    await validateEntry({ location: {
+      ...location,
+      entryDir: stagingDir,
+      metadataPath: path.join(stagingDir, CATALOG_STORE_METADATA_FILE),
+      snapshotRoot,
+    } });
+    options.signal?.throwIfAborted();
+    await fs.rename(location.entryDir, quarantineDir);
+    quarantined = true;
+    try {
+      await fs.rename(stagingDir, location.entryDir);
+    } catch (error) {
+      if (!await fs.pathExists(location.entryDir)) {
+        await fs.rename(quarantineDir, location.entryDir);
+        quarantined = false;
+      }
+      throw error;
+    }
+    const entry = await validateEntry({ location });
+    await fs.remove(quarantineDir).catch(() => {
+      try {
+        process.emitWarning('Catalog store repair succeeded, but quarantine cleanup failed.', {
+          code: 'AW_CATALOG_STORE_QUARANTINE_CLEANUP_FAILED',
+        });
+      } catch {
+        // Cleanup diagnostics cannot replace the repair result.
+      }
+    });
+    quarantined = false;
+    return { ...entry, reused: false };
+  } catch (error) {
+    if (error instanceof CatalogGenerationError) throw error;
+    throw new CatalogGenerationError({
+      code: 'catalogGenerationPublishFailed',
+      sourceId: options.resolution.sourceId,
+      message: `Cannot repair the active Catalog store entry for source "${options.resolution.sourceId}".`,
+      cause: error,
+    });
+  } finally {
+    await fs.remove(stagingDir).catch(() => undefined);
+    if (quarantined && !await fs.pathExists(location.entryDir)) {
+      await fs.rename(quarantineDir, location.entryDir).catch(() => undefined);
+    }
+  }
 }
