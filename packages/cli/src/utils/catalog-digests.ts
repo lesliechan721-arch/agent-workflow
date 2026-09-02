@@ -9,6 +9,7 @@ import {
   readPluginManifest,
 } from './manifest.js';
 import { calculateFileDigest } from './bundle-integrity.js';
+import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from './codex-native-render-receipt.js';
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -160,17 +161,13 @@ export async function calculateCatalogEntryContentDigest(
   return createSha256Digest(stableStringify(fileEntries));
 }
 
-/**
- * Digest for the Codex native cache payload. Codex/AW can add or remove the
- * manifest `skills` projection during native installation, so that one field
- * is canonicalized while all other manifest fields and non-manifest payload
- * bytes remain covered.
- */
-export async function calculateCodexSharedNativePayloadDigest(
+async function calculateCodexPayloadDigest(
   pluginRoot: string,
+  canonicalizeSkills: boolean,
 ): Promise<string> {
   const files = (await listFilesRecursively(pluginRoot)).filter((relativePath) =>
-    path.posix.basename(relativePath) !== '.agent-workflows-owner.json');
+    relativePath !== CODEX_NATIVE_RENDER_RECEIPT_PATH
+    && path.posix.basename(relativePath) !== '.agent-workflows-owner.json');
   const fileEntries = await Promise.all(
     files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
       const filePath = path.join(pluginRoot, relativePath);
@@ -181,7 +178,7 @@ export async function calculateCodexSharedNativePayloadDigest(
         digest = createSha256Digest(stableStringify({
           ...manifest,
           version: '<plugin-version>',
-          skills: '<native-managed>',
+          ...(canonicalizeSkills ? { skills: '<native-managed>' } : {}),
         }));
       } else {
         digest = await calculateContentPathDigest(pluginRoot, relativePath, node);
@@ -190,6 +187,22 @@ export async function calculateCodexSharedNativePayloadDigest(
     }),
   );
   return createSha256Digest(stableStringify(fileEntries));
+}
+
+/**
+ * Static shared-native digest. Codex can rewrite the manifest Skill projection,
+ * so both plugin version and skills remain canonicalized for compatibility.
+ */
+export function calculateCodexSharedNativePayloadDigest(pluginRoot: string): Promise<string> {
+  return calculateCodexPayloadDigest(pluginRoot, true);
+}
+
+/**
+ * Receipt-backed dynamic projection digest. The version is transport metadata,
+ * but the renderer-produced Skill projection is part of the payload identity.
+ */
+export function calculateCodexNativeRenderPayloadDigest(pluginRoot: string): Promise<string> {
+  return calculateCodexPayloadDigest(pluginRoot, false);
 }
 
 export async function calculateCatalogEntryDigestsFromRoot(

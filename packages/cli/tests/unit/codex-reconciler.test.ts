@@ -125,6 +125,18 @@ describe('Codex desired-state reconciliation planner', () => {
       .toThrowError(CodexReconcilePlanError);
   });
 
+  it('replaces render drift instead of treating it as damaged cache state', () => {
+    const plan = createCodexReconcilePlan(input('sync', target(), live({
+      state: 'replaceable',
+      reason: 'renderDrift',
+      version: '1.0.0',
+      desiredVersion: '1.0.0',
+      diagnostic: 'projectionRenderDrift',
+    })));
+    expect(plan.sharedNativeActions[0]?.action).toBe('replace');
+    expect(plan.review.requiresConfirmation).toBe(true);
+  });
+
   it('restores user=false after project native installation and checks exact plus neutral cwd', () => {
     const plan = createCodexReconcilePlan(input('install', target({ desiredScopes: ['project'] }), live(
       { state: 'missing' },

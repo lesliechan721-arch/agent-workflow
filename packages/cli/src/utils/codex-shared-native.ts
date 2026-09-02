@@ -3,6 +3,11 @@ import path from 'node:path';
 import type { CodexMarketplaceSnapshot } from './codex-config.js';
 import { tryParseStrictSemVer } from './manifest.js';
 import type { CodexPluginListEntry } from './native-cli.js';
+import {
+  codexNativeRenderProjectionsEqual,
+  type CodexNativeRenderProjection,
+  type CodexNativeRenderReceipt,
+} from './codex-native-render-receipt.js';
 
 export type CodexSharedNativeDiagnostic =
   | 'staleCacheObserved'
@@ -17,7 +22,13 @@ export type CodexSharedNativeDiagnostic =
   | 'manifestIdentityMismatch'
   | 'manifestVersionInvalid'
   | 'payloadPathUnsafe'
-  | 'payloadDigestMismatch';
+  | 'payloadDigestMismatch'
+  | 'projectionReceiptMissing'
+  | 'projectionReceiptUnreadable'
+  | 'projectionExpectedPayloadDigestMissing'
+  | 'projectionReceiptIdentityMismatch'
+  | 'projectionPayloadDigestMismatch'
+  | 'projectionRenderDrift';
 
 export type CodexSharedNativeState = 'missing' | 'usable' | 'replaceable' | 'blocked';
 
@@ -32,7 +43,7 @@ export type CodexSharedNativeInspection =
     }
   | {
       state: 'replaceable';
-      reason: 'outdated' | 'damaged';
+      reason: 'outdated' | 'damaged' | 'renderDrift';
       version?: string;
       desiredVersion?: string;
       diagnostic?: CodexSharedNativeDiagnostic;
@@ -66,6 +77,11 @@ export interface CodexSharedNativeEvidence {
   marketplacePathSafe: boolean;
   pluginListEntries: CodexPluginListEntry[] | null;
   manifest: CodexSharedNativeManifestEvidence;
+  expectedProjection?: CodexNativeRenderProjection;
+  projectionReceipt?:
+    | { state: 'absent' }
+    | { state: 'unreadable' }
+    | { state: 'present'; receipt: CodexNativeRenderReceipt };
 }
 
 function samePath(left: string, right: string): boolean {
@@ -159,6 +175,39 @@ export function inspectCodexSharedNative(
       reason: 'outdated',
       version: evidence.manifest.version,
       desiredVersion: evidence.desiredVersion,
+    };
+  }
+  if (evidence.expectedProjection !== undefined) {
+    if (evidence.projectionReceipt === undefined || evidence.projectionReceipt.state === 'absent') {
+      return damaged('projectionReceiptMissing');
+    }
+    if (evidence.projectionReceipt.state === 'unreadable') {
+      return blocked('unreadable', 'projectionReceiptUnreadable');
+    }
+    const receipt = evidence.projectionReceipt.receipt;
+    if (evidence.expectedPayloadDigest === undefined) {
+      return damaged('projectionExpectedPayloadDigestMissing');
+    }
+    if (evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest
+      || receipt.payloadDigest !== evidence.expectedPayloadDigest) {
+      return damaged('projectionPayloadDigestMismatch');
+    }
+    if (receipt.logicalPluginId !== evidence.expectedProjection.logicalPluginId
+      || receipt.strategy !== evidence.expectedProjection.strategy) {
+      return blocked('foreign', 'projectionReceiptIdentityMismatch');
+    }
+    if (!codexNativeRenderProjectionsEqual(receipt, evidence.expectedProjection)) {
+      return {
+        state: 'replaceable',
+        reason: 'renderDrift',
+        version: evidence.manifest.version,
+        desiredVersion: evidence.desiredVersion,
+        diagnostic: 'projectionRenderDrift',
+      };
+    }
+    return {
+      state: 'usable',
+      version: evidence.manifest.version,
     };
   }
   if (evidence.expectedPayloadDigest !== undefined

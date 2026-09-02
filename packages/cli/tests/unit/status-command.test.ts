@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  projectStatusSharedNativeReasons,
   statusCommandV7,
   statusTargetActivation,
   statusTargetExtensions,
@@ -150,6 +151,33 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v7 current behavior', () => {
+  it('preserves render drift as a recoverable shared-native status reason', () => {
+    const target = {
+      components: [{
+        kind: 'sharedNative',
+        key: 'demo@aw-local',
+        state: 'replaceable',
+        metadata: { reason: 'renderDrift', diagnostic: 'projectionRenderDrift' },
+      }],
+    } as Parameters<typeof statusTargetSharedNative>[0];
+    expect(statusTargetSharedNative(target)).toEqual({
+      pluginId: 'demo@aw-local',
+      state: 'replaceable',
+      reason: 'renderDrift',
+      diagnostic: 'projectionRenderDrift',
+    });
+    expect(projectStatusSharedNativeReasons({
+      pluginId: 'demo@aw-local',
+      state: 'replaceable',
+      reason: 'renderDrift',
+      diagnostic: 'projectionRenderDrift',
+    })).toEqual([{
+      code: 'codexSharedNativeRenderDrift',
+      message: 'codexSharedNativeRenderDrift: demo@aw-local render inputs changed and the shared native projection can be replaced.',
+      severity: 'warning',
+    }]);
+  });
+
   it('reports a qualified pure-native Codex project target without scoped materialization', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');

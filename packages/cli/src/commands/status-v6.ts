@@ -169,11 +169,50 @@ interface StatusOwnershipComponent {
 export interface StatusSharedNativeProjection {
   pluginId: string;
   state: 'missing' | 'usable' | 'replaceable' | 'blocked';
-  reason?: 'outdated' | 'damaged' | 'foreign' | 'unreadable';
+  reason?: 'outdated' | 'damaged' | 'renderDrift' | 'foreign' | 'unreadable';
   version?: string;
   desiredVersion?: string;
   diagnostic?: string;
   staleCacheObserved?: boolean;
+}
+
+export function projectStatusSharedNativeReasons(
+  sharedNative: StatusSharedNativeProjection | undefined,
+  existingReasonCodes: readonly string[] = [],
+): StatusV7Reason[] {
+  if (!sharedNative) return [];
+  const warning = (code: string, message: string): StatusV7Reason => ({
+    code,
+    message: `${code}: ${message}`,
+    severity: 'warning',
+  });
+  const blocking = (code: string, message: string): StatusV7Reason => ({
+    code,
+    message: `${code}: ${message}`,
+    severity: 'blocking',
+  });
+  return [
+    ...(sharedNative.state === 'blocked' && sharedNative.reason === 'foreign'
+      && !existingReasonCodes.includes('codexSharedNativeForeign')
+      ? [blocking('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
+      : []),
+    ...(sharedNative.state === 'blocked' && sharedNative.reason === 'unreadable'
+      && !existingReasonCodes.includes('codexSharedNativeCorrupt')
+      ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'damaged'
+      ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'outdated'
+      ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'renderDrift'
+      ? [warning('codexSharedNativeRenderDrift', `${sharedNative.pluginId} render inputs changed and the shared native projection can be replaced.`)]
+      : []),
+    ...(sharedNative.staleCacheObserved
+      ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
+      : []),
+  ];
 }
 
 export interface StatusActivationProjection {
@@ -257,7 +296,8 @@ export function statusTargetSharedNative(
   return {
     pluginId: component.key,
     state: component.state,
-    ...(reason === 'outdated' || reason === 'damaged' || reason === 'foreign' || reason === 'unreadable'
+    ...(reason === 'outdated' || reason === 'damaged' || reason === 'renderDrift'
+      || reason === 'foreign' || reason === 'unreadable'
       ? { reason }
       : {}),
     ...(typeof component.metadata?.version === 'string'
@@ -2386,23 +2426,10 @@ export async function statusCommandV7(options: {
                         ? 'needsSync'
                         : 'ready';
     const stableErrors = [
-      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'foreign'
-        && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeForeign')
-        ? [blocking('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
-        : []),
-      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'unreadable'
-        && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeCorrupt')
-        ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
-        : []),
-      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'damaged'
-        ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
-        : []),
-      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'outdated'
-        ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
-        : []),
-      ...(sharedNative?.staleCacheObserved
-        ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
-        : []),
+      ...projectStatusSharedNativeReasons(
+        sharedNative,
+        baseTargetErrors.map((error) => error.code),
+      ),
       ...(desiredOverlapConflict
         ? [blocking('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
         : []),
