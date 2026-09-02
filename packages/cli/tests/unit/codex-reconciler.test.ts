@@ -113,6 +113,14 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(plan.warnings).toEqual([]);
   });
 
+  it('requires a native ensure action when shared state is unobserved', () => {
+    expect(createCodexReconcilePlan(input(
+      'install',
+      target(),
+      live({ state: 'unobserved' }),
+    )).sharedNativeActions[0]?.action).toBe('install');
+  });
+
   it('repairs damaged replaceable state and fails closed for unreadable state', () => {
     const damaged = {
       state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing',

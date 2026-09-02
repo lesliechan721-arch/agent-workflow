@@ -169,7 +169,7 @@ describe('status v7 current behavior', () => {
     const target = result.payload.targets[0]!;
     expect(target).toMatchObject({ pluginId: 'local/demo', state: 'absent' });
     expect(statusTargetIntent(target)).toEqual({ enabled: false, scopes: [], relation: 'none' });
-    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'missing' });
+    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
     expect(statusTargetActivation(target)).toEqual({
       evidence: 'assumed',
       systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
@@ -209,7 +209,7 @@ describe('status v7 current behavior', () => {
     expect(statusTargetIntent(target)).toEqual({
       enabled: true, scopes: ['project', 'user'], relation: 'root',
     });
-    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'missing' });
+    expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
     expect(statusTargetActivation(target)).toEqual({
         evidence: 'assumed',
         systemConsumer: { state: 'missing', requiredMinVersion: '0.151.0' },
@@ -535,10 +535,11 @@ describe('status v7 current behavior', () => {
       state: 'needsSync',
       reasons: expect.arrayContaining([
         expect.objectContaining({ code: 'staleCacheObserved', severity: 'warning' }),
+        expect.objectContaining({ code: 'codexSharedNativeUnobserved', severity: 'warning' }),
       ]),
     })]);
     expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
-      state: 'missing', staleCacheObserved: true,
+      state: 'unobserved', staleCacheObserved: true,
     });
     expect(result.payload.targets[0]!.reasons).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'codexSharedNativeUpdateRequired' }),
@@ -574,7 +575,7 @@ describe('status v7 current behavior', () => {
       enabled: false, scopes: [], relation: 'none',
     });
     expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
-      state: 'missing', staleCacheObserved: true,
+      state: 'unobserved', staleCacheObserved: true,
     });
   });
 
@@ -815,12 +816,76 @@ describe('status v7 current behavior', () => {
         state: 'compatible', detectedVersion: '0.151.0', requiredMinVersion: '0.151.0',
       },
     });
+    expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
+      state: 'missing',
+    });
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
     expect(await filesystemSnapshot(isolation.layout.codexHomeDir)).toEqual(codexHomeBefore);
     expect(nativeRunner).toHaveBeenCalledTimes(2);
     expect(nativeRunner.mock.calls.every(([invocation]) =>
       invocation.command === 'codex'
       && invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+  });
+
+  it('merges exact installed with neutral absent and blocks duplicate official IDs', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'merged-codex-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    await writeCodexNativeResidue({
+      cwd: isolation.layout.fixtureCwd,
+      env,
+      version: '1.0.0',
+      userEnabled: true,
+      sourceIdentity,
+    });
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'merged-system-prefix'),
+      version: '0.151.0',
+    });
+    let duplicate = false;
+    const nativeRunner = vi.fn(async (invocation) => {
+      const installed = invocation.cwd === isolation.layout.fixtureCwd
+        ? [{ pluginId: 'demo@aw-local', installed: true, enabled: true, version: '1.0.0' }]
+        : [];
+      if (duplicate && installed.length > 0) installed.push({ ...installed[0]! });
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ installed, available: [] }),
+        stderr: '',
+      };
+    });
+    setNativeCliRunnerOverrideForTests(nativeRunner);
+
+    try {
+      const merged = await statusCommandV7({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+      });
+      expect(statusTargetSharedNative(merged.payload.targets[0]!)).toMatchObject({
+        state: 'usable', version: '1.0.0',
+      });
+
+      duplicate = true;
+      const blocked = await statusCommandV7({
+        plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
+        env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
+      });
+      expect(blocked.payload.targets[0]).toMatchObject({ state: 'blocked' });
+      expect(statusTargetSharedNative(blocked.payload.targets[0]!)).toMatchObject({
+        state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListDuplicate',
+      });
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
   });
 
   it('uses shallow system registration evidence without recursively hashing the payload', async () => {
@@ -972,6 +1037,9 @@ describe('status v7 current behavior', () => {
         detectedVersion: '0.150.0',
       },
     });
+    expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
+      state: 'unobserved',
+    });
     expect(nativeRunner).not.toHaveBeenCalled();
   });
 
@@ -1116,6 +1184,9 @@ describe('status v7 current behavior', () => {
       systemConsumer: expect.objectContaining({
         state: 'unresolved', code: 'codexProjectPluginUnsupported',
       }),
+    });
+    expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
+      state: 'unobserved',
     });
     expect(nativeRunner).not.toHaveBeenCalled();
   });

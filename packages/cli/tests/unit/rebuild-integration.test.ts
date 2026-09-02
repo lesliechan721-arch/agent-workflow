@@ -294,29 +294,33 @@ describe('rebuild adapter integration', () => {
     await fs.outputJson(path.join(cacheRoot, 'plugin.json'), {
       name: pluginName, version: '1.0.0',
     });
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
+    await fs.ensureDir(isolation.layout.awHomeDir);
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
       '[marketplaces.aw]',
-      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      `source = ${JSON.stringify(marketplaceRoot)}`,
       'source_type = "local"',
       '',
     ].join('\n'));
     const calls: NativeCliInvocation[] = [];
     const inspected = await inspectCodexSharedNativeLive({
       pluginName,
+      sourceId: 'official',
       desiredVersion: '1.0.0',
       expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(cacheRoot),
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
+      marketplaceRoot,
       nativeCliRunner: async (invocation) => {
         calls.push(invocation);
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            installed: [{
+            installed: invocation.cwd === isolation.layout.fixtureCwd ? [{
               pluginId: `${pluginName}@aw`, installed: true,
-              enabled: invocation.cwd === isolation.layout.fixtureCwd,
+              enabled: true,
               version: '1.0.0',
-            }],
+            }] : [],
             available: [],
           }),
           stderr: '',
@@ -326,7 +330,7 @@ describe('rebuild adapter integration', () => {
 
     expect(inspected).toMatchObject({
       sharedNative: { state: 'usable', version: '1.0.0' },
-      activations: { user: false, project: true },
+      activations: { project: true },
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
       isolation.layout.fixtureCwd,
@@ -337,13 +341,16 @@ describe('rebuild adapter integration', () => {
 
   it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(isolation.layout.awHomeDir);
     const calls: NativeCliInvocation[] = [];
     const inspected = await inspectCodexSharedNativeLive({
       pluginName: 'unreadable-list',
+      sourceId: 'official',
       desiredVersion: '1.0.0',
       expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', 'official'),
       nativeCliRunner: async (invocation) => {
         calls.push(invocation);
         return { exitCode: 0, stdout: '{invalid', stderr: '' };
@@ -360,28 +367,114 @@ describe('rebuild adapter integration', () => {
     expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
-  it('uses the successful Codex list when the other inspection fails', async () => {
+  it('fails closed when one Codex list succeeds and the other fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.ensureDir(isolation.layout.awHomeDir);
     const inspected = await inspectCodexSharedNativeLive({
       pluginName: 'degraded-list',
+      sourceId: 'official',
       desiredVersion: '1.0.0',
       expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', 'official'),
       nativeCliRunner: async (invocation) => invocation.cwd === isolation.layout.fixtureCwd
         ? { exitCode: 1, stdout: '', stderr: 'project unavailable' }
         : {
             exitCode: 0,
-            stdout: JSON.stringify({ installed: [], available: [] }),
+            stdout: JSON.stringify({
+              installed: [{
+                pluginId: 'degraded-list@aw', installed: true, enabled: true, version: '1.0.0',
+              }],
+              available: [],
+            }),
             stderr: '',
           },
     });
 
     expect(inspected).toMatchObject({
-      sharedNative: { state: 'missing' },
+      sharedNative: {
+        state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable',
+      },
       activationObservations: { user: true, project: false },
     });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'blocks an installed Codex plugin when its marketplace root is a symlink',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const pluginName = 'unsafe-marketplace';
+      const marketplacesRoot = path.join(isolation.layout.awHomeDir, 'marketplaces');
+      const marketplaceRoot = path.join(marketplacesRoot, 'official');
+      const foreignRoot = path.join(isolation.layout.fixtureCwd, 'foreign-marketplace');
+      await fs.ensureDir(foreignRoot);
+      await fs.ensureDir(marketplacesRoot);
+      await fs.symlink(foreignRoot, marketplaceRoot, 'dir');
+      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n'));
+
+      const inspected = await inspectCodexSharedNativeLive({
+        pluginName,
+        sourceId: 'official',
+        desiredVersion: '1.0.0',
+        inspectionMode: 'shallow',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        marketplaceRoot,
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [{
+              pluginId: `${pluginName}@aw`, installed: true, enabled: true, version: '1.0.0',
+            }],
+            available: [],
+          }),
+          stderr: '',
+        }),
+      });
+
+      expect(inspected.sharedNative).toMatchObject({
+        state: 'blocked', reason: 'foreign', diagnostic: 'marketplacePathUnsafe',
+      });
+    },
+  );
+  it.skipIf(process.platform === 'win32')(
+    'blocks a Codex marketplace below a symlinked marketplaces ancestor',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const pluginName = 'unsafe-marketplaces-ancestor';
+      const marketplacesRoot = path.join(isolation.layout.awHomeDir, 'marketplaces');
+      const foreignRoot = path.join(isolation.layout.fixtureCwd, 'foreign-marketplaces');
+      const marketplaceRoot = path.join(marketplacesRoot, 'official');
+      await fs.ensureDir(path.join(foreignRoot, 'official'));
+      await fs.ensureDir(isolation.layout.awHomeDir);
+      await fs.symlink(foreignRoot, marketplacesRoot, 'dir');
+
+      const inspected = await inspectCodexSharedNativeLive({
+        pluginName,
+        sourceId: 'official',
+        desiredVersion: '1.0.0',
+        inspectionMode: 'shallow',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        marketplaceRoot,
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [], available: [] }),
+          stderr: '',
+        }),
+      });
+
+      expect(inspected.sharedNative).toEqual({
+        state: 'blocked', reason: 'foreign', diagnostic: 'marketplacePathUnsafe',
+      });
+    },
+  );
   it.each(['codex', 'claude'] as const)(
     'does not make an uninstalled %s target partial because the shared marketplace exists',
     async (platform) => {
@@ -411,7 +504,11 @@ describe('rebuild adapter integration', () => {
         catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
         context: createCommandExecutionContext({
           env: isolation.env,
-          nativeCliRunner: async () => { throw new Error('native list must not authorize ownership'); },
+          nativeCliRunner: async () => ({
+            exitCode: 0,
+            stdout: JSON.stringify({ installed: [], available: [] }),
+            stderr: '',
+          }),
         }),
       });
       expect(inspected.inspection.state).toBe('absent');
@@ -441,7 +538,11 @@ describe('rebuild adapter integration', () => {
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({
         env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [], available: [] }),
+          stderr: '',
+        }),
       }),
     });
     const target = await integration.buildTarget({
@@ -516,6 +617,19 @@ describe('rebuild adapter integration', () => {
         installed = false;
         await fs.remove(path.dirname(cacheRoot));
         await writeConfig();
+      }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${plugin.manifest.name}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
       }
       if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
         return {
@@ -641,7 +755,11 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.awHomeDir, source: 'local' },
       context: createCommandExecutionContext({
         env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [], available: [] }),
+          stderr: '',
+        }),
       }),
     });
     expect(inspected.inspection.state).toBe('absent');
@@ -689,7 +807,13 @@ describe('rebuild adapter integration', () => {
           env: isolation.env,
           nativeCliRunner: async (invocation) => {
             calls.push([invocation.command, ...invocation.args].join(' '));
-            return { exitCode: 0, stdout: '', stderr: '' };
+            return {
+              exitCode: 0,
+              stdout: invocation.args.includes('--json')
+                ? JSON.stringify({ installed: [], available: [] })
+                : '',
+              stderr: '',
+            };
           },
         }),
       });
@@ -832,7 +956,19 @@ describe('rebuild adapter integration', () => {
         catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
         context: createCommandExecutionContext({
           env: isolation.env,
-          nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+          nativeCliRunner: async () => ({
+            exitCode: 0,
+            stdout: platform === 'codex'
+              ? JSON.stringify({
+                  installed: [{
+                    pluginId: 'stale-native-version@aw', installed: true,
+                    enabled: true, version: '1.0.0',
+                  }],
+                  available: [],
+                })
+              : '',
+            stderr: '',
+          }),
         }),
       });
       expect(inspected.inspection.state).toBe('present');
@@ -874,7 +1010,17 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
       context: createCommandExecutionContext({
         env: isolation.env,
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [{
+              pluginId: 'revision-evidence@aw', installed: true,
+              enabled: true, version: '2.0.0',
+            }],
+            available: [],
+          }),
+          stderr: '',
+        }),
       }),
     });
 
@@ -977,7 +1123,7 @@ describe('rebuild adapter integration', () => {
   it.each([
     { label: 'disabled', configEntry: 'enabled = false' },
     { label: 'missing', configEntry: null },
-  ])('reports Codex native residue with a $label config entry as partial and discoverable', async ({ configEntry }) => {
+  ])('does not promote Codex native residue with a $label config entry to installed', async ({ configEntry }) => {
     const isolation = getCurrentSourceTestIsolation();
     const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'disabled-native');
     plugin.manifest.version = '1.0.0';
@@ -1002,7 +1148,11 @@ describe('rebuild adapter integration', () => {
     ), { name: 'disabled-native', version: '1.0.0' });
     const context = createCommandExecutionContext({
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      nativeCliRunner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ installed: [], available: [] }),
+        stderr: '',
+      }),
     });
 
     const inspected = await inspectRebuildTarget({
@@ -1013,7 +1163,7 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
       context,
     });
-    expect(inspected.inspection.state).toBe('partial');
+    expect(inspected.inspection.state).toBe('absent');
     await expect(discoverRebuildTargetNames({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -2162,7 +2312,7 @@ describe('rebuild adapter integration', () => {
         expect.objectContaining({ message: expect.stringContaining('codexProjectConfigNotEffective') }),
       ]));
     }
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(6);
     expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
@@ -2225,6 +2375,19 @@ describe('rebuild adapter integration', () => {
         if (extraPayload) {
           await fs.outputFile(path.join(cacheRoot, 'skills', 'rogue', 'SKILL.md'), '# Rogue\n');
         }
+      }
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${plugin.manifest.name}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
       }
       return {
         exitCode: 0,
@@ -2925,6 +3088,19 @@ describe('rebuild adapter integration', () => {
       if (invocation.args[1] === 'add') installed = true;
       if (invocation.args[1] === 'remove') installed = false;
       await writeConfig();
+      if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: `${plugin.manifest.name}@aw`, installed: true,
+              enabled: true, version: plugin.manifest.version,
+            }] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
       return {
         exitCode: 0,
         stdout: invocation.args[1] === 'list' && installed ? `${plugin.manifest.name}@aw\n` : '',
@@ -3022,6 +3198,56 @@ describe('rebuild adapter integration', () => {
     expect(calls).not.toContain(`codex plugin remove ${pluginName}@aw`);
     expect(calls).not.toContain('codex plugin marketplace remove aw');
     expect(await fs.pathExists(cacheRoot)).toBe(true);
+  });
+
+  it.each([
+    ['installed', 'codexNativeRemoveIncomplete'],
+    ['duplicate', 'codexNativeObservationFailed'],
+  ] as const)('fails Codex remove when the official postcheck is %s', async (postcheck, error) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'remove-postcheck');
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.apps = './apps';
+    const pluginId = 'remove-postcheck@aw';
+    let removed = false;
+    const runner = vi.fn(async (invocation: NativeCliInvocation) => {
+      if (invocation.args.join(' ') === `plugin remove ${pluginId}`) removed = true;
+      const entry = {
+        pluginId, installed: true, enabled: true, version: plugin.manifest.version,
+      };
+      const exactEntries = removed && postcheck === 'duplicate' ? [entry, entry] : [entry];
+      return {
+        exitCode: 0,
+        stdout: invocation.args.includes('--json')
+          ? JSON.stringify({
+              installed: invocation.cwd === isolation.layout.fixtureCwd ? exactEntries : [],
+              available: [],
+            })
+          : '',
+        stderr: '',
+      };
+    });
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
+    });
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+    });
+    const component = target.ownedComponents.find((candidate) =>
+      candidate.kind === 'native-plugin');
+    if (!component || component.kind !== 'native-plugin') {
+      throw new Error('Expected a native plugin component.');
+    }
+
+    await expect(integration.driver.removeNative!(component))
+      .rejects.toThrow(error);
+    expect(runner.mock.calls.some(([invocation]) =>
+      invocation.args.join(' ') === `plugin remove ${pluginId}`)).toBe(true);
   });
 
   it('never removes a Codex plugin through a foreign aw marketplace owner', async () => {
@@ -3933,6 +4159,19 @@ describe('rebuild adapter integration', () => {
                 cacheRoot,
                 { overwrite: true },
               );
+            }
+            if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+              return {
+                exitCode: 0,
+                stdout: JSON.stringify({
+                  installed: installed ? [{
+                    pluginId: `${fixtureName}@aw`, installed: true,
+                    enabled: true, version: plugin.manifest.version,
+                  }] : [],
+                  available: [],
+                }),
+                stderr: '',
+              };
             }
             return {
               exitCode: 0,

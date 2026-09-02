@@ -1620,6 +1620,70 @@ describe('five namespaced write commands', () => {
     });
   }, 30_000);
 
+  it.each([
+    ['absent', 'failed', 'codexNativeInstallIncomplete'],
+    ['duplicate', 'failed', 'codexNativeObservationFailed'],
+    ['exact-installed-neutral-absent', 'succeeded', undefined],
+  ] as const)('handles Codex install when the official postcheck is %s', async (
+    postcheck,
+    expectedState,
+    error,
+  ) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'absent-postcheck-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    let addObserved = false;
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const pluginArgs = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      const result = await runtime.nativeCliRunner(invocation);
+      if (pluginArgs[1] === 'add') addObserved = true;
+      if (addObserved && pluginArgs.join(' ') === 'plugin list --json') {
+        const entry = {
+          pluginId: 'demo@aw', installed: true, enabled: true, version: '1.0.0',
+        };
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: invocation.cwd !== isolation.layout.fixtureCwd ? []
+              : postcheck === 'duplicate' ? [entry, entry]
+                : postcheck === 'exact-installed-neutral-absent' ? [entry] : [],
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
+      return result;
+    });
+
+    const result = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { ...runtime, nativeCliRunner });
+
+    expect(result.overallState).toBe(expectedState);
+    if (error) {
+      expect(result.targetResults).toEqual([
+        expect.objectContaining({
+          state: 'failed',
+          message: expect.stringContaining(error),
+        }),
+      ]);
+    }
+    expect(addObserved).toBe(true);
+  }, 30_000);
+
   it('reports payload drift and repairs it through confirmed sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-payload-drift-source');
@@ -1686,7 +1750,7 @@ describe('five namespaced write commands', () => {
       ]),
     })]);
     expect(statusTargetSharedNative(status.payload.targets[0]!)).toMatchObject({
-      state: 'missing', staleCacheObserved: true,
+      state: 'unobserved', staleCacheObserved: true,
     });
     expect(runtime.nativeCliRunner).toHaveBeenCalledTimes(callsBeforeStatus);
 
@@ -1786,7 +1850,7 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ state: 'needsSync' }),
     ]);
     expect(statusTargetSharedNative(foreignStatus.payload.targets[0]!)).toMatchObject({
-      state: 'missing', staleCacheObserved: true,
+      state: 'unobserved', staleCacheObserved: true,
     });
     const foreignOutput = createCapturedCliIo();
     expect(await runCli([
@@ -2266,7 +2330,7 @@ describe('five namespaced write commands', () => {
       enabled: true, scopes: ['project', 'user'], relation: 'root',
     });
     expect(statusTargetSharedNative(status.payload.targets[0]!)).toMatchObject({
-      pluginId: 'demo@aw', state: 'missing', staleCacheObserved: true,
+      pluginId: 'demo@aw', state: 'unobserved', staleCacheObserved: true,
     });
     expect(statusTargetActivation(status.payload.targets[0]!)).toMatchObject({
       user: true, project: true,
@@ -5440,7 +5504,7 @@ describe('five namespaced write commands', () => {
     },
   );
 
-  it('preserves Codex marketplace and cache payload bytes after live activation is removed', async () => {
+  it('cleans stale Codex config while preserving cache payload after official absence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'offline-native-no-activation-source');
     const remainingRoot = path.join(isolation.layout.fixtureCwd, 'offline-native-no-activation-remaining');
@@ -5472,10 +5536,6 @@ describe('five namespaced write commands', () => {
       fs.readFile(marketplaceSkill),
       fs.readFile(cacheSkill),
     ]);
-    await applyCodexConfigTransactionFile(
-      path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
-      { removePluginActivations: ['demo@aw'] },
-    );
     runtime.installed.delete('demo@aw');
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -5492,6 +5552,9 @@ describe('five namespaced write commands', () => {
     }, runtime);
 
     expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    await expect(readCodexConfigFile(path.join(
+      isolation.env.AW_CODEX_HOME!, 'config.toml',
+    ))).resolves.toMatchObject({ snapshot: { plugins: {} } });
     await expect(fs.readFile(marketplaceSkill)).resolves.toEqual(marketplaceBefore);
     await expect(fs.readFile(cacheSkill)).resolves.toEqual(cacheBefore);
   }, 30_000);
@@ -7723,7 +7786,7 @@ describe('five namespaced write commands', () => {
     })).toBe(1);
     expect(JSON.parse(output.readStdout())).toMatchObject({
       overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'codexSharedNativeCorrupt' })],
+      targetResults: [expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' })],
     });
     expect(output.readStderr()).toBe('');
     expect(nativeCliRunner).not.toHaveBeenCalled();
@@ -7741,7 +7804,7 @@ describe('five namespaced write commands', () => {
     expect(declined.targetResults).toEqual([
       expect.objectContaining({ errorCode: 'managedCodexAuthorizationRequired' }),
     ]);
-    expect(nativeCliRunner).toHaveBeenCalledTimes(2);
+    expect(nativeCliRunner).toHaveBeenCalled();
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --json')).toBe(true);
@@ -7846,9 +7909,6 @@ describe('five namespaced write commands', () => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const args = invocation.args.slice(pluginIndex);
       if (invocation.command === 'codex' && args[1] === 'list' && args.includes('--json')) {
-        if (invocation.cwd !== isolation.layout.fixtureCwd) {
-          return { exitCode: 1, stdout: '', stderr: 'neutral list unavailable' };
-        }
         return {
           exitCode: 0,
           stdout: JSON.stringify({

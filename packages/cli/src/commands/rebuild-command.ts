@@ -2060,8 +2060,8 @@ export async function runRebuildCommand(options: {
             const nativePresent = inspected.components.some((component) =>
               component.component.kind === 'native-plugin' && component.state === 'present');
             return nativePresent
-              && codexRegistration?.entries.some((entry_) =>
-                entry_.pluginId === codexPluginId) === true
+              && codexRegistration?.observation.state === 'observed'
+              && codexRegistration.observation.value === 'installed'
               && codexActivationSnapshots?.[scope].plugins[codexPluginId]?.enabled === true
               ? 'present'
               : 'absent';
@@ -2435,6 +2435,7 @@ export async function runRebuildCommand(options: {
           const sharedInspection = surface.nativeKinds.length > 0
             ? await inspectCodexSharedNativeLive({
                 pluginName: entry.plugin.manifest.name,
+                sourceId: entry.source.sourceId,
                 desiredVersion: entry.plugin.manifest.version,
                 expectedPayloadDigest: contentDigest,
                 cwd: options.commandOptions.cwd,
@@ -2453,7 +2454,7 @@ export async function runRebuildCommand(options: {
               })
             : undefined;
           const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
-            ?? { state: 'missing' };
+            ?? { state: 'unobserved' };
           const projectionEntries: Array<{
             scope: Scope;
             artifactKey: string;

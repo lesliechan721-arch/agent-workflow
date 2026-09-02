@@ -165,7 +165,7 @@ interface StatusOwnershipComponent {
 
 export interface StatusSharedNativeProjection {
   pluginId: string;
-  state: 'missing' | 'usable' | 'replaceable' | 'blocked';
+  state: 'missing' | 'usable' | 'replaceable' | 'blocked' | 'unobserved';
   reason?: 'outdated' | 'damaged' | 'foreign' | 'unreadable';
   version?: string;
   desiredVersion?: string;
@@ -249,7 +249,8 @@ export function statusTargetSharedNative(
   if (!component || (component.state !== 'missing'
     && component.state !== 'usable'
     && component.state !== 'replaceable'
-    && component.state !== 'blocked')) return undefined;
+    && component.state !== 'blocked'
+    && component.state !== 'unobserved')) return undefined;
   const reason = component.metadata?.reason;
   return {
     pluginId: component.key,
@@ -1027,7 +1028,7 @@ export async function statusCommandV7(options: {
     const consumer = await inspectCodexSystemConsumer(scope);
     if (consumer.state !== 'compatible') {
       return {
-        entries: [],
+        observation: { state: 'unobserved' as const },
         observations: { user: false, project: false },
         activations: {},
       };
@@ -1068,8 +1069,8 @@ export async function statusCommandV7(options: {
           ? inspectCodexRegistration(
             `${probe.pluginName}@${probe.marketplaceName}`,
             options.scope === undefined ? probe.scope : scopes[0]!,
-          ).then((registration) => registration.entries.some((entry) =>
-            entry.pluginId === `${probe.pluginName}@${probe.marketplaceName}`)
+          ).then((registration) => registration.observation.state === 'observed'
+            && registration.observation.value === 'installed'
             && registration.activations[probe.scope] === true
             ? 'present' as const
             : 'absent' as const)
@@ -1747,7 +1748,7 @@ export async function statusCommandV7(options: {
                 const pluginRegistration = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexRegistration(codexPluginId, registrationScope)
                   : {
-                      entries: [],
+                      observation: { state: 'unobserved' as const },
                       observations: { user: false, project: false },
                       activations: {},
                     };
@@ -1755,6 +1756,7 @@ export async function statusCommandV7(options: {
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
+                      sourceId: item.resolution!.sourceId,
                       desiredVersion: entry.version,
                       inspectionMode: 'shallow',
                       cwd: options.cwd,
@@ -1773,6 +1775,12 @@ export async function statusCommandV7(options: {
                   ? { pluginId: codexPluginId, state: 'blocked', reason: 'unreadable' }
                   : !nativeState
                     ? undefined
+                    : nativeState.state === 'unobserved'
+                      ? {
+                          pluginId: codexPluginId,
+                          state: 'unobserved',
+                          ...(nativeState.staleCacheObserved ? { staleCacheObserved: true } : {}),
+                        }
                     : nativeState.state === 'missing'
                       ? {
                           pluginId: codexPluginId,
@@ -2355,7 +2363,9 @@ export async function statusCommandV7(options: {
             ? ownershipState !== 'absent' || desired.relation === 'managed'
               ? 'orphaned'
               : 'absent'
-            : sharedNative?.state === 'missing' || sharedNative?.state === 'replaceable'
+            : sharedNative?.state === 'missing'
+              || sharedNative?.state === 'replaceable'
+              || sharedNative?.state === 'unobserved'
                   ? 'needsSync'
                   : activationDrift || extensions?.state === 'drifted'
                     ? 'needsSync'
@@ -2382,10 +2392,13 @@ export async function statusCommandV7(options: {
       ...(sharedNative?.staleCacheObserved
         ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
         : []),
+      ...(sharedNative?.state === 'unobserved' && desiredEnabled
+        ? [warning('codexSharedNativeUnobserved', `${sharedNative.pluginId} was not observed by a compatible Codex consumer.`)]
+        : []),
       ...(desiredOverlapConflict
         ? [blocking('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
         : []),
-      ...(activationDrift && sharedNative?.state !== 'missing'
+      ...(activationDrift && sharedNative?.state !== 'missing' && sharedNative?.state !== 'unobserved'
         ? [warning('codexActivationDrift', `${target.pluginId} activation differs from desired intent.`)]
         : []),
       ...(extensions?.state === 'drifted'
