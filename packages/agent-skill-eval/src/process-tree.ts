@@ -21,10 +21,23 @@ interface ProcessIdentity {
   startTime: string;
 }
 
+interface ProcessCommandFailure {
+  reason: 'callback-error' | 'deadline-exceeded' | 'synchronous-error';
+  code?: string | number;
+  signal?: string;
+  killed?: boolean;
+}
+
+type ProcessCommandResult =
+  | { output: string; failure?: never }
+  | { output: null; failure: ProcessCommandFailure };
+
 interface PosixProcessSnapshot {
   table: Map<number, ProcessEntry>;
   markerPids: Set<number>;
   markerLookupSucceeded: boolean;
+  markerLookupAttempts: number;
+  markerLookupFailure?: ProcessCommandFailure;
   confirmedUnmarkedPids: Set<number>;
 }
 
@@ -98,21 +111,47 @@ const defaultExecFile: NonNullable<ProcessTreeDependencies['execFile']> = (
   callback,
 ) => execFile(command, args, options, (error, stdout) => callback(error, stdout));
 
-function runCommand(
+function safeCommandFailureValue(value: unknown): string | number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/u.test(value)) return undefined;
+  return value;
+}
+
+function commandFailure(
+  reason: ProcessCommandFailure['reason'],
+  error?: unknown,
+): ProcessCommandFailure {
+  const details = error && typeof error === 'object'
+    ? error as { code?: unknown; signal?: unknown; killed?: unknown }
+    : {};
+  const code = safeCommandFailureValue(details.code);
+  const signal = safeCommandFailureValue(details.signal);
+  return {
+    reason,
+    ...(code !== undefined ? { code } : {}),
+    ...(typeof signal === 'string' ? { signal } : {}),
+    ...(typeof details.killed === 'boolean' ? { killed: details.killed } : {}),
+  };
+}
+
+function runCommandWithDiagnostics(
   command: string,
   args: string[],
   execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
   timeoutMs: number,
-): Promise<string | null> {
+): Promise<ProcessCommandResult> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (result: string | null): void => {
+    const finish = (result: ProcessCommandResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       resolve(result);
     };
-    const timeout = setTimeout(() => finish(null), timeoutMs);
+    const timeout = setTimeout(() => finish({
+      output: null,
+      failure: commandFailure('deadline-exceeded'),
+    }), timeoutMs);
     timeout.unref();
 
     try {
@@ -124,12 +163,24 @@ function runCommand(
           windowsHide: true,
           maxBuffer: PROCESS_TREE_MAX_BUFFER_BYTES,
         },
-        (error, stdout) => finish(error ? null : stdout),
+        (error, stdout) => finish(error
+          ? { output: null, failure: commandFailure('callback-error', error) }
+          : { output: stdout }),
       );
-    } catch {
-      finish(null);
+    } catch (error) {
+      finish({ output: null, failure: commandFailure('synchronous-error', error) });
     }
   });
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  execFileImpl: NonNullable<ProcessTreeDependencies['execFile']>,
+  timeoutMs: number,
+): Promise<string | null> {
+  return runCommandWithDiagnostics(command, args, execFileImpl, timeoutMs)
+    .then((result) => result.output);
 }
 
 function parsePosixProcessTable(stdout: string): Map<number, ProcessEntry> {
@@ -178,13 +229,28 @@ async function readPosixProcessTable(
   confirmUnmarkedPid?: number,
 ): Promise<PosixProcessSnapshot | null> {
   const identityArgs = ['-A', '-o', 'pid=,ppid=,pgid=,state=,lstart='];
-  const [identityOutput, markerOutput] = await Promise.all([
+  const markerArgs = ['eww', '-A', '-o', 'pid=,command='];
+  const lookupStartedAt = Date.now();
+  const [identityOutput, initialMarkerResult] = await Promise.all([
     runCommand('ps', identityArgs, execFileImpl, timeoutMs),
     marker === undefined
-      ? Promise.resolve('')
-      : runCommand('ps', ['eww', '-A', '-o', 'pid=,command='], execFileImpl, timeoutMs),
+      ? Promise.resolve<ProcessCommandResult>({ output: '' })
+      : runCommandWithDiagnostics('ps', markerArgs, execFileImpl, timeoutMs),
   ]);
   if (identityOutput === null) return null;
+  let markerResult = initialMarkerResult;
+  let markerLookupAttempts = marker === undefined ? 0 : 1;
+  const retryTimeoutMs = timeoutMs - (Date.now() - lookupStartedAt);
+  if (marker !== undefined && markerResult.output === null && retryTimeoutMs > 0) {
+    markerLookupAttempts += 1;
+    markerResult = await runCommandWithDiagnostics(
+      'ps',
+      markerArgs,
+      execFileImpl,
+      retryTimeoutMs,
+    );
+  }
+  const markerOutput = markerResult.output;
   const table = parsePosixProcessTable(identityOutput);
   const markerPids = marker === undefined || markerOutput === null
     ? new Set<number>()
@@ -208,8 +274,31 @@ async function readPosixProcessTable(
     table,
     markerPids,
     markerLookupSucceeded: marker === undefined || markerOutput !== null,
+    markerLookupAttempts,
+    ...(markerResult.failure ? { markerLookupFailure: markerResult.failure } : {}),
     confirmedUnmarkedPids,
   };
+}
+
+function posixMarkerLookupFailure(
+  snapshot: PosixProcessSnapshot,
+  stage: string,
+): Error {
+  const fields = [
+    `stage=${stage}`,
+    `attempts=${snapshot.markerLookupAttempts}`,
+    `reason=${snapshot.markerLookupFailure?.reason ?? 'unknown'}`,
+  ];
+  if (snapshot.markerLookupFailure?.code !== undefined) {
+    fields.push(`code=${snapshot.markerLookupFailure.code}`);
+  }
+  if (snapshot.markerLookupFailure?.signal !== undefined) {
+    fields.push(`signal=${snapshot.markerLookupFailure.signal}`);
+  }
+  if (snapshot.markerLookupFailure?.killed !== undefined) {
+    fields.push(`killed=${snapshot.markerLookupFailure.killed}`);
+  }
+  return cleanupUnconfirmed(`POSIX process marker lookup failed (${fields.join(', ')}).`);
 }
 
 async function defaultCreateSentinel(
@@ -245,9 +334,10 @@ async function defaultCreateSentinel(
 function validateLeaseSnapshot(
   snapshot: PosixProcessSnapshot,
   lease: ProcessTreeInspectionLease,
+  stage: string,
 ): Error | undefined {
   if (!snapshot.markerLookupSucceeded) {
-    return cleanupUnconfirmed('POSIX process marker lookup failed.');
+    return posixMarkerLookupFailure(snapshot, stage);
   }
   const sentinelEntry = snapshot.table.get(lease.sentinel.pid);
   if (
@@ -281,7 +371,7 @@ export async function acquireProcessTreeInspectionLease(
     );
     if (!snapshot) throw cleanupUnconfirmed('POSIX process identity lookup failed.');
     if (!snapshot.markerLookupSucceeded) {
-      throw cleanupUnconfirmed('POSIX process marker lookup failed.');
+      throw posixMarkerLookupFailure(snapshot, 'inspection-preflight');
     }
     const entry = snapshot.table.get(sentinel.pid);
     if (!entry || !snapshot.markerPids.has(sentinel.pid)) {
@@ -401,16 +491,17 @@ function latchObservationFailure(state: ObservationState, error: Error): void {
 function acceptPosixSnapshot(
   state: ObservationState,
   snapshot: PosixProcessSnapshot,
+  stage: string,
 ): boolean {
   if (!snapshot.markerLookupSucceeded && state.marker !== undefined) {
     latchObservationFailure(
       state,
-      cleanupUnconfirmed('POSIX process marker lookup failed.'),
+      posixMarkerLookupFailure(snapshot, stage),
     );
     return false;
   }
   if (state.lease) {
-    const leaseFailure = validateLeaseSnapshot(snapshot, state.lease);
+    const leaseFailure = validateLeaseSnapshot(snapshot, state.lease, stage);
     if (leaseFailure) {
       latchObservationFailure(state, leaseFailure);
       return false;
@@ -587,7 +678,7 @@ function createProcessTreeObservation(
         );
         return;
       }
-      acceptPosixSnapshot(state, snapshot);
+      acceptPosixSnapshot(state, snapshot, 'observation');
     });
   const scheduleRefresh = (): void => {
     if (state.disposed) return;
@@ -775,7 +866,10 @@ async function terminatePosixProcessTree(
   const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
   const kill = state.dependencies.kill ?? process.kill.bind(process);
   const deadline = Date.now() + PROCESS_TREE_COMMAND_TIMEOUT_MS;
-  const inspect = async (timeoutMs: number): Promise<PosixProcessSnapshot | undefined> => {
+  const inspect = async (
+    timeoutMs: number,
+    stage: string,
+  ): Promise<PosixProcessSnapshot | undefined> => {
     const next = await readPosixProcessTable(
       execFileImpl,
       state.markerEnvironmentVariable,
@@ -792,9 +886,9 @@ async function terminatePosixProcessTree(
       );
       return undefined;
     }
-    return acceptPosixSnapshot(state, next) ? next : undefined;
+    return acceptPosixSnapshot(state, next, stage) ? next : undefined;
   };
-  let snapshot = await inspect(PROCESS_TREE_COMMAND_TIMEOUT_MS);
+  let snapshot = await inspect(PROCESS_TREE_COMMAND_TIMEOUT_MS, 'termination-start');
   let processGroupCurrentlyVerified = snapshot !== undefined;
   if (!snapshot) snapshot = state.lastSnapshot;
   if (!snapshot) {
@@ -828,7 +922,10 @@ async function terminatePosixProcessTree(
     for (const identity of [...state.descendants.values()].reverse()) {
       signalIdentity(identity, snapshot, 'SIGSTOP', kill);
     }
-    const next = await inspect(Math.max(1, deadline - Date.now()));
+    const next = await inspect(
+      Math.max(1, deadline - Date.now()),
+      'termination-freeze',
+    );
     if (!next) {
       processGroupCurrentlyVerified = false;
       break;
@@ -866,7 +963,7 @@ async function terminatePosixProcessTree(
     if (state.failure) throw state.failure;
     return;
   }
-  const verified = await inspect(PROCESS_TREE_COMMAND_TIMEOUT_MS);
+  const verified = await inspect(PROCESS_TREE_COMMAND_TIMEOUT_MS, 'termination-verification');
   if (!verified) {
     throw state.failure ?? cleanupUnconfirmed('POSIX termination verification failed.');
   }
@@ -874,7 +971,9 @@ async function terminatePosixProcessTree(
     if (!posixIdentityMatches(identity, verified)) return false;
     return !verified.table.get(identity.pid)?.state?.startsWith('Z');
   });
-  if (stillRunning) throw cleanupUnconfirmed('a verified POSIX descendant is still running.');
+  if (stillRunning) {
+    throw state.failure ?? cleanupUnconfirmed('a verified POSIX descendant is still running.');
+  }
   const unobservedMarkedProcess = state.marker === undefined
     ? false
     : [...verified.markerPids].some((pid) =>
@@ -882,7 +981,7 @@ async function terminatePosixProcessTree(
       !verified.table.get(pid)?.state?.startsWith('Z')
     );
   if (unobservedMarkedProcess) {
-    throw cleanupUnconfirmed('an unverified marker process is still running.');
+    throw state.failure ?? cleanupUnconfirmed('an unverified marker process is still running.');
   }
   if (requireConfirmedCleanup && state.marker === undefined && observedAtTermination.size === 0) {
     throw cleanupUnconfirmed('no inherited-pipe process identity was observed.');

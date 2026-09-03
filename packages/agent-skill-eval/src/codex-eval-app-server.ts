@@ -24,6 +24,7 @@ import {
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
+  applyCodexEvalGitIsolation,
   codexEvalConfigOverrides,
   validateCodexEvalConfigIsolation,
   validateCodexEvalRpcIsolation,
@@ -195,7 +196,6 @@ const PASSTHROUGH_ENV = new Set([
 ]);
 const CODEX_EVAL_APP_SERVER_OVERRIDES = [
   'features.default_mode_request_user_input=true',
-  'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
 ] as const;
 const DARWIN_SANDBOX_EXEC = '/usr/bin/sandbox-exec';
 
@@ -480,7 +480,7 @@ function buildIsolatedEnv(
   }
   const home = path.join(root, 'home');
   const temp = path.join(root, 'tmp');
-  return applyCodexEvalProviderEnvironment({
+  return applyCodexEvalProviderEnvironment(applyCodexEvalGitIsolation({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -492,8 +492,7 @@ function buildIsolatedEnv(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
-    GIT_OPTIONAL_LOCKS: '0',
-  }, runtime);
+  }), runtime);
 }
 
 async function snapshotWorkspace(root: string): Promise<Map<string, string>> {

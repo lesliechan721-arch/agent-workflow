@@ -24,6 +24,7 @@ import {
   type AwSkillEvalTriggerCase,
   type AwSkillEvalTriggerSuiteCaseContract,
 } from './codex-eval-cases.js';
+import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js';
 
 async function createTriggerTemporaryRoot(
   workRoot?: string,
@@ -173,7 +174,7 @@ function buildIsolatedEnv(
   }
   const home = path.join(runRoot, 'home');
   const temp = path.join(runRoot, 'tmp');
-  return applyCodexEvalProviderEnvironment({
+  return applyCodexEvalProviderEnvironment(applyCodexEvalGitIsolation({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -185,7 +186,7 @@ function buildIsolatedEnv(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
-  }, runtime);
+  }), runtime);
 }
 
 async function snapshotWorkspace(root: string): Promise<Record<string, string>> {

@@ -42,7 +42,7 @@ leaf inventory 为空的条件是：合法 manifest 未声明 `skills`，且 `ar
 
 用户明确要求 Release Check 时，先准备 checker 的完整输入。对 leaf inventory 的每个唯一 production digest，使用 `review-agent-skill` 的 `full` 模式生成 `QualityReviewResult v1`；机器检查和 Quality Review validator 必须通过，validator 的 `effectiveDecision` 必须为 `pass`，coverage 必须为 100%，总体 confidence 必须为 medium 或 high。Review 必须精确覆盖这些 digest；重复、未匹配或未消费的 Review 都是输入错误。Quality Review 不声明 Eval 执行事实，也不拥有 Eval machine gate。
 
-动态 Skill 还必须提供对应 platform×scope 的 materialized final。对每个 materialized target 和 Eval manifest 中适用的 release-required profile×suite，分别准备 exact 绑定的 `EvalSpec v1`、passing `EvalAudit v1` 和 `EvalResult v1`；不得合并多个 suite corpus。静态 Skill 只在其 Eval manifest 声明 release-required suite 时需要三件套。Reviewer 检查三件套、当前 manifest corpus、required case 的 minimum runs、完成状态、grade 通过率和 baseline 回归。缺少任一 required input 时停止并列出具体 profile/suite 缺口；不要先运行 checker，也不要把 Quality Review 内的 Eval 描述当作发布证据。需要新运行或失败诊断时读取 `references/aw-eval-runtime.md`。失败结果的 triage 不是 Release Check 输入或 machine gate；clean success 不需要 triage。
+动态 Skill 还必须提供对应 platform×scope 的 materialized final。对每个 materialized target 和 Eval manifest 中适用的 release-required profile×suite，分别准备 exact 绑定的 `EvalSpec v1`、passing `EvalAudit v1` 和带必需 `processManagement` 证据的 `EvalResult v2`；不得合并多个 suite corpus。静态 Skill 只在其 Eval manifest 声明 release-required suite 时需要三件套。Reviewer 检查三件套、当前 manifest corpus、required case 的 minimum runs、完成状态、grade 通过率、baseline 回归和 suite 的进程模式政策。省略 `releaseProcessManagement` 时只接受 managed Result；只有显式 `allow-unmanaged-confirmed` 才接受已确认的 unmanaged Result。缺少任一 required input 时停止并列出具体 profile/suite 缺口；不要先运行 checker，也不要把 Quality Review 内的 Eval 描述当作发布证据。需要新运行或失败诊断时读取 `references/aw-eval-runtime.md`。失败结果的 triage 不是 Release Check 输入或 machine gate；clean success 不需要 triage。
 
 输入完整后运行确定性 checker：
 

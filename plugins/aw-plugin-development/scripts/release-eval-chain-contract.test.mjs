@@ -307,12 +307,19 @@ exec "${process.execPath}" "${evalBin}" "$@"
       }
     }
     const result = {
-      version: 1,
+      version: 2,
       specDigest: sha256(specRaw),
       auditDigest: sha256(auditRaw),
       targetDigest: check.target.digest,
       caseDigest: spec.cases.digest,
       provider: spec.provider,
+      processManagement: options.processManagement ?? {
+        mode: 'managed',
+        inspectionAvailable: true,
+        userAcknowledged: false,
+        descendantCleanupGuaranteed: false,
+        limitation: 'Process-tree inspection is not OS-enforced containment.',
+      },
       startedAt: '2026-08-31T00:00:00Z',
       finishedAt: '2026-08-31T00:00:01Z',
       runs,
@@ -349,6 +356,24 @@ exec "${process.execPath}" "${evalBin}" "$@"
   delete omittedSplitsManifest.suites[0].releaseSplits;
   await writeFile(manifestPath, JSON.stringify(omittedSplitsManifest));
   assert.equal((await runJson(releaseChecker, checkerArgs(valid), env)).ready, true);
+  await writeFile(manifestPath, JSON.stringify(evalManifest));
+
+  const unmanaged = await writeChain({
+    processManagement: {
+      mode: 'unmanaged-confirmed',
+      inspectionAvailable: false,
+      userAcknowledged: true,
+      descendantCleanupGuaranteed: false,
+      limitation: 'Only the direct child is targeted.',
+    },
+  });
+  const unmanagedDefaultResult = await runJson(releaseChecker, checkerArgs(unmanaged), env);
+  assert.equal(unmanagedDefaultResult.ready, false);
+  assert.ok(unmanagedDefaultResult.reasons.some((reason) => reason.includes('managed-only release policy')));
+  const unmanagedAllowedManifest = structuredClone(evalManifest);
+  unmanagedAllowedManifest.suites[0].releaseProcessManagement = 'allow-unmanaged-confirmed';
+  await writeFile(manifestPath, JSON.stringify(unmanagedAllowedManifest));
+  assert.equal((await runJson(releaseChecker, checkerArgs(unmanaged), env)).ready, true);
   await writeFile(manifestPath, JSON.stringify(evalManifest));
 
   const missingAuditArgs = checkerArgs(valid).filter((value, index, values) => (

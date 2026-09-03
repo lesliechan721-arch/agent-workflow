@@ -1,10 +1,13 @@
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  applyCodexEvalGitIsolation,
   assertCodexEvalKeychainWrapperAbsent,
   codexEvalConfigOverrides,
   inspectCodexEvalHostIsolation,
@@ -12,6 +15,7 @@ import {
 } from '../../dist/index.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((root) => fs.remove(root)));
@@ -103,6 +107,8 @@ describe('Codex eval isolation', () => {
   it('rejects macOS wrappers that inject accountsKeychainExport', async () => {
     await expect(assertCodexEvalKeychainWrapperAbsent({
       platform: 'darwin',
+      sourceEnv: {},
+      resolveCodexExecutable: async () => '/usr/local/bin/codex',
       readUserKeychainSearchList: async () => [
         '    "/private/var/folders/example/T/accountsKeychainExport123/accountsKeychainExport.keychain"',
         '    "/Users/example/Library/Keychains/login.keychain-db"',
@@ -115,6 +121,8 @@ describe('Codex eval isolation', () => {
       '    "/Users/example/Library/Keychains/login.keychain-db"\n');
     await expect(assertCodexEvalKeychainWrapperAbsent({
       platform: 'darwin',
+      sourceEnv: {},
+      resolveCodexExecutable: async () => '/usr/local/bin/codex',
       readUserKeychainSearchList,
     })).resolves.toBeUndefined();
     await expect(assertCodexEvalKeychainWrapperAbsent({
@@ -124,11 +132,64 @@ describe('Codex eval isolation', () => {
     expect(readUserKeychainSearchList).toHaveBeenCalledTimes(1);
   });
 
+  it('blocks macOS execution when the selected Codex executable cannot be resolved', async () => {
+    const readUserKeychainSearchList = vi.fn(async () => '');
+    await expect(assertCodexEvalKeychainWrapperAbsent({
+      platform: 'darwin',
+      sourceEnv: { PATH: '' },
+      resolveCodexExecutable: async () => null,
+      readUserKeychainSearchList,
+    })).rejects.toThrow('Unable to resolve the selected Codex executable');
+    expect(readUserKeychainSearchList).not.toHaveBeenCalled();
+  });
+
+  it('rejects a resolved cmux Codex shim before reading the keychain search list', async () => {
+    const readUserKeychainSearchList = vi.fn(async () =>
+      '    "/Users/example/Library/Keychains/login.keychain-db"\n');
+    await expect(assertCodexEvalKeychainWrapperAbsent({
+      platform: 'darwin',
+      sourceEnv: {
+        PATH: '/private/tmp/cmux-cli-shims/session:/usr/local/bin',
+        CMUX_CODEX_WRAPPER_SHIM: '/private/tmp/cmux-cli-shims/session/codex',
+      },
+      resolveCodexExecutable: async () =>
+        '/private/tmp/cmux-cli-shims/session/codex',
+      readUserKeychainSearchList,
+    })).rejects.toThrow('cmux Codex shim or wrapper');
+    expect(readUserKeychainSearchList).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a normal-looking executable symlinked to a cmux Codex shim',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-codex-link-'));
+      tempDirs.push(root);
+      const shim = path.join(root, 'cmux-cli-shims', 'session', 'codex');
+      const bin = path.join(root, 'bin');
+      await fs.ensureDir(path.dirname(shim));
+      await fs.ensureDir(bin);
+      await fs.writeFile(shim, '#!/bin/sh\nexit 0\n');
+      await fs.chmod(shim, 0o755);
+      await fs.symlink(shim, path.join(bin, 'codex'));
+      const readUserKeychainSearchList = vi.fn(async () => '');
+
+      await expect(assertCodexEvalKeychainWrapperAbsent({
+        platform: 'darwin',
+        sourceEnv: { PATH: bin },
+        readUserKeychainSearchList,
+      })).rejects.toThrow('cmux Codex shim or wrapper');
+      expect(readUserKeychainSearchList).not.toHaveBeenCalled();
+    },
+  );
+
   it('forces file credential stores for every eval and disables strict surfaces', () => {
     expect(codexEvalConfigOverrides('standard')).toEqual([
       'cli_auth_credentials_store="file"',
       'mcp_oauth_credentials_store="file"',
       'features.secret_auth_storage=false',
+      'shell_environment_policy.set.GIT_CONFIG_NOSYSTEM="1"',
+      'shell_environment_policy.set.GIT_TERMINAL_PROMPT="0"',
+      'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
     ]);
     expect(codexEvalConfigOverrides('strict')).toEqual(expect.arrayContaining([
       'features.secret_auth_storage=false',
@@ -144,6 +205,37 @@ describe('Codex eval isolation', () => {
     expect(codexEvalConfigOverrides('strict')).not.toContain(
       'features.recommended_plugins=false',
     );
+  });
+
+  it('keeps an isolated HOME from re-enabling a system Git credential helper', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-git-isolation-'));
+    tempDirs.push(root);
+    const systemConfig = path.join(root, 'system.gitconfig');
+    await fs.writeFile(systemConfig, '[credential]\n\thelper = osxkeychain\n');
+    const baseEnv = {
+      PATH: process.env.PATH,
+      HOME: root,
+      GIT_CONFIG_SYSTEM: systemConfig,
+    };
+    const visible = await execFileAsync('git', ['config', '--get-all', 'credential.helper'], {
+      cwd: root,
+      env: baseEnv,
+      encoding: 'utf8',
+    });
+    expect(visible.stdout.trim().split('\n')).toContain('osxkeychain');
+
+    const isolatedEnv = applyCodexEvalGitIsolation(baseEnv);
+    const isolated = await execFileAsync('git', ['config', '--list'], {
+      cwd: root,
+      env: isolatedEnv,
+      encoding: 'utf8',
+    });
+    expect(isolated.stdout).not.toContain('credential.helper');
+    expect(isolatedEnv).toMatchObject({
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_OPTIONAL_LOCKS: '0',
+    });
   });
 
   it('accepts an empty host control plane and checks both macOS managed keys', async () => {

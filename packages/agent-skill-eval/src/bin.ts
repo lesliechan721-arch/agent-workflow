@@ -17,7 +17,7 @@ const help = `Usage: aw-skill-eval <command>
 Commands:
   spec validate <spec.json>
   audit validate <audit.json> --spec <spec.json>
-  run <spec.json> --audit <audit.json>
+  run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]
   result validate <result.json> --spec <spec.json> --audit <audit.json>
   inspect-result <result.json> --spec <spec.json> --audit <audit.json>
   doctor --json
@@ -115,10 +115,22 @@ async function main(argv: string[]): Promise<void> {
     return
   }
   if (command === 'run') {
-    const runPath = requirePath(action, 'Usage: aw-skill-eval run <spec.json> --audit <audit.json>')
-    if (value !== '--audit' || extra.length !== 1) {
-      throw new Error('Usage: aw-skill-eval run <spec.json> --audit <audit.json>')
-    }
+    const usage = 'Usage: aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]'
+    const runPath = requirePath(action, usage)
+    const runOptions = value === undefined ? [...extra] : [value, ...extra]
+    const allowUnmanagedCount = runOptions.filter((entry) =>
+      entry === '--allow-unmanaged-processes').length
+    const allowUnmanagedProcesses = allowUnmanagedCount === 1
+    const auditPath = optionPath(runOptions, '--audit', usage)
+    const expectedLength = allowUnmanagedProcesses ? 3 : 2
+    if (
+      allowUnmanagedCount > 1
+      || runOptions.length !== expectedLength
+      || runOptions.some((entry, index) =>
+        entry !== '--audit'
+        && entry !== '--allow-unmanaged-processes'
+        && index !== runOptions.indexOf('--audit') + 1)
+    ) throw new Error(usage)
     const controller = new AbortController()
     let receivedSignal: NodeJS.Signals | null = null
     const handleSignal = (signal: NodeJS.Signals): void => {
@@ -132,8 +144,18 @@ async function main(argv: string[]): Promise<void> {
     process.on('SIGTERM', handleSigterm)
     try {
       const result = await runEvalSpec(runPath, {
-        auditPath: requirePath(extra[0], '--audit requires a path'),
+        auditPath,
+        allowUnmanagedProcesses,
         signal: controller.signal,
+        onProcessManagementResolved: (evidence) => {
+          if (evidence.mode !== 'unmanaged-confirmed') return
+          process.stderr.write(
+            '[WARNING] Unmanaged process execution was explicitly authorized. ' +
+            'Only the direct provider child is targeted; descendant discovery and cleanup ' +
+            'are not available, so descendants can remain running. macOS keychain and cmux ' +
+            'checks still apply.\n',
+          )
+        },
       })
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
     } finally {

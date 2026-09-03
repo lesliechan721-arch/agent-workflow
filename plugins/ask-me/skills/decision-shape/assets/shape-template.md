@@ -1,12 +1,12 @@
 # Shape：<主题>
 
-## Outcome and boundary
+## 结果与边界
 
 - 目标：
 - 范围：
 - 非目标或边界：
 
-## Shared decision direction
+## 共享决策方向（Decision frame）
 
 - 优先保证：
 - 可以接受：
@@ -14,7 +14,7 @@
 - 不能接受：
 - 默认判断原则：
 
-## Confirmed decisions
+## 已确认决定
 
 ### <决定>
 
@@ -23,18 +23,18 @@
 - 影响：
 - 当前证据：
 
-## Evidence and prototype verdicts
+## 证据与 Prototype 结论
 
 - <仍支撑当前决定的原型、实验、测量或研究。>
 
-## Open decisions
+## 开放决定
 
 - <仍会材料性改变结果的问题。>
 
-## Delegated choices
+## 明确委托
 
-- <明确交给后续执行者的非材料选择。>
+- <决定或验证事项、责任人、条件和期限。>
 
-## Deferred items and accepted risks
+## 延后事项与已接受风险
 
-- <延后内容、条件和已接受风险。>
+- <延后内容、可见后果和重新评估条件。>

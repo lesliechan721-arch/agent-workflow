@@ -20,8 +20,14 @@ import {
   validateEvalResult,
   type EvalResultBinding,
   type EvalResult,
+  type EvalResultProcessManagement,
   type EvalResultRun,
 } from './eval-result.js'
+import {
+  resolveEvalProcessManagement,
+  type EvalProcessManagementDependencies,
+} from './eval-process-management.js'
+import { resolveCodexEvalExecutable } from './codex-eval-isolation.js'
 import { validateEvalSpecFile, type EvalSpecCalculated } from './eval-spec.js'
 import { assertEvalProviderSuiteKind } from './eval-suite-binding.js'
 import {
@@ -45,6 +51,9 @@ import type { Digest } from './types.js'
 
 export interface RunEvalSpecOptions {
   auditPath: string
+  allowUnmanagedProcesses?: boolean
+  processManagementDependencies?: EvalProcessManagementDependencies
+  onProcessManagementResolved?: (evidence: EvalResultProcessManagement) => void
   signal?: AbortSignal
   sourceEnv?: NodeJS.ProcessEnv
   builtinProviderDependencies?: BuiltinEvalProviderDependencies
@@ -480,6 +489,27 @@ export async function runEvalSpec(
   const sourceEnv = options.sourceEnv
     ?? options.builtinProviderDependencies?.sourceEnv
     ?? process.env
+  const requestedCodexBin = options.builtinProviderDependencies?.codexBin
+    ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN
+    ?? 'codex'
+  const processPlatform = options.processManagementDependencies?.platform
+    ?? options.processManagementDependencies?.processTree?.platform
+    ?? process.platform
+  const resolvedCodexBin = await resolveCodexEvalExecutable(
+    { executable: requestedCodexBin, sourceEnv, platform: processPlatform },
+    options.processManagementDependencies?.resolveCodexExecutable,
+  )
+  const codexBin = resolvedCodexBin ?? requestedCodexBin
+  const processManagement = await resolveEvalProcessManagement({
+    allowUnmanaged: options.allowUnmanagedProcesses ?? false,
+    codexBin,
+    sourceEnv,
+    dependencies: {
+      ...options.processManagementDependencies,
+      resolveCodexExecutable: async () => resolvedCodexBin,
+    },
+  })
+  options.onProcessManagementResolved?.(processManagement)
   const runtime = await resolveCodexEvalRuntimeConfig({
     sourceEnv,
     inheritUserConfig: true,
@@ -493,8 +523,10 @@ export async function runEvalSpec(
   const builtinProviderDependencies: BuiltinEvalProviderDependencies = {
     ...options.builtinProviderDependencies,
     sourceEnv,
+    codexBin,
     model: runtime.model ?? undefined,
     codexRuntime: runtime,
+    processManagement,
   }
   const startedAt = new Date().toISOString()
   const runs: EvalResultRun[] = []
@@ -564,6 +596,7 @@ export async function runEvalSpec(
                   input,
                   sourceEnv,
                   codexRuntime: runtime,
+                  processManagement,
                 })
               : await (options.executeCodexWorkflowProvider ?? executeCodexWorkflowProvider)({
                   provider: {
@@ -575,6 +608,7 @@ export async function runEvalSpec(
                   sourceEnv,
                   codexRuntime: runtime,
                   codexBin: builtinProviderDependencies.codexBin,
+                  processManagement,
                 })
           if (options.signal?.aborted) throw abortError()
           const sanitized = redactValue(providerResult, secrets())
@@ -659,12 +693,13 @@ export async function runEvalSpec(
     last.error = { message: abortError().message }
   }
   const result: EvalResult = {
-    version: 1,
+    version: 2,
     specDigest: calculated.specDigest,
     auditDigest: auditValidation.calculated.auditDigest,
     targetDigest: calculated.targetDigest,
     caseDigest: calculated.caseDigest,
     provider: calculated.spec.provider,
+    processManagement: redactValue(processManagement, secrets()),
     startedAt,
     finishedAt: new Date().toISOString(),
     runs,

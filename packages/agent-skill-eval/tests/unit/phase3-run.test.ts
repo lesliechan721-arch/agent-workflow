@@ -58,6 +58,19 @@ const availableProcessTree = {
       : ''),
 }
 
+function runManagedEval(
+  specPath: string,
+  options: Parameters<typeof runEvalSpec>[1],
+): ReturnType<typeof runEvalSpec> {
+  return runEvalSpec(specPath, {
+    ...options,
+    processManagementDependencies: options.processManagementDependencies ?? {
+      platform: 'linux',
+      inspectProcessTree: async () => undefined,
+    },
+  })
+}
+
 async function waitForFile(filePath: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -443,11 +456,110 @@ describe('EvalSpec v1 execution', () => {
       path.join(data.root, 'workspace', 'eval', 'linked-fixture'),
     )
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-    await expect(runEvalSpec(data.specPath, {
+    await expect(runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: execute,
     })).rejects.toThrow('symlink')
     expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('blocks restricted runs before output and passes explicit unmanaged evidence to custom providers', async () => {
+    const blocked = await fixture()
+    const blockedExecute = vi.fn()
+    await expect(runEvalSpec(blocked.specPath, {
+      auditPath: blocked.auditPath,
+      sourceEnv: {
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':workspace-write',
+      },
+      processManagementDependencies: { platform: 'linux' },
+      executeCustomProvider: blockedExecute,
+    })).rejects.toThrow('does not identify a Full Access Codex session')
+    expect(blockedExecute).not.toHaveBeenCalled()
+    await expect(readdir(path.join(blocked.root, 'output'))).rejects.toThrow()
+
+    const unmanaged = await fixture()
+    const execute = vi.fn(async (options: { processManagement: unknown }) => {
+      expect(options.processManagement).toMatchObject({
+        mode: 'unmanaged-confirmed',
+        inspectionAvailable: false,
+        userAcknowledged: true,
+        descendantCleanupGuaranteed: false,
+      })
+      return { usage: null, grade: { passed: true, score: 1 } }
+    })
+    const result = await runEvalSpec(unmanaged.specPath, {
+      auditPath: unmanaged.auditPath,
+      allowUnmanagedProcesses: true,
+      sourceEnv: {
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':read-only',
+      },
+      processManagementDependencies: { platform: 'linux' },
+      executeCustomProvider: execute as never,
+    })
+    expect(execute).toHaveBeenCalledOnce()
+    expect(result.result).toMatchObject({
+      version: 2,
+      processManagement: { mode: 'unmanaged-confirmed' },
+    })
+  })
+
+  it('blocks a macOS keychain wrapper before output or provider execution in every process mode', async () => {
+    for (const allowUnmanagedProcesses of [false, true]) {
+      const data = await fixture()
+      const execute = vi.fn()
+      const inspectProcessTree = vi.fn(async () => undefined)
+      await expect(runEvalSpec(data.specPath, {
+        auditPath: data.auditPath,
+        allowUnmanagedProcesses,
+        sourceEnv: {
+          CODEX_HOME: process.env.CODEX_HOME,
+          CODEX_PERMISSION_PROFILE: ':danger-full-access',
+        },
+        processManagementDependencies: {
+          platform: 'darwin',
+          resolveCodexExecutable: async () => '/usr/local/bin/codex',
+          readUserKeychainSearchList: async () =>
+            '"/private/tmp/accountsKeychainExport/eval.keychain"',
+          inspectProcessTree,
+        },
+        executeCustomProvider: execute,
+      })).rejects.toThrow('accountsKeychainExport')
+      expect(execute).not.toHaveBeenCalled()
+      expect(inspectProcessTree).not.toHaveBeenCalled()
+      await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+    }
+  })
+
+  it('blocks a cmux Codex shim before output or provider execution in every process mode', async () => {
+    for (const allowUnmanagedProcesses of [false, true]) {
+      const data = await fixture()
+      const execute = vi.fn()
+      const readUserKeychainSearchList = vi.fn(async () => '')
+      const inspectProcessTree = vi.fn(async () => undefined)
+      await expect(runEvalSpec(data.specPath, {
+        auditPath: data.auditPath,
+        allowUnmanagedProcesses,
+        sourceEnv: {
+          CODEX_HOME: process.env.CODEX_HOME,
+          CODEX_PERMISSION_PROFILE: ':danger-full-access',
+          PATH: '/private/tmp/cmux-cli-shims/session:/usr/local/bin',
+        },
+        processManagementDependencies: {
+          platform: 'darwin',
+          resolveCodexExecutable: async () =>
+            '/private/tmp/cmux-cli-shims/session/codex',
+          readUserKeychainSearchList,
+          inspectProcessTree,
+        },
+        executeCustomProvider: execute,
+      })).rejects.toThrow('cmux Codex shim or wrapper')
+      expect(execute).not.toHaveBeenCalled()
+      expect(readUserKeychainSearchList).not.toHaveBeenCalled()
+      expect(inspectProcessTree).not.toHaveBeenCalled()
+      await expect(readdir(path.join(data.root, 'output'))).rejects.toThrow()
+    }
   })
 
   it('rejects prepared workspace, provider, and fixture mutations before output or provider execution', async () => {
@@ -459,7 +571,7 @@ describe('EvalSpec v1 execution', () => {
       const data = await fixture()
       await writeFile(path.join(data.root, 'workspace', ...relativePath), 'changed after Audit\n')
       const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-      await expect(runEvalSpec(data.specPath, {
+      await expect(runManagedEval(data.specPath, {
         auditPath: data.auditPath,
         executeCustomProvider: execute,
       })).rejects.toThrow('workspace digest')
@@ -472,7 +584,7 @@ describe('EvalSpec v1 execution', () => {
     const data = await fixture()
     await mkdir(path.join(data.root, 'workspace', 'subject', 'added-empty'))
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-    await expect(runEvalSpec(data.specPath, {
+    await expect(runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: execute,
     })).rejects.toThrow('workspace digest')
@@ -493,7 +605,7 @@ describe('EvalSpec v1 execution', () => {
       return { usage: null, grade: { passed: true, score: 1 } }
     })
 
-    await runEvalSpec(data.specPath, {
+    await runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: execute as never,
     })
@@ -504,7 +616,7 @@ describe('EvalSpec v1 execution', () => {
   it('never invokes a provider when Audit admission is absent or mismatched', async () => {
     const data = await fixture()
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-    await expect(runEvalSpec(data.specPath, {
+    await expect(runManagedEval(data.specPath, {
       auditPath: path.join(data.root, 'missing-audit.json'),
       executeCustomProvider: execute,
     })).rejects.toThrow('does not admit execution')
@@ -515,7 +627,7 @@ describe('EvalSpec v1 execution', () => {
       { ...data.audit, approvedCaseIds: [] },
     ]) {
       await writeFile(data.auditPath, `${JSON.stringify(audit, null, 2)}\n`)
-      await expect(runEvalSpec(data.specPath, {
+      await expect(runManagedEval(data.specPath, {
         auditPath: data.auditPath,
         executeCustomProvider: execute,
       })).rejects.toThrow('does not admit execution')
@@ -547,7 +659,7 @@ describe('EvalSpec v1 execution', () => {
       errors: expect.arrayContaining([expect.stringContaining('providerDigest')]),
     })
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-    await expect(runEvalSpec(data.specPath, {
+    await expect(runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: execute,
     })).rejects.toThrow('providerDigest')
@@ -566,7 +678,7 @@ describe('EvalSpec v1 execution', () => {
       const runBuiltinProvider = vi.fn()
       const executeCustomProvider = vi.fn()
       const executeCodexWorkflowProvider = vi.fn()
-      await expect(runEvalSpec(data.specPath, {
+      await expect(runManagedEval(data.specPath, {
         auditPath: data.auditPath,
         runBuiltinProvider,
         executeCustomProvider,
@@ -613,12 +725,21 @@ describe('EvalSpec v1 execution', () => {
 
     const result = await runEvalSpec(data.specPath, {
       auditPath: data.auditPath,
+      allowUnmanagedProcesses: true,
+      sourceEnv: {
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':read-only',
+      },
+      processManagementDependencies: { platform: 'linux' },
       executeCustomProvider,
       executeCodexWorkflowProvider,
     })
 
     expect(executeCustomProvider).not.toHaveBeenCalled()
     expect(executeCodexWorkflowProvider).toHaveBeenCalledOnce()
+    expect(executeCodexWorkflowProvider).toHaveBeenCalledWith(expect.objectContaining({
+      processManagement: expect.objectContaining({ mode: 'unmanaged-confirmed' }),
+    }))
     expect(result.result.provider).toEqual(data.spec.provider)
     expect(result.result.runs[0]).toMatchObject({
       status: 'completed',
@@ -649,7 +770,7 @@ describe('EvalSpec v1 execution', () => {
       writeFile(failed.auditPath, `${JSON.stringify(failed.audit, null, 2)}\n`),
     ])
     const failClosed = vi.fn(async () => { throw new Error('prepare failed') })
-    const failedResult = await runEvalSpec(failed.specPath, {
+    const failedResult = await runManagedEval(failed.specPath, {
       auditPath: failed.auditPath,
       executeCodexWorkflowProvider: failClosed,
     })
@@ -703,6 +824,12 @@ describe('EvalSpec v1 execution', () => {
     }))
     await runEvalSpec(data.specPath, {
       auditPath: data.auditPath,
+      allowUnmanagedProcesses: true,
+      sourceEnv: {
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':read-only',
+      },
+      processManagementDependencies: { platform: 'linux' },
       runBuiltinProvider: runBuiltinProvider as never,
     })
     expect(runBuiltinProvider).toHaveBeenCalledWith('codex-trigger', expect.objectContaining({
@@ -722,6 +849,7 @@ describe('EvalSpec v1 execution', () => {
     }), expect.objectContaining({
       model: 'gpt-5.6-luna',
       codexRuntime: expect.objectContaining({ inherited: false, modelProvider: 'openai' }),
+      processManagement: expect.objectContaining({ mode: 'unmanaged-confirmed' }),
     }))
   })
 
@@ -758,7 +886,7 @@ describe('EvalSpec v1 execution', () => {
       return { usage: null, grade: { passed: true, score: 1 } }
     })
 
-    const result = await runEvalSpec(data.specPath, {
+    const result = await runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       sourceEnv: {
         PATH: process.env.PATH,
@@ -777,6 +905,33 @@ describe('EvalSpec v1 execution', () => {
     expect(runBuiltinProvider).toHaveBeenCalledOnce()
     expect(JSON.stringify(result.result)).not.toContain(sourceCodexHome)
     expect(JSON.stringify(result.result)).not.toContain('provider.example.invalid')
+  })
+
+  it('launches the canonical Codex executable admitted by the macOS preflight', async () => {
+    const data = await fixture()
+    await useTriggerProvider(data)
+    const runBuiltinProvider = vi.fn(async (_id, _input, dependencies) => {
+      expect(dependencies).toMatchObject({ codexBin: '/native/bin/codex' })
+      return { usage: null, grade: { passed: true, score: 1 } }
+    })
+
+    await runEvalSpec(data.specPath, {
+      auditPath: data.auditPath,
+      sourceEnv: {
+        CODEX_PERMISSION_PROFILE: ':danger-full-access',
+        PATH: '/eval/fixture/bin:/host/bin',
+      },
+      builtinProviderDependencies: { codexBin: 'codex' },
+      processManagementDependencies: {
+        platform: 'darwin',
+        resolveCodexExecutable: async () => '/native/bin/codex',
+        readUserKeychainSearchList: async () => '',
+        inspectProcessTree: async () => undefined,
+      },
+      runBuiltinProvider: runBuiltinProvider as never,
+    })
+
+    expect(runBuiltinProvider).toHaveBeenCalledOnce()
   })
 
   it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
@@ -809,7 +964,7 @@ describe('EvalSpec v1 execution', () => {
       data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
       await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
 
-      const result = await runEvalSpec(data.specPath, {
+      const result = await runManagedEval(data.specPath, {
         auditPath: data.auditPath,
         sourceEnv: { PATH: process.env.PATH, CODEX_HOME: sourceCodexHome },
       })
@@ -873,7 +1028,7 @@ describe('EvalSpec v1 execution', () => {
         return value
       }) as typeof fs.readFile)
 
-      const result = await runEvalSpec(data.specPath, {
+      const result = await runManagedEval(data.specPath, {
         auditPath: data.auditPath,
         sourceEnv: { PATH: process.env.PATH, CODEX_HOME: sourceCodexHome },
         executeCustomProvider: (options) => executeCustomProcessProvider({
@@ -960,7 +1115,18 @@ describe('EvalSpec v1 execution', () => {
     let mappedFixturesPath = ''
     await runEvalSpec(data.specPath, {
       auditPath: data.auditPath,
-      runBuiltinProvider: (async (_id, input: { case: Record<string, unknown>; fixturesPath: string }) => {
+      allowUnmanagedProcesses: true,
+      sourceEnv: {
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':read-only',
+      },
+      processManagementDependencies: { platform: 'linux' },
+      runBuiltinProvider: (async (
+        _id,
+        input: { case: Record<string, unknown>; fixturesPath: string },
+        dependencies: { processManagement: unknown },
+      ) => {
+        expect(dependencies.processManagement).toMatchObject({ mode: 'unmanaged-confirmed' })
         mappedCase = input.case
         mappedFixturesPath = input.fixturesPath
         return { usage: null, grade: { passed: true, score: 1 } }
@@ -1121,7 +1287,7 @@ describe('EvalSpec v1 execution', () => {
         }
       }
     }
-    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 70 })
+    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 71 })
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
   })
@@ -1132,7 +1298,7 @@ describe('EvalSpec v1 execution', () => {
     await mkdir(output)
     await writeFile(path.join(output, 'foreign.txt'), 'do not change\n')
     const execute = vi.fn(async () => ({ usage: null, grade: { passed: true, score: 1 } }))
-    await expect(runEvalSpec(data.specPath, {
+    await expect(runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: execute,
     })).rejects.toThrow()
@@ -1163,7 +1329,7 @@ describe('EvalSpec v1 execution', () => {
         },
       }
     })
-    const first = await runEvalSpec(without.specPath, {
+    const first = await runManagedEval(without.specPath, {
       auditPath: without.auditPath,
       executeCustomProvider: execute as never,
       sourceEnv: {
@@ -1199,7 +1365,7 @@ describe('EvalSpec v1 execution', () => {
 
     const previous = await fixture({ baseline: 'previous-version' })
     const previousObserved: string[] = []
-    const second = await runEvalSpec(previous.specPath, {
+    const second = await runManagedEval(previous.specPath, {
       auditPath: previous.auditPath,
       executeCustomProvider: (async ({ input }: { input: { variant: string; workspacePath: string } }) => {
         previousObserved.push(await readFile(
@@ -1215,7 +1381,7 @@ describe('EvalSpec v1 execution', () => {
 
   it('stops after timeout or bound-input mutation and still writes a valid diagnostic result', async () => {
     const timeout = await fixture({ runs: 3, caseCount: 2 })
-    const timedOut = await runEvalSpec(timeout.specPath, {
+    const timedOut = await runManagedEval(timeout.specPath, {
       auditPath: timeout.auditPath,
       executeCustomProvider: (async () => { throw new Error('provider timed out after 1000ms') }) as never,
     })
@@ -1225,7 +1391,7 @@ describe('EvalSpec v1 execution', () => {
 
     const changed = await fixture({ runs: 3 })
     const before = await computeSkillDigest(changed.target)
-    const changedResult = await runEvalSpec(changed.specPath, {
+    const changedResult = await runManagedEval(changed.specPath, {
       auditPath: changed.auditPath,
       executeCustomProvider: (async ({ input }: { input: { workspacePath: string } }) => {
         const attemptTarget = path.join(
@@ -1247,7 +1413,7 @@ describe('EvalSpec v1 execution', () => {
     expect(changedResult.result.runs[0]?.error?.message).toContain('digest changed')
 
     const changedWorkspace = await fixture({ runs: 3 })
-    const changedWorkspaceResult = await runEvalSpec(changedWorkspace.specPath, {
+    const changedWorkspaceResult = await runManagedEval(changedWorkspace.specPath, {
       auditPath: changedWorkspace.auditPath,
       executeCustomProvider: (async () => {
         await writeFile(
@@ -1262,7 +1428,7 @@ describe('EvalSpec v1 execution', () => {
     expect(changedWorkspaceResult.result.runs[0]?.error?.message).toContain('digest changed')
 
     const cleanup = await fixture({ runs: 3 })
-    const cleanupResult = await runEvalSpec(cleanup.specPath, {
+    const cleanupResult = await runManagedEval(cleanup.specPath, {
       auditPath: cleanup.auditPath,
       executeCustomProvider: (async () => {
         throw new Error('process-tree cleanup could not be confirmed')
@@ -1281,7 +1447,7 @@ describe('EvalSpec v1 execution', () => {
       controller.abort()
       return { usage: { inputTokens: 1, outputTokens: 1 }, grade: { passed: true, score: 1 } }
     })
-    const result = await runEvalSpec(data.specPath, {
+    const result = await runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       signal: controller.signal,
       runBuiltinProvider: runBuiltinProvider as never,
@@ -1296,7 +1462,7 @@ describe('EvalSpec v1 execution', () => {
     })
   })
 
-  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+  it.skipIf(process.platform !== 'linux' || !hostProcessInspectionAvailable)(
     'cleans a custom provider tree before exiting for SIGINT and SIGTERM',
     async () => {
       for (const [signal, exitCode] of [
@@ -1381,7 +1547,7 @@ describe('EvalSpec v1 execution', () => {
 
   it('supports the new validation and inspection CLI contract', async () => {
     const data = await fixture({ baseline: 'without-skill' })
-    const result = await runEvalSpec(data.specPath, {
+    const result = await runManagedEval(data.specPath, {
       auditPath: data.auditPath,
       executeCustomProvider: (async () => ({
         usage: { inputTokens: 1, outputTokens: 1 },
@@ -1389,6 +1555,8 @@ describe('EvalSpec v1 execution', () => {
       })) as never,
     })
     const bin = path.resolve('dist/bin.js')
+    await expect(execFileAsync(process.execPath, [bin, '--help']))
+      .resolves.toMatchObject({ stdout: expect.stringContaining('--allow-unmanaged-processes') })
     const specOutput = JSON.parse((await execFileAsync(process.execPath, [
       bin, 'spec', 'validate', data.specPath,
     ])).stdout) as { valid: boolean; calculated: { providerDigest: string } }
@@ -1429,6 +1597,51 @@ describe('EvalSpec v1 execution', () => {
       '--spec', data.specPath, '--audit', data.auditPath,
     ])).rejects.toMatchObject({ code: 1 })
   })
+
+  it.skipIf(process.platform !== 'linux')(
+    'accepts the per-run unmanaged CLI flag and records its evidence',
+    async () => {
+      const data = await fixture()
+      const providerPath = path.join(data.root, 'provider.mjs')
+      await writeFile(providerPath, [
+        "let input = ''",
+        "process.stdin.setEncoding('utf8')",
+        "process.stdin.on('data', (chunk) => { input += chunk })",
+        "process.stdin.on('end', () => {",
+        '  JSON.parse(input)',
+        '  process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))',
+        '})',
+        '',
+      ].join('\n'))
+      data.spec.provider = { type: 'custom-process', command: [process.execPath, providerPath] }
+      data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
+      await Promise.all([
+        writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`),
+        writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`),
+      ])
+
+      const completed = await execFileAsync(process.execPath, [
+        path.resolve('dist/bin.js'),
+        'run', data.specPath,
+        '--audit', data.auditPath,
+        '--allow-unmanaged-processes',
+      ], {
+        env: {
+          PATH: process.env.PATH,
+          CODEX_HOME: process.env.CODEX_HOME,
+          CODEX_PERMISSION_PROFILE: ':read-only',
+        },
+      })
+      const output = JSON.parse(completed.stdout) as {
+        result: { version: number; processManagement: { mode: string } }
+      }
+      expect(output.result).toMatchObject({
+        version: 2,
+        processManagement: { mode: 'unmanaged-confirmed' },
+      })
+      expect(completed.stderr).toContain('Unmanaged process execution was explicitly authorized')
+    },
+  )
 
   it('rejects every provider and suite kind mismatch during spec validation', async () => {
     const bin = path.resolve('dist/bin.js')

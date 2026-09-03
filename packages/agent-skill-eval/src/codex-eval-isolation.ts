@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -18,6 +20,12 @@ const CODEX_EVAL_CREDENTIAL_OVERRIDES = [
   'cli_auth_credentials_store="file"',
   'mcp_oauth_credentials_store="file"',
   'features.secret_auth_storage=false',
+] as const;
+
+const CODEX_EVAL_GIT_OVERRIDES = [
+  'shell_environment_policy.set.GIT_CONFIG_NOSYSTEM="1"',
+  'shell_environment_policy.set.GIT_TERMINAL_PROMPT="0"',
+  'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
 ] as const;
 
 export const CODEX_EVAL_STRICT_OVERRIDES = [
@@ -167,15 +175,156 @@ async function readMacUserKeychainSearchList(): Promise<string> {
   }
 }
 
-export async function assertCodexEvalKeychainWrapperAbsent(options: {
+export interface CodexEvalKeychainInspection {
+  platform: NodeJS.Platform;
+  status: 'not-applicable' | 'safe' | 'blocked' | 'unavailable';
+}
+
+export interface ResolveCodexEvalExecutableOptions {
+  executable: string;
+  sourceEnv: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+}
+
+type ResolveCodexEvalExecutable = (
+  options: ResolveCodexEvalExecutableOptions,
+) => Promise<string | null>;
+
+async function defaultResolveCodexEvalExecutable(
+  options: ResolveCodexEvalExecutableOptions,
+): Promise<string | null> {
+  const extensions = options.platform === 'win32' && path.extname(options.executable) === ''
+    ? (options.sourceEnv.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
+    : [''];
+  const candidates = path.isAbsolute(options.executable)
+    || options.executable.includes('/')
+    || options.executable.includes('\\')
+    ? [options.executable]
+    : (options.sourceEnv.PATH ?? '').split(path.delimiter).filter(Boolean).flatMap((directory) =>
+        extensions.map((extension) => path.join(directory, `${options.executable}${extension}`)));
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return path.resolve(candidate);
+    } catch {
+      // Continue to the next PATH entry.
+    }
+  }
+  return null;
+}
+
+export async function resolveCodexEvalExecutable(
+  options: ResolveCodexEvalExecutableOptions,
+  resolver: ResolveCodexEvalExecutable = defaultResolveCodexEvalExecutable,
+): Promise<string | null> {
+  const resolved = await resolver(options);
+  return resolved === null ? null : canonicalPath(resolved);
+}
+
+function isCmuxCodexWrapper(
+  executable: string,
+  sourceEnv: NodeJS.ProcessEnv,
+): boolean {
+  const normalized = executable.replaceAll('\\', '/');
+  const configuredShim = sourceEnv.CMUX_CODEX_WRAPPER_SHIM;
+  return (
+    /\/cmux-cli-shims\/(?:[^/]+\/)?codex$/u.test(normalized)
+    || /\/cmux-codex-wrapper$/u.test(normalized)
+    || (configuredShim !== undefined
+      && canonicalPath(executable) === canonicalPath(configuredShim))
+  );
+}
+
+interface InspectCodexEvalKeychainOptions {
   platform?: NodeJS.Platform;
+  sourceEnv?: NodeJS.ProcessEnv;
+  codexBin?: string;
+  resolveCodexExecutable?: ResolveCodexEvalExecutable;
   readUserKeychainSearchList?: () => Promise<string>;
-} = {}): Promise<void> {
-  if ((options.platform ?? process.platform) !== 'darwin') return;
-  const searchList = await (
-    options.readUserKeychainSearchList ?? readMacUserKeychainSearchList
-  )();
-  if (/accountsKeychainExport/iu.test(searchList)) {
+}
+
+async function inspectCodexEvalKeychainRisk(
+  options: InspectCodexEvalKeychainOptions,
+): Promise<{
+  inspection: CodexEvalKeychainInspection;
+  reason: 'codex-executable-unavailable' | 'cmux-codex-wrapper' | 'accounts-keychain-export' | null;
+}> {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'darwin') {
+    return {
+      inspection: { platform, status: 'not-applicable' },
+      reason: null,
+    };
+  }
+  const sourceEnv = options.sourceEnv ?? process.env;
+  const executable = options.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex';
+  const resolvedExecutable = await resolveCodexEvalExecutable(
+    { executable, sourceEnv, platform },
+    options.resolveCodexExecutable,
+  );
+  if (resolvedExecutable === null) {
+    return {
+      inspection: { platform, status: 'unavailable' },
+      reason: 'codex-executable-unavailable',
+    };
+  }
+  if (
+    (resolvedExecutable && isCmuxCodexWrapper(resolvedExecutable, sourceEnv))
+    || ((path.isAbsolute(executable) || executable.includes('/') || executable.includes('\\'))
+      && isCmuxCodexWrapper(path.resolve(executable), sourceEnv))
+  ) {
+    return {
+      inspection: { platform, status: 'blocked' },
+      reason: 'cmux-codex-wrapper',
+    };
+  }
+  try {
+    const searchList = await (
+      options.readUserKeychainSearchList ?? readMacUserKeychainSearchList
+    )();
+    const blocked = /accountsKeychainExport/iu.test(searchList);
+    return {
+      inspection: { platform, status: blocked ? 'blocked' : 'safe' },
+      reason: blocked ? 'accounts-keychain-export' : null,
+    };
+  } catch {
+    return {
+      inspection: { platform, status: 'unavailable' },
+      reason: null,
+    };
+  }
+}
+
+export async function inspectCodexEvalKeychain(
+  options: InspectCodexEvalKeychainOptions = {},
+): Promise<CodexEvalKeychainInspection> {
+  return (await inspectCodexEvalKeychainRisk(options)).inspection;
+}
+
+export async function assertCodexEvalKeychainWrapperAbsent(
+  options: InspectCodexEvalKeychainOptions = {},
+): Promise<void> {
+  const { inspection, reason } = await inspectCodexEvalKeychainRisk(options);
+  if (inspection.status === 'unavailable') {
+    if (reason === 'codex-executable-unavailable') {
+      throw new Error(
+        'Unable to resolve the selected Codex executable before Codex model eval. ' +
+        'Select the native Codex executable with AW_SKILL_EVAL_CODEX_BIN. No model process was started.',
+      );
+    }
+    throw new Error(
+      'Unable to inspect the macOS user keychain search list before Codex model eval.',
+    );
+  }
+  if (inspection.status === 'blocked') {
+    if (reason === 'cmux-codex-wrapper') {
+      throw new Error(
+        'Cannot start a Codex model eval through a cmux Codex shim or wrapper because ' +
+        'its keychain behavior is not safe for an isolated eval process. Select the native ' +
+        'Codex executable with AW_SKILL_EVAL_CODEX_BIN or run aw-skill-eval from an ordinary ' +
+        'Terminal session. No model process was started.',
+      );
+    }
     throw new Error(
       'Cannot start a Codex model eval from a macOS wrapper that injects ' +
       'accountsKeychainExport into the user keychain search list. Run ' +
@@ -189,8 +338,20 @@ export function codexEvalConfigOverrides(
 ): string[] {
   return [
     ...CODEX_EVAL_CREDENTIAL_OVERRIDES,
+    ...CODEX_EVAL_GIT_OVERRIDES,
     ...(isolation === 'strict' ? CODEX_EVAL_STRICT_OVERRIDES : []),
   ];
+}
+
+export function applyCodexEvalGitIsolation(
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+  };
 }
 
 export function codexEvalIsolationEvidence(options: {

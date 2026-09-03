@@ -18,7 +18,7 @@ aw skill eval prepare ask-me \
 aw-skill-eval run /tmp/aw-eval-specs/<spec-dir>/spec.json --audit /tmp/aw-eval-specs/<spec-dir>/audit.json
 ```
 
-该命令生成 `EvalResult v1`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。
+该命令生成 `EvalResult v2`。随后运行 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>`。clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才由全新上下文做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。
 
 发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。每个所选 suite/profile 应分别准备，不要合并为一个 Spec：
 
@@ -45,10 +45,4 @@ corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条 sanity�
 只在 case 的 `workspace_files`
 中提供已确认事实，用来验证 agent 先读项目文档、不重复询问，再把用户所有的取舍交给用户。
 
-`decision-grill-evals.json`
-保留 15 个未由当前 manifest 注册的诊断用例。多数用例隔离检查单条正文规则；`reopen-existing-decision`、`avoid-exhaustion`
-和 `shared-understanding-confirmation` 使用低提示自然任务检查完整 Skill。它不是当前 manifest 注册的
-suite，不通过 `aw skill eval prepare` 运行。conversation baseline 只移除 owner Skill，并保留
-`decision-prototype`。
-
-`decision-frame-cases.json` 检查推断 frame 对用户可见、方向歧义先选择、调用方 frame 复用，以及叶子 Skill 的独立交付。`decision-comprehension-cases.json` 检查非技术场景、短流程、时间线、上下文压缩和理解失败后的表现形式切换。
+`decision-frame-cases.json` 检查推断的共享决策方向对用户可见、方向歧义先选择、调用方方向复用，以及叶子 Skill 的独立交付。`decision-comprehension-cases.json` 检查紧凑默认呈现、非技术场景、短流程、时间线、上下文压缩和理解失败后的表现形式切换。

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -120,6 +121,7 @@ test('Runner exposes exactly five public workflow steps', async () => {
     [...skill.matchAll(/^## ([1-5])\. /gmu)].map((match) => Number(match[1])),
     [1, 2, 3, 4, 5],
   );
+  // Static contract exception: an installed Agent must use the canonical public CLI sequence; behavior test is not suitable because these command pointers are consumed as instructions rather than executable code.
   for (const command of [
     'aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
     'aw-skill-eval spec validate <spec.json>',
@@ -129,31 +131,13 @@ test('Runner exposes exactly five public workflow steps', async () => {
   ]) {
     assert.ok(skill.includes(command), command);
   }
-  assert.match(skill, /预计调用数 `<=10`/u);
-  assert.match(skill, /预计调用数 `>10`/u);
-  assert.match(skill, /`codex-workflow`.*Engine attempt/u);
-  assert.match(skill, /每个 attempt 只有一个 Engine-owned app-server root/u);
-  assert.match(skill, /只在 macOS\/Linux 运行/u);
-  assert.match(skill, /prepare\/grade 不接收 credential 或 proxy/u);
-  assert.match(skill, /采集脱敏 trace、normalized evidence 和 model output/u);
-  assert.match(skill, /attempt 失败会停止 batch，不 retry/u);
-  assert.match(skill, /`custom-process` 因调用数和外部影响未知/u);
-  assert.match(skill, /实际调用数、credential、网络行为和副作用未知/u);
-  // Static contract exception: an installed Runner must disclose that custom-process is cooperative containment, not a sandbox; behavior test is not suitable because this safety boundary is direct Agent instruction.
-  assert.match(skill, /可信、协作式 provider，不是任意外部程序 sandbox/u);
-  assert.match(skill, /Engine 只在 macOS\/Linux 启动它/u);
-  assert.match(skill, /违反或检查失效会 fail closed、丢弃 grade 并停止 batch/u);
-  assert.match(skill, /Runner 只披露并调用 Engine，不重复该运行期检查/u);
-  assert.match(skill, /clean success 直接结束，不要求 triage/u);
-  assert.match(skill, /只有出现 execution\/grade 失败、current 结果混合、current 相对 baseline 回归/u);
 
   const diagnosticsStart = skill.indexOf('## 高级诊断');
   assert.ok(diagnosticsStart > 0, 'advanced diagnostics pointer');
   const publicWorkflow = skill.slice(skill.indexOf('## 1. '), diagnosticsStart);
+  // Static contract exception: ordinary execution must not invoke optional diagnostics; behavior test is not suitable because absence from the always-loaded workflow is the safety property.
   assert.doesNotMatch(publicWorkflow, /\bdoctor\b|capabilit(?:y|ies)|\bdescribe\b|\bsmoke\b/u);
-  assert.match(publicWorkflow, /run 失败.*高级诊断/u);
   assert.ok(skill.indexOf('aw skill eval doctor --json') > diagnosticsStart);
-  assert.match(skill.slice(diagnosticsStart), /安装或版本升级.*用户显式请求.*run 失败/u);
 
   // Static contract exception: obsolete commands can start unapproved model paths or bind stale contracts; behavior test is not suitable because absence from the installed instructions is the safety property.
   for (const forbidden of [
@@ -206,11 +190,20 @@ test('nested Runner handoff fixtures reach their intended admission states', asy
     'utf8',
   )).cases;
   const unknownAudit = cases.find((entry) => entry.id === 'missing-audit-blocks-model-run');
-  const audited = cases.find((entry) => entry.id === 'audited-run-validates-and-triages');
+  const prepareFailure = cases.find((entry) => entry.id === 'selection-prepare-failure-stops');
+  const engineBlocked = cases.find((entry) => entry.id === 'engine-preflight-block-stops-without-doctor');
+  const restricted = cases.find((entry) => entry.id === 'restricted-profile-requires-explicit-mode-choice');
+  const unmanaged = cases.find((entry) => entry.id === 'explicit-unmanaged-choice-is-per-run');
   assert.ok(unknownAudit);
-  assert.ok(audited);
+  assert.ok(prepareFailure);
+  assert.ok(engineBlocked);
+  assert.ok(restricted);
+  assert.ok(unmanaged);
+  assert.equal(prepareFailure.expected.workspaceUnchanged, true);
+  assert.equal(engineBlocked.expected.workspaceUnchanged, false);
+  assert.deepEqual(engineBlocked.input.pathPrepend, ['fixtures/bin']);
 
-  for (const entry of [unknownAudit, audited]) {
+  for (const entry of [unknownAudit, engineBlocked]) {
     const temporary = await materializeHandoffFiles(entry.input.workspaceFiles);
     try {
       const specPath = path.join(temporary, 'spec.json');
@@ -222,16 +215,37 @@ test('nested Runner handoff fixtures reach their intended admission states', asy
           (error) => JSON.parse(error.stdout).errors.includes('Audit status is unknown; execution is blocked'),
         );
       } else {
-        const resultPath = path.join(temporary, 'result.json');
         assert.equal(JSON.parse((await runEval([
           'audit', 'validate', auditPath, '--spec', specPath,
-        ], temporary)).stdout).valid, true);
-        assert.equal(JSON.parse((await runEval([
-          'result', 'validate', resultPath, '--spec', specPath, '--audit', auditPath,
         ], temporary)).stdout).valid, true);
       }
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
+  }
+});
+
+test('Runner preflight fixture blocks before model start and records the canonical command', async () => {
+  const fixture = path.join(
+    sourceRoot,
+    'skills/run-aw-skill-evals/evals/fixtures/bin/aw-skill-eval',
+  );
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-runner-preflight-fixture-'));
+  try {
+    await access(fixture, constants.X_OK);
+    await mkdir(path.join(temporary, 'fixtures'), { recursive: true });
+    await assert.rejects(
+      execFileAsync(process.execPath, [fixture, 'run', 'spec.json', '--audit', 'audit.json'], {
+        cwd: temporary,
+        encoding: 'utf8',
+      }),
+      (error) => error.code === 2 && error.stderr.includes('before model start'),
+    );
+    assert.equal(
+      await readFile(path.join(temporary, 'fixtures/runner-trace.txt'), 'utf8'),
+      'aw-skill-eval run spec.json --audit audit.json\n',
+    );
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
   }
 });

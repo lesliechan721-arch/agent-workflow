@@ -67,7 +67,7 @@ describe('Eval runtime owner gate', () => {
     )
     expect(verifier).toContain("{ name: 'eval-spec', version: 1 }")
     expect(verifier).toContain("{ name: 'eval-audit', version: 1 }")
-    expect(verifier).toContain("{ name: 'eval-result', version: 1 }")
+    expect(verifier).toContain("{ name: 'eval-result', version: 2 }")
   })
 
   it.each([

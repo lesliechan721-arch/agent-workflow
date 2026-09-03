@@ -375,6 +375,9 @@ async function evalRequirement(
           .map((entry) => ({ caseId: entry.id, minimumRuns }))
           .sort((left, right) => left.caseId.localeCompare(right.caseId)),
         minimumPassRate,
+        releaseProcessManagement: suite.releaseProcessManagement === 'allow-unmanaged-confirmed'
+          ? 'allow-unmanaged-confirmed'
+          : 'managed-only',
       });
     }
   }
@@ -407,6 +410,21 @@ function caseCorpusErrors(requirement, selectedDocument) {
 
 function runFactErrors(requirement, spec, result) {
   const errors = [];
+  const processMode = result.processManagement?.mode;
+  if (
+    requirement.releaseProcessManagement === 'managed-only'
+    && processMode !== 'managed'
+  ) {
+    errors.push(
+      `EvalResult process management mode ${String(processMode)} is not allowed by managed-only release policy`,
+    );
+  } else if (
+    requirement.releaseProcessManagement === 'allow-unmanaged-confirmed'
+    && processMode !== 'managed'
+    && processMode !== 'unmanaged-confirmed'
+  ) {
+    errors.push(`EvalResult process management mode ${String(processMode)} is invalid`);
+  }
   const requiredIds = new Set(requirement.releaseCases.map((entry) => entry.caseId));
   const currentRuns = result.runs.filter((run) => run.variant === 'current' && requiredIds.has(run.caseId));
   const currentAttempts = new Map();
@@ -478,6 +496,8 @@ function runFactErrors(requirement, spec, result) {
     facts: {
       minimumRuns: requirement.releaseCases[0]?.minimumRuns ?? 1,
       minimumPassRate: requirement.minimumPassRate,
+      releaseProcessManagement: requirement.releaseProcessManagement,
+      processManagementMode: processMode,
       current: { runs: completedCurrent.length, passRate: currentPassRate },
       baseline,
     },
