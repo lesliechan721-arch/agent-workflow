@@ -285,7 +285,6 @@ describe('plugin script test runner', () => {
       fields: {
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'default-mode',
         },
       },
@@ -782,25 +781,21 @@ describe('plugin script test runner', () => {
       fields: {
         token: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           sensitive: true,
           default: 'super-secret-plugin-token',
         },
         pin: {
           type: 'number',
-          writableLayers: ['user', 'project'],
           sensitive: true,
           default: 8675309,
         },
         enabled: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           sensitive: true,
           default: true,
         },
         credentials: {
           type: 'object',
-          writableLayers: ['user', 'project'],
           properties: {
             accessKey: { type: 'string', sensitive: true },
           },

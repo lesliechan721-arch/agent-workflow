@@ -11,7 +11,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "本 suite 只验证用户可见的共享方向连续性，以及候选产物和 Shape 结果；内部 Skill 路由由现有 router suite 和组合合同测试负责。"
+      "rationale": "验证共享决策方向在宏与叶子能力之间保持用户可见且语义一致，不依赖某个英文标题。"
     },
     "runtime": {
       "isolation": "strict"
@@ -29,8 +29,8 @@
       ],
       "prompt": "使用 decision-shape 塑造一个内部批量导入功能。用户只说希望尽快上线，但不能产生不可恢复的数据错误。当前没有 Shape 记录。本轮不要写文件。",
       "assertions": [
-        "向用户展示 provisional 共享方向",
-        "不把 frame 仅作为内部推断",
+        "向用户展示 provisional 共享决策方向",
+        "方向包含快速交付与数据可恢复性的真实边界",
         "与第一个材料问题同轮推进，或先处理真正的方向歧义",
         "不进入 Spec 或实现"
       ],
@@ -39,9 +39,9 @@
           {
             "expectedQuestionCount": 1,
             "answersByIndex": [
-              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+              "暂不决定，请结束本轮并保留刚才展示的方向和问题。"
             ],
-            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            "unexpectedQuestionAnswer": "暂不决定，请结束本轮。"
           }
         ]
       },
@@ -50,7 +50,7 @@
         "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "Shape 是共享 frame 的 owner；首个材料问题不能依赖用户看不见的优化方向。",
+        "rationale": "Shape 是共享决策方向的 owner；首个材料问题不能依赖用户看不见的优化方向。",
         "minimalCounterexample": "用户已经提供清楚且不矛盾的现有 Shape 时，可以直接采用其中的共享方向。",
         "errorCost": "high",
         "allowedVariance": "可以先展示方向或与第一题同轮展示，但不能先完成一串基于隐藏 frame 的问题。"
@@ -64,12 +64,11 @@
         "frame-continuity",
         "platform-codex"
       ],
-      "prompt": "使用 decision-shape 继续 planning/approval-shape.md。Grill 已确认审批角色边界；现在必须看到两种风险提示文案才能决定信息层级。沿用现有共享方向，把简短决策背景和两个轻量候选写到 prototypes/approval-risk-copy/candidates.md；不要启动网页 Review。展示候选后问我选择，再更新 Shape 并停止。",
+      "prompt": "使用 decision-shape 继续 planning/approval-shape.md。审批角色边界已确认；现在必须看到两种风险提示文案才能决定信息层级。沿用现有共享方向，在 prototypes/approval-risk-copy/ 创建 brief.md、schema v2 的 prototype.json，以及 artifact/page-top.md 和 artifact/before-submit.md；使用聊天反馈，不启动网页 Review。展示后问我选择，再写入 verdict.md、更新 Shape 并停止。",
       "assertions": [
-        "candidates.md 中用户可见的决策背景与现有 Shape 的共享方向一致",
-        "两个风险提示候选都遵守关键风险不能在用户确认后才出现的边界",
-        "更新后的 Shape 保留安全与正确性的共享方向和已确认的审批角色边界",
-        "更新后的 Shape 记录用户选择的方案 B"
+        "候选中的决策背景与当前共享方向一致",
+        "两个候选都遵守关键风险不能在确认后才出现的边界",
+        "更新后的 Shape 保留审批角色边界并记录用户选择"
       ],
       "input": {
         "scriptedReplies": [
@@ -78,19 +77,19 @@
             "answersByIndex": [
               "选择方案 B：在提交按钮上方显示风险提示。请更新 Shape 后停止。"
             ],
-            "unexpectedQuestionAnswer": "只需要我在两个风险提示候选中选择；其它问题保持开放。"
+            "unexpectedQuestionAnswer": "只处理两个风险提示候选。"
           }
         ],
         "workspaceFiles": {
-          "planning/approval-shape.md": "# Shape：审批信息层级\n\n## Shared decision direction（Decision frame）\n\n- 优先保证：安全与正确性。\n- 可以接受：增加少量界面文字。\n- 不能接受：用户在确认后才看见关键风险。\n\n## Confirmed decisions\n\n- 审批角色边界已经确认，只有审批人可以提交。\n\n## Open decisions\n\n- 风险提示放在页面顶部还是提交按钮上方。\n"
+          "planning/approval-shape.md": "# Shape：审批信息层级\n\n## 共享决策方向（Decision frame）\n\n- 优先保证：安全与正确性。\n- 可以接受：增加少量界面文字。\n- 不能接受：用户在确认后才看见关键风险。\n\n## 已确认决定\n\n- 只有审批人可以提交。\n\n## 开放决定\n\n- 风险提示放在页面顶部还是提交按钮上方。\n"
         }
       },
       "expected": {
-        "output": "候选产物和更新后的 Shape 使用一致的共享方向；Shape 保留已确认的审批角色边界并记录方案 B。本 case 不判断内部 Skill 加载。",
+        "output": "候选和 Shape 使用同一共享方向，并记录方案 B。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "planning/approval-shape.md",
-          "prototypes/approval-risk-copy/candidates.md"
+          "prototypes/approval-risk-copy/**"
         ],
         "artifacts": [
           {
@@ -98,18 +97,63 @@
             "exists": true,
             "contains": [
               "安全与正确性",
-              "审批角色边界",
+              "审批人",
               "方案 B"
             ]
           },
           {
-            "path": "prototypes/approval-risk-copy/candidates.md",
+            "path": "prototypes/approval-risk-copy/brief.md",
             "exists": true,
             "contains": [
               "安全与正确性",
-              "确认后",
+              "风险提示"
+            ]
+          },
+          {
+            "path": "prototypes/approval-risk-copy/prototype.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2,
+              "id": "approval-risk-copy",
+              "revision": 1,
+              "decisionContext": {},
+              "selectionMode": "single",
+              "options": [
+                {
+                  "id": "page-top",
+                  "kind": "text",
+                  "artifact": "artifact/page-top.md"
+                },
+                {
+                  "id": "before-submit",
+                  "kind": "text",
+                  "artifact": "artifact/before-submit.md"
+                }
+              ]
+            }
+          },
+          {
+            "path": "prototypes/approval-risk-copy/artifact/page-top.md",
+            "exists": true,
+            "contains": [
               "方案 A",
-              "方案 B"
+              "安全与正确性"
+            ]
+          },
+          {
+            "path": "prototypes/approval-risk-copy/artifact/before-submit.md",
+            "exists": true,
+            "contains": [
+              "方案 B",
+              "安全与正确性"
+            ]
+          },
+          {
+            "path": "prototypes/approval-risk-copy/verdict.md",
+            "exists": true,
+            "contains": [
+              "方案 B",
+              "提交按钮上方"
             ]
           }
         ]
@@ -126,27 +170,26 @@
       ],
       "prompt": "使用 decision-shape 继续 planning/audit-retention-shape.md。当前开放问题是审计日志保留 30 天还是 90 天，可以通过讨论决定。本轮只提出这一题，不写文件。",
       "assertions": [
-        "用户可见的问题直接以安全、可恢复和合规优先的现有共享方向为依据",
-        "用户可见的推荐和 30 天与 90 天后果对照说明合规风险与有限存储成本的取舍",
-        "不向用户重新提出、替换或要求重复确认另一套 frame",
-        "本轮只提出审计日志保留期限这一题"
+        "问题和推荐沿用安全、可恢复、合规优先的共享方向",
+        "不重新提出另一套方向",
+        "本轮只处理审计日志保留期限"
       ],
       "input": {
         "scriptedReplies": [
           {
             "expectedQuestionCount": 1,
             "answersByIndex": [
-              "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+              "暂不决定，请结束本轮。"
             ],
-            "unexpectedQuestionAnswer": "暂不决定，请结束本轮并保留刚才展示的方向/问题。"
+            "unexpectedQuestionAnswer": "暂不决定。"
           }
         ],
         "workspaceFiles": {
-          "planning/audit-retention-shape.md": "# Shape：审计日志保留\n\n## Shared decision direction（Decision frame）\n\n- 优先保证：安全、可恢复和合规。\n- 可以接受：增加有限存储成本。\n- 不优先：最低存储用量。\n- 不能接受：删除仍处于法定保留期的记录。\n\n## Confirmed decisions\n\n- 管理员不能直接删除审计日志。\n\n## Open decisions\n\n- 审计日志保留 30 天还是 90 天。\n"
+          "planning/audit-retention-shape.md": "# Shape：审计日志保留\n\n## 共享决策方向（Decision frame）\n\n- 优先保证：安全、可恢复和合规。\n- 可以接受：增加有限存储成本。\n- 不优先：最低存储用量。\n- 不能接受：删除仍处于法定保留期的记录。\n\n## 已确认决定\n\n- 管理员不能直接删除审计日志。\n\n## 开放决定\n\n- 审计日志保留 30 天还是 90 天。\n"
         }
       },
       "expected": {
-        "output": "用户可见的问题、后果对照和推荐沿用现有共享方向，且没有重新制定 frame。本 case 不判断内部 Skill 加载。",
+        "output": "沿用现有共享方向提出一题，不重新制定方向。",
         "workspaceUnchanged": true
       }
     },
@@ -161,18 +204,18 @@
       ],
       "prompt": "planning/pricing-shape.md 中已有多个决定。用户只把方向从“最大化收入”改成“简单透明优先”；支付安全和数据保留边界不变。请更新当前 Shape，但不要进入下一个叶子问题。",
       "assertions": [
-        "记录共享 frame 的变化",
+        "记录共享方向变化",
         "只重新打开受收入优先影响的定价决定",
         "保留支付安全和数据保留边界",
         "不重做完整 Shape"
       ],
       "input": {
         "workspaceFiles": {
-          "planning/pricing-shape.md": "# Shape：Pricing\n\n## Shared decision direction（Decision frame）\n\n- 优先保证：最大化收入。\n- 不能接受：降低支付安全或缩短法定数据保留。\n\n## Confirmed decisions\n\n- 提供三个付费层级。\n- 支付安全边界保持现有标准。\n- 数据保留 30 天。\n"
+          "planning/pricing-shape.md": "# Shape：Pricing\n\n## 共享决策方向（Decision frame）\n\n- 优先保证：最大化收入。\n- 不能接受：降低支付安全或缩短法定数据保留。\n\n## 已确认决定\n\n- 提供三个付费层级。\n- 支付安全边界保持现有标准。\n- 数据保留 30 天。\n"
         }
       },
       "expected": {
-        "output": "选择性重新检查受新方向影响的定价决定。",
+        "output": "只重新检查受新方向影响的定价决定。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "planning/pricing-shape.md"

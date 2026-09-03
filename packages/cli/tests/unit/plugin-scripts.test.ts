@@ -7,13 +7,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
+  redactPluginScriptOutput,
   runPostApplyScript,
+  summarizePluginScriptOutput,
   type PluginProcessRunner,
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
+const OUTPUT_LIMIT = 64 * 1024;
 
 async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-post-apply-'));
@@ -36,7 +39,7 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
       },
       scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
       ...(options.sensitiveDefault ? {
-        config: { fields: { token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, default: options.sensitiveDefault } } },
+        config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
       } : {}),
     },
   };
@@ -47,6 +50,153 @@ afterEach(async () => {
 });
 
 describe('postApply script', () => {
+  it('redacts short sensitive scalar tokens only at token boundaries', () => {
+    expect(summarizePluginScriptOutput(
+      'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
+      ['a', '1', 'true', 'long-secret-value'],
+    )).toBe(
+      '[REDACTED] [REDACTED] [REDACTED] [REDACTED] cat 10 1.5 -1 untrue command:start',
+    );
+    expect(summarizePluginScriptOutput(
+      `${'x'.repeat(OUTPUT_LIMIT - 2)} az`,
+      ['a'],
+    )).toMatch(/ a$/u);
+    expect(summarizePluginScriptOutput(
+      `${'x'.repeat(OUTPUT_LIMIT - 2)} a `,
+      ['a'],
+    )).toMatch(/ \[REDACTED\]$/u);
+  });
+
+  it('keeps generic credential redaction in plugin script summaries', () => {
+    expect(summarizePluginScriptOutput(
+      'authorization=Bearer bearer-secret token=token-secret',
+      [],
+    )).toBe('authorization=Bearer [REDACTED] token=[REDACTED]');
+  });
+
+  it('uses overlap only to redact a token that starts inside the raw output window', () => {
+    const secret = `§${'s'.repeat(99)}`;
+    const summary = summarizePluginScriptOutput(
+      `${'x'.repeat(OUTPUT_LIMIT - 20)}${secret}RAW-OVERLAP-SECRET`,
+      [secret],
+    );
+
+    expect(summary).toContain('[REDACTED]');
+    expect(summary).not.toContain('RAW-OVERLAP-SECRET');
+    for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
+      expect(summary).not.toContain(secret.slice(0, prefixLength));
+    }
+  });
+
+  it('preserves raw-window text after a fully contained sensitive token', () => {
+    expect(summarizePluginScriptOutput(
+      'before window-secret-value after-window-text',
+      ['window-secret-value'],
+    )).toBe('before [REDACTED] after-window-text');
+  });
+
+  it('redacts overlapping sensitive tokens independently of input order', () => {
+    const value = 'before abc-secret after';
+    const shortFirst = summarizePluginScriptOutput(value, ['abc', 'abc-secret']);
+    const longFirst = summarizePluginScriptOutput(value, ['abc-secret', 'abc']);
+
+    expect(shortFirst).toBe('before [REDACTED] after');
+    expect(longFirst).toBe(shortFirst);
+  });
+
+  it('merges self-overlapping and partially overlapping sensitive token ranges', () => {
+    expect(redactPluginScriptOutput('abababababab tail', ['abababab'])).toBe(
+      '[REDACTED] tail',
+    );
+    expect(redactPluginScriptOutput('abcdefghijkl tail', ['abcdefgh', 'efghijkl'])).toBe(
+      '[REDACTED] tail',
+    );
+  });
+
+  it('does not expose overlap text when overlapping tokens cross the raw output window', () => {
+    const firstSecret = `§${'a'.repeat(39)}`;
+    const secondSecret = `${'a'.repeat(20)}${'b'.repeat(30)}`;
+    const summary = summarizePluginScriptOutput(
+      `${'x'.repeat(OUTPUT_LIMIT - 30)}${firstSecret}${'b'.repeat(30)}RAW-OVERLAP-TAIL`,
+      [firstSecret, secondSecret],
+    );
+
+    expect(summary).toContain('[REDACTED]');
+    expect(summary).not.toContain('RAW-OVERLAP-TAIL');
+    for (const secret of [firstSecret, secondSecret]) {
+      for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
+        expect(summary).not.toContain(secret.slice(0, prefixLength));
+      }
+    }
+  });
+
+  it('still truncates long non-sensitive output', () => {
+    const summary = summarizePluginScriptOutput(`${'x'.repeat(OUTPUT_LIMIT)}tail`, []);
+
+    expect(summary).toHaveLength(OUTPUT_LIMIT);
+    expect(summary).not.toContain('tail');
+  });
+
+  it('redacts a sensitive token split across the output limit by the default runner', async () => {
+    const secret = '§post-apply-cross-boundary-sensitive-token';
+    const plugin = await createPlugin({ sensitiveDefault: secret });
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => { input += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  const token = JSON.parse(input).config.values.token;',
+      '  const splitAt = 12;',
+      `  const first = "x".repeat(${OUTPUT_LIMIT} - splitAt) + token.slice(0, splitAt);`,
+      '  process.stderr.write(first, () => {',
+      '    setTimeout(() => {',
+      '      process.stderr.write(token.slice(splitAt), () => { process.exitCode = 7; });',
+      '    }, 20);',
+      '  });',
+      '});',
+    ].join('\n'));
+
+    const error = await runPostApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      artifacts: [],
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('[REDACTED]');
+    for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
+      expect(error.message).not.toContain(secret.slice(0, prefixLength));
+    }
+  });
+
+  it('keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
+    const plugin = await createPlugin();
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+      'process.stdin.resume();',
+      `process.stderr.write("x".repeat(${OUTPUT_LIMIT}), () => {`,
+      '  setTimeout(() => {',
+      '    process.stderr.write("tail", () => { process.exitCode = 7; });',
+      '  }, 20);',
+      '});',
+    ].join('\n'));
+
+    const error = await runPostApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      artifacts: [],
+    }).catch((failure: unknown) => failure as Error);
+    const prefix = 'postApply failed with exit code 7. stderr: ';
+
+    expect(error.message.startsWith(prefix)).toBe(true);
+    expect(error.message.slice(prefix.length)).toHaveLength(OUTPUT_LIMIT);
+    expect(error.message).not.toContain('tail');
+  });
+
   it('uses only user config for a user target', async () => {
     const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
     const sourceIdentity = `sha256:${'4'.repeat(64)}`;
@@ -136,6 +286,59 @@ describe('postApply script', () => {
       artifacts: [],
       runner,
     })).rejects.toThrow('postApply timed out. stderr: [REDACTED]');
+  });
+
+  it('redacts every scalar leaf of a top-level sensitive object from stderr', async () => {
+    const plugin = await createPlugin();
+    const sourceIdentity = `sha256:${'8'.repeat(64)}`;
+    plugin.sourceIdentity = sourceIdentity;
+    plugin.manifest.config = {
+      fields: {
+        credentials: {
+          type: 'object',
+          sensitive: true,
+          properties: {
+            token: { type: 'string' },
+            account: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+    };
+    const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId,
+      sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: plugin.rootDir,
+      env,
+      values: { credentials: { token: 'object-secret', account: 'private-account' } },
+    });
+    const runner: PluginProcessRunner = {
+      async run() {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: '',
+          stderr: 'object-secret private-account',
+          timedOut: false,
+        };
+      },
+    };
+
+    const error = await runPostApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env }),
+      artifacts: [],
+      runner,
+    }).catch((failure: unknown) => failure as Error);
+    expect(error.message).not.toContain('object-secret');
+    expect(error.message).not.toContain('private-account');
+    expect(error.message).toContain('[REDACTED] [REDACTED]');
   });
 
   it('reports a non-zero exit without persisting failure state', async () => {

@@ -11,7 +11,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "遗漏已确认决定或开放问题会破坏跨上下文恢复；记录过程历史或开发专有状态会污染通用 Shape。"
+      "rationale": "遗漏当前决定、冲突或关键证据缺口会破坏共享理解；记录过程历史或依赖字面标题会污染通用 Shape。"
     },
     "runtime": {
       "isolation": "strict"
@@ -27,14 +27,14 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "使用 decision-shape 帮我塑造明年的产品定价方向。这个任务不是软件开发，不需要 Spec。先建立取舍框架并指出当前最重要的问题。",
+      "prompt": "使用 decision-shape 帮我塑造明年的产品定价方向。这个任务不是软件开发，不需要 Spec。先建立取舍方向并指出当前最重要的问题。",
       "assertions": [
         "不引用开发工作流专有目录或阶段",
-        "建立 Decision frame",
+        "向用户展示可校准的共享决策方向",
         "指出当前最重要的材料问题"
       ],
       "expected": {
-        "output": "建立通用 Decision frame 和当前问题，不引用 dev-workflow、docs/dev 或 Fast/Standard/Assured 保障等级。",
+        "output": "建立通用共享决策方向和当前问题，不引用 dev-workflow、docs/dev 或 Fast/Standard/Assured。",
         "workspaceUnchanged": true
       }
     },
@@ -50,11 +50,12 @@
       "prompt": "使用 decision-shape 继续这个计划，并把当前 Shape 写到 planning/pricing-shape.md。已有决定：优先简单透明；不做复杂分层。请归一当前记录。",
       "assertions": [
         "只写指定路径",
-        "保留当前有效决定",
-        "文件足以恢复当前共享理解"
+        "保留当前有效决定和共享方向",
+        "文件足以恢复当前共享理解",
+        "不保存完整问答或模型思考"
       ],
       "expected": {
-        "output": "更新指定文件，包含当前 Outcome、Decision frame、已确认决定、开放决定、证据和接受风险，使用户可以仅凭该文件恢复当前共享理解。",
+        "output": "更新指定文件，以当前语义记录结果与边界、共享决策方向、决定、开放问题、证据和风险。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "planning/pricing-shape.md"
@@ -64,11 +65,12 @@
             "path": "planning/pricing-shape.md",
             "exists": true,
             "contains": [
-              "Decision frame",
+              "共享决策方向",
               "优先简单透明"
             ],
             "notContains": [
-              "完整问答"
+              "完整问答",
+              "模型思考"
             ]
           }
         ]
@@ -91,8 +93,8 @@
       ],
       "input": {
         "workspaceFiles": {
-          "planning/pricing-shape.md": "# Shape：Pricing\n\n## Outcome and boundary\n\n- 为小团队提供简单透明的自助定价。\n- 不做按功能拆分的复杂分层。\n\n## Decision frame\n\n- 优先级：透明、易理解、低运营成本。\n- 可接受代价：短期减少细分变现。\n\n## Confirmed decisions\n\n- 只保留一个付费层级。\n- 价格页使用单页结构。\n\n## Evidence and prototype verdicts\n\n- `prototypes/pricing-layout/verdict.md`：单页信息结构已接受。\n\n## Open decisions\n\n- 按月计费还是按年计费。\n",
-          "prototypes/pricing-layout/verdict.md": "# Prototype verdict\n\n- Prototype ID: pricing-layout\n- Revision: 3\n- Verdict: accepted\n- 当前结论：使用单页信息结构，不使用分层比较表。\n"
+          "planning/pricing-shape.md": "# Shape：Pricing\n\n## 结果与边界\n\n- 为小团队提供简单透明的自助定价。\n- 不做按功能拆分的复杂分层。\n\n## 共享决策方向（Decision frame）\n\n- 优先保证：透明、易理解、低运营成本。\n- 可以接受：短期减少细分变现。\n\n## 已确认决定\n\n- 只保留一个付费层级。\n- 价格页使用单页结构。\n\n## 证据与 Prototype 结论\n\n- `prototypes/pricing-layout/verdict.md`：单页信息结构已接受。\n\n## 开放决定\n\n- 按月计费还是按年计费。\n",
+          "prototypes/pricing-layout/verdict.md": "# Prototype 结论：Pricing layout\n\n- Prototype ID：pricing-layout\n- Revision：3\n\n## 当前结论\n\n使用单页信息结构。\n"
         }
       },
       "expected": {
@@ -104,6 +106,62 @@
         "minimalCounterexample": "如果现有工件没有记录某个材料决定的当前结论或证据，则可以就该缺口向用户提问。",
         "errorCost": "high",
         "allowedVariance": "可以用不同摘要，但不得重问已确认决定。"
+      }
+    },
+    {
+      "id": "artifact-conflict-is-surfaced",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "artifact-conflict",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "继续 planning/layout-shape.md。当前 Shape 写采用单页布局，但最新 Prototype verdict 写用户接受分步布局；现有材料不能证明哪个更新。请继续塑形，不要修改文件。",
+      "assertions": [
+        "明确指出 Shape 与 Prototype verdict 冲突",
+        "请求用户确认当前有效方向",
+        "不静默覆盖 Shape 或 verdict",
+        "不进入下一材料问题"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "planning/layout-shape.md": "# Shape：Layout\n\n## 已确认决定\n\n- 采用单页布局。\n",
+          "prototypes/layout/verdict.md": "# Prototype 结论：Layout\n\n## 当前结论\n\n用户接受分步布局。\n"
+        }
+      },
+      "expected": {
+        "output": "向用户暴露单页与分步布局冲突，并在确认前保持工件不变。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "两个都声称当前有效的持久工件相互冲突时，静默选择会使后续工作采用未经用户确认的方向。",
+        "minimalCounterexample": "如果现有材料明确说明用户已用新决定替代旧决定，则可以更新当前 Shape，不必再次确认。"
+      }
+    },
+    {
+      "id": "unaccepted-material-evidence-keeps-shape-open",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "evidence-completion",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "当前 Shape 暂定采用同步三方调用，但 P99 是否能满足 50 ms 尚未验证；该证据可能推翻架构方向，用户也没有接受缺少证据的后果。请判断 Shape 是否完整，不要修改文件。",
+      "assertions": [
+        "判断 Shape 尚未完成",
+        "说明该证据可能推翻当前方向",
+        "不把证据缺口静默移入已接受风险",
+        "给出需要验证或用户明确接受条件性结论的下一步"
+      ],
+      "expected": {
+        "output": "保持 Shape 开放，直到取得性能证据或用户明确接受条件性结论及风险。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "把可能推翻方向的未验证命题视为已完成，会把条件性架构决定误交给后续执行。",
+        "minimalCounterexample": "如果证据缺口不会材料性改变方向，或用户已明确接受条件性结论及其后果，则 Shape 可以完成。"
       }
     }
   ]

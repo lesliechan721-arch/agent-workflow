@@ -143,8 +143,15 @@ AW 在安装时保留 Codex 和 Claude Code 的原生调用元数据，不使用
 ```bash
 # 同步来源，建立或更新 Active Catalog snapshot
 aw catalog source sync official
+aw catalog source sync official --yes
 aw catalog source sync official --check
+aw catalog source sync official --replace-damaged --yes
 aw catalog source status official
+
+# 检查或手工回收 immutable Catalog store；prune 默认只预览
+aw catalog store status
+aw catalog store prune
+aw catalog store prune --yes
 
 # 安装、刷新同步或移除
 aw install git-toolkit -p both
@@ -175,7 +182,9 @@ aw reinstall git -p codex -s user
 
 `cleanup`、`uninstall` 和 `reinstall` 不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
 
-普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review；刷新失败但旧 Active 可用时，会输出 warning 并继续使用旧 Active。没有 Active 或 Active 损坏时，CLI 命令停止并提示 `aw catalog source sync <id>`；TUI 来源详情可显式获取、修复或验证并切换 Active。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。检查只更新当前 TUI 的提示，不修改 Status v7 或 Active，也不会自动激活候选。健康 Git Active 先只检查远端 ref；固定 commit 不联网。Path source 检查本地候选。网络检查失败时，旧 Active 保持可用，用户仍可浏览，并可在来源详情重新检查目标来源。Catalog 更新需先确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。`cleanup` 和 `cleanup --force` 不读取 Active；它们可只凭 live ownership 或离线 evidence 清理 AW-owned 输出。source 或 Catalog store 缺失或损坏不能永久阻止 cleanup，且两者仍保留 foreign 或 shared 内容。CLI 的 `catalog source add` 和 `update` 只改 config；TUI add/update 的默认 Review 会保存配置并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 回退改 ref 后再 sync；Path source 恢复目录后再 sync。
+普通 install、reinstall、uninstall、status、config、TUI 初始 load 和 Portable 操作只读取本地 Active Catalog snapshot。显式 `sync --refresh` 和 TUI“刷新并同步”会先刷新相关来源，再基于新的 Active 建立 Review；刷新失败、候选影响未知或需要确认且旧 Active 可用时，会输出 warning 并继续使用旧 Active。没有 Active 时，CLI 提示 `aw catalog source sync <id>`。Active store 损坏时，Git source 先按 Active 的精确 commit 修复旧 store key；CLI 修复后继续检查当前候选，TUI 修复成功后停止并重新显示当前更新。精确旧版本无法取得，或 Path 当前内容不是旧 key 时，CLI 只接受 `aw catalog source sync <id> --replace-damaged --yes`，TUI 使用独立的“使用当前候选替换损坏的 Active” Review。`catalog-sources.json` 损坏时，TUI 可经 Review 备份原文件并恢复官方默认来源；它不删除 Catalog state 或 store。TUI 初始页面不等待网络；进入 ready 后，每个 session 只对开启自动检查的来源检查一次 freshness，并优先检查主来源。关闭后只能在来源详情手动检查。自动检查和“重新检查”先轻量检查健康 Git Active 的远端 ref；commit 未变时不 fetch，固定 commit 不联网；“完整验证”强制完整 resolve。没有 Active、Active 损坏和恢复动作仍完整验证，Path source 也完整验证本地候选。检查只更新当前 TUI 的提示，不修改 Status v7 或 Active，也不会自动激活候选。完整背景 candidate 只可在绑定相同 session token、source config fingerprint 和 Active store key 时复用于普通 Review preparation；Execute 仍重新 resolve。候选缺少当前 AW capability 时显示 missing IDs，旧 Active 保持可用，普通 update 不出现。网络检查失败时，旧 Active 保持可用，用户仍可浏览。Git 完整 resolve 默认 timeout 是 180000 ms；ref probe 最多 30000 ms；`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`，其中 `0` 表示无 deadline。Catalog 更新在影响现有引用或影响未知时需要 `--yes` 或 TUI 明确确认；成功切换 Active 后，已安装插件不会自动升级，TUI 只重新计算可用的插件升级。`cleanup` 和 `cleanup --force` 不读取 Active；它们可只凭 live ownership 或离线 evidence 清理 AW-owned 输出。source 或 Catalog store 缺失或损坏不能永久阻止 cleanup，且两者仍保留 foreign 或 shared 内容。CLI 的 `catalog source add` 和 `update` 只改 config；移除有引用或引用清单不完整的 source 需要 `--yes`。TUI add/update 的默认 Review 会保存配置并启用已确认候选。`sync --check` fetch 并验证但不写 store 或 Active，并在 JSON receipt 中返回脱敏的影响证据；普通 sync 原子写 store 后切换 Active，失败时保留原 Active。Git 普通更新只接受更高版本；同版本不同 digest 和版本回退会停止。明确修改 URL、path、subdir 或 ref 后的 sync 可经确认切换。Path source 允许内容变化。
+
+`aw catalog store status [--json]` 只读检查 immutable store。`aw catalog store prune` 默认是 dry-run；只有 `--yes` 才删除，且 `--dry-run` 与 `--yes` 互斥。命令始终保留 Active。健康的非 Active 正式 entry 只有超过 30 天才可回收；`.staging-*` 和 `.replacement-*` 超过 24 小时才可回收；`.quarantine-*` 还要求对应正式 entry 存在并通过完整验证。损坏、未知、unsafe、符号链接和 foreign node 都保留。实际 prune 在 AW_HOME mutation lock 内重新读取 state 和 store；state 损坏时零删除。单项删除失败不阻止其它安全项，并返回 partial receipt。这里没有自动 GC；误删的弱 snapshot 通过 source sync 重建，Active、foreign 内容和无法证明安全的 residue 不由 prune 删除。
 
 除 `cleanup` 和 `cleanup --force` 外，普通写操作在锁内复用一次 ordinary live inventory，并只对依赖计划中的目标执行 ownership、native、config 和 Active snapshot 重验。删除保护需要历史 project consumer 时，会使用独立范围的 inventory。需要定位耗时时，使用 `--debug --log-file <path>`，查看 `review.prepare.*`、`native:success|error` 和 `rebuild:action` 的 `durationMs`。原生事件只包含 agent、稳定 operation、退出状态和固定 reason，不包含 args、cwd、stdout、stderr 或未知错误文本。原生 CLI 时间单独记录，不计入 Catalog 读取时间。
 
@@ -252,11 +261,11 @@ aw install aw-catalog-development -p both
 
 使用 `author-aw-catalog` 建立或维护 Workspace；单个 canonical Plugin Source 交给 `author-aw-plugin`。删除由 Catalog Author 确认 Workspace、插件名、inventory 和反向依赖后交给 Plugin Author 的公开 `aw plugin remove` 分支；receipt 返回后 Catalog Author 验证剩余 inventory，空 inventory 不验证已删除对象。删除不会自动 publish。Workspace、聚合验证、publish plan/apply 和失败恢复的唯一作者流程见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
-当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync。
+当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync，影响现有引用或影响未知时使用 `--yes`。
 
 远端 Catalog 发布先运行 `aw catalog publish plan`，确认 Workspace identity、source HEAD、remote identity、branch、parent、tag、snapshot digest、`expectedCommit` 和 `planDigest`。`planDigest` 绑定 canonical `{ descriptor, expectedCommit }`。确认后再使用 `aw catalog publish apply --expected-plan-digest <digest> --yes`。apply 用 digest 唯一定位 schema v2 `.aw/publish/<version>/journal.json`，不依赖当前 metadata version。相同 plan 可在当前 HEAD 或 dirty state 改变后对账或续跑；Workspace identity、remote identity 和 branch 仍必须相同。不同 plan 必须提高 Catalog version。
 
-Skill-local Eval 作者合同使用 Manifest v1。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择生成输入完整的 `EvalSpec v1`，但不运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v1` 的唯一机器 owner；执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并直接运行 `aw-skill-eval run <spec.json> --audit <audit.json>`。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版使用字符串 `workspace` 的 v1 Spec 必须重新 prepare 和 Audit。Engine 内置 `codex-trigger` 和 `codex-conversation` provider registry；`custom-process` 只可作为可信、协作式外部 provider escape hatch，不是任意程序 sandbox；进程 containment 与平台边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`，clean success 不要求 triage；只有安装或升级、用户明确请求诊断、执行失败，或结果异常及将驱动生产 Skill 修改时，才进入相应高级诊断或独立 result-triage。
+Skill-local Eval 作者合同使用 Manifest v1。`aw skill eval prepare` 按 plugin、Skill、suite、profile 和 case 选择生成输入完整的 `EvalSpec v1`，但不运行模型。`@lesliechan721/agent-skill-eval` 是 `EvalSpec v1 → EvalAudit v1 → EvalResult v2` 的唯一机器 owner；Result v2 要求 `processManagement` 证据，不兼容 Result v1。执行前必须有精确绑定 provider、workspace、current/optional previous target、case digest 和全部 selected cases 的 passing Audit，并运行 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`。所有真实 run 在 output 和模型前检查 permission、macOS Codex 可执行入口与 keychain，以及进程管理能力。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；该模式只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 keychain 检查。完整边界见[架构说明](docs/architecture.md)。普通成功路径不运行 `aw skill eval doctor --json` 或 `aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>`，clean success 不要求 triage；只有安装或升级、用户明确请求诊断、模型已启动后的 run 失败，或结果异常及将驱动生产 Skill 修改时，才进入相应高级诊断或独立 result-triage。
 
 ### 本仓库维护与官方发版
 

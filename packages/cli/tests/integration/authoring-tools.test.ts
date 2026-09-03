@@ -241,12 +241,10 @@ async function writeDynamicArtifactPlugin(
       fields: {
         enableInstruction: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
       },
@@ -2524,10 +2522,9 @@ describe('authoring tools', () => {
           mode: 'project',
         },
         schema: {
-          apiKey: { type: 'string', writableLayers: ['user', 'project'], required: true, sensitive: true },
+          apiKey: { type: 'string', required: true, sensitive: true },
           mode: {
             type: 'string',
-            writableLayers: ['user', 'project'],
             default: 'standard',
             choices: {
               allowCustom: false,
@@ -2641,10 +2638,9 @@ describe('authoring tools', () => {
       },
       config: {
         fields: {
-          token: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, required: true },
+          token: { type: 'string', sensitive: true, required: true },
           mode: {
             type: 'string',
-            writableLayers: ['user', 'project'],
             default: 'standard',
             choices: {
               allowCustom: false,
@@ -2656,22 +2652,14 @@ describe('authoring tools', () => {
           },
           configFile: {
             type: 'string',
-            writableLayers: ['user', 'project'],
             default: './config.txt',
-            validation: { format: 'path' },
           },
-          constructor: { type: 'string', writableLayers: ['user', 'project'], default: 'declared-constructor' },
           metadata: {
             type: 'object',
-            writableLayers: ['user', 'project'],
-            properties: Object.fromEntries([
-              ['__proto__', { type: 'string' }],
-              ['constructor', { type: 'string' }],
-            ]),
+            properties: { owner: { type: 'string' } },
           },
           labels: {
             type: 'object',
-            writableLayers: ['user', 'project'],
             additionalProperties: { type: 'string' },
           },
         },
@@ -2718,12 +2706,9 @@ describe('authoring tools', () => {
           token: 'project-secret',
           mode: 'strict',
           metadata: Object.fromEntries([
-            ['__proto__', 'fixed-prototype'],
-            ['constructor', 'fixed-constructor'],
+            ['owner', 'fixed-owner'],
           ]),
           labels: Object.fromEntries([
-            ['__proto__', 'dynamic-prototype'],
-            ['constructor', 'dynamic-constructor'],
             ['toString', 'dynamic-to-string'],
           ]),
           staleProjectSecret: 'do-not-print-project',
@@ -2758,23 +2743,14 @@ describe('authoring tools', () => {
       token: '[redacted]',
       mode: 'strict',
       configFile: './config.txt',
-      constructor: 'declared-constructor',
     });
     expect(payload.sources).toMatchObject({
       token: 'project',
       mode: 'project',
       configFile: 'default',
-      constructor: 'default',
     });
-    expect(payload.values.metadata).toEqual(Object.fromEntries([
-      ['__proto__', 'fixed-prototype'],
-      ['constructor', 'fixed-constructor'],
-    ]));
-    expect(payload.values.labels).toEqual(Object.fromEntries([
-      ['__proto__', 'dynamic-prototype'],
-      ['constructor', 'dynamic-constructor'],
-      ['toString', 'dynamic-to-string'],
-    ]));
+    expect(payload.values.metadata).toEqual({ owner: 'fixed-owner' });
+    expect(payload.values.labels).toEqual({ toString: 'dynamic-to-string' });
     expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
       expect.arrayContaining([
         { scope: 'user', key: 'staleUserSecret' },
@@ -2983,7 +2959,6 @@ describe('authoring tools', () => {
         fields: {
           apiKey: {
             type: 'string',
-            writableLayers: ['user', 'project'],
             required: true,
             sensitive: true,
           },
@@ -3160,7 +3135,6 @@ describe('authoring tools', () => {
         fields: {
           badMin: {
             type: 'string',
-            writableLayers: ['user', 'project'],
             min: 1,
           },
         },
@@ -3192,7 +3166,6 @@ describe('authoring tools', () => {
         fields: {
           goodKey: {
             type: 'string',
-            writableLayers: ['user', 'project'],
           },
         },
       },
@@ -3223,7 +3196,6 @@ describe('authoring tools', () => {
         fields: {
           goodKey: {
             type: 'string',
-            writableLayers: ['user', 'project'],
           },
         },
       },
@@ -3258,7 +3230,6 @@ describe('authoring tools', () => {
     const fields = {
       mode: {
         type: 'string',
-        writableLayers: ['user', 'project'],
         choices: {
           allowCustom: false,
           presets: [
@@ -3269,27 +3240,20 @@ describe('authoring tools', () => {
       },
       limit: {
         type: 'number',
-        writableLayers: ['user', 'project'],
         validation: { minimum: 1, maximum: 20 },
       },
       trace: {
         type: 'boolean',
-        writableLayers: ['user', 'project'],
       },
       token: {
         type: 'string',
-        writableLayers: ['user', 'project'],
         sensitive: true,
       },
       rules: {
         type: 'string',
-        writableLayers: ['user', 'project'],
-        validation: { format: 'path' },
       },
       workspace: {
         type: 'string',
-        writableLayers: ['user', 'project'],
-        validation: { format: 'path' },
       },
     };
     const scriptPath = path.join(
@@ -3332,8 +3296,8 @@ describe('authoring tools', () => {
       cwd: repoRoot(),
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
-    })).rejects.toMatchObject({
-      stdout: expect.stringContaining('sensitive config cannot declare choices'),
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3756,7 +3720,7 @@ describe('authoring tools', () => {
         },
         config: {
           fields: {
-            variant: { type: 'string', writableLayers: ['user', 'project'], default: 'standard' },
+            variant: { type: 'string', default: 'standard' },
           },
         },
         artifacts: {
@@ -4446,7 +4410,7 @@ describe('authoring tools', () => {
     ]);
   });
 
-  it('validate_plugin.mjs enforces native Codex Skill config and identity contracts', async () => {
+  it('validate_plugin.mjs enforces native Codex Skill identity contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-dynamic-contract-'));
     tempDirs.push(tempRoot);
     const fixture = await writeSourcePlugin(
@@ -4456,7 +4420,7 @@ describe('authoring tools', () => {
         skills: './skills',
         config: {
           fields: {
-            mode: { type: 'string', writableLayers: ['user', 'project'] },
+            mode: { type: 'string' },
           },
         },
         scripts: {
@@ -4483,13 +4447,7 @@ describe('authoring tools', () => {
       },
     );
 
-    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('native delivery requires a config field with writableLayers ["user"]'),
-    });
-
     const manifest = await fs.readJson(fixture.manifestPath);
-    manifest.config.fields.mode.writableLayers = ['user'];
-    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('native dynamic Skill "review" conflicts with a static Skill'),
     });
@@ -6046,7 +6004,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
   });
 
@@ -6095,7 +6053,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6108,7 +6066,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v10 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
     });
   });
 

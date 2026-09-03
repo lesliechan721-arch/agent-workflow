@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4, type ConsoleV4ScreenId } from '../../src/tui/console-app-v4.js';
@@ -22,7 +22,10 @@ import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source
 import {
   probeCatalogSourceGeneration,
   syncCatalogSourceGeneration,
+  type CatalogGenerationServiceRuntime,
 } from '../../src/utils/catalog-generation-service.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
@@ -63,6 +66,9 @@ async function confirmReview(
   instance: ReturnType<typeof render>,
   controller: TuiController,
 ): Promise<void> {
+  if (controller.snapshot.activeReview?.requiresConfirmation) {
+    await input(instance, '\r');
+  }
   await input(instance, '\r');
   await waitFor(
     () => controller.snapshot.result !== undefined,
@@ -72,7 +78,10 @@ async function confirmReview(
   await nextTurn(3);
 }
 
-async function configuredController(logicalIdentity?: string): Promise<{
+async function configuredController(
+  logicalIdentity?: string,
+  catalogGenerationRuntime?: CatalogGenerationServiceRuntime,
+): Promise<{
   controller: TuiController;
   firstRoot: string;
   secondRoot: string;
@@ -108,7 +117,9 @@ async function configuredController(logicalIdentity?: string): Promise<{
   });
   const progress = createRebuildProgressFeed();
   return {
-    controller: new TuiController(createTuiControllerDependencies(context, progress), progress),
+    controller: new TuiController(createTuiControllerDependencies(context, progress, {
+      catalogGenerationRuntime,
+    }), progress),
     firstRoot,
     secondRoot,
   };
@@ -189,6 +200,79 @@ async function pushGitCatalogVersion(
 }
 
 describe('TUI v4 real catalog source boundary', () => {
+  it('reuses a complete background candidate for Review and resolves again for Execute', async () => {
+    const pathResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const { controller, firstRoot } = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: pathResolve },
+    });
+    await rewriteCatalogSnapshot(firstRoot, '2.0.0', 'fresh candidate\n');
+
+    await controller.load();
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'complete background candidate',
+    );
+    expect(pathResolve).toHaveBeenCalledTimes(1);
+
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(pathResolve).toHaveBeenCalledTimes(1);
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'catalogGeneration',
+    });
+    expect(pathResolve).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
+  it('falls back to a fresh probe when source config or Active binding changes', async () => {
+    const configResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const configFixture = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: configResolve },
+    });
+    await rewriteCatalogSnapshot(configFixture.firstRoot, '2.0.0', 'config candidate\n');
+    await configFixture.controller.load();
+    await waitFor(
+      () => configFixture.controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'config-bound candidate',
+    );
+    const isolation = getCurrentSourceTestIsolation();
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'local', type: 'path', primary: true, path: configFixture.secondRoot }],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await configFixture.controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(configResolve).toHaveBeenCalledTimes(2);
+    configFixture.controller.dispose();
+
+    const activeResolve = vi.fn(catalogPathProviderInternal.resolve);
+    const activeFixture = await configuredController(undefined, {
+      providers: { git: catalogGitProviderInternal.resolve, path: activeResolve },
+    });
+    await rewriteCatalogSnapshot(activeFixture.firstRoot, '2.0.0', 'active candidate\n');
+    await activeFixture.controller.load();
+    await waitFor(
+      () => activeFixture.controller.getCatalogFreshness('local')?.state === 'localChangesAvailable',
+      'Active-bound candidate',
+    );
+    await syncCatalogSourceGeneration({
+      sourceId: 'local', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await rewriteCatalogSnapshot(activeFixture.firstRoot, '3.0.0', 'next candidate\n');
+    await activeFixture.controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    expect(activeResolve).toHaveBeenCalledTimes(2);
+    activeFixture.controller.dispose();
+  });
   it.each([
     ['malformed', '{"schemaVersion":'],
     ['schema-invalid', '{"schemaVersion":2,"sources":[]}\n'],
@@ -425,7 +509,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('blocks a version conflict that appears after an update overlay', async () => {
+  it('reuses the update overlay for Review and blocks a changed candidate at Execute', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller, work } = await configuredGitController();
     const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
@@ -438,9 +522,12 @@ describe('TUI v4 real catalog source boundary', () => {
     );
     await pushGitCatalogVersion(work, '1.0.0', 'conflicting candidate');
 
-    await expect(controller.buildOperationReview({
+    const review = await controller.buildOperationReview({
       kind: 'catalogGeneration', action: 'update', sourceId: 'git-local',
-    })).rejects.toMatchObject({ code: 'catalogVersionConflict' });
+    });
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'catalogVersionConflict',
+    });
 
     expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
     controller.dispose();
@@ -529,11 +616,7 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')?.active?.catalogVersion).toBe('2.0.0');
     expect((await readCatalogGenerationState(isolation.env)).sources.local!.active?.snapshotDigest)
       .not.toBe(before.snapshotDigest);
-    await waitFor(
-      () => controller.getCatalogFreshness('local')?.state === 'current',
-      'freshness after Active switch',
-      () => controller.getCatalogFreshness('local'),
-    );
+    expect(controller.getCatalogFreshness('local')?.state).toBe('notChecked');
     controller.dispose();
   });
 
@@ -610,6 +693,36 @@ describe('TUI v4 real catalog source boundary', () => {
       schemaVersion: 1,
       sources: { local: { active: concurrent!.active, lastSync: concurrent!.lastSync } },
     });
+    controller.dispose();
+  });
+
+  it('rebuilds the real Ink Review when config impact changes before activation lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot } = await configuredController();
+    await controller.load();
+    const before = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    await rewriteCatalogSnapshot(firstRoot, '2.0.0', 'reviewed impact candidate\n');
+    await controller.recheckCatalogSource('local');
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    setTuiControllerRuntimeTestHooksForTests({
+      afterCatalogGenerationCandidateResolved: async () => {
+        await fs.outputJson(
+          path.join(isolation.env.AW_HOME!, 'plugin-config', 'local', 'one', 'config.json'),
+          { schemaVersion: 3, pluginId: 'local/one', values: {} },
+        );
+      },
+    });
+
+    await confirmReview(instance, controller);
+
+    expect(controller.snapshot.result).toMatchObject({
+      state: 'stale', operationKind: 'catalogGeneration',
+    });
+    expect(controller.snapshot.activeReview?.reviewToken).not.toBe(review.reviewToken);
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active).toEqual(before);
     controller.dispose();
   });
 
@@ -879,7 +992,8 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     const frame = instance.lastFrame() ?? '';
     const compactFrame = frame.replace(/\s+/gu, '');
-    expect(frame).toContain('重新下载并修复');
+    expect(frame).toContain('重新下载旧版本并精确修复');
+    expect(frame).toContain('使用当前候选替换损坏的 Active');
     expect(frame).toContain('编辑来源…');
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
@@ -945,7 +1059,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('prioritizes exact repair over config mismatch and preserves a sibling store entry', async () => {
+  it('repairs the exact old target and stops before a config-mismatched candidate switch', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller, firstRoot } = await configuredController();
     const mirrorRoot = path.join(isolation.layout.fixtureCwd, 'same-catalog-new-path');
@@ -976,18 +1090,19 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('验证候选并恢复');
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('使用当前候选替换损坏的 Active');
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'combined repair Review');
-    expect(controller.snapshot.activeReview?.primaryLabel).toBe('验证并精确修复');
+    expect(controller.snapshot.activeReview?.primaryLabel).toBe('重新下载并修复');
     expect(instance.lastFrame()).toContain('精确替换损坏的 Active 条目');
     await confirmReview(instance, controller);
 
     const repaired = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
     expect(repaired.snapshotDigest).toBe(active.snapshotDigest);
-    expect(repaired.sourceConfigFingerprint).not.toBe(active.sourceConfigFingerprint);
-    expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'ready' });
+    expect(repaired.sourceConfigFingerprint).toBe(active.sourceConfigFingerprint);
+    expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'configMismatch' });
     await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
     controller.dispose();
   });
@@ -995,7 +1110,7 @@ describe('TUI v4 real catalog source boundary', () => {
   it.each([
     ['1.0.0', 'same-version drift', ['metadata.json']],
     ['0.9.0', 'lower-version candidate', ['snapshot', 'catalog-manifest.json']],
-  ] as const)('does not infer the old version from an incomplete Active entry for %s', async (
+  ] as const)('repairs the exact old Git commit without inferring its damaged store version for %s', async (
     version,
     content,
     damageRelative,
@@ -1044,20 +1159,18 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('验证候选并恢复');
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
     expect(instance.lastFrame()).toContain('编辑来源');
-    expect(instance.lastFrame()).toContain('移除来源');
 
     await input(instance, '\r');
-    await waitFor(
-      () => controller.snapshot.reviewPreparation?.state === 'failed',
-      'safe comparison block',
-    );
-    expect(instance.lastFrame()).toContain('损坏的当前 Active 无法提供可信版本');
-    expect(controller.snapshot.activeReview).toBeUndefined();
-    expect(await readCatalogGenerationState(isolation.env)).toEqual(stateBeforeReview);
+    await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'exact Git repair Review');
+    expect(controller.snapshot.activeReview?.primaryLabel).toBe('重新下载并修复');
+    await confirmReview(instance, controller);
+    expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' });
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active)
+      .toEqual(stateBeforeReview.sources['git-local']!.active);
     await expect(fs.pathExists(candidateEntry)).resolves.toBe(false);
-    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active).toEqual(active);
+    expect(controller.getCatalogGeneration('git-local')).toMatchObject({ state: 'configMismatch' });
     controller.dispose();
   });
 
@@ -1110,7 +1223,7 @@ describe('TUI v4 real catalog source boundary', () => {
 
     expect(controller.snapshot.reviewPreparation).toMatchObject({
       state: 'failed',
-      message: expect.stringContaining('不能安全比较候选'),
+      message: expect.stringContaining('使用当前候选替换损坏的 Active'),
     });
     expect(instance.lastFrame()).toContain('当前 Active 保持不变');
     expect(await readCatalogGenerationState(isolation.env)).toEqual(stateBeforeReview);
@@ -1119,10 +1232,25 @@ describe('TUI v4 real catalog source boundary', () => {
       .resolves.toBe('damaged metadata\n');
     await expect(fs.readFile(path.join(activeEntry, 'snapshot', 'catalog-manifest.json'), 'utf8'))
       .resolves.toBe('damaged snapshot\n');
+
+    const replacement = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'local',
+    });
+    expect(replacement).toMatchObject({
+      primaryLabel: '确认并替换',
+      requiresConfirmation: true,
+    });
+    await expect(controller.executeOperation(replacement.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'catalogGeneration',
+    });
+    expect((await readCatalogGenerationState(isolation.env)).sources.local!.active)
+      .toMatchObject({ logicalIdentity: candidate.candidate.logicalIdentity });
+    await expect(fs.readFile(path.join(activeEntry, 'metadata.json'), 'utf8'))
+      .resolves.toBe('damaged metadata\n');
     controller.dispose();
   });
 
-  it('allows a real source edit to select a new key without repairing the damaged old entry', async () => {
+  it('keeps the damaged Active after a source edit, then replaces it through a separate Review', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller, work } = await configuredGitController();
     await git(work, ['checkout', '-b', 'replacement']);
@@ -1146,15 +1274,24 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     expect(review.primaryLabel).toBe('验证并切换');
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
-      state: 'succeeded', operationKind: 'catalogGeneration',
+      state: 'partial', operationKind: 'catalogGeneration',
     });
 
-    const switched = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
-    expect(switched.snapshotDigest).not.toBe(active.snapshotDigest);
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active)
+      .toEqual(active);
     await expect(fs.readFile(damagedPath, 'utf8')).resolves.toBe('damaged old entry\n');
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources[0]).toMatchObject({
       refPolicy: { type: 'explicit', ref: 'refs/heads/replacement' },
     });
+    const replacement = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'git-local',
+    });
+    expect(replacement.primaryLabel).toBe('确认并替换');
+    await expect(controller.executeOperation(replacement.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded', operationKind: 'catalogGeneration',
+    });
+    const switched = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
+    expect(switched.snapshotDigest).not.toBe(active.snapshotDigest);
     expect(controller.getCatalogGeneration('git-local')).toMatchObject({
       state: 'ready', active: { catalogVersion: '2.0.0' },
     });
@@ -1239,6 +1376,46 @@ describe('TUI v4 real catalog source boundary', () => {
     await controller.executeOperation(review.reviewToken);
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources.map((source) => source.id))
       .toEqual(['local']);
+    controller.dispose();
+  });
+
+  it('rebuilds the real Ink remove Review when impact changes before the source lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, firstRoot, secondRoot } = await configuredController();
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          { id: 'local', type: 'path', primary: true, path: firstRoot },
+          { id: 'team', type: 'path', primary: false, path: secondRoot },
+        ],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'remove', sourceId: 'team',
+    });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    setTuiControllerRuntimeTestHooksForTests({
+      afterMutationEvidenceCapture: async () => {
+        await fs.outputJson(
+          path.join(isolation.env.AW_HOME!, 'plugin-config', 'team', 'two', 'config.json'),
+          { schemaVersion: 3, pluginId: 'team/two', values: {} },
+        );
+      },
+    });
+
+    await confirmReview(instance, controller);
+
+    expect(controller.snapshot.result).toMatchObject({
+      state: 'stale', operationKind: 'sourceMutation',
+    });
+    expect(controller.snapshot.activeReview?.reviewToken).not.toBe(review.reviewToken);
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources.map((source) => source.id))
+      .toEqual(['local', 'team']);
     controller.dispose();
   });
 

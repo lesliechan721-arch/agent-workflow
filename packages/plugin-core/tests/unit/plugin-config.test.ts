@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  canonicalizePluginConfigValue,
+  canonicalizePluginConfigValues,
   formatPluginConfigIssue,
   matchPluginConfigPreset,
   normalizePluginConfigDefinition as normalizeCorePluginConfigDefinition,
@@ -21,7 +23,7 @@ function normalizePluginConfigDefinition(value: Record<string, unknown>) {
     fields: Object.fromEntries(Object.entries(fields).map(([key, field]) => [
       key,
       typeof field === 'object' && field !== null && !Array.isArray(field)
-        ? { writableLayers: ['user', 'project'], ...field }
+        ? { ...field }
         : field,
     ])),
   })
@@ -62,15 +64,65 @@ describe('Plugin Config v2 contract', () => {
       .toEqual(['multipleOf'])
     expect(validatePluginConfigValue(config.fields.mode!, 'custom', 'mode').map((issue) => issue.code))
       .toEqual(['choice'])
+    expect(validatePluginConfigValue(config.fields.workers!, Number.NaN, 'workers')[0]?.code)
+      .toBe('type')
+    expect(validatePluginConfigValue(config.fields.workers!, Number.POSITIVE_INFINITY, 'workers')[0]?.code)
+      .toBe('type')
   })
 
-  it('rejects removed fields, arrays, null, nested objects, and boolean choices', () => {
+  it('preserves object child choices and sensitive metadata', () => {
+    const config = normalizePluginConfigDefinition({
+      fields: {
+        fixed: {
+          type: 'object',
+          sensitive: true,
+          properties: {
+            token: {
+              type: 'string',
+              sensitive: true,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'managed', title: 'Managed', value: 'managed' }],
+              },
+            },
+          },
+        },
+        dynamic: {
+          type: 'object',
+          additionalProperties: {
+            type: 'boolean',
+            sensitive: true,
+            choices: {
+              allowCustom: false,
+              presets: [{ id: 'enabled', title: 'Enabled', value: true }],
+            },
+          },
+        },
+      },
+    })
+
+    expect(config.fields.fixed).toMatchObject({
+      sensitive: true,
+      properties: {
+        token: { sensitive: true, choices: { allowCustom: false } },
+      },
+    })
+    expect(config.fields.dynamic).toMatchObject({
+      additionalProperties: { sensitive: true, choices: { allowCustom: false } },
+    })
+    expect(validatePluginConfigValue(config.fields.dynamic!, { feature: false }, 'dynamic'))
+      .toContainEqual(expect.objectContaining({
+        code: 'choice',
+        path: { field: 'dynamic', property: 'feature' },
+      }))
+  })
+
+  it('rejects removed fields, arrays, null, and nested objects', () => {
     for (const field of [
       { type: 'enum', values: ['safe'] },
       { type: 'file' },
       { type: 'directory' },
       { type: 'string', recommendedValue: 'safe' },
-      { type: 'boolean', choices: { allowCustom: false, presets: [] } },
     ]) {
       expect(() => normalizePluginConfigDefinition({ fields: { value: field } })).toThrow()
     }
@@ -81,7 +133,7 @@ describe('Plugin Config v2 contract', () => {
         metadata: {
           type: 'object',
           properties: { name: { type: 'string', required: true } },
-          additionalProperties: { type: 'number' },
+          additionalProperties: false,
         },
       },
     })
@@ -94,17 +146,34 @@ describe('Plugin Config v2 contract', () => {
     )[0]?.path).toEqual({ field: 'metadata', property: 'name' })
   })
 
-  it('validates fixed and dynamic object properties with structured property paths', () => {
-    const config = normalizePluginConfigDefinition({
+  it('keeps fixed and key-value object modes mutually exclusive', () => {
+    expect(() => normalizePluginConfigDefinition({
       fields: {
         labels: {
+          type: 'object',
+          properties: { owner: { type: 'string' } },
+          additionalProperties: { type: 'string' },
+        },
+      },
+    })).toThrow(/cannot be mixed/u)
+    expect(() => normalizePluginConfigDefinition({
+      fields: { labels: { type: 'object', additionalProperties: false } },
+    })).toThrow(/requires a scalar additionalProperties/u)
+
+    const config = normalizePluginConfigDefinition({
+      fields: {
+        fixed: {
           type: 'object',
           properties: {
             owner: { type: 'string', required: true, validation: { format: 'identifier' } },
           },
+          additionalProperties: false,
+        },
+        labels: {
+          type: 'object',
           additionalProperties: { type: 'string', validation: { minLength: 2 } },
           validation: {
-            minProperties: 2,
+            minProperties: 1,
             maxProperties: 3,
             key: { format: 'identifier' },
           },
@@ -112,15 +181,16 @@ describe('Plugin Config v2 contract', () => {
       },
     })
     const issues = validatePluginConfigDocument(config, {
+      fixed: { extra: 'value' },
       labels: { 'bad-key': 'x' },
     })
     expect(issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'required', path: { field: 'labels', property: 'owner' }, recoverable: true }),
+      expect.objectContaining({ code: 'required', path: { field: 'fixed', property: 'owner' }, recoverable: true }),
+      expect.objectContaining({ code: 'additionalProperty', path: { field: 'fixed', property: 'extra' }, recoverable: true }),
       expect.objectContaining({ code: 'format', path: { field: 'labels', property: 'bad-key' }, recoverable: true }),
       expect.objectContaining({ code: 'minLength', path: { field: 'labels', property: 'bad-key' }, recoverable: true }),
-      expect.objectContaining({ code: 'minProperties', path: { field: 'labels' }, recoverable: true }),
     ]))
-    expect(formatPluginConfigIssue(issues[0]!)).toContain('labels')
+    expect(formatPluginConfigIssue(issues[0]!)).toContain('fixed')
     expect(normalizePluginConfigDefinition({
       fields: {
         labels: {
@@ -131,18 +201,15 @@ describe('Plugin Config v2 contract', () => {
     }).fields.labels).toMatchObject({ additionalProperties: false })
   })
 
-  it('applies object key validation only to dynamic keys in defaults and presets', () => {
+  it('applies object key validation to key-value defaults and presets', () => {
     const config = normalizePluginConfigDefinition({
       fields: {
         labels: {
           type: 'object',
-          default: { 'fixed-key': 'default' },
+          default: { fixed_key: 'default' },
           choices: {
             allowCustom: true,
-            presets: [{ id: 'fixed', title: 'Fixed', value: { 'fixed-key': 'preset' } }],
-          },
-          properties: {
-            'fixed-key': { type: 'string' },
+            presets: [{ id: 'fixed', title: 'Fixed', value: { fixed_key: 'preset' } }],
           },
           additionalProperties: { type: 'string' },
           validation: { key: { format: 'identifier' } },
@@ -150,60 +217,45 @@ describe('Plugin Config v2 contract', () => {
       },
     })
 
-    expect(validatePluginConfigDocument(config, { labels: { 'fixed-key': 'value' } })).toEqual([])
+    expect(validatePluginConfigDocument(config, { labels: { fixed_key: 'value' } })).toEqual([])
     expect(validatePluginConfigPreset(config.fields.labels!, {
-      id: 'fixed-again', title: 'Fixed again', value: { 'fixed-key': 'preset' },
+      id: 'fixed-again', title: 'Fixed again', value: { fixed_key: 'preset' },
     }, 'labels')).toEqual([])
     expect(validatePluginConfigDocument(config, {
-      labels: { 'fixed-key': 'value', 'bad key': 'dynamic' },
+      labels: { fixed_key: 'value', 'bad key': 'dynamic' },
     })).toContainEqual(expect.objectContaining({
       code: 'format',
       path: { field: 'labels', property: 'bad key' },
     }))
   })
 
-  it('uses own properties for declared and dynamic special keys', () => {
-    const config = normalizePluginConfigDefinition({
-      fields: {
-        constructor: { type: 'string' },
-        fixed: {
-          type: 'object',
-          properties: Object.fromEntries([
-            ['__proto__', { type: 'string', sensitive: true }],
-            ['constructor', { type: 'number' }],
-          ]),
+  it('rejects dangerous authoring and runtime config keys', () => {
+    for (const key of ['__proto__', 'constructor', 'prototype']) {
+      expect(() => normalizePluginConfigDefinition({
+        fields: Object.fromEntries([[key, { type: 'string' }]]),
+      })).toThrow(/config key/u)
+      expect(() => normalizePluginConfigDefinition({
+        fields: {
+          fixed: {
+            type: 'object',
+            properties: Object.fromEntries([[key, { type: 'string' }]]),
+          },
         },
-        dynamic: {
-          type: 'object',
-          additionalProperties: { type: 'string' },
-        },
-      },
-    })
-    const fixed = Object.fromEntries([
-      ['__proto__', 'private'],
-      ['constructor', 2],
-    ])
-    const dynamic = Object.fromEntries([
-      ['__proto__', 'prototype'],
-      ['constructor', 'constructor'],
-      ['toString', 'to-string'],
-    ])
-
-    expect(Object.getPrototypeOf(config.fields)).toBeNull()
-    expect(Object.getPrototypeOf(config.fields.fixed!.properties)).toBeNull()
-    expect(validatePluginConfigDocument(config, { constructor: 'declared', fixed, dynamic })).toEqual([])
-    expect(redactPluginConfigValue(config.fields.fixed!, fixed)).toEqual(Object.assign(
-      Object.create(null),
-      { ['__proto__']: '[redacted]', constructor: 2 },
-    ))
-    expect(validatePluginConfigValue(
-      config.fields.fixed!,
-      { toString: 'not declared' },
-      'fixed',
-    )).toContainEqual(expect.objectContaining({
-      code: 'additionalProperty',
-      path: { field: 'fixed', property: 'toString' },
+      })).toThrow(/dangerous config key/u)
+    }
+    const dynamic = normalizePluginConfigDefinition({
+      fields: { labels: { type: 'object', additionalProperties: { type: 'string' } } },
+    }).fields.labels!
+    expect(validatePluginConfigValue(dynamic, Object.fromEntries([
+      ['__proto__', 'bad'],
+      ['safe', 'good'],
+    ]), 'labels')).toContainEqual(expect.objectContaining({
+      code: 'dangerousKey',
+      path: { field: 'labels', property: '__proto__' },
     }))
+    expect(validatePluginConfigDocument({ fields: {} }, Object.fromEntries([
+      ['constructor', 'bad'],
+    ]))).toContainEqual(expect.objectContaining({ code: 'dangerousKey' }))
   })
 
   it.each([
@@ -213,9 +265,6 @@ describe('Plugin Config v2 contract', () => {
     ['url', 'https://example.com/path', 'example.com'],
     ['hostname', 'api.example.com', '-bad.example.com'],
     ['email', 'user@example.com', 'user@example'],
-    ['path', './relative/path', ''],
-    ['file', './not-yet-created.txt', ''],
-    ['directory', './not-yet-created-dir', ''],
   ] as const)('validates the %s string format', (format, valid, invalid) => {
     const config = normalizePluginConfigDefinition({
       fields: { value: { type: 'string', validation: { format } } },
@@ -224,30 +273,10 @@ describe('Plugin Config v2 contract', () => {
     expect(validatePluginConfigValue(config.fields.value!, invalid, 'value')[0]?.code).toBe('format')
   })
 
-  it('keeps file and directory object child formats as pure path strings', () => {
-    const field = normalizePluginConfigDefinition({
-      fields: {
-        locations: {
-          type: 'object',
-          properties: {
-            certificate: { type: 'string', validation: { format: 'file' } },
-          },
-          additionalProperties: { type: 'string', validation: { format: 'directory' } },
-        },
-      },
-    }).fields.locations!
-
-    expect(validatePluginConfigValue(field, {
-      certificate: './not-yet-created.pem',
-      cache: './not-yet-created-cache',
-    }, 'locations')).toEqual([])
-    expect(validatePluginConfigValue(field, {
-      certificate: '',
-      cache: '',
-    }, 'locations')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'format', path: { field: 'locations', property: 'certificate' } }),
-      expect.objectContaining({ code: 'format', path: { field: 'locations', property: 'cache' } }),
-    ]))
+  it.each(['path', 'file', 'directory'])('rejects the removed %s string format', (format) => {
+    expect(() => normalizePluginConfigDefinition({
+      fields: { value: { type: 'string', validation: { format } } },
+    })).toThrow(/unsupported string format/u)
   })
 
   it('matches actual preset values, canonicalizes objects, and redacts one object level', () => {
@@ -274,7 +303,12 @@ describe('Plugin Config v2 contract', () => {
     const field = config.fields.credentials!
     const value = { region: 'west', token: 'secret' }
     expect(stablePluginConfigStringify(value)).toBe('{"region":"west","token":"secret"}')
+    expect(canonicalizePluginConfigValue(value)).toEqual({ region: 'west', token: 'secret' })
+    expect(canonicalizePluginConfigValues({ z: { b: 2, a: 1 }, a: true }))
+      .toEqual({ a: true, z: { a: 1, b: 2 } })
     expect(matchPluginConfigPreset(field, value)?.id).toBe('service')
+    expect(validatePluginConfigValue(field, { region: 'east', token: 'secret' }, 'credentials'))
+      .toContainEqual(expect.objectContaining({ code: 'choice' }))
     expect(redactPluginConfigValue(field, value)).toEqual({ region: 'west', token: '[redacted]' })
     expect(validatePluginConfigPreset(field, {
       id: 'bad',
@@ -333,7 +367,7 @@ describe('Plugin Config v2 contract', () => {
         },
       },
     })).toThrow(/declared preset value/u)
-    expect(() => normalizePluginConfigDefinition({
+    expect(normalizePluginConfigDefinition({
       fields: {
         token: {
           type: 'string',
@@ -341,7 +375,7 @@ describe('Plugin Config v2 contract', () => {
           choices: { allowCustom: true, presets: [{ id: 'one', title: 'One', value: 'one' }] },
         },
       },
-    })).toThrow(/sensitive config cannot declare choices/u)
+    }).fields.token).toMatchObject({ sensitive: true, choices: { allowCustom: true } })
     expect(() => normalizePluginConfigDefinition({
       fields: {
         mode: {
@@ -370,9 +404,25 @@ describe('Plugin Config v2 contract', () => {
         },
       },
     })).toThrow(/duplicate preset id/u)
+    expect(() => normalizePluginConfigDefinition({
+      fields: {
+        value: {
+          type: 'object',
+          properties: { first: { type: 'number' }, second: { type: 'number' } },
+          choices: {
+            allowCustom: true,
+            presets: [
+              { id: 'one', title: 'One', value: { first: 1, second: 2 } },
+              { id: 'two', title: 'Two', value: { second: 2, first: 1 } },
+            ],
+          },
+        },
+      },
+    })).toThrow(/duplicate preset value/u)
 
     for (const objectField of [
       { type: 'object' },
+      { type: 'object', properties: {}, additionalProperties: { type: 'string' } },
       { type: 'object', properties: { child: { type: 'string', default: 'x' } } },
       { type: 'object', additionalProperties: { type: 'string', required: true } },
     ]) {

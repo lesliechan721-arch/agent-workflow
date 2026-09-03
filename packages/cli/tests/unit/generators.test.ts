@@ -617,7 +617,6 @@ describe('local-plugin generator', () => {
       fields: {
         explorerModel: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
       },

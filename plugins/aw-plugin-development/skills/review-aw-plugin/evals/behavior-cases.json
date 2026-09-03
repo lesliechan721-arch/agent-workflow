@@ -64,20 +64,20 @@
         "regression",
         "release-evidence-boundary"
       ],
-      "prompt": "插件的 full QualityReviewResult 已通过，但没有提供 release-required suite 对应的 EvalSpec v1、EvalAudit v1 或 EvalResult v1。请判断是否可发布，并说明 clean success 与失败诊断的 triage 边界。",
+      "prompt": "插件的 full QualityReviewResult 已通过，但没有提供 release-required suite 对应的 EvalSpec v1、EvalAudit v1 或 EvalResult v2。请判断是否可发布，并说明 clean success 与失败诊断的 triage 边界。",
       "expected": {
-        "output": "发布检查失败，并要求与 production digest、profile、suite 和当前 case corpus 精确绑定的 EvalSpec v1、single passing EvalAudit v1 与 successful EvalResult v1。clean success 不需要 triage；失败时可建议诊断 triage，但 triage 不是 Release Check 输入或 machine gate。",
+        "output": "发布检查失败，并要求与 production digest、profile、suite 和当前 case corpus 精确绑定的 EvalSpec v1、single passing EvalAudit v1 与 successful EvalResult v2。clean success 不需要 triage；失败时可建议诊断 triage，但 triage 不是 Release Check 输入或 machine gate。",
         "workspaceUnchanged": true
       },
       "assertions": [
         "不从 Quality Review 推断 Eval 证据",
-        "要求 release-required suite 的 EvalSpec v1、single passing EvalAudit v1 和 successful EvalResult v1 精确绑定 production digest、profile、suite 与当前 case corpus",
+        "要求 release-required suite 的 EvalSpec v1、single passing EvalAudit v1 和 successful EvalResult v2 精确绑定 production digest、profile、suite 与当前 case corpus",
         "clean success 不要求 triage；失败 triage 只用于诊断，不作为 Release Check 输入、证据或 machine gate"
       ],
       "audit": {
-        "rationale": "QualityReviewResult 不拥有 Eval 运行证据；Release Check 必须独立消费 exact 绑定的 EvalSpec v1、single passing EvalAudit v1 和 successful EvalResult v1。",
+        "rationale": "QualityReviewResult 不拥有 Eval 运行证据；Release Check 必须独立消费 exact 绑定的 EvalSpec v1、single passing EvalAudit v1 和 successful EvalResult v2。",
         "allowedVariance": "可以说明缺少哪份当前合同输入；不得仅凭 Quality Review 放行，也不得把失败 triage 提升为 machine gate。",
-        "minimalCounterexample": "若每个 release-required profile×suite 都提供与 production digest 和当前 corpus 精确绑定且验证通过的 EvalSpec v1、single EvalAudit v1 和 EvalResult v1，则 clean success 可通过 Eval 证据条件，无需 triage。"
+        "minimalCounterexample": "若每个 release-required profile×suite 都提供与 production digest 和当前 corpus 精确绑定且验证通过的 EvalSpec v1、single EvalAudit v1 和 EvalResult v2，则 clean success 可通过 Eval 证据条件，无需 triage。"
       }
     },
     {

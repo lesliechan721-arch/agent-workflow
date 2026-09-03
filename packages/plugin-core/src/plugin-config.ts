@@ -29,11 +29,9 @@ const STRING_FORMATS = new Set<PluginConfigStringFormat>([
   'url',
   'hostname',
   'email',
-  'path',
-  'file',
-  'directory',
 ])
 const MAX_OBJECT_PROPERTIES = 32
+const DANGEROUS_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 function createPropertyMap<Value>(): Record<string, Value> {
   return Object.create(null) as Record<string, Value>
@@ -44,6 +42,10 @@ function ownProperty<Value>(
   property: string,
 ): Value | undefined {
   return value !== undefined && Object.hasOwn(value, property) ? value[property] : undefined
+}
+
+function isDangerousConfigKey(value: string): boolean {
+  return DANGEROUS_CONFIG_KEYS.has(value)
 }
 
 function asObject(value: unknown, path: string): Record<string, unknown> {
@@ -179,9 +181,6 @@ function stringFormatMatches(value: string, format: PluginConfigStringFormat): b
   if (format === 'semver') return SEMVER_PATTERN.test(value)
   if (format === 'hostname') return HOSTNAME_PATTERN.test(value)
   if (format === 'email') return EMAIL_PATTERN.test(value)
-  if (format === 'path' || format === 'file' || format === 'directory') {
-    return value.length > 0 && !value.includes('\0')
-  }
   try {
     const url = new URL(value)
     return url.protocol.length > 1
@@ -260,7 +259,6 @@ function validateScalarField(
   if (
     checkChoices
     && issues.length === 0
-    && fieldDefinition.type !== 'boolean'
     && fieldDefinition.choices?.allowCustom === false
     && matchPluginConfigPreset(fieldDefinition as PluginConfigSchemaField, value as PluginConfigValue) === undefined
   ) {
@@ -302,6 +300,10 @@ function validateObjectField(
     }
   }
   for (const [property, childValue] of Object.entries(input)) {
+    if (isDangerousConfigKey(property)) {
+      issues.push(createIssue('dangerousKey', field, 'Dangerous config key is not allowed.', property))
+      continue
+    }
     const child = ownProperty(fieldDefinition.properties, property)
     if (child !== undefined) {
       issues.push(...validateScalarField(child, childValue, field, property))
@@ -321,10 +323,7 @@ function validateObjectField(
     checkChoices
     && issues.length === 0
     && fieldDefinition.choices?.allowCustom === false
-    && matchPluginConfigPreset(
-      fieldDefinition as PluginConfigSchemaField,
-      input as PluginConfigObject,
-    ) === undefined
+    && matchPluginConfigPreset(fieldDefinition, input as PluginConfigObject) === undefined
   ) {
     issues.push(createIssue('choice', field, 'Expected a declared preset value.'))
   }
@@ -390,6 +389,10 @@ export function validatePluginConfigDocument(
     issues.push(...validatePluginConfigValue(fieldDefinition, input[field], field))
   }
   for (const field of Object.keys(input)) {
+    if (isDangerousConfigKey(field)) {
+      issues.push(createIssue('dangerousKey', field, 'Dangerous config key is not allowed.'))
+      continue
+    }
     if (!Object.hasOwn(definition.fields, field)) {
       issues.push(createIssue('unknownField', field, 'Unknown config field.'))
     }
@@ -397,21 +400,31 @@ export function validatePluginConfigDocument(
   return issues
 }
 
-export function stablePluginConfigStringify(value: PluginConfigValue): string {
-  if (typeof value !== 'object') return JSON.stringify(value)
-  return JSON.stringify(Object.fromEntries(
+export function canonicalizePluginConfigValue(value: PluginConfigValue): PluginConfigValue {
+  if (typeof value !== 'object') return value
+  return Object.fromEntries(
     Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
-  ))
+  )
+}
+
+export function canonicalizePluginConfigValues(
+  values: Readonly<Record<string, PluginConfigValue>>,
+): Record<string, PluginConfigValue> {
+  return Object.fromEntries(Object.entries(values)
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([key, value]) => [key, canonicalizePluginConfigValue(value)]))
+}
+
+export function stablePluginConfigStringify(value: PluginConfigValue): string {
+  return JSON.stringify(canonicalizePluginConfigValue(value))
 }
 
 export function matchPluginConfigPreset(
   definition: PluginConfigSchemaField,
   value: PluginConfigValue,
 ): PluginConfigPreset | undefined {
-  return definition.type === 'boolean'
-    ? undefined
-    : definition.choices?.presets.find((preset) =>
-      stablePluginConfigStringify(preset.value) === stablePluginConfigStringify(value))
+  return definition.choices?.presets.find((preset) =>
+    stablePluginConfigStringify(preset.value) === stablePluginConfigStringify(value))
 }
 
 export function validatePluginConfigPreset(
@@ -492,7 +505,7 @@ function normalizeChoices<Value extends PluginConfigValue>(
 function normalizeScalarField(
   value: unknown,
   path: string,
-  options: { allowDefault: boolean; allowRequired: boolean; requireWritableLayers?: boolean },
+  options: { allowDefault: boolean; allowRequired: boolean },
 ): PluginConfigScalarField | PluginConfigObjectPropertyField | PluginConfigAdditionalPropertiesField {
   const input = asObject(value, path)
   const type = nonEmptyString(input.type, `${path}.type`)
@@ -500,15 +513,12 @@ function normalizeScalarField(
     throw new Error(`Invalid ${path}.type: expected string, number, or boolean.`)
   }
   const allowed = ['type', 'title', 'description', 'sensitive']
-  if (options.requireWritableLayers) allowed.push('writableLayers')
   if (options.allowDefault) allowed.push('default')
   if (options.allowRequired) allowed.push('required')
-  if (type !== 'boolean') allowed.push('choices', 'validation')
+  allowed.push('choices')
+  if (type !== 'boolean') allowed.push('validation')
   assertAllowedKeys(input, path, allowed)
   const common = {
-    ...(options.requireWritableLayers
-      ? { writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`) }
-      : {}),
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
     required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
@@ -547,47 +557,33 @@ function normalizeScalarField(
     type,
     ...common,
     default: defaultValue as boolean | undefined,
+    choices: input.choices === undefined
+      ? undefined
+      : normalizeChoices<boolean>(input.choices, `${path}.choices`),
   }
-}
-
-function normalizeWritableLayers(
-  value: unknown,
-  path: string,
-): ['user' | 'project', ...Array<'user' | 'project'>] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`Invalid ${path}: expected a non-empty array.`)
-  }
-  const layers: Array<'user' | 'project'> = []
-  for (const [index, layer] of value.entries()) {
-    if (layer !== 'user' && layer !== 'project') {
-      throw new Error(`Invalid ${path}[${index}]: expected "user" or "project".`)
-    }
-    if (layers.includes(layer)) {
-      throw new Error(`Invalid ${path}[${index}]: duplicate writable layer "${layer}".`)
-    }
-    layers.push(layer)
-  }
-  return layers as ['user' | 'project', ...Array<'user' | 'project'>]
 }
 
 function assertChoices(
   definition: PluginConfigSchemaField,
   path: string,
 ): void {
-  if (definition.sensitive === true && definition.type !== 'boolean' && definition.choices !== undefined) {
-    throw new Error(`Invalid ${path}.choices: sensitive config cannot declare choices.`)
-  }
-  if (definition.type === 'boolean' || definition.choices === undefined) return
+  if (definition.choices === undefined) return
   if (definition.choices.allowCustom === false && definition.choices.presets.length === 0) {
     throw new Error(`Invalid ${path}.choices.presets: expected at least one preset when allowCustom is false.`)
   }
   const ids = new Set<string>()
+  const values = new Set<string>()
   let recommendedCount = 0
   for (const [index, preset] of definition.choices.presets.entries()) {
     if (ids.has(preset.id)) {
       throw new Error(`Invalid ${path}.choices.presets[${index}].id: duplicate preset id "${preset.id}".`)
     }
     ids.add(preset.id)
+    const canonicalValue = stablePluginConfigStringify(preset.value)
+    if (values.has(canonicalValue)) {
+      throw new Error(`Invalid ${path}.choices.presets[${index}].value: duplicate preset value.`)
+    }
+    values.add(canonicalValue)
     if (preset.recommended === true) recommendedCount += 1
     const issues = validatePluginConfigPreset(definition, preset, path)
     if (issues.length > 0) {
@@ -599,16 +595,10 @@ function assertChoices(
   }
 }
 
-function normalizeObjectField(
-  value: unknown,
-  path: string,
-): PluginConfigObjectField & {
-  writableLayers: ['user' | 'project', ...Array<'user' | 'project'>]
-} {
+function normalizeObjectField(value: unknown, path: string): PluginConfigObjectField {
   const input = asObject(value, path)
   assertAllowedKeys(input, path, [
     'type',
-    'writableLayers',
     'title',
     'description',
     'default',
@@ -619,8 +609,11 @@ function normalizeObjectField(
     'additionalProperties',
     'validation',
   ])
-  if (input.properties === undefined && input.additionalProperties === undefined) {
-    throw new Error(`Invalid ${path}: object config requires properties or additionalProperties.`)
+  if (input.properties === undefined && (input.additionalProperties === undefined || input.additionalProperties === false)) {
+    throw new Error(`Invalid ${path}: key-value object config requires a scalar additionalProperties field.`)
+  }
+  if (input.properties !== undefined && input.additionalProperties !== undefined && input.additionalProperties !== false) {
+    throw new Error(`Invalid ${path}: fixed and key-value object config modes cannot be mixed.`)
   }
   let properties: Record<string, PluginConfigObjectPropertyField> | undefined
   if (input.properties !== undefined) {
@@ -630,6 +623,9 @@ function normalizeObjectField(
     }
     properties = createPropertyMap<PluginConfigObjectPropertyField>()
     for (const [property, child] of Object.entries(propertiesInput)) {
+      if (isDangerousConfigKey(property)) {
+        throw new Error(`Invalid ${path}.properties: dangerous config key "${property}" is not allowed.`)
+      }
       properties[property] = normalizeScalarField(child, `${path}.properties.${property}`, {
         allowDefault: false,
         allowRequired: true,
@@ -677,7 +673,6 @@ function normalizeObjectField(
   }
   return {
     type: 'object',
-    writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`),
     title: optionalText(input.title, `${path}.title`),
     description: optionalText(input.description, `${path}.description`),
     default: input.default as PluginConfigObject | undefined,
@@ -686,8 +681,9 @@ function normalizeObjectField(
     choices: input.choices === undefined
       ? undefined
       : normalizeChoices<PluginConfigObject>(input.choices, `${path}.choices`),
-    properties,
-    additionalProperties,
+    ...(properties === undefined
+      ? { additionalProperties: additionalProperties as PluginConfigAdditionalPropertiesField }
+      : { properties, additionalProperties: false as const }),
     validation,
   }
 }
@@ -701,7 +697,7 @@ export function normalizePluginConfigDefinition(
   const fieldsInput = asObject(input.fields, `${path}.fields`)
   const fields = createPropertyMap<PluginConfigSchemaField>()
   for (const [field, rawDefinition] of Object.entries(fieldsInput)) {
-    if (!CONFIG_KEY_PATTERN.test(field)) {
+    if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
       throw new Error(`Invalid ${path}.fields: config key "${field}" is not valid.`)
     }
     const rawField = asObject(rawDefinition, `${path}.fields.${field}`)
@@ -710,8 +706,7 @@ export function normalizePluginConfigDefinition(
       : normalizeScalarField(rawField, `${path}.fields.${field}`, {
           allowDefault: true,
           allowRequired: true,
-          requireWritableLayers: true,
-        }) as PluginConfigSchemaField
+        }) as PluginConfigScalarField
     assertChoices(definition, `${path}.fields.${field}`)
     if (definition.default !== undefined) {
       const issues = validatePluginConfigValue(definition, definition.default, field)

@@ -7,6 +7,10 @@ import {
   createCodexNativeRenderReceipt,
   type CodexNativeRenderTargetReceipt,
 } from '../../src/utils/codex-native-render-receipt.js';
+import {
+  combineCodexNativePluginObservations,
+  type CodexNativePluginObservation,
+} from '../../src/utils/codex-native-observation.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const otherDigest = (character: string): string => `sha256:${character.repeat(64)}`;
@@ -45,11 +49,11 @@ function evidence(
       sourcePointsToManifest: false,
     },
     marketplacePathSafe: true,
-    pluginListEntries: [{
-      pluginId: 'demo@aw-team',
-      version: '2.0.0',
-      enabled: true,
-    }],
+    observation: {
+      state: 'observed',
+      value: 'installed',
+      entry: { pluginId: 'demo@aw-team', version: '2.0.0', enabled: true },
+    },
     manifest: {
       state: 'present',
       identity: 'demo',
@@ -63,12 +67,54 @@ function evidence(
 }
 
 describe('codex-shared-native', () => {
+  it.each([
+    [
+      [{ state: 'unobserved' }, { state: 'observed', value: 'absent' }],
+      { state: 'unobserved' },
+    ],
+    [
+      [{ state: 'observed', value: 'absent' }, { state: 'unobserved' }],
+      { state: 'unobserved' },
+    ],
+    [
+      [
+        { state: 'unobserved' },
+        {
+          state: 'observed', value: 'installed',
+          entry: { pluginId: 'demo@aw-team', enabled: true },
+        },
+      ],
+      {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', enabled: true },
+      },
+    ],
+    [
+      [
+        {
+          state: 'observed', value: 'installed',
+          entry: { pluginId: 'demo@aw-team', enabled: true },
+        },
+        { state: 'observed', value: 'absent' },
+      ],
+      {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', enabled: true },
+      },
+    ],
+  ] satisfies Array<[CodexNativePluginObservation[], CodexNativePluginObservation]>) (
+    'merges exact and neutral native observations without treating unknown evidence as absence',
+    (observations, expected) => {
+      expect(combineCodexNativePluginObservations(observations)).toEqual(expected);
+    },
+  );
+
   it('uses only the four shared-native states and keeps detail beside the state', () => {
     const cases = [
       [
         evidence({
           marketplaceRegistration: undefined,
-          pluginListEntries: [],
+          observation: { state: 'observed', value: 'absent' },
           manifest: { state: 'absent' },
         }),
         { state: 'missing' },
@@ -79,7 +125,10 @@ describe('codex-shared-native', () => {
       ],
       [
         evidence({
-          pluginListEntries: [{ pluginId: 'demo@aw-team', version: '1.0.0', enabled: true }],
+          observation: {
+            state: 'observed', value: 'installed',
+            entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
+          },
           manifest: {
             state: 'present',
             identity: 'demo',
@@ -153,12 +202,14 @@ describe('codex-shared-native', () => {
     }))).toMatchObject({ state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe' });
 
     expect(inspectCodexSharedNative(evidence({
-      pluginListEntries: [{ pluginId: 'demo@foreign', version: '2.0.0', enabled: true }],
+      observation: { state: 'observed', value: 'absent' },
     }))).toMatchObject({ state: 'missing', staleCacheObserved: true });
   });
 
   it('requires exact plugin-list, manifest identity, version, and digest evidence', () => {
-    expect(inspectCodexSharedNative(evidence({ pluginListEntries: null })))
+    expect(inspectCodexSharedNative(evidence({
+      observation: { state: 'failed', reason: 'unavailable' },
+    })))
       .toMatchObject({ state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable' });
     expect(inspectCodexSharedNative(evidence({ manifest: { state: 'absent' } })))
       .toMatchObject({ state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing' });
@@ -177,19 +228,20 @@ describe('codex-shared-native', () => {
   it('treats cache as secondary evidence behind the official plugin list', () => {
     expect(inspectCodexSharedNative(evidence({
       marketplaceRegistration: undefined,
-      pluginListEntries: [],
+      observation: { state: 'observed', value: 'absent' },
       manifest: { state: 'absent' },
     }))).toEqual({ state: 'missing' });
     expect(inspectCodexSharedNative(evidence({
-      pluginListEntries: [],
+      observation: { state: 'observed', value: 'absent' },
     }))).toEqual({
       state: 'missing',
       staleCacheObserved: true,
     });
     expect(inspectCodexSharedNative(evidence({
-      pluginListEntries: [{
-        pluginId: 'demo@aw-team', version: '1.0.0', enabled: true,
-      }],
+      observation: {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
+      },
     }))).toEqual({
       state: 'replaceable',
       reason: 'outdated',
@@ -339,7 +391,11 @@ describe('codex-shared-native', () => {
         logicalPluginId: 'official/demo',
         strategy: 'shared-user',
       },
-      pluginListEntries: [{ pluginId: 'demo@aw-team', version: '1.0.0', enabled: true }],
+      observation: {
+        state: 'observed',
+        value: 'installed',
+        entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
+      },
       manifest: {
         state: 'present',
         identity: 'demo',
@@ -351,6 +407,25 @@ describe('codex-shared-native', () => {
       projectionReceipt: { state: 'present', receipt: foreignReceipt },
     }))).toMatchObject({
       state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+    });
+  });
+
+  it('keeps unobserved distinct from official absence', () => {
+    expect(inspectCodexSharedNative(evidence({
+      observation: { state: 'unobserved' },
+    }))).toEqual({ state: 'unobserved', staleCacheObserved: true });
+  });
+
+  it.each([
+    { state: 'observed', value: 'absent' } as const,
+    { state: 'unobserved' } as const,
+  ])('blocks an unsafe marketplace before projecting $state registration evidence', (observation) => {
+    expect(inspectCodexSharedNative(evidence({
+      marketplacePathSafe: false,
+      observation,
+      manifest: { state: 'absent' },
+    }))).toEqual({
+      state: 'blocked', reason: 'foreign', diagnostic: 'marketplacePathUnsafe',
     });
   });
 });

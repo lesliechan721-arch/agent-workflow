@@ -1933,18 +1933,6 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
-  const refreshKeys = normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema);
-  if (delivery?.mode === 'codex-native') {
-    for (const [index, key] of refreshKeys.entries()) {
-      const writableLayers = schema?.fields[key]?.writableLayers;
-      if (writableLayers?.length !== 1 || writableLayers[0] !== 'user') {
-        throw new Error(
-          `Invalid ${fieldName}.refreshKeys[${index}]: native delivery requires a config field with writableLayers ["user"].`,
-        );
-      }
-    }
-  }
-
   return {
     id,
     platform,
@@ -1954,7 +1942,7 @@ function normalizeArtifactTargetEntry(
     kind,
     projectManagedKind,
     states: normalizeArtifactStates(input.states, `${fieldName}.states`),
-    refreshKeys,
+    refreshKeys: normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema),
     delivery,
     requiresCodexProjectConfig:
       input.requiresCodexProjectConfig === undefined

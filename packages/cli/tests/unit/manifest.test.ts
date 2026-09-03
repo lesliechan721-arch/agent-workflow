@@ -411,17 +411,14 @@ describe('manifest utils', () => {
       fields: {
         enableLightweightInstruction: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
@@ -434,14 +431,12 @@ describe('manifest utils', () => {
         },
         token: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           title: 'API Token',
           required: true,
           sensitive: true,
         },
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [
@@ -453,7 +448,6 @@ describe('manifest utils', () => {
         },
         limit: {
           type: 'number',
-          writableLayers: ['user', 'project'],
           validation: { minimum: 1, maximum: 10 },
           default: 3,
         },
@@ -703,7 +697,6 @@ describe('manifest utils', () => {
       fields: {
         'bad/key': {
           type: 'string',
-          writableLayers: ['user', 'project'],
         },
       },
     };
@@ -714,7 +707,6 @@ describe('manifest utils', () => {
       fields: {
         'bad-key': {
           type: 'string',
-          writableLayers: ['user', 'project'],
         },
       },
     };
@@ -725,7 +717,6 @@ describe('manifest utils', () => {
       fields: {
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [{ id: 'safe', title: 'Safe', value: 'safe' }],
@@ -741,7 +732,6 @@ describe('manifest utils', () => {
       fields: {
         limit: {
           type: 'number',
-          writableLayers: ['user', 'project'],
           validation: { minimum: 10, maximum: 1 },
         },
       },
@@ -753,7 +743,6 @@ describe('manifest utils', () => {
       fields: {
         text: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           min: 1,
         },
       },
@@ -769,7 +758,6 @@ describe('manifest utils', () => {
     const fields = {
       mode: {
         type: 'string',
-        writableLayers: ['user', 'project'],
         choices: {
           allowCustom: false,
           presets: [
@@ -781,22 +769,17 @@ describe('manifest utils', () => {
       },
       limit: {
         type: 'number',
-        writableLayers: ['user', 'project'],
         validation: { minimum: 1, maximum: 20 },
       },
       trace: {
         type: 'boolean',
-        writableLayers: ['user', 'project'],
       },
       token: {
         type: 'string',
-        writableLayers: ['user', 'project'],
         sensitive: true,
       },
       rules: {
         type: 'string',
-        writableLayers: ['user', 'project'],
-        validation: { format: 'path' },
       },
     };
 
@@ -837,8 +820,8 @@ describe('manifest utils', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
     const fields = {
-      mode: { type: 'string', writableLayers: ['user', 'project'] },
-      limit: { type: 'number', writableLayers: ['user', 'project'] },
+      mode: { type: 'string' },
+      limit: { type: 'number' },
     };
     const invalidCases = [
       {
@@ -897,17 +880,14 @@ describe('manifest utils', () => {
       fields: {
         enabled: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           default: true,
         },
         model: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
         userOnly: {
           type: 'string',
-          writableLayers: ['user'],
         },
       },
     };
@@ -947,12 +927,6 @@ describe('manifest utils', () => {
         skillKey: 'native-codex-skill',
       }],
     };
-    await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'native delivery requires a config field with writableLayers ["user"]',
-    );
-
-    manifest.artifacts.targets[0].refreshKeys = ['userOnly'];
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
@@ -1238,12 +1212,10 @@ describe('manifest utils', () => {
       fields: {
         enabled: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           default: true,
         },
         model: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
       },

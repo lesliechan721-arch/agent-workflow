@@ -119,13 +119,11 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
       fields: {
         apiKey: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           required: true,
           sensitive: true,
         },
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [
@@ -201,10 +199,9 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
       values: { apiKey: 'test-key', mode: 'strict' },
       sources: { apiKey: 'user', mode: 'project' },
       schema: {
-        apiKey: { type: 'string', writableLayers: ['user', 'project'], sensitive: true, required: true },
+        apiKey: { type: 'string', sensitive: true, required: true },
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: [

@@ -19,16 +19,17 @@ const STRING_FORMATS = new Set([
     'url',
     'hostname',
     'email',
-    'path',
-    'file',
-    'directory',
 ]);
 const MAX_OBJECT_PROPERTIES = 32;
+const DANGEROUS_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 function createPropertyMap() {
     return Object.create(null);
 }
 function ownProperty(value, property) {
     return value !== undefined && Object.hasOwn(value, property) ? value[property] : undefined;
+}
+function isDangerousConfigKey(value) {
+    return DANGEROUS_CONFIG_KEYS.has(value);
 }
 function asObject(value, path) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -145,9 +146,6 @@ function stringFormatMatches(value, format) {
         return HOSTNAME_PATTERN.test(value);
     if (format === 'email')
         return EMAIL_PATTERN.test(value);
-    if (format === 'path' || format === 'file' || format === 'directory') {
-        return value.length > 0 && !value.includes('\0');
-    }
     try {
         const url = new URL(value);
         return url.protocol.length > 1;
@@ -205,7 +203,6 @@ function validateScalarField(fieldDefinition, value, field, property, checkChoic
                 : [createIssue('type', field, 'Expected a boolean.', property)];
     if (checkChoices
         && issues.length === 0
-        && fieldDefinition.type !== 'boolean'
         && fieldDefinition.choices?.allowCustom === false
         && matchPluginConfigPreset(fieldDefinition, value) === undefined) {
         issues.push(createIssue('choice', field, 'Expected a declared preset value.', property));
@@ -236,6 +233,10 @@ function validateObjectField(fieldDefinition, value, field, checkChoices = true)
         }
     }
     for (const [property, childValue] of Object.entries(input)) {
+        if (isDangerousConfigKey(property)) {
+            issues.push(createIssue('dangerousKey', field, 'Dangerous config key is not allowed.', property));
+            continue;
+        }
         const child = ownProperty(fieldDefinition.properties, property);
         if (child !== undefined) {
             issues.push(...validateScalarField(child, childValue, field, property));
@@ -295,21 +296,31 @@ export function validatePluginConfigDocument(definition, value) {
         issues.push(...validatePluginConfigValue(fieldDefinition, input[field], field));
     }
     for (const field of Object.keys(input)) {
+        if (isDangerousConfigKey(field)) {
+            issues.push(createIssue('dangerousKey', field, 'Dangerous config key is not allowed.'));
+            continue;
+        }
         if (!Object.hasOwn(definition.fields, field)) {
             issues.push(createIssue('unknownField', field, 'Unknown config field.'));
         }
     }
     return issues;
 }
-export function stablePluginConfigStringify(value) {
+export function canonicalizePluginConfigValue(value) {
     if (typeof value !== 'object')
-        return JSON.stringify(value);
-    return JSON.stringify(Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)));
+        return value;
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0));
+}
+export function canonicalizePluginConfigValues(values) {
+    return Object.fromEntries(Object.entries(values)
+        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, value]) => [key, canonicalizePluginConfigValue(value)]));
+}
+export function stablePluginConfigStringify(value) {
+    return JSON.stringify(canonicalizePluginConfigValue(value));
 }
 export function matchPluginConfigPreset(definition, value) {
-    return definition.type === 'boolean'
-        ? undefined
-        : definition.choices?.presets.find((preset) => stablePluginConfigStringify(preset.value) === stablePluginConfigStringify(value));
+    return definition.choices?.presets.find((preset) => stablePluginConfigStringify(preset.value) === stablePluginConfigStringify(value));
 }
 export function validatePluginConfigPreset(definition, preset, field = 'value') {
     return definition.type === 'object'
@@ -372,19 +383,15 @@ function normalizeScalarField(value, path, options) {
         throw new Error(`Invalid ${path}.type: expected string, number, or boolean.`);
     }
     const allowed = ['type', 'title', 'description', 'sensitive'];
-    if (options.requireWritableLayers)
-        allowed.push('writableLayers');
     if (options.allowDefault)
         allowed.push('default');
     if (options.allowRequired)
         allowed.push('required');
+    allowed.push('choices');
     if (type !== 'boolean')
-        allowed.push('choices', 'validation');
+        allowed.push('validation');
     assertAllowedKeys(input, path, allowed);
     const common = {
-        ...(options.requireWritableLayers
-            ? { writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`) }
-            : {}),
         title: optionalText(input.title, `${path}.title`),
         description: optionalText(input.description, `${path}.description`),
         required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
@@ -423,40 +430,30 @@ function normalizeScalarField(value, path, options) {
         type,
         ...common,
         default: defaultValue,
+        choices: input.choices === undefined
+            ? undefined
+            : normalizeChoices(input.choices, `${path}.choices`),
     };
 }
-function normalizeWritableLayers(value, path) {
-    if (!Array.isArray(value) || value.length === 0) {
-        throw new Error(`Invalid ${path}: expected a non-empty array.`);
-    }
-    const layers = [];
-    for (const [index, layer] of value.entries()) {
-        if (layer !== 'user' && layer !== 'project') {
-            throw new Error(`Invalid ${path}[${index}]: expected "user" or "project".`);
-        }
-        if (layers.includes(layer)) {
-            throw new Error(`Invalid ${path}[${index}]: duplicate writable layer "${layer}".`);
-        }
-        layers.push(layer);
-    }
-    return layers;
-}
 function assertChoices(definition, path) {
-    if (definition.sensitive === true && definition.type !== 'boolean' && definition.choices !== undefined) {
-        throw new Error(`Invalid ${path}.choices: sensitive config cannot declare choices.`);
-    }
-    if (definition.type === 'boolean' || definition.choices === undefined)
+    if (definition.choices === undefined)
         return;
     if (definition.choices.allowCustom === false && definition.choices.presets.length === 0) {
         throw new Error(`Invalid ${path}.choices.presets: expected at least one preset when allowCustom is false.`);
     }
     const ids = new Set();
+    const values = new Set();
     let recommendedCount = 0;
     for (const [index, preset] of definition.choices.presets.entries()) {
         if (ids.has(preset.id)) {
             throw new Error(`Invalid ${path}.choices.presets[${index}].id: duplicate preset id "${preset.id}".`);
         }
         ids.add(preset.id);
+        const canonicalValue = stablePluginConfigStringify(preset.value);
+        if (values.has(canonicalValue)) {
+            throw new Error(`Invalid ${path}.choices.presets[${index}].value: duplicate preset value.`);
+        }
+        values.add(canonicalValue);
         if (preset.recommended === true)
             recommendedCount += 1;
         const issues = validatePluginConfigPreset(definition, preset, path);
@@ -472,7 +469,6 @@ function normalizeObjectField(value, path) {
     const input = asObject(value, path);
     assertAllowedKeys(input, path, [
         'type',
-        'writableLayers',
         'title',
         'description',
         'default',
@@ -483,8 +479,11 @@ function normalizeObjectField(value, path) {
         'additionalProperties',
         'validation',
     ]);
-    if (input.properties === undefined && input.additionalProperties === undefined) {
-        throw new Error(`Invalid ${path}: object config requires properties or additionalProperties.`);
+    if (input.properties === undefined && (input.additionalProperties === undefined || input.additionalProperties === false)) {
+        throw new Error(`Invalid ${path}: key-value object config requires a scalar additionalProperties field.`);
+    }
+    if (input.properties !== undefined && input.additionalProperties !== undefined && input.additionalProperties !== false) {
+        throw new Error(`Invalid ${path}: fixed and key-value object config modes cannot be mixed.`);
     }
     let properties;
     if (input.properties !== undefined) {
@@ -494,6 +493,9 @@ function normalizeObjectField(value, path) {
         }
         properties = createPropertyMap();
         for (const [property, child] of Object.entries(propertiesInput)) {
+            if (isDangerousConfigKey(property)) {
+                throw new Error(`Invalid ${path}.properties: dangerous config key "${property}" is not allowed.`);
+            }
             properties[property] = normalizeScalarField(child, `${path}.properties.${property}`, {
                 allowDefault: false,
                 allowRequired: true,
@@ -538,7 +540,6 @@ function normalizeObjectField(value, path) {
     }
     return {
         type: 'object',
-        writableLayers: normalizeWritableLayers(input.writableLayers, `${path}.writableLayers`),
         title: optionalText(input.title, `${path}.title`),
         description: optionalText(input.description, `${path}.description`),
         default: input.default,
@@ -547,8 +548,9 @@ function normalizeObjectField(value, path) {
         choices: input.choices === undefined
             ? undefined
             : normalizeChoices(input.choices, `${path}.choices`),
-        properties,
-        additionalProperties,
+        ...(properties === undefined
+            ? { additionalProperties: additionalProperties }
+            : { properties, additionalProperties: false }),
         validation,
     };
 }
@@ -558,7 +560,7 @@ export function normalizePluginConfigDefinition(value, path = 'config') {
     const fieldsInput = asObject(input.fields, `${path}.fields`);
     const fields = createPropertyMap();
     for (const [field, rawDefinition] of Object.entries(fieldsInput)) {
-        if (!CONFIG_KEY_PATTERN.test(field)) {
+        if (!CONFIG_KEY_PATTERN.test(field) || isDangerousConfigKey(field)) {
             throw new Error(`Invalid ${path}.fields: config key "${field}" is not valid.`);
         }
         const rawField = asObject(rawDefinition, `${path}.fields.${field}`);
@@ -567,7 +569,6 @@ export function normalizePluginConfigDefinition(value, path = 'config') {
             : normalizeScalarField(rawField, `${path}.fields.${field}`, {
                 allowDefault: true,
                 allowRequired: true,
-                requireWritableLayers: true,
             });
         assertChoices(definition, `${path}.fields.${field}`);
         if (definition.default !== undefined) {
@@ -728,8 +729,11 @@ function supportedValue(value) {
 function validateValues(values, schema) {
   if (!isRecord(values)) fail('invalidValues: Store values must be an object.');
   for (const [key, value] of Object.entries(values)) {
+    if (isDangerousConfigKey(key)) {
+      fail(`dangerousKey: Config "${key}" is not allowed.`);
+    }
     if (!supportedValue(value)) fail(`invalidValues: Config "${key}" has an unsupported value.`);
-    const field = schema[key];
+    const field = Object.hasOwn(schema, key) ? schema[key] : undefined;
     if (!field) continue;
     const issues = validatePluginConfigValue(field, value, key);
     if (issues.length > 0) fail(`invalidValues: ${formatPluginConfigIssue(issues[0])}`);

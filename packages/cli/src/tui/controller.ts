@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 
 import type {
+  CatalogActivationMode,
   CatalogSource,
   CatalogGenerationActiveV1,
   CatalogGenerationCandidateEvidence,
   CatalogGenerationSyncResult,
+  CatalogSourceImpact,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -65,6 +67,7 @@ import {
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -114,6 +117,7 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       apply: boolean;
+      retryApply?: true;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
@@ -149,7 +153,7 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogGeneration';
-      action: 'activate' | 'update' | 'repair' | 'recoverState';
+      action: 'activate' | 'update' | 'repair' | 'replaceDamaged' | 'recoverState';
       sourceId: string;
       sourceMutation?:
         | { action: 'add'; source: CatalogSource }
@@ -197,13 +201,22 @@ export interface OperationEvidence {
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
   };
+  resetTarget?: {
+    sourceId: string;
+    pluginName: string;
+    scope: Scope;
+    kind: 'absent' | 'regularFile' | 'symbolicLink' | 'directory';
+    fingerprint: string;
+  };
   sourceWrite?: {
     configDigest: string;
     proposedConfigDigest: string;
     sourceIdentity?: string;
     inventoryDigest: string;
+    impactDigest?: string;
     referenceCount: number;
     inventoryComplete: boolean;
+    impact?: CatalogSourceImpact;
   };
   catalogGeneration?: {
     action: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
@@ -213,6 +226,10 @@ export interface OperationEvidence {
     candidateRelation?: CatalogGenerationFreshnessState;
     explicitSourceChange?: boolean;
     exactRepair?: boolean;
+    activationMode?: CatalogActivationMode;
+    impact?: CatalogSourceImpact;
+    impactDigest?: string;
+    impactMode?: 'generation' | 'identityChange';
     configDigest: string;
     proposedConfigDigest?: string;
     proposedSource?: CatalogSource;
@@ -355,6 +372,11 @@ export interface OperationResultSummary {
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
+  configApplySkippedReason?: 'invalidConfig';
+  configScope?: Scope;
+  configApplyRetryAvailable?: boolean;
+  resetDisposition?: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
+  quarantineBasename?: string;
   changes?: string[];
   warnings?: string[];
   recoveryActions?: string[];
@@ -417,9 +439,10 @@ export interface SourceReferenceSummaryViewModel {
   inventoryComplete: boolean;
   installationCount?: number;
   configCount?: number;
+  lifecycleCount?: number;
   marketplaceCount?: number;
   dependencies: Array<{
-    category: 'installation' | 'config' | 'marketplace';
+    category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
     pluginId?: string;
     sourceId?: string;
     platform?: PlatformName;
@@ -444,6 +467,7 @@ export interface TuiControllerDependencies {
     intent: OperationIntent,
     signal: AbortSignal,
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void>,
+    reusableCandidate?: CatalogSessionReusableCandidate,
   ) => Promise<OperationEvidence>;
   previewDependencyPlacement?: (
     intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
@@ -483,6 +507,8 @@ export interface TuiControllerDependencies {
 export interface ConfigResetAvailability {
   exists: boolean;
   state: 'missing' | 'ready' | 'invalid';
+  targetKind?: 'absent' | 'regularFile' | 'symbolicLink' | 'directory' | 'special';
+  resettable?: boolean;
   invalidCode?: ConfigInvalidStoreEvidence['code'];
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
@@ -596,10 +622,35 @@ function publicReviewPreparation(
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
+  if (evidence.resetTarget) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        resetTarget: evidence.resetTarget,
+        ...(evidence.source ? { source: evidence.source } : {}),
+      })))
+      .digest('hex');
+  }
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue(staleEvidence)))
     .digest('hex');
+}
+
+export function operationEvidenceMatches(
+  expected: OperationEvidence,
+  current: OperationEvidence,
+): boolean {
+  if (expected.resetTarget && current.resetTarget) {
+    if (JSON.stringify(stableValue(expected.resetTarget))
+      !== JSON.stringify(stableValue(current.resetTarget))) {
+      return false;
+    }
+    if (!expected.source) return true;
+    return current.source !== undefined
+      && JSON.stringify(stableValue(expected.source))
+        === JSON.stringify(stableValue(current.source));
+  }
+  return operationEvidenceFingerprint(expected) === operationEvidenceFingerprint(current);
 }
 
 function sourceIdFromPluginId(pluginId: string): string {
@@ -923,7 +974,9 @@ export class TuiController {
           generationState: generation?.state,
           generationErrorCode: generation?.errorCode,
         }),
-        fixedCommit: detail?.type === 'git'
+        fixedCommit: generation?.state === 'ready'
+          && generation.active !== undefined
+          && detail?.type === 'git'
           && detail.refPolicy === 'explicit'
           && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(detail.explicitRef ?? ''),
       };
@@ -1646,6 +1699,10 @@ export class TuiController {
     return this.#catalogSourcesSession.recheck(sourceId);
   }
 
+  fullValidateCatalogSource(sourceId: string): Promise<void> {
+    return this.#catalogSourcesSession.fullValidate(sourceId);
+  }
+
   setExternalDraftState(state?: 'configDraft' | 'sourceDraft'): void {
     this.#externalDraft = state;
   }
@@ -1908,6 +1965,8 @@ export class TuiController {
         ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
         : code === 'catalogGenerationActiveComparisonUnavailable'
           ? '损坏的当前 Active 无法提供可信版本，不能安全比较候选。当前 Active 保持不变。请明确编辑来源，或移除后重新添加。'
+        : code === 'catalogReplaceDamagedRequired'
+          ? '无法重新取得或精确匹配旧 Active。当前 Active 保持不变。请返回并选择“使用当前候选替换损坏的 Active”。'
         : code === 'catalogVersionConflict'
           ? '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。'
           : code === 'catalogRollbackDetected'
@@ -1926,7 +1985,17 @@ export class TuiController {
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void> = () => undefined,
   ): Promise<OperationEvidence> {
     if (this.dependencies.prepareReviewEvidence) {
-      return this.dependencies.prepareReviewEvidence(structuredClone(intent), signal, onStage);
+      const reusableCandidate = intent.kind === 'catalogGeneration'
+        && !intent.sourceMutation
+        && (intent.action === 'activate' || intent.action === 'update')
+        ? this.#catalogSourcesSession.reusableCandidate(intent.sourceId)
+        : undefined;
+      return this.dependencies.prepareReviewEvidence(
+        structuredClone(intent),
+        signal,
+        onStage,
+        reusableCandidate,
+      );
     }
     await onStage('validate');
     await this.dependencies.validateIntent?.(structuredClone(intent), signal);
@@ -2112,7 +2181,7 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind !== 'pluginWrite') {
+    if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
         current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
@@ -2124,7 +2193,7 @@ export class TuiController {
         return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
+      if (!operationEvidenceMatches(ticket.evidence, current)) {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }
@@ -2198,9 +2267,6 @@ export class TuiController {
       if (ticket.intent.kind === 'catalogSourcesRecovery') {
         this.#phase = 'ready';
         this.#loadError = undefined;
-      }
-      if (ticket.intent.kind === 'catalogGeneration') {
-        void this.#catalogSourcesSession.refresh(ticket.intent.sourceId, false);
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         ? operationResultSummary(ticket.intent, execution)
@@ -2580,6 +2646,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
           ? 'Catalog 已启用，但主来源尚未切换。可在 TUI 中重试。'
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
+          : intent.action === 'replaceDamaged' ? '损坏的 Active Catalog 已由当前候选替换。'
           : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
             : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
               : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'
@@ -2725,18 +2792,49 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
               : entry.state as 'completed' | 'failed',
       }];
     });
-    const partial = targets.some((target) => target.state === 'failed' || target.state === 'skipped')
+    const overallState = typeof execution === 'object' && execution !== null
+      ? (execution as { overallState?: unknown }).overallState
+      : undefined;
+    const applySkippedReason = typeof execution === 'object' && execution !== null
+      ? (execution as { applySkippedReason?: unknown }).applySkippedReason
+      : undefined;
+    const invalidConfig = applySkippedReason === 'invalidConfig';
+    const resetDisposition = typeof execution === 'object' && execution !== null
+      ? (execution as { resetDisposition?: unknown }).resetDisposition
+      : undefined;
+    const quarantineBasename = typeof execution === 'object' && execution !== null
+      ? (execution as { quarantineBasename?: unknown }).quarantineBasename
+      : undefined;
+    const partial = overallState === 'partial'
+      || invalidConfig
+      || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
       && targets.some((target) => target.state === 'completed' || target.state === 'kept');
-    const failed = typeof execution === 'object' && execution !== null
-      && (execution as { overallState?: unknown }).overallState === 'failed'
+    const failed = overallState === 'failed'
       || (targets.length > 0
         && targets.every((target) => target.state === 'failed' || target.state === 'skipped'));
     return {
-      code: failed && !partial ? 'operationFailed'
-        : partial ? 'operationPartial' : 'operationSucceeded',
-      message: failed && !partial ? '操作结果无法确认。'
-        : partial ? '操作只完成了一部分。' : '操作已完成。',
-      ...(intent.kind === 'configSave' ? { configApplied: intent.apply } : {}),
+      code: failed || partial ? 'operationPartial' : 'operationSucceeded',
+      message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
+        : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
+      pluginId: intent.pluginId,
+      configScope: intent.scope,
+      configApplyRetryAvailable: intent.kind === 'configSave'
+        && intent.apply && !invalidConfig && (failed || partial),
+      ...(intent.kind === 'configSave'
+        ? { configApplied: invalidConfig ? false : intent.apply }
+        : invalidConfig ? { configApplied: false } : {}),
+      ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
+      ...(intent.kind === 'configReset'
+        && (resetDisposition === 'absent'
+          || resetDisposition === 'deletedFile'
+          || resetDisposition === 'unlinkedSymlink'
+          || resetDisposition === 'quarantinedDirectory')
+        ? {
+            resetDisposition,
+            ...(resetDisposition === 'quarantinedDirectory' && typeof quarantineBasename === 'string'
+              ? { quarantineBasename } : {}),
+          }
+        : {}),
       ...(targets.length > 0 ? { targets } : {}),
     };
   }

@@ -11,7 +11,7 @@ const repositoryRoot = path.resolve(path.dirname(scriptPath), '..')
 const canonicalSchemas = [
   { name: 'eval-spec', version: 1 },
   { name: 'eval-audit', version: 1 },
-  { name: 'eval-result', version: 1 },
+  { name: 'eval-result', version: 2 },
 ]
 const runnerSkillFiles = new Set([
   'README.md',

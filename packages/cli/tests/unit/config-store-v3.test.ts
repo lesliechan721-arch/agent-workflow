@@ -17,12 +17,15 @@ const config = normalizePluginConfigDefinition({
   fields: {
     connection: {
       type: 'object',
-      writableLayers: ['user', 'project'],
       properties: {
         'display-name': { type: 'string' },
         region: { type: 'string' },
         token: { type: 'string', sensitive: true },
       },
+      additionalProperties: false,
+    },
+    labels: {
+      type: 'object',
       additionalProperties: { type: 'string' },
       validation: { key: { format: 'identifier' } },
     },
@@ -135,7 +138,7 @@ describe('plugin config Store v3', () => {
     })).rejects.toThrow('invalidJson');
   });
 
-  it('rejects a known invalid object value as an invalidValues store projection', async () => {
+  it('keeps a schema-invalid envelope structurally ready and blocks its effective field', async () => {
     const user = storeOptions('user');
     const filePath = resolvePluginConfigStorePath(user);
     await fs.outputJson(filePath, {
@@ -147,9 +150,8 @@ describe('plugin config Store v3', () => {
     });
 
     await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
-      state: 'invalid',
-      invalidCode: 'invalidValues',
-      values: {},
+      state: 'ready',
+      values: { connection: { region: 42 } },
     });
     for (const targetScope of ['user', 'project'] as const) {
       await expect(resolveEffectivePluginConfig({
@@ -159,23 +161,38 @@ describe('plugin config Store v3', () => {
         targetScope,
         cwd: user.cwd,
         env: user.env,
-      })).rejects.toThrow('invalidValues');
+      })).resolves.toMatchObject({
+        values: {},
+        sources: { connection: 'user' },
+        fieldStates: {
+          connection: {
+            invalidOverride: { source: 'user' },
+          },
+        },
+        issues: [expect.objectContaining({ key: 'connection', source: 'user' })],
+      });
     }
   });
 
-  it('accepts a fixed key that does not match the dynamic key format in schema-aware stores', async () => {
+  it('validates fixed and key-value objects without mixing their schemas', async () => {
     const user = storeOptions('user');
     await fs.outputJson(resolvePluginConfigStorePath(user), {
       schemaVersion: 3,
       sourceId: user.sourceId,
       sourceIdentity,
       pluginName: manifest.name,
-      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+      values: {
+        connection: { 'display-name': 'fixed' },
+        labels: { dynamic_name: 'dynamic' },
+      },
     });
 
     await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
       state: 'ready',
-      values: { connection: { 'display-name': 'fixed', dynamic_name: 'dynamic' } },
+      values: {
+        connection: { 'display-name': 'fixed' },
+        labels: { dynamic_name: 'dynamic' },
+      },
     });
 
     await fs.outputJson(resolvePluginConfigStorePath(user), {
@@ -183,11 +200,120 @@ describe('plugin config Store v3', () => {
       sourceId: user.sourceId,
       sourceIdentity,
       pluginName: manifest.name,
-      values: { connection: { 'display-name': 'fixed', 'bad key': 'dynamic' } },
+      values: { labels: { 'bad key': 'dynamic' } },
     });
     await expect(readPluginConfigStore({ ...user, schema: config.fields })).resolves.toMatchObject({
-      state: 'invalid',
-      invalidCode: 'invalidValues',
+      state: 'ready',
+      values: { labels: { 'bad key': 'dynamic' } },
     });
+    await expect(resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'user',
+      cwd: user.cwd,
+      env: user.env,
+    })).resolves.toMatchObject({
+      values: {},
+      fieldStates: { labels: { invalidOverride: { source: 'user' } } },
+    });
+  });
+
+  it('keeps a lower object only as fallback when a project override is invalid', async () => {
+    const user = storeOptions('user');
+    const project = storeOptions('project');
+    await writePluginConfigStore({
+      ...user,
+      values: { connection: { region: 'user', token: 'user-secret' } },
+    });
+    await fs.outputJson(resolvePluginConfigStorePath(project), {
+      schemaVersion: 3,
+      sourceId: project.sourceId,
+      sourceIdentity,
+      pluginName: manifest.name,
+      values: { connection: { region: 42 } },
+    });
+
+    const invalid = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      cwd: user.cwd,
+      env: user.env,
+    });
+    expect(invalid.values).not.toHaveProperty('connection');
+    expect(invalid.fieldStates.connection).toMatchObject({
+      invalidOverride: { source: 'project' },
+      fallback: {
+        source: 'user',
+        value: { region: 'user', token: 'user-secret' },
+      },
+    });
+
+    await patchPluginConfigStore({ ...project, updates: {}, removeKeys: ['connection'] });
+    const restored = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      cwd: user.cwd,
+      env: user.env,
+    });
+    expect(restored.values.connection).toEqual({ region: 'user', token: 'user-secret' });
+  });
+
+  it('treats a dangerous dynamic object key as a recoverable field error', async () => {
+    const user = storeOptions('user');
+    await fs.outputFile(resolvePluginConfigStorePath(user), JSON.stringify({
+      schemaVersion: 3,
+      sourceId: user.sourceId,
+      sourceIdentity,
+      pluginName: manifest.name,
+      values: { labels: JSON.parse('{"__proto__":"value"}') },
+    }));
+
+    const store = await readPluginConfigStore({ ...user, schema: config.fields });
+    expect(store.state).toBe('ready');
+    const effective = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      manifest,
+      targetScope: 'user',
+      cwd: user.cwd,
+      env: user.env,
+    });
+    expect(effective.fieldStates.labels?.invalidOverride?.source).toBe('user');
+    expect(effective.issues.some((issue) => issue.message.includes('Dangerous config key'))).toBe(true);
+  });
+
+  it('canonicalizes values in memory and on the next real write', async () => {
+    const user = storeOptions('user');
+    const filePath = resolvePluginConfigStorePath(user);
+    await fs.outputJson(filePath, {
+      schemaVersion: 3,
+      sourceId: user.sourceId,
+      sourceIdentity,
+      pluginName: manifest.name,
+      values: { labels: { z: 'last', a: 'first' }, connection: { token: 'secret', region: 'west' } },
+    });
+    const before = await fs.readFile(filePath, 'utf8');
+    const read = await readPluginConfigStore(user);
+    expect(Object.keys(read.values)).toEqual(['connection', 'labels']);
+    expect(Object.keys(read.values.labels as object)).toEqual(['a', 'z']);
+    expect(await fs.readFile(filePath, 'utf8')).toBe(before);
+
+    const reordered = JSON.parse(before);
+    reordered.values = {
+      connection: { region: 'west', token: 'secret' },
+      labels: { a: 'first', z: 'last' },
+    };
+    await fs.outputFile(filePath, `${JSON.stringify(reordered)}\n`);
+    const byteReordered = await readPluginConfigStore(user);
+    expect(byteReordered.values).toEqual(read.values);
+    expect(byteReordered.rawDigest).not.toBe(read.rawDigest);
+
+    await patchPluginConfigStore({ ...user, updates: { connection: { region: 'east' } } });
+    const written = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    expect(Object.keys(written.values)).toEqual(['connection', 'labels']);
+    expect(Object.keys(written.values.labels)).toEqual(['a', 'z']);
   });
 });

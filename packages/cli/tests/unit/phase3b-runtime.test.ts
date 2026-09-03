@@ -97,7 +97,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backupPath }));
   });
 
-  it('inventories canonical owner artifacts but ignores ordinary project Skill markers', async () => {
+  it('inventories canonical project owner artifacts but ignores ordinary project and marketplace Skill markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
@@ -179,11 +179,6 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(inventory.references).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'namespacedOwner', location: role, sourceId: 'team' }),
-      expect.objectContaining({
-        kind: 'namespacedOwner',
-        location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
-        sourceId: 'team',
-      }),
     ]));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backup }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: exampleMarker }));
@@ -191,6 +186,11 @@ describe('phase 3B namespaced runtime stores', () => {
       location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
     }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
+      sourceId: 'team',
+    }));
   });
 
   it('does not turn Codex cache residue into ordinary or orphan cleanup consumers', async () => {
@@ -319,7 +319,7 @@ describe('phase 3B namespaced runtime stores', () => {
     await Promise.all([
       createCatalogSnapshotFixture(primaryRoot, 'primary-demo'),
       createCatalogSnapshotFixture(teamRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], title: 'Mode' } } };
+        manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
       }),
     ]);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -339,10 +339,6 @@ describe('phase 3B namespaced runtime stores', () => {
       sourceId: 'other', sourceIdentity: `sha256:${'c'.repeat(64)}`, pluginName: 'demo', scope: 'user',
       cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { retained: true },
     });
-    await expect(removeCatalogSourceCommand({
-      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true });
-
     const ambiguous = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: ambiguous.io, interactive: false,
@@ -351,12 +347,24 @@ describe('phase 3B namespaced runtime stores', () => {
       errors: [expect.objectContaining({ code: 'configTargetAmbiguous' })],
     });
 
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }), '{invalid');
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ ok: true, changed: true });
+
     const reset = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env, io: reset.io, interactive: false,
     })).toBe(0);
     expect(JSON.parse(reset.readStdout())).toMatchObject({
-      ok: true, pluginId: 'team/demo', deleted: true, removedKeys: ['mode'],
+      ok: true,
+      pluginId: 'team/demo',
+      deleted: true,
+      removedKeys: [],
+      resetDisposition: 'deletedFile',
     });
     await expect(readPluginConfigStore({
       sourceId: 'other', sourceIdentity: `sha256:${'c'.repeat(64)}`, pluginName: 'demo', scope: 'user',
@@ -452,7 +460,7 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('emits config receipt 5 and keeps a namespaced store after its source is removed', async () => {
+  it('emits config receipt 6 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -463,11 +471,45 @@ describe('phase 3B namespaced runtime stores', () => {
           fields: {
             mode: {
               type: 'string',
-              writableLayers: ['user', 'project'],
               title: 'Mode',
               choices: {
                 allowCustom: false,
                 presets: [{ id: 'fast', title: 'Fast', value: 'fast' }],
+              },
+            },
+            enabled: {
+              type: 'boolean',
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'off', title: 'Off', value: false }],
+              },
+            },
+            secretMode: {
+              type: 'string',
+              sensitive: true,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'private', title: 'Private', value: 'secret-mode' }],
+              },
+            },
+            fixedSecret: {
+              type: 'object',
+              properties: {
+                token: { type: 'string', sensitive: true },
+                region: { type: 'string' },
+              },
+              additionalProperties: false,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'fixed', title: 'Fixed', value: { token: 'fixed-secret', region: 'west' } }],
+              },
+            },
+            kvSecret: {
+              type: 'object',
+              additionalProperties: { type: 'string', sensitive: true },
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'kv', title: 'KV', value: { account: 'kv-secret' } }],
               },
             },
           },
@@ -512,7 +554,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(0);
     const setReceipt = JSON.parse(setOutput.readStdout()) as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       command: 'config:set',
       pluginName: 'demo',
       pluginId: 'team/demo',
@@ -529,6 +571,38 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(stored.values).toEqual({ mode: 'fast' });
     expect(JSON.stringify(stored.values)).not.toContain('preset');
+    const booleanPresetOutput = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'set', 'team/demo', 'enabled', '--preset', 'off', '--scope', 'user', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: booleanPresetOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(await readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: setReceipt.sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).toMatchObject({ values: { mode: 'fast', enabled: false } });
+    for (const [key, preset] of [
+      ['secretMode', 'private'],
+      ['fixedSecret', 'fixed'],
+      ['kvSecret', 'kv'],
+    ] as const) {
+      const output = createCapturedCliIo();
+      expect(await runCli([
+        'config', 'set', 'team/demo', key, '--preset', preset, '--scope', 'user', '--json',
+      ], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      })).toBe(0);
+    }
     const getOutput = createCapturedCliIo();
     expect(await runCli(['config', 'get', 'team/demo', 'mode', '--scope', 'user', '--json'], {
       cwd: isolation.layout.fixtureCwd,
@@ -541,6 +615,36 @@ describe('phase 3B namespaced runtime stores', () => {
         key: 'mode', value: 'fast', source: 'user', matchedPreset: 'fast', valid: true, issues: [],
       }],
     });
+    for (const [key, value, secret] of [
+      ['secretMode', '[redacted]', 'secret-mode'],
+      ['fixedSecret', { token: '[redacted]', region: 'west' }, 'fixed-secret'],
+      ['kvSecret', { account: '[redacted]' }, 'kv-secret'],
+    ] as const) {
+      const output = createCapturedCliIo();
+      expect(await runCli(['config', 'get', 'team/demo', key, '--scope', 'user', '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+      })).toBe(0);
+      const serialized = output.readStdout();
+      expect(JSON.parse(serialized)).toMatchObject({
+        fields: [{ key, value, matchedPreset: null, valid: true, issues: [] }],
+      });
+      expect(serialized).not.toContain(secret);
+    }
+    const listOutput = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'team/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: listOutput.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(listOutput.readStdout()).fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'secretMode', matchedPreset: null }),
+      expect.objectContaining({ key: 'fixedSecret', matchedPreset: null }),
+      expect.objectContaining({ key: 'kvSecret', matchedPreset: null }),
+    ]));
     await fs.outputFile(stored.path, '{ invalid json');
     const unconfirmedReset = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--scope', 'user', '--json'], {
@@ -558,7 +662,10 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
-      command: 'config:reset', configWrite: 'succeeded', deleted: true,
+      receiptSchemaVersion: 6,
+      command: 'config:reset',
+      configWrite: 'succeeded',
+      deleted: true,
     });
     await expect(fs.pathExists(stored.path)).resolves.toBe(false);
     const remainingNames = await fs.readdir(path.dirname(stored.path)).catch(() => []);
@@ -577,7 +684,16 @@ describe('phase 3B namespaced runtime stores', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    })).resolves.toMatchObject({
+      ok: true,
+      changed: true,
+      references: [{
+        category: 'config',
+        pluginId: 'team/demo',
+        scope: 'user',
+        sourceId: 'team',
+      }],
+    });
     const skillsRoot = path.join(
       isolation.env.AW_HOME!,
       'marketplaces',
@@ -613,23 +729,6 @@ describe('phase 3B namespaced runtime stores', () => {
         platform: 'codex',
         scope: 'user',
       },
-    });
-    const statusOutput = createCapturedCliIo();
-    expect(await runCli(['status', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: statusOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      schemaVersion: 7,
-      targets: expect.arrayContaining([
-        expect.objectContaining({
-          pluginId: 'team/demo',
-          state: 'blocked',
-          reasons: [expect.objectContaining({ code: 'sourceMissing' })],
-        }),
-      ]),
     });
     const offlineResetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
@@ -1544,7 +1643,18 @@ describe('phase 3B namespaced runtime stores', () => {
 
       resumeInstall.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+      await expect(mutation).resolves.toMatchObject({
+        ok: true,
+        changed: true,
+        references: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'installation', pluginId: 'team/demo', scope: 'project',
+          }),
+          expect.objectContaining({
+            category: 'lifecycle', pluginId: 'team/demo', scope: 'project',
+          }),
+        ]),
+      });
       expect(mutationCompleted).toBe(true);
       expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
     } finally {

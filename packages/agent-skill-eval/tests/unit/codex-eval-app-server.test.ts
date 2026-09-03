@@ -8,6 +8,7 @@ import fs from 'fs-extra'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  createPosixProcessTreeMonitor,
   inspectAppServerConfigWarning,
   runCodexTriggerProviderCase,
   settleAppServerProcessCleanup,
@@ -100,6 +101,30 @@ describe('Codex provider app-server process boundary', () => {
     }
   })
 
+  it('allows a tagged POSIX scan to use the full cleanup deadline', async () => {
+    const processes = new Map([
+      [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
+    ])
+    const snapshot = () => new Map(processes)
+    const monitor = createPosixProcessTreeMonitor(100, {
+      treeId: 'tree-id',
+      readProcessTable: async () => snapshot(),
+      readTaggedProcessTable: async () => await new Promise((resolve) => {
+        setTimeout(() => resolve(snapshot()), 1_100)
+      }),
+      kill: (pid, signal) => {
+        const entry = processes.get(pid)
+        if (entry && signal === 'SIGSTOP') {
+          processes.set(pid, { ...entry, state: 'T' })
+        }
+        if (signal === 'SIGKILL') processes.delete(pid)
+        return true
+      },
+    })
+
+    await expect(monitor.terminate()).resolves.toEqual([])
+  })
+
   it('times out a delayed initialize before turn/start', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-delayed-initialize-'))
     try {
@@ -107,6 +132,7 @@ describe('Codex provider app-server process boundary', () => {
       const fixtureRoot = path.join(root, 'fixtures')
       const sourceCodexHome = path.join(root, 'source-codex-home')
       const requestLog = path.join(root, 'requests.log')
+      const launchLog = path.join(root, 'launch.json')
       const codexBin = path.join(root, 'fake-codex.mjs')
       await Promise.all([
         fs.ensureDir(subjectRoot),
@@ -116,6 +142,12 @@ describe('Codex provider app-server process boundary', () => {
       await fs.writeFile(codexBin, [
         '#!/usr/bin/env node',
         "import fs from 'node:fs'",
+        `fs.writeFileSync(${JSON.stringify(launchLog)}, JSON.stringify({`,
+        '  args: process.argv.slice(2),',
+        '  gitConfigNoSystem: process.env.GIT_CONFIG_NOSYSTEM,',
+        '  gitTerminalPrompt: process.env.GIT_TERMINAL_PROMPT,',
+        '  gitOptionalLocks: process.env.GIT_OPTIONAL_LOCKS,',
+        '}))',
         "let buffer = ''",
         "process.stdin.setEncoding('utf8')",
         "process.stdin.on('data', (chunk) => {",
@@ -192,6 +224,22 @@ describe('Codex provider app-server process boundary', () => {
       const requests = await vi.waitFor(() => fs.readFile(requestLog, 'utf8'))
       expect(requests).toContain('initialize')
       expect(requests).not.toContain('turn/start')
+      const launch = JSON.parse(await fs.readFile(launchLog, 'utf8')) as {
+        args: string[]
+        gitConfigNoSystem?: string
+        gitTerminalPrompt?: string
+        gitOptionalLocks?: string
+      }
+      expect(launch).toMatchObject({
+        gitConfigNoSystem: '1',
+        gitTerminalPrompt: '0',
+        gitOptionalLocks: '0',
+      })
+      expect(launch.args).toEqual(expect.arrayContaining([
+        'shell_environment_policy.set.GIT_CONFIG_NOSYSTEM="1"',
+        'shell_environment_policy.set.GIT_TERMINAL_PROMPT="0"',
+        'shell_environment_policy.set.GIT_OPTIONAL_LOCKS="0"',
+      ]))
     } finally {
       await fs.remove(root)
     }

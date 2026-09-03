@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
-  resolveArtifactRenderConfig,
   runArtifactRenderer as runArtifactRendererExact,
   writeArtifactRendererContext as writeArtifactRendererContextExact,
   resolveArtifactRendererTarget,
@@ -21,6 +20,8 @@ import { resolveAwDeliveredArtifactIds } from '../../src/utils/artifact-request.
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
+const OUTPUT_LIMIT = 64 * 1024;
+const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
 
 function requestedIdsFor(
   manifest: PluginMeta['manifest'],
@@ -93,29 +94,24 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
       fields: {
         token: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           sensitive: true,
         },
         credentials: {
           type: 'object',
-          writableLayers: ['user', 'project'],
           properties: {
             accessKey: { type: 'string', sensitive: true },
           },
         },
         enableLightweightInstruction: {
           type: 'boolean',
-          writableLayers: ['user', 'project'],
           default: true,
         },
         explorerModel: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           choices: {
             allowCustom: false,
             presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
@@ -257,7 +253,7 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       `writeFileSync(${JSON.stringify(started)}, String(process.pid));`,
       'setInterval(() => {}, 1000);',
@@ -294,7 +290,7 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });',
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       'setInterval(() => {}, 1000);',
     ].join('\n'));
@@ -491,133 +487,6 @@ describe('artifact renderer runtime', () => {
     expect(result.plan.artifacts.map((artifact) => artifact.id)).toEqual(['lightweight-instruction']);
   });
 
-  it('reports one project artifact boundary issue for an object with filesystem path children', async () => {
-    const root = await makeTempRoot('aw-artifact-renderer-boundary-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const manifest = createManifest();
-    manifest.config!.fields.sharedFile = {
-      type: 'string',
-      writableLayers: ['user', 'project'],
-      validation: { format: 'file' },
-    };
-    manifest.config!.fields.locations = {
-      type: 'object',
-      writableLayers: ['user', 'project'],
-      properties: {
-        certificate: { type: 'string', validation: { format: 'file' } },
-        label: { type: 'string' },
-      },
-      additionalProperties: { type: 'string', validation: { format: 'directory' } },
-    };
-    const plugin = await writePlugin(root, manifest);
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-      values: { locations: { label: 'shared label' } },
-    });
-
-    const clean = await resolveArtifactRenderConfig({
-      manifest: plugin.manifest,
-      scope: 'project',
-      cwd,
-      env,
-    });
-    expect(clean.issues).not.toContainEqual(expect.objectContaining({
-      type: 'sharedCompositeContainsLocalPath',
-    }));
-
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-      values: {
-        sharedFile: '/machine/certificate.pem',
-        locations: { certificate: '/machine/certificate.pem', cache: '/machine/cache' },
-      },
-    });
-
-    const project = await resolveArtifactRenderConfig({
-      manifest: plugin.manifest,
-      scope: 'project',
-      cwd,
-      env,
-    });
-    const user = await resolveArtifactRenderConfig({
-      manifest: plugin.manifest,
-      scope: 'user',
-      cwd,
-      env,
-    });
-
-    expect(project.issues).toContainEqual({
-      type: 'sharedCompositeContainsLocalPath',
-      key: 'locations',
-      source: 'project',
-      message: expect.any(String),
-    });
-    expect(project.issues).toContainEqual({
-      type: 'sharedCompositeContainsLocalPath',
-      key: 'sharedFile',
-      source: 'project',
-      message: expect.any(String),
-    });
-    expect(user.issues).not.toContainEqual(expect.objectContaining({
-      type: 'sharedCompositeContainsLocalPath',
-    }));
-  });
-
-  it('does not start the renderer when project config crosses the artifact boundary', async () => {
-    const root = await makeTempRoot('aw-artifact-renderer-blocked-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const manifest = createManifest();
-    manifest.config!.fields.locations = {
-      type: 'object',
-      writableLayers: ['user', 'project'],
-      properties: {
-        certificate: { type: 'string', validation: { format: 'file' } },
-      },
-    };
-    const plugin = await writePlugin(root, manifest);
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-      values: { locations: { certificate: '/machine/certificate.pem' } },
-    });
-    let runnerCalled = false;
-
-    await expect(runArtifactRenderer({
-      event: 'install',
-      plugin,
-      platform: 'codex',
-      scope: 'project',
-      cwd,
-      commandEnv: env,
-      runner: {
-        async run() {
-          runnerCalled = true;
-          return {
-            exitCode: 0,
-            signal: null,
-            stdout: JSON.stringify({ version: 2, artifacts: [] }),
-            stderr: '',
-            timedOut: false,
-          };
-        },
-      },
-    })).rejects.toThrow('sharedCompositeContainsLocalPath');
-
-    expect(runnerCalled).toBe(false);
-  });
-
   it('runs renderer with empty changed keys for install and upgrade, and explicit keys for refresh', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-run-');
     const cwd = path.join(root, 'repo');
@@ -726,6 +595,48 @@ describe('artifact renderer runtime', () => {
     expect(String(error)).toContain('[REDACTED]');
     expect(String(error)).not.toContain('secret-token');
     expect(String(error)).not.toContain('nested-render-secret');
+  });
+
+  it('redacts a sensitive renderer token split across the output limit by the default runner', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-redaction-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    const secret = '§renderer-cross-boundary-sensitive-token';
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root, createManifest(), [
+      'import { readFileSync } from "node:fs";',
+      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const token = context.config.values.token;',
+      'const splitAt = 12;',
+      `const first = "x".repeat(${OUTPUT_LIMIT} - splitAt) + token.slice(0, splitAt);`,
+      'process.stderr.write(first, () => {',
+      '  setTimeout(() => {',
+      '    process.stderr.write(token.slice(splitAt), () => { process.exitCode = 9; });',
+      '  }, 20);',
+      '});',
+    ].join('\n'));
+    const env = { AW_HOME: awHome, PATH: process.env.PATH } as NodeJS.ProcessEnv;
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: secret },
+    });
+
+    const error = await runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('[REDACTED]');
+    for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
+      expect(error.message).not.toContain(secret.slice(0, prefixLength));
+    }
   });
 
   it('fails on unsupported versions, non-zero exit, and timeouts', async () => {

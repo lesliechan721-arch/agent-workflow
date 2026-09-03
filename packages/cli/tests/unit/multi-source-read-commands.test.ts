@@ -231,7 +231,7 @@ describe('multi-source read commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('status-config-preflight');
     await createCatalogSnapshotFixture(root, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { fields: { rules: { type: 'string', writableLayers: ['user', 'project'], title: '规则', required: true } } };
+      manifest.config = { fields: { rules: { type: 'string', title: '规则', required: true } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1051,7 +1051,7 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(config.readStdout())).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       command: 'config:set',
       ok: false,
       overallState: 'failed',
@@ -1296,7 +1296,7 @@ describe('multi-source read commands', () => {
         [],
         'demo\n',
         (manifest) => {
-          manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'fast' } } };
+          manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
         },
       );
       const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -1426,7 +1426,7 @@ describe('multi-source read commands', () => {
       [],
       'demo\n',
       (manifest) => {
-        manifest.config = { fields: { mode: { type: 'string', writableLayers: ['user', 'project'], default: 'fast' } } };
+        manifest.config = { fields: { mode: { type: 'string', default: 'fast' } } };
       },
     );
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);

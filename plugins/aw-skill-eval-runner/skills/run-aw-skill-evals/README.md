@@ -10,13 +10,13 @@
 
 ## 工作方式
 
-执行前只从已验证 Spec/cases 显示 case/runs/baseline、预计真实调用数、provider 进程类别、可能使用现有 credential 环境、模型网络和输出路径。用户已明确要求且预计不超过 10 次内置模型调用时可直接执行；更高成本或 custom process 会再次确认。
+执行前只从已验证 Spec/cases 和 validator receipt 显示 case/runs/baseline、预计真实调用数、provider 类别、可能使用 credential、模型网络和输出路径。用户已明确要求且预计不超过 10 次内置模型调用时可直接执行；更高成本或 custom process 会再次确认。
 
-clean success 不增加额外 triage。只有执行或评分异常、混合结果、baseline 回归，或结果将用于修改生产 Skill 时，才调用独立 Auditor 做 result-triage。
+Engine 负责执行预检、隔离和清理。若它阻断运行，Runner 只报告诊断和恢复选项，不复刻检查、不绕过，也不自动重试。只有用户明确接受 Engine 提示的本次 unmanaged 风险后，Runner 才给该次命令增加相应 flag。
 
-`runs` 和 `timeoutMs` 改变不使 Audit 失效。旧版使用字符串 `workspace` 的 v1 Spec 必须重新 prepare 并重新 Audit。
+clean success 返回已验证 EvalResult 和 Engine 记录的执行模式，不增加额外 triage。只有执行或评分异常、混合结果、baseline 回归，或结果将用于修改生产 Skill 时，才调用独立 Auditor 做 result-triage。
 
-普通成功路径不运行环境 doctor。只有安装或版本升级、用户明确请求诊断，或执行失败需要定位 provider 环境时，才进入高级诊断分支。
+普通成功路径不运行环境 doctor。只有安装或版本升级、用户明确请求诊断，或模型已启动后的执行失败需要定位 provider 环境时，才进入高级诊断分支。
 
 ## 边界
 

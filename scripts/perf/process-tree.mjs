@@ -310,7 +310,7 @@ function signalPosixIdentities(options) {
   );
   if (options.includeRoot && rootMatches) {
     try {
-      process.kill(-options.child.pid, options.signal);
+      options.killProcessGroup(options.child.pid, options.signal);
     } catch {
       killDirectChild(options.child, options.signal);
     }
@@ -326,6 +326,9 @@ export function runProcessTree(options, dependencies = {}) {
   const verifyPosixProcessTree = dependencies.verifyPosixProcessTree ?? snapshotPosixProcessTree;
   const runTaskkill = dependencies.taskkillProcessTree ?? taskkillProcessTree;
   const killProcess = dependencies.killPosixProcess ?? ((pid, signal) => process.kill(pid, signal));
+  const killProcessGroup = dependencies.killPosixProcessGroup ?? (
+    (pid, signal) => process.kill(-pid, signal)
+  );
   const terminationGraceMs = options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
   const cleanupSettleMs = options.cleanupSettleMs ?? DEFAULT_CLEANUP_SETTLE_MS;
   const snapshotTimeoutMs = options.descendantSnapshotTimeoutMs ??
@@ -364,8 +367,12 @@ export function runProcessTree(options, dependencies = {}) {
     let monitorTimer;
     let monitorInFlight = Promise.resolve();
     let resolveChildClose;
+    let resolveForceCleanup;
     const childClose = new Promise((resolveClose) => {
       resolveChildClose = resolveClose;
+    });
+    const forceCleanup = new Promise((resolveForce) => {
+      resolveForceCleanup = resolveForce;
     });
 
     const delay = (milliseconds) => new Promise((resolveDelay) => {
@@ -386,6 +393,7 @@ export function runProcessTree(options, dependencies = {}) {
       clearTimeout(timeoutTimer);
       stopMonitoring();
       options.signal?.removeEventListener('abort', abortRun);
+      options.forceSignal?.removeEventListener('abort', forceRun);
       for (const timer of delayTimers) {
         clearTimeout(timer);
       }
@@ -501,6 +509,7 @@ export function runProcessTree(options, dependencies = {}) {
         signal: 'SIGTERM',
         includeRoot: false,
         killProcess,
+        killProcessGroup,
       });
       if (termTargets.matchingDescendants.length === 0) {
         return;
@@ -518,6 +527,7 @@ export function runProcessTree(options, dependencies = {}) {
         signal: 'SIGKILL',
         includeRoot: false,
         killProcess,
+        killProcessGroup,
       });
       await delay(cleanupSettleMs);
       const finalSnapshot = await captureSnapshot();
@@ -582,7 +592,7 @@ export function runProcessTree(options, dependencies = {}) {
         } else if (!childHasExited(child)) {
           killDirectChild(child, 'SIGTERM');
         }
-        await delay(terminationGraceMs);
+        await Promise.race([delay(terminationGraceMs), forceCleanup]);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
           rememberCurrentRootSnapshot(killSnapshot);
@@ -610,6 +620,7 @@ export function runProcessTree(options, dependencies = {}) {
             signal: 'SIGTERM',
             includeRoot: true,
             killProcess,
+            killProcessGroup,
           });
           if (!sameIdentity(rootIdentity, termSnapshot.identitiesByPid.get(child.pid)) &&
               !childHasExited(child)) {
@@ -618,7 +629,7 @@ export function runProcessTree(options, dependencies = {}) {
         } else {
           killDirectChild(child, 'SIGTERM');
         }
-        await delay(terminationGraceMs);
+        await Promise.race([delay(terminationGraceMs), forceCleanup]);
         const killSnapshot = await captureSnapshot();
         if (killSnapshot) {
           rememberCurrentRootSnapshot(killSnapshot);
@@ -630,6 +641,7 @@ export function runProcessTree(options, dependencies = {}) {
             signal: 'SIGKILL',
             includeRoot: true,
             killProcess,
+            killProcessGroup,
           });
           if (!killResult.rootMatches && !childHasExited(child)) {
             killDirectChild(child, 'SIGKILL');
@@ -641,6 +653,9 @@ export function runProcessTree(options, dependencies = {}) {
         }
       }
       await delay(cleanupSettleMs);
+      if (platform !== 'win32' && !rootIdentity) {
+        throw new Error(`${options.label} cleanup could not verify process-tree ownership.`);
+      }
       if (platform === 'win32') {
         const finalSnapshot = await captureSnapshot();
         if (!finalSnapshot) {
@@ -677,6 +692,7 @@ export function runProcessTree(options, dependencies = {}) {
             signal: 'SIGKILL',
             includeRoot: false,
             killProcess,
+            killProcessGroup,
           });
           await delay(cleanupSettleMs);
           let finalSnapshot = await captureVerificationSnapshot();
@@ -721,7 +737,14 @@ export function runProcessTree(options, dependencies = {}) {
         : new Error('Process-tree run aborted.');
       void cleanupRunningTree().then(() => finish(reason), finish);
     };
+    const forceRun = () => {
+      resolveForceCleanup();
+    };
     options.signal?.addEventListener('abort', abortRun, { once: true });
+    options.forceSignal?.addEventListener('abort', forceRun, { once: true });
+    if (options.forceSignal?.aborted) {
+      forceRun();
+    }
 
     scheduleMonitor();
     child.stdout.on('data', (chunk) => {

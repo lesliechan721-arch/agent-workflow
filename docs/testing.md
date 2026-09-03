@@ -151,7 +151,8 @@ Performance gate 必须校验摘要名称集合。缺少、重复或未知名称
 ## Test Isolation
 
 - 使用测试提供的隔离 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 和 workspace。
-- 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
+- 三个 package 的 Vitest 入口由统一进程树 wrapper 运行。正常结束、`SIGINT` 和 `SIGTERM` 会清理本次 wrapper 通过 PID 与 start identity 证实的进程树；清理期间再次收到中断信号时立即升级强制清理。只有确认清理成功时才返回标准信号退出码，清理无法验证时必须报告错误并以 `1` 退出。wrapper 自身被 `SIGKILL`、宿主崩溃或断电时不承诺清理。
+- 合成长驻 detached 测试子进程必须设置有界的自退出时限，防止测试宿主被强制终止后永久遗留；行为断言仍必须证明正常路径会在更短的既定期限内主动清理。
 - 平台命令使用 fake native runner。
 - 需要进程树检查的测试在允许 POSIX/Windows 进程检查的环境运行。
 - 测试结束后清理自己的临时目录和 mock。

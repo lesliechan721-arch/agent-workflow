@@ -41,12 +41,13 @@ describe('plugin authoring capability structure registry', () => {
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.type'))
       .toEqual(schema.$defs.configField.oneOf.map((entry: { $ref: string }) => {
         const definition = entry.$ref.split('/').at(-1)!
-        return schema.$defs[definition].properties.type.const
+        const resolved = definition === 'configObjectField'
+          ? schema.$defs.configFixedObjectField
+          : schema.$defs[definition]
+        return resolved.properties.type.const
       }))
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.validation.format'))
       .toEqual(schema.$defs.configStringValidation.properties.format.enum)
-    expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.writableLayers'))
-      .toEqual(schema.$defs.configWritableLayers.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].platforms'))
       .toEqual(schema.$defs.buildConfig.properties.skillRuntimeFiles.items.properties.platforms.items.enum)
     expect(getPluginAuthoringAcceptedValues('build-config', 'buildConfig.skillRuntimeFiles[].distributions'))

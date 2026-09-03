@@ -12,9 +12,11 @@
 
 ## 工作方式
 
-Skill 会先调查事实，并维护一份用户可见的共享 Decision frame。它把同一方向传给当前叶子 Skill：可以通过讨论解决时组合 `decision-grill`；必须看到、运行、操作、实验或测量时组合 `decision-prototype`。两个叶子 Skill 仍可独立使用，不会重新制定外层方向。
+Skill 会先调查事实，并维护一份用户可见的共享决策方向（Decision frame）。它把同一方向传给当前叶子 Skill：可以通过讨论解决时组合 `decision-grill`；必须看到、运行、操作、实验或测量时组合 `decision-prototype`。两个叶子 Skill 仍可独立使用，不会重新制定外层方向。
 
 共享方向改变时，只重新打开受影响的决定。其它已确认决定、证据和边界继续有效。
+
+Shape 与最新用户确认或 Prototype 结论冲突时，Skill 会先暴露冲突。可能推翻当前方向的证据仍缺失，且用户未接受后果时，Shape 保持开放。
 
 完成时返回当前有效的 Shape。调用者提供路径、仓库有明确约定或跨会话确有价值时，Skill 会维护 Shape 文件；否则只在对话中交付。
 

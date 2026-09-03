@@ -5,6 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 import { runCli } from '../../src/index.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import {
+  createEmptyPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function capture() {
@@ -132,5 +137,39 @@ describe('catalog source auto-check CLI', () => {
     });
     expect(JSON.parse(result.stdout)).toEqual(result.json);
     expect(result.stderr).toBe('error: option --auto-check cannot be used with option --no-auto-check\n');
+  });
+
+  it('requires --yes to remove a source with lifecycle references and returns public impact evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'remove-referenced-source');
+    await fs.ensureDir(sourceRoot);
+    expect((await runJson([
+      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--json',
+    ])).exitCode).toBe(0);
+    await writePluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team/demo', platforms: ['codex'],
+    }));
+
+    const blocked = await runJson(['catalog', 'source', 'remove', 'team', '--json']);
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.json).toMatchObject({
+      ok: false,
+      changed: false,
+      references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }],
+      errors: [{ code: 'catalogSourceImpactConfirmationRequired' }],
+    });
+    expect(JSON.stringify(blocked.json)).not.toContain(isolation.layout.fixtureCwd);
+
+    const removed = await runJson([
+      'catalog', 'source', 'remove', 'team', '--yes', '--json',
+    ]);
+    expect(removed.exitCode, removed.stderr).toBe(0);
+    expect(removed.json).toMatchObject({
+      ok: true,
+      changed: true,
+      references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }],
+    });
   });
 });

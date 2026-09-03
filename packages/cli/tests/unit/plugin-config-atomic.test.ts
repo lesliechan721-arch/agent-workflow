@@ -397,9 +397,17 @@ describe('plugin config atomic writes', () => {
 
     const directoryOptions = { ...base, pluginName: 'directory-store' };
     const directoryPath = resolvePluginConfigStorePath(directoryOptions);
-    await fs.ensureDir(directoryPath);
-    await expect(resetPluginConfigStore(directoryOptions)).rejects.toThrow('regular file');
-    await expect(fs.lstat(directoryPath)).resolves.toMatchObject({});
+    await fs.outputFile(path.join(directoryPath, 'retained.txt'), 'keep');
+    const directoryReset = await resetPluginConfigStore(directoryOptions);
+    expect(directoryReset).toMatchObject({
+      resetDisposition: 'quarantinedDirectory',
+      quarantineBasename: expect.any(String),
+    });
+    await expect(fs.readFile(path.join(
+      path.dirname(directoryPath),
+      directoryReset.quarantineBasename!,
+      'retained.txt',
+    ), 'utf8')).resolves.toBe('keep');
 
     const symlinkOptions = { ...base, pluginName: 'symlink-store' };
     const symlinkPath = resolvePluginConfigStorePath(symlinkOptions);
@@ -407,7 +415,10 @@ describe('plugin config atomic writes', () => {
     await fs.outputJson(foreignTarget, { foreign: true });
     await fs.ensureDir(path.dirname(symlinkPath));
     await fs.symlink(foreignTarget, symlinkPath);
-    await expect(resetPluginConfigStore(symlinkOptions)).rejects.toThrow('symbolic link');
+    await expect(resetPluginConfigStore(symlinkOptions)).resolves.toMatchObject({
+      resetDisposition: 'unlinkedSymlink',
+    });
+    await expect(fs.pathExists(symlinkPath)).resolves.toBe(false);
     await expect(fs.readJson(foreignTarget)).resolves.toEqual({ foreign: true });
 
     const foreignOptions = { ...base, pluginName: 'foreign-store' };

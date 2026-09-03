@@ -393,12 +393,6 @@ async function testStaticManifestContract() {
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
 
-  for (const field of [
-    'exploreMinimumInitialWaitMinutes',
-    'subagentMinimumInitialWaitMinutes',
-  ]) {
-    assert.deepEqual(manifest.config.fields[field].writableLayers, ['user']);
-  }
   for (const target of manifest.artifacts.targets.filter((entry) =>
     entry.target === 'codex.skill')) {
     assert.deepEqual(target.delivery, {
@@ -410,9 +404,6 @@ async function testStaticManifestContract() {
   for (const target of manifest.artifacts.targets.filter((entry) =>
     entry.target === 'codex.agentRole')) {
     assert.equal(target.delivery, undefined);
-    for (const key of target.refreshKeys) {
-      assert.deepEqual(manifest.config.fields[key].writableLayers, ['user', 'project']);
-    }
   }
 
   assert.deepEqual(

@@ -50,7 +50,7 @@ describe('codex-surface-analysis', () => {
   it('keeps renderer output and instruction, permission, and agent extensions AW-owned', () => {
     const analysis = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
+      config: { fields: { mode: { type: 'string' } } },
       scripts: {
         artifacts: { render: { runner: 'node', path: './render.mjs' } },
       },
@@ -93,7 +93,7 @@ describe('codex-surface-analysis', () => {
 
   it('treats config as input and postApply as target-local behavior', () => {
     const configOnly = analyzeCodexSurface(manifest({
-      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
+      config: { fields: { mode: { type: 'string' } } },
     }));
     expect(configOnly).toMatchObject({
       ok: true,
@@ -107,7 +107,7 @@ describe('codex-surface-analysis', () => {
 
     const nativeAndConfig = analyzeCodexSurface(manifest({
       skills: './skills',
-      config: { fields: { mode: { type: 'string', writableLayers: ['user', 'project'] } } },
+      config: { fields: { mode: { type: 'string' } } },
     }));
     expect(nativeAndConfig).toMatchObject({
       ok: true,

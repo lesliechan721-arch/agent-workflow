@@ -953,6 +953,40 @@ describe('built-in Eval provider registry', () => {
 })
 
 describe('custom process provider', () => {
+  it('runs an explicitly unmanaged provider without process-tree inspection', async () => {
+    const paths = await runRoot()
+    const processTree = {
+      platform: 'win32' as const,
+      createSentinel: vi.fn(async () => { throw new Error('must not inspect') }),
+      execFile: vi.fn(() => { throw new Error('must not inspect') }),
+    }
+    const result = await executeCustomProcessProvider({
+      command: [
+        process.execPath,
+        '-e',
+        'process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))',
+      ],
+      evalRoot: paths.root,
+      input: input(paths, { id: 'case-1' }),
+      sourceEnv: { PATH: process.env.PATH },
+      processTree,
+      processManagement: {
+        mode: 'unmanaged-confirmed',
+        inspectionAvailable: false,
+        userAcknowledged: true,
+        descendantCleanupGuaranteed: false,
+        limitation: 'Only the direct child is targeted.',
+      },
+    })
+
+    expect(result).toEqual({
+      usage: null,
+      grade: { passed: true, score: 1 },
+    })
+    expect(processTree.createSentinel).not.toHaveBeenCalled()
+    expect(processTree.execFile).not.toHaveBeenCalled()
+  })
+
   it('stages auth and Codex runtime variables outside the isolated HOME', async () => {
     const paths = await runRoot()
     const sourceCodexHome = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-auth-only-'))
@@ -980,6 +1014,9 @@ describe('custom process provider', () => {
       "if (process.env.AW_CODEX_EVAL_MODEL_PROVIDER !== 'openai') throw new Error('provider mismatch')",
       "if (process.env.AW_SKILL_EVAL_CODEX_MODEL !== 'dependency-model') throw new Error('model precedence mismatch')",
       "if (process.env.AW_CODEX_EVAL_SENSITIVE_ENV_NAMES === undefined) throw new Error('sensitive names missing')",
+      "if (process.env.GIT_CONFIG_NOSYSTEM !== '1') throw new Error('system Git config is enabled')",
+      "if (process.env.GIT_TERMINAL_PROMPT !== '0') throw new Error('Git terminal prompt is enabled')",
+      "if (process.env.GIT_OPTIONAL_LOCKS !== '0') throw new Error('Git optional locks are enabled')",
       "const auth = JSON.parse(fs.readFileSync(path.join(runtimeHome, 'auth.json'), 'utf8'))",
       "if (auth.tokens.access_token !== 'fake-auth-token') throw new Error('staged auth mismatch')",
       `fs.writeFileSync(${JSON.stringify(artifactPath)}, auth.tokens.access_token)`,
@@ -1911,6 +1948,13 @@ describe('provider doctor', () => {
     expect(result).toMatchObject({
       providers: ['codex-trigger', 'codex-conversation'],
       codex: { resolvedExecutable: path.join(path.sep, 'fake', 'codex') },
+      permission: { profile: null, status: 'unknown' },
+      keychain: { platform: 'linux', status: 'not-applicable' },
+      processManagement: {
+        managedAvailable: true,
+        unmanagedAvailable: true,
+        defaultMode: 'managed',
+      },
       cleanup: { platform: 'linux', supported: true, mechanism: 'process-tree' },
     })
     expect(result.credentials).toContainEqual({ name: 'OPENAI_API_KEY', present: true })
@@ -1921,6 +1965,58 @@ describe('provider doctor', () => {
       { name: 'OPENAI_API_KEY', present: true },
     ])
     expect(JSON.stringify(result)).not.toContain(secret)
+  })
+
+  it('reports restricted permission and a blocked macOS keychain without exposing paths', async () => {
+    const { root } = await runRoot()
+    const result = await doctorEvalProviders({
+      sourceEnv: {
+        CODEX_HOME: root,
+        CODEX_PERMISSION_PROFILE: ':workspace-write',
+        PATH: path.join(path.sep, 'fake'),
+      },
+      platform: 'darwin',
+      canAccess: async (candidate) => candidate === path.join(path.sep, 'fake', 'codex'),
+      checkCleanup: async () => true,
+      readUserKeychainSearchList: async () =>
+        '"/private/tmp/accountsKeychainExport-123/eval.keychain"',
+    })
+
+    expect(result.permission).toEqual({ profile: 'workspace-write', status: 'restricted' })
+    expect(result.keychain).toEqual({ platform: 'darwin', status: 'blocked' })
+    expect(result.processManagement).toEqual({
+      managedAvailable: false,
+      unmanagedAvailable: false,
+      defaultMode: 'blocked',
+    })
+    expect(JSON.stringify(result)).not.toContain('/private/tmp')
+  })
+
+  it('reports a resolved cmux Codex shim as blocked before reading the keychain list', async () => {
+    const { root } = await runRoot()
+    const shim = '/private/tmp/cmux-cli-shims/session/codex'
+    const readUserKeychainSearchList = vi.fn(async () =>
+      '"/Users/example/Library/Keychains/login.keychain-db"')
+    const result = await doctorEvalProviders({
+      sourceEnv: {
+        CODEX_HOME: root,
+        CODEX_PERMISSION_PROFILE: ':danger-full-access',
+        PATH: path.dirname(shim),
+      },
+      platform: 'darwin',
+      canAccess: async (candidate) => candidate === shim,
+      checkCleanup: async () => true,
+      readUserKeychainSearchList,
+    })
+
+    expect(result.codex.resolvedExecutable).toBe(shim)
+    expect(result.keychain).toEqual({ platform: 'darwin', status: 'blocked' })
+    expect(result.processManagement).toEqual({
+      managedAvailable: false,
+      unmanagedAvailable: false,
+      defaultMode: 'blocked',
+    })
+    expect(readUserKeychainSearchList).not.toHaveBeenCalled()
   })
 
   it('uses the clean OpenAI auth fallback when user config is absent', async () => {

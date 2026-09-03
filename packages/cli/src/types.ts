@@ -187,6 +187,60 @@ export interface CatalogGenerationCandidateComparison {
   changedFields: Array<keyof CatalogGenerationCandidateEvidence>;
 }
 
+export type CatalogActivationMode =
+  | 'normal'
+  | 'explicitSourceChange'
+  | 'exactRepair'
+  | 'replaceDamaged';
+
+export type CatalogSourceImpactCategory =
+  | 'installation'
+  | 'config'
+  | 'lifecycle'
+  | 'marketplace';
+
+export interface CatalogSourceImpactReference {
+  category: CatalogSourceImpactCategory;
+  sourceId: string;
+  pluginId?: string;
+  platform?: PlatformName;
+  scope?: Scope;
+  projectRecord?: 'current' | 'historical' | 'unknown';
+  marketplaceName?: string;
+}
+
+export interface CatalogSourcePluginChanges {
+  added: string[];
+  removed: string[];
+  changed: string[];
+  newlyIncompatible: string[];
+  dependencyChanged: string[];
+}
+
+export interface CatalogSourceImpactError {
+  code: 'stateInventoryFailed' | 'catalogManifestUnavailable';
+  kind: string;
+  relevance?:
+    | { global: true }
+    | {
+        global: false;
+        sourceId?: string;
+        pluginName?: string;
+        platform?: PlatformName;
+        scope?: Scope;
+      };
+}
+
+export interface CatalogSourceImpact {
+  impactSchemaVersion: 1;
+  sourceId: string;
+  inventoryComplete: boolean;
+  references: CatalogSourceImpactReference[];
+  affectedReferences: CatalogSourceImpactReference[];
+  changes: CatalogSourcePluginChanges;
+  errors: CatalogSourceImpactError[];
+}
+
 export interface CatalogGenerationSyncResult {
   catalogGenerationSchemaVersion: 1;
   sourceId: CatalogSourceId;
@@ -196,6 +250,7 @@ export interface CatalogGenerationSyncResult {
   resolution: CatalogGenerationSyncEvidence;
   active?: CatalogGenerationActiveV1;
   lastSync: CatalogGenerationLastSyncV1;
+  impact?: CatalogSourceImpact;
 }
 
 export interface CatalogGenerationSetSource {
@@ -273,6 +328,14 @@ export interface ConfigFieldEntry {
   sourceLayer: 'default' | 'user' | 'project' | null;
   storedValue?: unknown;
   storedSourceLayer?: 'user' | 'project';
+  invalidOverride?: {
+    sourceLayer: 'default' | 'user' | 'project';
+    issues: unknown[];
+  };
+  fallback?: {
+    effectiveValue: unknown;
+    sourceLayer: 'default' | 'user' | 'project';
+  };
   value: unknown | null;
   source: 'default' | 'user' | 'project' | 'missing';
   matchedPreset: string | null;
@@ -288,6 +351,19 @@ export interface ConfigReceiptFieldEntry {
   action: 'set' | 'unset' | 'reset';
   scope: Scope;
   valueState?: ConfigValueState;
+}
+
+export const CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION = 6;
+
+export type ConfigMutationCommand = 'config:set' | 'config:unset' | 'config:reset';
+
+export interface ConfigMutationReceiptBase<
+  Command extends ConfigMutationCommand = ConfigMutationCommand,
+> {
+  receiptSchemaVersion: typeof CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION;
+  command: Command;
+  ok: boolean;
+  overallState: RebuildReceiptOverallState;
 }
 
 export interface ConfigSchemaEvidence {

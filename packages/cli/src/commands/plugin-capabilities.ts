@@ -87,10 +87,6 @@ const adapterFacts: Readonly<Partial<Record<
   },
   config: {
     'config.presentation': { conflicts: 'Schema mutation and sensitive or path values in presets.' },
-    'config.fields.<key>.writableLayers': {
-      requires: 'The field can be set or unset only in the declared user or project layers.',
-      conflicts: 'Nested object properties declaring their own writableLayers.',
-    },
   },
   'post-apply': {
     'scripts.postApply': { requires: 'A Node entry inside the plugin root.' },
@@ -106,9 +102,6 @@ const adapterFacts: Readonly<Partial<Record<
       profiles: 'CODEX dynamic Skill',
       requires: 'codex.skill target with one supported delivery shape.',
       conflicts: 'Any non-codex.skill target.',
-    },
-    'artifacts.targets[].refreshKeys': {
-      requires: 'Known config keys; codex-native delivery requires user-only writableLayers.',
     },
     'artifacts.targets[].runtimeImports': {
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',

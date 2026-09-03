@@ -100,7 +100,6 @@ function configureDemoManifest(manifest: PluginMeta['manifest']): void {
     fields: {
       mode: {
         type: 'string',
-        writableLayers: ['user', 'project'],
         choices: {
           allowCustom: false,
           presets: [
@@ -217,7 +216,11 @@ describe('public AW_HOME mutation command lock', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    })).resolves.toMatchObject({
+      ok: true,
+      changed: true,
+      references: [{ category: 'config', sourceId: 'team', pluginId: 'team/demo' }],
+    });
     expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).not.toBe(oldIdentity);
     await expect(fs.readJson(path.join(
       isolation.env.AW_HOME!,

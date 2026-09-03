@@ -37,13 +37,29 @@ export interface EvalResultSummary {
   error: number
 }
 
+export type EvalResultProcessManagement = {
+  mode: 'managed'
+  inspectionAvailable: true
+  userAcknowledged: false
+  descendantCleanupGuaranteed: false
+  limitation: string
+} | {
+  mode: 'unmanaged-confirmed'
+  inspectionAvailable: false
+  userAcknowledged: true
+  descendantCleanupGuaranteed: false
+  limitation: string
+  diagnostic?: string
+}
+
 export interface EvalResult {
-  version: 1
+  version: 2
   specDigest: Digest
   auditDigest: Digest
   targetDigest: Digest
   caseDigest: Digest
   provider: EvalProvider
+  processManagement: EvalResultProcessManagement
   startedAt: string
   finishedAt: string
   runs: EvalResultRun[]

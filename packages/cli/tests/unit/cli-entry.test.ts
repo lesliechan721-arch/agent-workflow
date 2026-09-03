@@ -272,24 +272,37 @@ describe('CLI entry v5', () => {
   });
 
   it.each([
-    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install', jsonReceipt: true },
-    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set', jsonReceipt: false },
-  ])('does not start a TUI for incomplete $command', async ({ argv, usage, jsonReceipt }) => {
+    {
+      command: 'install',
+      argv: ['install', '--json'],
+      usage: 'Usage: aw install',
+      receiptCommand: 'install',
+      stderr: '',
+    },
+    {
+      command: 'config:set',
+      argv: ['config', 'set', '--json'],
+      usage: 'Usage: aw config set',
+      receiptCommand: 'config:set',
+      stderr: 'usage',
+    },
+  ])('does not start a TUI for incomplete $command', async ({
+    argv,
+    usage,
+    receiptCommand,
+    stderr,
+  }) => {
     const output = capture();
     expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
-    if (jsonReceipt) {
-      expect(JSON.parse(output.stdout())).toMatchObject({
-        ok: false,
-        command: 'install',
-        receiptSchemaVersion: 6,
-        overallState: 'failed',
-        errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
-      });
-      expect(output.stderr()).toBe('');
-    } else {
-      expect(output.stdout()).toBe('');
-      expect(output.stderr()).toContain(usage);
-    }
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      ok: false,
+      command: receiptCommand,
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
+    });
+    if (stderr === 'usage') expect(output.stderr()).toContain(usage);
+    else expect(output.stderr()).toBe(stderr);
   });
 
   it.each([

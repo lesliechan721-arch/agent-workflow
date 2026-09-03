@@ -57,7 +57,6 @@
     "fields": {
       "quickProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "Quick 探索配置",
         "description": "quick 探索 role 使用的模型与推理强度。",
         "default": {
@@ -117,7 +116,6 @@
       },
       "standardProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "Standard 探索配置",
         "description": "standard 探索 role 使用的模型与推理强度。",
         "default": {
@@ -177,7 +175,6 @@
       },
       "deepProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "Deep 探索配置",
         "description": "deep 探索 role 使用的模型与推理强度。",
         "default": {
@@ -237,7 +234,6 @@
       },
       "simpleTaskProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "简单任务配置",
         "description": "简单任务 agent type 使用的模型与推理强度，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。",
         "default": {
@@ -292,7 +288,6 @@
       },
       "generalTaskProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "通用任务配置",
         "description": "通用任务 agent type 使用的模型与推理强度，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。",
         "default": {
@@ -347,7 +342,6 @@
       },
       "complexTaskProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "复杂任务配置",
         "description": "复杂任务 agent type 使用的模型与推理强度，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。",
         "default": {
@@ -402,7 +396,6 @@
       },
       "advancedTaskProfile": {
         "type": "object",
-        "writableLayers": ["user", "project"],
         "title": "高难任务配置",
         "description": "高难任务 agent type 使用的模型与推理强度，适用于系统级、高歧义、高风险或要求极高完整性的任务。",
         "default": {
@@ -457,7 +450,6 @@
       },
       "exploreMinimumInitialWaitMinutes": {
         "type": "number",
-        "writableLayers": ["user"],
         "title": "探索首次响应式等待窗口（分钟）",
         "default": 10,
         "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。",
@@ -469,7 +461,6 @@
       },
       "subagentMinimumInitialWaitMinutes": {
         "type": "number",
-        "writableLayers": ["user"],
         "title": "子代理首次响应式等待窗口（分钟）",
         "default": 10,
         "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。",

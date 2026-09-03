@@ -8,26 +8,32 @@ export type CatalogGenerationErrorCode =
   | 'catalogGenerationSourceMissing'
   | 'catalogGenerationIdentityMismatch'
   | 'catalogGenerationReviewStale'
-  | 'catalogGenerationRepairTargetChanged'
+  | 'catalogReplaceDamagedRequired'
   | 'catalogGenerationActiveComparisonUnavailable'
   | 'catalogLogicalIdentityChanged'
+  | 'catalogVersionConflict'
+  | 'catalogRollbackDetected'
+  | 'catalogImpactConfirmationRequired'
   | 'catalogGenerationRefreshFailed'
   | 'catalogGenerationPublishFailed';
 
 export class CatalogGenerationError extends Error {
   readonly code: CatalogGenerationErrorCode;
   readonly sourceId?: string;
+  readonly impact?: CatalogSourceImpact;
 
   constructor(options: {
     code: CatalogGenerationErrorCode;
     message: string;
     sourceId?: string;
     cause?: unknown;
+    impact?: CatalogSourceImpact;
   }) {
     super(options.message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'CatalogGenerationError';
     this.code = options.code;
     this.sourceId = options.sourceId;
+    this.impact = options.impact;
   }
 }
 
@@ -50,3 +56,4 @@ export function isOfflineCleanupCatalogGenerationError(error: unknown): boolean 
   return error instanceof CatalogGenerationError
     && OFFLINE_CLEANUP_ERROR_CODES.has(error.code);
 }
+import type { CatalogSourceImpact } from '../types.js';

@@ -126,9 +126,9 @@
           {
             "path": "prototypes/approval-layout/prototype.json",
             "exists": true,
-            "contains": [
-              "\"revision\": 3"
-            ]
+            "json": {
+              "revision": 3
+            }
           },
           {
             "path": "prototypes/approval-layout/artifact/index.html",

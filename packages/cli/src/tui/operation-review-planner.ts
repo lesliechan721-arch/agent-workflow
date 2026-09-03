@@ -87,6 +87,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     return { title, description, primaryLabel: title, destructive };
   }
   if (intent.kind === 'configSave') {
+    if (intent.retryApply) {
+      return {
+        title: '重试应用插件设置',
+        description: '重新读取当前设置和安装证据；不会恢复或重写历史值。',
+        primaryLabel: '重试应用',
+        destructive: false,
+      };
+    }
     return {
       title: intent.apply ? '保存并应用插件设置' : '保存插件设置',
       description: intent.apply
@@ -128,7 +136,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     if (intent.action === 'update' && evidence?.catalogGeneration?.exactRepair) {
       return {
         title: '验证并精确修复 Catalog',
-        description: '候选与当前 Active store key 相同。精确替换损坏条目，并把 Active 来源证据对齐当前配置。',
+        description: '候选与当前 Active store key 相同。精确替换损坏条目，并保留 Active 身份。',
         primaryLabel: '验证并精确修复',
         destructive: false,
       };
@@ -137,6 +145,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
       update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
       repair: ['重新下载并修复 Catalog', '只修复这个来源的 Active 条目，不删除其他 digest。', '重新下载并修复'],
+      replaceDamaged: ['替换损坏的 Active Catalog', '使用当前候选替换无法精确修复的 Active。失败时保留旧 Active。', '确认并替换'],
       recoverState: ['恢复 Catalog 状态并启用', '重建无效 generation state，并只激活已确认的目标来源。来源配置和 Catalog store 保持不变。', '恢复状态并启用'],
     } as const;
     const [title, description, primaryLabel] = labels[intent.action];
@@ -369,6 +378,22 @@ function reviewChanges(
       { kind: 'keep', title: '现有安装和设置不会迁移' },
     );
     if (intent.action === 'remove') changes.push({ kind: 'keep', title: '保留其他来源' });
+    const impact = evidence?.sourceWrite?.impact;
+    if (impact) {
+      for (const category of ['installation', 'config', 'lifecycle', 'marketplace'] as const) {
+        const count = impact.affectedReferences.filter((reference) => reference.category === category).length;
+        if (count > 0) changes.push({
+          kind: 'warning',
+          title: `${category === 'installation' ? '安装' : category === 'config' ? '设置' : category === 'lifecycle' ? '生命周期意图' : 'Marketplace'}引用受影响`,
+          description: `${count} 项`,
+        });
+      }
+      if (!impact.inventoryComplete) changes.push({
+        kind: 'warning',
+        title: '来源影响未知',
+        description: '部分状态无法读取；不能把影响视为零。',
+      });
+    }
     return changes;
   }
   if (intent.kind === 'catalogGeneration') {
@@ -393,7 +418,12 @@ function reviewChanges(
       ...(generation.exactRepair ? [{
         kind: 'change' as const,
         title: '精确替换损坏的 Active 条目',
-        description: 'logical identity 和 snapshot digest 保持不变；来源 fingerprint 与 provenance 对齐当前配置。',
+        description: 'logical identity、snapshot digest、manifest digest 和 commit 保持不变。',
+      }] : []),
+      ...(intent.action === 'replaceDamaged' ? [{
+        kind: 'warning' as const,
+        title: '使用当前候选替换损坏的 Active',
+        description: '旧版本无法安全比较；确认后只切换到本次绑定的当前候选。',
       }] : []),
       ...(generation.sourceMutation ? [{
         kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
@@ -420,6 +450,16 @@ function reviewChanges(
         title: '显式来源切换将改变 Catalog logical identity',
         description: '确认前请核对新来源身份和候选摘要。',
       }] : []),
+      ...((generation.impact?.affectedReferences ?? []).length > 0 ? [{
+        kind: 'warning' as const,
+        title: '现有引用受候选变化影响',
+        description: `${generation.impact!.affectedReferences.length} 项；已安装插件不会自动修改。`,
+      }] : []),
+      ...(generation.impact && !generation.impact.inventoryComplete ? [{
+        kind: 'warning' as const,
+        title: '候选影响未知',
+        description: '部分状态或旧 Manifest 无法读取；不能把影响视为零。',
+      }] : []),
       { kind: 'keep', title: '不会升级已安装 Plugin' },
       { kind: 'keep', title: intent.action === 'recoverState'
         ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
@@ -437,6 +477,17 @@ function reviewChanges(
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
   const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
+  if (intent.retryApply) {
+    return [
+      ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
+        kind: 'change',
+        group: 'configImpact',
+        title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+      })) ?? []),
+      { kind: 'keep', group: 'preserved', title: `${layerLabel}中的当前值保持不变` },
+      { kind: 'keep', group: 'preserved', title: '不会恢复历史设置值' },
+    ];
+  }
   if (intent.changes) {
     const hasAffectedCodexTarget = evidence?.config?.affectedTargets.some(
       (target) => target.platform === 'codex',
@@ -579,7 +630,12 @@ export function buildOperationReviewProjection(options: {
   const { intent, evidence } = options;
   const labels = operationLabels(intent, evidence);
   const requiresConfirmation = (evidence.codexReconcilePlans ?? []).some((plan) =>
-    plan.review.requiresConfirmation);
+    plan.review.requiresConfirmation)
+    || Boolean(evidence.sourceWrite
+      && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
+    || Boolean(evidence.catalogGeneration?.impact
+      && (!evidence.catalogGeneration.impact.inventoryComplete
+        || evidence.catalogGeneration.impact.affectedReferences.length > 0));
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
     plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
@@ -605,9 +661,18 @@ export function buildOperationReviewProjection(options: {
     ...(labels.destructive ? { destructive: true as const } : {}),
     requiresConfirmation,
     sharedImpact: {
-      pluginIds: [...new Set((evidence.codexReconcilePlans ?? []).flatMap((plan) =>
-        plan.review.sharedImpact.pluginIds))],
-      ...(warning ? { warning } : {}),
+      pluginIds: [...new Set([
+        ...(evidence.codexReconcilePlans ?? []).flatMap((plan) =>
+          plan.review.sharedImpact.pluginIds),
+        ...(evidence.sourceWrite?.impact?.affectedReferences ?? []).flatMap((reference) =>
+          reference.pluginId ? [reference.pluginId] : []),
+        ...(evidence.catalogGeneration?.impact?.affectedReferences ?? []).flatMap((reference) =>
+          reference.pluginId ? [reference.pluginId] : []),
+      ])],
+      ...(warning ? { warning }
+        : requiresConfirmation && (evidence.sourceWrite || evidence.catalogGeneration?.impact)
+          ? { warning: '确认来源影响后才会继续。未知影响不会按零处理。' }
+          : {}),
     },
   };
 }

@@ -7,7 +7,10 @@ import {
 export async function syncCatalogSourceCommand(options: {
   sourceId: string;
   cliVersion: string;
+  cwd?: string;
   check?: boolean;
+  impactConfirmed?: boolean;
+  replaceDamaged?: boolean;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;

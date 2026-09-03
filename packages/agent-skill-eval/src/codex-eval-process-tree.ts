@@ -855,7 +855,7 @@ export function createPosixProcessTreeMonitor(
             const taggedTable = await readTaggedPosixProcessTableWithTimeout(
               dependencies.treeId,
               readTaggedProcessTable,
-              Math.min(PROCESS_TERMINATION_GRACE_MS, remainingMs),
+              remainingMs,
             );
             const tagContainsOnlyFrozenKnownIdentities = [...taggedTable].every(
               ([pid, entry]) => {

@@ -34,7 +34,7 @@
         "representative"
       ],
       "input": {
-        "query": "使用 aw-skill-eval 执行这份 EvalSpec v1，并保存 EvalResult v1。",
+        "query": "使用 aw-skill-eval 执行这份 EvalSpec v1，并保存 EvalResult v2。",
         "expectedLoad": true
       }
     },

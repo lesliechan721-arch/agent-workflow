@@ -334,7 +334,7 @@
         "minLength": { "type": "integer", "minimum": 0 },
         "maxLength": { "type": "integer", "minimum": 0 },
         "pattern": { "type": "string" },
-        "format": { "enum": ["identifier", "slug", "semver", "url", "hostname", "email", "path", "file", "directory"] }
+        "format": { "enum": ["identifier", "slug", "semver", "url", "hostname", "email"] }
       }
     },
     "configNumberValidation": {
@@ -368,12 +368,19 @@
         "description": { "type": "string", "minLength": 1 }, "value": { "type": "number" }, "recommended": { "const": true }
       }
     },
+    "configBooleanPreset": {
+      "type": "object", "additionalProperties": false, "required": ["id", "title", "value"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 }, "value": { "type": "boolean" }, "recommended": { "const": true }
+      }
+    },
     "configObjectPreset": {
       "type": "object", "additionalProperties": false, "required": ["id", "title", "value"],
       "properties": {
         "id": { "type": "string", "minLength": 1 }, "title": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "minLength": 1 },
-        "value": { "type": "object", "maxProperties": 32, "additionalProperties": { "$ref": "#/$defs/configScalar" } },
+        "value": { "type": "object", "maxProperties": 32, "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configScalar" } },
         "recommended": { "const": true }
       }
     },
@@ -393,6 +400,14 @@
         "presets": { "type": "array", "items": { "$ref": "#/$defs/configNumberPreset" } }
       }
     },
+    "configBooleanChoices": {
+      "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
+      "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
+      "properties": {
+        "allowCustom": { "type": "boolean" },
+        "presets": { "type": "array", "items": { "$ref": "#/$defs/configBooleanPreset" } }
+      }
+    },
     "configObjectChoices": {
       "type": "object", "additionalProperties": false, "required": ["allowCustom", "presets"],
       "not": { "properties": { "allowCustom": { "const": false }, "presets": { "type": "array", "maxItems": 0 } }, "required": ["allowCustom", "presets"] },
@@ -404,34 +419,28 @@
     "configScalar": {
       "anyOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }]
     },
-    "configWritableLayers": {
-      "type": "array", "minItems": 1, "uniqueItems": true,
-      "items": { "enum": ["user", "project"] }
-    },
     "configStringField": {
-      "type": "object", "additionalProperties": false, "required": ["type", "writableLayers"],
+      "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": { "const": "string" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "writableLayers": { "$ref": "#/$defs/configWritableLayers" },
         "default": { "type": "string" }, "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
         "choices": { "$ref": "#/$defs/configStringChoices" }, "validation": { "$ref": "#/$defs/configStringValidation" }
       }
     },
     "configNumberField": {
-      "type": "object", "additionalProperties": false, "required": ["type", "writableLayers"],
+      "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": { "const": "number" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "writableLayers": { "$ref": "#/$defs/configWritableLayers" },
         "default": { "type": "number" }, "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
         "choices": { "$ref": "#/$defs/configNumberChoices" }, "validation": { "$ref": "#/$defs/configNumberValidation" }
       }
     },
     "configBooleanField": {
-      "type": "object", "additionalProperties": false, "required": ["type", "writableLayers"],
+      "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "writableLayers": { "$ref": "#/$defs/configWritableLayers" },
-        "default": { "type": "boolean" }, "required": { "type": "boolean" }, "sensitive": { "type": "boolean" }
+        "default": { "type": "boolean" }, "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
+        "choices": { "$ref": "#/$defs/configBooleanChoices" }
       }
     },
     "configScalarField": {
@@ -462,7 +471,8 @@
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" }
+        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
+        "choices": { "$ref": "#/$defs/configBooleanChoices" }
       }
     },
     "configScalarDynamicField": {
@@ -490,31 +500,37 @@
       "type": "object", "additionalProperties": false, "required": ["type"],
       "properties": {
         "type": { "const": "boolean" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "sensitive": { "type": "boolean" }
+        "sensitive": { "type": "boolean" }, "choices": { "$ref": "#/$defs/configBooleanChoices" }
+      }
+    },
+    "configFixedObjectField": {
+      "type": "object", "additionalProperties": false, "required": ["type", "properties"],
+      "properties": {
+        "type": { "const": "object" }, "title": { "type": "string" }, "description": { "type": "string" },
+        "default": { "type": "object", "maxProperties": 32, "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configScalar" } },
+        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
+        "choices": { "$ref": "#/$defs/configObjectChoices" },
+        "properties": { "type": "object", "maxProperties": 32, "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configScalarChildField" } },
+        "additionalProperties": { "const": false },
+        "validation": { "$ref": "#/$defs/configObjectValidation" }
+      }
+    },
+    "configKeyValueObjectField": {
+      "type": "object", "additionalProperties": false, "required": ["type", "additionalProperties"],
+      "properties": {
+        "type": { "const": "object" }, "title": { "type": "string" }, "description": { "type": "string" },
+        "default": { "type": "object", "maxProperties": 32, "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configScalar" } },
+        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
+        "choices": { "$ref": "#/$defs/configObjectChoices" },
+        "additionalProperties": { "$ref": "#/$defs/configScalarDynamicField" },
+        "validation": { "$ref": "#/$defs/configObjectValidation" }
       }
     },
     "configObjectField": {
-      "type": "object", "additionalProperties": false, "required": ["type", "writableLayers"],
-      "if": {
-        "not": {
-          "properties": { "properties": {} },
-          "required": ["properties"]
-        }
-      },
-      "then": {
-        "properties": { "additionalProperties": {} },
-        "required": ["additionalProperties"]
-      },
-      "properties": {
-        "type": { "const": "object" }, "title": { "type": "string" }, "description": { "type": "string" },
-        "writableLayers": { "$ref": "#/$defs/configWritableLayers" },
-        "default": { "type": "object", "maxProperties": 32, "additionalProperties": { "$ref": "#/$defs/configScalar" } },
-        "required": { "type": "boolean" }, "sensitive": { "type": "boolean" },
-        "choices": { "$ref": "#/$defs/configObjectChoices" },
-        "properties": { "type": "object", "maxProperties": 32, "additionalProperties": { "$ref": "#/$defs/configScalarChildField" } },
-        "additionalProperties": { "anyOf": [{ "const": false }, { "$ref": "#/$defs/configScalarDynamicField" }] },
-        "validation": { "$ref": "#/$defs/configObjectValidation" }
-      }
+      "oneOf": [
+        { "$ref": "#/$defs/configFixedObjectField" },
+        { "$ref": "#/$defs/configKeyValueObjectField" }
+      ]
     },
     "configField": {
       "oneOf": [
@@ -525,7 +541,7 @@
     "config": {
       "type": "object", "additionalProperties": false, "required": ["fields"],
       "properties": {
-        "fields": { "type": "object", "additionalProperties": { "$ref": "#/$defs/configField" } },
+        "fields": { "type": "object", "propertyNames": { "not": { "enum": ["__proto__", "constructor", "prototype"] } }, "additionalProperties": { "$ref": "#/$defs/configField" } },
         "presentation": {
           "type": "object", "additionalProperties": false,
           "properties": {

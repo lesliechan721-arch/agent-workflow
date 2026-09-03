@@ -34,14 +34,11 @@ describe('generated aw-config helper', () => {
       fields: {
         mode: {
           type: 'string',
-          writableLayers: ['user', 'project'],
           validation: { minLength: 2 },
         },
-        certificate: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'file' } },
-        workspace: { type: 'string', writableLayers: ['user', 'project'], validation: { format: 'directory' } },
+        endpoint: { type: 'string', validation: { format: 'url' } },
         credentials: {
           type: 'object',
-          writableLayers: ['user', 'project'],
           properties: {
             token: { type: 'string', required: true, sensitive: true },
             retries: { type: 'number', validation: { integer: true, minimum: 0 } },
@@ -50,16 +47,10 @@ describe('generated aw-config helper', () => {
         },
         locations: {
           type: 'object',
-          writableLayers: ['user', 'project'],
-          properties: {
-            certificate: { type: 'string', validation: { format: 'file' } },
-          },
-          additionalProperties: { type: 'string', validation: { format: 'directory' } },
+          additionalProperties: { type: 'string', validation: { minLength: 2 } },
         },
         labels: {
           type: 'object',
-          writableLayers: ['user', 'project'],
-          properties: { 'fixed-key': { type: 'string' } },
           additionalProperties: { type: 'string' },
           validation: { key: { format: 'identifier' } },
         },
@@ -68,22 +59,72 @@ describe('generated aw-config helper', () => {
     const fixtures = [
       ['mode', 'x'],
       ['mode', 'safe'],
-      ['certificate', './not-yet-created.pem'],
-      ['certificate', ''],
-      ['workspace', './not-yet-created-directory'],
-      ['workspace', ''],
+      ['endpoint', 'https://example.test'],
+      ['endpoint', 'example.test'],
       ['credentials', { token: 'secret', retries: 2 }],
       ['credentials', { retries: -1 }],
       ['credentials', { token: 'secret', nested: {} }],
-      ['locations', { certificate: './not-yet-created.pem', cache: './not-yet-created-directory' }],
+      ['locations', { certificate: 'pem', cache: 'directory' }],
       ['locations', { certificate: '', cache: '' }],
-      ['labels', { 'fixed-key': 'fixed', dynamic_key: 'dynamic' }],
-      ['labels', { 'fixed-key': 'fixed', 'bad key': 'dynamic' }],
+      ['labels', { fixed_key: 'fixed', dynamic_key: 'dynamic' }],
+      ['labels', { fixed_key: 'fixed', 'bad key': 'dynamic' }],
+      ['labels', Object.fromEntries([['__proto__', 'dangerous']])],
     ] as const;
 
     for (const [key, value] of fixtures) {
       expect(helper.validatePluginConfigValue(fields[key]!, value, key))
         .toEqual(validatePluginConfigValue(fields[key]!, value, key));
+    }
+  });
+
+  it.each(['__proto__', 'constructor', 'prototype'])(
+    'fails closed for the top-level dangerous key %s',
+    async (dangerousKey) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-dangerous-key-'));
+      try {
+        const contextPath = path.join(root, 'context.json');
+        const helperPath = path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs');
+        await fs.writeFile(contextPath, `${JSON.stringify({
+          plugin: { name: 'fixture-plugin' },
+          config: {
+            schema: { token: { type: 'string' } },
+            values: Object.fromEntries([[dangerousKey, 'dangerous']]),
+          },
+        }, null, 2)}\n`, 'utf8');
+
+        await expect(execFileAsync(process.execPath, [helperPath, 'json'], {
+          cwd: root,
+          env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, NODE_PATH: '' },
+        })).rejects.toMatchObject({
+          stderr: `[aw-config] dangerousKey: Config "${dangerousKey}" is not allowed.\n`,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('continues to filter an ordinary unknown top-level key', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-unknown-key-'));
+    try {
+      const contextPath = path.join(root, 'context.json');
+      const helperPath = path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs');
+      await fs.writeFile(contextPath, `${JSON.stringify({
+        plugin: { name: 'fixture-plugin' },
+        config: {
+          schema: { token: { type: 'string' } },
+          values: { token: 'kept', futureKey: 'ignored' },
+        },
+      }, null, 2)}\n`, 'utf8');
+
+      const result = await execFileAsync(process.execPath, [helperPath, 'json'], {
+        cwd: root,
+        env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, NODE_PATH: '' },
+      });
+      expect(JSON.parse(result.stdout).values).toEqual({ token: 'kept' });
+      expect(result.stderr).toBe('');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 
@@ -102,7 +143,6 @@ describe('generated aw-config helper', () => {
           schema: {
             credentials: {
               type: 'object',
-              writableLayers: ['user', 'project'],
               properties: {
                 token: { type: 'string', required: true, sensitive: true },
                 endpoint: { type: 'string' },

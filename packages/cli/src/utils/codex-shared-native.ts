@@ -2,12 +2,12 @@ import path from 'node:path';
 
 import type { CodexMarketplaceSnapshot } from './codex-config.js';
 import { tryParseStrictSemVer } from './manifest.js';
-import type { CodexPluginListEntry } from './native-cli.js';
 import {
   codexNativeRenderProjectionsEqual,
   type CodexNativeRenderProjection,
   type CodexNativeRenderReceipt,
 } from './codex-native-render-receipt.js';
+import type { CodexNativePluginObservation } from './codex-native-observation.js';
 
 export type CodexSharedNativeDiagnostic =
   | 'staleCacheObserved'
@@ -30,9 +30,13 @@ export type CodexSharedNativeDiagnostic =
   | 'projectionPayloadDigestMismatch'
   | 'projectionRenderDrift';
 
-export type CodexSharedNativeState = 'missing' | 'usable' | 'replaceable' | 'blocked';
+export type CodexSharedNativeState = 'missing' | 'usable' | 'replaceable' | 'blocked' | 'unobserved';
 
 export type CodexSharedNativeInspection =
+  | {
+      state: 'unobserved';
+      staleCacheObserved?: true;
+    }
   | {
       state: 'missing';
       staleCacheObserved?: true;
@@ -75,7 +79,7 @@ export interface CodexSharedNativeEvidence {
   expectedPayloadDigest?: string;
   marketplaceRegistration?: CodexMarketplaceSnapshot;
   marketplacePathSafe: boolean;
-  pluginListEntries: CodexPluginListEntry[] | null;
+  observation: CodexNativePluginObservation;
   manifest: CodexSharedNativeManifestEvidence;
   expectedProjectionRequired?: boolean;
   expectedProjectionIdentity?: Pick<CodexNativeRenderProjection, 'logicalPluginId' | 'strategy'>;
@@ -126,26 +130,30 @@ export function inspectCodexSharedNative(
     throw new Error('Invalid expected Codex shared native payload digest.');
   }
 
-  if (evidence.pluginListEntries === null) return blocked('unreadable', 'pluginListUnavailable');
-
-  const listMatches = evidence.pluginListEntries.filter((entry) =>
-    entry.pluginId === evidence.pluginId);
-  if (listMatches.length > 1) return blocked('unreadable', 'pluginListDuplicate');
-  const listEntry = listMatches[0];
-
-  if (!listEntry) {
+  if (!evidence.marketplacePathSafe) return blocked('foreign', 'marketplacePathUnsafe');
+  if (evidence.observation.state === 'unobserved') {
+    return evidence.manifest.state === 'absent'
+      ? { state: 'unobserved' }
+      : { state: 'unobserved', staleCacheObserved: true };
+  }
+  if (evidence.observation.state === 'failed') {
+    return blocked(
+      'unreadable',
+      evidence.observation.reason === 'duplicate' ? 'pluginListDuplicate' : 'pluginListUnavailable',
+    );
+  }
+  if (evidence.observation.value === 'absent') {
     return evidence.manifest.state === 'absent'
       ? { state: 'missing' }
       : { state: 'missing', staleCacheObserved: true };
   }
+  const listEntry = evidence.observation.entry;
   if (evidence.marketplaceRegistration && !isCanonicalCodexMarketplaceRegistration(
     evidence.marketplaceRegistration,
     evidence.canonicalMarketplaceRoot,
   )) {
     return blocked('foreign', 'marketplaceRegistrationForeign');
   }
-  if (!evidence.marketplacePathSafe) return blocked('foreign', 'marketplacePathUnsafe');
-
   if (evidence.manifest.state === 'unreadable') return blocked('unreadable', 'manifestUnreadable');
   if (evidence.manifest.state === 'absent') {
     return damaged('manifestMissing');
