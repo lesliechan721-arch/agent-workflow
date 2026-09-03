@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/manifest';
+
 import type { PlatformName, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
 
@@ -113,11 +115,9 @@ export function createOperationPlanConfigDigest(options: {
   scope: Scope;
   effectiveValues: Readonly<Record<string, PluginConfigValue>>;
 }): OperationPlanEvidence['configDigests'][number] {
-  const values = Object.entries(options.effectiveValues)
-    .sort(([left], [right]) => compareText(left, right));
   const digest = crypto
     .createHash('sha256')
-    .update(JSON.stringify(values))
+    .update(JSON.stringify(canonicalizePluginConfigValues(options.effectiveValues)))
     .digest('hex');
   return {
     pluginId: options.pluginId,

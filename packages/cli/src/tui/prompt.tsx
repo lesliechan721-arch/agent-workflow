@@ -266,13 +266,14 @@ export function createInkPrompt(options: InkPromptOptions = {}): CliPrompt {
       }
       const label = definition.label ?? key;
       if (definition.enum && definition.enum.length > 0) {
-        updates[key] = unwrap(await select({
+        const selected = unwrap(await select({
           message: label,
           choices: definition.enum.map((value) => ({ value: String(value), label: String(value) })),
           defaultValue: configOptions.currentValues?.[key] === undefined
             ? undefined
             : String(configOptions.currentValues[key]),
         }));
+        updates[key] = definition.enum.find((value) => String(value) === selected)!;
         continue;
       }
       if (definition.type === 'boolean') {

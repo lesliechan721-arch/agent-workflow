@@ -79,17 +79,17 @@ describe('operation plan', () => {
     const reviewedConfig = createOperationPlanConfigDigest({
       pluginId: 'official/demo',
       scope: 'project',
-      effectiveValues: { token: 'private-a', mode: 'strict' },
+      effectiveValues: { token: 'private-a', mode: 'strict', labels: { region: 'west', tier: 2 } },
     });
     const reorderedConfig = createOperationPlanConfigDigest({
       pluginId: 'official/demo',
       scope: 'project',
-      effectiveValues: { mode: 'strict', token: 'private-a' },
+      effectiveValues: { labels: { tier: 2, region: 'west' }, mode: 'strict', token: 'private-a' },
     });
     const changedConfig = createOperationPlanConfigDigest({
       pluginId: 'official/demo',
       scope: 'project',
-      effectiveValues: { mode: 'strict', token: 'private-b' },
+      effectiveValues: { mode: 'strict', token: 'private-b', labels: { region: 'west', tier: 2 } },
     });
     const reviewed = createOperationPlan({
       ...input(),

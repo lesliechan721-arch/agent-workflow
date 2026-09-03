@@ -780,7 +780,6 @@ describe('manifest utils', () => {
       },
       rules: {
         type: 'string',
-        validation: { format: 'path' },
       },
     };
 

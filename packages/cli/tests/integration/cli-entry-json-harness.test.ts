@@ -448,7 +448,176 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(installWriteCommand).toHaveBeenCalledOnce();
   });
 
-  it('emits a fail-closed config mutation receipt v5', async () => {
+  it.each([
+    ['set', ['config', 'set', '--json']],
+    ['unset', ['config', 'unset', '-j']],
+    ['reset', ['config', 'reset', '--json']],
+  ] as const)('emits one Config Mutation Receipt v6 when config %s arguments are missing', async (
+    command,
+    argv,
+  ) => {
+    const result = await runCliEntry([...argv]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      command: `config:${command}`,
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
+    });
+    expect(result.stderr.match(/Usage:/gu)).toHaveLength(1);
+  });
+
+  it.each([
+    ['set', '-jv', []],
+    ['unset', '-vj', []],
+    ['reset', '-jD', []],
+    ['set', '-js', ['project']],
+  ] as const)('recognizes JSON intent in the config %s %s short option cluster', async (
+    command,
+    cluster,
+    clusterValue,
+  ) => {
+    const result = await runCliEntry([
+      'config', command, cluster, ...clusterValue, '--unknown=private-value',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      command: `config:${command}`,
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{
+        code: 'invalidArguments',
+        message: 'error: invalid config mutation arguments',
+      }],
+    });
+    expect(result.stderr).toBe('error: invalid config mutation arguments\n');
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain('private-value');
+  });
+
+  it.each([
+    ['set', [
+      'config', 'set', 'official/demo', 'mode',
+      '--value-json', '"safe"', '--json', '--unknown=private-value',
+    ]],
+    ['unset', ['config', 'unset', 'official/demo', 'mode', '-j', '--unknown=private-value']],
+    ['reset', ['config', 'reset', 'official/demo', '--yes', '--json', '--unknown=private-value']],
+  ] as const)('emits one safe Config Mutation Receipt v6 for config %s unknown options', async (
+    command,
+    argv,
+  ) => {
+    const result = await runCliEntry([...argv]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      command: `config:${command}`,
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{
+        code: 'invalidArguments',
+        message: 'error: invalid config mutation arguments',
+      }],
+    });
+    expect(result.stderr).toBe('error: invalid config mutation arguments\n');
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain('private-value');
+  });
+
+  it('emits one Config Mutation Receipt v6 for an action failure', async () => {
+    const result = await runCliEntry([
+      'config', 'set', 'official/demo', 'mode', '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      command: 'config:set',
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{
+        code: 'configMutationFailed',
+        message: 'Use exactly one of --value-json <json> or --preset <id>.',
+      }],
+    });
+    expect(result.stderr).toBe('Use exactly one of --value-json <json> or --preset <id>.\n');
+  });
+
+  it.each([
+    ['list', '-jv'],
+    ['get', '-vj'],
+  ] as const)(
+    'does not misclassify config %s parsing failures as mutation receipts',
+    async (command, jsonOptions) => {
+      const result = await runCliEntry([
+        'config', command, 'official/demo', jsonOptions, '--unknown',
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain("error: unknown option '--unknown'");
+    },
+  );
+
+  it('does not expose a secret value-json token in a config set usage failure', async () => {
+    const sensitivePath = path.join(os.tmpdir(), 'private', 'config-secret.json');
+    const secret = 'config-secret-value';
+    const valueJson = JSON.stringify({ path: sensitivePath, token: secret });
+    const result = await runCliEntry([
+      'config', 'set', 'official/demo', '--value-json', valueJson, '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.parseJsonStdout()).toMatchObject({
+      ok: false,
+      command: 'config:set',
+      receiptSchemaVersion: 6,
+      overallState: 'failed',
+      errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
+    });
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(secret);
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(valueJson);
+    expect(`${result.stdout}\n${result.stderr}`).not.toContain(sensitivePath);
+  });
+
+  it.each(['--json', '-j'] as const)(
+    'does not treat a %s value-json argument as JSON intent',
+    async (valueJson) => {
+      const result = await runCliEntry([
+        'config', 'set', 'official/demo', 'mode',
+        '--value-json', valueJson, '--unknown=private-value',
+      ]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain("error: unknown option '--unknown=private-value'");
+    },
+  );
+
+  it.each([
+    ['an attached scope value', ['-sj']],
+    ['a following scope value', ['-s', '-j']],
+  ] as const)('does not scan %s as short JSON options', async (_label, scopeOptions) => {
+    const result = await runCliEntry([
+      'config', 'set', 'official/demo', 'mode', ...scopeOptions, '--unknown',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain("error: unknown option '--unknown'");
+  });
+
+  it('does not scan for JSON intent after --', async () => {
+    const result = await runCliEntry(['config', 'set', '--', '--json']);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('Usage: aw config set');
+  });
+
+  it('emits a fail-closed config mutation receipt v6', async () => {
     const workspace = await makeWorkspace();
     await setEmbeddedRootOverride(workspace.embeddedRoot);
 
@@ -460,7 +629,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(noOp.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:reset',
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
       plugin: 'git-commit',
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'configStoreMissing' })],

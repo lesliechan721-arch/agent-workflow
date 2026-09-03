@@ -4805,7 +4805,7 @@ describe('five namespaced write commands', () => {
       .resolves.toBe(false);
   });
 
-  it('allows cleanup and uninstall when required plugin config is invalid', async () => {
+  it('preserves malformed selected config while cleanup and uninstall remove owned artifacts', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-removal-config-source');
     const configure = (manifest: PluginMeta['manifest']) => {
@@ -4815,6 +4815,10 @@ describe('five namespaced write commands', () => {
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'cleanup-target', configureManifest: configure },
       { name: 'uninstall-target', configureManifest: configure },
+      { name: 'guard-target', configureManifest: configure },
+      { name: 'unrelated', configureManifest: configure },
+      { name: 'config-only', configureManifest: configure },
+      { name: 'no-live-other', configureManifest: configure },
     ]);
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -4824,7 +4828,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    for (const pluginName of ['cleanup-target', 'uninstall-target']) {
+    for (const pluginName of ['cleanup-target', 'uninstall-target', 'guard-target']) {
       await writePluginConfigStore({
         sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
         cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { mode: 'valid' },
@@ -4834,32 +4838,85 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
-    const installed = await installWriteCommand(['team/cleanup-target', 'team/uninstall-target'], {
+    const installed = await installWriteCommand([
+      'team/cleanup-target', 'team/uninstall-target', 'team/guard-target',
+    ], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
     for (const pluginName of ['cleanup-target', 'uninstall-target']) {
-      await writePluginConfigStore({
-        sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
-        cwd: isolation.layout.fixtureCwd, env: isolation.env, values: {},
-      });
+      await fs.outputFile(resolvePluginConfigStorePath({
+        sourceId: 'team', pluginName, scope: 'project',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      }), '{malformed');
     }
 
     const cleaned = await cleanupWriteCommand(['team/cleanup-target'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
+    const cleanupConfigPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'cleanup-target', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
+    expect(cleaned.warnings.some((warning) => warning.includes('pluginConfigPreserved')),
+      JSON.stringify(cleaned.warnings)).toBe(true);
+    expect(cleaned.rebuildResults.some((result) => result.removed.length > 0)).toBe(true);
+    await expect(fs.readFile(cleanupConfigPath, 'utf8')).resolves.toBe('{malformed');
+    await fs.unlink(cleanupConfigPath);
+
     const uninstalled = await uninstallWriteCommand(['team/uninstall-target'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
 
-    expect(cleaned.overallState, JSON.stringify(cleaned.rebuildResults)).toBe('succeeded');
     expect(uninstalled.overallState, JSON.stringify(uninstalled.rebuildResults)).toBe('succeeded');
-    for (const pluginName of ['cleanup-target', 'uninstall-target']) {
-      await expect(readPluginConfigStore({
-        sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
-        cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      })).resolves.toMatchObject({ exists: false, values: {} });
-    }
+    expect(uninstalled.warnings.some((warning) => warning.includes('pluginConfigPreserved')),
+      JSON.stringify(uninstalled.warnings)).toBe(true);
+    expect(uninstalled.rebuildResults.some((result) => result.removed.length > 0)).toBe(true);
+    const uninstallConfigPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'uninstall-target', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await expect(fs.readFile(uninstallConfigPath, 'utf8')).resolves.toBe('{malformed');
+    await fs.unlink(uninstallConfigPath);
+
+    const configOnlyPath = resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'config-only', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await fs.outputFile(configOnlyPath, '{config-only-malformed');
+    const configOnlyCleanup = await cleanupWriteCommand(['team/config-only'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(configOnlyCleanup.overallState).toBe('succeeded');
+    expect(configOnlyCleanup.rebuildResults).toEqual([]);
+    expect(configOnlyCleanup.warnings.some((warning) => warning.includes('pluginConfigPreserved')))
+      .toBe(true);
+    await expect(fs.readFile(configOnlyPath, 'utf8')).resolves.toBe('{config-only-malformed');
+
+    const unrelatedNoLive = await cleanupWriteCommand(['team/no-live-other'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(unrelatedNoLive.overallState).toBe('failed');
+    expect(unrelatedNoLive.targetResults).toContainEqual(expect.objectContaining({
+      target: expect.objectContaining({ pluginId: 'team/no-live-other' }),
+      state: 'failed',
+      errorCode: 'stateInventoryFailed',
+    }));
+
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: 'team', pluginName: 'unrelated', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }), '{unrelated-malformed');
+    const guarded = await uninstallWriteCommand(['team/guard-target'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(guarded.overallState).toBe('failed');
+    expect(guarded.targetResults).toContainEqual(expect.objectContaining({
+      target: expect.objectContaining({ pluginId: 'team/guard-target' }),
+      state: 'failed',
+      errorCode: 'stateInventoryFailed',
+    }));
   });
 
   it('adds a missing dependency when sync --all starts from intent roots', async () => {
@@ -7876,7 +7933,7 @@ describe('five namespaced write commands', () => {
           },
           count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
           token: { type: 'string', sensitive: true, title: '令牌' },
-          rules: { type: 'string', validation: { format: 'path' }, title: '规则文件' },
+          rules: { type: 'string', title: '规则文件' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
@@ -9465,6 +9522,11 @@ describe('five namespaced write commands', () => {
       manifest.config = {
         fields: {
           mode: { type: 'string', default: 'safe' },
+          labels: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+            validation: { key: { format: 'identifier' } },
+          },
         },
       };
       manifest.scripts = {
@@ -9544,6 +9606,7 @@ describe('five namespaced write commands', () => {
     expect(set).toMatchObject({
       exitCode: 0,
       payload: {
+        receiptSchemaVersion: 6,
         configWrite: 'succeeded',
         overallState: 'succeeded',
         targetResults: [expect.objectContaining({ state: 'completed' })],
@@ -9558,7 +9621,7 @@ describe('five namespaced write commands', () => {
     ]);
     expect(unset).toMatchObject({
       exitCode: 0,
-      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+      payload: { receiptSchemaVersion: 6, configWrite: 'succeeded', overallState: 'succeeded' },
     });
     expect((await readStore()).values).toEqual({});
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
@@ -9569,10 +9632,63 @@ describe('five namespaced write commands', () => {
     ]);
     expect(reset).toMatchObject({
       exitCode: 0,
-      payload: { configWrite: 'succeeded', overallState: 'succeeded', deleted: true },
+      payload: {
+        receiptSchemaVersion: 6,
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        deleted: true,
+      },
     });
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { labels: { 'bad key': 'preserved' } },
+    });
+    const partial = await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply',
+    ]);
+    expect(partial).toMatchObject({
+      exitCode: 1,
+      payload: {
+        receiptSchemaVersion: 6,
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+        targetResults: [],
+        effective: {
+          fieldStates: {
+            labels: { invalidOverride: { source: 'project' } },
+            mode: { effective: { source: 'project', value: 'fast' } },
+          },
+        },
+      },
+    });
+    expect((await readStore()).values).toEqual({
+      labels: { 'bad key': 'preserved' },
+      mode: 'fast',
+    });
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+    const repaired = await runPublic([
+      'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
+      '--scope', 'project', '--apply',
+    ]);
+    expect(repaired).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    expect((await readStore()).values).toEqual({
+      labels: { good_key: 'repaired' },
+      mode: 'fast',
+    });
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
     const failed = await runPublic([
@@ -9582,7 +9698,10 @@ describe('five namespaced write commands', () => {
       exitCode: 1,
       payload: { configWrite: 'succeeded', overallState: 'partial' },
     });
-    expect((await readStore()).values).toEqual({ mode: 'fail' });
+    expect((await readStore()).values).toEqual({
+      labels: { good_key: 'repaired' },
+      mode: 'fail',
+    });
     const configAfterFailure = await fs.readFile(configPath, 'utf8');
     expect(configAfterFailure).toContain('mode=fast');
     expect(configAfterFailure).not.toContain('mode=fail');

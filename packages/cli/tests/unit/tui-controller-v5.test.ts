@@ -5,6 +5,7 @@ import type { DependencyOperationPlan } from '../../src/commands/dependency-oper
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
+  operationEvidenceMatches,
   operationEvidenceFingerprint,
   userIssueKey,
   type OperationEvidence,
@@ -859,6 +860,74 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
+  it('projects boolean presets, open custom policy, and sensitive selection safely', () => {
+    const configured = (key: string, value: boolean) => ({
+      key,
+      title: key,
+      kind: 'manifest' as const,
+      reserved: false,
+      writable: true,
+      valueState: 'configured' as const,
+      effectiveValue: value,
+      sourceLayer: 'user' as const,
+      storedValue: value,
+      storedSourceLayer: 'user' as const,
+    });
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: {
+        fields: {
+          closed: {
+            type: 'boolean',
+            choices: {
+              allowCustom: false,
+              presets: [{ id: 'on', title: '仅开启', value: true, recommended: true }],
+            },
+          },
+          open: {
+            type: 'boolean',
+            choices: {
+              allowCustom: true,
+              presets: [{ id: 'on', title: '开启方案', value: true }],
+            },
+          },
+          secret: {
+            type: 'boolean',
+            sensitive: true,
+            choices: {
+              allowCustom: false,
+              presets: [{ id: 'on', title: '敏感开启', value: true }],
+            },
+          },
+        },
+      },
+      read: {
+        pluginName: 'demo',
+        scope: 'user',
+        fields: [configured('closed', true), configured('open', false), configured('secret', true)],
+      },
+    });
+    const fields = Object.fromEntries(page.groups.flatMap((group) =>
+      group.fields.map((field) => [field.key, field])));
+
+    expect(fields.closed).toMatchObject({
+      allowCustom: false,
+      matchedPresetId: 'on',
+      choices: [{ id: 'on', title: '仅开启', value: true, recommended: true }],
+    });
+    expect(fields.open).toMatchObject({
+      allowCustom: true,
+      choices: [{ id: 'on', title: '开启方案', value: true }],
+    });
+    expect(fields.secret).toMatchObject({
+      sensitive: true,
+      allowCustom: false,
+      choices: [{ id: 'on', title: '敏感开启', value: true }],
+    });
+    expect(fields.secret).not.toHaveProperty('matchedPresetId');
+    expect(fields.secret).not.toHaveProperty('value');
+  });
+
   it('projects canonical object presets and a stable sensitive-child summary', () => {
     const definition = {
       fields: {
@@ -866,11 +935,18 @@ describe('TUI v4 router and ViewModel', () => {
           type: 'object' as const,
           choices: {
             allowCustom: true,
-            presets: [{
-              id: 'service',
-              title: 'Service',
-              value: { token: 'secret', region: 'west' },
-            }],
+            presets: [
+              {
+                id: 'service-a',
+                title: 'Service A',
+                value: { token: 'secret', region: 'west' },
+              },
+              {
+                id: 'service-b',
+                title: 'Service B',
+                value: { token: 'other-secret', region: 'west' },
+              },
+            ],
           },
           properties: {
             token: { type: 'string' as const, sensitive: true, required: true },
@@ -896,7 +972,7 @@ describe('TUI v4 router and ViewModel', () => {
           sourceLayer: 'user',
           value: { region: 'west', token: '[redacted]' },
           source: 'user',
-          matchedPreset: 'service',
+          matchedPreset: 'service-a',
           valid: true,
           issues: [],
         }],
@@ -907,10 +983,12 @@ describe('TUI v4 router and ViewModel', () => {
 
     expect(field).toMatchObject({
       type: 'object',
-      matchedPresetId: 'service',
-      displayValue: '方案“Service” · 2 项（region、token）',
+      displayValue: '已设置 · 2 项',
       draftValue: { region: 'west', token: 'secret' },
     });
+    expect(field).not.toHaveProperty('matchedPresetId');
+    expect(field.displayValue).not.toContain('Service');
+    expect(field.displayValue).not.toContain('自定义');
     expect(field.displayValue).not.toContain('secret');
   });
 
@@ -979,13 +1057,57 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const field = page.groups[0]!.fields[0]!;
 
-    expect(field.fallbackDisplayValue).toBe('方案“Inherited service” · 2 项（region、token）');
+    expect(field.fallbackDisplayValue).toBe('已设置 · 2 项');
+    expect(field.fallbackDisplayValue).not.toContain('Inherited service');
     expect(field.fallbackObjectChanges).toEqual(expect.arrayContaining([
       { property: 'region', before: 'east', after: 'west' },
       { property: 'token', before: '已设置', after: '已设置', private: true },
     ]));
     expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('current-secret');
     expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
+  });
+
+  it('does not classify an object preset through sensitive KV values', () => {
+    const schema = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [
+              { id: 'primary', title: 'Primary account', value: { account: 'secret-a' } },
+              { id: 'secondary', title: 'Secondary account', value: { account: 'secret-b' } },
+            ],
+          },
+          additionalProperties: { type: 'string' as const, sensitive: true },
+        },
+      },
+    };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema,
+      read: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [{
+          key: 'credentials',
+          title: 'credentials',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: { account: '[redacted]' },
+          sourceLayer: 'user',
+        }],
+      },
+      effectiveRawValues: { credentials: { account: 'secret-a' } },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field.displayValue).toBe('已设置 · 1 项');
+    expect(field).not.toHaveProperty('matchedPresetId');
+    expect(field.displayValue).not.toContain('Primary account');
+    expect(field.displayValue).not.toContain('自定义');
   });
   it('restores list focus, query, and source tab after a detail route goes back', () => {
     const router = new TuiRouter();
@@ -2382,6 +2504,32 @@ describe('TUI v4 Review safety', () => {
     }));
   });
 
+  it('keeps reset source evidence asymmetric for offline recovery', () => {
+    const offline: OperationEvidence = {
+      catalog: { configDigest: 'offline', compositeDigest: 'offline' },
+      resetTarget: {
+        sourceId: 'team', pluginName: 'demo', scope: 'user',
+        kind: 'regularFile', fingerprint: 'sha256:target',
+      },
+    };
+    const available: OperationEvidence = {
+      ...offline,
+      source: {
+        sourceId: 'team', sourceIdentity: 'sha256:source-a', manifestDigest: 'sha256:manifest-a',
+      },
+    };
+    const advanced: OperationEvidence = {
+      ...available,
+      source: {
+        sourceId: 'team', sourceIdentity: 'sha256:source-a', manifestDigest: 'sha256:manifest-b',
+      },
+    };
+
+    expect(operationEvidenceMatches(offline, available)).toBe(true);
+    expect(operationEvidenceMatches(available, offline)).toBe(false);
+    expect(operationEvidenceMatches(available, advanced)).toBe(false);
+  });
+
   it.each([
     {
       label: 'managed acquisition failure',
@@ -3181,7 +3329,9 @@ describe('TUI v4 Review safety', () => {
       state: 'partial',
       summary: {
         code: 'operationPartial',
-        message: '操作只完成了一部分。',
+        message: '设置已保存，但插件内容重新应用失败或部分失败。',
+        configScope: 'user',
+        configApplyRetryAvailable: true,
         targets: [
           expect.objectContaining({ platform: 'codex', state: 'completed' }),
           expect.objectContaining({ platform: 'claude', state: 'failed' }),
@@ -3190,6 +3340,69 @@ describe('TUI v4 Review safety', () => {
     });
     expect(controller.snapshot.router.current.route).toMatchObject({ name: 'result' });
     expect(controller.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('reports a saved invalid config with no target writes as unapplied partial', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        applySkippedReason: 'invalidConfig',
+        targetResults: [],
+      }),
+    }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'strict' },
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'partial',
+      summary: {
+        code: 'operationPartial',
+        configApplied: false,
+        configApplySkippedReason: 'invalidConfig',
+        configApplyRetryAvailable: false,
+        message: '设置已保存，但没有应用。当前配置仍无效。',
+      },
+    });
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['deletedFile', undefined],
+    ['unlinkedSymlink', undefined],
+    ['quarantinedDirectory', 'config.broken-safe.json'],
+  ] as const)('projects the safe %s config reset disposition', async (resetDisposition, quarantineBasename) => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+        resetDisposition,
+        ...(quarantineBasename ? { quarantineBasename } : {}),
+      }),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+      summary: {
+        resetDisposition,
+        ...(quarantineBasename ? { quarantineBasename } : {}),
+      },
+    });
   });
 
   it('reports a reset as unconfirmed when the post-write status reload fails', async () => {

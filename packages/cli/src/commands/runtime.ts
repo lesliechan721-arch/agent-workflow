@@ -825,7 +825,7 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
               ? undefined
               : String(configOptions.currentValues[key]),
           }));
-          updates[key] = selected;
+          updates[key] = definition.enum.find((value) => String(value) === selected)!;
           continue;
         }
 

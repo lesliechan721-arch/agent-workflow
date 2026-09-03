@@ -93,6 +93,7 @@ import {
   buildPlatformActions,
   buildPluginDetailActions,
   buildPluginPreviewActions,
+  configObjectHasSensitiveChild,
   hasInstalledPlacement,
   configValuesEqual,
 } from './model.js';
@@ -1317,24 +1318,30 @@ export function ConsoleAppV4(props: {
   }, [configRoute?.pluginId, configRoute?.layer.scope, props.controller]);
 
   useEffect(() => {
-    if (route.name !== 'configUnavailable' || !route.invalidStores?.length) {
+    if (route.name !== 'configUnavailable'
+      || (!route.invalidStores?.length && !route.layer)) {
       setConfigResetAvailability({});
       return;
     }
     const abort = new AbortController();
     setConfigResetAvailability({});
-    void Promise.all(route.invalidStores.map(async ({ scope }) => ({
-      scope,
-      availability: await props.controller.getConfigResetAvailability(route.pluginId, { scope }),
-    }))).then((results) => {
-      if (!abort.signal.aborted) {
-        setConfigResetAvailability(Object.fromEntries(results.map((result) => [
-          result.scope,
-          result.availability,
-        ])));
+    const scopes = route.invalidStores?.map(({ scope }) => scope)
+      ?? (route.layer ? [route.layer.scope] : []);
+    void Promise.all(scopes.map(async (scope) => {
+      try {
+        return {
+          scope,
+          availability: await props.controller.getConfigResetAvailability(route.pluginId, { scope }),
+        };
+      } catch {
+        return { scope, availability: undefined };
       }
-    }).catch(() => {
-      if (!abort.signal.aborted) setConfigResetAvailability({});
+    })).then((results) => {
+      if (!abort.signal.aborted) {
+        setConfigResetAvailability(Object.fromEntries(results
+          .filter((result) => result.availability !== undefined)
+          .map((result) => [result.scope, result.availability!])));
+      }
     });
     return () => abort.abort();
   }, [
@@ -1344,6 +1351,7 @@ export function ConsoleAppV4(props: {
     route.name === 'configUnavailable'
       ? route.invalidStores?.map((store) => `${store.scope}:${store.code}`).join('|') ?? ''
       : '',
+    route.name === 'configUnavailable' ? route.layer?.scope ?? '' : '',
   ]);
 
   useEffect(() => {
@@ -1411,6 +1419,8 @@ export function ConsoleAppV4(props: {
         ? undefined
         : activeField.definition.additionalProperties)
     : undefined;
+  const activePropertySensitive = activeField?.sensitive === true
+    || activePropertyDefinition?.sensitive === true;
   useEffect(() => {
     if (route.name !== 'configFieldEditor' || !activeField) return;
     const draft = draftUpdates[activeField.key];
@@ -1430,7 +1440,7 @@ export function ConsoleAppV4(props: {
     const current = route.propertyKey !== undefined && activeObjectDraft
       ? activeObjectDraft[route.propertyKey]
       : undefined;
-    setInputValue(route.stage === 'key' || activePropertyDefinition?.sensitive
+    setInputValue(route.stage === 'key' || activePropertySensitive
       ? ''
       : current === undefined ? '' : String(current));
     setInputError(undefined);
@@ -1819,6 +1829,10 @@ export function ConsoleAppV4(props: {
         : '当前项目';
   const objectSummary = (field: ConfigFieldViewModel, value: PluginConfigObject): string => {
     if (field.sensitive) return '已设置';
+    if (configObjectHasSensitiveChild(field.definition)) {
+      const count = Object.keys(value).length;
+      return `已设置 · ${count === 0 ? '空对象' : `${count} 项`}`;
+    }
     const preset = field.choices?.find((choice) => configValuesEqual(choice.value, value));
     const keys = Object.keys(value).sort((left, right) => left.localeCompare(right, 'en'));
     const count = keys.length === 0
@@ -2098,8 +2112,7 @@ export function ConsoleAppV4(props: {
         updates: draftUpdates,
         removeKeys: draftRemoves,
         sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
-        privateKeys: fields.filter((field) => field.definition.type === 'object'
-          && Object.values(field.definition.properties ?? {}).some((child) => child.sensitive === true))
+        privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
           .map((field) => field.key),
         changes: configChanges(),
       });
@@ -3300,7 +3313,11 @@ export function ConsoleAppV4(props: {
           }))
         : (activeGroup?.fields ?? []).map((field) => ({
             label: field.title,
-            description: readonly
+            description: field.invalidOverrideIssue
+              ? field.invalidOverrideOwnedByLayer
+                ? `${field.invalidOverrideIssue} 删除后恢复：${field.fallbackDisplayValue ?? '未设置'} · ${field.fallbackSourceLabel ?? '未设置'}`
+                : field.invalidOverrideIssue
+              : readonly
               ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
               : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
             meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
@@ -3358,6 +3375,17 @@ export function ConsoleAppV4(props: {
       ];
       actions = [...tabActions, ...operationActions];
       const effectiveConfigFocus = Math.min(focus, Math.max(0, actions.length - 1));
+      const focusedConfigField = effectiveConfigFocus < (activeGroup?.fields.length ?? 0)
+        ? activeGroup?.fields[effectiveConfigFocus]
+        : undefined;
+      if (!readonly) {
+        const canUnsetFocused = focusedConfigField?.configured === true
+          && (!focusedConfigField.invalidOverrideIssue
+            || focusedConfigField.invalidOverrideOwnedByLayer === true);
+        help = canUnsetFocused
+          ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回'
+          : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · Esc 返回';
+      }
       const fieldFocus = tabActions.length > 0
         ? effectiveConfigFocus < tabActions.length ? effectiveConfigFocus : Math.min(scrollOffset, tabActions.length - 1)
         : 0;
@@ -3421,14 +3449,19 @@ export function ConsoleAppV4(props: {
           ...fieldEditorMode(activeField),
         }),
       },
-      draftRemoves.includes(activeField.key)
+      ...(!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer ? [draftRemoves.includes(activeField.key)
         ? { label: '撤销删除', run: () => { cancelDraftRemoval(activeField.key); back(); } }
-        : { label: deleteLabel, status: 'error', run: () => { removeDraft(activeField.key); back(); } },
+        : { label: deleteLabel, status: 'error' as const, run: () => { removeDraft(activeField.key); back(); } }] : []),
     ];
     content = <Box flexDirection="column"><SectionCard>
+      {activeField.invalidOverrideIssue
+        ? <StaticRow title="当前覆盖无效" meta={activeField.invalidOverrideIssue} status="warning" />
+        : null}
       <StaticRow title={`${layer}中的值`} meta={currentFieldDisplay(activeField)} />
       <StaticRow title="当前实际生效" meta={`${effectiveFieldDisplay(activeField)} · 来自${activeField.effectiveSourceLabel}`} />
-      <StaticRow title="删除后将恢复" meta={`${activeField.fallbackDisplayValue ?? '未设置'} · 来自${activeField.fallbackSourceLabel ?? '未设置'}`} />
+      {!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer
+        ? <StaticRow title="删除后将恢复" meta={`${activeField.fallbackDisplayValue ?? '未设置'} · 来自${activeField.fallbackSourceLabel ?? '未设置'}`} />
+        : null}
     </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'configFieldEditor' && plugin && activeField) {
     breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title}`;
@@ -3440,14 +3473,25 @@ export function ConsoleAppV4(props: {
         : '此字段只允许使用 manifest 方案。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
       const current = draftUpdates[activeField.key] ?? activeField.draftValue ?? activeField.value;
+      const booleanCustomValues = activeField.type === 'boolean' && activeField.allowCustom
+        ? [true, false].filter((value) =>
+            !activeField.choices?.some((preset) => preset.value === value))
+        : [];
       actions = [
         ...(activeField.choices ?? []).map((preset) => ({
           label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
           description: preset.description,
-          selected: configValuesEqual(current, preset.value),
+          selected: !activeField.sensitive
+            && !configObjectHasSensitiveChild(activeField.definition)
+            && configValuesEqual(current, preset.value),
           run: () => { updateDraft(activeField.key, preset.value); back(); },
         })),
-        ...(activeField.allowCustom ? [{
+        ...booleanCustomValues.map((value) => ({
+          label: value ? '开启' : '关闭',
+          selected: !activeField.sensitive && current === value,
+          run: () => { updateDraft(activeField.key, value); back(); },
+        })),
+        ...(activeField.allowCustom && activeField.type !== 'boolean' ? [{
           label: '自定义…',
           description: activeField.type === 'object' ? '编辑固定属性和动态键值' : '输入自定义值',
           run: () => {
@@ -3462,7 +3506,7 @@ export function ConsoleAppV4(props: {
       title = `${activeField.title}？`;
       description = activeField.description ?? '选择开启或关闭。';
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
-      actions = [{ label: '开启', selected: draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false), run: () => { updateDraft(activeField.key, false); back(); } }];
+      actions = [{ label: '开启', selected: !activeField.sensitive && (draftUpdates[activeField.key] === true || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === true)), run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', selected: !activeField.sensitive && (draftUpdates[activeField.key] === false || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === false)), run: () => { updateDraft(activeField.key, false); back(); } }];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (route.editor === 'object' && activeField.definition.type === 'object' && activeObjectDraft) {
       const objectDefinition = activeField.definition;
@@ -3486,8 +3530,7 @@ export function ConsoleAppV4(props: {
         }
         if (activeField.sensitive || definition.sensitive) return '已设置';
         const value = activeObjectDraft[property]!;
-        const preset = definition.type === 'boolean' ? undefined
-          : definition.choices?.presets.find((choice) => choice.value === value);
+        const preset = definition.choices?.presets.find((choice) => choice.value === value);
         if (preset) return preset.title;
         if (typeof value === 'boolean') return value ? '开启' : '关闭';
         return String(value);
@@ -3614,16 +3657,34 @@ export function ConsoleAppV4(props: {
       help = '↑↓ 移动 · Enter 使用 · Esc 取消';
       const current = activeObjectDraft[property];
       actions = definition.type === 'boolean'
-        ? [true, false].map((value) => ({
-            label: value ? '开启' : '关闭',
-            selected: current === value,
-            run: () => { if (updateObjectProperty(property, value)) back(); },
-          }))
+        ? definition.choices
+          ? [
+              ...definition.choices.presets.map((preset) => ({
+                label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
+                description: preset.description,
+                selected: !activePropertySensitive && current === preset.value,
+                run: () => { if (updateObjectProperty(property, preset.value)) back(); },
+              })),
+              ...(definition.choices.allowCustom
+                ? [true, false]
+                  .filter((value) => !definition.choices!.presets.some((preset) => preset.value === value))
+                  .map((value) => ({
+                    label: value ? '开启' : '关闭',
+                    selected: !activePropertySensitive && current === value,
+                    run: () => { if (updateObjectProperty(property, value)) back(); },
+                  }))
+                : []),
+            ]
+          : [true, false].map((value) => ({
+              label: value ? '开启' : '关闭',
+              selected: !activePropertySensitive && current === value,
+              run: () => { if (updateObjectProperty(property, value)) back(); },
+            }))
         : [
             ...(definition.choices?.presets ?? []).map((preset) => ({
               label: `${preset.title}${preset.recommended ? '（推荐）' : ''}`,
               description: preset.description,
-              selected: current === preset.value,
+              selected: !activePropertySensitive && current === preset.value,
               run: () => { if (updateObjectProperty(property, preset.value)) back(); },
             })),
             ...(definition.choices?.allowCustom ? [{
@@ -3636,46 +3697,54 @@ export function ConsoleAppV4(props: {
           ];
       content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
     } else if (property !== undefined && definition) {
-      title = definition.sensitive ? '输入敏感值' : `输入${propertyTitle}`;
-      description = inputError ?? (definition.sensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
+      title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
+      description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
       help = '输入 · Enter 使用 · Esc 取消';
-      content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={definition.sensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
+      content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activePropertySensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
     }
-  } else if (route.name === 'configUnavailable' && plugin) {
-    breadcrumb = `${plugin.displayName} / 设置`;
+  } else if (route.name === 'configUnavailable') {
+    const unavailablePluginName = plugin?.displayName ?? route.pluginId.split('/').at(-1) ?? route.pluginId;
+    const unavailableSourceId = plugin?.sourceId ?? route.pluginId.split('/')[0] ?? '当前来源';
+    breadcrumb = `${unavailablePluginName} / 设置`;
     context = '暂时不可编辑';
     const diagnostic = configUnavailableDiagnostic(route);
     const invalidLayer = (route.invalidStores?.length ?? 0) > 0;
     title = diagnostic.title;
     description = '';
+    const resetScopes = route.invalidStores?.map(({ scope }) => scope)
+      ?? (route.layer ? [route.layer.scope] : []);
     actions = [
-      ...(route.invalidStores ?? []).flatMap((store) => {
-        const availability = configResetAvailability[store.scope];
-        return availability?.state === 'invalid' && availability.sourceIdentityPresent
+      ...resetScopes.flatMap((scope) => {
+        const availability = configResetAvailability[scope];
+        return availability?.exists && availability.resettable !== false
           ? [{
-              label: `重置${store.scope === 'user' ? '个人默认' : '当前项目'}设置层…`,
+              label: `重置${scope === 'user' ? '个人默认' : '当前项目'}设置层…`,
               description: '删除整个目标层；不创建备份',
               status: 'error' as const,
               run: () => beginReview({
                 kind: 'configReset',
-                pluginId: plugin.pluginId,
-                scope: store.scope,
-                expectedStoreState: 'invalid',
+                pluginId: route.pluginId,
+                scope,
+                ...(availability.state === 'invalid' ? { expectedStoreState: 'invalid' as const } : {}),
               }),
             }]
           : [];
       }),
-      ...(invalidLayer ? [{
-        label: showTechnical ? '返回问题摘要' : '查看安全路径摘要',
-        description: '只显示设置层、恢复影响和脱敏错误代码',
-        run: () => setShowTechnical((value) => !value),
-      }] : [
-        { label: `在终端运行 aw catalog source sync ${plugin.sourceId}`, description: '同步成功后重新加载 TUI', run: back },
+      ...(!invalidLayer ? [
+        { label: `在终端运行 aw catalog source sync ${unavailableSourceId}`, description: '同步成功后重新加载 TUI', run: back },
         { label: showTechnical ? '返回问题摘要' : '技术详情', description: '查看脱敏错误代码和阶段', run: () => setShowTechnical((value) => !value) },
-      ]),
+      ] : []),
       { label: '返回', run: back },
     ];
-    content = invalidLayer && showTechnical
+    const unsupportedScopes = resetScopes.filter((scope) =>
+      configResetAvailability[scope]?.resettable === false);
+    const unsupportedRows = unsupportedScopes.map((scope) => <StaticRow
+      key={`unsupported-reset:${scope}`}
+      title={`${scope === 'user' ? '个人默认' : '当前项目'}设置层不能自动重置：特殊节点，请手动移动`}
+      status="warning"
+      compact
+    />);
+    content = invalidLayer
       ? <Box flexDirection="column">
           <TechnicalDetails>
             {(route.invalidStores ?? []).flatMap((store) => [
@@ -3693,9 +3762,10 @@ export function ConsoleAppV4(props: {
               compact
             />
           </TechnicalDetails>
+          {unsupportedRows}
           <SemanticRows actions={actions} focus={focus} kind="action" compact />
         </Box>
-      : <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical={showTechnical} compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={focus} kind="action" compact={invalidLayer || policy.mode === 'compact'} /></Box>;
+      : <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical={showTechnical} compact={policy.mode === 'compact'} />{unsupportedRows}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceList') {
     breadcrumb = '插件来源';
     title = '插件来源';
@@ -4558,6 +4628,7 @@ export function ConsoleAppV4(props: {
       && result.returnRoute?.name === 'pluginDetail';
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
+    const invalidConfigResult = resultSummary?.configApplySkippedReason === 'invalidConfig';
     const successfulConfigOperation = configOperation !== undefined && !blocked && !partial;
     const sourceOperation = operationKind === 'sourceMutation'
       || operationKind === 'catalogGeneration'
@@ -4593,7 +4664,9 @@ export function ConsoleAppV4(props: {
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
-        : partial ? '! 设置已保存，但部分应用失败'
+        : partial ? resultSummary?.configApplySkippedReason === 'invalidConfig'
+          ? '! 设置已保存，但未应用'
+          : '! 设置已保存，但部分应用失败'
           : resultSummary?.configApplied ? '✓ 设置已保存并应用' : '✓ 设置已保存'
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
@@ -4628,11 +4701,18 @@ export function ConsoleAppV4(props: {
       : blocked ? result.message
         : configOperation
           ? partial
-            ? '设置层已经保存；平台应用失败不会回滚设置。'
+            ? resultSummary?.message ?? '设置层已经保存；平台应用失败不会回滚设置。'
             : '设置层已经更新。'
           : '状态已刷新。';
     const pluginId = resultSummary?.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
+    const configResultPluginId = pluginId ?? ('returnRoute' in result
+      && result.returnRoute
+      && 'pluginId' in result.returnRoute
+      ? result.returnRoute.pluginId
+      : undefined);
+    const configRetryAvailable = resultSummary?.configApplyRetryAvailable === true
+      && resultSummary.configScope !== undefined && configResultPluginId !== undefined;
     const configOrigin = successfulConfigOperation && pluginId
       ? props.controller.configOrigin(pluginId)
       : undefined;
@@ -4767,7 +4847,18 @@ export function ConsoleAppV4(props: {
       ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? leaveResult() : leaveResult({ name: 'sourceList' }) }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
       : configOperation && partial
       ? [
-          { label: '返回修改', description: '重新打开已保存的设置层', run: () => leaveResult() },
+          ...(configRetryAvailable ? [{
+            label: '重试应用',
+            description: '先重新进入 Review，并重新采集当前证据',
+            run: () => beginReview({
+              kind: 'configSave',
+              pluginId: configResultPluginId!,
+              scope: resultSummary!.configScope!,
+              apply: true,
+              retryApply: true,
+            }),
+          }] : []),
+          { label: invalidConfigResult ? '返回设置' : '返回修改', description: '重新打开已保存的设置层', run: () => leaveResult() },
           { label: '返回设置执行 unset / reset', description: '显式删除顶层字段或整个设置层', run: () => leaveResult() },
           { label: '保留设置并退出', run: () => requestExit({ code: 1, reason: 'partial' }) },
         ]
@@ -4865,6 +4956,15 @@ export function ConsoleAppV4(props: {
       <StaticRow key="failure-code" title="failure code" meta={'code' in result ? result.code : 'operationFailed'} compact />,
       <StaticRow key="folded-fields" title="其余技术字段已折叠" meta="本次写入没有安全 receipt" status="muted" compact />,
     ];
+    const resetDispositionText = resultSummary?.resetDisposition === 'absent'
+      ? '设置层原本不存在；没有删除内容'
+      : resultSummary?.resetDisposition === 'deletedFile'
+        ? '已删除设置文件'
+        : resultSummary?.resetDisposition === 'unlinkedSymlink'
+          ? '已解除设置路径符号链接；链接目标未修改'
+          : resultSummary?.resetDisposition === 'quarantinedDirectory'
+            ? `设置路径是目录；已隔离为 ${resultSummary.quarantineBasename ?? '安全隔离目录'}`
+            : undefined;
     content = portableOperation ? <Box flexDirection="column">
       {portableTechnicalSummary ? <>
         {portableRows}
@@ -4897,7 +4997,7 @@ export function ConsoleAppV4(props: {
       </ResultCard>
       </>}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? `${result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · ${result.code}` : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title={`另有 ${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial ? <Callout status="warning" title="恢复指引" description="如需清理残留，请先显式运行 cleanup；然后运行 reinstall 或 sync。不会自动清理，也没有 journal restore。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+    </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? `${result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · ${result.code}` : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title={`另有 ${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="如需清理残留，请先显式运行 cleanup；然后运行 reinstall 或 sync。不会自动清理，也没有 journal restore。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -5227,7 +5327,7 @@ export function ConsoleAppV4(props: {
       }
       if (key.return && route.stage === 'custom'
         && route.propertyKey !== undefined && activePropertyDefinition) {
-        if (activePropertyDefinition.sensitive && inputValue.length === 0) {
+        if (activePropertySensitive && inputValue.length === 0) {
           back();
           return;
         }
@@ -5328,7 +5428,11 @@ export function ConsoleAppV4(props: {
       if (dirty) void beginConfigSave(false);
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
-      if (key) removeDraft(key);
+      const field = currentConfigPage?.groups.flatMap((group) => group.fields)
+        .find((candidate) => candidate.key === key);
+      if (field?.configured && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
+        removeDraft(field.key);
+      }
     } else if (route.name === 'configFields' && visibleConfigTabs.length > 1
       && (key.leftArrow || key.rightArrow)) {
       const current = Math.max(0, visibleConfigTabs.findIndex((tab) => tab.id === activeConfigTabId));

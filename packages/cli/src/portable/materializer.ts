@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactRuntimeImportDefinition,
@@ -267,7 +268,9 @@ async function materializePluginCandidates(options: {
   }
   options.recordConfigDigest(
     pluginId(options.plugin),
-    `sha256:${crypto.createHash('sha256').update(JSON.stringify(config.values)).digest('hex')}`,
+    `sha256:${crypto.createHash('sha256')
+      .update(JSON.stringify(canonicalizePluginConfigValues(config.values)))
+      .digest('hex')}`,
   );
   const staticRoot = distribution.skills
     ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))

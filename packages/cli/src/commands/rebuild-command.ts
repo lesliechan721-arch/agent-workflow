@@ -294,6 +294,31 @@ function assertRebuildCatalogSourceInventoryComplete(
   });
 }
 
+const MALFORMED_CONFIG_PRESERVED_WARNING =
+  'pluginConfigPreserved: 目标插件的无效配置文件已保留。可稍后运行 aw config reset 清理。';
+
+function omitSelectedPluginConfigErrors(
+  inventory: CatalogSourceReferenceInventory,
+  targets: ReadonlyArray<{ sourceId: string; pluginName: string }>,
+): { inventory: CatalogSourceReferenceInventory; omitted: boolean } {
+  let omitted = false;
+  const errors = inventory.errors.filter((error) => {
+    const relevance = error.relevance;
+    const selected = error.kind.startsWith('config') && targets.some((target) => {
+      if (!relevance.global
+        && relevance.sourceId === target.sourceId
+        && relevance.pluginName === target.pluginName) return true;
+      const location = error.location.replaceAll('\\', '/');
+      return location.endsWith(
+        `/plugin-config/${target.sourceId}/${target.pluginName}/config.json`,
+      );
+    });
+    if (selected) omitted = true;
+    return !selected;
+  });
+  return { inventory: { ...inventory, errors }, omitted };
+}
+
 function selectedPlatforms(selection: CommandOptions['platform']): PlatformName[] {
   return selection === 'both' ? ['codex', 'claude'] : [selection];
 }
@@ -1715,6 +1740,7 @@ export async function runRebuildCommand(options: {
     platform: PlatformName;
     scope: Scope;
   }> = [];
+  let malformedSelectedConfigPreserved = false;
   if (options.command === 'cleanup' && !options.all) {
     cleanupInventory = await readOrdinaryInventory();
     const live = resolveLiveCleanupTargets({
@@ -1750,6 +1776,11 @@ export async function runRebuildCommand(options: {
       cleanupLiveTargets = [liveTarget];
     }
     liveTargets = cleanupLiveTargets;
+    if (cleanupLiveTargets.length > 0) {
+      const filtered = omitSelectedPluginConfigErrors(cleanupInventory, cleanupLiveTargets);
+      cleanupInventory = filtered.inventory;
+      malformedSelectedConfigPreserved ||= filtered.omitted;
+    }
   }
   if (options.all) {
     const inventory = await readOrdinaryInventory();
@@ -1969,15 +2000,27 @@ export async function runRebuildCommand(options: {
           scope: options.commandOptions.scope,
         })) : [];
       });
-      const inventoryError = cleanupInventory?.errors.find((error) =>
-        error.relevance.global || unresolvedTargets.some((target) =>
+      const qualifiedTargets = requestedPluginNames.flatMap((selector) => {
+        const parsed = parsePluginId(selector);
+        return parsed.sourceId ? [{ sourceId: parsed.sourceId, pluginName: parsed.pluginName }] : [];
+      });
+      const filtered = cleanupInventory && qualifiedTargets.length > 0
+        ? omitSelectedPluginConfigErrors(cleanupInventory, qualifiedTargets)
+        : { inventory: cleanupInventory, omitted: false };
+      malformedSelectedConfigPreserved ||= filtered.omitted;
+      const inventoryError = filtered.inventory?.errors.find((error) => {
+        if (!cleanupForce
+          || (error.kind !== 'ownerMarkerRead' && error.kind !== 'ownerMarkerValidation')
+          || error.relevance.global) return true;
+        const relevant = unresolvedTargets.some((target) =>
           !error.relevance.global
           && (error.relevance.sourceId === undefined || error.relevance.sourceId === target.sourceId)
           && (error.relevance.pluginName === undefined || error.relevance.pluginName === target.pluginName)
           && (error.relevance.platform === undefined || error.relevance.platform === target.platform)
-          && (error.relevance.scope === undefined
-            || error.relevance.scope === target.scope
-            || target.platform === 'codex')));
+          && (error.relevance.scope === undefined || error.relevance.scope === target.scope));
+        return relevant
+          && !(error.relevance.platform === 'codex' && error.relevance.scope === 'project');
+      });
       if (inventoryError) {
         throw namespacedPreflightError(
           `stateInventoryFailed: ${inventoryError.message}`,
@@ -1985,6 +2028,20 @@ export async function runRebuildCommand(options: {
         );
       }
       const result = mergeRebuildCommandResults([]);
+      if (malformedSelectedConfigPreserved) {
+        result.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
+      }
+      if (cleanupForce && !options.runtime?.previewOperationPlan) {
+        try {
+          await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
+            path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
+          );
+        } catch (error) {
+          result.warnings.push(
+            `obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       return result;
     }
     const cleanupSourceSnapshot = await readCatalogSourcesConfigSnapshot(runtimeEnv).catch(() => undefined);
@@ -2030,6 +2087,9 @@ export async function runRebuildCommand(options: {
       nativeCliRunner: options.runtime?.nativeCliRunner,
       codexManager: options.runtime?.codexManager,
     });
+    if (malformedSelectedConfigPreserved) {
+      cleanupResult.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
+    }
     return cleanupResult;
   }
   try {
@@ -2305,7 +2365,12 @@ export async function runRebuildCommand(options: {
             }
           : inventory, options.commandOptions.scope);
       };
-      assertWriteInventoryComplete(stateInventory);
+      const checked = options.command === 'uninstall'
+        ? omitSelectedPluginConfigErrors(stateInventory, preflightTargets)
+        : { inventory: stateInventory, omitted: false };
+      malformedSelectedConfigPreserved ||= checked.omitted;
+      if (checked.omitted) stateInventory.errors = checked.inventory.errors;
+      assertWriteInventoryComplete(checked.inventory);
       const hasCodexSelection = executionSelections.some((selection) =>
         selection.platform === 'codex');
       const intentBeforeByScope = hasCodexSelection || dependencyEnabled
@@ -3714,8 +3779,12 @@ export async function runRebuildCommand(options: {
             env: runtimeEnv,
           });
           if (options.command !== 'cleanup') {
+            const checked = options.command === 'uninstall'
+              ? omitSelectedPluginConfigErrors(removalStateInventory, preflightTargets)
+              : { inventory: removalStateInventory, omitted: false };
+            malformedSelectedConfigPreserved ||= checked.omitted;
             assertRebuildCatalogSourceInventoryComplete(
-              removalStateInventory,
+              checked.inventory,
               options.commandOptions.scope,
             );
           }
@@ -4320,6 +4389,9 @@ export async function runRebuildCommand(options: {
         }
       }
       const merged = mergeRebuildCommandResults(results);
+      if (malformedSelectedConfigPreserved) {
+        merged.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
+      }
       merged.dependencyPlan = lockedPlan;
       merged.overallState = reconcileOverallState(merged.targetResults, lockedPlan);
       if (lockedCodexPlans.length > 0) merged.codexReconcilePlans = lockedCodexPlans;

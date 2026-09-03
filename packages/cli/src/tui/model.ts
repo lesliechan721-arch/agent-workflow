@@ -269,6 +269,8 @@ export interface ConfigFieldViewModel {
   effectiveSourceLabel: string;
   fallbackDisplayValue?: string;
   fallbackSourceLabel?: string;
+  invalidOverrideIssue?: string;
+  invalidOverrideOwnedByLayer?: boolean;
   fallbackObjectChanges?: Array<{
     property: string;
     before: string;
@@ -311,6 +313,12 @@ export interface ConfigPageViewModel {
   groups: ConfigGroupViewModel[];
   presets: ConfigPresetViewModel[];
   storedCount: number;
+}
+
+export function configObjectHasSensitiveChild(field: PluginConfigSchemaField): boolean {
+  if (field.type !== 'object') return false;
+  return Object.values(field.properties ?? {}).some((property) => property.sensitive === true)
+    || (field.additionalProperties !== false && field.additionalProperties?.sensitive === true);
 }
 
 export type UserIssueCategory =
@@ -1766,6 +1774,10 @@ function displayConfigValue(options: {
     && options.value !== null
     && !Array.isArray(options.value)) {
     const object = options.value as PluginConfigObject;
+    if (configObjectHasSensitiveChild(options.field)) {
+      const count = Object.keys(object).length;
+      return `已设置 · ${count === 0 ? '空对象' : `${count} 项`}`;
+    }
     const preset = matchPluginConfigPreset(options.field, object);
     const keys = Object.keys(object).sort((left, right) => left.localeCompare(right, 'en'));
     const keySummary = keys.length === 0
@@ -1863,7 +1875,7 @@ export function buildConfigGroups(options: {
         && (entry.valueState === 'configured' || entry.valueState === 'default')
       : entry?.storedSourceLayer !== undefined;
     const privateValue = schema.sensitive === true;
-    const choices = schema.type === 'boolean' ? undefined : schema.choices;
+    const choices = schema.choices;
     const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
     const selectedRawValue = effectivePage
       ? options.effectiveRawValues?.[key]
@@ -1871,6 +1883,16 @@ export function buildConfigGroups(options: {
     const selectedStoredInvalid = !effectivePage
       && entry?.storedSourceLayer !== undefined
       && entry.storedValue === undefined;
+    const invalidOverrideSourceCandidate = selectedStoredInvalid
+      ? (effectivePage ? entry?.invalidOverride?.sourceLayer : options.read.scope)
+      : entry?.invalidOverride?.sourceLayer;
+    const invalidOverrideSource = invalidOverrideSourceCandidate === 'user'
+      || invalidOverrideSourceCandidate === 'project'
+      ? invalidOverrideSourceCandidate
+      : undefined;
+    const invalidOverride = invalidOverrideSource !== undefined;
+    const invalidOverrideOwnedByLayer = !effectivePage
+      && invalidOverrideSource === options.read.scope;
     const effectiveConfigured = effectiveEntry?.sourceLayer !== undefined
       && effectiveEntry.sourceLayer !== null
       && effectiveEntry.effectiveValue !== undefined
@@ -1922,6 +1944,14 @@ export function buildConfigGroups(options: {
           : effectiveEntry?.effectiveValue,
       }),
       effectiveSourceLabel: configSourceLabel(effectiveEntry?.sourceLayer ?? null),
+      ...(invalidOverride ? {
+        invalidOverrideOwnedByLayer,
+        invalidOverrideIssue: invalidOverrideOwnedByLayer
+          ? schema.type === 'object'
+            ? `字段“${schema.title ?? key}”在本层的对象值无效。请修改或删除此字段。`
+            : `字段“${schema.title ?? key}”在本层的值无效。请修改或删除此字段。`
+          : `字段“${schema.title ?? key}”在${configSourceLabel(invalidOverrideSource ?? null)}中的值无效。请切换到该设置层修改或删除此字段。`,
+      } : {}),
       ...(!effectivePage && configured ? {
         fallbackDisplayValue: displayConfigValue({
           field: schema,
@@ -1949,7 +1979,7 @@ export function buildConfigGroups(options: {
       ...(!privateValue && effectiveEntry?.effectiveValue !== undefined && effectiveEntry.effectiveValue !== null
         ? { effectiveValue: effectiveEntry.effectiveValue as PluginConfigValue }
         : {}),
-      ...((effectivePage
+      ...(!privateValue && (effectivePage
         ? options.effectiveRawValues?.[key]
         : selectedRawValue ?? (schema.type === 'object' && !configured
           ? options.effectiveRawValues?.[key]
@@ -1961,7 +1991,8 @@ export function buildConfigGroups(options: {
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
       ...(choices ? { choices: choices.presets } : {}),
       allowCustom: choices?.allowCustom ?? true,
-      ...((selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null
+      ...(!privateValue && !configObjectHasSensitiveChild(schema)
+        && (selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null
         && matchPluginConfigPreset(schema, (selectedRawValue ?? selectedValue) as PluginConfigValue)
         ? { matchedPresetId: matchPluginConfigPreset(
             schema,
