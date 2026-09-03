@@ -83,6 +83,8 @@ function unique(values: readonly string[]): string[] {
 
 function recoveryForTarget(state: ReceiptTargetResult['state'], errorCode?: string): string[] {
   if (state === 'completed') return [];
+  if (errorCode === 'exclusiveOwnerEvidenceInvalid'
+    || errorCode === 'forceCleanupPathUnavailable') return [];
   if (errorCode === 'codexProjectPluginVersionTooLow'
     || errorCode === 'codexProjectPluginUnsupported'
     || errorCode === 'codexSystemCliUnsupported') {

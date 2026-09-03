@@ -151,6 +151,17 @@ function failedWriteCommandResult(
       state: 'failed',
       message,
       errorCode,
+      ...(errorCode === 'exclusiveOwnerEvidenceInvalid' && result.target.pluginId ? {
+        recoveryActions: [
+          `run aw cleanup ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope} --force`,
+          `then run aw reinstall ${result.target.pluginId} --platform ${result.target.platform} --scope ${result.target.scope}`,
+        ],
+      } : errorCode === 'forceCleanupPathUnavailable' ? {
+        recoveryActions: [
+          'restore the local Active bundle and retry cleanup --force',
+          'inspect and remove only the exact expected output manually',
+        ],
+      } : {}),
     })),
     overallState: 'failed',
     receiptTargets: rebuildResults.map((result) => result.target),

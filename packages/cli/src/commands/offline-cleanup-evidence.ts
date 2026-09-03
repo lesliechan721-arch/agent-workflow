@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'fs-extra';
 
 import type { PlatformName, Scope } from '../types.js';
 import type { CatalogSourceReferenceInventory } from '../utils/catalog-source-references.js';
+import type { OwnedComponent, OwnerIdentity } from '../utils/ownership.js';
 
 export interface OfflineCleanupTargetEvidence {
   reason: 'sourceMissing' | 'bundleUnavailable';
@@ -15,16 +17,82 @@ export interface OfflineCleanupTargetEvidence {
   plan: OfflineCleanupPlan;
   planDigest: string;
   targetFingerprint: string;
+  forceExclusive?: true;
 }
 
 export interface OfflineCleanupPlanAction {
   action: 'removeOwnedOutput' | 'removeNativeRegistration';
-  kind: 'namespacedOwner' | 'namespacedMarketplace';
+  kind: 'namespacedOwner' | 'namespacedMarketplace' | 'skill-directory' | 'owned-text-file';
   target: string;
+  allowedRoot?: string;
+  owner?: OwnerIdentity;
+  pathEvidence?: string;
   marketplaceName?: string;
   activationScope?: Scope;
   projectKey?: string | null;
   pluginVersion?: string;
+}
+
+async function pathEvidence(component: Extract<OwnedComponent, { path: string }>): Promise<string> {
+  const target = await fs.lstat(component.path).then((stats) => ({
+    type: stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : stats.isSymbolicLink() ? 'symlink' : 'other',
+    dev: stats.dev,
+    ino: stats.ino,
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+  })).catch((error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT'
+    ? { type: 'absent' }
+    : { type: 'error', code: (error as NodeJS.ErrnoException).code ?? 'unknown' });
+  const ownershipPath = component.kind === 'skill-directory'
+    ? path.join(component.path, '.agent-workflows-owner.json')
+    : component.path;
+  const ownership = await fs.readFile(ownershipPath).then((content) =>
+    `sha256:${crypto.createHash('sha256').update(content).digest('hex')}`)
+    .catch((error: unknown) => `unreadable:${(error as NodeJS.ErrnoException).code ?? 'unknown'}`);
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify({ target, ownership })).digest('hex')}`;
+}
+
+export async function forceOfflineCleanupEvidence(options: {
+  reason: OfflineCleanupTargetEvidence['reason'];
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  platform: PlatformName;
+  scope: Scope;
+  components: ReadonlyArray<Extract<OwnedComponent, { path: string }>>;
+}): Promise<OfflineCleanupTargetEvidence> {
+  const actions = await Promise.all(options.components.map(async (component): Promise<OfflineCleanupPlanAction> => ({
+    action: 'removeOwnedOutput',
+    kind: component.kind,
+    target: component.path,
+    allowedRoot: component.allowedRoot,
+    owner: component.identity,
+    pathEvidence: await pathEvidence(component),
+  })));
+  actions.sort((left, right) => left.target.localeCompare(right.target));
+  const plan: OfflineCleanupPlan = {
+    schemaVersion: 1,
+    pluginId: options.pluginId,
+    sourceIdentity: options.sourceIdentity,
+    platform: options.platform,
+    scope: options.scope,
+    actions,
+  };
+  const planDigest = calculateOfflineCleanupPlanDigest(plan);
+  return {
+    reason: options.reason,
+    pluginId: options.pluginId,
+    pluginName: options.pluginName,
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+    platform: options.platform,
+    scope: options.scope,
+    plan,
+    planDigest,
+    targetFingerprint: planDigest,
+    forceExclusive: true,
+  };
 }
 
 export interface OfflineCleanupPlan {
@@ -152,6 +220,7 @@ export function offlineCleanupEvidenceMatches(
   actual: OfflineCleanupTargetEvidence,
 ): boolean {
   return expected.reason === actual.reason
+    && expected.forceExclusive === actual.forceExclusive
     && expected.pluginId === actual.pluginId
     && expected.pluginName === actual.pluginName
     && expected.sourceId === actual.sourceId

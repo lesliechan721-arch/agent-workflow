@@ -463,41 +463,6 @@ export async function inventoryLegacyOwnerReferences(options: {
       options.cwd,
     )) skillRoots.add(root);
   }
-  const marketplacesRoot = path.join(awHome, 'marketplaces');
-  const marketplaces = await inventoryCanonicalDirectoryEntries({
-    errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd: options.cwd,
-  });
-  for (const entry of marketplaces) {
-    const marketplaceRoot = path.join(marketplacesRoot, entry.name);
-    if (!await inventoryCanonicalDirectory({
-      errors,
-      location: marketplaceRoot,
-      kind: 'marketplaceRootValidation',
-      env,
-      cwd: options.cwd,
-    })) continue;
-    const pluginsRoot = path.join(marketplacesRoot, entry.name, 'plugins');
-    const plugins = await inventoryCanonicalDirectoryEntries({
-      errors, location: pluginsRoot, kind: 'pluginDirectoryRead', env, cwd: options.cwd,
-    });
-    for (const plugin of plugins) {
-      const pluginRoot = path.join(pluginsRoot, plugin.name);
-      if (!await inventoryCanonicalDirectory({
-        errors,
-        location: pluginRoot,
-        kind: 'pluginDirectoryRead',
-        env,
-        cwd: options.cwd,
-      })) continue;
-      for (const root of await resolveCanonicalPluginSkillRoots(
-        pluginRoot,
-        false,
-        errors,
-        env,
-        options.cwd,
-      )) skillRoots.add(root);
-    }
-  }
   for (const root of skillRoots) {
     references.push(...await findDirectSkillOwnerMarkers(root, errors, env, options.cwd));
   }
@@ -636,6 +601,13 @@ async function readOwnedHeaderReference(
       'ownerHeaderPathValidation',
       env,
       cwd,
+      {
+        global: false,
+        ...(parsed.identity.sourceId ? { sourceId: parsed.identity.sourceId } : {}),
+        pluginName: parsed.identity.plugin,
+        platform: parsed.identity.platform,
+        scope: parsed.identity.scope,
+      },
     ));
     return null;
   }
