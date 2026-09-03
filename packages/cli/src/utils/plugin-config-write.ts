@@ -23,6 +23,7 @@ import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js
 import {
   assertReadyPluginConfigStore,
   assertSafePluginConfigSegment,
+  codexNativeRefreshKeys,
   coercePluginConfigUpdates,
   patchPluginConfigStore,
   readPluginConfigStore,
@@ -563,6 +564,18 @@ async function applyPluginConfigWriteUnlocked(
 
   for (const key of requestedRemoveKeys) {
     if (!schema[key]) throw new Error(`Unknown config key "${key}".`);
+  }
+
+  if (options.scope === 'project') {
+    const userOnlyKeys = codexNativeRefreshKeys(schemaPlugin.manifest);
+    const rejectedKeys = Object.keys(requestedUpdates).filter((key) => userOnlyKeys.has(key));
+    if (rejectedKeys.length > 0) {
+      const error = new Error(
+        `sharedNativeConfigUserScopeRequired: Codex native Skill refresh keys can only be set in user scope: ${rejectedKeys.join(', ')}.`,
+      ) as Error & { code: string };
+      error.code = 'sharedNativeConfigUserScopeRequired';
+      throw error;
+    }
   }
 
   const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });

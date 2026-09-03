@@ -10359,6 +10359,19 @@ describe('five namespaced write commands', () => {
     expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
 
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'project', '--value-json', '15',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigUserScopeRequired' })] },
+    });
+    const projectStoreAfterReject = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(projectStoreAfterReject.values).not.toHaveProperty('exploreMinimumInitialWaitMinutes');
+
     const userInstall = await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
     ]);

@@ -35,7 +35,7 @@
 - renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；renderer 只返回与该集合精确相等的 `ArtifactPlan`，不直接写平台文件。AW direct writer 不请求 `codex-native` target。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
-- Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只允许 user-only 字段，且不能与静态 Codex Skill 同名。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
+- Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只能在 user scope 写入，project scope 的 set 必须拒绝，且不能与静态 Codex Skill 同名。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
 - Codex native dynamic projection 在 payload 内使用固定 `.agents-plugin/aw-codex-native-render.json` receipt。schema 1 的 kind 是 `aw-codex-native-render`，strategy 固定为 `shared-user`；它只保存 logical plugin/source/version、renderer、规范化 target identity、per-target config/artifact digest、聚合 config/render-input digest 和排除 receipt 自身后的 payload digest，不保存原始 config。所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，不受 scope 是否重叠影响。target 按稳定 ID 排序。receipt 是可重建的 projection evidence，不是 installed ledger。
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。

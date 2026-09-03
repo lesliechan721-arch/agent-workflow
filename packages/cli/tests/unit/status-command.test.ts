@@ -195,9 +195,9 @@ describe('status v7 current behavior', () => {
 
     expect(result.payload.schemaVersion).toBe(7);
     const target = result.payload.targets[0]!;
-    expect(target).toMatchObject({ pluginId: 'local/demo', state: 'orphaned' });
+    expect(target).toMatchObject({ pluginId: 'local/demo', state: 'absent' });
     expect(target.components).toContainEqual(expect.objectContaining({
-      kind: 'ownership', key: 'native', state: 'partial',
+      kind: 'ownership', key: 'native', state: 'absent',
     }));
     expect(statusTargetIntent(target)).toEqual({ enabled: false, scopes: [], relation: 'none' });
     expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
@@ -529,7 +529,7 @@ describe('status v7 current behavior', () => {
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'local/demo',
-      state: 'orphaned',
+      state: 'absent',
     })]);
     expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
       enabled: false, scopes: [], relation: 'none',

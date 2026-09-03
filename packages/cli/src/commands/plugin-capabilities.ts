@@ -103,6 +103,9 @@ const adapterFacts: Readonly<Partial<Record<
       requires: 'codex.skill target with one supported delivery shape.',
       conflicts: 'Any non-codex.skill target.',
     },
+    'artifacts.targets[].refreshKeys': {
+      requires: 'Config fields referenced by codex-native targets are writable only in user scope.',
+    },
     'artifacts.targets[].runtimeImports': {
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',
       conflicts: 'Using the reuse edge as an installation dependency.',

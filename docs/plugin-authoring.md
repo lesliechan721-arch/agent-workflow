@@ -101,7 +101,7 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。native target 使用 user 配置 profile；user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。
+每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。native target 使用 user 配置 profile；与 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。
 
 AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
 

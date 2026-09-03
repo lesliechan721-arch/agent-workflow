@@ -1103,6 +1103,7 @@ export async function statusCommandV7(options: {
     scope: Scope;
     marketplaceName: string;
     marketplaceRoot: string;
+    desired: boolean;
   }) => async (): Promise<OwnedProbeResult> => {
     const key = [
       probe.sourceIdentity,
@@ -1110,9 +1111,15 @@ export async function statusCommandV7(options: {
       probe.platform,
       probe.scope,
       probe.marketplaceName,
+      String(probe.desired),
     ].join('\0');
     let value = nativeProbeCache.get(key);
     if (!value) {
+      const hasLocalResidue = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === probe.sourceId
+        && reference.pluginName === probe.pluginName
+        && reference.platform === probe.platform);
       value = probe.platform === 'codex'
           ? inspectCodexRegistration(
             `${probe.pluginName}@${probe.marketplaceName}`,
@@ -1123,7 +1130,9 @@ export async function statusCommandV7(options: {
                 'codexNativeObservationFailed: status requires Codex plugin list evidence.',
               );
             }
-            if (registration.observation.state === 'unobserved') return 'partial' as const;
+            if (registration.observation.state === 'unobserved') {
+              return probe.desired || hasLocalResidue ? 'partial' as const : 'absent' as const;
+            }
             if (registration.observation.value === 'absent') return 'absent' as const;
             return registration.activations[probe.scope] === true
               ? 'present' as const
@@ -1487,6 +1496,8 @@ export async function statusCommandV7(options: {
                         scope,
                         marketplaceName,
                         marketplaceRoot,
+                        desired: sourceDesired.get(desiredTargetKey(plugin.pluginId, platform))
+                          ?.scopes.includes(scope) === true,
                       }),
                       shallow: true,
                     });
@@ -1639,16 +1650,18 @@ export async function statusCommandV7(options: {
                                   debugLogger: createNoopDebugLogger(),
                                 },
                                 userActivationDesired: codexDesiredUserActivationIds,
-                              nativeProbe: readOnlyNativeProbe({
+                                nativeProbe: readOnlyNativeProbe({
                                   pluginName: dependencyName,
                                   sourceId: item.resolution!.sourceId,
                                   sourceIdentity: item.resolution!.sourceIdentity,
                                   platform,
                                   scope: dependencyScope,
                                   marketplaceName: dependencyMarketplaceName,
-                                marketplaceRoot,
-                              }),
-                              shallow: true,
+                                  marketplaceRoot,
+                                  desired: sourceDesired.get(desiredTargetKey(dependencyId, platform))
+                                    ?.scopes.includes(dependencyScope) === true,
+                                }),
+                                shallow: true,
                               });
                               const dependencyLiveState = projectedLiveState({
                                 inspection: dependencyInspected.inspection,
@@ -2373,7 +2386,9 @@ export async function statusCommandV7(options: {
         ? 'partial' as const
         : observedTargets.some((candidate) => candidate.state === 'present')
           ? 'present' as const
-          : 'absent' as const;
+          : sharedNative?.staleCacheObserved
+            ? 'partial' as const
+            : 'absent' as const;
     const hasSourceError = observedTargets.some((candidate) => candidate.errors.some((error) =>
       error.code === 'sourceMissing'
       || error.code === 'catalogSourceUnavailable'
@@ -2504,7 +2519,11 @@ export async function statusCommandV7(options: {
       ...ownershipComponents.map((component): StatusV7Component => ({
         kind: 'ownership',
         key: component.key,
-        state: component.state,
+        state: component.key === 'native'
+          && component.state === 'absent'
+          && sharedNative?.staleCacheObserved
+          ? 'partial'
+          : component.state,
         ...(component.error ? { metadata: { errorCode: component.error.code } } : {}),
       })),
       ...(sharedNative ? [{
