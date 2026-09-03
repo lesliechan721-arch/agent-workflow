@@ -249,6 +249,21 @@ describe('multi-source performance budgets', () => {
       ...createCommandExecutionContext({
         env,
         nativeCliRunner: async (invocation) => {
+          if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                installed: pluginAdded ? [{
+                  pluginId: `${plugin.manifest.name}@${marketplaceName}`,
+                  installed: true,
+                  enabled: true,
+                  version: plugin.manifest.version,
+                }] : [],
+                available: [],
+              }),
+              stderr: '',
+            };
+          }
           if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
             marketplaceAdded = true;
             await writeCodexConfig();
