@@ -886,6 +886,9 @@ describe('manifest utils', () => {
           type: 'string',
           default: 'gpt-5.4-mini',
         },
+        userOnly: {
+          type: 'string',
+        },
       },
     };
 
@@ -908,6 +911,29 @@ describe('manifest utils', () => {
       manifest: {
         artifacts: {
           targets: [expect.objectContaining(validTarget)],
+        },
+      },
+    });
+
+    manifest.artifacts = {
+      targets: [{
+        id: 'native-codex-skill',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: ['model'],
+        skillKey: 'native-codex-skill',
+      }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        artifacts: {
+          targets: [expect.objectContaining({
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          })],
         },
       },
     });
@@ -964,6 +990,7 @@ describe('manifest utils', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: ['model'],
@@ -992,6 +1019,7 @@ describe('manifest utils', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: ['model'],
@@ -1033,7 +1061,9 @@ describe('manifest utils', () => {
       ],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('duplicate artifact id + target');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'duplicate artifact id "lightweight-instruction" for surface/scope "codex:project"',
+    );
 
     manifest.artifacts = {
       targets: [
@@ -1069,6 +1099,7 @@ describe('manifest utils', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],
@@ -1099,6 +1130,7 @@ describe('manifest utils', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         projectManagedKind: 'skill',
         states: ['present'],
         refreshKeys: [],

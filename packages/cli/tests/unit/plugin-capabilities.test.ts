@@ -77,6 +77,19 @@ describe('plugin capabilities command', () => {
     expect(output.stderr()).toContain('Unknown plugin capability surface');
   });
 
+  it('publishes the exact renderer request context contract', async () => {
+    const output = capture();
+    expect(await runCli(['plugin', 'capabilities', '--surface', 'artifacts', '--json'], {
+      io: output.io,
+    })).toBe(0);
+    const result = JSON.parse(output.stdout());
+    expect(result.capabilities.artifacts).toContainEqual(expect.objectContaining({
+      field: 'rendererContext.requestedArtifactIds',
+      required: true,
+      requires: 'Return exactly these declared artifacts and no other artifacts.',
+    }));
+  });
+
   it('renders a compact human view', async () => {
     const output = capture();
     expect(await runCli(['plugin', 'capabilities', '--surface', 'post-apply'], {

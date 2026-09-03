@@ -267,11 +267,32 @@ export async function renderArtifactPlan(context) {
     throw new Error(`Unsupported platform: ${platform}`);
   }
 
+  if (!Array.isArray(context?.requestedArtifactIds) || context.requestedArtifactIds.length === 0) {
+    throw new Error('requestedArtifactIds must be a non-empty array.');
+  }
+  const requestedArtifactIds = new Set(context.requestedArtifactIds);
+  if (requestedArtifactIds.size !== context.requestedArtifactIds.length) {
+    throw new Error('requestedArtifactIds must not contain duplicates.');
+  }
+  const knownArtifactIds = new Set([
+    CODEX_EXPLORE_SKILL_ID,
+    ...CODEX_EXPLORE_ROLES.map((role) => role.id),
+    CODEX_SUBAGENT_GUIDE_SKILL_ID,
+    ...CODEX_SUBAGENT_ROLES.map((role) => role.id),
+  ]);
+  for (const id of requestedArtifactIds) {
+    if (!knownArtifactIds.has(id)) throw new Error(`Unknown requested artifact ID: ${id}`);
+  }
+
   const defaults = await readManifestDefaults();
   const config = resolveConfigValues(context, defaults);
   const [exploreSkillTemplate, subagentSkillTemplate] = await Promise.all([
-    readSkillTemplate(context, CODEX_EXPLORE_SKILL_ID, CODEX_EXPLORE_SKILL_KEY),
-    readSkillTemplate(context, CODEX_SUBAGENT_GUIDE_SKILL_ID, CODEX_SUBAGENT_GUIDE_SKILL_KEY),
+    requestedArtifactIds.has(CODEX_EXPLORE_SKILL_ID)
+      ? readSkillTemplate(context, CODEX_EXPLORE_SKILL_ID, CODEX_EXPLORE_SKILL_KEY)
+      : undefined,
+    requestedArtifactIds.has(CODEX_SUBAGENT_GUIDE_SKILL_ID)
+      ? readSkillTemplate(context, CODEX_SUBAGENT_GUIDE_SKILL_ID, CODEX_SUBAGENT_GUIDE_SKILL_KEY)
+      : undefined,
   ]);
   const exploreDeveloperInstructions = renderExploreRoleDeveloperInstructions();
   const subagentDeveloperInstructions = renderSubagentRoleDeveloperInstructions();
@@ -279,7 +300,7 @@ export async function renderArtifactPlan(context) {
   return {
     version: 2,
     artifacts: [
-      {
+      ...(exploreSkillTemplate ? [{
         id: CODEX_EXPLORE_SKILL_ID,
         kind: 'skill',
         platform: 'codex',
@@ -301,11 +322,11 @@ export async function renderArtifactPlan(context) {
             }),
           },
         },
-      },
-      ...CODEX_EXPLORE_ROLES.map((role) =>
+      }] : []),
+      ...CODEX_EXPLORE_ROLES.filter((role) => requestedArtifactIds.has(role.id)).map((role) =>
         renderRoleArtifact(role, exploreDeveloperInstructions, config.roles[role.key] ?? {}),
       ),
-      {
+      ...(subagentSkillTemplate ? [{
         id: CODEX_SUBAGENT_GUIDE_SKILL_ID,
         kind: 'skill',
         platform: 'codex',
@@ -324,8 +345,8 @@ export async function renderArtifactPlan(context) {
             }),
           },
         },
-      },
-      ...CODEX_SUBAGENT_ROLES.map((role) =>
+      }] : []),
+      ...CODEX_SUBAGENT_ROLES.filter((role) => requestedArtifactIds.has(role.id)).map((role) =>
         renderRoleArtifact(role, subagentDeveloperInstructions, config.roles[role.key] ?? {}),
       ),
     ],

@@ -13,13 +13,14 @@ import type {
   DeveloperInstructionsBlockArtifact,
   PlatformName,
   DistributionName,
+  NormalizedPluginManifest,
   PluginArtifactTargetDefinition,
-  PluginManifestSource,
   Scope,
 } from '../types.js';
 import type { ResolvedArtifactRenderConfig } from './artifact-renderer.js';
 import { assertPlatformFieldSupported } from './manifest.js';
 import { validatePortableSkillName } from './dynamic-skill-tree.js';
+import { resolveArtifactRequest } from './artifact-request.js';
 
 const SUPPORTED_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
@@ -131,7 +132,7 @@ function resolvePlanObject(plan: unknown): ArtifactPlan {
 }
 
 function getDeclaredTargets(options: {
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   platform: PlatformName | DistributionName;
   scope: Scope;
 }): Map<string, PluginArtifactTargetDefinition> {
@@ -525,7 +526,7 @@ function artifactSortKey(artifact: ValidatedArtifactPlanArtifact): [number, stri
 }
 
 function resolveDigestSalt(options: {
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   rendererDigest?: string;
   manifestDigest?: string;
 }): string {
@@ -560,20 +561,31 @@ export function createArtifactConfigDigest(options: {
 
 export function validateArtifactPlan(options: {
   pluginName?: string;
-  manifest: PluginManifestSource;
+  manifest: NormalizedPluginManifest;
   plan: unknown;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  requestedArtifactIds: readonly string[];
   renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
   rendererDigest?: string;
   manifestDigest?: string;
 }): ValidatedArtifactPlan {
   const pluginName = options.pluginName ?? options.manifest.name;
-  const declarationMap = getDeclaredTargets({
+  const allDeclarations = getDeclaredTargets({
     manifest: options.manifest,
     platform: options.platform,
     scope: options.scope,
   });
+  const request = resolveArtifactRequest({
+    manifest: options.manifest,
+    platform: options.platform,
+    scope: options.scope,
+    requestedArtifactIds: options.requestedArtifactIds,
+  });
+  const requestedIds = new Set(request.requestedArtifactIds);
+  const declarationMap = new Map(
+    [...allDeclarations].filter(([, declaration]) => requestedIds.has(declaration.id)),
+  );
   const parsedPlan = resolvePlanObject(options.plan);
   const digestSalt = resolveDigestSalt({
     manifest: options.manifest,

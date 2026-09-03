@@ -93,7 +93,19 @@ const adapterFacts: Readonly<Partial<Record<
   },
   artifacts: {
     'scripts.artifacts.render': { requires: 'artifacts.targets.' },
+    'rendererContext.requestedArtifactIds': {
+      requires: 'Return exactly these declared artifacts and no other artifacts.',
+      provenance: ['CLI artifact renderer context'],
+    },
     'artifacts.targets': { requires: 'scripts.artifacts.render and complete static target identity.' },
+    'artifacts.targets[].delivery': {
+      profiles: 'CODEX dynamic Skill',
+      requires: 'codex.skill target with one supported delivery shape.',
+      conflicts: 'Any non-codex.skill target.',
+    },
+    'artifacts.targets[].refreshKeys': {
+      requires: 'Config fields referenced by codex-native targets are writable only in user scope.',
+    },
     'artifacts.targets[].runtimeImports': {
       requires: 'A provider runtimeExports entry resolved into the consumer bundle.',
       conflicts: 'Using the reuse edge as an installation dependency.',

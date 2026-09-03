@@ -90,7 +90,7 @@ describe('AW capability contracts', () => {
       },
       config: { fields: {} },
       scripts: { postApply: { path: './scripts/post-apply.mjs' } },
-      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', states: ['present'], refreshKeys: [] }] },
+      artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [] }] },
       distributions: { agentSkills: { skills: './portable' } },
     }))).toEqual([
       'aw.dynamic-artifacts.v2',

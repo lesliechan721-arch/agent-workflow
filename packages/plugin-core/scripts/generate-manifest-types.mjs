@@ -9,7 +9,7 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const schemaPath = path.join(packageRoot, 'schemas', 'plugin-manifest-v3.json')
 const outputPath = path.join(packageRoot, 'src', 'generated', 'plugin-manifest-v3.ts')
 const schema = JSON.parse(await fs.readFile(schemaPath, 'utf8'))
-const generated = await compile(schema, 'PluginManifestSourceV3', {
+const generated = (await compile(schema, 'PluginManifestSourceV3', {
   bannerComment: '/* This file is generated. Run `pnpm generate` in packages/plugin-core to update it. */',
   declareExternallyReferenced: true,
   enableConstEnums: false,
@@ -21,7 +21,7 @@ const generated = await compile(schema, 'PluginManifestSourceV3', {
     trailingComma: 'all',
   },
   unreachableDefinitions: true,
-})
+})).replace(/[\t ]+$/gmu, '')
 
 if (process.argv.includes('--check')) {
   const current = await fs.readFile(outputPath, 'utf8').catch(() => '')

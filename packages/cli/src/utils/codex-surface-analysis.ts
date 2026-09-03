@@ -19,8 +19,7 @@ export type CodexExtensionKind =
   | 'skill'
   | 'instruction'
   | 'permission'
-  | 'agent'
-  | 'config';
+  | 'agent';
 export type CodexSurfaceClassification =
   | 'empty'
   | 'native'
@@ -51,6 +50,7 @@ export interface CodexSurfaceAnalysisOptions {
 
 export interface CodexSurfaceAnalysis {
   ok: boolean;
+  configInputs: string[];
   nativeKinds: CodexNativeKind[];
   extensionKinds: CodexExtensionKind[];
   unsupportedKinds: CodexUnsupportedNativeKind[];
@@ -95,7 +95,6 @@ const EXTENSION_KIND_ORDER: CodexExtensionKind[] = [
   'instruction',
   'permission',
   'agent',
-  'config',
 ];
 
 function compareText(left: string, right: string): number {
@@ -169,6 +168,7 @@ export function analyzeCodexSurface(
   if (!supportsPlatform(manifest, 'codex')) {
     return {
       ok: true,
+      configInputs: [],
       nativeKinds: [],
       extensionKinds: [],
       unsupportedKinds: [],
@@ -198,15 +198,7 @@ export function analyzeCodexSurface(
   if (manifest.apps) declareNative('app', 'manifest.apps');
   if (manifest.slashCommands) unsupportedKinds.add('slashCommand');
 
-  if (manifest.config) {
-    extensionKinds.add('config');
-    addAwComponent(components, {
-      key: 'manifest.config',
-      kind: 'config',
-      scopes: [...BOTH_SCOPES],
-      dynamic: true,
-    });
-  }
+  const configInputs = Object.keys(manifest.config?.fields ?? {}).sort(compareText);
 
   for (const instruction of resolvePlatformEntries(manifest.extensions?.instructions, 'codex')) {
     extensionKinds.add('instruction');
@@ -245,14 +237,26 @@ export function analyzeCodexSurface(
       : target.target === 'codex.agentRole'
         ? 'agent'
         : 'instruction';
-    extensionKinds.add(kind);
-    addAwComponent(components, {
-      key: `artifacts.targets:${target.id}`,
-      kind,
-      scopes: [...target.scopes],
-      dynamic: true,
-      name: target.skillKey ?? target.roleKey ?? target.id,
-    });
+    if (target.target === 'codex.skill' && target.delivery?.mode === 'codex-native') {
+      nativeKinds.add('skill');
+      components.push({
+        key: `artifacts.targets:${target.id}`,
+        kind: 'skill',
+        owner: 'codex-native',
+        scopes: [...target.scopes],
+        dynamic: true,
+        name: target.skillKey,
+      });
+    } else {
+      extensionKinds.add(kind);
+      addAwComponent(components, {
+        key: `artifacts.targets:${target.id}`,
+        kind,
+        scopes: [...target.scopes],
+        dynamic: true,
+        name: target.skillKey ?? target.roleKey ?? target.id,
+      });
+    }
   }
 
   const orderedNativeKinds = NATIVE_KIND_ORDER
@@ -265,7 +269,9 @@ export function analyzeCodexSurface(
     components.some((component) => component.owner === 'aw'
       && component.dynamic
       && component.kind === kind)
-    && (options.nativeArtifactNames?.[kind]?.length ?? 0) === 0);
+    && components.some((component) => component.owner === 'codex-native'
+      && component.kind === kind
+      && !component.name));
   const errorCode = collisions.length > 0
     ? 'codexSurfaceOwnerCollision' as const
     : missingNativeIdentityKinds.length > 0
@@ -293,6 +299,7 @@ export function analyzeCodexSurface(
           : 'none';
   return {
     ok: errorCode === undefined,
+    configInputs,
     nativeKinds: orderedNativeKinds,
     extensionKinds: orderedExtensionKinds,
     unsupportedKinds: orderedUnsupportedKinds,

@@ -160,6 +160,96 @@ describe('plugin manifest v3 structure', () => {
     }))).toThrow(PluginManifestStructureError)
   })
 
+  it('enforces codex.skill delivery', () => {
+    const target = {
+      id: 'dynamic', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+      states: ['present'], refreshKeys: ['userOnly'], skillKey: 'dynamic',
+    }
+    const config = {
+      fields: {
+        userOnly: { type: 'string' },
+        shared: { type: 'string' },
+      },
+    }
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config, artifacts: { targets: [target] },
+    }))).toThrow(/delivery/u)
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{ ...target, delivery: { mode: 'aw-extension' } }] },
+    }))).not.toThrow()
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{ ...target, delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }] },
+    }))).not.toThrow()
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3, config,
+      artifacts: { targets: [{
+        ...target,
+        target: 'claude.skill',
+        platform: 'claude',
+        delivery: { mode: 'aw-extension' },
+      }] },
+    }))).toThrow(/additional properties/u)
+  })
+
+  it('requires artifact IDs to be unique only within overlapping surface scopes', () => {
+    const codexInstruction = {
+      id: 'shared-id', platform: 'codex', scopes: ['user'],
+      target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: [],
+    }
+    const codexRole = {
+      id: 'shared-id', platform: 'codex', scopes: ['user'],
+      target: 'codex.agentRole', states: ['present'], refreshKeys: [], roleKey: 'shared-role',
+    }
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+      artifacts: { targets: [codexInstruction, codexRole] },
+    }))).toThrow(/duplicate artifact id "shared-id" for surface\/scope "codex:user"/u)
+
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'] },
+      },
+      artifacts: { targets: [
+        codexInstruction,
+        {
+          id: 'shared-id', platform: 'claude', scopes: ['user'],
+          target: 'claude.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-skill',
+        },
+      ] },
+    }))).not.toThrow()
+  })
+
+  it('requires codex-native IDs and Skill keys to be globally unique across scopes', () => {
+    const nativeTarget = {
+      id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+      delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+      states: ['present'], refreshKeys: [], skillKey: 'native-skill',
+    }
+    const nativeManifest = (second: Record<string, unknown>) => manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+      artifacts: { targets: [nativeTarget, { ...nativeTarget, scopes: ['project'], ...second }] },
+    })
+    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ skillKey: 'other-skill' })))
+      .toThrow(/duplicate codex-native artifact id "native-id" in the shared projection/u)
+    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({ id: 'other-id' })))
+      .toThrow(/duplicate codex-native skillKey "native-skill" in the shared projection/u)
+    expect(() => validatePluginManifest('/tmp/plugin', nativeManifest({
+      id: 'other-id', skillKey: 'other-skill',
+    }))).not.toThrow()
+  })
+
   it('fails closed for reserved imports and accepts only injected exports', () => {
     const withImport = (exportName: string) => manifest({
       schemaVersion: 3,

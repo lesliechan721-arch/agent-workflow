@@ -23,6 +23,7 @@ import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js
 import {
   assertReadyPluginConfigStore,
   assertSafePluginConfigSegment,
+  codexNativeRefreshKeys,
   coercePluginConfigUpdates,
   patchPluginConfigStore,
   readPluginConfigStore,
@@ -503,8 +504,21 @@ type ApplyPluginConfigWriteOptions = {
   awHomeMutationToken?: AwHomeMutationToken;
   request: PluginConfigWriteRequest;
   apply?: boolean;
+  sharedNativeApplyConfirmed?: boolean;
   reviewPreflight?: () => Promise<void> | void;
 };
+
+function changedKeysAffectSharedNativeTarget(options: {
+  plugin: PluginMeta;
+  changedKeys: readonly string[];
+}): boolean {
+  const changedKeys = new Set(options.changedKeys);
+  return (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === 'codex'
+    && target.target === 'codex.skill'
+    && target.delivery?.mode === 'codex-native'
+    && target.refreshKeys.some((key) => changedKeys.has(key)));
+}
 
 async function applyPluginConfigWriteUnlocked(
   options: ApplyPluginConfigWriteOptions,
@@ -552,6 +566,18 @@ async function applyPluginConfigWriteUnlocked(
     if (!schema[key]) throw new Error(`Unknown config key "${key}".`);
   }
 
+  if (options.scope === 'project') {
+    const userOnlyKeys = codexNativeRefreshKeys(schemaPlugin.manifest);
+    const rejectedKeys = Object.keys(requestedUpdates).filter((key) => userOnlyKeys.has(key));
+    if (rejectedKeys.length > 0) {
+      const error = new Error(
+        `sharedNativeConfigUserScopeRequired: Codex native Skill refresh keys can only be set in user scope: ${rejectedKeys.join(', ')}.`,
+      ) as Error & { code: string };
+      error.code = 'sharedNativeConfigUserScopeRequired';
+      throw error;
+    }
+  }
+
   const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
   const store = await readPluginConfigStore({
     ...configIdentity,
@@ -569,6 +595,34 @@ async function applyPluginConfigWriteUnlocked(
       || stablePluginConfigStringify(store.values[key]!) !== stablePluginConfigStringify(value))
     .map(([key]) => key);
   const changedKeys = [...updatedKeys, ...removedKeys];
+  let applyTargets = options.applyTargets;
+  const sharedNativeAffected = changedKeysAffectSharedNativeTarget({
+    plugin: schemaPlugin,
+    changedKeys,
+  });
+  if (
+    options.apply !== false
+    && options.scope === 'user'
+    && options.sharedNativeApplyConfirmed === false
+    && sharedNativeAffected
+  ) {
+    applyTargets ??= (await discoverVisibleTargets({
+      plugin: schemaPlugin,
+      pluginName,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+      rebuildRuntime: options.rebuildRuntime,
+    })).targets;
+    if (applyTargets.some((target) => target.platform === 'codex')) {
+      const error = new Error(
+        'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
+      ) as Error & { code: string };
+      error.code = 'sharedNativeConfigApplyConfirmationRequired';
+      throw error;
+    }
+  }
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({
       ...configIdentity,
@@ -634,7 +688,7 @@ async function applyPluginConfigWriteUnlocked(
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
-        applyTargets: options.applyTargets,
+        applyTargets,
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,

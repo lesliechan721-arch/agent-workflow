@@ -15,7 +15,72 @@ export type PluginPath = string
  * via the `definition` "stringArray".
  */
 export type StringArray = string[]
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "artifactTarget".
+ */
+export type ArtifactTarget = ({
+id: string
+platform?: ("codex" | "claude")
+distribution?: "agent-skills"
+scopes: ("user" | "project")[]
+target: "codex.skill"
+kind?: ("instruction" | "codexRole" | "skill")
+projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
+states: ("present" | "disabled")[]
+refreshKeys: StringArray
+requiresCodexProjectConfig?: boolean
+delivery: CodexSkillDelivery
+roleKey?: string
+skillKey?: string
+sourceDirs?: StringArray
+runtimeImports?: ArtifactRuntimeImports
+} | {
+id: string
+platform?: ("codex" | "claude")
+distribution?: "agent-skills"
+scopes: ("user" | "project")[]
+target: ("codex.developerInstructionsBlock" | "codex.agentRole" | "claude.skill" | "agent-skills.skill")
+kind?: ("instruction" | "codexRole" | "skill")
+projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
+states: ("present" | "disabled")[]
+refreshKeys: StringArray
+requiresCodexProjectConfig?: boolean
+roleKey?: string
+skillKey?: string
+sourceDirs?: StringArray
+runtimeImports?: ArtifactRuntimeImports
+})
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "codexSkillDelivery".
+ */
+export type CodexSkillDelivery = ({
+mode: "codex-native"
+identity: "shared"
+renderProfile: "user"
+} | {
+mode: "aw-extension"
+})
 export type Capabilities = string[]
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "artifactRuntimeImports".
+ */
+export type ArtifactRuntimeImports = {
+name: string
+plugin: string
+export: string
+resolved?: {
+path: string
+digest: string
+providerPluginId: string
+providerVersion: Semver
+source: string
+requiredCapabilities: Capabilities
+capabilitySetDigest: string
+}
+}[]
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
@@ -195,39 +260,6 @@ agentOverrides?: PlatformOverrides
  */
 export interface Artifacts {
 targets?: ArtifactTarget[]
-}
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "artifactTarget".
- */
-export interface ArtifactTarget {
-id: string
-platform?: ("codex" | "claude")
-distribution?: "agent-skills"
-scopes: ("user" | "project")[]
-target: ("codex.developerInstructionsBlock" | "codex.agentRole" | "codex.skill" | "claude.skill" | "agent-skills.skill")
-kind?: ("instruction" | "codexRole" | "skill")
-projectManagedKind?: ("skill" | "mcpServer" | "instruction" | "permission" | "hook" | "agent")
-states: ("present" | "disabled")[]
-refreshKeys: StringArray
-requiresCodexProjectConfig?: boolean
-roleKey?: string
-skillKey?: string
-sourceDirs?: StringArray
-runtimeImports?: {
-name: string
-plugin: string
-export: string
-resolved?: {
-path: string
-digest: string
-providerPluginId: string
-providerVersion: Semver
-source: string
-requiredCapabilities: Capabilities
-capabilitySetDigest: string
-}
-}[]
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema

@@ -2,6 +2,11 @@ import path from 'node:path';
 
 import type { CodexMarketplaceSnapshot } from './codex-config.js';
 import { tryParseStrictSemVer } from './manifest.js';
+import {
+  codexNativeRenderProjectionsEqual,
+  type CodexNativeRenderProjection,
+  type CodexNativeRenderReceipt,
+} from './codex-native-render-receipt.js';
 import type { CodexNativePluginObservation } from './codex-native-observation.js';
 
 export type CodexSharedNativeDiagnostic =
@@ -17,7 +22,13 @@ export type CodexSharedNativeDiagnostic =
   | 'manifestIdentityMismatch'
   | 'manifestVersionInvalid'
   | 'payloadPathUnsafe'
-  | 'payloadDigestMismatch';
+  | 'payloadDigestMismatch'
+  | 'projectionReceiptMissing'
+  | 'projectionReceiptUnreadable'
+  | 'projectionExpectedPayloadDigestMissing'
+  | 'projectionReceiptIdentityMismatch'
+  | 'projectionPayloadDigestMismatch'
+  | 'projectionRenderDrift';
 
 export type CodexSharedNativeState = 'missing' | 'usable' | 'replaceable' | 'blocked' | 'unobserved';
 
@@ -36,7 +47,7 @@ export type CodexSharedNativeInspection =
     }
   | {
       state: 'replaceable';
-      reason: 'outdated' | 'damaged';
+      reason: 'outdated' | 'damaged' | 'renderDrift';
       version?: string;
       desiredVersion?: string;
       diagnostic?: CodexSharedNativeDiagnostic;
@@ -70,6 +81,13 @@ export interface CodexSharedNativeEvidence {
   marketplacePathSafe: boolean;
   observation: CodexNativePluginObservation;
   manifest: CodexSharedNativeManifestEvidence;
+  expectedProjectionRequired?: boolean;
+  expectedProjectionIdentity?: Pick<CodexNativeRenderProjection, 'logicalPluginId' | 'strategy'>;
+  expectedProjection?: CodexNativeRenderProjection;
+  projectionReceipt?:
+    | { state: 'absent' }
+    | { state: 'unreadable' }
+    | { state: 'present'; receipt: CodexNativeRenderReceipt };
 }
 
 function samePath(left: string, right: string): boolean {
@@ -150,6 +168,24 @@ export function inspectCodexSharedNative(
   ) {
     return blocked('foreign', 'manifestIdentityMismatch');
   }
+  const projectionExpected = evidence.expectedProjectionRequired
+    || evidence.expectedProjection !== undefined;
+  let projectionReceipt: CodexNativeRenderReceipt | undefined;
+  if (projectionExpected) {
+    if (evidence.projectionReceipt === undefined || evidence.projectionReceipt.state === 'absent') {
+      return damaged('projectionReceiptMissing');
+    }
+    if (evidence.projectionReceipt.state === 'unreadable') {
+      return blocked('unreadable', 'projectionReceiptUnreadable');
+    }
+    projectionReceipt = evidence.projectionReceipt.receipt;
+    const expectedIdentity = evidence.expectedProjectionIdentity ?? evidence.expectedProjection;
+    if (expectedIdentity
+      && (projectionReceipt.logicalPluginId !== expectedIdentity.logicalPluginId
+        || projectionReceipt.strategy !== expectedIdentity.strategy)) {
+      return blocked('foreign', 'projectionReceiptIdentityMismatch');
+    }
+  }
   if (!tryParseStrictSemVer(evidence.manifest.version)) {
     return damaged('manifestVersionInvalid');
   }
@@ -167,6 +203,37 @@ export function inspectCodexSharedNative(
       reason: 'outdated',
       version: evidence.manifest.version,
       desiredVersion: evidence.desiredVersion,
+    };
+  }
+  if (projectionExpected) {
+    const receipt = projectionReceipt!;
+    if (evidence.expectedProjection === undefined) {
+      return damaged('projectionExpectedPayloadDigestMissing');
+    }
+    if (evidence.expectedPayloadDigest === undefined) {
+      return damaged('projectionExpectedPayloadDigestMissing');
+    }
+    if (receipt.logicalPluginId !== evidence.expectedProjection.logicalPluginId
+      || receipt.strategy !== evidence.expectedProjection.strategy) {
+      return blocked('foreign', 'projectionReceiptIdentityMismatch');
+    }
+    if (evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest
+      || evidence.manifest.payloadDigest !== receipt.payloadDigest
+      || receipt.payloadDigest !== evidence.expectedPayloadDigest) {
+      return damaged('projectionPayloadDigestMismatch');
+    }
+    if (!codexNativeRenderProjectionsEqual(receipt, evidence.expectedProjection)) {
+      return {
+        state: 'replaceable',
+        reason: 'renderDrift',
+        version: evidence.manifest.version,
+        desiredVersion: evidence.desiredVersion,
+        diagnostic: 'projectionRenderDrift',
+      };
+    }
+    return {
+      state: 'usable',
+      version: evidence.manifest.version,
     };
   }
   if (evidence.expectedPayloadDigest !== undefined

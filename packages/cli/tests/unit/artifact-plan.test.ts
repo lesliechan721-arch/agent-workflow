@@ -8,7 +8,7 @@ import type { PluginManifestSource } from '../../src/types.js';
 import { resolveArtifactRenderConfig } from '../../src/utils/artifact-renderer.js';
 import {
   createArtifactConfigDigest,
-  validateArtifactPlan,
+  validateArtifactPlan as validateArtifactPlanExact,
 } from '../../src/utils/artifact-plan.js';
 import {
   createCodexSkillExpectedTree,
@@ -17,6 +17,20 @@ import {
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
+
+function validateArtifactPlan(
+  options: Omit<Parameters<typeof validateArtifactPlanExact>[0], 'requestedArtifactIds'> & {
+    requestedArtifactIds?: readonly string[];
+  },
+) {
+  const requestedArtifactIds = options.requestedArtifactIds ??
+    (options.manifest.artifacts?.targets ?? [])
+      .filter((target) =>
+        (target.platform ?? target.distribution) === options.platform
+        && target.scopes.includes(options.scope))
+      .map((target) => target.id);
+  return validateArtifactPlanExact({ ...options, requestedArtifactIds });
+}
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -169,6 +183,7 @@ function createSkillManifest(): PluginManifestSource {
           platform: 'codex',
           scopes: ['project', 'user'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: ['explorerModel', 'modelReasoningEffort'],
@@ -216,6 +231,48 @@ afterEach(async () => {
 });
 
 describe('artifact plan validation', () => {
+  it('requires the plan to equal the explicit requested artifact subset', () => {
+    const manifest = createManifest();
+    const roleOnlyPlan = createPresentPlan();
+    roleOnlyPlan.artifacts = [roleOnlyPlan.artifacts[0]];
+
+    expect(validateArtifactPlan({
+      manifest,
+      plan: roleOnlyPlan,
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['codex-explorer-role'],
+      renderConfig,
+    }).artifacts.map((artifact) => artifact.id)).toEqual(['codex-explorer-role']);
+
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: createPresentPlan(),
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['codex-explorer-role'],
+      renderConfig,
+    })).toThrow('is not declared');
+
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: roleOnlyPlan,
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['codex-explorer-role', 'codex-explorer-role'],
+      renderConfig,
+    })).toThrow('duplicate artifact ID');
+
+    expect(() => validateArtifactPlan({
+      manifest,
+      plan: roleOnlyPlan,
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['unknown-artifact'],
+      renderConfig,
+    })).toThrow('is not declared for codex/user');
+  });
+
   it('accepts present and disabled dynamic artifacts and sorts them stably', () => {
     const manifest = createManifest();
     const validatedPresent = validateArtifactPlan({
@@ -250,7 +307,7 @@ describe('artifact plan validation', () => {
     });
   });
 
-  it('accepts Codex dynamic artifact declarations on dual-platform manifests and keeps Claude plans empty', () => {
+  it('accepts Codex declarations on dual-platform manifests and rejects an empty renderer request', () => {
     const baseManifest = createManifest();
     const manifest = createManifest({
       marketplace: {
@@ -275,7 +332,7 @@ describe('artifact plan validation', () => {
       'codex.agentRole',
     ]);
 
-    const validatedClaude = validateArtifactPlan({
+    expect(() => validateArtifactPlan({
       manifest,
       plan: {
         version: 2,
@@ -285,8 +342,7 @@ describe('artifact plan validation', () => {
       scope: 'project',
       renderConfig,
       rendererDigest: 'sha256:renderer-a',
-    });
-    expect(validatedClaude.artifacts).toEqual([]);
+    })).toThrow('requires at least one requested artifact ID');
   });
 
   it('rejects unknown targets, refresh keys, states, declarations, and project write surfaces', () => {

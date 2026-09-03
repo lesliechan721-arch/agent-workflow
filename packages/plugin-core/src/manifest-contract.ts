@@ -1727,6 +1727,29 @@ function normalizeArtifactRefreshKeys(
   return normalized;
 }
 
+function normalizeCodexSkillDelivery(
+  value: unknown,
+  fieldName: string,
+): NonNullable<PluginArtifactTargetDefinition['delivery']> {
+  const input = assertObject(value, fieldName);
+  const mode = ensureString(input.mode, `${fieldName}.mode`);
+  if (mode === 'aw-extension') {
+    assertAllowedKeys(input, fieldName, ['mode']);
+    return { mode };
+  }
+  if (mode === 'codex-native') {
+    assertAllowedKeys(input, fieldName, ['mode', 'identity', 'renderProfile']);
+    if (input.identity !== 'shared') {
+      throw new Error(`Invalid ${fieldName}.identity: expected "shared".`);
+    }
+    if (input.renderProfile !== 'user') {
+      throw new Error(`Invalid ${fieldName}.renderProfile: expected "user".`);
+    }
+    return { mode, identity: 'shared', renderProfile: 'user' };
+  }
+  throw new Error(`Invalid ${fieldName}.mode: expected "codex-native" or "aw-extension".`);
+}
+
 function normalizeDynamicArtifactKind(value: unknown, fieldName: string): DynamicArtifactKind {
   const kind = ensureString(value, fieldName);
   if (!DYNAMIC_ARTIFACT_KINDS.has(kind as DynamicArtifactKind)) {
@@ -1780,6 +1803,7 @@ function normalizeArtifactTargetEntry(
     'projectManagedKind',
     'states',
     'refreshKeys',
+    'delivery',
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
@@ -1792,6 +1816,12 @@ function normalizeArtifactTargetEntry(
   validateArtifactId(id, `${fieldName}.id`);
 
   const target = normalizeArtifactTarget(input.target, `${fieldName}.target`);
+  const delivery = target === 'codex.skill'
+    ? normalizeCodexSkillDelivery(input.delivery, `${fieldName}.delivery`)
+    : undefined;
+  if (target !== 'codex.skill' && input.delivery !== undefined) {
+    throw new Error(`Invalid ${fieldName}.delivery: delivery is only supported for codex.skill targets.`);
+  }
   const portable = target === 'agent-skills.skill';
   const platform = portable ? undefined : normalizePlatformName(input.platform, `${fieldName}.platform`);
   const distribution = portable
@@ -1913,6 +1943,7 @@ function normalizeArtifactTargetEntry(
     projectManagedKind,
     states: normalizeArtifactStates(input.states, `${fieldName}.states`),
     refreshKeys: normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema),
+    delivery,
     requiresCodexProjectConfig:
       input.requiresCodexProjectConfig === undefined
         ? undefined
@@ -1925,7 +1956,7 @@ function normalizeArtifactTargetEntry(
       `${fieldName}.runtimeImports`,
       reservedImports,
     ),
-  };
+  } as PluginArtifactTargetDefinition;
 }
 
 function normalizeArtifacts(
@@ -1946,8 +1977,10 @@ function normalizeArtifacts(
           throw new Error(`Invalid ${fieldName}.targets: expected an array.`);
         }
 
-        const seen = new Set<string>();
+        const seenIdsBySurfaceScope = new Set<string>();
         const seenSkillOwners = new Set<string>();
+        const seenNativeIds = new Set<string>();
+        const seenNativeSkillKeys = new Set<string>();
         return targetsInput.map((entry, index) => {
           const target = normalizeArtifactTargetEntry(
             pluginRoot,
@@ -1956,11 +1989,15 @@ function normalizeArtifacts(
             schema,
             reservedImports,
           );
-          const key = `${target.id}:${target.target}`;
-          if (seen.has(key)) {
-            throw new Error(`Invalid ${fieldName}.targets[${index}]: duplicate artifact id + target "${key}".`);
+          for (const scope of target.scopes) {
+            const surfaceScopeId = `${target.platform ?? target.distribution}:${scope}:${target.id}`;
+            if (seenIdsBySurfaceScope.has(surfaceScopeId)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate artifact id "${target.id}" for surface/scope "${target.platform ?? target.distribution}:${scope}".`,
+              );
+            }
+            seenIdsBySurfaceScope.add(surfaceScopeId);
           }
-          seen.add(key);
           if ((target.target === 'codex.skill' || target.target === 'claude.skill' || target.target === 'agent-skills.skill') && target.skillKey) {
             for (const scope of target.scopes) {
               const ownerKey = `${target.platform ?? target.distribution}:${scope}:${target.skillKey}`;
@@ -1971,6 +2008,20 @@ function normalizeArtifacts(
               }
               seenSkillOwners.add(ownerKey);
             }
+          }
+          if (target.delivery?.mode === 'codex-native') {
+            if (seenNativeIds.has(target.id)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate codex-native artifact id "${target.id}" in the shared projection.`,
+              );
+            }
+            if (target.skillKey && seenNativeSkillKeys.has(target.skillKey)) {
+              throw new Error(
+                `Invalid ${fieldName}.targets[${index}]: duplicate codex-native skillKey "${target.skillKey}" in the shared projection.`,
+              );
+            }
+            seenNativeIds.add(target.id);
+            if (target.skillKey) seenNativeSkillKeys.add(target.skillKey);
           }
           return target;
         });
@@ -2783,6 +2834,18 @@ async function validateSourceSkillInventory(
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
+  for (const [index, target] of (manifest.artifacts?.targets ?? []).entries()) {
+    if (
+      target.target === 'codex.skill'
+      && target.delivery?.mode === 'codex-native'
+      && target.skillKey
+      && staticSkillNameSet.has(target.skillKey)
+    ) {
+      throw new Error(
+        `Invalid artifacts.targets[${index}].skillKey: native dynamic Skill "${target.skillKey}" conflicts with a static Skill of the same name.`,
+      );
+    }
+  }
   const portableSkillsRoot = manifest.distributions?.agentSkills?.skills
     ? path.join(pluginRoot, stripDotSlash(manifest.distributions.agentSkills.skills))
     : null;

@@ -344,15 +344,27 @@ function validateDesiredTarget(target: DesiredTarget): void {
 
   const identityKeys = new Set<string>();
   const componentPaths = new Set<string>();
+  const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
+  const desiredComponentSet = new Set(desiredComponents);
+  const sharedNativeSkillKeys = new Set((target.plugin.manifest.artifacts?.targets ?? [])
+    .filter((artifactTarget) => artifactTarget.platform === 'codex'
+      && artifactTarget.target === 'codex.skill'
+      && artifactTarget.delivery?.mode === 'codex-native')
+    .map((artifactTarget) => artifactTarget.skillKey));
   let nativeCount = 0;
   for (const component of target.ownedComponents) {
     validateOwnerIdentity(component.identity);
+    const crossScopeLegacyNativeSkill = platform === 'codex'
+      && component.kind === 'skill-directory'
+      && !desiredComponentSet.has(component)
+      && sharedNativeSkillKeys.has(component.identity.artifactKey)
+      && component.identity.scope !== scope;
     if (
       component.identity.plugin !== pluginName
       || component.identity.sourceId !== sourceId
       || component.identity.pluginId !== pluginId
       || component.identity.platform !== platform
-      || component.identity.scope !== scope
+      || (component.identity.scope !== scope && !crossScopeLegacyNativeSkill)
     ) {
       throw new Error('Owned component identity does not match the desired target.');
     }
@@ -383,7 +395,6 @@ function validateDesiredTarget(target: DesiredTarget): void {
     }
   }
 
-  const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
   if (target.forceExclusiveCleanup && target.ownedComponents.some((component) =>
     component.kind !== 'skill-directory' && component.kind !== 'owned-text-file')) {
     throw new Error('Force cleanup only supports exclusive skill directories and owned text files.');
@@ -677,18 +688,18 @@ async function materializeTarget(options: {
         target.ownedComponents.filter((component) =>
           component.kind === 'skill-directory' || component.kind === 'owned-text-file'),
       );
-      if (driver.commitMaterialize) {
+      if (driver.rollbackMaterialize) {
         try {
           await action(
             accumulator,
-            'marketplace.commit',
-            () => driver.commitMaterialize!(target),
+            'marketplace.rollback',
+            () => driver.rollbackMaterialize!(target),
             events,
           );
-        } catch (commitError) {
+        } catch (rollbackError) {
           accumulator.failures.push({
-            phase: 'marketplace.commit',
-            message: errorMessage(commitError),
+            phase: 'marketplace.rollback',
+            message: errorMessage(rollbackError),
           });
         }
       }

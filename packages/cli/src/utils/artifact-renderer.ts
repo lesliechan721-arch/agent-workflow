@@ -41,6 +41,8 @@ import {
 } from './plugin-scripts.js';
 import { resolveAwHome } from './paths.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
+import { resolveArtifactRequest } from './artifact-request.js';
+import { validateArtifactPlan } from './artifact-plan.js';
 
 export type ArtifactRenderEvent = 'install' | 'refresh' | 'materialize';
 
@@ -74,6 +76,7 @@ export interface ArtifactRendererContext {
     issues: PluginConfigIssue[];
   };
   changedConfigKeys: string[];
+  requestedArtifactIds: string[];
   previousArtifacts: unknown[];
   artifactSources: Array<{
     id: string;
@@ -271,10 +274,12 @@ export async function writeArtifactRendererContext(options: {
   event: ArtifactRenderEvent;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  configScope?: Scope;
   cwd: string;
   commandEnv: NodeJS.ProcessEnv;
   changedConfigKeys?: string[];
   previousArtifacts?: unknown[];
+  requestedArtifactIds: readonly string[];
 }): Promise<WrittenArtifactRendererContext> {
   const event = assertArtifactRenderEvent(options.event);
   if (
@@ -295,18 +300,21 @@ export async function writeArtifactRendererContext(options: {
     sourceIdentity: options.sourceIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
-    scope: options.scope,
+    scope: options.configScope ?? options.scope,
     cwd: options.cwd,
     env: options.commandEnv,
   });
   const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
   const platform = distribution ? undefined : options.platform as PlatformName;
+  const request = resolveArtifactRequest({
+    manifest: options.target.sourceManifest,
+    platform: options.platform,
+    scope: options.scope,
+    requestedArtifactIds: options.requestedArtifactIds,
+  });
 
   const artifactSources = await Promise.all(
-    (options.target.sourceManifest.artifacts?.targets ?? [])
-      .filter((target) =>
-        (distribution ? target.distribution === distribution : target.platform === platform)
-        && target.scopes.includes(options.scope))
+    request.declarations
       .map(async (target) => ({
         id: target.id,
         target: target.target,
@@ -349,12 +357,10 @@ export async function writeArtifactRendererContext(options: {
       issues: config.issues,
     },
     changedConfigKeys: options.changedConfigKeys ?? [],
+    requestedArtifactIds: request.requestedArtifactIds,
     previousArtifacts: options.previousArtifacts ?? [],
     artifactSources,
-    runtimeImports: (options.target.sourceManifest.artifacts?.targets ?? [])
-      .filter((target) =>
-        (distribution ? target.distribution === distribution : target.platform === platform)
-        && target.scopes.includes(options.scope))
+    runtimeImports: request.declarations
       .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
         if (!runtimeImport.resolved) {
           throw new Error(`Artifact runtime import "${target.id}/${runtimeImport.name}" is not resolved in the bundle.`);
@@ -504,10 +510,12 @@ export async function runArtifactRenderer(options: {
   plugin: PluginMeta;
   platform: PlatformName | DistributionName;
   scope: Scope;
+  configScope?: Scope;
   cwd: string;
   commandEnv?: NodeJS.ProcessEnv;
   changedConfigKeys?: string[];
   previousArtifacts?: unknown[];
+  requestedArtifactIds: readonly string[];
   scriptTimeoutMs?: number;
   signal?: AbortSignal;
   runner?: PluginProcessRunner;
@@ -531,10 +539,12 @@ export async function runArtifactRenderer(options: {
     event,
     platform: options.platform,
     scope: options.scope,
+    ...(options.configScope ? { configScope: options.configScope } : {}),
     cwd: options.cwd,
     commandEnv,
     changedConfigKeys,
     previousArtifacts: options.previousArtifacts,
+    requestedArtifactIds: options.requestedArtifactIds,
   });
 
   try {
@@ -608,6 +618,16 @@ export async function runArtifactRenderer(options: {
     const plan = assertArtifactPlanEnvelope(parsed, {
       stdoutSummary,
       stderrSummary,
+    });
+    validateArtifactPlan({
+      manifest: options.plugin.manifest,
+      plan,
+      platform: options.platform,
+      scope: options.scope,
+      requestedArtifactIds: writtenContext.context.requestedArtifactIds,
+      renderConfig: writtenContext.context.config,
+      rendererDigest: target.rendererDigest,
+      manifestDigest: target.manifestDigest,
     });
 
     return {

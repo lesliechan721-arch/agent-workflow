@@ -5,13 +5,29 @@ import {
   canonicalizePluginConfigValues,
   formatPluginConfigIssue,
   matchPluginConfigPreset,
-  normalizePluginConfigDefinition,
+  normalizePluginConfigDefinition as normalizeCorePluginConfigDefinition,
   redactPluginConfigValue,
   stablePluginConfigStringify,
   validatePluginConfigDocument,
   validatePluginConfigPreset,
   validatePluginConfigValue,
 } from '../../src/plugin-config.js'
+
+function normalizePluginConfigDefinition(value: Record<string, unknown>) {
+  const fields = value.fields
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    return normalizeCorePluginConfigDefinition(value)
+  }
+  return normalizeCorePluginConfigDefinition({
+    ...value,
+    fields: Object.fromEntries(Object.entries(fields).map(([key, field]) => [
+      key,
+      typeof field === 'object' && field !== null && !Array.isArray(field)
+        ? { ...field }
+        : field,
+    ])),
+  })
+}
 
 describe('Plugin Config v2 contract', () => {
   it('normalizes scalar fields, closed choices, defaults, and type-specific limits', () => {

@@ -1058,6 +1058,7 @@ describe('authoring tools', () => {
               platform: 'codex',
               scopes: ['project'],
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               states: ['present'],
               refreshKeys: [],
               skillKey: 'repo-report',
@@ -3494,6 +3495,70 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
     });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: {
+        targets: [
+          validManifest.artifacts.targets[0],
+          {
+            ...validManifest.artifacts.targets[1],
+            id: validManifest.artifacts.targets[0].id,
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'duplicate artifact id "lightweight-instruction" for surface/scope "codex:user"',
+      ),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      marketplace: {
+        ...validManifest.marketplace,
+        policy: { ...validManifest.marketplace.policy, products: ['CODEX', 'CLAUDE'] },
+      },
+      artifacts: {
+        targets: [
+          {
+            ...validManifest.artifacts.targets[0],
+            id: 'shared-surface-id',
+            scopes: ['user'],
+          },
+          {
+            id: 'shared-surface-id',
+            platform: 'claude',
+            scopes: ['user'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'shared-claude-skill',
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(path.join(pluginDir, 'scripts', 'render-artifacts.mjs'), [
+      'const fs = await import("node:fs");',
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const artifact = context.platform === "codex" ? {',
+      '  id: "shared-surface-id", kind: "instruction", platform: "codex",',
+      '  target: "codex.developerInstructionsBlock", state: "present",',
+      '  refreshKeys: ["enableInstruction", "explorerModel"], content: "Codex surface."',
+      '} : {',
+      '  id: "shared-surface-id", kind: "skill", platform: "claude", target: "claude.skill",',
+      '  state: "present", refreshKeys: [], skillKey: "shared-claude-skill",',
+      '  content: { files: {',
+      '    "SKILL.md": "---\\nname: shared-claude-skill\\ndescription: Shared Claude Skill.\\n---\\n",',
+      '    "README.md": "# Shared Claude Skill\\n"',
+      '  } }',
+      '};',
+      'process.stdout.write(JSON.stringify({ version: 2, artifacts: [artifact] }));',
+    ].join('\n'));
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
   });
 
   it('keeps author validation aligned with Catalog build across native and portable runtime surfaces', async () => {
@@ -3654,7 +3719,9 @@ describe('authoring tools', () => {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
         },
         config: {
-          fields: { variant: { type: 'string', default: 'standard' } },
+          fields: {
+            variant: { type: 'string', default: 'standard' },
+          },
         },
         artifacts: {
           targets: [{
@@ -4048,6 +4115,7 @@ describe('authoring tools', () => {
             platform: 'codex',
             scopes: ['project'],
             target: 'codex.skill',
+            delivery: { mode: 'aw-extension' },
             projectManagedKind: 'skill',
             states: ['present'],
             refreshKeys: [],
@@ -4340,6 +4408,68 @@ describe('authoring tools', () => {
         );
       })(),
     ]);
+  });
+
+  it('validate_plugin.mjs enforces native Codex Skill identity contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-dynamic-contract-'));
+    tempDirs.push(tempRoot);
+    const fixture = await writeSourcePlugin(
+      tempRoot,
+      'native-dynamic-contract',
+      createBaseManifest('native-dynamic-contract', {
+        skills: './skills',
+        config: {
+          fields: {
+            mode: { type: 'string' },
+          },
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        artifacts: {
+          targets: [{
+            id: 'review',
+            platform: 'codex',
+            target: 'codex.skill',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            scopes: ['user'],
+            states: ['present'],
+            refreshKeys: ['mode'],
+            skillKey: 'review',
+            sourceDirs: ['./skills/review'],
+          }],
+        },
+      }),
+      {
+        'skills/review/SKILL.md': '---\nname: review\ndescription: Review.\n---\nReview.\n',
+        'skills/review/README.md': '# Review\n',
+        'scripts/render.mjs': 'process.stdout.write(JSON.stringify({version:2,artifacts:[]}));\n',
+      },
+    );
+
+    const manifest = await fs.readJson(fixture.manifestPath);
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('native dynamic Skill "review" conflicts with a static Skill'),
+    });
+
+    delete manifest.skills;
+    delete manifest.artifacts.targets[0].sourceDirs;
+    manifest.artifacts.targets.push({
+      ...manifest.artifacts.targets[0],
+      scopes: ['project'],
+      skillKey: 'other-review',
+    });
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate codex-native artifact id "review" in the shared projection'),
+    });
+
+    manifest.artifacts.targets[1].id = 'other-review';
+    manifest.artifacts.targets[1].skillKey = 'review';
+    await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
+    await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate codex-native skillKey "review" in the shared projection'),
+    });
   });
 
   it('validate_plugin.mjs rejects dynamic role metadata and missing Codex invocation policy', async () => {

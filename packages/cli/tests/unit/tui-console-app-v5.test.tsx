@@ -612,6 +612,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       displayValue: '未设置',
       required: false,
       sensitive: false,
+      writable: true,
       dirty: false,
       inherited: true,
       configured: false,
@@ -726,6 +727,7 @@ function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPageViewMo
         displayValue: '继承',
         required: true,
         sensitive: false,
+        writable: true,
         dirty: false,
         inherited: true,
         configured: false,
@@ -4690,6 +4692,37 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFieldEditor', layer: { scope: 'project' }, fieldKey: 'note',
+    });
+  });
+
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('shows shared native user-only fields as project read-only guidance at $columns x $rows', async (size) => {
+    const page = configPage();
+    const userOnly = page.groups[0]!.fields[0]!;
+    userOnly.title = '共享等待窗口';
+    userOnly.writable = false;
+    userOnly.sharedNativeRender = true;
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({
+      name: 'configFields',
+      pluginId: page.pluginId,
+      layer: { scope: 'project', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(4);
+
+    const frame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
+    expect(frame).toContain('个人默认控制共享native');
+    expect(frame).toContain('项目不可改');
+    expect(frame).toContain('影响所有项目');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).not.toMatchObject({
+      name: 'configFieldAction',
+      fieldKey: userOnly.key,
     });
   });
 

@@ -151,6 +151,7 @@ async function createFixture(
               id: 'dynamic-skill',
               platform: 'codex',
               target: 'codex.skill',
+              delivery: { mode: 'aw-extension' },
               kind: 'skill',
               scopes: ['user'],
               states: ['present'],

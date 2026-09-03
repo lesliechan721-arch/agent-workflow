@@ -169,11 +169,54 @@ interface StatusOwnershipComponent {
 export interface StatusSharedNativeProjection {
   pluginId: string;
   state: 'missing' | 'usable' | 'replaceable' | 'blocked' | 'unobserved';
-  reason?: 'outdated' | 'damaged' | 'foreign' | 'unreadable';
+  reason?: 'outdated' | 'damaged' | 'renderDrift' | 'foreign' | 'unreadable';
   version?: string;
   desiredVersion?: string;
   diagnostic?: string;
   staleCacheObserved?: boolean;
+}
+
+export function projectStatusSharedNativeReasons(
+  sharedNative: StatusSharedNativeProjection | undefined,
+  existingReasonCodes: readonly string[] = [],
+  desiredEnabled = false,
+): StatusV7Reason[] {
+  if (!sharedNative) return [];
+  const warning = (code: string, message: string): StatusV7Reason => ({
+    code,
+    message: `${code}: ${message}`,
+    severity: 'warning',
+  });
+  const blocking = (code: string, message: string): StatusV7Reason => ({
+    code,
+    message: `${code}: ${message}`,
+    severity: 'blocking',
+  });
+  return [
+    ...(sharedNative.state === 'blocked' && sharedNative.reason === 'foreign'
+      && !existingReasonCodes.includes('codexSharedNativeForeign')
+      ? [blocking('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
+      : []),
+    ...(sharedNative.state === 'blocked' && sharedNative.reason === 'unreadable'
+      && !existingReasonCodes.includes('codexSharedNativeCorrupt')
+      ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'damaged'
+      ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'outdated'
+      ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
+      : []),
+    ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'renderDrift'
+      ? [warning('codexSharedNativeRenderDrift', `${sharedNative.pluginId} render inputs changed and the shared native projection can be replaced.`)]
+      : []),
+    ...(sharedNative.staleCacheObserved
+      ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
+      : []),
+    ...(sharedNative.state === 'unobserved' && desiredEnabled
+      ? [warning('codexSharedNativeUnobserved', `${sharedNative.pluginId} was not observed by a compatible Codex consumer.`)]
+      : []),
+  ];
 }
 
 export interface StatusActivationProjection {
@@ -258,7 +301,8 @@ export function statusTargetSharedNative(
   return {
     pluginId: component.key,
     state: component.state,
-    ...(reason === 'outdated' || reason === 'damaged' || reason === 'foreign' || reason === 'unreadable'
+    ...(reason === 'outdated' || reason === 'damaged' || reason === 'renderDrift'
+      || reason === 'foreign' || reason === 'unreadable'
       ? { reason }
       : {}),
     ...(typeof component.metadata?.version === 'string'
@@ -1059,6 +1103,7 @@ export async function statusCommandV7(options: {
     scope: Scope;
     marketplaceName: string;
     marketplaceRoot: string;
+    desired: boolean;
   }) => async (): Promise<OwnedProbeResult> => {
     const key = [
       probe.sourceIdentity,
@@ -1066,9 +1111,15 @@ export async function statusCommandV7(options: {
       probe.platform,
       probe.scope,
       probe.marketplaceName,
+      String(probe.desired),
     ].join('\0');
     let value = nativeProbeCache.get(key);
     if (!value) {
+      const hasLocalResidue = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === probe.sourceId
+        && reference.pluginName === probe.pluginName
+        && reference.platform === probe.platform);
       value = probe.platform === 'codex'
           ? inspectCodexRegistration(
             `${probe.pluginName}@${probe.marketplaceName}`,
@@ -1079,7 +1130,9 @@ export async function statusCommandV7(options: {
                 'codexNativeObservationFailed: status requires Codex plugin list evidence.',
               );
             }
-            if (registration.observation.state === 'unobserved') return 'partial' as const;
+            if (registration.observation.state === 'unobserved') {
+              return probe.desired || hasLocalResidue ? 'partial' as const : 'absent' as const;
+            }
             if (registration.observation.value === 'absent') return 'absent' as const;
             return registration.activations[probe.scope] === true
               ? 'present' as const
@@ -1443,6 +1496,8 @@ export async function statusCommandV7(options: {
                         scope,
                         marketplaceName,
                         marketplaceRoot,
+                        desired: sourceDesired.get(desiredTargetKey(plugin.pluginId, platform))
+                          ?.scopes.includes(scope) === true,
                       }),
                       shallow: true,
                     });
@@ -1595,16 +1650,18 @@ export async function statusCommandV7(options: {
                                   debugLogger: createNoopDebugLogger(),
                                 },
                                 userActivationDesired: codexDesiredUserActivationIds,
-                              nativeProbe: readOnlyNativeProbe({
+                                nativeProbe: readOnlyNativeProbe({
                                   pluginName: dependencyName,
                                   sourceId: item.resolution!.sourceId,
                                   sourceIdentity: item.resolution!.sourceIdentity,
                                   platform,
                                   scope: dependencyScope,
                                   marketplaceName: dependencyMarketplaceName,
-                                marketplaceRoot,
-                              }),
-                              shallow: true,
+                                  marketplaceRoot,
+                                  desired: sourceDesired.get(desiredTargetKey(dependencyId, platform))
+                                    ?.scopes.includes(dependencyScope) === true,
+                                }),
+                                shallow: true,
                               });
                               const dependencyLiveState = projectedLiveState({
                                 inspection: dependencyInspected.inspection,
@@ -1790,18 +1847,23 @@ export async function statusCommandV7(options: {
                       activations: {},
                     };
                 let residueFailed = false;
+                const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+                  target.platform === 'codex'
+                  && target.target === 'codex.skill'
+                  && target.delivery?.mode === 'codex-native');
                 const sharedInspection = codexSurface.nativeKinds.length > 0
                   ? await inspectCodexSharedNativeLive({
                       pluginName: entry.name,
                       sourceId: item.resolution!.sourceId,
                       desiredVersion: entry.version,
-                      inspectionMode: 'shallow',
+                      inspectionMode: hasNativeRenderTargets ? 'payload' : 'shallow',
                       cwd: options.cwd,
                       env,
                       marketplaceName,
                       marketplaceRoot,
                       nativeCliRunner,
                       pluginRegistration,
+                      ...(hasNativeRenderTargets ? { nativeRenderPlugin: plugin } : {}),
                     }).catch(() => {
                       residueFailed = true;
                       return undefined;
@@ -2324,7 +2386,9 @@ export async function statusCommandV7(options: {
         ? 'partial' as const
         : observedTargets.some((candidate) => candidate.state === 'present')
           ? 'present' as const
-          : 'absent' as const;
+          : sharedNative?.staleCacheObserved
+            ? 'partial' as const
+            : 'absent' as const;
     const hasSourceError = observedTargets.some((candidate) => candidate.errors.some((error) =>
       error.code === 'sourceMissing'
       || error.code === 'catalogSourceUnavailable'
@@ -2403,26 +2467,11 @@ export async function statusCommandV7(options: {
                         ? 'needsSync'
                         : 'ready';
     const stableErrors = [
-      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'foreign'
-        && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeForeign')
-        ? [blocking('codexSharedNativeForeign', `${sharedNative.pluginId} is foreign and was preserved.`)]
-        : []),
-      ...(sharedNative?.state === 'blocked' && sharedNative.reason === 'unreadable'
-        && !baseTargetErrors.some((error) => error.code === 'codexSharedNativeCorrupt')
-        ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
-        : []),
-      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'damaged'
-        ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
-        : []),
-      ...(sharedNative?.state === 'replaceable' && sharedNative.reason === 'outdated'
-        ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
-        : []),
-      ...(sharedNative?.staleCacheObserved
-        ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]
-        : []),
-      ...(sharedNative?.state === 'unobserved' && desiredEnabled
-        ? [warning('codexSharedNativeUnobserved', `${sharedNative.pluginId} was not observed by a compatible Codex consumer.`)]
-        : []),
+      ...projectStatusSharedNativeReasons(
+        sharedNative,
+        baseTargetErrors.map((error) => error.code),
+        desiredEnabled,
+      ),
       ...(desiredOverlapConflict
         ? [blocking('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
         : []),
@@ -2470,7 +2519,11 @@ export async function statusCommandV7(options: {
       ...ownershipComponents.map((component): StatusV7Component => ({
         kind: 'ownership',
         key: component.key,
-        state: component.state,
+        state: component.key === 'native'
+          && component.state === 'absent'
+          && sharedNative?.staleCacheObserved
+          ? 'partial'
+          : component.state,
         ...(component.error ? { metadata: { errorCode: component.error.code } } : {}),
       })),
       ...(sharedNative ? [{

@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  projectStatusSharedNativeReasons,
   statusCommandV7,
   statusTargetActivation,
   statusTargetExtensions,
@@ -150,6 +151,33 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v7 current behavior', () => {
+  it('preserves render drift as a recoverable shared-native status reason', () => {
+    const target = {
+      components: [{
+        kind: 'sharedNative',
+        key: 'demo@aw-local',
+        state: 'replaceable',
+        metadata: { reason: 'renderDrift', diagnostic: 'projectionRenderDrift' },
+      }],
+    } as Parameters<typeof statusTargetSharedNative>[0];
+    expect(statusTargetSharedNative(target)).toEqual({
+      pluginId: 'demo@aw-local',
+      state: 'replaceable',
+      reason: 'renderDrift',
+      diagnostic: 'projectionRenderDrift',
+    });
+    expect(projectStatusSharedNativeReasons({
+      pluginId: 'demo@aw-local',
+      state: 'replaceable',
+      reason: 'renderDrift',
+      diagnostic: 'projectionRenderDrift',
+    })).toEqual([{
+      code: 'codexSharedNativeRenderDrift',
+      message: 'codexSharedNativeRenderDrift: demo@aw-local render inputs changed and the shared native projection can be replaced.',
+      severity: 'warning',
+    }]);
+  });
+
   it('reports a qualified pure-native Codex project target without scoped materialization', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'capability-source');
@@ -167,9 +195,9 @@ describe('status v7 current behavior', () => {
 
     expect(result.payload.schemaVersion).toBe(7);
     const target = result.payload.targets[0]!;
-    expect(target).toMatchObject({ pluginId: 'local/demo', state: 'orphaned' });
+    expect(target).toMatchObject({ pluginId: 'local/demo', state: 'absent' });
     expect(target.components).toContainEqual(expect.objectContaining({
-      kind: 'ownership', key: 'native', state: 'partial',
+      kind: 'ownership', key: 'native', state: 'absent',
     }));
     expect(statusTargetIntent(target)).toEqual({ enabled: false, scopes: [], relation: 'none' });
     expect(statusTargetSharedNative(target)).toMatchObject({ state: 'unobserved' });
@@ -219,7 +247,7 @@ describe('status v7 current behavior', () => {
     });
   });
 
-  it('reports a mixed user/project intent as an extension conflict with two recovery actions', async () => {
+  it('does not treat mixed-scope config inputs as a Codex extension conflict', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-conflict-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -242,27 +270,13 @@ describe('status v7 current behavior', () => {
     });
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
-      state: 'blocked',
-      reasons: expect.arrayContaining([expect.objectContaining({ code: 'codexExtensionScopeConflict' })]),
-      recoveryActions: [
-        expect.objectContaining({
-          command: 'uninstall',
-          scope: 'user',
-          description: expect.stringContaining(
-            'aw uninstall local/demo --platform codex --scope user',
-          ),
-        }),
-        expect.objectContaining({
-          command: 'uninstall',
-          scope: 'project',
-          description: expect.stringContaining(
-            'aw uninstall local/demo --platform codex --scope project',
-          ),
-        }),
-      ],
+      state: 'needsSync',
+      recoveryActions: [expect.objectContaining({ command: 'sync' })],
     })]);
-    expect(statusTargetExtensions(result.payload.targets[0]!)).toMatchObject({ state: 'conflict' });
-    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(true);
+    expect(result.payload.targets[0]!.reasons)
+      .not.toContainEqual(expect.objectContaining({ code: 'codexExtensionScopeConflict' }));
+    expect(statusTargetExtensions(result.payload.targets[0]!)).toBeUndefined();
+    expect(result.hasErrors, JSON.stringify(result.payload, null, 2)).toBe(false);
   });
 
   it('recovers a dependency scope conflict through its desired roots', async () => {
@@ -515,7 +529,7 @@ describe('status v7 current behavior', () => {
 
     expect(result.payload.targets).toEqual([expect.objectContaining({
       pluginId: 'local/demo',
-      state: 'orphaned',
+      state: 'absent',
     })]);
     expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
       enabled: false, scopes: [], relation: 'none',
@@ -540,6 +554,7 @@ describe('status v7 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present'],
           refreshKeys: [],
@@ -806,6 +821,7 @@ describe('status v7 current behavior', () => {
           platform: 'codex',
           scopes: ['project'],
           target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
           projectManagedKind: 'skill',
           states: ['present', 'disabled'],
           refreshKeys: [],

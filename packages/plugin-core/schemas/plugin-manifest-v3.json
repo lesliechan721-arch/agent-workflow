@@ -194,37 +194,71 @@
       "type": "object", "additionalProperties": false, "required": ["plugin", "export"],
       "properties": { "plugin": { "type": "string" }, "export": { "type": "string" } }
     },
-    "artifactTarget": {
-      "type": "object", "additionalProperties": false,
-      "required": ["id", "scopes", "target", "states", "refreshKeys"],
-      "properties": {
-        "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
-        "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
-        "target": { "enum": ["codex.developerInstructionsBlock", "codex.agentRole", "codex.skill", "claude.skill", "agent-skills.skill"] },
-        "kind": { "enum": ["instruction", "codexRole", "skill"] },
-        "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
-        "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
-        "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
-        "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
-        "runtimeImports": {
-          "type": "array", "items": {
-            "type": "object", "additionalProperties": false, "required": ["name", "plugin", "export"],
+    "codexSkillDelivery": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["mode", "identity", "renderProfile"],
+          "properties": {
+            "mode": { "const": "codex-native" }, "identity": { "const": "shared" }, "renderProfile": { "const": "user" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["mode"],
+          "properties": { "mode": { "const": "aw-extension" } }
+        }
+      ]
+    },
+    "artifactRuntimeImports": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["name", "plugin", "export"],
+        "properties": {
+          "name": { "type": "string" }, "plugin": { "type": "string" }, "export": { "type": "string" },
+          "resolved": {
+            "type": "object", "additionalProperties": false,
+            "required": ["path", "digest", "providerPluginId", "providerVersion", "source", "requiredCapabilities", "capabilitySetDigest"],
             "properties": {
-              "name": { "type": "string" }, "plugin": { "type": "string" }, "export": { "type": "string" },
-              "resolved": {
-                "type": "object", "additionalProperties": false,
-                "required": ["path", "digest", "providerPluginId", "providerVersion", "source", "requiredCapabilities", "capabilitySetDigest"],
-                "properties": {
-                  "path": { "type": "string" }, "digest": { "type": "string" }, "providerPluginId": { "type": "string" },
-                  "providerVersion": { "$ref": "#/$defs/semver" }, "source": { "type": "string" },
-                  "requiredCapabilities": { "$ref": "#/$defs/runtimeExportRequires/properties/aw/properties/capabilities" },
-                  "capabilitySetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
-                }
-              }
+              "path": { "type": "string" }, "digest": { "type": "string" }, "providerPluginId": { "type": "string" },
+              "providerVersion": { "$ref": "#/$defs/semver" }, "source": { "type": "string" },
+              "requiredCapabilities": { "$ref": "#/$defs/runtimeExportRequires/properties/aw/properties/capabilities" },
+              "capabilitySetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
             }
           }
         }
       }
+    },
+    "artifactTarget": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "scopes", "target", "states", "refreshKeys", "delivery"],
+          "properties": {
+            "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
+            "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
+            "target": { "const": "codex.skill" }, "kind": { "enum": ["instruction", "codexRole", "skill"] },
+            "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
+            "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
+            "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
+            "delivery": { "$ref": "#/$defs/codexSkillDelivery" },
+            "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
+            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["id", "scopes", "target", "states", "refreshKeys"],
+          "properties": {
+            "id": { "type": "string" }, "platform": { "enum": ["codex", "claude"] },
+            "distribution": { "const": "agent-skills" }, "scopes": { "type": "array", "items": { "enum": ["user", "project"] } },
+            "target": { "enum": ["codex.developerInstructionsBlock", "codex.agentRole", "claude.skill", "agent-skills.skill"] },
+            "kind": { "enum": ["instruction", "codexRole", "skill"] },
+            "projectManagedKind": { "enum": ["skill", "mcpServer", "instruction", "permission", "hook", "agent"] },
+            "states": { "type": "array", "items": { "enum": ["present", "disabled"] } },
+            "refreshKeys": { "$ref": "#/$defs/stringArray" }, "requiresCodexProjectConfig": { "type": "boolean" },
+            "roleKey": { "type": "string" }, "skillKey": { "type": "string" }, "sourceDirs": { "$ref": "#/$defs/stringArray" },
+            "runtimeImports": { "$ref": "#/$defs/artifactRuntimeImports" }
+          }
+        }
+      ]
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,

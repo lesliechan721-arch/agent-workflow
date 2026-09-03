@@ -210,6 +210,27 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
       capabilities: {
         artifacts: expect.arrayContaining([
           expect.objectContaining({ field: 'artifacts.targets[].target', owner: 'core' }),
+          expect.objectContaining({
+            field: 'artifacts.targets[].delivery',
+            owner: 'core',
+            profiles: 'CODEX dynamic Skill',
+          }),
+          {
+            field: 'artifacts.targets[].delivery.identity',
+            type: 'literal shared',
+            required: 'when delivery.mode is codex-native',
+            acceptedValues: ['shared'],
+            owner: 'core',
+            provenance: ['@lesliechan721/aw-plugin-core manifest structure registry'],
+          },
+          {
+            field: 'artifacts.targets[].delivery.renderProfile',
+            type: 'literal user',
+            required: 'when delivery.mode is codex-native',
+            acceptedValues: ['user'],
+            owner: 'core',
+            provenance: ['@lesliechan721/aw-plugin-core manifest structure registry'],
+          },
         ]),
       },
     });

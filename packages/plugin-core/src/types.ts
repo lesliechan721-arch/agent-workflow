@@ -234,6 +234,13 @@ export interface PluginExtensions {
 }
 
 export type ArtifactState = 'present' | 'disabled';
+export interface CodexNativeSkillDelivery {
+  mode: 'codex-native';
+  identity: 'shared';
+  renderProfile: 'user';
+}
+export interface AwExtensionSkillDelivery { mode: 'aw-extension' }
+export type CodexSkillDelivery = CodexNativeSkillDelivery | AwExtensionSkillDelivery;
 export type ArtifactTarget =
   | 'codex.developerInstructionsBlock'
   | 'codex.agentRole'
@@ -254,12 +261,11 @@ export interface ArtifactRuntimeImportDefinition extends BuildConfigImportRefere
     capabilitySetDigest: string;
   };
 }
-export interface PluginArtifactTargetDefinition {
+interface PluginArtifactTargetDefinitionBase {
   id: string;
   platform?: PlatformName;
   distribution?: DistributionName;
   scopes: Scope[];
-  target: ArtifactTarget;
   kind?: DynamicArtifactKind;
   projectManagedKind?: CodexProjectManagedKind;
   states: ArtifactState[];
@@ -270,6 +276,15 @@ export interface PluginArtifactTargetDefinition {
   sourceDirs?: string[];
   runtimeImports?: ArtifactRuntimeImportDefinition[];
 }
+export type PluginArtifactTargetDefinition =
+  | PluginArtifactTargetDefinitionBase & {
+      target: 'codex.skill';
+      delivery: CodexSkillDelivery;
+    }
+  | PluginArtifactTargetDefinitionBase & {
+      target: Exclude<ArtifactTarget, 'codex.skill'>;
+      delivery?: never;
+    };
 export interface PluginArtifactsConfig { targets?: PluginArtifactTargetDefinition[] }
 export interface PluginAgentSkillsDistribution { skills?: string }
 export interface PluginDistributionsConfig { agentSkills?: PluginAgentSkillsDistribution }

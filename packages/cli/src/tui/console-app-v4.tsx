@@ -1982,6 +1982,7 @@ export function ConsoleAppV4(props: {
       const next = { ...current };
       for (const [key, value] of Object.entries(preset.values)) {
         const field = fields.get(key);
+        if (!field?.writable) continue;
         if (field?.configured && configValuesEqual(field.draftValue ?? field.value, value)) delete next[key];
         else next[key] = value;
       }
@@ -2127,7 +2128,7 @@ export function ConsoleAppV4(props: {
     const field = currentConfigPage.groups.flatMap((group) => group.fields)
       .find((candidate) => candidate.key === pendingLayerFieldKey);
     setPendingLayerFieldKey(undefined);
-    if (!field) return;
+    if (!field?.writable) return;
     const layer = { scope: route.layer.scope as Scope };
     props.controller.push(field.configured ? {
       name: 'configFieldAction',
@@ -3294,6 +3295,12 @@ export function ConsoleAppV4(props: {
       const activeGroup = activeTab?.kind === 'group'
         ? currentConfigPage.groups.find((group) => group.id === activeTab.id)
         : undefined;
+      const projectSharedNativeFields = route.layer.scope === 'project'
+        ? (activeGroup?.fields ?? []).filter((field) => field.sharedNativeRender && !field.writable)
+        : [];
+      if (projectSharedNativeFields.length > 0) {
+        description += ' 等待设置由个人默认控制共享 native；当前项目不可改。更改影响所有项目。';
+      }
       const mutableLayer = {
         scope: route.layer.scope as Scope,
       };
@@ -3311,7 +3318,7 @@ export function ConsoleAppV4(props: {
                 })
               : () => applyConfigPreset(currentConfigPage, preset.id),
           }))
-        : (activeGroup?.fields ?? []).map((field) => ({
+        : (activeGroup?.fields ?? []).filter((field) => readonly || field.writable).map((field) => ({
             label: field.title,
             description: field.invalidOverrideIssue
               ? field.invalidOverrideOwnedByLayer
@@ -3346,7 +3353,14 @@ export function ConsoleAppV4(props: {
       const operationActions: ActionItem[] = readonly ? [] : [
         ...buildAllowedConfigActions(dirty).map((action): ActionItem => ({
           label: action.label,
-          description: action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
+          description: route.layer.scope === 'user'
+            && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
+              currentConfigPage.groups.flatMap((group) => group.fields)
+                .some((field) => field.key === key && field.sharedNativeRender))
+            ? action.apply
+              ? '保存并重新生成共享 Codex native Skill；影响所有启用项目'
+              : '只保存个人默认；共享 Codex native render 将待同步'
+            : action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
           run: () => beginConfigSave(action.apply),
         })),
         ...(currentConfigPage.storedCount > 0 ? [{
@@ -5294,7 +5308,7 @@ export function ConsoleAppV4(props: {
           return;
         }
         const keyIssues = activeField.definition.validation?.key
-          ? validatePluginConfigValue({
+            ? validatePluginConfigValue({
               type: 'object',
               additionalProperties: { type: 'string' },
               validation: { key: activeField.definition.validation.key },

@@ -192,6 +192,26 @@ describe('rebuild postApply boundary', () => {
     expect(fixture.calls).toEqual(['preflight', 'artifacts', 'commit', 'postApply:demo']);
   });
 
+  it('rolls back the marketplace generation when native materialization fails', async () => {
+    const fixture = createFixture();
+    fixture.target.writeNativeRequired = true;
+    fixture.driver.writeNative = async () => {
+      fixture.calls.push('native');
+      throw new Error('manager failed');
+    };
+    fixture.driver.commitMaterialize = async () => { fixture.calls.push('commit'); };
+    fixture.driver.rollbackMaterialize = async () => { fixture.calls.push('rollback'); };
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver,
+    });
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { phase: 'native.write', message: 'manager failed' },
+    });
+    expect(result.actions).toContainEqual({ name: 'marketplace.rollback', status: 'succeeded' });
+    expect(fixture.calls).toEqual(['preflight', 'native', 'rollback']);
+  });
+
   it('continues later targets after an earlier target fails', async () => {
     const fixture = createFixture();
     const blocked = { ...fixture.target, identity: { ...fixture.target.identity, pluginName: 'blocked' },

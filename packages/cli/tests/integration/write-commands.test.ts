@@ -40,11 +40,13 @@ import {
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
+import { fileURLToPath } from 'node:url';
 import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
   git,
 } from '../helpers/catalog-source-fixture.js';
+import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
@@ -76,6 +78,7 @@ import {
   createSharedOwnerToken,
   parseOwnedTextHeader,
   renderOwnedTextFile,
+  SKILL_OWNER_MARKER,
   writeOwnedTextFile,
   writeSkillOwnerMarker,
 } from '../../src/utils/ownership.js';
@@ -84,6 +87,7 @@ import {
   calculateCatalogEntryArtifactDigest,
   calculateCatalogEntryContentDigest,
   calculateCatalogEntryManifestDigest,
+  calculateCodexNativeRenderPayloadDigest,
 } from '../../src/utils/catalog-digests.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
@@ -101,6 +105,10 @@ import {
   readCodexConfigFile,
 } from '../../src/utils/codex-config.js';
 import { renderTrackedHookGroupIdentity } from '../../src/utils/hooks-contract.js';
+import {
+  CODEX_NATIVE_RENDER_RECEIPT_PATH,
+  type CodexNativeRenderReceipt,
+} from '../../src/utils/codex-native-render-receipt.js';
 
 async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
@@ -159,6 +167,7 @@ function createCodexNativeTestRuntime(
   codexVersion = '0.200.0',
 ) {
   const installed = new Set<string>();
+  const installedVersions = new Map<string, string>();
   const marketplaceRoots = new Map<string, string>();
   const userConfigPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
   const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
@@ -190,16 +199,27 @@ function createCodexNativeTestRuntime(
       const pluginName = pluginId.slice(0, separator);
       const marketplaceName = pluginId.slice(separator + 1);
       installed.add(pluginId);
+      const marketplacePluginRoot = path.join(
+        marketplaceRoots.get(marketplaceName)!,
+        'plugins',
+        pluginName,
+      );
+      const pluginVersion = String((await fs.readJson(path.join(
+        marketplacePluginRoot,
+        '.agents-plugin',
+        'plugin.json',
+      ))).version);
+      installedVersions.set(pluginId, pluginVersion);
       const cacheRoot = path.join(
         isolation.env.AW_CODEX_HOME!,
         'plugins',
         'cache',
         marketplaceName,
         pluginName,
-        '1.0.0',
+        pluginVersion,
       );
       await fs.copy(
-        path.join(marketplaceRoots.get(marketplaceName)!, 'plugins', pluginName),
+        marketplacePluginRoot,
         cacheRoot,
         { overwrite: true },
       );
@@ -210,6 +230,7 @@ function createCodexNativeTestRuntime(
       const pluginId = pluginArgs[2]!;
       const separator = pluginId.lastIndexOf('@');
       installed.delete(pluginId);
+      installedVersions.delete(pluginId);
       await fs.remove(path.join(
         isolation.env.AW_CODEX_HOME!,
         'plugins',
@@ -237,7 +258,7 @@ function createCodexNativeTestRuntime(
             installed: true,
             enabled: user.snapshot.plugins[pluginId]?.enabled === true
               || (exact && project.snapshot.plugins[pluginId]?.enabled === true),
-            version: '1.0.0',
+            version: installedVersions.get(pluginId) ?? '1.0.0',
           })),
           available: [],
         }),
@@ -4121,7 +4142,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey,
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey,
         }],
       };
     };
@@ -4303,7 +4324,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['user'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
         }],
       };
     };
@@ -4382,7 +4403,7 @@ describe('five namespaced write commands', () => {
       };
       manifest.artifacts = { targets: [{
         id: 'dynamic-skill', platform: 'codex', scopes: ['user'],
-        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
+        target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'demo-skill',
       }] };
     };
     await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo', configureManifest: configure }]);
@@ -4436,7 +4457,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'leaf-skill',
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'leaf-skill',
         }],
       };
     };
@@ -4688,7 +4709,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present', 'disabled'], refreshKeys: [],
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present', 'disabled'], refreshKeys: [],
           skillKey: 'shared-skill',
         }],
       };
@@ -4746,7 +4767,7 @@ describe('five namespaced write commands', () => {
       manifest.artifacts = {
         targets: [{
           id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey,
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey,
         }],
       };
     };
@@ -6569,7 +6590,7 @@ describe('five namespaced write commands', () => {
         };
         manifest.artifacts = { targets: [{
           id: 'removable-skill', platform: 'codex', scopes: ['project'],
-          target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'removable-skill',
+          target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'removable-skill',
         }] };
       },
     };
@@ -6640,7 +6661,7 @@ describe('five namespaced write commands', () => {
       };
       manifest.artifacts = { targets: [{
         id: 'damaged-demo', platform: 'codex', scopes: ['project'],
-        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'damaged-demo',
+        target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'damaged-demo',
       }] };
     };
     const forcePlugin = {
@@ -6852,7 +6873,7 @@ describe('five namespaced write commands', () => {
       };
       manifest.artifacts = { targets: [{
         id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'project-skill',
+        target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'project-skill',
       }] };
     };
     const definition = [{ name: 'demo', configureManifest: configure }];
@@ -7063,7 +7084,7 @@ describe('five namespaced write commands', () => {
       };
       manifest.artifacts = { targets: [{
         id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
-        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-name',
+        target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'shared-name',
       }] };
     };
     const definitions = [
@@ -7235,7 +7256,7 @@ describe('five namespaced write commands', () => {
       };
       manifest.artifacts = { targets: [{
         id: 'dynamic-skill', platform: 'codex', scopes: ['user'],
-        target: 'codex.skill', states: ['present'], refreshKeys: [], skillKey: 'shared-name',
+        target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'shared-name',
       }] };
     };
     const definitions = [
@@ -8077,6 +8098,7 @@ describe('five namespaced write commands', () => {
           platform,
           scopes: ['project'],
           target: `${platform}.skill`,
+          ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' as const } } : {}),
           states: ['present'],
           refreshKeys: [],
           skillKey: 'review',
@@ -8250,6 +8272,7 @@ describe('five namespaced write commands', () => {
         platform: 'codex',
         scopes: ['project'],
         target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'review',
@@ -8641,6 +8664,7 @@ describe('five namespaced write commands', () => {
             platform,
             scopes: ['project'],
             target: `${platform}.skill`,
+            ...(platform === 'codex' ? { delivery: { mode: 'aw-extension' as const } } : {}),
             states: ['present'],
             refreshKeys: ['mode'],
             skillKey: 'mode-skill',
@@ -9705,5 +9729,724 @@ describe('five namespaced write commands', () => {
     const configAfterFailure = await fs.readFile(configPath, 'utf8');
     expect(configAfterFailure).toContain('mode=fast');
     expect(configAfterFailure).not.toContain('mode=fail');
+  });
+
+  it('requires --yes for native-refreshing user config with only a project Codex intent', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'shared-native-config-source');
+    const rendererMarker = path.join(isolation.layout.fixtureCwd, 'native-config-renderer.jsonl');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'native-config', 'scripts', 'render.mjs'), [
+      'import { appendFile, readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const mode = context.config.values.mode;',
+      'if (mode === "fail") throw new Error("native renderer requested failure");',
+      `await appendFile(${JSON.stringify(rendererMarker)}, JSON.stringify({ cwd: process.cwd(), context }) + "\\n");`,
+      'console.log(JSON.stringify({ version: 2, artifacts: context.requestedArtifactIds.map((id) => ({',
+      '  id, kind: "skill", platform: "codex", target: "codex.skill",',
+      '  state: mode === "off" ? "disabled" : "present",',
+      '  skillKey: "native-config", refreshKeys: ["mode"],',
+      '  ...(mode === "off" ? { disabledReason: "disabled by user config" } : { content: { files: {',
+      '    "SKILL.md": `mode=${context.config.values.mode}\\nprojectMode=${context.config.values.projectMode}\\nrequestScope=${context.scope}\\nconfigScope=${context.config.targetScope}\\n`,',
+      '    "README.md": "native readme",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
+      '  } } })',
+      '})) }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'native-config', [], 'native\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.config = {
+        fields: {
+          mode: { type: 'string', default: 'safe' },
+          projectMode: { type: 'string', default: 'project-default' },
+        },
+      };
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [{
+          id: 'native-config',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present', 'disabled'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-config',
+        }],
+      };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, {
+      schemaVersion: 1,
+      kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/native-config', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+      managed: { codexPluginIds: [] },
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: runtime.nativeCliRunner,
+      });
+      return {
+        exitCode,
+        payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
+      };
+    };
+    const readStore = () => readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'native-config',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'native-config',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { projectMode: 'project-only' },
+    });
+    const legacyProjectSkillsRoot = path.join(
+      isolation.layout.fixtureCwd,
+      '.agents',
+      'skills',
+    );
+    const legacyProjectSkillRoot = path.join(legacyProjectSkillsRoot, 'native-config');
+    await fs.outputFile(path.join(legacyProjectSkillRoot, 'SKILL.md'), 'legacy owned\n');
+    await writeSkillOwnerMarker({
+      skillRoot: legacyProjectSkillRoot,
+      allowedRoot: legacyProjectSkillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/native-config',
+        plugin: 'native-config',
+        artifactKey: 'native-config',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
+    const legacyUserSkillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const legacyUserSkillRoot = path.join(legacyUserSkillsRoot, 'native-config');
+    await fs.outputFile(path.join(legacyUserSkillRoot, 'SKILL.md'), 'legacy user owned\n');
+    await writeSkillOwnerMarker({
+      skillRoot: legacyUserSkillRoot,
+      allowedRoot: legacyUserSkillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/native-config',
+        plugin: 'native-config',
+        artifactKey: 'native-config',
+        platform: 'codex',
+        scope: 'user',
+      },
+    });
+
+    expect(await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"saved"', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+
+    const blocked = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"blocked"', '--scope', 'user', '--apply',
+    ]);
+    expect(blocked).toMatchObject({
+      exitCode: 1,
+      payload: {
+        overallState: 'failed',
+        errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })],
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'saved' });
+
+    const authorized = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"authorized"', '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(authorized, JSON.stringify(authorized, null, 2)).toMatchObject({
+      exitCode: 0,
+      payload: {
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'authorized' });
+
+    const [canonicalPluginId] = [...runtime.installed];
+    expect(canonicalPluginId).toBe('native-config@aw');
+    const cachePluginRoot = path.join(
+      isolation.env.AW_CODEX_HOME!,
+      'plugins',
+      'cache',
+      'aw',
+      'native-config',
+      '1.0.0',
+    );
+    const marketplacePluginRoot = path.join(
+      isolation.env.AW_HOME!,
+      'marketplaces',
+      'team',
+      'plugins',
+      'native-config',
+    );
+    const cacheSkillRoot = path.join(cachePluginRoot, 'codex', 'skills', 'native-config');
+    const marketplaceSkillRoot = path.join(
+      marketplacePluginRoot,
+      'codex',
+      'skills',
+      'native-config',
+    );
+    const directUserSkillRoot = legacyUserSkillRoot;
+    const directProjectSkillRoot = legacyProjectSkillRoot;
+    await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=authorized\nprojectMode=project-default\nrequestScope=user\nconfigScope=user\n');
+    await expect(fs.readFile(path.join(marketplaceSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=authorized\nprojectMode=project-default\nrequestScope=user\nconfigScope=user\n');
+    await expect(fs.pathExists(path.join(cacheSkillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(marketplaceSkillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+    await expect(fs.pathExists(directUserSkillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(directProjectSkillRoot)).resolves.toBe(false);
+    const firstReceipt = await fs.readJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as { configDigest: string; targets: Array<{ configDigest: string }> };
+    expect(firstReceipt.targets).toHaveLength(1);
+    const firstRenderEvents = (await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')
+      .map((line) => JSON.parse(line) as { cwd: string; context: { plugin: { rootDir: string } } });
+    expect(firstRenderEvents).toHaveLength(1);
+    expect(firstRenderEvents[0]!.cwd).toBe(firstRenderEvents[0]!.context.plugin.rootDir);
+    expect(firstRenderEvents[0]!.cwd).not.toBe(isolation.layout.fixtureCwd);
+
+    const statusBinRoot = await writeStatusSystemCodexPackage(
+      path.join(isolation.layout.fixtureCwd, 'native-config-status-prefix'),
+      '0.151.0',
+    );
+    const readNativeStatus = async () => {
+      const statusRunner = vi.fn(runtime.nativeCliRunner);
+      setNativeCliRunnerOverrideForTests(statusRunner);
+      try {
+        const status = await statusCommandV7({
+          plugins: ['team/native-config'],
+          cwd: isolation.layout.fixtureCwd,
+          env: { ...isolation.env, PATH: statusBinRoot },
+          cliVersion: '1.0.0',
+          platform: 'codex',
+          scope: 'project',
+          json: true,
+        });
+        return { status, statusRunner };
+      } finally {
+        setNativeCliRunnerOverrideForTests(null);
+      }
+    };
+    const exactStatus = await readNativeStatus();
+    expect(exactStatus.status.payload.targets).toEqual([
+      expect.objectContaining({ state: 'ready' }),
+    ]);
+    expect(statusTargetSharedNative(exactStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'usable', version: '1.0.0' });
+    expect(statusTargetActivation(exactStatus.status.payload.targets[0]!))
+      .toMatchObject({ user: false, project: true, effective: true });
+    expect((await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')).toHaveLength(1);
+
+    expect(await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"drifted"', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    const driftStatus = await readNativeStatus();
+    expect(driftStatus.status.payload.targets[0]).toMatchObject({ state: 'needsSync' });
+    expect(statusTargetSharedNative(driftStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
+    expect(driftStatus.status.payload.targets[0]!.reasons)
+      .toContainEqual(expect.objectContaining({ code: 'codexSharedNativeRenderDrift' }));
+    expect((await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')).toHaveLength(1);
+
+    await fs.outputFile(path.join(marketplaceSkillRoot, 'SKILL.md'), 'stale replay overlay\n');
+    const refreshed = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"refreshed"',
+      '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(refreshed, JSON.stringify(refreshed, null, 2)).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    const refreshedReceipt = await fs.readJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    expect(refreshedReceipt.configDigest).not.toBe(firstReceipt.configDigest);
+    await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=refreshed\nprojectMode=project-default\nrequestScope=user\nconfigScope=user\n');
+    await expect(fs.readFile(path.join(marketplaceSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=refreshed\nprojectMode=project-default\nrequestScope=user\nconfigScope=user\n');
+    const refreshedConfig = await readCodexConfigFile(
+      path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
+    );
+    const refreshedProjectConfig = await readCodexConfigFile(
+      path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
+    );
+    expect(refreshedConfig.snapshot.plugins[canonicalPluginId!]?.enabled).toBe(false);
+    expect(refreshedProjectConfig.snapshot.plugins[canonicalPluginId!]?.enabled).toBe(true);
+
+    const canonicalReceiptPath = path.join(
+      marketplacePluginRoot,
+      CODEX_NATIVE_RENDER_RECEIPT_PATH,
+    );
+    const canonicalReceipt = await fs.readFile(canonicalReceiptPath);
+    const canonicalMarketplaceConfigPath = path.join(
+      isolation.env.AW_HOME!,
+      'marketplaces',
+      'team',
+      'config.json',
+    );
+    const canonicalMarketplaceConfig = await fs.readJson(canonicalMarketplaceConfigPath);
+    await fs.outputJson(canonicalMarketplaceConfigPath, {
+      ...canonicalMarketplaceConfig,
+      sourceIdentity: `sha256:${'f'.repeat(64)}`,
+    });
+    const mismatchedCanonicalStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(mismatchedCanonicalStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
+    await fs.outputJson(canonicalMarketplaceConfigPath, canonicalMarketplaceConfig);
+    await fs.remove(canonicalReceiptPath);
+    const missingCanonicalStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(missingCanonicalStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
+    await fs.outputFile(canonicalReceiptPath, canonicalReceipt);
+
+    await fs.outputFile(path.join(cacheSkillRoot, 'SKILL.md'), 'tampered\n');
+    await fs.outputJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+      {
+        ...refreshedReceipt,
+        payloadDigest: await calculateCodexNativeRenderPayloadDigest(cachePluginRoot),
+      },
+      { spaces: 2 },
+    );
+    const damagedStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(damagedStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
+    expect(damagedStatus.status.payload.targets[0]!.reasons)
+      .toContainEqual(expect.objectContaining({ code: 'codexSharedNativeCorrupt' }));
+    const callsBeforeRepair = runtime.nativeCliRunner.mock.calls.length;
+    const repairedTamper = await runPublic([
+      'sync', 'team/native-config', '--platform', 'codex', '--scope', 'project', '--yes',
+    ]);
+    expect(repairedTamper, JSON.stringify(repairedTamper, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const repairCalls = runtime.nativeCliRunner.mock.calls
+      .slice(callsBeforeRepair)
+      .map(([invocation]) => invocation.args.join(' '));
+    expect(repairCalls.some((args) => args.includes('plugin remove native-config@aw'))).toBe(true);
+    expect(repairCalls.some((args) => args.includes('plugin add native-config@aw'))).toBe(true);
+    await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=refreshed');
+    const repairedReceipt = await fs.readJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    await fs.outputFile(path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), '{invalid');
+    const unreadableStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(unreadableStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'blocked', reason: 'unreadable' });
+    await fs.outputJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+      repairedReceipt,
+      { spaces: 2 },
+    );
+
+    expect(await runPublic([
+      'config', 'unset', 'team/native-config', 'mode', '--scope', 'user', '--apply',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: {
+        overallState: 'failed',
+        errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })],
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'refreshed' });
+
+    const authorizedUnset = await runPublic([
+      'config', 'unset', 'team/native-config', 'mode', '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(authorizedUnset, JSON.stringify(authorizedUnset, null, 2)).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    expect((await readStore()).values).toEqual({});
+    const finalReceipt = await fs.readJson(
+      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as { configDigest: string };
+    expect(finalReceipt.configDigest).not.toBe(refreshedReceipt.configDigest);
+    await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('mode=safe\nprojectMode=project-default\nrequestScope=user\nconfigScope=user\n');
+
+    const disabled = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"off"',
+      '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(disabled, JSON.stringify(disabled, null, 2)).toMatchObject({
+      exitCode: 0,
+      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+    });
+    await expect(fs.pathExists(cacheSkillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(marketplaceSkillRoot)).resolves.toBe(false);
+    await expect(fs.readJson(path.join(cachePluginRoot, '.codex-plugin', 'plugin.json')))
+      .resolves.not.toHaveProperty('skills');
+    await expect(fs.readJson(path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
+      .resolves.toMatchObject({ targets: [{ id: 'native-config', skillKey: 'native-config' }] });
+    expect(runtime.installed).toContain(canonicalPluginId!);
+    const disabledStatus = await readNativeStatus();
+    expect(disabledStatus.status.payload.targets).toEqual([
+      expect.objectContaining({ state: 'ready' }),
+    ]);
+    expect(statusTargetSharedNative(disabledStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'usable', version: '1.0.0' });
+
+    const marketplaceReceiptBeforeFailure = await fs.readFile(
+      path.join(marketplacePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    );
+    const failedRender = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"fail"',
+      '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(failedRender).toMatchObject({
+      exitCode: 1,
+      payload: { configWrite: 'succeeded', overallState: 'partial' },
+    });
+    await expect(fs.pathExists(marketplaceSkillRoot)).resolves.toBe(false);
+    await expect(fs.readFile(path.join(marketplacePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
+      .resolves.toEqual(marketplaceReceiptBeforeFailure);
+
+    expect(await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"off"', '--scope', 'user',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    await fs.outputFile(path.join(legacyProjectSkillRoot, 'SKILL.md'), 'legacy project again\n');
+    await writeSkillOwnerMarker({
+      skillRoot: legacyProjectSkillRoot,
+      allowedRoot: legacyProjectSkillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/native-config',
+        plugin: 'native-config',
+        artifactKey: 'native-config',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
+    const userInstalled = await installWriteCommand(['team/native-config'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime);
+    expect(userInstalled, JSON.stringify(userInstalled, null, 2))
+      .toMatchObject({ overallState: 'succeeded' });
+    await expect(fs.pathExists(legacyProjectSkillRoot)).resolves.toBe(false);
+  });
+
+  it('separates mixed native Skill and AW role renderer requests', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'mixed-native-render-source');
+    const rendererMarker = path.join(isolation.layout.fixtureCwd, 'mixed-native-renderer.jsonl');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'mixed-native', 'scripts', 'render.mjs'), [
+      'import { appendFile, readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      `await appendFile(${JSON.stringify(rendererMarker)}, JSON.stringify({ ids: context.requestedArtifactIds, scope: context.scope, configScope: context.config.targetScope }) + "\\n");`,
+      'const artifacts = context.requestedArtifactIds.map((id) => id === "native-skill" ? ({',
+      '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
+      '  skillKey: "native-skill", refreshKeys: [], content: { files: {',
+      '    "SKILL.md": "native mixed", "README.md": "native mixed readme",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
+      '  } }',
+      '}) : ({',
+      '  id, kind: "codexRole", platform: "codex", target: "codex.agentRole", state: "present",',
+      '  roleKey: "helper", refreshKeys: [], content: {',
+      '    registration: { description: "Helper role." },',
+      '    roleFile: { name: "helper", description: "Helper role.", developer_instructions: "Help." }',
+      '  }',
+      '}));',
+      'console.log(JSON.stringify({ version: 2, artifacts }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'mixed-native', [], 'mixed\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [
+          {
+            id: 'native-skill',
+            platform: 'codex',
+            scopes: ['user', 'project'],
+            target: 'codex.skill',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'native-skill',
+          },
+          {
+            id: 'aw-role',
+            platform: 'codex',
+            scopes: ['project'],
+            target: 'codex.agentRole',
+            states: ['present'],
+            refreshKeys: [],
+            roleKey: 'helper',
+            requiresCodexProjectConfig: true,
+          },
+        ],
+      };
+    });
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const installed = await installWriteCommand(['team/mixed-native'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime);
+    expect(installed, JSON.stringify(installed, null, 2)).toMatchObject({ overallState: 'succeeded' });
+
+    const events = (await fs.readFile(rendererMarker, 'utf8')).trim().split('\n')
+      .map((line) => JSON.parse(line) as { ids: string[]; scope: string; configScope: string });
+    expect(events).toContainEqual({ ids: ['aw-role'], scope: 'project', configScope: 'project' });
+    expect(events).toContainEqual({ ids: ['native-skill'], scope: 'user', configScope: 'user' });
+    expect(events.every((event) => event.ids.length === 1)).toBe(true);
+    await expect(fs.readFile(path.join(
+      isolation.layout.fixtureCwd,
+      '.codex',
+      'agents',
+      'aw-mixed-native-helper.toml',
+    ), 'utf8')).resolves.toContain('developer_instructions = "Help."');
+    await expect(fs.readFile(path.join(
+      isolation.env.AW_CODEX_HOME!,
+      'plugins',
+      'cache',
+      'aw',
+      'mixed-native',
+      '1.0.0',
+      'codex',
+      'skills',
+      'native-skill',
+      'SKILL.md',
+    ), 'utf8')).resolves.toBe('native mixed');
+
+  });
+
+  it('runs codex-enhance shared Skills and project roles through public commands', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const sourcePluginRoot = path.join(repositoryRoot, 'plugins', 'codex-enhance');
+    const authoringRoot = path.join(isolation.layout.fixtureCwd, 'codex-enhance-authoring');
+    await fs.copy(
+      path.join(repositoryRoot, 'plugins', 'marketplace-source.json'),
+      path.join(authoringRoot, 'plugins', 'marketplace-source.json'),
+    );
+    await fs.copy(sourcePluginRoot, path.join(authoringRoot, 'plugins', 'codex-enhance'));
+    const sourceRoot = await createSyntheticEmbeddedRoot(authoringRoot);
+    await fs.outputJson(path.join(sourceRoot, '.aw-generated.json'), {
+      schemaVersion: 1,
+      kind: 'catalog',
+      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(sourceRoot).digest('hex')}`,
+      sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${sourceRoot}`).digest('hex')}`,
+    });
+    const manifest = await fs.readJson(path.join(
+      sourceRoot, 'plugins', 'codex-enhance', '.agents-plugin', 'plugin.json',
+    ));
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: runtime.nativeCliRunner,
+      });
+      return { exitCode, payload: JSON.parse(captured.readStdout()) as Record<string, unknown> };
+    };
+
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
+      '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    const projectInstall = await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+    ]);
+    expect(projectInstall, JSON.stringify(projectInstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const cacheRoot = path.join(
+      isolation.env.AW_CODEX_HOME!, 'plugins', 'cache', 'aw', 'codex-enhance', manifest.version,
+    );
+    const marketplaceRoot = path.join(
+      isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins', 'codex-enhance',
+    );
+    const skillPaths = ['codex-explore', 'codex-subagent-guide'].map((skill) =>
+      path.join(cacheRoot, 'codex', 'skills', skill, 'SKILL.md'));
+    for (const skillPath of skillPaths) await expect(fs.pathExists(skillPath)).resolves.toBe(true);
+    for (const skill of ['codex-explore', 'codex-subagent-guide']) {
+      await expect(fs.pathExists(path.join(isolation.env.AW_CODEX_HOME!, 'skills', skill)))
+        .resolves.toBe(false);
+    }
+    const initialSkillBytes = await Promise.all(skillPaths.map((skillPath) => fs.readFile(skillPath)));
+    const initialReceipt = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    expect(initialReceipt.targets.map((target) => target.skillKey)).toEqual([
+      'codex-explore', 'codex-subagent-guide',
+    ]);
+    const projectStore = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(projectStore.values.standardProfile).toEqual({
+      model: 'project-standard', reasoningEffort: 'max',
+    });
+    await expect(fs.readFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents',
+      'aw-codex-enhance-codex-explore-standard.toml',
+    ), 'utf8')).resolves.toContain('model = "project-standard"');
+    for (const [index, skillPath] of skillPaths.entries()) {
+      await expect(fs.readFile(skillPath)).resolves.toEqual(initialSkillBytes[index]);
+    }
+    const projectOnlyConfig = await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ));
+    const projectOnlyUserConfig = await readCodexConfigFile(path.join(
+      isolation.env.AW_CODEX_HOME!, 'config.toml',
+    ));
+    expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
+    expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'project', '--value-json', '15',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigUserScopeRequired' })] },
+    });
+    const projectStoreAfterReject = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(projectStoreAfterReject.values).not.toHaveProperty('exploreMinimumInitialWaitMinutes');
+
+    const userInstall = await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
+    ]);
+    expect(userInstall, JSON.stringify(userInstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    await expect(fs.pathExists(path.join(
+      isolation.env.AW_CODEX_HOME!, 'agents', 'aw-codex-enhance-codex-explore-standard.toml',
+    ))).resolves.toBe(true);
+    const userUninstall = await runPublic([
+      'uninstall', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
+    ]);
+    expect(userUninstall, JSON.stringify(userUninstall, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    expect(await runPublic([
+      'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+
+    const receiptBeforeWaitSave = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    );
+    const skillsBeforeWaitSave = await Promise.all(
+      skillPaths.map((skillPath) => fs.readFile(skillPath)),
+    );
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '15',
+    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
+      .resolves.toEqual(receiptBeforeWaitSave);
+    for (const [index, skillPath] of skillPaths.entries()) {
+      await expect(fs.readFile(skillPath)).resolves.toEqual(skillsBeforeWaitSave[index]);
+    }
+    const statusBinRoot = await writeStatusSystemCodexPackage(
+      path.join(isolation.layout.fixtureCwd, 'codex-enhance-status-prefix'),
+      '0.200.0',
+    );
+    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
+    const status = await statusCommandV7({
+      plugins: ['team/codex-enhance'], platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: statusBinRoot },
+      cliVersion: '1.0.0', json: true,
+    }).finally(() => setNativeCliRunnerOverrideForTests(null));
+    expect(status.payload.targets[0], JSON.stringify(status.payload.targets[0], null, 2))
+      .toMatchObject({ state: 'needsSync' });
+    expect(statusTargetSharedNative(status.payload.targets[0]!))
+      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '20', '--apply',
+    ])).toMatchObject({
+      exitCode: 1,
+      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })] },
+    });
+    const storeAfterReject = await readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect(storeAfterReject.values.exploreMinimumInitialWaitMinutes).toBe(15);
+
+    expect(await runPublic([
+      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
+      '--scope', 'user', '--value-json', '20', '--apply', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const replacedReceipt = await fs.readJson(
+      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
+    ) as CodexNativeRenderReceipt;
+    expect(replacedReceipt.configDigest).not.toBe(initialReceipt.configDigest);
+    await expect(fs.readFile(path.join(
+      marketplaceRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md',
+    ), 'utf8')).resolves.toContain('至少 `20` 分钟');
+    const [userConfig, projectConfig] = await Promise.all([
+      readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
+      readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
+    ]);
+    expect(userConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
+    expect(projectConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
   });
 });

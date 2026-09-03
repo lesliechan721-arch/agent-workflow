@@ -52,6 +52,17 @@ export type PluginConfigIssueType =
   | 'sharedCompositeContainsLocalPath';
 type PluginConfigStorePathAccess = 'read' | 'write';
 
+export function codexNativeRefreshKeys(
+  manifest: NormalizedPluginManifest,
+): ReadonlySet<string> {
+  return new Set((manifest.artifacts?.targets ?? []).flatMap((target) =>
+    target.platform === 'codex'
+      && target.target === 'codex.skill'
+      && target.delivery?.mode === 'codex-native'
+      ? target.refreshKeys
+      : []));
+}
+
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
   code?: string;
@@ -1816,6 +1827,7 @@ async function buildManifestFieldEntries(options: {
     cwd: options.cwd,
     env: options.env,
   });
+  const userOnlyKeys = codexNativeRefreshKeys(options.plugin.manifest);
   const effectiveFieldState = (key: string): Pick<ConfigFieldEntry,
     'valueState' | 'effectiveValue' | 'sourceLayer'
     | 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'
@@ -1866,7 +1878,7 @@ async function buildManifestFieldEntries(options: {
       title: field.title ?? key,
       kind: 'manifest',
       reserved: false,
-      writable: true,
+      writable: options.scope !== 'project' || !userOnlyKeys.has(key),
       valueState: 'default',
       effectiveValue: null,
       sourceLayer: null,

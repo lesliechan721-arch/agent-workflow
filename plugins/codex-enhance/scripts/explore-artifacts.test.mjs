@@ -72,6 +72,15 @@ function createContext(overrides = {}) {
       name: 'codex-enhance',
       version: '0.2.0',
     },
+    requestedArtifactIds: [
+      'codex-explore-skill',
+      ...expectedRoles.map((role) => role.id),
+      'codex-subagent-guide-skill',
+      'codex-subagent-simple-role',
+      'codex-subagent-general-role',
+      'codex-subagent-complex-role',
+      'codex-subagent-advanced-role',
+    ],
     artifactSources: [
       {
         id: 'codex-explore-skill',
@@ -272,6 +281,24 @@ async function testConfigSourcesAndManifestDefaults() {
   assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
 }
 
+async function testDeliverySpecificRequests() {
+  const nativePlan = await runRenderer(createContext({
+    scope: 'project',
+    requestedArtifactIds: ['codex-explore-skill'],
+  }));
+  assert.deepEqual(nativePlan.artifacts.map((artifact) => artifact.id), [
+    'codex-explore-skill',
+  ]);
+
+  const roleIds = expectedRoles.map((role) => role.id);
+  const awPlan = await runRenderer(createContext({
+    scope: 'project',
+    requestedArtifactIds: roleIds,
+  }));
+  assert.deepEqual(awPlan.artifacts.map((artifact) => artifact.id), roleIds);
+  assert.equal(awPlan.artifacts.every((artifact) => artifact.target === 'codex.agentRole'), true);
+}
+
 async function testStaticManifestContract() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
@@ -366,6 +393,19 @@ async function testStaticManifestContract() {
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
 
+  for (const target of manifest.artifacts.targets.filter((entry) =>
+    entry.target === 'codex.skill')) {
+    assert.deepEqual(target.delivery, {
+      mode: 'codex-native',
+      identity: 'shared',
+      renderProfile: 'user',
+    });
+  }
+  for (const target of manifest.artifacts.targets.filter((entry) =>
+    entry.target === 'codex.agentRole')) {
+    assert.equal(target.delivery, undefined);
+  }
+
   assert.deepEqual(
     manifest.artifacts.targets
       .filter((target) => target.id.startsWith('codex-explore-'))
@@ -411,6 +451,7 @@ async function testTrimBlockAndUnsupportedPlatform() {
 async function main() {
   await testRenderedArtifactsAndSkillContract();
   await testConfigSourcesAndManifestDefaults();
+  await testDeliverySpecificRequests();
   await testStaticManifestContract();
   await testTrimBlockAndUnsupportedPlatform();
   console.log('render-artifacts tests passed');

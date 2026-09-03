@@ -2032,7 +2032,7 @@ function validateStringArray(value, fieldName, options = {}) {
   return output;
 }
 
-function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
+function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
   const fieldName = `artifacts.targets[${index}]`;
   const target = expectRecord(entry, fieldName);
   if (!target) return null;
@@ -2047,6 +2047,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     'projectManagedKind',
     'states',
     'refreshKeys',
+    'delivery',
     'requiresCodexProjectConfig',
     'roleKey',
     'skillKey',
@@ -2060,6 +2061,27 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     error(`${fieldName}.target: unsupported artifact target "${artifactTarget}"`);
   }
   const portable = artifactTarget === 'agent-skills.skill';
+  let delivery;
+  if (artifactTarget === 'codex.skill') {
+    delivery = expectRecord(target.delivery, `${fieldName}.delivery`);
+    if (delivery) {
+      if (delivery.mode === 'aw-extension') {
+        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode']);
+      } else if (delivery.mode === 'codex-native') {
+        validateAllowedKeys(delivery, `${fieldName}.delivery`, ['mode', 'identity', 'renderProfile']);
+        if (delivery.identity !== 'shared') {
+          error(`${fieldName}.delivery.identity: expected "shared"`);
+        }
+        if (delivery.renderProfile !== 'user') {
+          error(`${fieldName}.delivery.renderProfile: expected "user"`);
+        }
+      } else {
+        error(`${fieldName}.delivery.mode: expected "codex-native" or "aw-extension"`);
+      }
+    }
+  } else if (target.delivery !== undefined) {
+    error(`${fieldName}.delivery: delivery is only supported for codex.skill targets`);
+  }
   const platform = portable || target.platform === undefined
     ? undefined
     : validateManifestString(target.platform, `${fieldName}.platform`);
@@ -2081,14 +2103,6 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     if (target.distribution !== undefined) {
       error(`${fieldName}.distribution: platform targets do not support distribution`);
     }
-  }
-
-  const key = id && artifactTarget ? `${id}:${artifactTarget}` : null;
-  if (key) {
-    if (seen.has(key)) {
-      error(`${fieldName}: duplicate artifact id + target "${key}"`);
-    }
-    seen.add(key);
   }
 
   const expectedKind = ARTIFACT_KIND_BY_TARGET[artifactTarget];
@@ -2236,6 +2250,7 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     projectManagedKind,
     states,
     refreshKeys,
+    delivery,
     roleKey,
     skillKey,
     sourceDirs,
@@ -2254,10 +2269,56 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
     return [];
   }
 
-  const seen = new Set();
   const declarations = artifacts.targets
-    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir))
+    .map((entry, index) => validateArtifactTargetEntry(entry, index, manifest, pluginDir))
     .filter(Boolean);
+  const idsBySurfaceScope = new Map();
+  const nativeIds = new Map();
+  const nativeSkillKeys = new Map();
+  for (const [declarationIndex, declaration] of declarations.entries()) {
+    for (const scope of declaration.scopes) {
+      const surface = declaration.platform ?? declaration.distribution;
+      const key = `${surface}:${scope}:${declaration.id}`;
+      const existing = idsBySurfaceScope.get(key);
+      if (existing !== undefined) {
+        error(
+          `artifacts.targets has duplicate artifact id "${declaration.id}" for surface/scope "${surface}:${scope}" in targets[${existing}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        idsBySurfaceScope.set(key, declarationIndex);
+      }
+    }
+    if (declaration.delivery?.mode === 'codex-native') {
+      const existingId = nativeIds.get(declaration.id);
+      if (existingId !== undefined) {
+        error(
+          `artifacts.targets has duplicate codex-native artifact id "${declaration.id}" in the shared projection at targets[${existingId}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        nativeIds.set(declaration.id, declarationIndex);
+      }
+      const existingSkillKey = nativeSkillKeys.get(declaration.skillKey);
+      if (existingSkillKey !== undefined) {
+        error(
+          `artifacts.targets has duplicate codex-native skillKey "${declaration.skillKey}" in the shared projection at targets[${existingSkillKey}] and targets[${declarationIndex}]`,
+        );
+      } else {
+        nativeSkillKeys.set(declaration.skillKey, declarationIndex);
+      }
+    }
+  }
+  const staticSkillNames = new Set(collectDeclaredSkillNames(pluginDir, manifest).static);
+  for (const [index, declaration] of declarations.entries()) {
+    if (
+      declaration.target === 'codex.skill'
+      && declaration.delivery?.mode === 'codex-native'
+      && staticSkillNames.has(declaration.skillKey)
+    ) {
+      error(
+        `artifacts.targets[${index}].skillKey: native dynamic Skill "${declaration.skillKey}" conflicts with a static Skill of the same name`,
+      );
+    }
+  }
   const owners = new Map();
   for (const declaration of declarations) {
     if (
@@ -2856,6 +2917,7 @@ function runArtifactRendererFixture(
             issues: [],
           },
           changedConfigKeys: [],
+          requestedArtifactIds: scopedDeclarations.map((target) => target.id),
           previousArtifacts: [],
           artifactSources: scopedDeclarations.map((target) => ({
             id: target.id,
