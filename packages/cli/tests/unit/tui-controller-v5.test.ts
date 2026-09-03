@@ -746,7 +746,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
-  it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
+  it('projects manifest order, presentation groups, choices, and private values safely', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
       { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
@@ -755,19 +755,23 @@ describe('TUI v4 router and ViewModel', () => {
     const page = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: {
-          level: { type: 'enum', title: '级别', values: ['fast', 'strict'] },
-          rules: { type: 'file', title: '规则', default: '/Users/private/default-rules.json' },
+        fields: {
+          level: {
+            type: 'string',
+            title: '级别',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'fast', title: '快速', value: 'fast' },
+                { id: 'strict', title: '严格', value: 'strict', recommended: true },
+              ],
+            },
+          },
+          rules: { type: 'string', title: '规则', sensitive: true, default: '/Users/private/default-rules.json' },
           token: { type: 'string', title: '令牌', sensitive: true, default: 'default-secret' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level'] }],
-          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict', advanced: true } },
-          presets: [{
-            id: 'strict',
-            title: '严格方案',
-            values: { level: 'strict', rules: '/Users/private/preset-rules.json', token: 'preset-secret' },
-          }],
         },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
@@ -778,24 +782,23 @@ describe('TUI v4 router and ViewModel', () => {
       ['其他设置', ['rules', 'token']],
     ]);
     expect(page.groups[0]!.fields[0]).toEqual(expect.objectContaining({
-      enumValues: ['fast', 'strict'],
-      valueLabels: { fast: '快速', strict: '严格' },
-      recommendedValue: 'strict',
+      type: 'string',
+      allowCustom: false,
+      matchedPresetId: 'strict',
+      choices: [
+        { id: 'fast', title: '快速', value: 'fast' },
+        { id: 'strict', title: '严格', value: 'strict', recommended: true },
+      ],
       value: 'strict',
     }));
-    expect(page.presets).toEqual([{
-      id: 'strict',
-      title: '严格方案',
-      values: { level: 'strict' },
-      privateFieldTitles: ['规则', '令牌'],
-    }]);
+    expect(page.presets).toEqual([]);
     const serialized = JSON.stringify(page);
     expect(serialized).not.toContain('/Users/private');
     expect(serialized).not.toContain('sk-private');
 
     const fallback = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum' }, rules: { type: 'file' }, token: { type: 'string', sensitive: true } } },
+      schema: { fields: { level: { type: 'string' }, rules: { type: 'string' }, token: { type: 'string', sensitive: true } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
     });
     expect(fallback.groups).toHaveLength(1);
@@ -805,8 +808,13 @@ describe('TUI v4 router and ViewModel', () => {
     const fieldAdvanced = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: { level: { type: 'enum' }, model: { type: 'string' } },
-        presentation: { fields: { model: { advanced: true } } },
+        fields: { level: { type: 'string' }, model: { type: 'string' } },
+        presentation: {
+          groups: [
+            { id: 'general', title: '插件设置', fields: ['level'] },
+            { id: 'advanced', title: '高级设置', fields: ['model'], advanced: true },
+          ],
+        },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [fields[0]!, {
         key: 'model', title: '模型', kind: 'manifest', reserved: false, writable: true,
@@ -829,7 +837,7 @@ describe('TUI v4 router and ViewModel', () => {
     };
     const editable = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
         ...layeredField,
         effectiveValue: 'strict',
@@ -839,7 +847,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({
@@ -849,6 +857,135 @@ describe('TUI v4 router and ViewModel', () => {
     expect(effective.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
     });
+  });
+
+  it('projects canonical object presets and a stable sensitive-child summary', () => {
+    const definition = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'service',
+              title: 'Service',
+              value: { token: 'secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true, required: true },
+            region: { type: 'string' as const, required: true },
+          },
+        },
+      },
+    };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: definition,
+      read: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [{
+          key: 'credentials',
+          title: 'credentials',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: { region: 'west', token: '[redacted]' },
+          sourceLayer: 'user',
+          value: { region: 'west', token: '[redacted]' },
+          source: 'user',
+          matchedPreset: 'service',
+          valid: true,
+          issues: [],
+        }],
+      },
+      effectiveRawValues: { credentials: { region: 'west', token: 'secret' } },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field).toMatchObject({
+      type: 'object',
+      matchedPresetId: 'service',
+      displayValue: '方案“Service” · 2 项（region、token）',
+      draftValue: { region: 'west', token: 'secret' },
+    });
+    expect(field.displayValue).not.toContain('secret');
+  });
+
+  it('matches a raw inherited object preset for a project override and precomputes redacted unset changes', () => {
+    const schema = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'inherited',
+              title: 'Inherited service',
+              value: { token: 'inherited-secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true },
+            region: { type: 'string' as const },
+          },
+        },
+      },
+    };
+    const entry = (scope: 'user' | 'project', value: { token: string; region: string }) => ({
+      key: 'credentials',
+      title: 'credentials',
+      kind: 'manifest' as const,
+      reserved: false,
+      writable: true,
+      valueState: 'configured' as const,
+      effectiveValue: value,
+      sourceLayer: scope,
+      storedValue: value,
+      storedSourceLayer: scope,
+    });
+    const userRaw = { token: 'inherited-secret', region: 'west' };
+    const projectRaw = { token: 'current-secret', region: 'east' };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema,
+      read: {
+        pluginName: 'demo',
+        scope: 'project',
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+      },
+      effectiveRead: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+      },
+      layerReads: {
+        user: {
+          pluginName: 'demo',
+          scope: 'user',
+          fields: [entry('user', { token: '[redacted]', region: 'west' })],
+        },
+        project: {
+          pluginName: 'demo',
+          scope: 'project',
+          fields: [entry('project', { token: '[redacted]', region: 'east' })],
+        },
+      },
+      rawValues: { credentials: projectRaw },
+      rawLayerValues: { user: { credentials: userRaw }, project: { credentials: projectRaw } },
+      effectiveRawValues: { credentials: projectRaw },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field.fallbackDisplayValue).toBe('方案“Inherited service” · 2 项（region、token）');
+    expect(field.fallbackObjectChanges).toEqual(expect.arrayContaining([
+      { property: 'region', before: 'east', after: 'west' },
+      { property: 'token', before: '已设置', after: '已设置', private: true },
+    ]));
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('current-secret');
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
   });
   it('restores list focus, query, and source tab after a detail route goes back', () => {
     const router = new TuiRouter();
@@ -1162,7 +1299,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'required',
         pluginId: 'official/required',
         description: 'required config fixture',
-        configIssues: [{ type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
+        configIssues: [{ scope: 'user', type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official',
@@ -1246,7 +1383,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'team/configured',
           description: 'config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
         {
@@ -1254,7 +1391,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'official/source-configured',
           description: 'source config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
       ],
@@ -1419,7 +1556,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'offline',
         pluginId: 'official/offline',
         description: 'offline fixture',
-        configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+        configIssues: [{ scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
@@ -1481,19 +1618,19 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: [
         {
           pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
-          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'projectLocal' }],
+          configIssues: [{ scope: 'project', type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
         },
         {
           pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
-          configDiagnostic: { code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
+          configDiagnostic: { scope: 'user', code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
         },
       ],
     });
 
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
       title: 'invalid · 设置值无效',
-      configLayer: { scope: 'project', projectLayer: 'local' },
-      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      configLayer: { scope: 'project' },
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project', scope: 'project' }],
       diagnostic: {
         technical: { code: 'invalid-config', stage: 'validate-config' },
       },
@@ -3484,11 +3621,11 @@ describe('TUI v4 Review safety', () => {
     const route = {
       name: 'configFields' as const,
       pluginId: 'official/demo',
-      layer: { scope: 'project' as const, projectLayer: 'shared' as const },
+      layer: { scope: 'project' as 'project' | 'user' },
     };
     router.push(route);
-    route.layer.projectLayer = 'local';
-    expect(router.snapshot.current.route).toMatchObject({ layer: { projectLayer: 'shared' } });
+    route.layer.scope = 'user';
+    expect(router.snapshot.current.route).toMatchObject({ layer: { scope: 'project' } });
 
     const loaded = {
       payload: status({ sources: [source('official', { type: 'path' })] }),

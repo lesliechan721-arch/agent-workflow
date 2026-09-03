@@ -1,10 +1,14 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
+
+import fs from 'fs-extra';
 
 import type {
   CatalogGenerationActiveV1,
   CatalogGenerationSet,
   CatalogGenerationSetSource,
   CatalogSource,
+  PluginMeta,
   SourceIdentity,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
@@ -16,14 +20,46 @@ import {
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import {
   createCatalogStoreKey,
+  readCatalogSnapshotLogicalIdentity,
+  readCatalogStoreMetadata,
   readCatalogStoreEntry,
+  resolveCatalogStoreLocation,
   type CatalogStoreEntry,
 } from './catalog-generation-store.js';
 import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
-import { checkAwCapabilitySupport } from './manifest.js';
+import { checkAwCapabilitySupport, validatePluginManifest } from './manifest.js';
+import { validateCatalogManifestV7 } from './catalog-manifest-v7.js';
+import { calculateFileDigest } from './bundle-integrity.js';
+import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryContentDigest,
+} from './catalog-digests.js';
+import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
 
 export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSource {
   active: CatalogGenerationActiveV1;
+}
+
+export interface ResolvedActiveCatalogPluginShallow {
+  sourceId: string;
+  sourceIdentity: string;
+  catalogVersion: string;
+  snapshotPath: string;
+  plugin: PluginMeta;
+}
+
+async function assertRegularDirectory(value: string, label: string): Promise<void> {
+  const stats = await fs.lstat(value);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular directory.`);
+  }
+}
+
+async function assertRegularFile(value: string, label: string): Promise<void> {
+  const stats = await fs.lstat(value);
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`${label} must be a regular file.`);
+  }
 }
 
 async function resolveFromState(options: {
@@ -128,6 +164,100 @@ export async function resolveActiveCatalogGeneration(options: {
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
   });
+}
+
+export async function resolveActiveCatalogPluginShallow(options: {
+  sourceId: string;
+  pluginName: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ResolvedActiveCatalogPluginShallow> {
+  const env = options.env ?? process.env;
+  const control = await readCatalogGenerationControlSnapshot({ env });
+  const source = control.configSnapshot.config.sources.find((entry) => entry.id === options.sourceId);
+  const active = control.generationState.sources[options.sourceId]?.active;
+  if (!source || !active) throw new Error('Selected Catalog source has no Active snapshot.');
+  const sourceIdentity = control.sourceIdentities[source.id]!;
+  if (active.sourceIdentity !== sourceIdentity
+    || active.sourceConfigFingerprint !== calculateCatalogSourceConfigFingerprint(source)) {
+    throw new Error('Active Catalog snapshot does not match the selected source configuration.');
+  }
+
+  const location = resolveCatalogStoreLocation({
+    logicalIdentity: active.logicalIdentity,
+    snapshotDigest: active.snapshotDigest,
+    env,
+  });
+  const metadata = await readCatalogStoreMetadata({
+    logicalIdentity: active.logicalIdentity,
+    snapshotDigest: active.snapshotDigest,
+    env,
+  });
+  if (metadata.manifestDigest !== active.manifestDigest
+    || metadata.logicalIdentity !== active.logicalIdentity
+    || metadata.snapshotDigest !== active.snapshotDigest) {
+    throw new Error('Active Catalog snapshot does not match its content-addressed store metadata.');
+  }
+  await assertRegularDirectory(location.storeRootDir, 'Catalog store root');
+  await assertRegularDirectory(location.logicalIdentityDirectory, 'Catalog logical identity store');
+  await assertRegularDirectory(location.entryDir, 'Catalog store entry');
+  await assertRegularDirectory(location.snapshotRoot, 'Catalog snapshot');
+  if (await readCatalogSnapshotLogicalIdentity(location.snapshotRoot) !== active.logicalIdentity) {
+    throw new Error('Catalog snapshot logical identity does not match Active state.');
+  }
+  const manifestPath = path.join(location.snapshotRoot, CURRENT_CATALOG_MANIFEST_FILE);
+  await assertRegularFile(manifestPath, 'Catalog manifest');
+  if (await calculateFileDigest(manifestPath) !== active.manifestDigest) {
+    throw new Error('Catalog manifest does not match Active state.');
+  }
+  const rawManifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  const rawEntries = Array.isArray(rawManifest.entries) ? rawManifest.entries : [];
+  const rawEntry = rawEntries.find((entry) => entry !== null
+    && typeof entry === 'object'
+    && !Array.isArray(entry)
+    && (entry as Record<string, unknown>).name === options.pluginName);
+  if (!rawEntry) throw new Error('Selected plugin is absent from the local Active snapshot.');
+  const manifest = validateCatalogManifestV7({ ...rawManifest, entries: [rawEntry] });
+  if (manifest.catalogVersion !== metadata.catalogVersion
+    || manifest.channel !== metadata.channel
+    || JSON.stringify(manifest.requires.aw.capabilities ?? [])
+      !== JSON.stringify(metadata.requiredAwCapabilities)) {
+    throw new Error('Catalog manifest does not match store metadata.');
+  }
+  const entry = manifest.entries[0]!;
+  const pluginsRoot = path.join(location.snapshotRoot, 'plugins');
+  const pluginRoot = path.resolve(pluginsRoot, entry.name);
+  if (path.dirname(pluginRoot) !== path.resolve(pluginsRoot)) {
+    throw new Error('Selected plugin path escapes the Catalog snapshot.');
+  }
+  await assertRegularDirectory(pluginsRoot, 'Catalog plugins root');
+  await assertRegularDirectory(pluginRoot, 'Selected plugin bundle');
+  const pluginManifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  await assertRegularFile(pluginManifestPath, 'Selected plugin manifest');
+  const rawPluginManifest = await fs.readJson(pluginManifestPath) as Record<string, unknown>;
+  const shallowManifestInput = { ...rawPluginManifest };
+  delete shallowManifestInput.dependencies;
+  const normalizedPluginManifest = validatePluginManifest(pluginRoot, shallowManifestInput);
+  const plugin: PluginMeta = {
+    rootDir: pluginRoot,
+    manifestPath: pluginManifestPath,
+    manifest: normalizedPluginManifest,
+  };
+  if (plugin.manifest.name !== options.pluginName || plugin.manifest.version !== entry.version) {
+    throw new Error('Selected plugin bundle identity does not match its Catalog entry.');
+  }
+  const artifactDigest = await calculateCatalogEntryArtifactDigest(pluginRoot);
+  const contentDigest = await calculateCatalogEntryContentDigest(pluginRoot);
+  if (artifactDigest !== entry.artifactDigest
+    || contentDigest !== entry.contentDigest) {
+    throw new Error('Selected plugin bundle does not match its Catalog entry.');
+  }
+  return {
+    sourceId: source.id,
+    sourceIdentity,
+    catalogVersion: metadata.catalogVersion,
+    snapshotPath: location.snapshotRoot,
+    plugin,
+  };
 }
 
 export function calculateCatalogGenerationSetDigest(

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
-import type { CatalogSourceResolution } from '../types.js';
+import type { CatalogSourceResolution, PluginConfigSchema, Scope } from '../types.js';
 import {
   statusCommandV7,
   statusTargetIntent,
@@ -38,9 +38,9 @@ import {
 } from '../utils/multi-source-catalog.js';
 import {
   coercePluginConfigUpdates,
-  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   resolveConfigRead,
+  resolveEffectivePluginConfig,
 } from '../utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
@@ -56,6 +56,7 @@ import {
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   operationEvidenceFingerprint,
+  TuiConfigInvalidStoreError,
   TuiController,
   TuiOperationBlockedError,
   type OperationEvidence,
@@ -615,6 +616,40 @@ export function createTuiControllerDependencies(
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
     return selectCatalogOperationContext(sessionCatalogOperationContext, [sourceId]);
   };
+  const readConfigStoresForTui = async (config: {
+    sourceId?: string;
+    sourceIdentity?: string;
+    pluginName: string;
+    schema: PluginConfigSchema['fields'];
+    scope: Scope | 'effective';
+    signal: AbortSignal;
+  }) => {
+    const scopes = config.scope === 'user' ? ['user'] as const : ['user', 'project'] as const;
+    const stores = await Promise.all(scopes.map((scope) => readPluginConfigStore({
+      sourceId: config.sourceId,
+      sourceIdentity: config.sourceIdentity,
+      pluginName: config.pluginName,
+      scope,
+      cwd: context.cwd,
+      env: context.env,
+      schema: config.schema,
+    })));
+    const user = stores[0]!;
+    const project = config.scope === 'user' ? undefined : stores[1]!;
+    config.signal.throwIfAborted();
+    const invalidStores = ([
+      { scope: 'user' as const, store: user },
+      ...(project ? [{ scope: 'project' as const, store: project }] : []),
+    ]).flatMap(({ scope, store }) => store.state === 'invalid' ? [{
+      scope,
+      code: store.invalidCode!,
+      pathSummary: scope === 'user'
+        ? `AW_HOME/plugin-config/${config.sourceId ?? '<source>'}/${config.pluginName}/config.json`
+        : `<project>/.agent-workflows/plugin-config/${config.sourceId ?? '<source>'}/${config.pluginName}/config.json`,
+    }] : []);
+    if (invalidStores.length > 0) throw new TuiConfigInvalidStoreError(invalidStores);
+    return { user, ...(project ? { project } : {}) };
+  };
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
@@ -1102,12 +1137,12 @@ export function createTuiControllerDependencies(
           }
           if (intent.kind === 'configSave') {
             await coercePluginConfigUpdates({
-              schema: plugin.manifest.config.schema,
+              schema: plugin.manifest.config.fields,
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
             for (const key of intent.removeKeys ?? []) {
-              if (!plugin.manifest.config.schema[key]) {
+              if (!plugin.manifest.config.fields[key]) {
                 throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
               }
             }
@@ -1123,7 +1158,6 @@ export function createTuiControllerDependencies(
         sourceIdentity: selected.source.sourceIdentity,
         pluginName: selected.pluginName,
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         cwd: context.cwd,
         env: context.env,
       });
@@ -1148,7 +1182,6 @@ export function createTuiControllerDependencies(
         targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
         config: {
           scope: intent.scope,
-          projectLayer: intent.projectLayer,
           schemaIdentity: selected.source.manifestDigest,
           storeDigest: digest({ exists: store.exists, values: store.values }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
@@ -1250,12 +1283,12 @@ export function createTuiControllerDependencies(
                 throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
               }
               await coercePluginConfigUpdates({
-                schema: plugin.manifest.config.schema,
+                schema: plugin.manifest.config.fields,
                 updates: intent.updates ?? {},
                 cwd: context.cwd,
               });
               for (const key of intent.removeKeys ?? []) {
-                if (!plugin.manifest.config.schema[key]) {
+                if (!plugin.manifest.config.fields[key]) {
                   throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
                 }
               }
@@ -1376,14 +1409,12 @@ export function createTuiControllerDependencies(
         sourceIdentity: selected.source.sourceIdentity,
         pluginName: selected.pluginName,
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         cwd: context.cwd,
         env: context.env,
       });
       signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
-        projectLayer: intent.projectLayer,
         schemaIdentity: selected.source.manifestDigest,
         storeDigest: digest({ exists: store.exists, values: store.values }),
         affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
@@ -1516,12 +1547,12 @@ export function createTuiControllerDependencies(
               throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
             }
             await coercePluginConfigUpdates({
-              schema: plugin.manifest.config.schema,
+              schema: plugin.manifest.config.fields,
               updates: intent.updates ?? {},
               cwd: context.cwd,
             });
             for (const key of intent.removeKeys ?? []) {
-              if (!plugin.manifest.config.schema[key]) {
+              if (!plugin.manifest.config.fields[key]) {
                 throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
               }
             }
@@ -1566,7 +1597,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: layer.scope,
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1574,7 +1604,6 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: 'effective',
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1596,11 +1625,20 @@ export function createTuiControllerDependencies(
           if (!plugin.manifest.config) {
             throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
           }
+          const stores = await readConfigStoresForTui({
+            sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            schema: plugin.manifest.config.fields,
+            scope: layer.scope,
+            signal,
+          });
+          const userStore = stores.user;
+          const projectStore = stores.project;
           const read = await resolveConfigRead({
             pluginName: plugin.manifest.name,
             plugin,
             scope: layer.scope,
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
@@ -1608,69 +1646,82 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             plugin,
             scope: 'effective',
-            projectLayer: layer.projectLayer,
             cwd: context.cwd,
             env: context.env,
           });
           const layerReads = layer.scope === 'effective' ? undefined : {
-            user: await resolveConfigRead({
+            user: layer.scope === 'user' ? read : await resolveConfigRead({
               pluginName: plugin.manifest.name,
               plugin,
               scope: 'user',
-              projectLayer: 'shared',
               cwd: context.cwd,
               env: context.env,
             }),
-            project: await resolveConfigRead({
-              pluginName: plugin.manifest.name,
-              plugin,
-              scope: 'project',
-              projectLayer: 'shared',
-              cwd: context.cwd,
-              env: context.env,
-            }),
-            local: await resolveConfigRead({
-              pluginName: plugin.manifest.name,
-              plugin,
-              scope: 'project',
-              projectLayer: 'local',
-              cwd: context.cwd,
-              env: context.env,
-            }),
+            ...(layer.scope === 'user' ? {} : { project: read }),
           };
+          const effectiveRaw = await resolveEffectivePluginConfig({
+            sourceId: plugin.sourceId,
+            sourceIdentity: plugin.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            manifest: plugin.manifest,
+            targetScope: layer.scope === 'user' ? 'user' : 'project',
+            cwd: context.cwd,
+            env: context.env,
+          });
+          const layerStore = layer.scope === 'effective'
+            ? undefined
+            : layer.scope === 'user' ? userStore : projectStore;
           return buildConfigPage({
             pluginId,
             schema: plugin.manifest.config,
             read,
             effectiveRead,
             ...(layerReads ? { layerReads } : {}),
+            ...(layerStore ? { rawValues: layerStore.values } : {}),
+            rawLayerValues: {
+              user: userStore.values,
+              ...(projectStore ? { project: projectStore.values } : {}),
+            },
+            effectiveRawValues: effectiveRaw.values,
           });
         },
       });
     },
     async getConfigResetAvailability(pluginId, layer, signal) {
-      signal.throwIfAborted();
-      const { sourceId, pluginName } = parsePluginId(pluginId);
-      if (!sourceId) return { exists: false, sourceIdentityPresent: false };
-      const identity = await readNamespacedPluginConfigStoreIdentity({
-        sourceId,
-        pluginName,
-        scope: layer.scope,
-        projectLayer: layer.projectLayer,
-        cwd: context.cwd,
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: pluginId,
+        cliVersion: packageInfo.version,
         env: context.env,
+        signal,
+        ...(sessionContextForPlugin(pluginId)
+          ? { operationContext: sessionContextForPlugin(pluginId)! }
+          : {}),
+        consume: async ({ plugin, source }) => {
+          const store = await readPluginConfigStore({
+            sourceId: source.sourceId,
+            sourceIdentity: source.sourceIdentity,
+            pluginName: plugin.manifest.name,
+            scope: layer.scope,
+            cwd: context.cwd,
+            env: context.env,
+            schema: plugin.manifest.config?.fields,
+          });
+          signal.throwIfAborted();
+          return {
+            exists: store.exists,
+            state: store.state,
+            ...(store.invalidCode ? { invalidCode: store.invalidCode } : {}),
+            sourceIdentityPresent: true,
+            sourceIdentity: source.sourceIdentity,
+            storeDigest: digest({
+              exists: store.exists,
+              pluginId,
+              values: store.values,
+            }),
+          };
+        },
       });
-      signal.throwIfAborted();
-      if (!identity) return { exists: false, sourceIdentityPresent: false };
-      return {
-        exists: true,
-        sourceIdentityPresent: true,
-        storeDigest: digest({
-          exists: identity.store.exists,
-          pluginId: identity.pluginId,
-          values: identity.store.values,
-        }),
-      };
     },
     async executeIntent(intent, expectedEvidence, signal) {
       if (intent.kind === 'catalogSourcesRecovery') {
@@ -1998,7 +2049,6 @@ export function createTuiControllerDependencies(
                       plugin,
                       pluginName: plugin.manifest.name,
                       scope: intent.scope,
-                      projectLayer: intent.projectLayer,
                       cwd: context.cwd,
                       env: context.env,
                       nativeCliRunner: context.nativeCliRunner,
@@ -2018,7 +2068,6 @@ export function createTuiControllerDependencies(
                       plugin,
                       pluginName: plugin.manifest.name,
                       scope: intent.scope,
-                      projectLayer: intent.projectLayer,
                       cwd: context.cwd,
                       env: context.env,
                       nativeCliRunner: context.nativeCliRunner,

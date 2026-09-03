@@ -58,6 +58,49 @@ async function createFixture(source) {
   return root;
 }
 
+async function createRealVitestFixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-real-vitest-wrapper-'));
+  roots.push(root);
+  const packageRoot = path.join(root, 'node_modules/vitest');
+  const realPackageRoot = await fs.realpath(
+    path.join(repositoryRoot, 'packages/cli/node_modules/vitest'),
+  );
+  await fs.mkdir(path.dirname(packageRoot), { recursive: true });
+  await fs.symlink(realPackageRoot, packageRoot, 'dir');
+  await fs.mkdir(path.join(root, 'tests'), { recursive: true });
+  await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({
+    private: true,
+    scripts: {
+      test: `node ${JSON.stringify(wrapperPath)} run tests/hang.test.mjs`,
+    },
+  }));
+  await fs.writeFile(path.join(root, 'tests/hang.test.mjs'), [
+    "import fs from 'node:fs';",
+    "import { test } from 'vitest';",
+    "test('hangs in a real worker', async () => {",
+    "  fs.writeFileSync(process.env.WORKER_PID_FILE, JSON.stringify({ worker: process.pid }));",
+    "  await new Promise(() => {});",
+    "});",
+  ].join('\n'));
+  return root;
+}
+
+async function createPsShim(root, failFile) {
+  const binDir = path.join(root, 'bin');
+  const realPs = spawnSync('which', ['ps'], { encoding: 'utf8' }).stdout.trim();
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(path.join(binDir, 'ps'), [
+    '#!/usr/bin/env node',
+    "import fs from 'node:fs';",
+    "import { spawnSync } from 'node:child_process';",
+    `if (fs.existsSync(${JSON.stringify(failFile)})) process.exit(1);`,
+    `const result = spawnSync(${JSON.stringify(realPs)}, process.argv.slice(2), { stdio: 'inherit' });`,
+    'process.exit(result.status ?? 1);',
+  ].join('\n'));
+  await fs.chmod(path.join(binDir, 'ps'), 0o755);
+  return binDir;
+}
+
 function spawnWrapper(cwd, args, env) {
   const child = spawn(process.execPath, [wrapperPath, ...args], {
     cwd,
@@ -161,6 +204,7 @@ describe('Vitest process-tree wrapper', () => {
     const run = spawnWrapper(fixture, ['run'], { PID_FILE: pidFile });
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.root, pids.descendant);
+    const interruptedAt = performance.now();
     run.child.kill(signal);
     await new Promise((resolve) => setTimeout(resolve, 25));
     run.child.kill(signal);
@@ -168,7 +212,94 @@ describe('Vitest process-tree wrapper', () => {
     await Promise.all([waitForExit(pids.root), waitForExit(pids.descendant)]);
 
     expect(result).toMatchObject({ code: expectedCode, signal: null });
+    expect(performance.now() - interruptedAt).toBeLessThan(1_400);
     expect(isProcessAlive(pids.root)).toBe(false);
     expect(isProcessAlive(pids.descendant)).toBe(false);
+  });
+
+  itWithPosixInspection('cleans a real Vitest worker after repeated SIGINT through pnpm', async () => {
+    const fixture = await createRealVitestFixture();
+    const workerPidFile = path.join(fixture, 'worker.pid');
+    const pnpmExecPath = process.env.npm_execpath;
+    const command = pnpmExecPath ? process.execPath : 'pnpm';
+    const args = pnpmExecPath ? [pnpmExecPath, 'test'] : ['test'];
+    const run = spawn(command, args, {
+      cwd: fixture,
+      env: { ...process.env, WORKER_PID_FILE: workerPidFile },
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const closed = new Promise((resolve, reject) => {
+      run.once('error', reject);
+      run.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    const { worker: workerPid } = await readJsonEventually(workerPidFile);
+    observedPids.push(run.pid, workerPid);
+
+    process.kill(-run.pid, 'SIGINT');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    try {
+      process.kill(-run.pid, 'SIGINT');
+    } catch {
+      // The pnpm foreground process group can already have exited.
+    }
+    await closed;
+    await waitForExit(workerPid, 3_000);
+
+    expect(isProcessAlive(workerPid)).toBe(false);
+  });
+
+  itWithPosixInspection('reports cleanup verification failure instead of hiding it as SIGINT', async () => {
+    const fixture = await createFixture([
+      "import { spawn } from 'node:child_process';",
+      "import fs from 'node:fs';",
+      "const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+      "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid }));",
+      "process.on('SIGINT', () => {});",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    const binDir = path.join(fixture, 'bin');
+    const failFile = path.join(fixture, 'fail-ps');
+    const pidFile = path.join(fixture, 'pids.json');
+    await createPsShim(fixture, failFile);
+    const run = spawnWrapper(fixture, ['run'], {
+      PID_FILE: pidFile,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+    });
+    const pids = await readJsonEventually(pidFile);
+    observedPids.push(pids.root, pids.descendant);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await fs.writeFile(failFile, '1');
+    run.child.kill('SIGINT');
+    const result = await run.closed;
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('cleanup could not verify descendant termination');
+  });
+
+  itWithPosixInspection('fails cleanup when process snapshots never establish ownership', async () => {
+    const fixture = await createFixture([
+      "import { spawn } from 'node:child_process';",
+      "import fs from 'node:fs';",
+      "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+      "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid }));",
+      "process.on('SIGINT', () => {});",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    const failFile = path.join(fixture, 'fail-ps');
+    const pidFile = path.join(fixture, 'pids.json');
+    const binDir = await createPsShim(fixture, failFile);
+    await fs.writeFile(failFile, '1');
+    const run = spawnWrapper(fixture, ['run'], {
+      PID_FILE: pidFile,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+    });
+    const pids = await readJsonEventually(pidFile);
+    observedPids.push(pids.root, pids.descendant);
+    run.child.kill('SIGINT');
+    const result = await run.closed;
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('cleanup could not verify process-tree ownership');
   });
 });

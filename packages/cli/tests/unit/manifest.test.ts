@@ -408,7 +408,7 @@ describe('manifest utils', () => {
       },
     };
     manifest.config = {
-      schema: {
+      fields: {
         enableLightweightInstruction: {
           type: 'boolean',
           default: true,
@@ -418,8 +418,15 @@ describe('manifest utils', () => {
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
-          type: 'enum',
-          values: ['low', 'medium', 'high', 'xhigh'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+              id: value,
+              title: value,
+              value,
+            })),
+          },
           default: 'medium',
         },
         token: {
@@ -429,14 +436,19 @@ describe('manifest utils', () => {
           sensitive: true,
         },
         mode: {
-          type: 'enum',
-          values: ['safe', 'fast'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'safe', title: 'Safe', value: 'safe' },
+              { id: 'fast', title: 'Fast', value: 'fast' },
+            ],
+          },
           default: 'safe',
         },
         limit: {
           type: 'number',
-          min: 1,
-          max: 10,
+          validation: { minimum: 1, maximum: 10 },
           default: 3,
         },
       },
@@ -499,9 +511,11 @@ describe('manifest utils', () => {
         node: ['./scripts/*.test.mjs'],
       },
     });
-    expect(plugin.manifest.config?.schema.mode).toMatchObject({
-      type: 'enum',
-      values: ['safe', 'fast'],
+    expect(plugin.manifest.config?.fields.mode).toMatchObject({
+      type: 'string',
+      choices: {
+        allowCustom: false,
+      },
       default: 'safe',
     });
 
@@ -529,8 +543,8 @@ describe('manifest utils', () => {
         roleKey: 'codex-explorer',
       }),
     ]);
-    expect(bundleManifest.config?.schema.token.sensitive).toBe(true);
-    expect(bundleManifest.config?.schema.token.title).toBe('API Token');
+    expect(bundleManifest.config?.fields.token.sensitive).toBe(true);
+    expect(bundleManifest.config?.fields.token.title).toBe('API Token');
 
     const platformManifest = createPlatformManifestBase(plugin) as Record<string, unknown>;
     expect(platformManifest.scripts).toBeUndefined();
@@ -680,7 +694,7 @@ describe('manifest utils', () => {
     const manifest = await readFixturePluginManifest(repoRoot);
 
     manifest.config = {
-      schema: {
+      fields: {
         'bad/key': {
           type: 'string',
         },
@@ -690,7 +704,7 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('config key "bad/key" is not valid');
 
     manifest.config = {
-      schema: {
+      fields: {
         'bad-key': {
           type: 'string',
         },
@@ -700,31 +714,33 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('config key "bad-key" is not valid');
 
     manifest.config = {
-      schema: {
+      fields: {
         mode: {
-          type: 'enum',
-          values: ['safe'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [{ id: 'safe', title: 'Safe', value: 'safe' }],
+          },
           default: 'fast',
         },
       },
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('enum default must be one of values');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('Expected a declared preset value');
 
     manifest.config = {
-      schema: {
+      fields: {
         limit: {
           type: 'number',
-          min: 10,
-          max: 1,
+          validation: { minimum: 10, maximum: 1 },
         },
       },
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min must be less than or equal to max');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('minimum must be less than or equal to maximum');
 
     manifest.config = {
-      schema: {
+      fields: {
         text: {
           type: 'string',
           min: 1,
@@ -732,23 +748,28 @@ describe('manifest utils', () => {
       },
     };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min/max are only supported for number config');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must NOT have additional properties');
   });
 
   it('accepts config presentation and preserves the no-presentation contract', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    const schema = {
+    const fields = {
       mode: {
-        type: 'enum',
-        values: ['safe', 'fast'],
+        type: 'string',
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'safe', title: 'Safe', value: 'safe' },
+            { id: 'fast', title: 'Fast', value: 'fast' },
+          ],
+        },
         default: 'safe',
       },
       limit: {
         type: 'number',
-        min: 1,
-        max: 20,
+        validation: { minimum: 1, maximum: 20 },
       },
       trace: {
         type: 'boolean',
@@ -758,23 +779,24 @@ describe('manifest utils', () => {
         sensitive: true,
       },
       rules: {
-        type: 'file',
+        type: 'string',
+        validation: { format: 'path' },
       },
     };
 
-    manifest.config = { schema };
+    manifest.config = { fields };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
         config: {
-          schema,
+          fields,
           presentation: undefined,
         },
       },
     });
 
     manifest.config = {
-      schema,
+      fields,
       presentation: {
         groups: [
           {
@@ -782,32 +804,6 @@ describe('manifest utils', () => {
             title: 'General',
             description: 'Common settings.',
             fields: ['mode', 'limit'],
-          },
-        ],
-        fields: {
-          mode: {
-            valueLabels: {
-              safe: 'Safe',
-              fast: 'Fast',
-            },
-            recommendedValue: 'safe',
-          },
-          limit: {
-            recommendedValue: 10,
-            placeholder: '1-20',
-            unit: 'minutes',
-            advanced: true,
-          },
-        },
-        presets: [
-          {
-            id: 'fast',
-            title: 'Fast review',
-            description: 'Only updates listed settings.',
-            values: {
-              mode: 'fast',
-              trace: true,
-            },
           },
         ],
       },
@@ -824,29 +820,9 @@ describe('manifest utils', () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    const schema = {
-      mode: {
-        type: 'enum',
-        values: ['safe', 'fast'],
-      },
-      limit: {
-        type: 'number',
-        min: 1,
-        max: 20,
-      },
-      trace: {
-        type: 'boolean',
-      },
-      token: {
-        type: 'string',
-        sensitive: true,
-      },
-      rules: {
-        type: 'file',
-      },
-      workspace: {
-        type: 'directory',
-      },
+    const fields = {
+      mode: { type: 'string' },
+      limit: { type: 'number' },
     };
     const invalidCases = [
       {
@@ -883,68 +859,13 @@ describe('manifest utils', () => {
         },
         error: 'config key "mode" is assigned to more than one group',
       },
-      {
-        presentation: {
-          fields: { missing: { advanced: true } },
-        },
-        error: 'config.presentation.fields: unknown config key "missing"',
-      },
-      {
-        presentation: {
-          fields: { mode: { valueLabels: { balanced: 'Balanced' } } },
-        },
-        error: 'unknown enum token "balanced"',
-      },
-      {
-        presentation: {
-          fields: { mode: { recommendedValue: 'balanced' } },
-        },
-        error: 'enum default must be one of values',
-      },
-      {
-        presentation: {
-          presets: [{ id: 'large', title: 'Large', values: { limit: 21 } }],
-        },
-        error: 'default is greater than max',
-      },
-      {
-        presentation: {
-          presets: [
-            { id: 'safe', title: 'Safe', values: { mode: 'safe' } },
-            { id: 'safe', title: 'Also safe', values: { trace: true } },
-          ],
-        },
-        error: 'duplicate preset id "safe"',
-      },
-      {
-        presentation: {
-          presets: [{ id: 'bad', title: 'Bad', values: { missing: true } }],
-        },
-        error: 'unknown config key "missing"',
-      },
-      {
-        presentation: {
-          presets: [{ id: 'secret', title: 'Secret', values: { token: 'private' } }],
-        },
-        error: 'presets cannot contain sensitive, file, or directory config values',
-      },
-      {
-        presentation: {
-          presets: [{ id: 'path', title: 'Path', values: { rules: '/private/rules' } }],
-        },
-        error: 'presets cannot contain sensitive, file, or directory config values',
-      },
-      {
-        presentation: {
-          presets: [{ id: 'directory', title: 'Directory', values: { workspace: '/private/workspace' } }],
-        },
-        error: 'presets cannot contain sensitive, file, or directory config values',
-      },
+      { presentation: { fields: {} }, error: 'must NOT have additional properties' },
+      { presentation: { presets: [] }, error: 'must NOT have additional properties' },
     ];
 
     for (const invalidCase of invalidCases) {
       manifest.config = {
-        schema,
+        fields,
         presentation: invalidCase.presentation,
       };
       await writeFixturePluginManifest(repoRoot, manifest);
@@ -957,7 +878,7 @@ describe('manifest utils', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
     manifest.config = {
-      schema: {
+      fields: {
         enabled: {
           type: 'boolean',
           default: true,
@@ -1257,7 +1178,7 @@ describe('manifest utils', () => {
     delete manifest.apps;
     await fs.remove(path.join(pluginRoot, '.app.json'));
     manifest.config = {
-      schema: {
+      fields: {
         enabled: {
           type: 'boolean',
           default: true,

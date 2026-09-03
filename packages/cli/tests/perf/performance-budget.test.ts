@@ -114,7 +114,7 @@ describe('multi-source performance budgets', () => {
           manifest.extensions = {
             instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
           };
-          manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+          manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
         },
       },
       ...Array.from({ length: 20 }, (_, index) => ({

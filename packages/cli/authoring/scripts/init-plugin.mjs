@@ -116,15 +116,21 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
 
   if (opts.withConfigApi) {
     manifest.config = {
-      schema: {
+      fields: {
         apiKey: {
           type: 'string',
           required: true,
           sensitive: true,
         },
         mode: {
-          type: 'enum',
-          values: ['standard', 'strict'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'standard', title: 'Standard', value: 'standard', recommended: true },
+              { id: 'strict', title: 'Strict', value: 'strict' },
+            ],
+          },
           default: 'standard',
         },
       },
@@ -191,17 +197,26 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     plugin: { name: '${pluginName}' },
     config: {
       values: { apiKey: 'test-key', mode: 'strict' },
-      sources: { apiKey: 'user', mode: 'projectShared' },
+      sources: { apiKey: 'user', mode: 'project' },
       schema: {
         apiKey: { type: 'string', sensitive: true, required: true },
-        mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' }
+        mode: {
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: [
+              { id: 'standard', title: 'Standard', value: 'standard', recommended: true },
+              { id: 'strict', title: 'Strict', value: 'strict' }
+            ]
+          },
+          default: 'standard'
+        }
       }
     },
     paths: {
       configStores: {
         user: join(tempDir, 'missing-user.json'),
-        project: join(tempDir, 'missing-project.json'),
-        projectLocal: join(tempDir, 'missing-project-local.json')
+        project: join(tempDir, 'missing-project.json')
       }
     }
   }), 'utf8');
@@ -211,7 +226,7 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
     cwd: tempDir,
     env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, AW_HOME: join(tempDir, 'unused-aw-home') }
   });
-  assert.equal(stdout.trim(), 'test-key');
+  assert.equal(stdout.trim(), '[redacted]');
 });
 `
     : '';
@@ -229,16 +244,18 @@ test('postApply script accepts JSON context from stdin', async () => {
   }), 'utf8');
 
   const postApplyPath = join(dirname(fileURLToPath(import.meta.url)), 'postApply.mjs');
-  const { stdout } = await execFileAsync(process.execPath, [postApplyPath], {
+  const postApply = spawnSync(process.execPath, [postApplyPath], {
     cwd: tempDir,
-    input: await readFile(contextPath, 'utf8')
+    input: await readFile(contextPath, 'utf8'),
+    encoding: 'utf8',
   });
-  assert.match(stdout, /postApply completed/);
+  assert.equal(postApply.status, 0, postApply.stderr);
+  assert.match(postApply.stdout, /postApply completed/);
 });
 `
     : '';
 
-  return `import { execFile } from 'node:child_process';
+  return `import { execFile, spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';

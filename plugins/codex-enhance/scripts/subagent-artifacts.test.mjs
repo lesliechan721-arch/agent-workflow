@@ -29,28 +29,28 @@ const ROLE_EXPECTATIONS = [
   {
     artifactId: 'codex-subagent-simple-role',
     roleKey: 'codex-subagent-simple',
-    refreshKeys: ['simpleTaskModel', 'simpleTaskReasoningEffort'],
+    profileKey: 'simpleTaskProfile',
     model: 'gpt-5.6-luna',
     reasoningEffort: 'max',
   },
   {
     artifactId: 'codex-subagent-general-role',
     roleKey: 'codex-subagent-general',
-    refreshKeys: ['generalTaskModel', 'generalTaskReasoningEffort'],
+    profileKey: 'generalTaskProfile',
     model: 'gpt-5.6-terra',
     reasoningEffort: 'xhigh',
   },
   {
     artifactId: 'codex-subagent-complex-role',
     roleKey: 'codex-subagent-complex',
-    refreshKeys: ['complexTaskModel', 'complexTaskReasoningEffort'],
+    profileKey: 'complexTaskProfile',
     model: 'gpt-5.6-sol',
     reasoningEffort: 'medium',
   },
   {
     artifactId: 'codex-subagent-advanced-role',
     roleKey: 'codex-subagent-advanced',
-    refreshKeys: ['advancedTaskModel', 'advancedTaskReasoningEffort'],
+    profileKey: 'advancedTaskProfile',
     model: 'gpt-5.6-sol',
     reasoningEffort: 'xhigh',
   },
@@ -108,7 +108,7 @@ function artifactsFrom(plan) {
     assert.equal(role.kind, 'codexRole');
     assert.equal(role.target, 'codex.agentRole');
     assert.equal(role.roleKey, expected.roleKey);
-    assert.deepEqual(role.refreshKeys, expected.refreshKeys);
+    assert.deepEqual(role.refreshKeys, [expected.profileKey]);
     assert.equal(role.state, 'present');
     assert.equal(role.content.roleFile.name, expected.roleKey);
     assert.equal(role.content.registration.description, role.content.roleFile.description);
@@ -189,12 +189,14 @@ test('renders a configured minimum initial wait window', async () => {
   assert.match(exploreSkill.content.files['SKILL.md'], /即 `timeout_ms=120000`/);
 });
 
-test('renders a configured role without changing the others', async () => {
+test('renders one complete configured profile without changing the other roles', async () => {
   const { roles } = artifactsFrom(
     await renderArtifactPlan(
       createContext({
-        advancedTaskModel: 'advanced-specialist',
-        advancedTaskReasoningEffort: 'max',
+        advancedTaskProfile: {
+          model: 'advanced-specialist',
+          reasoningEffort: 'max',
+        },
       }),
     ),
   );
@@ -206,21 +208,6 @@ test('renders a configured role without changing the others', async () => {
   const complex = roles.get('codex-subagent-complex');
   assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');
   assert.equal(complex.content.roleFile.model_reasoning_effort, 'medium');
-});
-
-test('treats blank configured values as their task defaults', async () => {
-  const { roles } = artifactsFrom(
-    await renderArtifactPlan(
-      createContext({
-        simpleTaskModel: '   ',
-        simpleTaskReasoningEffort: '   ',
-      }),
-    ),
-  );
-
-  const simple = roles.get('codex-subagent-simple');
-  assert.equal(simple.content.roleFile.model, 'gpt-5.6-luna');
-  assert.equal(simple.content.roleFile.model_reasoning_effort, 'max');
 });
 
 test('rejects unsupported platforms', async () => {

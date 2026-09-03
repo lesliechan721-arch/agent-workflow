@@ -11,7 +11,10 @@ import {
   createTuiControllerDependencies,
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
-import { TuiController } from '../../src/tui/controller.js';
+import {
+  TuiConfigInvalidStoreError,
+  TuiController,
+} from '../../src/tui/controller.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import {
   createCatalogSnapshotFixture,
@@ -411,7 +414,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -473,12 +476,10 @@ describe('TUI controller runtime scope conflict validation', () => {
       kind: 'configSave',
       pluginId: 'team/demo',
       scope: 'user',
-      projectLayer: 'shared',
-      apply: false,
       updates: { mode: 'strict' },
     }, signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
       config: {
-        scope: 'user', projectLayer: 'shared',
+        scope: 'user',
         affectedTargets: [
           { platform: 'codex', scope: 'project' },
           { platform: 'codex', scope: 'user' },
@@ -500,7 +501,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-targets-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -596,6 +597,113 @@ describe('TUI controller runtime scope conflict validation', () => {
     }
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenCalledTimes(writesBeforeDrift);
     drifting.dispose();
+  });
+
+  it('offers deterministic reset evidence for an invalid namespaced store', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-invalid-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const storePath = path.join(
+      isolation.layout.awHomeDir,
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputFile(storePath, '{invalid', 'utf8');
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    const pageError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(pageError).toBeInstanceOf(TuiConfigInvalidStoreError);
+    expect(pageError).toMatchObject({
+      code: 'invalidConfigStores',
+      evidence: [{
+        scope: 'user',
+        code: 'invalidJson',
+        pathSummary: 'AW_HOME/plugin-config/team/demo/config.json',
+      }],
+    });
+    expect(JSON.stringify(pageError)).not.toContain(isolation.layout.awHomeDir);
+
+    const invalidUserAvailability = await dependencies.getConfigResetAvailability!(
+      'team/demo',
+      { scope: 'user' },
+      new AbortController().signal,
+    );
+    expect(invalidUserAvailability).toMatchObject({
+      exists: true,
+      state: 'invalid',
+      invalidCode: 'invalidJson',
+      sourceIdentityPresent: true,
+      sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    await fs.writeJson(storePath, {
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: invalidUserAvailability.sourceIdentity,
+      pluginName: 'demo',
+      values: { mode: 'ready' },
+    });
+    await expect(dependencies.getConfigResetAvailability!(
+      'team/demo',
+      { scope: 'user' },
+      new AbortController().signal,
+    )).resolves.toMatchObject({ exists: true, state: 'ready' });
+
+    const projectStorePath = path.join(
+      isolation.layout.fixtureCwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputFile(projectStorePath, '{project-invalid', 'utf8');
+    const projectError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(projectError).toMatchObject({
+      evidence: [{
+        scope: 'project',
+        code: 'invalidJson',
+        pathSummary: '<project>/.agent-workflows/plugin-config/team/demo/config.json',
+      }],
+    });
+
+    await fs.outputFile(storePath, '{user-invalid-again', 'utf8');
+    const bothError = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'effective' },
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(bothError).toMatchObject({
+      evidence: [
+        expect.objectContaining({ scope: 'user', code: 'invalidJson' }),
+        expect.objectContaining({ scope: 'project', code: 'invalidJson' }),
+      ],
+    });
   });
 
   it('rejects config Review preparation without a loaded TUI session', async () => {
@@ -1011,7 +1119,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-reset-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({

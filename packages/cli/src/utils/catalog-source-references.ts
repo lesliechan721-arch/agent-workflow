@@ -240,9 +240,7 @@ function inventoryErrorRelevance(
     [path.join(awHome, 'plugin-config'), 'user'],
     [path.join(canonicalAwHome, 'plugin-config'), 'user'],
     [path.join(repoRoot, '.agent-workflows', 'plugin-config'), 'project'],
-    [path.join(repoRoot, '.agent-workflows', 'plugin-config.local'), 'project'],
     [path.join(canonicalRepoRoot, '.agent-workflows', 'plugin-config'), 'project'],
-    [path.join(canonicalRepoRoot, '.agent-workflows', 'plugin-config.local'), 'project'],
   ] as const) {
     const segments = pathSegmentsWithin(root, location);
     if (segments !== null) {
@@ -437,17 +435,15 @@ async function inventoryPluginConfigRoots(options: {
     env: options.env,
     cwd: options.cwd,
   })) {
-    for (const storeName of ['plugin-config', 'plugin-config.local']) {
-      const projectRoot = await inventoryCanonicalDescendantDirectory({
-        root: rawRepoRoot,
-        segments: ['.agent-workflows', storeName],
-        errors: options.errors,
-        kind: 'configDirectoryRead',
-        env: options.env,
-        cwd: options.cwd,
-      });
-      if (projectRoot) roots.push({ root: projectRoot, scope: 'project', projectKey: repoRoot });
-    }
+    const projectRoot = await inventoryCanonicalDescendantDirectory({
+      root: rawRepoRoot,
+      segments: ['.agent-workflows', 'plugin-config'],
+      errors: options.errors,
+      kind: 'configDirectoryRead',
+      env: options.env,
+      cwd: options.cwd,
+    });
+    if (projectRoot) roots.push({ root: projectRoot, scope: 'project', projectKey: repoRoot });
   }
   return roots;
 }
@@ -480,41 +476,6 @@ export async function inventoryLegacyOwnerReferences(options: {
       env,
       options.cwd,
     )) skillRoots.add(root);
-  }
-  const marketplacesRoot = path.join(awHome, 'marketplaces');
-  const marketplaces = await inventoryCanonicalDirectoryEntries({
-    errors, location: marketplacesRoot, kind: 'marketplaceDirectoryRead', env, cwd: options.cwd,
-  });
-  for (const entry of marketplaces) {
-    const marketplaceRoot = path.join(marketplacesRoot, entry.name);
-    if (!await inventoryCanonicalDirectory({
-      errors,
-      location: marketplaceRoot,
-      kind: 'marketplaceRootValidation',
-      env,
-      cwd: options.cwd,
-    })) continue;
-    const pluginsRoot = path.join(marketplacesRoot, entry.name, 'plugins');
-    const plugins = await inventoryCanonicalDirectoryEntries({
-      errors, location: pluginsRoot, kind: 'pluginDirectoryRead', env, cwd: options.cwd,
-    });
-    for (const plugin of plugins) {
-      const pluginRoot = path.join(pluginsRoot, plugin.name);
-      if (!await inventoryCanonicalDirectory({
-        errors,
-        location: pluginRoot,
-        kind: 'pluginDirectoryRead',
-        env,
-        cwd: options.cwd,
-      })) continue;
-      for (const root of await resolveCanonicalPluginSkillRoots(
-        pluginRoot,
-        false,
-        errors,
-        env,
-        options.cwd,
-      )) skillRoots.add(root);
-    }
   }
   for (const root of skillRoots) {
     references.push(...await findDirectSkillOwnerMarkers(root, errors, env, options.cwd));
@@ -661,6 +622,13 @@ async function readOwnedHeaderReference(
       'ownerHeaderPathValidation',
       env,
       cwd,
+      {
+        global: false,
+        ...(parsed.identity.sourceId ? { sourceId: parsed.identity.sourceId } : {}),
+        pluginName: parsed.identity.plugin,
+        platform: parsed.identity.platform,
+        scope: parsed.identity.scope,
+      },
     ));
     return null;
   }
@@ -886,19 +854,24 @@ function assertNamespacedConfigEnvelope(
   pluginName: string,
 ): asserts value is {
   schemaVersion: 3;
-  pluginId: string;
+  sourceId: string;
+  sourceIdentity: string;
+  pluginName: string;
   values: Record<string, unknown>;
 } {
   if (!isRecord(value)
     || value.schemaVersion !== 3
-    || typeof value.pluginId !== 'string'
+    || typeof value.sourceId !== 'string'
+    || typeof value.sourceIdentity !== 'string'
+    || !/^sha256:[0-9a-f]{64}$/u.test(value.sourceIdentity)
+    || typeof value.pluginName !== 'string'
     || !isRecord(value.values)
     || Object.keys(value).some((key) => ![
-      'schemaVersion', 'pluginId', 'values',
+      'schemaVersion', 'sourceId', 'sourceIdentity', 'pluginName', 'values',
     ].includes(key))) {
     throw new Error('Namespaced plugin config is not a valid schema 3 envelope.');
   }
-  if (value.pluginId !== `${sourceId}/${pluginName}`) {
+  if (value.sourceId !== sourceId || value.pluginName !== pluginName) {
     throw new Error('Namespaced plugin config identity does not match its directory path.');
   }
 }

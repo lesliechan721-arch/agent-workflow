@@ -340,14 +340,18 @@ function reviewChanges(
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
-      : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+      : '当前项目';
     return [
       ...(intent.changes?.map((change): OperationReviewChange => ({
         kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
-        description: `${change.before} → ${change.after}`,
-      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' }]),
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : `${change.before} → ${change.after}`,
+      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
       { kind: 'keep', group: 'configImpact', title: '只保存设置；当前安装保持不变' },
-      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -464,13 +468,20 @@ function reviewChanges(
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
+  const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
         group: 'configChanges',
-        title: removeKeys.has(change.key) ? `删除 ${change.title} 中的值` : change.title,
-        description: removeKeys.has(change.key)
+        title: removeKeys.has(change.key)
+          ? `${layerLabel} · 删除 ${change.title} 中的值`
+          : `${layerLabel} · ${change.title}`,
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : removeKeys.has(change.key)
           ? privateKeys.has(change.key) ? `已设置 → ${change.after}` : `${change.before} → ${change.after}`
           : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
@@ -528,7 +539,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     }
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${short(evidence.config.storeDigest)}`);
+  if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);

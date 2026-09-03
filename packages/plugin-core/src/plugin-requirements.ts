@@ -47,7 +47,7 @@ export function deriveAwCapabilitiesFromManifest(
   if ((manifest as { schemaVersion?: number }).schemaVersion === 3) capabilities.push('aw.plugin-manifest.v3')
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
-  if (manifest.config) capabilities.push('aw.plugin-config.v1')
+  if (manifest.config) capabilities.push('aw.plugin-config.v2')
   if (manifest.scripts?.postApply) capabilities.push('aw.plugin-post-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
   if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')
@@ -82,7 +82,7 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> =
   'review show': 'aw.review-publication.v1',
 }
 
-const CONFIG_CAPABILITY = 'aw.plugin-config.v1' satisfies RegisteredAwCapabilityId
+const CONFIG_CAPABILITY = 'aw.plugin-config.v2' satisfies RegisteredAwCapabilityId
 const CATALOG_SOURCE_CAPABILITY = 'aw.catalog-source.v2' satisfies RegisteredAwCapabilityId
 const CATALOG_DEV_SOURCE_CAPABILITY = 'aw.catalog-dev-source.v1' satisfies RegisteredAwCapabilityId
 

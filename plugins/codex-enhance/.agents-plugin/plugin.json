@@ -54,158 +54,421 @@
     }
   },
   "config": {
-    "schema": {
-      "quickModel": {
-        "type": "string",
-        "title": "Quick 探索模型",
-        "default": "gpt-5.6-luna",
-        "description": "quick 探索 role 使用的模型。"
+    "fields": {
+      "quickProfile": {
+        "type": "object",
+        "title": "Quick 探索配置",
+        "description": "quick 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "medium"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "quickReasoningEffort": {
-        "type": "enum",
-        "title": "Quick 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
-        "default": "medium",
-        "description": "quick 探索 role 使用的 model_reasoning_effort。"
+      "standardProfile": {
+        "type": "object",
+        "title": "Standard 探索配置",
+        "description": "standard 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "high"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "standardModel": {
-        "type": "string",
-        "title": "Standard 探索模型",
-        "default": "gpt-5.6-luna",
-        "description": "standard 探索 role 使用的模型。"
+      "deepProfile": {
+        "type": "object",
+        "title": "Deep 探索配置",
+        "description": "deep 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "standardReasoningEffort": {
-        "type": "enum",
-        "title": "Standard 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
-        "default": "high",
-        "description": "standard 探索 role 使用的 model_reasoning_effort。"
+      "simpleTaskProfile": {
+        "type": "object",
+        "title": "简单任务配置",
+        "description": "简单任务 agent type 使用的模型与推理强度，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "max"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "deepModel": {
-        "type": "string",
-        "title": "Deep 探索模型",
-        "default": "gpt-5.6-luna",
-        "description": "deep 探索 role 使用的模型。"
+      "generalTaskProfile": {
+        "type": "object",
+        "title": "通用任务配置",
+        "description": "通用任务 agent type 使用的模型与推理强度，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。",
+        "default": {
+          "model": "gpt-5.6-terra",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "deepReasoningEffort": {
-        "type": "enum",
-        "title": "Deep 探索推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max",
-          "ultra"
-        ],
-        "default": "xhigh",
-        "description": "deep 探索 role 使用的 model_reasoning_effort。"
+      "complexTaskProfile": {
+        "type": "object",
+        "title": "复杂任务配置",
+        "description": "复杂任务 agent type 使用的模型与推理强度，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。",
+        "default": {
+          "model": "gpt-5.6-sol",
+          "reasoningEffort": "medium"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
-      "simpleTaskModel": {
-        "type": "string",
-        "title": "简单任务模型",
-        "default": "gpt-5.6-luna",
-        "description": "简单任务 agent type 使用的模型，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。"
-      },
-      "simpleTaskReasoningEffort": {
-        "type": "enum",
-        "title": "简单任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "default": "max",
-        "description": "简单任务 agent type 使用的 model_reasoning_effort。"
-      },
-      "generalTaskModel": {
-        "type": "string",
-        "title": "通用任务模型",
-        "default": "gpt-5.6-terra",
-        "description": "通用任务 agent type 使用的模型，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。"
-      },
-      "generalTaskReasoningEffort": {
-        "type": "enum",
-        "title": "通用任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "default": "xhigh",
-        "description": "通用任务 agent type 使用的 model_reasoning_effort。"
-      },
-      "complexTaskModel": {
-        "type": "string",
-        "title": "复杂任务模型",
-        "default": "gpt-5.6-sol",
-        "description": "复杂任务 agent type 使用的模型，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。"
-      },
-      "complexTaskReasoningEffort": {
-        "type": "enum",
-        "title": "复杂任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "default": "medium",
-        "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
-      },
-      "advancedTaskModel": {
-        "type": "string",
-        "title": "高难任务模型",
-        "default": "gpt-5.6-sol",
-        "description": "高难任务 agent type 使用的模型，适用于系统级、高歧义、高风险或要求极高完整性的任务。"
-      },
-      "advancedTaskReasoningEffort": {
-        "type": "enum",
-        "title": "高难任务推理强度",
-        "values": [
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "default": "xhigh",
-        "description": "高难任务 agent type 使用的 model_reasoning_effort。"
+      "advancedTaskProfile": {
+        "type": "object",
+        "title": "高难任务配置",
+        "description": "高难任务 agent type 使用的模型与推理强度，适用于系统级、高歧义、高风险或要求极高完整性的任务。",
+        "default": {
+          "model": "gpt-5.6-sol",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "exploreMinimumInitialWaitMinutes": {
         "type": "number",
         "title": "探索首次响应式等待窗口（分钟）",
         "default": 10,
-        "min": 1,
-        "max": 60,
-        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。"
+        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 60
+        }
       },
       "subagentMinimumInitialWaitMinutes": {
         "type": "number",
         "title": "子代理首次响应式等待窗口（分钟）",
         "default": 10,
-        "min": 1,
-        "max": 60,
-        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。"
+        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 60
+        }
       }
     },
     "presentation": {
@@ -214,12 +477,9 @@
           "id": "codex-explore",
           "title": "codex-explore",
           "fields": [
-            "quickModel",
-            "quickReasoningEffort",
-            "standardModel",
-            "standardReasoningEffort",
-            "deepModel",
-            "deepReasoningEffort",
+            "quickProfile",
+            "standardProfile",
+            "deepProfile",
             "exploreMinimumInitialWaitMinutes"
           ]
         },
@@ -227,14 +487,10 @@
           "id": "codex-subagent-guide",
           "title": "codex-subagent-guide",
           "fields": [
-            "simpleTaskModel",
-            "simpleTaskReasoningEffort",
-            "generalTaskModel",
-            "generalTaskReasoningEffort",
-            "complexTaskModel",
-            "complexTaskReasoningEffort",
-            "advancedTaskModel",
-            "advancedTaskReasoningEffort",
+            "simpleTaskProfile",
+            "generalTaskProfile",
+            "complexTaskProfile",
+            "advancedTaskProfile",
             "subagentMinimumInitialWaitMinutes"
           ]
         }
@@ -276,8 +532,7 @@
           "present"
         ],
         "refreshKeys": [
-          "quickModel",
-          "quickReasoningEffort"
+          "quickProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-quick"
@@ -295,8 +550,7 @@
           "present"
         ],
         "refreshKeys": [
-          "standardModel",
-          "standardReasoningEffort"
+          "standardProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-standard"
@@ -314,8 +568,7 @@
           "present"
         ],
         "refreshKeys": [
-          "deepModel",
-          "deepReasoningEffort"
+          "deepProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-deep"
@@ -369,8 +622,7 @@
           "present"
         ],
         "refreshKeys": [
-          "simpleTaskModel",
-          "simpleTaskReasoningEffort"
+          "simpleTaskProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-simple"
@@ -388,8 +640,7 @@
           "present"
         ],
         "refreshKeys": [
-          "generalTaskModel",
-          "generalTaskReasoningEffort"
+          "generalTaskProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-general"
@@ -407,8 +658,7 @@
           "present"
         ],
         "refreshKeys": [
-          "complexTaskModel",
-          "complexTaskReasoningEffort"
+          "complexTaskProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-complex"
@@ -426,8 +676,7 @@
           "present"
         ],
         "refreshKeys": [
-          "advancedTaskModel",
-          "advancedTaskReasoningEffort"
+          "advancedTaskProfile"
         ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-advanced"

@@ -143,7 +143,13 @@ describe('Catalog source impact inspection', () => {
 
   it('keeps user and current-project config references as separate projections', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const envelope = { schemaVersion: 3, pluginId: 'team/demo', values: {} };
+    const envelope = {
+      schemaVersion: 3,
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'1'.repeat(64)}`,
+      pluginName: 'demo',
+      values: {},
+    };
     await Promise.all([
       fs.outputJson(
         `${isolation.layout.awHomeDir}/plugin-config/team/demo/config.json`,

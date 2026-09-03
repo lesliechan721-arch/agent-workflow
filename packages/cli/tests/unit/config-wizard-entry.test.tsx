@@ -17,7 +17,7 @@ vi.mock('../../src/utils/plugin-config-write.js', async () => {
 
 describe('config mutation runtime entry', () => {
   it.each([
-    ['set', ['demo', 'key', 'value']],
+    ['set', ['demo', 'key', '--value-json', '"value"', '--scope', 'user']],
     ['unset', ['demo', 'key']],
     ['reset', ['demo', '--scope', 'user', '--yes']],
   ] as const)('returns a v4 resolver failure for config %s', async (command, args) => {
@@ -44,7 +44,9 @@ describe('config mutation runtime entry', () => {
   it('does not expose a sensitive value in the transition failure', async () => {
     const secret = 'transition-secret-value';
     const captured = createCapturedCliIo();
-    await runCli(['config', 'set', 'demo', 'token', secret, '--json'], {
+    await runCli([
+      'config', 'set', 'demo', 'token', '--value-json', JSON.stringify(secret), '--scope', 'user', '--json',
+    ], {
       interactive: false,
       io: captured.io,
     });
