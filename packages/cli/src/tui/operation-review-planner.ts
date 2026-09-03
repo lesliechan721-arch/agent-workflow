@@ -9,6 +9,7 @@ import type {
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
+import { catalogSourceAutoCheckOnlyValue } from './catalog-sources/review.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -25,6 +26,14 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return {
+      title: '恢复 Catalog 来源配置',
+      description: '备份损坏配置，并恢复唯一的主来源 official。',
+      primaryLabel: '备份并恢复官方默认来源',
+      destructive: false,
+    };
+  }
   if (intent.kind === 'portableInstall') {
     return {
       title: '确认安装通用 Skills',
@@ -96,6 +105,16 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     };
   }
   if (intent.kind === 'sourceMutation') {
+    const autoCheck = intent.action === 'update'
+      ? catalogSourceAutoCheckOnlyValue(intent.update) : undefined;
+    if (autoCheck !== undefined) {
+      return {
+        title: '保存自动检查设置',
+        description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+        primaryLabel: '保存设置',
+        destructive: false,
+      };
+    }
     const labels = {
       add: ['添加来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
       update: ['修改来源', '只保存来源配置。保存后请在终端运行 source sync。', '保存来源', false],
@@ -109,7 +128,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     if (intent.action === 'update' && evidence?.catalogGeneration?.exactRepair) {
       return {
         title: '验证并精确修复 Catalog',
-        description: '候选与当前 Active store key 相同。精确替换损坏条目，并把 Active 来源证据对齐当前配置。',
+        description: '候选与当前 Active store key 相同。精确替换损坏条目，并保留 Active 身份。',
         primaryLabel: '验证并精确修复',
         destructive: false,
       };
@@ -118,6 +137,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
       update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
       repair: ['重新下载并修复 Catalog', '只修复这个来源的 Active 条目，不删除其他 digest。', '重新下载并修复'],
+      replaceDamaged: ['替换损坏的 Active Catalog', '使用当前候选替换无法精确修复的 Active。失败时保留旧 Active。', '确认并替换'],
       recoverState: ['恢复 Catalog 状态并启用', '重建无效 generation state，并只激活已确认的目标来源。来源配置和 Catalog store 保持不变。', '恢复状态并启用'],
     } as const;
     const [title, description, primaryLabel] = labels[intent.action];
@@ -145,6 +165,18 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    return [
+      { kind: 'add', title: '备份损坏的 catalog-sources.json' },
+      { kind: 'change', title: '恢复唯一的主来源 official' },
+      { kind: 'keep', title: '保留 catalog-state.json 和 catalog-store' },
+      {
+        kind: 'warning',
+        title: '自定义来源需要之后重新添加',
+        description: '无法从损坏配置中安全恢复自定义来源。',
+      },
+    ];
+  }
   if (intent.kind === 'portableInstall') {
     const review = evidence?.portable;
     if (!review) throw plannerError('portablePrepareFailed', '缺少通用 Skills Review 证据。');
@@ -308,14 +340,18 @@ function reviewChanges(
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
-      : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+      : '当前项目';
     return [
       ...(intent.changes?.map((change): OperationReviewChange => ({
         kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
-        description: `${change.before} → ${change.after}`,
-      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' }]),
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : `${change.before} → ${change.after}`,
+      })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
       { kind: 'keep', group: 'configImpact', title: '只保存设置；当前安装保持不变' },
-      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+      { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
     ];
   }
   if (intent.kind === 'sourceMutation') {
@@ -334,6 +370,22 @@ function reviewChanges(
       { kind: 'keep', title: '现有安装和设置不会迁移' },
     );
     if (intent.action === 'remove') changes.push({ kind: 'keep', title: '保留其他来源' });
+    const impact = evidence?.sourceWrite?.impact;
+    if (impact) {
+      for (const category of ['installation', 'config', 'lifecycle', 'marketplace'] as const) {
+        const count = impact.affectedReferences.filter((reference) => reference.category === category).length;
+        if (count > 0) changes.push({
+          kind: 'warning',
+          title: `${category === 'installation' ? '安装' : category === 'config' ? '设置' : category === 'lifecycle' ? '生命周期意图' : 'Marketplace'}引用受影响`,
+          description: `${count} 项`,
+        });
+      }
+      if (!impact.inventoryComplete) changes.push({
+        kind: 'warning',
+        title: '来源影响未知',
+        description: '部分状态无法读取；不能把影响视为零。',
+      });
+    }
     return changes;
   }
   if (intent.kind === 'catalogGeneration') {
@@ -358,7 +410,12 @@ function reviewChanges(
       ...(generation.exactRepair ? [{
         kind: 'change' as const,
         title: '精确替换损坏的 Active 条目',
-        description: 'logical identity 和 snapshot digest 保持不变；来源 fingerprint 与 provenance 对齐当前配置。',
+        description: 'logical identity、snapshot digest、manifest digest 和 commit 保持不变。',
+      }] : []),
+      ...(intent.action === 'replaceDamaged' ? [{
+        kind: 'warning' as const,
+        title: '使用当前候选替换损坏的 Active',
+        description: '旧版本无法安全比较；确认后只切换到本次绑定的当前候选。',
       }] : []),
       ...(generation.sourceMutation ? [{
         kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
@@ -385,6 +442,16 @@ function reviewChanges(
         title: '显式来源切换将改变 Catalog logical identity',
         description: '确认前请核对新来源身份和候选摘要。',
       }] : []),
+      ...((generation.impact?.affectedReferences ?? []).length > 0 ? [{
+        kind: 'warning' as const,
+        title: '现有引用受候选变化影响',
+        description: `${generation.impact!.affectedReferences.length} 项；已安装插件不会自动修改。`,
+      }] : []),
+      ...(generation.impact && !generation.impact.inventoryComplete ? [{
+        kind: 'warning' as const,
+        title: '候选影响未知',
+        description: '部分状态或旧 Manifest 无法读取；不能把影响视为零。',
+      }] : []),
       { kind: 'keep', title: '不会升级已安装 Plugin' },
       { kind: 'keep', title: intent.action === 'recoverState'
         ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
@@ -401,13 +468,20 @@ function reviewChanges(
   }
   const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const removeKeys = new Set(intent.removeKeys ?? []);
+  const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
   if (intent.changes) {
     return [
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
         group: 'configChanges',
-        title: removeKeys.has(change.key) ? `删除 ${change.title} 中的值` : change.title,
-        description: removeKeys.has(change.key)
+        title: removeKeys.has(change.key)
+          ? `${layerLabel} · 删除 ${change.title} 中的值`
+          : `${layerLabel} · ${change.title}`,
+        description: change.children && change.children.length > 0
+          ? `${change.before} → ${change.after}；${change.children.length} 个子项变化；${change.children.map((child) =>
+              `${child.property}: ${child.private ? '已设置 → 将更新' : `${child.before} → ${child.after}`}`,
+            ).join('；')}`
+          : removeKeys.has(change.key)
           ? privateKeys.has(change.key) ? `已设置 → ${change.after}` : `${change.before} → ${change.after}`
           : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
@@ -465,7 +539,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     }
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
-  if (evidence.config) details.push(`设置层：${evidence.config.scope}/${evidence.config.projectLayer} · ${short(evidence.config.storeDigest)}`);
+  if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);
   if (evidence.sourceWrite) {
     details.push(`新配置：${short(evidence.sourceWrite.proposedConfigDigest)}`);
     details.push(`引用清单：${short(evidence.sourceWrite.inventoryDigest)} · ${evidence.sourceWrite.referenceCount} 项`);
@@ -507,7 +581,12 @@ export function buildOperationReviewProjection(options: {
   const { intent, evidence } = options;
   const labels = operationLabels(intent, evidence);
   const requiresConfirmation = (evidence.codexReconcilePlans ?? []).some((plan) =>
-    plan.review.requiresConfirmation);
+    plan.review.requiresConfirmation)
+    || Boolean(evidence.sourceWrite
+      && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
+    || Boolean(evidence.catalogGeneration?.impact
+      && (!evidence.catalogGeneration.impact.inventoryComplete
+        || evidence.catalogGeneration.impact.affectedReferences.length > 0));
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
     plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
@@ -533,9 +612,18 @@ export function buildOperationReviewProjection(options: {
     ...(labels.destructive ? { destructive: true as const } : {}),
     requiresConfirmation,
     sharedImpact: {
-      pluginIds: [...new Set((evidence.codexReconcilePlans ?? []).flatMap((plan) =>
-        plan.review.sharedImpact.pluginIds))],
-      ...(warning ? { warning } : {}),
+      pluginIds: [...new Set([
+        ...(evidence.codexReconcilePlans ?? []).flatMap((plan) =>
+          plan.review.sharedImpact.pluginIds),
+        ...(evidence.sourceWrite?.impact?.affectedReferences ?? []).flatMap((reference) =>
+          reference.pluginId ? [reference.pluginId] : []),
+        ...(evidence.catalogGeneration?.impact?.affectedReferences ?? []).flatMap((reference) =>
+          reference.pluginId ? [reference.pluginId] : []),
+      ])],
+      ...(warning ? { warning }
+        : requiresConfirmation && (evidence.sourceWrite || evidence.catalogGeneration?.impact)
+          ? { warning: '确认来源影响后才会继续。未知影响不会按零处理。' }
+          : {}),
     },
   };
 }

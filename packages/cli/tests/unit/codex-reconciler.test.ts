@@ -113,6 +113,14 @@ describe('Codex desired-state reconciliation planner', () => {
     expect(plan.warnings).toEqual([]);
   });
 
+  it('requires a native ensure action when shared state is unobserved', () => {
+    expect(createCodexReconcilePlan(input(
+      'install',
+      target(),
+      live({ state: 'unobserved' }),
+    )).sharedNativeActions[0]?.action).toBe('install');
+  });
+
   it('repairs damaged replaceable state and fails closed for unreadable state', () => {
     const damaged = {
       state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing',
@@ -241,5 +249,30 @@ describe('Codex desired-state reconciliation planner', () => {
     const second = structuredClone(first);
     second.liveEvidence[0]!.extensions!.reverse();
     expect(createCodexReconcilePlan(first)).toEqual(createCodexReconcilePlan(second));
+  });
+
+  it('attributes a foreign extension to its component without poisoning healthy siblings', () => {
+    const catalog = target({ surface: {
+      ...surface('mixed'),
+      extensionKinds: ['instruction', 'agent'],
+      components: [
+        ...surface('mixed').components,
+        {
+          key: 'extensions.agents:worker',
+          kind: 'agent',
+          owner: 'aw',
+          scopes: ['project', 'user'],
+          dynamic: false,
+          name: 'worker',
+        },
+      ],
+    } });
+    expect(() => createCodexReconcilePlan(input('sync', catalog, live(
+      { state: 'usable', version: '1.0.0' },
+      { extensions: [
+        { componentKey: 'extensions.instructions:guide', scope: 'project', state: 'present' },
+        { componentKey: 'extensions.agents:worker', scope: 'project', state: 'foreign' },
+      ] },
+    )))).toThrowError(/extension extensions\.agents:worker is foreign/u);
   });
 });

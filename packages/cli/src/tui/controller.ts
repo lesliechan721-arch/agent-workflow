@@ -1,9 +1,12 @@
 import crypto from 'node:crypto';
 
 import type {
+  CatalogActivationMode,
   CatalogSource,
   CatalogGenerationActiveV1,
   CatalogGenerationCandidateEvidence,
+  CatalogGenerationSyncResult,
+  CatalogSourceImpact,
   DependencyScopeOverride,
   PlatformName,
   Scope,
@@ -11,7 +14,6 @@ import type {
 import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
-import { catalogSourceErrorCode } from '../utils/catalog-public-error.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationFreshnessResult,
@@ -21,7 +23,6 @@ import type {
   StatusV7PluginSummary,
   StatusTargetRevision,
 } from '../commands/status-v6.js';
-import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
@@ -55,6 +56,7 @@ import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
   type CatalogActivationBlockReason,
+  type ConfigInvalidStoreEvidence,
   type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
@@ -65,6 +67,12 @@ import {
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
+import { CatalogSourcesSession } from './catalog-sources/session.js';
+import {
+  catalogSourceAutoCheckOnlyValue,
+  projectCatalogSourceMutationWarnings,
+} from './catalog-sources/review.js';
 
 export type PluginWriteOperation = 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
 export type OperationKind = OperationIntent['kind'];
@@ -108,7 +116,6 @@ export type OperationIntent =
       kind: 'configSave';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
       apply: boolean;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
@@ -119,14 +126,21 @@ export type OperationIntent =
         title: string;
         before: string;
         after: string;
+        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
       }>;
     }
   | {
       kind: 'configReset';
       pluginId: string;
       scope: Scope;
-      projectLayer: ProjectConfigStoreLayer;
-      changes?: Array<{ key: string; title: string; before: string; after: string }>;
+      expectedStoreState?: 'invalid';
+      changes?: Array<{
+        key: string;
+        title: string;
+        before: string;
+        after: string;
+        children?: Array<{ property: string; before: string; after: string; private?: boolean }>;
+      }>;
     }
   | {
       kind: 'sourceMutation';
@@ -138,12 +152,15 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogGeneration';
-      action: 'activate' | 'update' | 'repair' | 'recoverState';
+      action: 'activate' | 'update' | 'repair' | 'replaceDamaged' | 'recoverState';
       sourceId: string;
       sourceMutation?:
         | { action: 'add'; source: CatalogSource }
         | { action: 'update'; update: CatalogSourceUpdate };
       setPrimaryAfterActivation?: boolean;
+    }
+  | {
+      kind: 'catalogSourcesRecovery';
     }
   ;
 
@@ -178,7 +195,6 @@ export interface OperationEvidence {
   };
   config?: {
     scope: Scope;
-    projectLayer: ProjectConfigStoreLayer;
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
@@ -188,8 +204,10 @@ export interface OperationEvidence {
     proposedConfigDigest: string;
     sourceIdentity?: string;
     inventoryDigest: string;
+    impactDigest?: string;
     referenceCount: number;
     inventoryComplete: boolean;
+    impact?: CatalogSourceImpact;
   };
   catalogGeneration?: {
     action: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
@@ -199,6 +217,10 @@ export interface OperationEvidence {
     candidateRelation?: CatalogGenerationFreshnessState;
     explicitSourceChange?: boolean;
     exactRepair?: boolean;
+    activationMode?: CatalogActivationMode;
+    impact?: CatalogSourceImpact;
+    impactDigest?: string;
+    impactMode?: 'generation' | 'identityChange';
     configDigest: string;
     proposedConfigDigest?: string;
     proposedSource?: CatalogSource;
@@ -335,6 +357,9 @@ export interface OperationResultSummary {
   message: string;
   pluginId?: string;
   action?: PluginWriteOperation;
+  catalogAction?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
+  catalogGeneration?: Pick<CatalogGenerationSyncResult,
+    'activeChanged' | 'outcome'> & { catalogVersion: string };
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
@@ -400,9 +425,10 @@ export interface SourceReferenceSummaryViewModel {
   inventoryComplete: boolean;
   installationCount?: number;
   configCount?: number;
+  lifecycleCount?: number;
   marketplaceCount?: number;
   dependencies: Array<{
-    category: 'installation' | 'config' | 'marketplace';
+    category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
     pluginId?: string;
     sourceId?: string;
     platform?: PlatformName;
@@ -427,6 +453,7 @@ export interface TuiControllerDependencies {
     intent: OperationIntent,
     signal: AbortSignal,
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void>,
+    reusableCandidate?: CatalogSessionReusableCandidate,
   ) => Promise<OperationEvidence>;
   previewDependencyPlacement?: (
     intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
@@ -439,17 +466,17 @@ export interface TuiControllerDependencies {
   ) => Promise<unknown>;
   getConfigGroups?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
   getConfigPage?: (
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
   getConfigResetAvailability?: (
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
     signal: AbortSignal,
   ) => Promise<ConfigResetAvailability>;
   logError?: (
@@ -465,6 +492,8 @@ export interface TuiControllerDependencies {
 
 export interface ConfigResetAvailability {
   exists: boolean;
+  state: 'missing' | 'ready' | 'invalid';
+  invalidCode?: ConfigInvalidStoreEvidence['code'];
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
   storeDigest?: string;
@@ -520,6 +549,18 @@ export class TuiOperationBlockedError extends Error {
     super(message);
     this.name = 'TuiOperationBlockedError';
     this.code = code;
+  }
+}
+
+export class TuiConfigInvalidStoreError extends Error {
+  readonly code = 'invalidConfigStores';
+  readonly evidence: ConfigInvalidStoreEvidence[];
+
+  constructor(evidence: ConfigInvalidStoreEvidence[]) {
+    super('One or more plugin config stores are invalid.');
+    this.name = 'TuiConfigInvalidStoreError';
+    this.evidence = structuredClone(evidence).sort((left, right) =>
+      (left.scope === 'user' ? 0 : 1) - (right.scope === 'user' ? 0 : 1));
   }
 }
 
@@ -640,11 +681,7 @@ export class TuiController {
   #status?: TuiStatusLoadResult;
   readonly #catalogGenerations = new Map<string, CatalogSourceGenerationViewModel>();
   readonly #catalogFreshness = new Map<string, CatalogSourceFreshnessViewModel>();
-  readonly #freshnessFingerprints = new Map<string, string>();
-  readonly #freshnessTokens = new Map<string, number>();
-  readonly #freshnessAborts = new Map<string, AbortController>();
-  readonly #automaticFreshnessChecks = new Set<string>();
-  readonly #freshnessSessionId = crypto.randomUUID();
+  readonly #catalogSourcesSession: CatalogSourcesSession;
   readonly #sessionGenerationKeys = new Map<string, string>();
   #viewModel?: TuiViewModel;
   #progress: RebuildProgressSnapshot = { messages: [] };
@@ -671,6 +708,23 @@ export class TuiController {
     progressFeed?: RebuildProgressFeed,
   ) {
     this.#progressFeed = progressFeed;
+    this.#catalogSourcesSession = new CatalogSourcesSession({
+      parentSignal: this.#abort.signal,
+      probe: async (sourceId, options, signal) => {
+        if (!this.dependencies.probeCatalogFreshness) {
+          throw new TuiOperationBlockedError('catalogFreshnessUnavailable', '来源检查入口不可用。');
+        }
+        return this.dependencies.probeCatalogFreshness(sourceId, options, signal);
+      },
+      onChange: (sourceId, freshness) => {
+        this.#catalogFreshness.set(sourceId, structuredClone(freshness));
+        this.#project();
+        this.#publish();
+      },
+      onError: (error, code) => {
+        void this.#logErrorSafe(error, code);
+      },
+    });
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
         this.#progress = {
@@ -854,33 +908,38 @@ export class TuiController {
           : 'ready',
         ...(source.error ? { message: '来源当前没有可用数据。' } : {}),
       });
-      const generation = this.#catalogGenerations.get(source.id);
-      const fingerprint = JSON.stringify({
-        sourceIdentity: source.identity,
-        requestedRef: source.requestedRef,
-        activeStoreKey: generation?.active?.storeKey,
-        generationState: generation?.state,
-        generationErrorCode: generation?.errorCode,
-      });
-      const previousFingerprint = this.#freshnessFingerprints.get(source.id);
-      if (previousFingerprint !== undefined && previousFingerprint !== fingerprint) {
-        this.#freshnessAborts.get(source.id)?.abort();
-        this.#freshnessTokens.set(source.id, (this.#freshnessTokens.get(source.id) ?? 0) + 1);
-        this.#catalogFreshness.set(source.id, { sourceId: source.id, state: 'notChecked' });
-      } else if (!this.#catalogFreshness.has(source.id)) {
+      if (!this.#catalogFreshness.has(source.id)) {
         this.#catalogFreshness.set(source.id, { sourceId: source.id, state: 'notChecked' });
       }
-      this.#freshnessFingerprints.set(source.id, fingerprint);
     }
     const configuredSourceIds = new Set(status.payload.catalog.sources.map((source) => source.id));
     for (const sourceId of this.#catalogFreshness.keys()) {
       if (configuredSourceIds.has(sourceId)) continue;
-      this.#freshnessAborts.get(sourceId)?.abort();
-      this.#freshnessAborts.delete(sourceId);
-      this.#freshnessFingerprints.delete(sourceId);
-      this.#freshnessTokens.delete(sourceId);
       this.#catalogFreshness.delete(sourceId);
     }
+    const details = new Map((status.sourceDetails ?? []).map((detail) => [detail.id, detail]));
+    this.#catalogSourcesSession.configure(status.payload.catalog.sources.map((source) => {
+      const generation = this.#catalogGenerations.get(source.id);
+      const detail = details.get(source.id);
+      return {
+        sourceId: source.id,
+        primary: source.primary,
+        autoCheck: this.dependencies.probeCatalogFreshness !== undefined
+          && (detail?.autoCheck ?? true),
+        fingerprint: JSON.stringify({
+          sourceIdentity: source.identity,
+          requestedRef: source.requestedRef,
+          activeStoreKey: generation?.active?.storeKey,
+          generationState: generation?.state,
+          generationErrorCode: generation?.errorCode,
+        }),
+        fixedCommit: generation?.state === 'ready'
+          && generation.active !== undefined
+          && detail?.type === 'git'
+          && detail.refPolicy === 'explicit'
+          && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(detail.explicitRef ?? ''),
+      };
+    }));
     this.#project();
     this.#normalizeCurrentRoute();
   }
@@ -907,83 +966,6 @@ export class TuiController {
     this.#phase = 'ready';
     this.#loadError = undefined;
     this.#publish();
-    this.#scheduleAutomaticFreshnessChecks();
-  }
-
-  #scheduleAutomaticFreshnessChecks(): void {
-    if (!this.dependencies.probeCatalogFreshness || !this.#status || this.#disposed) return;
-    const pending = this.#status.payload.catalog.sources.filter((source) => {
-      if (this.#automaticFreshnessChecks.has(source.id)) return false;
-      this.#automaticFreshnessChecks.add(source.id);
-      return true;
-    });
-    if (pending.length === 0) return;
-    const primary = pending.find((source) => source.primary);
-    const remaining = pending.filter((source) => source.id !== primary?.id);
-    queueMicrotask(() => {
-      if (this.#disposed) return;
-      if (primary) void this.#probeCatalogFreshness(primary.id, false);
-      const worker = async (): Promise<void> => {
-        while (!this.#disposed) {
-          const source = remaining.shift();
-          if (!source) return;
-          await this.#probeCatalogFreshness(source.id, false);
-        }
-      };
-      for (let index = 0; index < Math.min(2, remaining.length); index += 1) void worker();
-    });
-  }
-
-  async #probeCatalogFreshness(sourceId: string, fullValidation: boolean): Promise<void> {
-    if (!this.dependencies.probeCatalogFreshness || this.#disposed) return;
-    const sourceFingerprint = this.#freshnessFingerprints.get(sourceId);
-    if (!sourceFingerprint) return;
-    this.#freshnessAborts.get(sourceId)?.abort();
-    const abort = new AbortController();
-    this.#freshnessAborts.set(sourceId, abort);
-    const token = (this.#freshnessTokens.get(sourceId) ?? 0) + 1;
-    this.#freshnessTokens.set(sourceId, token);
-    const sessionId = this.#freshnessSessionId;
-    this.#catalogFreshness.set(sourceId, { sourceId, state: 'checking' });
-    this.#project();
-    this.#publish();
-    const signal = AbortSignal.any([this.#abort.signal, abort.signal]);
-    try {
-      const result = await this.dependencies.probeCatalogFreshness(
-        sourceId,
-        { fullValidation },
-        signal,
-      );
-      if (!this.#freshnessResultIsCurrent({ sourceId, sourceFingerprint, sessionId, token })) return;
-      this.#catalogFreshness.set(sourceId, structuredClone(result));
-    } catch (error) {
-      if (signal.aborted
-        || !this.#freshnessResultIsCurrent({ sourceId, sourceFingerprint, sessionId, token })) return;
-      const code = catalogSourceErrorCode(error);
-      this.#catalogFreshness.set(sourceId, {
-        sourceId,
-        state: code === 'awCapabilityUnsupported' ? 'incompatible' : 'checkFailed',
-        errorCode: code,
-      });
-      void this.#logErrorSafe(error, code);
-    } finally {
-      if (this.#freshnessAborts.get(sourceId) === abort) this.#freshnessAborts.delete(sourceId);
-    }
-    this.#project();
-    this.#publish();
-  }
-
-  #freshnessResultIsCurrent(options: {
-    sourceId: string;
-    sourceFingerprint: string;
-    sessionId: string;
-    token: number;
-  }): boolean {
-    return !this.#disposed
-      && !this.#abort.signal.aborted
-      && options.sessionId === this.#freshnessSessionId
-      && options.token === this.#freshnessTokens.get(options.sourceId)
-      && options.sourceFingerprint === this.#freshnessFingerprints.get(options.sourceId);
   }
 
   push(route: TuiRoute, context?: TuiPageContext): void {
@@ -1202,7 +1184,7 @@ export class TuiController {
     this.#router.push({
       name: 'configFields',
       pluginId,
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     this.#publish();
   }
@@ -1673,7 +1655,11 @@ export class TuiController {
   }
 
   recheckCatalogSource(sourceId: string): Promise<void> {
-    return this.#probeCatalogFreshness(sourceId, true);
+    return this.#catalogSourcesSession.recheck(sourceId);
+  }
+
+  fullValidateCatalogSource(sourceId: string): Promise<void> {
+    return this.#catalogSourcesSession.fullValidate(sourceId);
   }
 
   setExternalDraftState(state?: 'configDraft' | 'sourceDraft'): void {
@@ -1729,7 +1715,7 @@ export class TuiController {
 
   async getConfigGroups(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigGroupViewModel[]> {
     if (!this.dependencies.getConfigGroups) {
       throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
@@ -1743,7 +1729,7 @@ export class TuiController {
 
   async getConfigPage(
     pluginId: string,
-    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope | 'effective' },
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
     if (!this.dependencies.getConfigPage) {
@@ -1761,7 +1747,7 @@ export class TuiController {
 
   async getConfigResetAvailability(
     pluginId: string,
-    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    layer: { scope: Scope },
   ): Promise<ConfigResetAvailability> {
     if (!this.dependencies.getConfigResetAvailability) {
       throw new TuiOperationBlockedError(
@@ -1869,6 +1855,7 @@ export class TuiController {
   }
 
   #reviewPreparationLabel(intent: OperationIntent): string {
+    if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
     if ('pluginId' in intent) {
       return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
         ?? pluginNameFromId(intent.pluginId);
@@ -1937,6 +1924,8 @@ export class TuiController {
         ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
         : code === 'catalogGenerationActiveComparisonUnavailable'
           ? '损坏的当前 Active 无法提供可信版本，不能安全比较候选。当前 Active 保持不变。请明确编辑来源，或移除后重新添加。'
+        : code === 'catalogReplaceDamagedRequired'
+          ? '无法重新取得或精确匹配旧 Active。当前 Active 保持不变。请返回并选择“使用当前候选替换损坏的 Active”。'
         : code === 'catalogVersionConflict'
           ? '候选 Catalog 与当前 Active 版本相同，但内容摘要不同。普通更新已阻止。'
           : code === 'catalogRollbackDetected'
@@ -1955,7 +1944,17 @@ export class TuiController {
     onStage: (stage: ReviewPreparationStageId) => void | Promise<void> = () => undefined,
   ): Promise<OperationEvidence> {
     if (this.dependencies.prepareReviewEvidence) {
-      return this.dependencies.prepareReviewEvidence(structuredClone(intent), signal, onStage);
+      const reusableCandidate = intent.kind === 'catalogGeneration'
+        && !intent.sourceMutation
+        && (intent.action === 'activate' || intent.action === 'update')
+        ? this.#catalogSourcesSession.reusableCandidate(intent.sourceId)
+        : undefined;
+      return this.dependencies.prepareReviewEvidence(
+        structuredClone(intent),
+        signal,
+        onStage,
+        reusableCandidate,
+      );
     }
     await onStage('validate');
     await this.dependencies.validateIntent?.(structuredClone(intent), signal);
@@ -2009,7 +2008,8 @@ export class TuiController {
     this.#pruneReviewTickets(now);
     const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
-    const pluginId = 'pluginId' in intent ? intent.pluginId : intent.sourceId;
+    const pluginId = 'pluginId' in intent ? intent.pluginId
+      : 'sourceId' in intent ? intent.sourceId : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent
       ? evidence.source?.pluginVersion
@@ -2108,7 +2108,8 @@ export class TuiController {
       startedAtMs,
       elapsedMs: 0,
       current: {
-        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId : ticket.intent.sourceId,
+        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId
+          : 'sourceId' in ticket.intent ? ticket.intent.sourceId : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
     };
@@ -2139,7 +2140,7 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind !== 'pluginWrite') {
+    if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
         current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
@@ -2155,7 +2156,8 @@ export class TuiController {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }
-    if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
+    if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration'
+      || ticket.intent.kind === 'catalogSourcesRecovery') {
       generation = ++this.#generation;
     }
     try {
@@ -2169,6 +2171,12 @@ export class TuiController {
             structuredClone(ticket.intent),
             structuredClone(ticket.evidence),
           );
+      if (ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update') {
+        const confirmedAutoCheck = catalogSourceAutoCheckOnlyValue(ticket.intent.update);
+        if (confirmedAutoCheck !== undefined) {
+          this.#catalogSourcesSession.setAutoCheck(ticket.intent.sourceId, confirmedAutoCheck);
+        }
+      }
       const executionTargets = operationResultSummary(ticket.intent, execution).targets ?? [];
       this.#progressTargets = this.#progressTargets.map((target) => {
         const completed = executionTargets.find((candidate) =>
@@ -2178,7 +2186,8 @@ export class TuiController {
       });
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       generation = ++this.#generation;
-      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration') {
+      if (ticket.intent.kind === 'sourceMutation' || ticket.intent.kind === 'catalogGeneration'
+        || ticket.intent.kind === 'catalogSourcesRecovery') {
         this.dependencies.beginCatalogSession?.(ticket.intent.kind === 'sourceMutation' ? {
           reuseValidatedGenerations: true,
         } : undefined);
@@ -2214,8 +2223,9 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#applyStatus(refreshed);
-      if (ticket.intent.kind === 'catalogGeneration') {
-        void this.#probeCatalogFreshness(ticket.intent.sourceId, false);
+      if (ticket.intent.kind === 'catalogSourcesRecovery') {
+        this.#phase = 'ready';
+        this.#loadError = undefined;
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         ? operationResultSummary(ticket.intent, execution)
@@ -2354,6 +2364,22 @@ export class TuiController {
         const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         this.#applyStatus(refreshed);
+        if (ticket.intent.kind === 'catalogSourcesRecovery'
+          && code === 'catalogSourcesConfigRecoveryStale') {
+          this.#phase = 'ready';
+          this.#loadError = undefined;
+          this.#activeReview = undefined;
+          this.#result = undefined;
+          this.#router.replace({ name: 'home' });
+          this.#publish();
+          return cloneFrozen({
+            state: 'blocked',
+            operationId,
+            code,
+            message: '来源配置已变化，已重新加载当前状态。',
+            operationKind: ticket.intent.kind,
+          });
+        }
       } catch (reloadError) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
@@ -2365,7 +2391,7 @@ export class TuiController {
         intent: ticket.intent,
         navigation: 'result',
         returnRoute: ticket.returnRoute,
-        writeMayHaveCompleted: true,
+        writeMayHaveCompleted: ticket.intent.kind === 'catalogSourcesRecovery' ? false : true,
       });
     }
   }
@@ -2533,8 +2559,7 @@ export class TuiController {
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
-    for (const abort of this.#freshnessAborts.values()) abort.abort();
-    this.#freshnessAborts.clear();
+    this.#catalogSourcesSession.dispose();
     this.#abort.abort();
     this.#progressUnsubscribe?.();
     this.#tickets.clear();
@@ -2544,27 +2569,56 @@ export class TuiController {
 }
 
 function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogSourcesRecovery') {
+    const result = execution as { backupPath: string };
+    return {
+      code: 'operationSucceeded',
+      message: 'Catalog 来源配置已恢复。',
+      messages: [
+        `损坏配置已备份为 ${result.backupPath}。`,
+        '已恢复唯一的主来源 official；自定义来源需要重新添加。',
+      ],
+    };
+  }
   if (intent.kind === 'catalogGeneration') {
     const result = execution as {
       status?: 'succeeded' | 'partial';
       partialReason?: 'activation' | 'primary';
       configSaved?: boolean;
       errorCode?: string;
+      generation?: CatalogGenerationSyncResult;
     };
+    const generation = result.generation;
+    const updateActivated = intent.action === 'update'
+      && generation?.activeChanged === true
+      && generation.outcome === 'activated';
     return {
       code: result.status === 'partial' ? 'operationPartial' : 'operationSucceeded',
+      catalogAction: intent.action,
+      ...(generation ? { catalogGeneration: {
+        activeChanged: generation.activeChanged,
+        outcome: generation.outcome,
+        catalogVersion: generation.resolution.catalogVersion,
+      } } : {}),
       message: result.status === 'partial'
         ? result.partialReason === 'primary'
           ? 'Catalog 已启用，但主来源尚未切换。可在 TUI 中重试。'
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
+          : intent.action === 'replaceDamaged' ? '损坏的 Active Catalog 已由当前候选替换。'
           : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
-            : 'Catalog 已验证并启用。',
+            : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
+              : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'
+              : 'Catalog 已验证并启用。',
       messages: result.status === 'partial'
         ? [result.partialReason === 'primary'
             ? `新的 Active 可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
             : `旧 Active 保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
-        : ['Plugin 列表已从新的 Active Catalog 重新加载。'],
+        : updateActivated
+          ? ['已安装插件不会自动升级。', '已重新计算可用的插件升级。']
+          : intent.action === 'update'
+            ? [`当前 Active Catalog 已是 ${generation?.resolution.catalogVersion ?? '已验证版本'}。`]
+          : ['Plugin 列表已从新的 Active Catalog 重新加载。'],
     };
   }
   if (intent.kind === 'portableInstall') {
@@ -2713,11 +2767,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     };
   }
   const sourceWarnings = intent.kind === 'sourceMutation'
-    && typeof execution === 'object' && execution !== null
-    && Array.isArray((execution as { errors?: unknown }).errors)
-    ? (execution as { errors: Array<{ message?: unknown }> }).errors.flatMap((error) =>
-        typeof error?.message === 'string' ? [`警告：${error.message}`] : [])
-    : [];
+    ? projectCatalogSourceMutationWarnings(execution) : [];
   const overallFailed = typeof execution === 'object' && execution !== null
     && (execution as { overallState?: unknown }).overallState === 'failed';
   return {

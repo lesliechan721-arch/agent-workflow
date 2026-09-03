@@ -4,11 +4,14 @@ import type {
   CatalogSourcesConfig,
 } from '../types.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
-import type {
-  CatalogSourceInventoryError,
-  CatalogSourceReference,
-  CatalogSourceReferenceInventory,
-} from '../utils/catalog-source-references.js';
+import {
+  calculateCatalogSourceImpactDigest,
+  catalogSourceImpactRequiresConfirmation,
+  inspectCatalogSourceImpact,
+  type CatalogSourceImpact,
+  type CatalogSourceImpactError,
+  type CatalogSourceImpactReference,
+} from '../utils/catalog-source-impact.js';
 import {
   addCatalogSource,
   calculateCatalogSourcesConfigDigest,
@@ -18,6 +21,7 @@ import {
   replaceCatalogSourcesConfig,
   setPrimaryCatalogSource,
   updateCatalogSource,
+  isCatalogSourceAutoCheckEnabled,
   type CatalogSourceUpdate,
 } from '../utils/catalog-sources.js';
 import {
@@ -34,7 +38,7 @@ export interface CatalogSourceMutationReceipt {
   sourceId: string;
   primarySourceId?: string;
   configDigest?: string;
-  references: CatalogSourceReferenceInventory['references'];
+  references: CatalogSourceImpactReference[];
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -42,12 +46,13 @@ export interface CatalogSourceListPayload {
   catalogSourcesSchemaVersion: 2;
   primarySourceId: string;
   configDigest: string;
-  sources: Array<CatalogSource & { sourceIdentity: string }>;
+  sources: Array<CatalogSource & { sourceIdentity: string; autoCheck: boolean }>;
 }
 
 export type CatalogSourceCommandRuntime = {
   onProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
   awHomeMutationToken?: AwHomeMutationToken;
+  afterImpactInspected?: () => Promise<void>;
 };
 
 export type CatalogSourceMutationProgressStage = 'savingConfig';
@@ -69,13 +74,48 @@ export interface CatalogSourceMutationPreflight {
   sourceIdentity?: string;
   identityChanged: boolean;
   proposedSource?: CatalogSource;
+  impactDigest: string;
   references: CatalogSourcePreflightInventory;
 }
 
 export interface CatalogSourcePreflightInventory {
   inventorySchemaVersion: 1;
-  references: Array<Omit<CatalogSourceReference, 'location'>>;
-  errors: Array<Pick<CatalogSourceInventoryError, 'code' | 'kind' | 'relevance'>>;
+  inventoryComplete: boolean;
+  references: CatalogSourceImpactReference[];
+  errors: CatalogSourceImpactError[];
+}
+
+export class CatalogSourceImpactConfirmationRequiredError extends Error {
+  readonly code = 'catalogSourceImpactConfirmationRequired';
+  readonly impact: CatalogSourcePreflightInventory;
+
+  constructor(impact: CatalogSourcePreflightInventory) {
+    super('catalogSourceImpactConfirmationRequired: use --yes to confirm affected or unknown Catalog source references.');
+    this.name = 'CatalogSourceImpactConfirmationRequiredError';
+    this.impact = impact;
+  }
+}
+
+export class CatalogSourceIdentityChangeConfirmationRequiredError extends Error {
+  readonly code = 'catalogSourceIdentityChangeConfirmationRequired';
+  readonly impact: CatalogSourcePreflightInventory;
+
+  constructor(impact: CatalogSourcePreflightInventory) {
+    super('catalogSourceIdentityChangeConfirmationRequired: use --yes to confirm the source URL, path, or subdirectory change.');
+    this.name = 'CatalogSourceIdentityChangeConfirmationRequiredError';
+    this.impact = impact;
+  }
+}
+
+export class CatalogSourceReviewStaleError extends Error {
+  readonly code = 'operationReviewStale';
+  readonly impact: CatalogSourcePreflightInventory;
+
+  constructor(impact: CatalogSourcePreflightInventory) {
+    super('operationReviewStale: Catalog source impact changed after review. Review it again.');
+    this.name = 'CatalogSourceReviewStaleError';
+    this.impact = impact;
+  }
 }
 
 export class CatalogManagedSourceProtectedError extends Error {
@@ -168,6 +208,15 @@ async function identityChanged(
   return await calculateCatalogSourceIdentity(before) !== await calculateCatalogSourceIdentity(after);
 }
 
+function preflightInventory(impact: CatalogSourceImpact): CatalogSourcePreflightInventory {
+  return {
+    inventorySchemaVersion: 1,
+    inventoryComplete: impact.inventoryComplete,
+    references: impact.affectedReferences,
+    errors: impact.errors,
+  };
+}
+
 export async function preflightCatalogSourceMutation(options: {
   request: CatalogSourceMutationRequest;
   cwd: string;
@@ -195,6 +244,23 @@ export async function preflightCatalogSourceMutation(options: {
   const after = proposedConfig.sources.find((source) => source.id === sourceId);
   const changedIdentity = Boolean(before && after && await identityChanged(before, after));
   const sourceIdentity = after ? await calculateCatalogSourceIdentity(after) : undefined;
+  const impact = request.action === 'remove' || changedIdentity
+    ? await inspectCatalogSourceImpact({
+        sourceId,
+        cwd: options.cwd,
+        env,
+        sourcePrimary: before?.primary === true,
+        mode: request.action === 'remove' ? 'remove' : 'identityChange',
+      })
+    : {
+        impactSchemaVersion: 1 as const,
+        sourceId,
+        inventoryComplete: true,
+        references: [] as CatalogSourceImpactReference[],
+        affectedReferences: [] as CatalogSourceImpactReference[],
+        changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+        errors: [] as CatalogSourceImpactError[],
+      };
   return {
     sourceId,
     configDigest: snapshot.digest,
@@ -202,7 +268,8 @@ export async function preflightCatalogSourceMutation(options: {
     ...(sourceIdentity ? { sourceIdentity } : {}),
     identityChanged: changedIdentity,
     ...(after ? { proposedSource: after } : {}),
-    references: { inventorySchemaVersion: 1, references: [], errors: [] },
+    impactDigest: calculateCatalogSourceImpactDigest(impact),
+    references: preflightInventory(impact),
   };
 }
 
@@ -211,6 +278,7 @@ async function commitConfig(options: {
   sourceId: string;
   config: CatalogSourcesConfig;
   expectedDigest: string;
+  references?: CatalogSourcePreflightInventory;
   env: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
 }): Promise<CatalogSourceMutationReceipt> {
@@ -235,8 +303,13 @@ async function commitConfig(options: {
     sourceId: options.sourceId,
     primarySourceId: primarySourceId(written.config),
     configDigest: written.digest,
-    references: [],
-    errors: [],
+    references: options.references?.references ?? [],
+    errors: (options.references?.errors ?? []).map((error) => ({
+      code: error.code,
+      message: error.code === 'stateInventoryFailed'
+        ? 'Catalog source reference inventory is incomplete.'
+        : 'The previous Catalog manifest is unavailable.',
+    })),
   };
 }
 
@@ -250,6 +323,7 @@ export async function listCatalogSources(options: {
     configDigest: snapshot.digest,
     sources: await Promise.all(snapshot.config.sources.map(async (source) => ({
       ...source,
+      autoCheck: isCatalogSourceAutoCheckEnabled(source),
       sourceIdentity: await calculateCatalogSourceIdentity(source),
     }))),
   };
@@ -307,7 +381,15 @@ export async function updateCatalogSourceCommand(options: {
   managedByWorkspaceIdentity?: string;
   requireIdentityChangeConfirmation?: boolean;
   confirmIdentityChange?: boolean;
+  expectedImpactDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
+  const preview = await preflightCatalogSourceMutation({
+    request: { action: 'update', sourceId: options.sourceId, update: options.update },
+    cwd: options.cwd,
+    env: options.env,
+    managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+  });
+  await options.runtime?.afterImpactInspected?.();
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
@@ -317,21 +399,35 @@ export async function updateCatalogSourceCommand(options: {
         source: snapshot.config.sources.find((source) => source.id === options.sourceId),
         managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
       });
+      if (snapshot.digest !== preview.configDigest) {
+        throw new CatalogSourcesConfigConflictError(preview.configDigest, snapshot.digest);
+      }
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
       const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
       const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
       const after = config.sources.find((source) => source.id === options.sourceId)!;
-      const identityChanged = before.type === 'git' && after.type === 'git'
-        ? before.url !== after.url || before.subdir !== after.subdir
-        : before.type === 'path' && after.type === 'path'
-          ? before.path !== after.path
-          : true;
+      const changedIdentity = await identityChanged(before, after);
+      let references = preview.references;
+      if (changedIdentity) {
+        const impact = await inspectCatalogSourceImpact({
+          sourceId: options.sourceId,
+          cwd: options.cwd,
+          env,
+          sourcePrimary: before.primary,
+          mode: 'identityChange',
+        });
+        references = preflightInventory(impact);
+        if (options.expectedImpactDigest
+          && calculateCatalogSourceImpactDigest(impact) !== options.expectedImpactDigest) {
+          throw new CatalogSourceReviewStaleError(references);
+        }
+      }
       if (options.requireIdentityChangeConfirmation
-        && identityChanged
+        && changedIdentity
         && options.confirmIdentityChange !== true) {
-        throw new Error('catalogSourceIdentityChangeConfirmationRequired: use --yes to confirm the source URL, path, or subdirectory change.');
+        throw new CatalogSourceIdentityChangeConfirmationRequiredError(references);
       }
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
@@ -341,6 +437,7 @@ export async function updateCatalogSourceCommand(options: {
         sourceId: options.sourceId,
         config,
         expectedDigest: snapshot.digest,
+        references,
         env,
         runtime,
       });
@@ -387,7 +484,17 @@ export async function removeCatalogSourceCommand(options: {
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
+  requireImpactConfirmation?: boolean;
+  confirmImpact?: boolean;
+  expectedImpactDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
+  const preview = await preflightCatalogSourceMutation({
+    request: { action: 'remove', sourceId: options.sourceId },
+    cwd: options.cwd,
+    env: options.env,
+    managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+  });
+  await options.runtime?.afterImpactInspected?.();
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
@@ -397,8 +504,29 @@ export async function removeCatalogSourceCommand(options: {
         source: snapshot.config.sources.find((source) => source.id === options.sourceId),
         managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
       });
+      if (snapshot.digest !== preview.configDigest) {
+        throw new CatalogSourcesConfigConflictError(preview.configDigest, snapshot.digest);
+      }
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+      }
+      const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
+      const impact = await inspectCatalogSourceImpact({
+        sourceId: options.sourceId,
+        cwd: options.cwd,
+        env,
+        sourcePrimary: before.primary,
+        mode: 'remove',
+      });
+      const references = preflightInventory(impact);
+      if (options.expectedImpactDigest
+        && calculateCatalogSourceImpactDigest(impact) !== options.expectedImpactDigest) {
+        throw new CatalogSourceReviewStaleError(references);
+      }
+      if (options.requireImpactConfirmation === true
+        && catalogSourceImpactRequiresConfirmation(impact)
+        && options.confirmImpact !== true) {
+        throw new CatalogSourceImpactConfirmationRequiredError(references);
       }
       const config = removeCatalogSource(snapshot.config, options.sourceId);
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
@@ -409,6 +537,7 @@ export async function removeCatalogSourceCommand(options: {
         sourceId: options.sourceId,
         config,
         expectedDigest: snapshot.digest,
+        references,
         env,
         runtime,
       });

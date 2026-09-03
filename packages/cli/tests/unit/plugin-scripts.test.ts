@@ -11,6 +11,7 @@ import {
   type PluginProcessRunner,
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const tempDirs: string[] = [];
 
@@ -35,7 +36,7 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
       },
       scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
       ...(options.sensitiveDefault ? {
-        config: { schema: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
+        config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
       } : {}),
     },
   };
@@ -46,6 +47,47 @@ afterEach(async () => {
 });
 
 describe('postApply script', () => {
+  it('uses only user config for a user target', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
+    const sourceIdentity = `sha256:${'4'.repeat(64)}`;
+    plugin.sourceIdentity = sourceIdentity;
+    const cwd = path.join(plugin.rootDir, 'project');
+    const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId,
+      sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: 'user-value' },
+    });
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId,
+      sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'project',
+      cwd,
+      env,
+      values: { token: 'project-value' },
+    });
+    let invocation: PluginScriptInvocation | undefined;
+    await runPostApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      context: createCommandExecutionContext({ env }),
+      artifacts: [],
+      runner: { async run(value) {
+        invocation = value;
+        return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      } },
+    });
+
+    expect(JSON.parse(invocation?.stdin ?? '{}').config.values).toEqual({ token: 'user-value' });
+  });
+
   it('runs fixed Node in the plugin root and sends the minimal v1 context on stdin', async () => {
     const plugin = await createPlugin();
     let invocation: PluginScriptInvocation | undefined;

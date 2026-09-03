@@ -22,6 +22,24 @@ function fixturePath(name: string): string {
 }
 
 describe('Catalog providers', () => {
+  it('applies the full-fetch timeout range and the capped ref-probe timeout', () => {
+    expect(catalogGitProviderInternal.remoteTimeout({})).toBe(180_000);
+    expect(catalogGitProviderInternal.remoteTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '180000' }))
+      .toBe(180_000);
+    expect(catalogGitProviderInternal.remoteTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '300000' }))
+      .toBe(300_000);
+    expect(() => catalogGitProviderInternal.remoteTimeout({
+      AW_CATALOG_REMOTE_TIMEOUT_MS: '300001',
+    })).toThrow(/100\.\.300000/u);
+    expect(catalogGitProviderInternal.refProbeTimeout({})).toBe(30_000);
+    expect(catalogGitProviderInternal.refProbeTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '2500' }))
+      .toBe(2_500);
+    expect(catalogGitProviderInternal.refProbeTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '0' }))
+      .toBe(0);
+    expect(catalogGitProviderInternal.remoteTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '0' }))
+      .toBe(0);
+  });
+
   it('removes foreign repository namespaces and keeps user connection settings without prompts', () => {
     const env = catalogGitProviderInternal.gitEnvironment({
       HOME: '/isolated-home',

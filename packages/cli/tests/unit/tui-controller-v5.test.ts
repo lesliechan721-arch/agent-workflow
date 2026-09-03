@@ -36,6 +36,25 @@ function source(
   };
 }
 
+function sourceDetail(
+  id: string,
+  options: { autoCheck?: boolean; primary?: boolean; explicitRef?: string } = {},
+): NonNullable<TuiStatusLoadResult['sourceDetails']>[number] {
+  return {
+    id,
+    type: 'git',
+    primary: options.primary ?? id === 'official',
+    autoCheck: options.autoCheck ?? true,
+    locationSummary: `https://example.test/${id}.git`,
+    refPolicy: options.explicitRef ? 'explicit' : 'cliChannel',
+    ...(options.explicitRef ? { explicitRef: options.explicitRef } : {}),
+    pluginCount: 0,
+    sourceIdentity: `identity:${id}`,
+    requestedRef: options.explicitRef ?? 'refs/heads/catalog/latest',
+    configDigest: 'sha256:config',
+  };
+}
+
 function status(options: {
   sources?: StatusV7Payload['catalog']['sources'];
   targets?: StatusV7Payload['targets'];
@@ -727,7 +746,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
-  it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
+  it('projects manifest order, presentation groups, choices, and private values safely', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
       { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
@@ -736,19 +755,23 @@ describe('TUI v4 router and ViewModel', () => {
     const page = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: {
-          level: { type: 'enum', title: '级别', values: ['fast', 'strict'] },
-          rules: { type: 'file', title: '规则', default: '/Users/private/default-rules.json' },
+        fields: {
+          level: {
+            type: 'string',
+            title: '级别',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'fast', title: '快速', value: 'fast' },
+                { id: 'strict', title: '严格', value: 'strict', recommended: true },
+              ],
+            },
+          },
+          rules: { type: 'string', title: '规则', sensitive: true, default: '/Users/private/default-rules.json' },
           token: { type: 'string', title: '令牌', sensitive: true, default: 'default-secret' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level'] }],
-          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict', advanced: true } },
-          presets: [{
-            id: 'strict',
-            title: '严格方案',
-            values: { level: 'strict', rules: '/Users/private/preset-rules.json', token: 'preset-secret' },
-          }],
         },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
@@ -759,24 +782,23 @@ describe('TUI v4 router and ViewModel', () => {
       ['其他设置', ['rules', 'token']],
     ]);
     expect(page.groups[0]!.fields[0]).toEqual(expect.objectContaining({
-      enumValues: ['fast', 'strict'],
-      valueLabels: { fast: '快速', strict: '严格' },
-      recommendedValue: 'strict',
+      type: 'string',
+      allowCustom: false,
+      matchedPresetId: 'strict',
+      choices: [
+        { id: 'fast', title: '快速', value: 'fast' },
+        { id: 'strict', title: '严格', value: 'strict', recommended: true },
+      ],
       value: 'strict',
     }));
-    expect(page.presets).toEqual([{
-      id: 'strict',
-      title: '严格方案',
-      values: { level: 'strict' },
-      privateFieldTitles: ['规则', '令牌'],
-    }]);
+    expect(page.presets).toEqual([]);
     const serialized = JSON.stringify(page);
     expect(serialized).not.toContain('/Users/private');
     expect(serialized).not.toContain('sk-private');
 
     const fallback = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum' }, rules: { type: 'file' }, token: { type: 'string', sensitive: true } } },
+      schema: { fields: { level: { type: 'string' }, rules: { type: 'string' }, token: { type: 'string', sensitive: true } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
     });
     expect(fallback.groups).toHaveLength(1);
@@ -786,8 +808,13 @@ describe('TUI v4 router and ViewModel', () => {
     const fieldAdvanced = buildConfigPage({
       pluginId: 'official/demo',
       schema: {
-        schema: { level: { type: 'enum' }, model: { type: 'string' } },
-        presentation: { fields: { model: { advanced: true } } },
+        fields: { level: { type: 'string' }, model: { type: 'string' } },
+        presentation: {
+          groups: [
+            { id: 'general', title: '插件设置', fields: ['level'] },
+            { id: 'advanced', title: '高级设置', fields: ['model'], advanced: true },
+          ],
+        },
       },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [fields[0]!, {
         key: 'model', title: '模型', kind: 'manifest', reserved: false, writable: true,
@@ -810,7 +837,7 @@ describe('TUI v4 router and ViewModel', () => {
     };
     const editable = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [{
         ...layeredField,
         effectiveValue: 'strict',
@@ -820,7 +847,7 @@ describe('TUI v4 router and ViewModel', () => {
     });
     const effective = buildConfigPage({
       pluginId: 'official/demo',
-      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      schema: { fields: { level: { type: 'string' } } },
       read: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
     });
     expect(editable.groups[0]!.fields[0]).toMatchObject({
@@ -830,6 +857,135 @@ describe('TUI v4 router and ViewModel', () => {
     expect(effective.groups[0]!.fields[0]).toMatchObject({
       displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
     });
+  });
+
+  it('projects canonical object presets and a stable sensitive-child summary', () => {
+    const definition = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'service',
+              title: 'Service',
+              value: { token: 'secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true, required: true },
+            region: { type: 'string' as const, required: true },
+          },
+        },
+      },
+    };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: definition,
+      read: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [{
+          key: 'credentials',
+          title: 'credentials',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: { region: 'west', token: '[redacted]' },
+          sourceLayer: 'user',
+          value: { region: 'west', token: '[redacted]' },
+          source: 'user',
+          matchedPreset: 'service',
+          valid: true,
+          issues: [],
+        }],
+      },
+      effectiveRawValues: { credentials: { region: 'west', token: 'secret' } },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field).toMatchObject({
+      type: 'object',
+      matchedPresetId: 'service',
+      displayValue: '方案“Service” · 2 项（region、token）',
+      draftValue: { region: 'west', token: 'secret' },
+    });
+    expect(field.displayValue).not.toContain('secret');
+  });
+
+  it('matches a raw inherited object preset for a project override and precomputes redacted unset changes', () => {
+    const schema = {
+      fields: {
+        credentials: {
+          type: 'object' as const,
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'inherited',
+              title: 'Inherited service',
+              value: { token: 'inherited-secret', region: 'west' },
+            }],
+          },
+          properties: {
+            token: { type: 'string' as const, sensitive: true },
+            region: { type: 'string' as const },
+          },
+        },
+      },
+    };
+    const entry = (scope: 'user' | 'project', value: { token: string; region: string }) => ({
+      key: 'credentials',
+      title: 'credentials',
+      kind: 'manifest' as const,
+      reserved: false,
+      writable: true,
+      valueState: 'configured' as const,
+      effectiveValue: value,
+      sourceLayer: scope,
+      storedValue: value,
+      storedSourceLayer: scope,
+    });
+    const userRaw = { token: 'inherited-secret', region: 'west' };
+    const projectRaw = { token: 'current-secret', region: 'east' };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema,
+      read: {
+        pluginName: 'demo',
+        scope: 'project',
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+      },
+      effectiveRead: {
+        pluginName: 'demo',
+        scope: 'effective',
+        fields: [entry('project', { token: '[redacted]', region: 'east' })],
+      },
+      layerReads: {
+        user: {
+          pluginName: 'demo',
+          scope: 'user',
+          fields: [entry('user', { token: '[redacted]', region: 'west' })],
+        },
+        project: {
+          pluginName: 'demo',
+          scope: 'project',
+          fields: [entry('project', { token: '[redacted]', region: 'east' })],
+        },
+      },
+      rawValues: { credentials: projectRaw },
+      rawLayerValues: { user: { credentials: userRaw }, project: { credentials: projectRaw } },
+      effectiveRawValues: { credentials: projectRaw },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field.fallbackDisplayValue).toBe('方案“Inherited service” · 2 项（region、token）');
+    expect(field.fallbackObjectChanges).toEqual(expect.arrayContaining([
+      { property: 'region', before: 'east', after: 'west' },
+      { property: 'token', before: '已设置', after: '已设置', private: true },
+    ]));
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('current-secret');
+    expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
   });
   it('restores list focus, query, and source tab after a detail route goes back', () => {
     const router = new TuiRouter();
@@ -1143,7 +1299,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'required',
         pluginId: 'official/required',
         description: 'required config fixture',
-        configIssues: [{ type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
+        configIssues: [{ scope: 'user', type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official',
@@ -1227,7 +1383,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'team/configured',
           description: 'config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
         {
@@ -1235,7 +1391,7 @@ describe('TUI v4 router and ViewModel', () => {
           pluginId: 'official/source-configured',
           description: 'source config fixture',
           configIssues: [{
-            type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
+            scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user',
           }],
         },
       ],
@@ -1400,7 +1556,7 @@ describe('TUI v4 router and ViewModel', () => {
         pluginName: 'offline',
         pluginId: 'official/offline',
         description: 'offline fixture',
-        configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
+        configIssues: [{ scope: 'user', type: 'invalid-config', key: 'mode', title: '模式', source: 'user' }],
       }],
       sourceHealth: new Map([['official', {
         sourceId: 'official', state: 'unavailable', issueId: 'source:official:unavailable',
@@ -1462,19 +1618,19 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: [
         {
           pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
-          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'projectLocal' }],
+          configIssues: [{ scope: 'project', type: 'invalid-config', key: 'mode', title: '模式', source: 'project' }],
         },
         {
           pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
-          configDiagnostic: { code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
+          configDiagnostic: { scope: 'user', code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
         },
       ],
     });
 
     expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
       title: 'invalid · 设置值无效',
-      configLayer: { scope: 'project', projectLayer: 'local' },
-      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+      configLayer: { scope: 'project' },
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'project', scope: 'project' }],
       diagnostic: {
         technical: { code: 'invalid-config', stage: 'validate-config' },
       },
@@ -1524,6 +1680,313 @@ describe('TUI Catalog freshness session overlay', () => {
     });
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
     expect(controller.getPluginOverview('official/demo')?.aggregateStatus).not.toBe('unavailable');
+    expect(controller.listSources()).toContainEqual(expect.objectContaining({
+      id: 'official', state: 'ready',
+    }));
+    expect(controller.snapshot.viewModel?.home).toMatchObject({
+      issueCount: 0,
+      unavailableSourceCount: 0,
+      catalogRecoveryCount: 0,
+    });
+    controller.dispose();
+  });
+
+  it('automatically checks only enabled sources but keeps manual checks available', async () => {
+    const sources = [source('official', { primary: true }), source('team', { primary: false })];
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId,
+      state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ sources }),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [
+          sourceDetail('official', { primary: true }),
+          sourceDetail('team', { primary: false, autoCheck: false }),
+        ],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official']);
+    expect(controller.getSourceOverview('team').detail?.autoCheck).toBe(false);
+
+    await controller.recheckCatalogSource('team');
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official', 'team']);
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: false });
+    controller.dispose();
+  });
+
+  it('aborts and invalidates a running automatic check when autoCheck is disabled', async () => {
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    let aborted = false;
+    const enabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official')],
+    };
+    const disabled = {
+      ...enabled,
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(enabled)
+      .mockResolvedValueOnce(disabled)
+      .mockResolvedValueOnce(enabled);
+    const probeCatalogFreshness = vi.fn((_sourceId, _options, signal: AbortSignal) => {
+      signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+      return pending.promise;
+    });
+    const controller = new TuiController(dependencies({ loadStatus, probeCatalogFreshness }));
+
+    await controller.load();
+    await nextTurn();
+    await controller.reloadCatalog({ sourceId: 'official' });
+    expect(aborted).toBe(true);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('queues a newly enabled source when it has not been attempted in this session', async () => {
+    const initial = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const enabled = {
+      ...initial,
+      sourceDetails: [sourceDetail('official')],
+    };
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(initial).mockResolvedValueOnce(enabled),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    await controller.reloadCatalog({ sourceId: 'official' });
+    await nextTurn();
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('marks an exact commit source fixed without calling its automatic provider', async () => {
+    const probeCatalogFreshness = vi.fn();
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+        catalogGenerations: [{
+          sourceId: 'official',
+          sourceType: 'git',
+          state: 'ready',
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest', requestedRef: 'a'.repeat(40),
+            resolvedCommit: 'a'.repeat(40), storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
+    controller.dispose();
+  });
+
+  it.each([
+    ['disabled', sourceDetail('official', { autoCheck: false })],
+    ['fixed', sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+  ])('keeps a manual probe running across a same-descriptor reload for a %s source', async (
+    _label,
+    detail,
+  ) => {
+    const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
+    let aborted = false;
+    const loaded = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [detail],
+      ...(detail.explicitRef ? {
+        catalogGenerations: [{
+          sourceId: 'official', sourceType: 'git' as const, state: 'ready' as const,
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest' as const,
+            requestedRef: detail.explicitRef, resolvedCommit: detail.explicitRef,
+            storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
+      } : {}),
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn((_sourceId, _options, signal) => {
+        signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return pending.promise;
+      }),
+    }));
+
+    await controller.load();
+    const manual = controller.recheckCatalogSource('official');
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('checking');
+    await controller.reloadCatalog({ sourceId: 'official' });
+    expect(aborted).toBe(false);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('checking');
+
+    pending.resolve({ sourceId: 'official', state: 'updateAvailable' });
+    await manual;
+    expect(controller.getCatalogFreshness('official')?.state).toBe('updateAvailable');
+    controller.dispose();
+  });
+
+  it.each([
+    ['activationRequired', { state: 'activationRequired' as const }],
+    ['repairRequired', {
+      state: 'repairRequired' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+    ['configMismatch', {
+      state: 'configMismatch' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+  ])('probes an exact commit once when generation state is %s', async (_label, generation) => {
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [sourceDetail('official', { explicitRef: 'b'.repeat(64) })],
+        catalogGenerations: [{
+          sourceId: 'official', sourceType: 'git', ...generation,
+        }],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    expect(probeCatalogFreshness).toHaveBeenCalledWith(
+      'official', { fullValidation: false }, expect.any(AbortSignal),
+    );
+    controller.dispose();
+  });
+
+  it('applies a confirmed autoCheck disable before the final status reload completes', async () => {
+    const finalLoad = deferred<TuiStatusLoadResult>();
+    const automatic = deferred<{ sourceId: string; state: 'current' }>();
+    let aborted = false;
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const enabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official')],
+    };
+    const disabled = {
+      ...enabled,
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(enabled).mockImplementationOnce(() => finalLoad.promise),
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+      probeCatalogFreshness: vi.fn((_sourceId, _options, signal) => {
+        signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+        return automatic.promise;
+      }),
+    }));
+    await controller.load();
+    await nextTurn();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'update', sourceId: 'official',
+      update: { autoCheck: false },
+    });
+
+    const executing = controller.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    expect(aborted).toBe(true);
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    finalLoad.resolve(disabled);
+    await expect(executing).resolves.toMatchObject({ state: 'succeeded' });
+    automatic.resolve({ sourceId: 'official', state: 'current' });
+    await nextTurn();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('notChecked');
+    controller.dispose();
+  });
+
+  it('queues a confirmed autoCheck enable before a delayed final reload fails', async () => {
+    const finalLoad = deferred<TuiStatusLoadResult>();
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const disabled = {
+      payload: status(),
+      pluginSummaries: summaries(['official', 'demo']),
+      sourceDetails: [sourceDetail('official', { autoCheck: false })],
+    };
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(disabled).mockImplementationOnce(() => finalLoad.promise),
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+      probeCatalogFreshness,
+    }));
+    await controller.load();
+    await nextTurn();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'update', sourceId: 'official',
+      update: { autoCheck: true },
+    });
+
+    const executing = controller.executeOperation(review.reviewToken);
+    await nextTurn(2);
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    finalLoad.reject(new Error('final load failed'));
+    await expect(executing).resolves.toMatchObject({
+      state: 'blocked', code: 'tuiStateReloadFailed', writeMayHaveCompleted: true,
+    });
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
     controller.dispose();
   });
 
@@ -1595,8 +2058,65 @@ describe('TUI Catalog freshness session overlay', () => {
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness).toHaveBeenCalledTimes(3);
     expect(probeCatalogFreshness.mock.calls.at(-1)?.slice(0, 2)).toEqual([
-      'team', { fullValidation: true },
+      'team', { fullValidation: false },
     ]);
+    controller.dispose();
+  });
+
+  it('keeps complete candidates private to the current probe token and exposes full validation separately', async () => {
+    const candidate = {
+      sourceConfigFingerprint: 'sha256:source', sourceIdentity: 'identity:official',
+      logicalIdentity: 'workspace:official', requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit: 'a'.repeat(40), catalogVersion: '2.0.0', channel: 'latest' as const,
+      manifestDigest: `sha256:${'b'.repeat(64)}`, snapshotDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const probeCatalogFreshness = vi.fn()
+      .mockResolvedValueOnce({
+        sourceId: 'official', state: 'updateAvailable' as const, candidate,
+        reusableCandidate: {
+          sourceConfigFingerprint: 'sha256:source', activeStoreKey: null,
+          probe: { sourceId: 'official', candidate, manifest: {} },
+        },
+      })
+      .mockResolvedValueOnce({ sourceId: 'official', state: 'current' as const })
+      .mockResolvedValueOnce({ sourceId: 'official', state: 'current' as const });
+    const reviewEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: candidate.snapshotDigest },
+      catalogGeneration: {
+        action: 'update', candidate, activationMode: 'normal', configDigest: 'sha256:config',
+      },
+    };
+    const prepareReviewEvidence = vi.fn(async () => reviewEvidence);
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness,
+      prepareReviewEvidence,
+    }));
+    await controller.load();
+    await nextTurn();
+
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toMatchObject({
+      sourceId: 'official', activeStoreKey: null,
+    });
+
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+      sourceMutation: {
+        action: 'update', sourceId: 'official', update: { autoCheck: false },
+      },
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toBeUndefined();
+
+    await controller.recheckCatalogSource('official');
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toBeUndefined();
+
+    await controller.fullValidateCatalogSource('official');
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
     controller.dispose();
   });
 
@@ -3101,11 +3621,11 @@ describe('TUI v4 Review safety', () => {
     const route = {
       name: 'configFields' as const,
       pluginId: 'official/demo',
-      layer: { scope: 'project' as const, projectLayer: 'shared' as const },
+      layer: { scope: 'project' as 'project' | 'user' },
     };
     router.push(route);
-    route.layer.projectLayer = 'local';
-    expect(router.snapshot.current.route).toMatchObject({ layer: { projectLayer: 'shared' } });
+    route.layer.scope = 'user';
+    expect(router.snapshot.current.route).toMatchObject({ layer: { scope: 'project' } });
 
     const loaded = {
       payload: status({ sources: [source('official', { type: 'path' })] }),
@@ -3270,6 +3790,39 @@ describe('TUI v4 Review safety', () => {
     await controller.executeOperation(review.reviewToken);
     expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'sourceMutation' });
     expect(vi.mocked(controller.dependencies.loadStatus).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('describes an autoCheck-only Review as a settings save with unchanged Active and store', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before', proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true,
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'update',
+      sourceId: 'official',
+      update: { autoCheck: false },
+      changes: [{ title: '自动检查更新', before: '开启', after: '关闭' }],
+    });
+
+    expect(review).toMatchObject({
+      title: '保存自动检查设置',
+      description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+      primaryLabel: '保存设置',
+      changes: [expect.objectContaining({
+        title: '自动检查更新', description: '开启 → 关闭',
+      })],
+    });
+    expect(JSON.stringify(review)).not.toContain('source sync');
+    controller.dispose();
   });
 
   it('rebuilds a source Review with zero writes when config evidence becomes stale', async () => {

@@ -612,7 +612,7 @@ describe('local-plugin generator', () => {
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
     manifest.config = {
-      schema: {
+      fields: {
         explorerModel: {
           type: 'string',
           default: 'gpt-5.4-mini',

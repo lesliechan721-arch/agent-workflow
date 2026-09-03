@@ -97,7 +97,18 @@ function configureDemoManifest(manifest: PluginMeta['manifest']): void {
     instructions: [{ name: 'demo', title: 'Demo', content: 'Demo.' }],
   };
   manifest.config = {
-    schema: { mode: { type: 'enum', values: ['safe', 'fast'] } },
+    fields: {
+      mode: {
+        type: 'string',
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'safe', title: 'Safe', value: 'safe' },
+            { id: 'fast', title: 'Fast', value: 'fast' },
+          ],
+        },
+      },
+    },
   };
 }
 
@@ -205,7 +216,11 @@ describe('public AW_HOME mutation command lock', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    })).resolves.toMatchObject({
+      ok: true,
+      changed: true,
+      references: [{ category: 'config', sourceId: 'team', pluginId: 'team/demo' }],
+    });
     expect((await listCatalogSources({ env: isolation.env })).sources[0]!.sourceIdentity).not.toBe(oldIdentity);
     await expect(fs.readJson(path.join(
       isolation.env.AW_HOME!,
@@ -215,7 +230,9 @@ describe('public AW_HOME mutation command lock', () => {
       'config.json',
     ))).resolves.toEqual({
       schemaVersion: 3,
-      pluginId: 'team/demo',
+      sourceId: 'team',
+      sourceIdentity: oldIdentity,
+      pluginName: 'demo',
       values: { mode: 'safe' },
     });
   });

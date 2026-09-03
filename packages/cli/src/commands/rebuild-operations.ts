@@ -46,10 +46,12 @@ export interface DesiredTarget {
   optionalOwnedComponents?: readonly OwnedComponent[];
   requiresNative: boolean;
   writeNativeRequired?: boolean;
+  codexNativeObservationExpectation?: 'observed' | 'installed';
   artifacts: readonly GeneratedArtifact[];
   operationActions?: readonly OperationAction[];
   catalog?: CatalogResolution;
   postApplySource: PluginMeta;
+  forceExclusiveCleanup?: boolean;
 }
 
 export interface RebuildAction {
@@ -102,6 +104,7 @@ export interface RebuildPostApplyInvocation {
 
 export interface RebuildTargetDriver {
   ownership: OwnedComponentExecutor;
+  preflightMutation?(target: DesiredTarget): Promise<void>;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
   commitMaterialize?(target: DesiredTarget): Promise<void>;
   rollbackMaterialize?(target: DesiredTarget): Promise<void>;
@@ -381,6 +384,10 @@ function validateDesiredTarget(target: DesiredTarget): void {
   }
 
   const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
+  if (target.forceExclusiveCleanup && target.ownedComponents.some((component) =>
+    component.kind !== 'skill-directory' && component.kind !== 'owned-text-file')) {
+    throw new Error('Force cleanup only supports exclusive skill directories and owned text files.');
+  }
   nativeCount = desiredComponents.filter((component) => component.kind === 'native-plugin').length;
 
   if (target.requiresNative ? nativeCount !== 1 : nativeCount !== 0) {
@@ -463,6 +470,12 @@ function postcheckMessage(
     })));
     return inspection.errors.map((error) => `${error.label}: ${error.message}`).join('; ');
   }
+  if (invalid.some((component) =>
+    component.state === 'partial'
+    && component.component.kind === 'native-plugin'
+    && component.component.identity.platform === 'codex')) {
+    return 'codexActivationPostcheckFailed: Codex scope activation was not observed as enabled.';
+  }
   const diagnostics = invalid
     .map((component) => component.diagnostic)
     .filter((diagnostic): diagnostic is string => diagnostic !== undefined);
@@ -480,6 +493,7 @@ async function cleanupOwned(
     executor: driver.ownership,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
+    forceExclusive: target.forceExclusiveCleanup,
   });
 }
 
@@ -801,6 +815,18 @@ export async function executeRebuildOperation(options: {
   };
   try {
     validateDesiredTarget(options.target);
+  } catch (error) {
+    return failed(
+      options.command,
+      options.target,
+      accumulator,
+      'preflight',
+      errorMessage(error),
+    );
+  }
+
+  try {
+    await options.driver.preflightMutation?.(options.target);
   } catch (error) {
     return failed(
       options.command,

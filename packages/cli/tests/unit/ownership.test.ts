@@ -722,4 +722,67 @@ describe('ownership inspection and cleanup', () => {
       ],
     });
   });
+
+  it.each([
+    ['missing marker', async (skillRoot: string) => {
+      await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# damaged\n');
+    }],
+    ['damaged marker', async (skillRoot: string) => {
+      await fs.outputFile(path.join(skillRoot, SKILL_OWNER_MARKER), '{invalid\n');
+    }],
+  ])('force cleans an exact exclusive directory with %s through quarantine', async (_label, arrange) => {
+    const root = await makeTempRoot();
+    const allowedRoot = path.join(root, 'skills');
+    const skillRoot = path.join(allowedRoot, 'review');
+    await fs.ensureDir(skillRoot);
+    await arrange(skillRoot);
+    const component: OwnedComponent = {
+      kind: 'skill-directory',
+      path: skillRoot,
+      allowedRoot,
+      identity: userIdentity(),
+    };
+
+    await expect(cleanupOwnedComponents({
+      components: [component],
+      forceExclusive: true,
+    })).resolves.toMatchObject({ removed: [skillRoot], residual: [], quarantined: [] });
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+  });
+
+  it('force cleanup preserves foreign owners and unsafe exact paths', async () => {
+    const root = await makeTempRoot();
+    const allowedRoot = path.join(root, 'skills');
+    const foreignRoot = path.join(allowedRoot, 'review');
+    const mismatchRoot = path.join(allowedRoot, 'wrong-name');
+    const linkedRoot = path.join(allowedRoot, 'linked');
+    await fs.ensureDir(foreignRoot);
+    await writeSkillOwnerMarker({
+      skillRoot: foreignRoot,
+      allowedRoot,
+      identity: { ...userIdentity(), plugin: 'foreign', pluginId: 'official/foreign' },
+    });
+    await fs.outputFile(path.join(mismatchRoot, 'SKILL.md'), '# mismatch\n');
+    await fs.symlink(foreignRoot, linkedRoot);
+    const components: OwnedComponent[] = [
+      {
+        kind: 'skill-directory', path: foreignRoot, allowedRoot, identity: userIdentity(),
+      },
+      {
+        kind: 'skill-directory', path: mismatchRoot, allowedRoot, identity: userIdentity(),
+      },
+      {
+        kind: 'skill-directory', path: linkedRoot, allowedRoot,
+        identity: { ...userIdentity(), artifactKey: 'linked' },
+      },
+    ];
+
+    await expect(cleanupOwnedComponents({
+      components,
+      forceExclusive: true,
+    })).resolves.toMatchObject({ removed: [], residual: [foreignRoot, mismatchRoot, linkedRoot] });
+    await expect(fs.pathExists(foreignRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(mismatchRoot)).resolves.toBe(true);
+    expect((await fs.lstat(linkedRoot)).isSymbolicLink()).toBe(true);
+  });
 });

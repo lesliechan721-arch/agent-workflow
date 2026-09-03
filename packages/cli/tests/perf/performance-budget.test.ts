@@ -82,7 +82,12 @@ describe('multi-source performance budgets', () => {
       schemaVersion: 2,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     });
-    await syncCatalogSourceGeneration({ sourceId: 'local', cliVersion: '1.0.0', env });
+    await syncCatalogSourceGeneration({
+      sourceId: 'local',
+      cliVersion: '1.0.0',
+      env,
+      impactConfirmed: true,
+    });
 
     const gitWork = path.join(root, 'git-work');
     const gitRemote = path.join(root, 'catalog.git');
@@ -109,7 +114,7 @@ describe('multi-source performance budgets', () => {
           manifest.extensions = {
             instructions: [{ name: 'config-target', title: 'Config target', content: 'Config target.' }],
           };
-          manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+          manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
         },
       },
       ...Array.from({ length: 20 }, (_, index) => ({
@@ -154,7 +159,12 @@ describe('multi-source performance budgets', () => {
       ],
     });
     for (const sourceId of ['git-a', 'git-b', 'path-a', 'path-b']) {
-      await syncCatalogSourceGeneration({ sourceId, cliVersion: '1.0.0', env: fanoutEnv });
+      await syncCatalogSourceGeneration({
+        sourceId,
+        cliVersion: '1.0.0',
+        env: fanoutEnv,
+        impactConfirmed: true,
+      });
     }
     const writeRuntime = {
       env: fanoutEnv,
@@ -489,6 +499,7 @@ describe('multi-source performance budgets', () => {
         sourceId,
         cliVersion: '1.0.0',
         env: fanoutEnv,
+        impactConfirmed: true,
         runtime: { providers },
       })));
 

@@ -29,7 +29,7 @@ export const IMPLEMENTED_AW_CAPABILITIES = [
   'aw.plugin-manifest.v3',
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
-  'aw.plugin-config.v1',
+  'aw.plugin-config.v2',
   'aw.plugin-post-apply.v1',
   'aw.dynamic-artifacts.v2',
   'aw.portable-skills.v1',

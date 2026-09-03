@@ -1077,6 +1077,7 @@ describe('pack smoke', () => {
       'Create and validate a deterministic packed CLI authoring fixture.',
       '--skill-short-description',
       'Create a packed CLI authoring fixture.',
+      '--with-config-api',
       '--workspace-root',
       authorRepo,
     ], { cwd: authorRepo, env: process.env });
@@ -1101,6 +1102,19 @@ describe('pack smoke', () => {
       'second-skill',
       'SKILL.md',
     ))).resolves.toBe(true);
+    const helperPath = path.join(
+      authorRepo,
+      'plugins',
+      'author-smoke',
+      'scripts',
+      'aw-config.mjs',
+    );
+    const helperHelp = await execFileAsync(process.execPath, [helperPath, '--help'], {
+      cwd: authorRepo,
+      env: externalAuthoringEnv,
+    });
+    expect(helperHelp.stdout).toContain('effective|user|project');
+    expect(helperHelp.stderr).toBe('');
     const evalHelp = await execFileAsync(evalBin, ['--help'], {
       cwd: tempRoot,
       env: process.env,
@@ -1121,7 +1135,7 @@ describe('pack smoke', () => {
       );
       expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
     }
-  }, 240_000);
+  }, 300_000);
 
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');

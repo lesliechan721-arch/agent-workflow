@@ -104,7 +104,7 @@ function valueField<T>(request: CommandWizardRequest<T>, selection: CommandWizar
 }
 
 function isPrivateField(field: ReturnType<typeof valueField>): boolean {
-  return field?.sensitive === true || field?.type === 'file' || field?.type === 'directory';
+  return field?.sensitive === true;
 }
 
 function equivalentCommandDisplays<T>(
@@ -416,17 +416,22 @@ export function CommandWizard<T>(props: {
         }))}
       />;
     }
-    if (field?.type === 'enum') {
+    if (
+      field
+      && field.type !== 'object'
+      && field.choices?.allowCustom === false
+    ) {
+      const presets = field.choices.presets;
       return <SelectView
         key="value"
         message={message}
-        choices={(field.values ?? []).map((value) => ({
-          value: valueJson ? JSON.stringify(value) : value,
-          label: value,
+        choices={presets.map((preset) => ({
+          value: valueJson ? JSON.stringify(preset.value) : String(preset.value),
+          label: preset.title,
         }))}
-        defaultValue={typeof field.default === 'string'
-          ? valueJson ? JSON.stringify(field.default) : field.default
-          : valueJson ? JSON.stringify(field.values?.[0]) : field.values?.[0]}
+        defaultValue={field.default !== undefined
+          ? valueJson ? JSON.stringify(field.default) : String(field.default)
+          : valueJson ? JSON.stringify(presets[0]?.value) : String(presets[0]?.value ?? '')}
         pageSize={selectionRows}
         size={size}
         onComplete={(result) => handlePrompt('value', result, (value) => ({ value }))}

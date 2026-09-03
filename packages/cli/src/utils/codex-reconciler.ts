@@ -204,6 +204,9 @@ function nativeAction(options: {
     && desiredScopes(target).length > 0;
   if (!requiresNative || operation === 'uninstall') return 'none';
   const state = evidence.sharedNative;
+  if (state.state === 'unobserved') {
+    return operation === 'cleanup' ? 'none' : 'install';
+  }
   if (state.state === 'blocked') {
     throw new CodexReconcilePlanError(
       state.reason === 'foreign' ? 'codexSharedNativeForeign' : 'codexSharedNativeCorrupt',

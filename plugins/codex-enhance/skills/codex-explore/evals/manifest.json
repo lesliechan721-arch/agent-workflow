@@ -20,12 +20,18 @@
       "scope": "project",
       "plugins": {
         "codex-enhance": {
-          "quickModel": "eval-quick-model",
-          "quickReasoningEffort": "high",
-          "standardModel": "eval-standard-model",
-          "standardReasoningEffort": "xhigh",
-          "deepModel": "eval-deep-model",
-          "deepReasoningEffort": "max",
+          "quickProfile": {
+            "model": "eval-quick-model",
+            "reasoningEffort": "high"
+          },
+          "standardProfile": {
+            "model": "eval-standard-model",
+            "reasoningEffort": "xhigh"
+          },
+          "deepProfile": {
+            "model": "eval-deep-model",
+            "reasoningEffort": "max"
+          },
           "exploreMinimumInitialWaitMinutes": 2
         }
       }
@@ -42,12 +48,18 @@
       "scope": "user",
       "plugins": {
         "codex-enhance": {
-          "quickModel": "eval-quick-model",
-          "quickReasoningEffort": "high",
-          "standardModel": "eval-standard-model",
-          "standardReasoningEffort": "xhigh",
-          "deepModel": "eval-deep-model",
-          "deepReasoningEffort": "max",
+          "quickProfile": {
+            "model": "eval-quick-model",
+            "reasoningEffort": "high"
+          },
+          "standardProfile": {
+            "model": "eval-standard-model",
+            "reasoningEffort": "xhigh"
+          },
+          "deepProfile": {
+            "model": "eval-deep-model",
+            "reasoningEffort": "max"
+          },
           "exploreMinimumInitialWaitMinutes": 2
         }
       }

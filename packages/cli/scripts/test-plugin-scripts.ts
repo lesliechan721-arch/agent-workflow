@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -398,7 +399,9 @@ async function writeTestContext(options: {
   tempDir: string;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
   const sourceId = 'plugin-test';
-  const pluginId = `${sourceId}/${options.manifest.name}`;
+  const sourceIdentity = `sha256:${crypto.createHash('sha256')
+    .update(`${sourceId}/${options.manifest.name}`, 'utf8')
+    .digest('hex')}`;
   const configStores = {
     user: resolvePluginConfigStorePath({
       sourceId,
@@ -414,25 +417,20 @@ async function writeTestContext(options: {
       cwd: options.projectRoot,
       env: options.env,
     }),
-    projectLocal: resolvePluginConfigStorePath({
-      sourceId,
-      pluginName: options.manifest.name,
-      scope: 'project',
-      cwd: options.projectRoot,
-      env: options.env,
-      projectLayer: 'local',
-    }),
   };
-  if (options.manifest.config?.schema) {
+  if (options.manifest.config?.fields) {
     await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
       schemaVersion: 3,
-      pluginId,
+      sourceId,
+      sourceIdentity,
+      pluginName: options.manifest.name,
       values: {},
     }, { spaces: 2 })));
   }
-  const effective = options.manifest.config?.schema
+  const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
         sourceId,
+        sourceIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
@@ -447,7 +445,8 @@ async function writeTestContext(options: {
       version: options.manifest.version,
       rootDir: options.bundleRoot,
       sourceId,
-      pluginId,
+      sourceIdentity,
+      pluginId: `${sourceId}/${options.manifest.name}`,
     },
     sourceRoot: options.sourceRoot,
     platform: options.platform,

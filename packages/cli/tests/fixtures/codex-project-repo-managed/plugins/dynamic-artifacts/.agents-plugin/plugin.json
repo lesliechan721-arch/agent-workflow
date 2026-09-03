@@ -13,7 +13,7 @@
     }
   },
   "config": {
-    "schema": {
+    "fields": {
       "enableLightweightInstruction": {
         "type": "boolean",
         "default": true
@@ -23,8 +23,16 @@
         "default": "gpt-5.4-mini"
       },
       "modelReasoningEffort": {
-        "type": "enum",
-        "values": ["low", "medium", "high", "xhigh"],
+        "type": "string",
+        "choices": {
+          "allowCustom": false,
+          "presets": [
+            { "id": "low", "title": "Low", "value": "low" },
+            { "id": "medium", "title": "Medium", "value": "medium" },
+            { "id": "high", "title": "High", "value": "high" },
+            { "id": "xhigh", "title": "Extra high", "value": "xhigh" }
+          ]
+        },
         "default": "medium"
       }
     }

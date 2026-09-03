@@ -238,7 +238,7 @@ function materializationProfile(selection: ResolvedSelection): AwSkillEvalMateri
   }))
   for (const plugin of closure) {
     const config = explicitConfig.get(plugin.manifest.name) ?? {}
-    for (const [key, field] of Object.entries(plugin.manifest.config?.schema ?? {})) {
+    for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
       if (field.required === true && field.default === undefined && !Object.hasOwn(config, key)) {
         throw new Error(
           `Eval profile "${selection.profile.id}" is missing required config "${key}" `

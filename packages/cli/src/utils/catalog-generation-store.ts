@@ -38,6 +38,11 @@ export interface CatalogStoreEntry {
   reused: boolean;
 }
 
+export interface PreparedCatalogStoreRepair {
+  commit(): Promise<CatalogStoreEntry>;
+  cleanup(): Promise<void>;
+}
+
 function metadataError(message: string, cause?: unknown): CatalogGenerationError {
   return new CatalogGenerationError({
     code: 'catalogGenerationMetadataInvalid',
@@ -313,13 +318,13 @@ export async function readCatalogStoreEntry(options: {
   return validateEntry({ location: resolveCatalogStoreLocation(options) });
 }
 
-export async function replaceDamagedCatalogStoreEntry(options: {
+export async function prepareCatalogStoreEntryRepair(options: {
   resolution: CatalogSourceResolution;
   logicalIdentity: string;
   snapshotDigest: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
-}): Promise<CatalogStoreEntry> {
+}): Promise<PreparedCatalogStoreRepair> {
   const location = resolveCatalogStoreLocation(options);
   const stagingDir = resolveStrictStoreDescendant(
     location.logicalIdentityDirectory,
@@ -330,6 +335,7 @@ export async function replaceDamagedCatalogStoreEntry(options: {
     `.quarantine-${crypto.randomUUID()}.tmp`,
   );
   let quarantined = false;
+  let committed = false;
   try {
     await ensureRegularDirectoryPath(location.storeRootDir, 'Catalog store');
     await ensureRegularDirectoryPath(location.logicalIdentityDirectory, 'Catalog logical identity store');
@@ -374,41 +380,99 @@ export async function replaceDamagedCatalogStoreEntry(options: {
       snapshotRoot,
     } });
     options.signal?.throwIfAborted();
-    await fs.rename(location.entryDir, quarantineDir);
-    quarantined = true;
-    try {
-      await fs.rename(stagingDir, location.entryDir);
-    } catch (error) {
-      if (!await fs.pathExists(location.entryDir)) {
-        await fs.rename(quarantineDir, location.entryDir);
-        quarantined = false;
+    const cleanup = async (): Promise<void> => {
+      await fs.remove(stagingDir).catch(() => undefined);
+      if (quarantined && !await fs.pathExists(location.entryDir)) {
+        await fs.rename(quarantineDir, location.entryDir).catch(() => undefined);
       }
-      throw error;
-    }
-    const entry = await validateEntry({ location });
-    await fs.remove(quarantineDir).catch(() => {
-      try {
-        process.emitWarning('Catalog store repair succeeded, but quarantine cleanup failed.', {
-          code: 'AW_CATALOG_STORE_QUARANTINE_CLEANUP_FAILED',
+    };
+    return {
+      async commit() {
+        if (committed) throw new CatalogGenerationError({
+          code: 'catalogGenerationPublishFailed',
+          sourceId: options.resolution.sourceId,
+          message: `Catalog store repair for source "${options.resolution.sourceId}" was already committed.`,
         });
-      } catch {
-        // Cleanup diagnostics cannot replace the repair result.
-      }
-    });
-    quarantined = false;
-    return { ...entry, reused: false };
+        let installedReplacement = false;
+        try {
+          const targetExists = await fs.lstat(location.entryDir)
+            .then(() => true)
+            .catch((error: NodeJS.ErrnoException) => {
+              if (error.code === 'ENOENT') return false;
+              throw error;
+            });
+          if (targetExists) {
+            await fs.rename(location.entryDir, quarantineDir);
+            quarantined = true;
+          }
+          try {
+            await fs.rename(stagingDir, location.entryDir);
+            installedReplacement = true;
+          } catch (error) {
+            if (quarantined && !await fs.pathExists(location.entryDir)) {
+              await fs.rename(quarantineDir, location.entryDir);
+              quarantined = false;
+            }
+            throw error;
+          }
+          const entry = await validateEntry({ location });
+          committed = true;
+          if (quarantined) await fs.remove(quarantineDir).catch(() => {
+            try {
+              process.emitWarning('Catalog store repair succeeded, but quarantine cleanup failed.', {
+                code: 'AW_CATALOG_STORE_QUARANTINE_CLEANUP_FAILED',
+              });
+            } catch {
+              // Cleanup diagnostics cannot replace the repair result.
+            }
+          });
+          quarantined = false;
+          return { ...entry, reused: false };
+        } catch (error) {
+          if (quarantined) {
+            if (installedReplacement) {
+              await fs.remove(location.entryDir).catch(() => undefined);
+            }
+            if (!await fs.pathExists(location.entryDir)) {
+              await fs.rename(quarantineDir, location.entryDir).then(() => {
+                quarantined = false;
+              }).catch(() => undefined);
+            }
+          }
+          if (error instanceof CatalogGenerationError) throw error;
+          throw new CatalogGenerationError({
+            code: 'catalogGenerationPublishFailed',
+            sourceId: options.resolution.sourceId,
+            message: `Cannot repair the active Catalog store entry for source "${options.resolution.sourceId}".`,
+            cause: error,
+          });
+        }
+      },
+      cleanup,
+    };
   } catch (error) {
+    await fs.remove(stagingDir).catch(() => undefined);
     if (error instanceof CatalogGenerationError) throw error;
     throw new CatalogGenerationError({
       code: 'catalogGenerationPublishFailed',
       sourceId: options.resolution.sourceId,
-      message: `Cannot repair the active Catalog store entry for source "${options.resolution.sourceId}".`,
+      message: `Cannot prepare the active Catalog store repair for source "${options.resolution.sourceId}".`,
       cause: error,
     });
+  }
+}
+
+export async function replaceDamagedCatalogStoreEntry(options: {
+  resolution: CatalogSourceResolution;
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}): Promise<CatalogStoreEntry> {
+  const prepared = await prepareCatalogStoreEntryRepair(options);
+  try {
+    return await prepared.commit();
   } finally {
-    await fs.remove(stagingDir).catch(() => undefined);
-    if (quarantined && !await fs.pathExists(location.entryDir)) {
-      await fs.rename(quarantineDir, location.entryDir).catch(() => undefined);
-    }
+    await prepared.cleanup();
   }
 }

@@ -403,9 +403,20 @@ export function assertNoSensitiveProfileConfig(
   for (const installation of profile.plugins) {
     const plugin = byName.get(installation.name)
     if (!plugin) throw new Error(`Eval profile "${profile.id}" references unknown plugin "${installation.name}".`)
-    for (const [key, field] of Object.entries(plugin.manifest.config?.schema ?? {})) {
-      if (field.sensitive === true && Object.hasOwn(installation.config, key)) {
+    for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
+      if (!Object.hasOwn(installation.config, key)) continue
+      if (field.sensitive === true) {
         throw new Error(`Eval profile "${profile.id}" provides a sensitive config field for plugin "${installation.name}".`)
+      }
+      const value = installation.config[key]
+      if (field.type !== 'object' || value === null || typeof value !== 'object' || Array.isArray(value)) continue
+      for (const property of Object.keys(value)) {
+        const child = field.properties !== undefined && Object.hasOwn(field.properties, property)
+          ? field.properties[property]
+          : field.additionalProperties === false ? undefined : field.additionalProperties
+        if (child?.sensitive === true) {
+          throw new Error(`Eval profile "${profile.id}" provides a sensitive config field for plugin "${installation.name}".`)
+        }
       }
     }
   }

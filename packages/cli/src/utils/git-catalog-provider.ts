@@ -26,6 +26,7 @@ import {
 
 const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DEFAULT_REMOTE_TIMEOUT_MS = 180_000;
+const MAX_REF_PROBE_TIMEOUT_MS = 30_000;
 
 class CatalogGitDeadlineError extends Error {
   constructor(timeoutMs: number) {
@@ -62,13 +63,18 @@ function readRemoteTimeout(env: NodeJS.ProcessEnv): number {
   const raw = env.AW_CATALOG_REMOTE_TIMEOUT_MS;
   if (raw === undefined) return DEFAULT_REMOTE_TIMEOUT_MS;
   if (!/^(?:0|[1-9]\d*)$/.test(raw)) {
-    throw new Error('Invalid AW_CATALOG_REMOTE_TIMEOUT_MS: expected 0 or an integer in range 100..60000.');
+    throw new Error('Invalid AW_CATALOG_REMOTE_TIMEOUT_MS: expected 0 or an integer in range 100..300000.');
   }
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || (value !== 0 && (value < 100 || value > 60_000))) {
-    throw new Error('Invalid AW_CATALOG_REMOTE_TIMEOUT_MS: expected 0 or an integer in range 100..60000.');
+  if (!Number.isSafeInteger(value) || (value !== 0 && (value < 100 || value > 300_000))) {
+    throw new Error('Invalid AW_CATALOG_REMOTE_TIMEOUT_MS: expected 0 or an integer in range 100..300000.');
   }
   return value;
+}
+
+function readRefProbeTimeout(env: NodeJS.ProcessEnv): number {
+  const configured = readRemoteTimeout(env);
+  return configured === 0 ? 0 : Math.min(configured, MAX_REF_PROBE_TIMEOUT_MS);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -444,7 +450,7 @@ async function probeGitCatalogSourceRef(
       fixed: true,
     };
   }
-  const deadline = createDeadlineSignal(options.signal, readRemoteTimeout(env));
+  const deadline = createDeadlineSignal(options.signal, readRefProbeTimeout(env));
   let effectiveTransport: string | undefined;
   try {
     effectiveTransport = await resolveEffectiveGitUrl({
@@ -485,6 +491,8 @@ export const catalogGitProviderInternal = {
   resolve: resolveGitCatalogSource,
   probeRef: probeGitCatalogSourceRef,
   gitEnvironment,
+  remoteTimeout: readRemoteTimeout,
+  refProbeTimeout: readRefProbeTimeout,
 };
 
 async function resolveGitCatalogSourceDirect(

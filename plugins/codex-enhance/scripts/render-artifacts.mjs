@@ -14,22 +14,19 @@ const CODEX_EXPLORE_ROLES = [
     id: 'codex-explore-quick-role',
     key: 'codex-explore-quick',
     description: '适用于问题明确、低歧义的大范围只读检索与证据定位。',
-    modelKey: 'quickModel',
-    effortKey: 'quickReasoningEffort',
+    profileKey: 'quickProfile',
   },
   {
     id: 'codex-explore-standard-role',
     key: 'codex-explore-standard',
     description: '适用于常规跨文件、跨模块或多来源追踪核对；不确定时选择此档。',
-    modelKey: 'standardModel',
-    effortKey: 'standardReasoningEffort',
+    profileKey: 'standardProfile',
   },
   {
     id: 'codex-explore-deep-role',
     key: 'codex-explore-deep',
     description: '适用于高歧义、强冲突、复杂因果或要求高完整性的深入只读探索。',
-    modelKey: 'deepModel',
-    effortKey: 'deepReasoningEffort',
+    profileKey: 'deepProfile',
   },
   {
     id: 'codex-explore-custom-role',
@@ -44,24 +41,21 @@ const CODEX_SUBAGENT_ROLES = [
     id: 'codex-subagent-simple-role',
     key: 'codex-subagent-simple',
     description: '低歧义、边界清晰、成功标准明确且可机械验证的探索、检索、检查、转换或简单代码',
-    modelKey: 'simpleTaskModel',
-    effortKey: 'simpleTaskReasoningEffort',
+    profileKey: 'simpleTaskProfile',
   },
   {
     label: '通用',
     id: 'codex-subagent-general-role',
     key: 'codex-subagent-general',
     description: '超出简单范围的常规实现、调查、文档、写作、转换、协调，以及范围有限的计划或审核',
-    modelKey: 'generalTaskModel',
-    effortKey: 'generalTaskReasoningEffort',
+    profileKey: 'generalTaskProfile',
   },
   {
     label: '复杂',
     id: 'codex-subagent-complex-role',
     key: 'codex-subagent-complex',
     description: '跨模块实现、未知根因调试、并发、生命周期、性能、复杂因果或高风险修改',
-    modelKey: 'complexTaskModel',
-    effortKey: 'complexTaskReasoningEffort',
+    profileKey: 'complexTaskProfile',
   },
   {
     label: '高难',
@@ -69,11 +63,12 @@ const CODEX_SUBAGENT_ROLES = [
     key: 'codex-subagent-advanced',
     description:
       '系统级或跨领域架构、复杂安全分析、不可逆迁移、高歧义高风险决策，或要求极高完整性的实现、调试、计划和审核',
-    modelKey: 'advancedTaskModel',
-    effortKey: 'advancedTaskReasoningEffort',
+    profileKey: 'advancedTaskProfile',
   },
 ];
-const CONFIGURED_ROLES = [...CODEX_EXPLORE_ROLES, ...CODEX_SUBAGENT_ROLES];
+const CONFIGURED_ROLES = [...CODEX_EXPLORE_ROLES, ...CODEX_SUBAGENT_ROLES].filter(
+  (role) => role.profileKey,
+);
 const SUBAGENT_ROLE_DEVELOPER_INSTRUCTIONS =
   '只完成父代理在初始 message 中委派的任务，遵守其中的目标、范围、约束和成功标准；不得自行扩大任务或处理未委派工作。完成或无法继续时直接返回可整合的结果；适用时附关键证据、验证结果、阻塞原因和未解决项。';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -82,10 +77,6 @@ const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function optionalString(value) {
-  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
 }
 
 export function trimBlock(text) {
@@ -114,7 +105,7 @@ export function trimBlock(text) {
 
 async function readManifestDefaults() {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const schema = isRecord(manifest?.config?.schema) ? manifest.config.schema : {};
+  const schema = isRecord(manifest?.config?.fields) ? manifest.config.fields : {};
 
   return {
     exploreMinimumInitialWaitMinutes:
@@ -124,12 +115,7 @@ async function readManifestDefaults() {
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => [
         role.key,
-        {
-          model: role.modelKey ? optionalString(schema[role.modelKey]?.default) : undefined,
-          reasoningEffort: role.effortKey
-            ? optionalString(schema[role.effortKey]?.default)
-            : undefined,
-        },
+        isRecord(schema[role.profileKey]?.default) ? schema[role.profileKey].default : {},
       ]),
     ),
   };
@@ -164,15 +150,14 @@ function resolveConfigValues(context, defaults) {
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => {
         const roleDefaults = defaults.roles[role.key] ?? {};
+        const profile = isRecord(values[role.profileKey])
+          ? values[role.profileKey]
+          : roleDefaults;
         return [
           role.key,
           {
-            model: role.modelKey
-              ? (optionalString(values[role.modelKey]) ?? roleDefaults.model)
-              : undefined,
-            reasoningEffort: role.effortKey
-              ? (optionalString(values[role.effortKey]) ?? roleDefaults.reasoningEffort)
-              : undefined,
+            model: profile.model,
+            reasoningEffort: profile.reasoningEffort,
           },
         ];
       }),
@@ -206,7 +191,7 @@ function renderRoleArtifact(role, developerInstructions, config) {
     target: 'codex.agentRole',
     state: 'present',
     roleKey: role.key,
-    refreshKeys: [role.modelKey, role.effortKey].filter(Boolean),
+    refreshKeys: role.profileKey ? [role.profileKey] : [],
     content: {
       registration: { description: role.description },
       roleFile: {

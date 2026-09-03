@@ -89,6 +89,7 @@ export type CatalogGitRefPolicy =
 interface CatalogSourceBase {
   id: CatalogSourceId;
   primary: boolean;
+  autoCheck?: boolean;
 }
 
 export interface GitCatalogSource extends CatalogSourceBase {
@@ -186,6 +187,60 @@ export interface CatalogGenerationCandidateComparison {
   changedFields: Array<keyof CatalogGenerationCandidateEvidence>;
 }
 
+export type CatalogActivationMode =
+  | 'normal'
+  | 'explicitSourceChange'
+  | 'exactRepair'
+  | 'replaceDamaged';
+
+export type CatalogSourceImpactCategory =
+  | 'installation'
+  | 'config'
+  | 'lifecycle'
+  | 'marketplace';
+
+export interface CatalogSourceImpactReference {
+  category: CatalogSourceImpactCategory;
+  sourceId: string;
+  pluginId?: string;
+  platform?: PlatformName;
+  scope?: Scope;
+  projectRecord?: 'current' | 'historical' | 'unknown';
+  marketplaceName?: string;
+}
+
+export interface CatalogSourcePluginChanges {
+  added: string[];
+  removed: string[];
+  changed: string[];
+  newlyIncompatible: string[];
+  dependencyChanged: string[];
+}
+
+export interface CatalogSourceImpactError {
+  code: 'stateInventoryFailed' | 'catalogManifestUnavailable';
+  kind: string;
+  relevance?:
+    | { global: true }
+    | {
+        global: false;
+        sourceId?: string;
+        pluginName?: string;
+        platform?: PlatformName;
+        scope?: Scope;
+      };
+}
+
+export interface CatalogSourceImpact {
+  impactSchemaVersion: 1;
+  sourceId: string;
+  inventoryComplete: boolean;
+  references: CatalogSourceImpactReference[];
+  affectedReferences: CatalogSourceImpactReference[];
+  changes: CatalogSourcePluginChanges;
+  errors: CatalogSourceImpactError[];
+}
+
 export interface CatalogGenerationSyncResult {
   catalogGenerationSchemaVersion: 1;
   sourceId: CatalogSourceId;
@@ -195,6 +250,7 @@ export interface CatalogGenerationSyncResult {
   resolution: CatalogGenerationSyncEvidence;
   active?: CatalogGenerationActiveV1;
   lastSync: CatalogGenerationLastSyncV1;
+  impact?: CatalogSourceImpact;
 }
 
 export interface CatalogGenerationSetSource {
@@ -269,9 +325,14 @@ export interface ConfigFieldEntry {
   writable: boolean;
   valueState: ConfigValueState;
   effectiveValue: unknown | null;
-  sourceLayer: 'default' | 'user' | 'project' | 'local' | null;
+  sourceLayer: 'default' | 'user' | 'project' | null;
   storedValue?: unknown;
-  storedSourceLayer?: 'user' | 'project' | 'local';
+  storedSourceLayer?: 'user' | 'project';
+  value: unknown | null;
+  source: 'default' | 'user' | 'project' | 'missing';
+  matchedPreset: string | null;
+  valid: boolean;
+  issues: unknown[];
 }
 
 export interface ConfigReceiptFieldEntry {
@@ -281,7 +342,6 @@ export interface ConfigReceiptFieldEntry {
   reserved: boolean;
   action: 'set' | 'unset' | 'reset';
   scope: Scope;
-  projectLayer?: 'shared' | 'local';
   valueState?: ConfigValueState;
 }
 

@@ -17,12 +17,17 @@ function resolveVitestEntry(cwd) {
 
 export async function runVitest(args = process.argv.slice(2)) {
   const controller = new AbortController();
+  const forceController = new AbortController();
   let receivedSignal;
   const signalHandlers = new Map();
   for (const signal of SIGNAL_EXIT_CODES.keys()) {
     const handler = () => {
-      receivedSignal ??= signal;
-      controller.abort(new Error(`Vitest wrapper received ${signal}.`));
+      if (!receivedSignal) {
+        receivedSignal = signal;
+        controller.abort(new Error(`Vitest wrapper received ${signal}.`));
+        return;
+      }
+      forceController.abort(new Error(`Vitest wrapper received repeated ${signal}.`));
     };
     signalHandlers.set(signal, handler);
     process.on(signal, handler);
@@ -39,6 +44,7 @@ export async function runVitest(args = process.argv.slice(2)) {
         [TEST_RUNNER_PROCESS_TREE_ENV]: '1',
       },
       signal: controller.signal,
+      forceSignal: forceController.signal,
       timeoutMs: null,
       allowNonZeroExitCode: true,
       captureOutput: false,
@@ -50,7 +56,7 @@ export async function runVitest(args = process.argv.slice(2)) {
     }
     return result.exitCode ?? 1;
   } catch (error) {
-    if (receivedSignal) {
+    if (receivedSignal && error === controller.signal.reason) {
       return SIGNAL_EXIT_CODES.get(receivedSignal);
     }
     throw error;

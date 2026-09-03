@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import * as nodeFs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -28,6 +29,14 @@ import {
   withConfigFileMutation,
 } from './plugin-config.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
+import {
+  withAwHomeMutationLock,
+  type AwHomeMutationToken,
+} from './aw-home-mutation-lock.js';
+import {
+  assertRealFileParentWithinRoot,
+  assertSafeFileMutationPath,
+} from './safe-fs.js';
 import { resolveAwHome } from './state-paths.js';
 
 export const CATALOG_SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -44,16 +53,33 @@ export type CatalogSourceUpdate =
       url?: string;
       refPolicy?: CatalogGitRefPolicy;
       subdir?: string | null;
+      autoCheck?: boolean;
     }
   | {
       type?: 'path';
       path?: string;
+      autoCheck?: boolean;
     };
 
 export interface CatalogSourcesConfigSnapshot {
   config: CatalogSourcesConfig;
   digest: string;
   materialized: boolean;
+}
+
+export interface CatalogSourcesConfigRecoveryResult {
+  snapshot: CatalogSourcesConfigSnapshot;
+  backupPath: string;
+}
+
+let catalogSourcesBackupBeforeOpenHookForTests:
+  | ((backupPath: string) => Promise<void>)
+  | undefined;
+
+export function setCatalogSourcesBackupBeforeOpenHookForTests(
+  hook: ((backupPath: string) => Promise<void>) | undefined,
+): void {
+  catalogSourcesBackupBeforeOpenHookForTests = hook;
 }
 
 export class CatalogSourcesConfigConflictError extends Error {
@@ -111,6 +137,18 @@ function normalizeSubdir(value: unknown, fieldName: string): string | undefined 
   return normalized.replace(/^\.\//, '').replace(/\/$/, '');
 }
 
+function normalizeAutoCheck(value: unknown, fieldName: string): false | undefined {
+  if (value === undefined || value === true) return undefined;
+  if (value !== false) {
+    throw new Error(`Invalid ${fieldName}: expected a boolean.`);
+  }
+  return false;
+}
+
+export function isCatalogSourceAutoCheckEnabled(source: CatalogSource): boolean {
+  return source.autoCheck !== false;
+}
+
 function normalizeRefPolicy(value: unknown, fieldName: string): CatalogGitRefPolicy {
   const input = assertObject(value, fieldName);
   if (input.type === 'cliChannel') {
@@ -135,11 +173,12 @@ function normalizeRefPolicy(value: unknown, fieldName: string): CatalogGitRefPol
 function normalizeSource(value: unknown, fieldName: string): CatalogSource {
   const input = assertObject(value, fieldName);
   const id = normalizeSourceId(input.id, `${fieldName}.id`);
+  const autoCheck = normalizeAutoCheck(input.autoCheck, `${fieldName}.autoCheck`);
   if (typeof input.primary !== 'boolean') {
     throw new Error(`Invalid ${fieldName}.primary: expected a boolean.`);
   }
   if (input.type === 'git') {
-    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'url', 'refPolicy', 'subdir']);
+    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'autoCheck', 'url', 'refPolicy', 'subdir']);
     const subdir = normalizeSubdir(input.subdir, `${fieldName}.subdir`);
     if (typeof input.url !== 'string') {
       throw new Error(`Invalid ${fieldName}.url: expected a Git URL.`);
@@ -149,13 +188,14 @@ function normalizeSource(value: unknown, fieldName: string): CatalogSource {
       id,
       type: 'git',
       primary: input.primary,
+      ...(autoCheck === false ? { autoCheck } : {}),
       url: input.url,
       refPolicy: normalizeRefPolicy(input.refPolicy, `${fieldName}.refPolicy`),
       ...(subdir ? { subdir } : {}),
     };
   }
   if (input.type === 'path') {
-    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'path', 'managedBy']);
+    assertAllowedKeys(input, fieldName, ['id', 'type', 'primary', 'autoCheck', 'path', 'managedBy']);
     if (
       typeof input.path !== 'string'
       || input.path.trim() === ''
@@ -183,6 +223,7 @@ function normalizeSource(value: unknown, fieldName: string): CatalogSource {
       id,
       type: 'path',
       primary: input.primary,
+      ...(autoCheck === false ? { autoCheck } : {}),
       path: input.path,
       ...(managedBy ? { managedBy } : {}),
     };
@@ -205,7 +246,11 @@ export function createDefaultCatalogSourcesConfig(): CatalogSourcesConfig {
 
 export function isDefaultOfficialCatalogSource(source: CatalogSource): boolean {
   const official = createDefaultCatalogSourcesConfig().sources[0]!;
-  return isDeepStrictEqual({ ...source, primary: official.primary }, official);
+  const normalized = normalizeSource(
+    { ...source, primary: official.primary },
+    'catalog source',
+  );
+  return isDeepStrictEqual(normalized, official);
 }
 
 export function validateCatalogSourcesConfig(rawConfig: unknown): CatalogSourcesConfig {
@@ -281,22 +326,25 @@ export async function updateCatalogSource(
     updateInput,
     'catalog source update',
     existing.type === 'git'
-      ? ['type', 'url', 'refPolicy', 'subdir']
-      : ['type', 'path'],
+      ? ['type', 'url', 'refPolicy', 'subdir', 'autoCheck']
+      : ['type', 'path', 'autoCheck'],
   );
   const subdirUpdate = 'subdir' in update ? update.subdir : undefined;
   const subdir = existing.type === 'git'
     ? subdirUpdate === null ? undefined : subdirUpdate ?? existing.subdir
     : undefined;
   const updatedPath = existing.type === 'path'
-    ? await canonicalizeCatalogPath(
-        'path' in update && update.path !== undefined ? update.path : existing.path,
-        cwd,
-      )
+    && 'path' in update
+    && update.path !== undefined
+    ? await canonicalizeCatalogPath(update.path, cwd)
     : undefined;
+  const autoCheck = update.autoCheck === undefined
+    ? existing.autoCheck
+    : normalizeAutoCheck(update.autoCheck, 'catalog source update.autoCheck');
   const candidate = existing.type === 'git'
     ? {
         ...existing,
+        ...(autoCheck === false ? { autoCheck } : {}),
         ...('url' in update && update.url !== undefined ? { url: update.url } : {}),
         ...('refPolicy' in update && update.refPolicy !== undefined
           ? { refPolicy: update.refPolicy }
@@ -305,8 +353,10 @@ export async function updateCatalogSource(
       }
     : {
         ...existing,
+        ...(autoCheck === false ? { autoCheck } : {}),
         ...(updatedPath ? { path: updatedPath } : {}),
       };
+  if (autoCheck === undefined) delete candidate.autoCheck;
   if (candidate.type === 'git' && !subdir) delete candidate.subdir;
   return validateCatalogSourcesConfig({
     schemaVersion: 2,
@@ -434,4 +484,104 @@ export async function replaceCatalogSourcesConfig(options: {
     },
   });
   return { config, digest, materialized: true };
+}
+
+function catalogSourcesRecoveryStale(): CatalogGenerationError {
+  return new CatalogGenerationError({
+    code: 'catalogSourcesConfigRecoveryStale',
+    message: 'Catalog sources config recovery is stale because the config is missing or valid.',
+  });
+}
+
+function catalogSourcesRecoveryFailed(cause: unknown): CatalogGenerationError {
+  return new CatalogGenerationError({
+    code: 'catalogSourcesConfigRecoveryFailed',
+    message: 'Catalog sources config recovery failed. The invalid config was not replaced.',
+    cause,
+  });
+}
+
+function createBrokenCatalogSourcesBackupName(): string {
+  const utc = new Date().toISOString().replace(/[-:.]/gu, '');
+  return `${CATALOG_SOURCES_FILE}.broken-${utc}-${crypto.randomUUID()}`;
+}
+
+export async function recoverInvalidCatalogSourcesConfig(options: {
+  env?: NodeJS.ProcessEnv;
+  awHomeMutationToken?: AwHomeMutationToken;
+} = {}): Promise<CatalogSourcesConfigRecoveryResult> {
+  const env = options.env ?? process.env;
+  return withAwHomeMutationLock({
+    env,
+    token: options.awHomeMutationToken,
+    action: async () => {
+      const awHome = resolveAwHome(env);
+      const filePath = resolveCatalogSourcesConfigPath(env);
+      try {
+        return await withConfigFileMutation({
+          filePath,
+          allowedRoot: awHome,
+          action: async () => {
+            let target: Awaited<ReturnType<typeof nodeFs.lstat>>;
+            try {
+              target = await nodeFs.lstat(filePath);
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+                throw catalogSourcesRecoveryStale();
+              }
+              throw error;
+            }
+            if (target.isSymbolicLink() || !target.isFile()) {
+              throw new Error('Catalog sources config recovery target must be a regular file.');
+            }
+            const originalBytes = await nodeFs.readFile(filePath);
+            try {
+              validateCatalogSourcesConfig(JSON.parse(originalBytes.toString('utf8')));
+              throw catalogSourcesRecoveryStale();
+            } catch (error) {
+              if (error instanceof CatalogGenerationError) throw error;
+            }
+
+            const backupName = createBrokenCatalogSourcesBackupName();
+            const backupPath = path.join(awHome, backupName);
+            await assertSafeFileMutationPath({
+              filePath: backupPath,
+              allowedRoot: awHome,
+              label: 'Catalog sources config backup',
+            });
+            await assertRealFileParentWithinRoot({
+              filePath: backupPath,
+              allowedRoot: awHome,
+              label: 'Catalog sources config backup',
+            });
+            await catalogSourcesBackupBeforeOpenHookForTests?.(backupPath);
+            const backupHandle = await nodeFs.open(backupPath, 'wx', 0o600);
+            try {
+              await backupHandle.writeFile(originalBytes);
+            } finally {
+              await backupHandle.close();
+            }
+
+            const config = createDefaultCatalogSourcesConfig();
+            await atomicReplaceConfigFile({
+              filePath,
+              allowedRoot: awHome,
+              content: `${JSON.stringify(config, null, 2)}\n`,
+            });
+            return {
+              snapshot: {
+                config,
+                digest: calculateCatalogSourcesConfigDigest(config),
+                materialized: true,
+              },
+              backupPath: backupName,
+            };
+          },
+        });
+      } catch (error) {
+        if (error instanceof CatalogGenerationError) throw error;
+        throw catalogSourcesRecoveryFailed(error);
+      }
+    },
+  });
 }

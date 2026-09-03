@@ -15,6 +15,7 @@ import {
   type ConsoleV4ScreenId,
 } from '../../src/tui/console-app-v4.js';
 import {
+  TuiConfigInvalidStoreError,
   TuiController,
   userIssueKey,
   type OperationEvidence,
@@ -23,6 +24,7 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
+import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 
 afterEach(() => cleanup());
 
@@ -606,6 +608,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       key,
       title: key,
       type,
+      definition: { type },
       displayValue: '未设置',
       required: false,
       sensitive: false,
@@ -615,6 +618,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       sourceLabel: '未设置',
       effectiveDisplayValue: '未设置',
       effectiveSourceLabel: '未设置',
+      allowCustom: true,
       advanced: false,
       ...extra,
     };
@@ -624,7 +628,7 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       effectiveSourceLabel: extra.effectiveSourceLabel ?? (value.configured ? '个人默认' : '未设置'),
       ...(extra.effectiveValue !== undefined
         ? { effectiveValue: extra.effectiveValue }
-        : value.value !== undefined && !value.sensitive && value.type !== 'file' && value.type !== 'directory'
+        : value.value !== undefined && !value.sensitive
           ? { effectiveValue: value.value }
           : {}),
     };
@@ -645,13 +649,13 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
         title: '基本设置',
         advanced: false,
         fields: [
-          field('level', 'enum', { enumValues: ['fast', 'balanced', 'strict'], valueLabels: { fast: '快速', balanced: '平衡', strict: '严格' }, recommendedValue: 'balanced', value: 'strict', displayValue: '严格', configured: true, inherited: false }),
-          field('enabled', 'boolean', { value: true, displayValue: '开启', configured: true, inherited: false }),
-          field('timeout', 'number', { min: 1, max: 60, unit: '分钟', value: 15, displayValue: '15', configured: true, inherited: false }),
+          field('level', 'string', { definition: { type: 'string', choices: { allowCustom: false, presets: [{ id: 'fast', title: '快速', value: 'fast' }, { id: 'balanced', title: '平衡', value: 'balanced', recommended: true }, { id: 'strict', title: '严格', value: 'strict' }] } }, choices: [{ id: 'fast', title: '快速', value: 'fast' }, { id: 'balanced', title: '平衡', value: 'balanced', recommended: true }, { id: 'strict', title: '严格', value: 'strict' }], allowCustom: false, value: 'strict', draftValue: 'strict', displayValue: '严格', configured: true, inherited: false }),
+          field('enabled', 'boolean', { definition: { type: 'boolean' }, value: true, draftValue: true, displayValue: '开启', configured: true, inherited: false }),
+          field('timeout', 'number', { definition: { type: 'number', validation: { minimum: 1, maximum: 60 } }, min: 1, max: 60, unit: '分钟', value: 15, draftValue: 15, displayValue: '15', configured: true, inherited: false }),
           field('note', 'string', { placeholder: '输入说明' }),
-          field('rules', 'file', { configured: true, inherited: false, displayValue: '已设置' }),
-          field('workspace', 'directory'),
-          field('token', 'string', { sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
+          field('rules', 'string', { sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
+          field('workspace', 'string'),
+          field('token', 'string', { definition: { type: 'string', sensitive: true }, sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
         ],
       },
       {
@@ -663,6 +667,100 @@ function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
       },
     ],
   };
+}
+
+function objectConfigPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+  const effective = {
+    owner: 'Alice',
+    region: 'west',
+    token: 'SECRET-BYTES',
+    legacy: 'old',
+  };
+  return {
+    pluginId,
+    layer: { scope: 'user' },
+    storedCount: 0,
+    presets: [],
+    groups: [{
+      id: 'general',
+      title: '插件设置',
+      advanced: false,
+      fields: [{
+        key: 'settings',
+        title: '服务设置',
+        type: 'object',
+        definition: {
+          type: 'object',
+          choices: {
+            allowCustom: true,
+            presets: [{
+              id: 'service',
+              title: '服务方案',
+              value: { owner: 'Service', region: 'west', token: 'preset-secret' },
+              recommended: true,
+            }],
+          },
+          properties: {
+            owner: { type: 'string', title: '负责人', required: true, validation: { format: 'identifier' } },
+            region: {
+              type: 'string',
+              title: '区域',
+              required: true,
+              choices: {
+                allowCustom: false,
+                presets: [{ id: 'west', title: '西区', value: 'west' }, { id: 'east', title: '东区', value: 'east' }],
+              },
+            },
+            token: { type: 'string', title: '令牌', sensitive: true },
+          },
+          additionalProperties: { type: 'string', validation: { minLength: 2 } },
+          validation: { minProperties: 2, maxProperties: 6, key: { format: 'identifier' } },
+        },
+        choices: [{
+          id: 'service',
+          title: '服务方案',
+          value: { owner: 'Service', region: 'west', token: 'preset-secret' },
+          recommended: true,
+        }],
+        allowCustom: true,
+        displayValue: '继承',
+        required: true,
+        sensitive: false,
+        dirty: false,
+        inherited: true,
+        configured: false,
+        sourceLabel: '继承',
+        effectiveDisplayValue: '自定义 · 4 项（legacy、owner…）',
+        effectiveSourceLabel: '当前项目',
+        effectiveValue: effective,
+        draftValue: effective,
+        advanced: false,
+      }],
+    }],
+  };
+}
+
+function configuredObjectPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+  const page = objectConfigPage(pluginId);
+  const field = page.groups[0]!.fields[0]!;
+  const current = {
+    owner: 'Alice',
+    region: 'west',
+    token: 'CURRENT-SECRET',
+  };
+  page.storedCount = 1;
+  field.configured = true;
+  field.inherited = false;
+  field.displayValue = '自定义 · 3 项（owner、region…）';
+  field.value = current;
+  field.draftValue = current;
+  field.fallbackDisplayValue = '方案“服务方案” · 3 项（owner、region…）';
+  field.fallbackSourceLabel = '当前项目';
+  field.fallbackObjectChanges = [
+    { property: 'owner', before: 'Alice', after: 'Service' },
+    { property: 'token', before: '已设置', after: '已设置', private: true },
+  ];
+  return page;
 }
 
 async function nextTurn(count = 1): Promise<void> {
@@ -2598,7 +2696,7 @@ describe('ConsoleAppV4', () => {
     const productFrame = instance.lastFrame() ?? '';
     expect(productFrame).toContain('当前无法取得可信的字段定义');
     expect(productFrame).toContain('已保存的设置保持不变');
-    expect(productFrame).toContain('获取或修复来源');
+    expect(productFrame).toContain('在终端运行 aw catalog source sync team-tools');
     expect(productFrame).not.toContain('configReadFailed');
     expect(productFrame).not.toContain('config-secret');
     await input(instance, '\u001B[B');
@@ -3142,26 +3240,9 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'source-10' });
   });
 
-  it('masks absolute config and source paths in input frames while preserving editing', async () => {
-    const value = controller({ getConfigPage: vi.fn().mockResolvedValue(configPage()) });
+  it('masks absolute source paths in input frames while preserving editing', async () => {
+    const value = controller();
     await value.load();
-    value.push({
-      name: 'configFieldEditor',
-      pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
-      fieldKey: 'rules',
-      editor: 'path',
-    });
-    const config = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
-    await nextTurn(3);
-    const privateConfigPath = '/Users/alice/private/team/rules.json';
-    await input(config, ...privateConfigPath.split(''));
-    expect(config.lastFrame()).toContain('已选择 / … / rules.json');
-    expect(config.lastFrame()).not.toContain('/Users/alice/private');
-    await input(config, '\u007f');
-    expect(config.lastFrame()).toContain('rules.jso');
-    config.unmount();
-
     value.push({ name: 'sourceList' });
     const source = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
@@ -3251,7 +3332,6 @@ describe('ConsoleAppV4', () => {
     expect(chooserFrame).toContain('修改“level”');
     expect(chooserFrame).toContain('个人默认');
     expect(chooserFrame).toContain('当前项目');
-    expect(chooserFrame).toContain('当前项目（仅本机）');
     expect(chooserFrame).not.toContain('有效设置');
     const layerRoute = value.snapshot.router.current.route;
     await input(instance, '\t');
@@ -3274,7 +3354,7 @@ describe('ConsoleAppV4', () => {
     });
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
     expect(instance.lastFrame()).toContain('› level');
@@ -3295,10 +3375,265 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'configFields',
       pluginId: 'official/review-gate',
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     expect(instance.lastFrame()).toContain('当前插件设置');
     expect(instance.lastFrame()).not.toContain('保存修改');
+  });
+
+  it('uses preset-first scalar choices and retains invalid Core-validated input', async () => {
+    const page = configPage();
+    const getConfigPage = vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer }));
+    const closed = controller({ getConfigPage });
+    closed.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    closed.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'level',
+      editor: 'string',
+      mode: 'choices',
+    });
+    const closedInstance = render(<ConsoleAppV4 controller={closed} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(closedInstance.lastFrame()).toContain('快速');
+    expect(closedInstance.lastFrame()).toContain('平衡（推荐）');
+    expect(closedInstance.lastFrame()).not.toContain('自定义');
+
+    closedInstance.unmount();
+    const invalidPage = configPage();
+    const note = invalidPage.groups[0]!.fields.find((field) => field.key === 'note')!;
+    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$' } };
+    const invalid = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...invalidPage, pluginId, layer })),
+    });
+    invalid.push({ name: 'configFields', pluginId: invalidPage.pluginId, layer: { scope: 'user' } });
+    invalid.push({
+      name: 'configFieldEditor',
+      pluginId: invalidPage.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'note',
+      editor: 'string',
+      mode: 'custom',
+    });
+    const invalidInstance = render(<ConsoleAppV4 controller={invalid} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(invalidInstance, 'bad', '\r');
+    expect(invalid.snapshot.router.current.route.name).toBe('configFieldEditor');
+    expect(invalidInstance.lastFrame()).toContain('pattern');
+    expect(invalidInstance.lastFrame()).toContain('bad');
+  });
+
+  it('edits a mixed fixed and dynamic object from the effective seed and reviews one full top-level update', async () => {
+    const page = objectConfigPage();
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('服务方案（推荐）');
+    expect(instance.lastFrame()).toContain('自定义');
+
+    await input(instance, '\u001B[B', '\r');
+    const seededFrame = instance.lastFrame() ?? '';
+    expect(seededFrame).toContain('草稿来自当前完整有效对象');
+    expect(seededFrame).toContain('legacy');
+    expect(seededFrame).toContain('令牌');
+    expect(seededFrame).not.toContain('SECRET-BYTES');
+
+    await input(instance, '\r', '\r', ...Array.from({ length: 5 }, () => '\u007F'), 'bad-name', '\r');
+    expect(instance.lastFrame()).toContain('format');
+    expect(instance.lastFrame()).toContain('bad-name');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configObjectPropertyEditor', propertyKey: 'owner', stage: 'custom',
+    });
+    await input(instance, ...Array.from({ length: 8 }, () => '\u007F'), 'Bob', '\r');
+
+    await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'), '\r', '\u001B[B', '\r');
+    expect(instance.lastFrame()).not.toContain('legacy');
+    await input(instance, '\r', 'new_key', '\r', 'ready', '\r');
+    expect(instance.lastFrame()).toContain('new_key');
+    expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
+
+    await input(instance, ...Array.from({ length: 2 }, () => '\u001B[B'), '\r', 's');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 服务设置',
+        description: expect.stringContaining('owner: Alice → Bob'),
+      }),
+    ]));
+    expect(instance.lastFrame()).toContain('设置变更');
+    expect(instance.lastFrame()).toContain('3 个子');
+    expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: {
+        settings: {
+          owner: 'Bob',
+          region: 'west',
+          token: 'SECRET-BYTES',
+          new_key: 'ready',
+        },
+      },
+    }), evidence);
+  });
+
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('keeps one object focus and its add/save actions visible at $columns x $rows', async (size) => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'custom',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(4);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('添加键值');
+    expect(frame).toContain('使用此完整对象');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+  });
+
+  it('stores the actual complete object value selected by an object preset', async () => {
+    const page = objectConfigPage();
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [],
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      executeIntent,
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      editor: 'object',
+      mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+    await input(instance, '\r', 's');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('3 个子项变化');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(instance.lastFrame()).toContain('方案“服务方案”');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      updates: {
+        settings: { owner: 'Service', region: 'west', token: 'preset-secret' },
+      },
+    }), evidence);
+  });
+
+  it('uses a closed child choice without a custom route', async () => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configObjectPropertyEditor',
+      pluginId: page.pluginId,
+      layer: { scope: 'user' },
+      fieldKey: 'settings',
+      propertyKey: 'region',
+      dynamic: false,
+      stage: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('西区');
+    expect(frame).toContain('东区');
+    expect(frame).not.toContain('自定义');
+    expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('reviews object unset with inherited preset and redacted child changes', async () => {
+    const page = configuredObjectPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, 'u', 's');
+    await nextTurn(4);
+
+    expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 删除 服务设置 中的值',
+        description: expect.stringContaining('方案“服务方案”'),
+      }),
+    ]));
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
+  });
+
+  it('reviews a valid layer reset with inherited object preset and redacted child changes', async () => {
+    const page = configuredObjectPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(4);
+
+    expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: '个人默认 · 服务设置',
+        description: expect.stringContaining('方案“服务方案”'),
+      }),
+    ]));
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
+    expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('CURRENT-SECRET');
+    expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
+    expect(instance.lastFrame()).not.toContain('CURRENT-SECRET');
+    expect(instance.lastFrame()).not.toContain('preset-secret');
   });
 
   it('returns editor completion or cancellation to the original mutable field and then restores the config origin', async () => {
@@ -3323,14 +3658,14 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
 
     await input(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields',
-      layer: { scope: 'effective', projectLayer: 'shared' },
+      layer: { scope: 'effective' },
     });
     expect(value.snapshot.router.current.context.focusIndex).toBe(0);
     await input(instance, 'b');
@@ -3474,7 +3809,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
 
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     expect(value.snapshot.router.current.context).toMatchObject({ configGroupId: 'basic', focusIndex: 0 });
     expect(instance.lastFrame()).toContain('2 项未保存');
@@ -3522,7 +3857,7 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\u001B[C', '\u001B[C', '\r', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', layer: { scope: 'user', projectLayer: 'shared' },
+      name: 'configFields', layer: { scope: 'user' },
     });
     await input(instance, 'b');
     await nextTurn(2);
@@ -3590,32 +3925,26 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(partialScreens).toContain('C15');
     expect(partialInstance.lastFrame()).toContain('部分应用失败');
+    expect(partialInstance.lastFrame()).toContain('unset / reset');
+    expect(partialInstance.lastFrame()).toContain('cleanup');
+    expect(partialInstance.lastFrame()).toContain('reinstall 或 sync');
     await input(partialInstance, '\u001B[B', '\r');
-    expect(partial.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ title: 'Claude Code · 所有项目' }),
-    ]));
-    await input(
-      partialInstance,
-      '\u001B[B',
-      '\r',
-    );
-    expect(partial.snapshot.router.current.route).toEqual({
-      name: 'configFields', pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+    expect(partial.snapshot.router.current.route).toMatchObject({
+      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user' },
     });
     expect(partial.snapshot.result).toBeUndefined();
     expect(partial.snapshot.router.depth).toBe(2);
 
     const resetScreens = new Set<ConsoleV4ScreenId>();
     const reset = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
-    reset.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project', projectLayer: 'local' } });
+    reset.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project' } });
     const resetInstance = render(<ConsoleAppV4 controller={reset} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => resetScreens.add(screen)} />);
     await nextTurn(4);
     await input(resetInstance, ...Array.from({ length: 7 }, () => '\u001B[B'), '\r');
     await nextTurn(3);
     expect(resetScreens).toContain('C16');
-    expect(resetInstance.lastFrame()).toContain('当前项目（仅本机）');
-    expect(resetInstance.lastFrame()).toContain('其他设置层保持不变');
+    expect(resetInstance.lastFrame()).toContain('当前项目');
+    expect(resetInstance.lastFrame()).toContain('个人默认保持不变');
 
     const unavailableScreens = new Set<ConsoleV4ScreenId>();
     const unavailable = controller({
@@ -3626,7 +3955,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(5);
     expect(unavailableScreens).toContain('C17');
     expect(unavailableInstance.lastFrame()).toContain('Manifest 或来源不可用');
-    expect(unavailableInstance.lastFrame()).toContain('获取或修复来源');
+    expect(unavailableInstance.lastFrame()).toContain('在终端运行 aw catalog source sync team-tools');
     expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
     expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
     await input(unavailableInstance, '\r');
@@ -3667,12 +3996,17 @@ describe('ConsoleAppV4', () => {
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
-  it('keeps C17 read-only for a verified stored layer and keeps its details private', async () => {
+  it.each([
+    { columns: 80, rows: 24 },
+    { columns: 60, rows: 18 },
+  ])('offers invalid-layer reset through Review and keeps its details private at $columns x $rows', async (size) => {
     const sourceIdentity = `sha256:${'a'.repeat(64)}`;
     const storeDigest = `sha256:${'b'.repeat(64)}`;
     const value = controller({
       getConfigResetAvailability: vi.fn().mockResolvedValue({
         exists: true,
+        state: 'invalid',
+        invalidCode: 'invalidJson',
         sourceIdentityPresent: true,
         sourceIdentity,
         storeDigest,
@@ -3680,28 +4014,147 @@ describe('ConsoleAppV4', () => {
       captureEvidence: vi.fn().mockResolvedValue({
         ...evidence,
         source: { sourceId: 'team-tools', sourceIdentity },
-        config: { scope: 'user', projectLayer: 'shared', storeDigest },
+        config: { scope: 'user', storeDigest, affectedTargets: [] },
       }),
     });
     await value.load();
     value.push({
       name: 'configUnavailable',
       pluginId: 'team-tools/review-gate',
-      layer: { scope: 'user', projectLayer: 'shared' },
+      layer: { scope: 'user' },
+      invalidStores: [{
+        scope: 'user',
+        code: 'invalidJson',
+        pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json',
+      }],
+      diagnosticCode: 'invalidJson',
+      diagnosticStage: 'read-config',
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
-    expect(instance.lastFrame()).not.toContain('重置此设置层');
-    expect(instance.lastFrame()).toContain('技术详情');
+    expect(instance.lastFrame()).toContain('重置个人默认设置层');
+    expect(instance.lastFrame()).toContain('查看安全路径摘要');
     expect(instance.lastFrame()).not.toContain(sourceIdentity);
     expect(instance.lastFrame()).not.toContain(storeDigest);
     expect(instance.lastFrame()).not.toContain('/Users/private');
     await input(instance, 'd');
     const technicalFrame = instance.lastFrame() ?? '';
-    expect(technicalFrame).toContain('configUnavailable');
+    expect(technicalFrame).toContain('invalidJson');
     expect(technicalFrame).toContain('read-config');
     expect(technicalFrame).not.toContain(sourceIdentity);
     expect(technicalFrame).not.toContain(storeDigest);
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(value.snapshot.activeReview?.operationKind).toBe('configReset');
+    expect(instance.lastFrame()).toContain('重置插件设置');
+  });
+
+  it.each([
+    { invalidScope: 'user' as const, readyScope: 'project' as const },
+    { invalidScope: 'project' as const, readyScope: 'user' as const },
+  ])('binds an effective-entry invalid store to $invalidScope without offering $readyScope reset', async ({
+    invalidScope,
+    readyScope,
+  }) => {
+    const invalidStores = [{
+      scope: invalidScope,
+      code: 'invalidJson' as const,
+      pathSummary: invalidScope === 'user'
+        ? 'AW_HOME/plugin-config/team-tools/review-gate/config.json'
+        : '<project>/.agent-workflows/plugin-config/team-tools/review-gate/config.json',
+    }];
+    const getConfigResetAvailability = vi.fn(async (_pluginId, layer: { scope: 'user' | 'project' }) => ({
+      exists: true,
+      state: layer.scope === invalidScope ? 'invalid' as const : 'ready' as const,
+      ...(layer.scope === invalidScope ? { invalidCode: 'invalidJson' as const } : {}),
+      sourceIdentityPresent: true,
+      sourceIdentity: `identity:${layer.scope}`,
+      storeDigest: `digest:${layer.scope}`,
+    }));
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      getConfigPage: vi.fn().mockRejectedValue(new TuiConfigInvalidStoreError(invalidStores)),
+      getConfigResetAvailability,
+      captureEvidence,
+    });
+    value.push({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'effective' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(6);
+
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configUnavailable',
+      layer: { scope: invalidScope },
+      invalidStores,
+    });
+    expect(instance.lastFrame()).toContain(
+      `重置${invalidScope === 'user' ? '个人默认' : '当前项目'}设置层`,
+    );
+    expect(instance.lastFrame()).not.toContain(
+      `重置${readyScope === 'user' ? '个人默认' : '当前项目'}设置层`,
+    );
+    expect(getConfigResetAvailability).toHaveBeenCalledTimes(1);
+    expect(getConfigResetAvailability.mock.calls[0]?.[1]).toEqual({ scope: invalidScope });
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(captureEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'configReset', scope: invalidScope }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('lists two invalid stores in user-project order and can review either exact reset', async () => {
+    const invalidStores = [
+      {
+        scope: 'user' as const,
+        code: 'invalidJson' as const,
+        pathSummary: 'AW_HOME/plugin-config/team-tools/review-gate/config.json',
+      },
+      {
+        scope: 'project' as const,
+        code: 'invalidValues' as const,
+        pathSummary: '<project>/.agent-workflows/plugin-config/team-tools/review-gate/config.json',
+      },
+    ];
+    const openReset = async (scope: 'user' | 'project') => {
+      const captureEvidence = vi.fn().mockResolvedValue(evidence);
+      const value = controller({
+        getConfigPage: vi.fn().mockRejectedValue(new TuiConfigInvalidStoreError(invalidStores)),
+        getConfigResetAvailability: vi.fn(async (_pluginId, layer: { scope: 'user' | 'project' }) => ({
+          exists: true,
+          state: 'invalid' as const,
+          invalidCode: layer.scope === 'user' ? 'invalidJson' as const : 'invalidValues' as const,
+          sourceIdentityPresent: true,
+          sourceIdentity: `identity:${layer.scope}`,
+          storeDigest: `digest:${layer.scope}`,
+        })),
+        captureEvidence,
+      });
+      value.push({
+        name: 'configFields',
+        pluginId: 'team-tools/review-gate',
+        layer: { scope: 'effective' },
+      });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await nextTurn(6);
+      const frame = instance.lastFrame() ?? '';
+      expect(frame.indexOf('重置个人默认设置层')).toBeLessThan(frame.indexOf('重置当前项目设置层'));
+      if (scope === 'project') await input(instance, '\u001B[B');
+      await input(instance, '\r');
+      await nextTurn(4);
+      expect(captureEvidence).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'configReset', scope }),
+        expect.any(AbortSignal),
+      );
+      instance.unmount();
+    };
+
+    await openReset('user');
+    await openReset('project');
   });
 
   it('does not let an aborted config layer response overwrite the newer layer page', async () => {
@@ -3988,8 +4441,8 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(3);
-    expect(instance.lastFrame()).toContain('~ 变更 1');
-    expect(instance.lastFrame()).not.toContain('› ~ 变更 1');
+    expect(instance.lastFrame()).toContain('~ 个人默认 · 变更 1');
+    expect(instance.lastFrame()).not.toContain('› ~ 个人默认 · 变更 1');
     expect(instance.lastFrame()).toMatch(/另有 \d+ 项/u);
     expect(instance.lastFrame()).toContain('› 保存并应用');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
@@ -4183,6 +4636,96 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('token:secret');
   });
 
+  it('shows structured candidate capability diagnostics while preserving the old Active', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const value = controller({
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('Active Catalog 2.4.0 仍可浏览和使用');
+    expect(detail).not.toContain('更新到候选版本');
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 重新检查');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 完整验证');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
+  });
+
+  it('shows no-Active capability diagnostics without offering an activation action', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.map((source) => {
+      if (source.id !== 'team-tools') return source;
+      const { resolvedCommit: _resolvedCommit, catalogVersion: _catalogVersion,
+        channel: _channel, freshness: _freshness, ...rest } = source;
+      return { ...rest, error: 'unavailable', errorCode: 'catalogSourceUnavailable' };
+    });
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools' ? {
+        sourceId: 'team-tools', sourceType: 'git' as const,
+        state: 'activationRequired' as const,
+        errorCode: 'catalogGenerationUnavailable',
+      } : generation);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('这个来源没有可用 Active Catalog');
+    expect(detail).toContain('编辑来源…');
+    expect(detail).toContain('重新检查');
+    expect(detail).toContain('完整验证');
+    expect(detail).not.toContain('获取并启用');
+    expect(detail).not.toContain('启用并设为主来源');
+    expect(detail).not.toContain('当前 Active Catalog 保持不变');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain('awCapabilityUnsupported');
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
+  });
+
   it('never echoes Git credentials or query tokens while S06 is receiving input', async () => {
     const value = controller();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -4212,8 +4755,39 @@ describe('ConsoleAppV4', () => {
         scope: 'project',
       }],
     });
+    const executeIntent = vi.fn().mockResolvedValue({ ok: true });
     const value = controller({
       inspectSourceRemoval,
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        sourceWrite: {
+          configDigest: 'sha256:before',
+          proposedConfigDigest: 'sha256:after',
+          inventoryDigest: 'sha256:inventory',
+          referenceCount: 4,
+          inventoryComplete: false,
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            affectedReferences: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'stateInventoryFailed', kind: 'nativeStateRead' }],
+          },
+        },
+      }),
+      executeIntent,
     });
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const screens = new Set<ConsoleV4ScreenId>();
@@ -4224,6 +4798,74 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('S18');
     expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
     expect(inspectSourceRemoval).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('安装引用受影响');
+    expect(instance.lastFrame()).toContain('生命周期意图引用受影响');
+    expect(instance.lastFrame()).toContain('来源影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('opens the damaged Active replacement Review and requires explicit impact confirmation', async () => {
+    const loaded = loadResult();
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools'
+        ? { ...generation, state: 'repairRequired' as const }
+        : generation);
+    const executeIntent = vi.fn().mockResolvedValue({ status: 'succeeded' });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      const prepared = evidenceForIntent(intent);
+      if (intent.kind !== 'catalogGeneration' || !prepared.catalogGeneration) return prepared;
+      return {
+        ...prepared,
+        catalogGeneration: {
+          ...prepared.catalogGeneration,
+          previousActive: {
+            sourceConfigFingerprint: 'sha256:old-config',
+            sourceIdentity: 'identity:team-tools',
+            logicalIdentity: 'workspace:team-tools',
+            requestedRef: 'catalog/stable',
+            resolvedCommit: 'old123',
+            manifestDigest: 'sha256:old-manifest',
+            snapshotDigest: 'sha256:old-snapshot',
+            activatedAt: 500,
+          },
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],
+            affectedReferences: [],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'catalogManifestUnavailable' as const, kind: 'currentManifestRead' }],
+          },
+        },
+      };
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+      executeIntent,
+    });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('使用当前候选替换损坏的 Active');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'team-tools',
+    }), expect.anything());
+    expect(instance.lastFrame()).toContain('替换损坏的 Active Catalog');
+    expect(instance.lastFrame()).toContain('候选影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('已确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).toHaveBeenCalledOnce();
   });
 
   it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {
@@ -5399,7 +6041,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('失败');
     expect(instance.lastFrame()).toContain('Agent Lab');
     expect(instance.lastFrame()).toContain('未执行 · 依赖未完成');
-    expect(instance.lastFrame()).toContain('已完成或已保留的目标保持可用');
+    expect(instance.lastFrame()).toContain('已保留');
     expect(instance.lastFrame()).not.toContain('根插件没有留下部分安装');
 
     await input(instance, '\u001B[B', '\r');

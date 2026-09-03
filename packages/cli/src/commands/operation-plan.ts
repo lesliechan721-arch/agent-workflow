@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformName, PluginConfigValue, Scope } from '../types.js';
 import type { OwnedSharedLocator, OwnerIdentity } from '../utils/ownership.js';
 
 export interface OperationArtifactFile {
@@ -111,7 +111,7 @@ export type OperationPlanInput = Omit<OperationPlan, 'planFingerprint'>;
 export function createOperationPlanConfigDigest(options: {
   pluginId: string;
   scope: Scope;
-  effectiveValues: Readonly<Record<string, string | number | boolean>>;
+  effectiveValues: Readonly<Record<string, PluginConfigValue>>;
 }): OperationPlanEvidence['configDigests'][number] {
   const values = Object.entries(options.effectiveValues)
     .sort(([left], [right]) => compareText(left, right));
