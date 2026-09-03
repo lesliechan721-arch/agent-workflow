@@ -1716,7 +1716,7 @@ describe('TUI Catalog freshness session overlay', () => {
 
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official', 'team']);
-    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: false });
     controller.dispose();
   });
 
@@ -1791,6 +1791,15 @@ describe('TUI Catalog freshness session overlay', () => {
         payload: status(),
         pluginSummaries: summaries(['official', 'demo']),
         sourceDetails: [sourceDetail('official', { explicitRef: 'a'.repeat(40) })],
+        catalogGenerations: [{
+          sourceId: 'official',
+          sourceType: 'git',
+          state: 'ready',
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest', requestedRef: 'a'.repeat(40),
+            resolvedCommit: 'a'.repeat(40), storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
       }),
       probeCatalogFreshness,
     }));
@@ -1815,6 +1824,16 @@ describe('TUI Catalog freshness session overlay', () => {
       payload: status(),
       pluginSummaries: summaries(['official', 'demo']),
       sourceDetails: [detail],
+      ...(detail.explicitRef ? {
+        catalogGenerations: [{
+          sourceId: 'official', sourceType: 'git' as const, state: 'ready' as const,
+          active: {
+            catalogVersion: '1.0.0', channel: 'latest' as const,
+            requestedRef: detail.explicitRef, resolvedCommit: detail.explicitRef,
+            storeKey: 'official-active', digestShort: 'aaaaaaaa',
+          },
+        }],
+      } : {}),
     };
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(loaded),
@@ -1838,15 +1857,35 @@ describe('TUI Catalog freshness session overlay', () => {
     controller.dispose();
   });
 
-  it('marks a 64-character commit without Active fixed and never calls its automatic provider', async () => {
-    const probeCatalogFreshness = vi.fn();
+  it.each([
+    ['activationRequired', { state: 'activationRequired' as const }],
+    ['repairRequired', {
+      state: 'repairRequired' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+    ['configMismatch', {
+      state: 'configMismatch' as const,
+      active: {
+        catalogVersion: '1.0.0' as const, channel: 'latest' as const,
+        requestedRef: 'b'.repeat(64), resolvedCommit: 'b'.repeat(64),
+        storeKey: 'official-active', digestShort: 'bbbbbbbb',
+      },
+    }],
+  ])('probes an exact commit once when generation state is %s', async (_label, generation) => {
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => ({
+      sourceId, state: 'current' as const,
+    }));
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue({
         payload: status(),
         pluginSummaries: summaries(['official', 'demo']),
         sourceDetails: [sourceDetail('official', { explicitRef: 'b'.repeat(64) })],
         catalogGenerations: [{
-          sourceId: 'official', sourceType: 'git', state: 'activationRequired',
+          sourceId: 'official', sourceType: 'git', ...generation,
         }],
       }),
       probeCatalogFreshness,
@@ -1854,9 +1893,11 @@ describe('TUI Catalog freshness session overlay', () => {
 
     await controller.load();
     await nextTurn();
-    expect(controller.getCatalogGeneration('official')?.active).toBeUndefined();
-    expect(controller.getCatalogFreshness('official')?.state).toBe('fixed');
-    expect(probeCatalogFreshness).not.toHaveBeenCalled();
+    expect(controller.getCatalogFreshness('official')?.state).toBe('current');
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    expect(probeCatalogFreshness).toHaveBeenCalledWith(
+      'official', { fullValidation: false }, expect.any(AbortSignal),
+    );
     controller.dispose();
   });
 
@@ -2017,8 +2058,65 @@ describe('TUI Catalog freshness session overlay', () => {
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness).toHaveBeenCalledTimes(3);
     expect(probeCatalogFreshness.mock.calls.at(-1)?.slice(0, 2)).toEqual([
-      'team', { fullValidation: true },
+      'team', { fullValidation: false },
     ]);
+    controller.dispose();
+  });
+
+  it('keeps complete candidates private to the current probe token and exposes full validation separately', async () => {
+    const candidate = {
+      sourceConfigFingerprint: 'sha256:source', sourceIdentity: 'identity:official',
+      logicalIdentity: 'workspace:official', requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit: 'a'.repeat(40), catalogVersion: '2.0.0', channel: 'latest' as const,
+      manifestDigest: `sha256:${'b'.repeat(64)}`, snapshotDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const probeCatalogFreshness = vi.fn()
+      .mockResolvedValueOnce({
+        sourceId: 'official', state: 'updateAvailable' as const, candidate,
+        reusableCandidate: {
+          sourceConfigFingerprint: 'sha256:source', activeStoreKey: null,
+          probe: { sourceId: 'official', candidate, manifest: {} },
+        },
+      })
+      .mockResolvedValueOnce({ sourceId: 'official', state: 'current' as const })
+      .mockResolvedValueOnce({ sourceId: 'official', state: 'current' as const });
+    const reviewEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: candidate.snapshotDigest },
+      catalogGeneration: {
+        action: 'update', candidate, activationMode: 'normal', configDigest: 'sha256:config',
+      },
+    };
+    const prepareReviewEvidence = vi.fn(async () => reviewEvidence);
+    const controller = new TuiController(dependencies({
+      probeCatalogFreshness,
+      prepareReviewEvidence,
+    }));
+    await controller.load();
+    await nextTurn();
+
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toMatchObject({
+      sourceId: 'official', activeStoreKey: null,
+    });
+
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+      sourceMutation: {
+        action: 'update', sourceId: 'official', update: { autoCheck: false },
+      },
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toBeUndefined();
+
+    await controller.recheckCatalogSource('official');
+    await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'official',
+    });
+    expect(prepareReviewEvidence.mock.calls.at(-1)?.[3]).toBeUndefined();
+
+    await controller.fullValidateCatalogSource('official');
+    expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: true });
     controller.dispose();
   });
 

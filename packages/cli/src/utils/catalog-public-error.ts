@@ -106,6 +106,9 @@ export function sanitizeCatalogSourceError(
   if ('inventory' in original) {
     (sanitized as Error & { inventory?: unknown }).inventory = original.inventory;
   }
+  if ('impact' in original) {
+    (sanitized as Error & { impact?: unknown }).impact = original.impact;
+  }
   type CapabilityField = 'requiredCapabilities' | 'missingCapabilities' | 'availableCapabilities';
   const originalCapabilities = original as Error & Partial<Record<CapabilityField, unknown>>;
   const sanitizedCapabilities = sanitized as Error & { code: string }

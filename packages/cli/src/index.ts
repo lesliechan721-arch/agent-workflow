@@ -23,6 +23,7 @@ import {
   catalogSourceStatusCommand,
   syncCatalogSourceCommand,
 } from './commands/catalog-generation.js';
+import { catalogStorePrune, catalogStoreStatus } from './commands/catalog-store.js';
 import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
@@ -178,6 +179,15 @@ import type { ManagedCodexAuthorizer } from './utils/codex-manager.js';
 import { prepareSkillEval } from './commands/skill-eval.js';
 
 export type { CliIo } from './commands/runtime.js';
+export type {
+  CatalogStoreEntryCategory,
+  CatalogStoreEntryStatus,
+  CatalogStoreInspectionEntry,
+  CatalogStorePruneFailureResult,
+  CatalogStorePruneResult,
+  CatalogStoreStatusFailureResult,
+  CatalogStoreStatusResult,
+} from './commands/catalog-store.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
 
 function createDefaultIo(): CliIo {
@@ -2186,12 +2196,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--source-id <id>', 'explicit managed source ID')
     .option('--primary', 'make the development source primary', false)
     .option('--force-build', 'rebuild a current snapshot', false)
+    .option('-y, --yes', 'confirm affected or unknown source references', false)
     .requiredOption('--json', 'emit one schema 2 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
       primary?: boolean;
       forceBuild?: boolean;
+      yes?: boolean;
     }) => {
       try {
         const receipt = await activateCatalogDevSource({
@@ -2200,6 +2212,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceId: rawOptions.sourceId,
           primary: rawOptions.primary,
           forceBuild: rawOptions.forceBuild,
+          yes: rawOptions.yes,
           cliVersion: resolveCliVersion(),
           env,
         });
@@ -2278,6 +2291,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const failure = sanitizeCatalogSourceError(error, env, sensitiveRoots) as Error & {
       code?: string;
       inventory?: { references?: CatalogSourceMutationReceipt['references'] };
+      impact?: { references?: CatalogSourceMutationReceipt['references'] };
     };
     const message = failure instanceof Error ? failure.message : String(error);
     if (json) {
@@ -2287,7 +2301,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         ok: false,
         changed: false,
         sourceId,
-        references: failure.inventory?.references ?? [],
+        references: failure.impact?.references ?? failure.inventory?.references ?? [],
         errors: [{ code: failure.code ?? failure.name ?? 'catalogSourceMutationFailed', message }],
       });
     }
@@ -2301,7 +2315,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     json: boolean,
     error: unknown,
   ): void => {
-    const failure = sanitizeCatalogSourceError(error, env);
+    const failure = sanitizeCatalogSourceError(error, env) as Error & {
+      impact?: import('./types.js').CatalogSourceImpact;
+    };
     const message = redactString(failure.message);
     if (json) {
       writeJsonReceipt(io.stdout, {
@@ -2311,6 +2327,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         command,
         ok: false,
         ...(sourceId ? { sourceId } : {}),
+        ...(failure.impact ? { impact: failure.impact } : {}),
         errors: [{ code: catalogGenerationErrorCode(error), message }],
       });
     }
@@ -2405,13 +2422,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('sync')
     .argument('<id>')
     .option('--check', 'fetch and validate without changing the Catalog store or Active state', false)
+    .option('--replace-damaged', 'replace a damaged Active entry with the current candidate', false)
+    .option('-y, --yes', 'confirm affected, unknown, or damaged Active replacement impact', false)
     .option('-j, --json', 'print the source sync result as JSON', false)
-    .action(async (id: string, rawOptions: { check?: boolean; json?: boolean }) => {
+    .action(async (id: string, rawOptions: {
+      check?: boolean;
+      replaceDamaged?: boolean;
+      yes?: boolean;
+      json?: boolean;
+    }) => {
       try {
+        if (rawOptions.check && rawOptions.replaceDamaged) {
+          throw new Error('catalog source sync --check cannot use --replace-damaged.');
+        }
         const result = await syncCatalogSourceCommand({
           sourceId: id,
           cliVersion: resolveCliVersion(),
+          cwd,
           check: rawOptions.check === true,
+          impactConfirmed: rawOptions.yes === true,
+          replaceDamaged: rawOptions.replaceDamaged === true,
           env,
         });
         if (rawOptions.json) {
@@ -2635,14 +2665,106 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogSource
     .command('remove')
     .argument('<id>')
+    .option('-y, --yes', 'confirm affected or unknown source references', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
-    .action(async (id: string, rawOptions: { json?: boolean }) => {
+    .action(async (id: string, rawOptions: { yes?: boolean; json?: boolean }) => {
       try {
-        const receipt = await removeCatalogSourceCommand({ sourceId: id, cwd, env });
+        const receipt = await removeCatalogSourceCommand({
+          sourceId: id,
+          cwd,
+          env,
+          requireImpactConfirmation: true,
+          confirmImpact: rawOptions.yes === true,
+        });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} removed.`);
       } catch (error) {
         await writeCatalogSourceFailure('catalog:source:remove', id, rawOptions.json === true, error);
+      }
+    });
+
+  const catalogStore = catalog
+    .command('store')
+    .description('Inspect or prune the immutable Catalog store');
+
+  catalogStore
+    .command('status')
+    .option('-j, --json', 'print Catalog store status as JSON', false)
+    .action(async (rawOptions: { json?: boolean }) => {
+      try {
+        const result = await catalogStoreStatus({ env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else if (result.entries.length === 0) {
+          writeLine(io.stdout, 'Catalog store is empty.');
+        } else {
+          for (const entry of result.entries) {
+            const bytes = entry.reclaimableBytes === null ? 'unknown bytes' : `${entry.reclaimableBytes} bytes`;
+            writeLine(io.stdout, `${entry.storeKey}: ${entry.category}, ${entry.status}, ${entry.reason}, ${bytes}`);
+          }
+          writeLine(io.stdout, `Reclaimable: ${result.totals.reclaimableEntries} item(s).`);
+        }
+      } catch (error) {
+        const failure = sanitizeCatalogSourceError(error, env);
+        const message = redactString(failure.message);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          catalogStoreSchemaVersion: 1,
+          command: 'catalog:store:status',
+          ok: false,
+          entries: [],
+          errors: [{ code: catalogGenerationErrorCode(error), message }],
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
+      }
+    });
+
+  catalogStore
+    .command('prune')
+    .option('--dry-run', 'inspect reclaimable items without deleting them', false)
+    .option('-y, --yes', 'delete items classified as safely reclaimable', false)
+    .option('-j, --json', 'print the prune receipt as JSON', false)
+    .action(async (rawOptions: { dryRun?: boolean; yes?: boolean; json?: boolean }) => {
+      const dryRun = rawOptions.yes !== true;
+      try {
+        if (rawOptions.dryRun === true && rawOptions.yes === true) {
+          throw Object.assign(new Error('catalog store prune cannot combine `--dry-run` and `--yes`.'), {
+            code: 'invalidArguments',
+          });
+        }
+        const result = await catalogStorePrune({ dryRun, env });
+        if (rawOptions.json) {
+          writeJsonReceipt(io.stdout, result);
+        } else if (dryRun) {
+          writeLine(io.stdout, `Dry run: ${result.entries.filter((entry) => entry.status === 'reclaimable').length} item(s) are reclaimable.`);
+          writeLine(io.stdout, 'Run `aw catalog store prune --yes` to delete them.');
+        } else {
+          writeLine(io.stdout, `Deleted ${result.deleted.length} Catalog store item(s) (${result.deletedBytes} bytes).`);
+          if (result.errors.length > 0) writeLine(io.stderr, `${result.errors.length} item(s) could not be deleted and were retained.`);
+        }
+        commandExitState.exitCode = result.ok ? 0 : 1;
+      } catch (error) {
+        const failure = sanitizeCatalogSourceError(error, env);
+        const message = redactString(failure.message);
+        const explicitCode = (error as { code?: unknown }).code;
+        const code = typeof explicitCode === 'string'
+          ? explicitCode
+          : catalogGenerationErrorCode(error);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, {
+          catalogStoreSchemaVersion: 1,
+          command: 'catalog:store:prune',
+          ok: false,
+          overallState: 'failed',
+          dryRun,
+          entries: [],
+          deleted: [],
+          retained: [],
+          errors: [{ code, message }],
+          reclaimableBytes: null,
+          deletedBytes: 0,
+        });
+        writeLine(io.stderr, message);
+        commandExitState.exitCode = 1;
       }
     });
 

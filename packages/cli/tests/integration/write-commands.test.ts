@@ -33,7 +33,10 @@ import {
 import { TuiController } from '../../src/tui/controller.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { runCli } from '../../src/index.js';
-import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import {
+  getCurrentSourceTestIsolation,
+  registerCurrentTestWritableStateRoot,
+} from '../setup/test-isolation.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
@@ -466,7 +469,7 @@ describe('five namespaced write commands', () => {
     30_000,
   );
 
-  it('keeps warm write, config, status, and TUI operations provider-free', async () => {
+  it('keeps warm write, config, and status provider-free after the TUI background check', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'warm-active-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'warm\n', (manifest) => {
@@ -540,6 +543,7 @@ describe('five namespaced write commands', () => {
       { catalogGenerationRuntime },
     ));
     await controller.load();
+    await vi.waitFor(() => expect(providerCalls).toBe(1));
     const review = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'team/demo',
@@ -575,7 +579,7 @@ describe('five namespaced write commands', () => {
     await expect(controller.executeOperation(staleReview.reviewToken))
       .resolves.toMatchObject({ state: 'stale' });
     controller.dispose();
-    expect(providerCalls).toBe(0);
+    expect(providerCalls).toBe(1);
   });
 
   it('keeps owner and config identity after the official HTTPS transport changes to SSH', async () => {
@@ -780,8 +784,10 @@ describe('five namespaced write commands', () => {
         expect.objectContaining({ sourceId: 'missing', state: 'unavailable' }),
       ]));
     });
-    expect(goodProviderCalls).toBe(0);
-    expect(missingProviderCalls).toBe(0);
+    await vi.waitFor(() => {
+      expect(goodProviderCalls).toBe(1);
+      expect(missingProviderCalls).toBe(1);
+    });
 
     await writeGoodSource('2.0.0', 'newMode', 'new generation');
     await syncCatalogSourceGeneration({
@@ -827,9 +833,9 @@ describe('five namespaced write commands', () => {
       code: 'catalogGenerationUnavailable',
       message: expect.stringContaining('重新加载'),
     });
-    expect(goodProviderCalls).toBe(0);
+    expect(goodProviderCalls).toBe(1);
     await vi.waitFor(() => {
-      expect(missingProviderCalls).toBe(0);
+      expect(missingProviderCalls).toBe(1);
     });
     controller.dispose();
   });
@@ -3407,7 +3413,7 @@ describe('five namespaced write commands', () => {
     leafEntry.contentDigest = await calculateCatalogEntryContentDigest(leafRoot);
     await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
     await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
 
     await expect(statusCommandV7({
@@ -4470,7 +4476,9 @@ describe('five namespaced write commands', () => {
       { name: 'leaf', configureManifest: configureLeaf },
       { name: 'root', dependencies: [], configureManifest: configureRoot },
     ]);
-    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
     const intentLocation = {
       scope: 'project' as const,
       cwd: isolation.layout.fixtureCwd,
@@ -4879,7 +4887,7 @@ describe('five namespaced write commands', () => {
       { name: 'root', dependencies: ['leaf'] },
     ]);
     await syncCatalogSourceGeneration({
-      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
 
     const upgraded = await syncCommand([], {
@@ -5547,6 +5555,7 @@ describe('five namespaced write commands', () => {
     const isolation = getCurrentSourceTestIsolation();
     const projectA = isolation.layout.fixtureCwd;
     const projectB = path.join(isolation.layout.rootDir, 'dependency-project-b');
+    registerCurrentTestWritableStateRoot(projectB, 'secondary current project');
     const sourceRoot = path.join(projectA, 'historical-consumer-source');
     await fs.ensureDir(projectB);
     await createDependencyCatalogSnapshotFixture(sourceRoot, [

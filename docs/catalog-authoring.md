@@ -81,23 +81,35 @@ publisher 保留 annotated `catalog-v<version>` tag、branch lease、atomic push
 
 ```bash
 aw catalog source sync <id> --json
+aw catalog source sync <id> --yes --json
 aw catalog source sync <id> --check --json
+aw catalog source sync <id> --replace-damaged --yes --json
 aw catalog source status <id> --json
+
+aw catalog store status --json
+aw catalog store prune --json
+aw catalog store prune --yes --json
 ```
 
-`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。`catalog source add/update` 只改 source config。精确 repair 只接受与强 Active state 相同的 logical identity 和 snapshot digest；update 与损坏 Active 同 key 时，可在确认后精确替换该条目。只有完整匹配的 metadata 和 snapshot 才提供可信旧版本；任一不完整时不作 rollback/version-conflict 结论。旧版本不可用且候选 key 不同时，普通恢复/update 在 store 或 state 写入前阻止，用户必须明确编辑真实 source，或 remove 后 add。Git 回退时改 ref 后再 sync；Path source 损坏时恢复目录后再 sync。
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`，JSON receipt 包含脱敏的 source impact。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。候选删除插件、使插件新出现能力不兼容、改变依赖，或传递影响这些插件的现有引用时，sync 需要 `--yes`；清单或旧 manifest 不可读时影响为 unknown，也需要确认。`catalog source add/update` 只改 source config；remove 有引用或清单不完整时需要 `--yes`。普通 Git 激活只接受更高 Catalog version；相同 version 不同 digest 和较低 version 都拒绝。明确修改 source config 后的 sync 可确认这些关系。Path source 允许内容变化。
+
+Store prune 是显式恢复工具，不是自动 GC。默认命令和 `--dry-run` 都只预览；只有 `--yes` 删除。它保留所有 Active，保留 30 天内的非 Active 正式 entry，并保留 24 小时内的 staging、replacement 和 quarantine。老 quarantine 只有在可以确定对应 canonical key，且该正式 entry 完整健康时才删除。损坏 state、未知目录、符号链接、unsafe node、验证失败和 foreign 内容全部 fail closed。实际删除与 Active activation 共享现有 AW_HOME mutation lock，并在锁内重读。部分删除失败会保留 residue，并可再次运行 prune；被删除的非 Active 弱 snapshot 可通过 source sync 重建。
+
+Active store 损坏时，Git source 使用当前 transport 配置获取 `Active.resolvedCommit`，并只在 logical identity、snapshot digest、manifest digest 和 commit 全部匹配时修复旧 key；source config 不变。CLI 修复后继续普通 sync，TUI 修复成功后停止。旧 commit 不可取得，或 Path 当前内容不是旧 key 时，命令返回 replace-required。只有 `--replace-damaged --yes` 或 TUI 的独立替换 Review 可以使用已绑定的当前候选。替换执行前重查 source config、候选、Active 和旧 entry 仍损坏；它只跳过无法完成的旧版本比较，未经已验证的 source config 变化仍不能改变 logical identity。
 
 当前 Workspace 的 development source 使用：
 
 ```bash
-aw catalog dev activate --workspace-root "$workspace" --json
+aw catalog dev activate --workspace-root "$workspace" --yes --json
 aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --json
 ```
 
 `activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。
 
-Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
+Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`。完整 resolve 默认 180000 ms；ref probe 最多 30000 ms；`0` 表示无 deadline。每次 probe 或完整 resolve 内的命令共享各自 deadline，probe 后的完整 resolve 使用新的 deadline。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
+
+TUI 的自动检查和“重新检查”先做轻量 Git ref probe，commit 未变时不 fetch；“完整验证”强制完整 resolve。完整 freshness candidate 可在当前 session 内复用于普通 Review preparation，但必须继续匹配 session token、source config fingerprint 和 Active store key。Execute 总是重新 resolve。这个复用不持久 Candidate，也不改变 Active 或 Status。候选要求当前 AW 不支持的 capability 时，TUI 显示 missing capability IDs，保留旧 Active，并阻止普通 update。
 
 Snapshot v6 首次上线使用空的新 branch state，不读取旧 snapshot state。旧 `AW_HOME` 不迁移或自动删除；开发环境使用新的 `AW_HOME`，或手工清理后重新 sync。
 
