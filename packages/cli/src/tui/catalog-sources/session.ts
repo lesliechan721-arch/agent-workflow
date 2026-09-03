@@ -1,7 +1,11 @@
-import { catalogSourceErrorCode } from '../../utils/catalog-public-error.js';
+import {
+  CatalogProviderCompatibilityError,
+  catalogSourceErrorCode,
+} from '../../utils/catalog-public-error.js';
 import type { CatalogGenerationFreshnessResult } from '../../utils/catalog-generation-service.js';
 import type {
   CatalogSourceFreshnessViewModel,
+  CatalogSessionReusableCandidate,
   CatalogSourceSessionDescriptor,
 } from './types.js';
 
@@ -23,12 +27,19 @@ interface RunningProbe {
   primary: boolean;
 }
 
+interface ReusableCandidateEntry {
+  candidate: CatalogSessionReusableCandidate;
+  token: number;
+  fingerprint: string;
+}
+
 export class CatalogSourcesSession {
   readonly #sources = new Map<string, CatalogSourceSessionDescriptor>();
   readonly #attempted = new Set<string>();
   readonly #queue: string[] = [];
   readonly #running = new Map<string, RunningProbe>();
   readonly #tokens = new Map<string, number>();
+  readonly #reusableCandidates = new Map<string, ReusableCandidateEntry>();
   #disposed = false;
   #drainScheduled = false;
 
@@ -40,6 +51,7 @@ export class CatalogSourcesSession {
     for (const sourceId of this.#sources.keys()) {
       if (nextIds.has(sourceId)) continue;
       this.#cancel(sourceId);
+      this.#reusableCandidates.delete(sourceId);
       this.#sources.delete(sourceId);
     }
     for (const source of sources) {
@@ -47,6 +59,7 @@ export class CatalogSourcesSession {
       this.#sources.set(source.sourceId, source);
       if (previous && previous.fingerprint !== source.fingerprint) {
         this.#cancel(source.sourceId);
+        this.#reusableCandidates.delete(source.sourceId);
         this.options.onChange(source.sourceId, { sourceId: source.sourceId, state: 'notChecked' });
       }
       if (source.fixedCommit) {
@@ -98,7 +111,20 @@ export class CatalogSourcesSession {
   }
 
   recheck(sourceId: string): Promise<void> {
+    return this.refresh(sourceId, false);
+  }
+
+  fullValidate(sourceId: string): Promise<void> {
     return this.refresh(sourceId, true);
+  }
+
+  reusableCandidate(sourceId: string): CatalogSessionReusableCandidate | undefined {
+    const entry = this.#reusableCandidates.get(sourceId);
+    const source = this.#sources.get(sourceId);
+    if (!entry || !source
+      || entry.token !== this.#tokens.get(sourceId)
+      || entry.fingerprint !== source.fingerprint) return undefined;
+    return structuredClone(entry.candidate);
   }
 
   refresh(sourceId: string, fullValidation: boolean): Promise<void> {
@@ -112,6 +138,7 @@ export class CatalogSourcesSession {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#queue.length = 0;
+    this.#reusableCandidates.clear();
     for (const sourceId of this.#running.keys()) this.#cancel(sourceId);
   }
 
@@ -159,15 +186,30 @@ export class CatalogSourcesSession {
     try {
       const result = await this.options.probe(sourceId, { fullValidation }, signal);
       if (this.#isCurrent(source, token, signal)) {
-        this.options.onChange(sourceId, structuredClone(result));
+        const { reusableCandidate, ...freshness } = result;
+        if (reusableCandidate) {
+          this.#reusableCandidates.set(sourceId, {
+            candidate: { sourceId, ...structuredClone(reusableCandidate) },
+            token,
+            fingerprint: source.fingerprint,
+          });
+        } else {
+          this.#reusableCandidates.delete(sourceId);
+        }
+        this.options.onChange(sourceId, structuredClone(freshness));
       }
     } catch (error) {
       if (this.#isCurrent(source, token, signal)) {
         const code = catalogSourceErrorCode(error);
+        this.#reusableCandidates.delete(sourceId);
         this.options.onChange(sourceId, {
           sourceId,
           state: code === 'awCapabilityUnsupported' ? 'incompatible' : 'checkFailed',
           errorCode: code,
+          ...(error instanceof CatalogProviderCompatibilityError ? {
+            requiredCapabilities: [...error.requiredCapabilities],
+            missingCapabilities: [...error.missingCapabilities],
+          } : {}),
         });
         this.options.onError?.(error, code);
       }
@@ -191,6 +233,7 @@ export class CatalogSourcesSession {
   }
 
   #cancel(sourceId: string): void {
+    this.#reusableCandidates.delete(sourceId);
     const running = this.#running.get(sourceId);
     if (!running) return;
     this.#tokens.set(sourceId, running.token + 1);

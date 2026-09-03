@@ -323,6 +323,46 @@ describe('performance gate process tree cleanup', () => {
     expect(descendantSignals).toEqual([]);
   });
 
+  itOnPosix('does not force KILL a process group after the root identity changes', async () => {
+    const controller = new AbortController();
+    const forceController = new AbortController();
+    const abortReason = new Error('interrupt fixture');
+    const groupSignals = [];
+    let snapshotCalls = 0;
+    const snapshotPosixProcessTree = async (rootPid) => {
+      snapshotCalls += 1;
+      return parsePosixProcessTree(
+        rootPid,
+        `${rootPid} 1 ${snapshotCalls === 1 ? 'original-root' : 'reused-root'}`,
+      );
+    };
+    const running = runProcessTree({
+      label: 'reused POSIX group fixture',
+      command: process.execPath,
+      args: ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+      env: process.env,
+      signal: controller.signal,
+      forceSignal: forceController.signal,
+      timeoutMs: null,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 10_000,
+      cleanupSettleMs: 100,
+    }, {
+      snapshotPosixProcessTree,
+      verifyPosixProcessTree: snapshotPosixProcessTree,
+      killPosixProcessGroup: (_pid, signal) => groupSignals.push(signal),
+    });
+    while (snapshotCalls === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    controller.abort(abortReason);
+    forceController.abort(new Error('repeat interrupt fixture'));
+    await expect(running).rejects.toBe(abortReason);
+
+    expect(groupSignals).toEqual([]);
+  });
+
   itOnPosix('discovers root and detached grandchild on the third snapshot', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-third-snapshot-root-'));
     roots.push(root);
@@ -411,7 +451,9 @@ describe('performance gate process tree cleanup', () => {
       descendantMonitorIntervalMs: 1_000,
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
-    }, { snapshotPosixProcessTree })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    }, { snapshotPosixProcessTree })).rejects.toThrow(
+      'cleanup could not verify process-tree ownership',
+    );
 
     const pid = Number(await fs.readFile(pidFile, 'utf8'));
     observedPids.push(pid);
@@ -472,7 +514,9 @@ describe('performance gate process tree cleanup', () => {
       observedPids.push(pid);
       await waitForProcessesToExit([pid], 500);
 
-      expect(failure).toBeInstanceOf(ProcessTreeTimeoutError);
+      expect(failure).toMatchObject({
+        message: expect.stringContaining('cleanup could not verify process-tree ownership'),
+      });
       expect(elapsedMs).toBeLessThan(1_000);
       expect(isProcessAlive(pid)).toBe(false);
     }

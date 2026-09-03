@@ -17,6 +17,11 @@ import {
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
+import {
+  createEmptyPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -30,6 +35,136 @@ afterEach(() => {
 });
 
 describe('catalog source mutation v4', () => {
+  it('requires confirmation to remove a source with lifecycle intent references', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('referenced-source');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    await writePluginIntentState({
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team/demo',
+      platforms: ['codex'],
+    }));
+
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'remove', sourceId: 'team' },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(preview.references).toMatchObject({
+      inventoryComplete: true,
+      references: [{ category: 'lifecycle', sourceId: 'team', pluginId: 'team/demo' }],
+    });
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      requireImpactConfirmation: true,
+    })).rejects.toMatchObject({ code: 'catalogSourceImpactConfirmationRequired' });
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      references: [{ category: 'lifecycle', pluginId: 'team/demo' }],
+    });
+  });
+
+  it('uses lock-time impact for CLI remove confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('remove-impact-race');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      requireImpactConfirmation: true,
+      runtime: {
+        afterImpactInspected: async () => {
+          await writePluginIntentState({
+            scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+          }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+            pluginId: 'team/demo', platforms: ['codex'],
+          }));
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogSourceImpactConfirmationRequired' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .toContainEqual(expect.objectContaining({ id: 'team' }));
+  });
+
+  it('rejects reviewed remove and identity-change impact that drifts before the lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('reviewed-impact-first');
+    const second = fixturePath('reviewed-impact-second');
+    await Promise.all([
+      createCatalogSnapshotFixture(first),
+      createCatalogSnapshotFixture(second),
+    ]);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: first, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const addReference = async () => {
+      await writePluginIntentState({
+        scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+        pluginId: 'team/demo', platforms: ['codex'],
+      }));
+    };
+    const removePreview = await preflightCatalogSourceMutation({
+      request: { action: 'remove', sourceId: 'team' },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    await expect(removeCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true, confirmImpact: true,
+      expectedImpactDigest: removePreview.impactDigest,
+      runtime: { afterImpactInspected: addReference },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
+      .find((source) => source.id === 'team')).toMatchObject({
+        id: 'team', path: expect.stringContaining('reviewed-impact-first'),
+      });
+
+    await writePluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, createEmptyPluginIntentState());
+    const updatePreview = await preflightCatalogSourceMutation({
+      request: { action: 'update', sourceId: 'team', update: { type: 'path', path: second } },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { type: 'path', path: second },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireIdentityChangeConfirmation: true, confirmIdentityChange: true,
+      expectedImpactDigest: updatePreview.impactDigest,
+      runtime: { afterImpactInspected: addReference },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
+      .find((source) => source.id === 'team')).toMatchObject({
+        id: 'team', path: expect.stringContaining('reviewed-impact-first'),
+      });
+  });
+
   it('protects Workspace-managed sources in public commands and preflight', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('managed-first');

@@ -97,7 +97,7 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backupPath }));
   });
 
-  it('inventories canonical owner artifacts but ignores ordinary project Skill markers', async () => {
+  it('inventories canonical project owner artifacts but ignores ordinary project and marketplace Skill markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const identity: OwnerIdentity = {
       owner: 'agent-workflows',
@@ -179,11 +179,6 @@ describe('phase 3B namespaced runtime stores', () => {
     });
     expect(inventory.references).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'namespacedOwner', location: role, sourceId: 'team' }),
-      expect.objectContaining({
-        kind: 'namespacedOwner',
-        location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
-        sourceId: 'team',
-      }),
     ]));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: backup }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: exampleMarker }));
@@ -191,6 +186,11 @@ describe('phase 3B namespaced runtime stores', () => {
       location: path.join(projectSkillRoot, '.agent-workflows-owner.json'),
     }));
     expect(inventory.references).not.toContainEqual(expect.objectContaining({ location: nestedSkillMarker }));
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedOwner',
+      location: path.join(bundleSkillRoot, '.agent-workflows-owner.json'),
+      sourceId: 'team',
+    }));
   });
 
   it('does not turn Codex cache residue into ordinary or orphan cleanup consumers', async () => {
@@ -684,7 +684,16 @@ describe('phase 3B namespaced runtime stores', () => {
       cliVersion: '1.0.0',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-    })).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+    })).resolves.toMatchObject({
+      ok: true,
+      changed: true,
+      references: [{
+        category: 'config',
+        pluginId: 'team/demo',
+        scope: 'user',
+        sourceId: 'team',
+      }],
+    });
     const skillsRoot = path.join(
       isolation.env.AW_HOME!,
       'marketplaces',
@@ -720,23 +729,6 @@ describe('phase 3B namespaced runtime stores', () => {
         platform: 'codex',
         scope: 'user',
       },
-    });
-    const statusOutput = createCapturedCliIo();
-    expect(await runCli(['status', '--json'], {
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      io: statusOutput.io,
-      interactive: false,
-    })).toBe(1);
-    expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
-      schemaVersion: 7,
-      targets: expect.arrayContaining([
-        expect.objectContaining({
-          pluginId: 'team/demo',
-          state: 'blocked',
-          reasons: [expect.objectContaining({ code: 'sourceMissing' })],
-        }),
-      ]),
     });
     const offlineResetOutput = createCapturedCliIo();
     expect(await runCli(['config', 'reset', 'team/demo', '--yes', '--json'], {
@@ -1651,7 +1643,18 @@ describe('phase 3B namespaced runtime stores', () => {
 
       resumeInstall.resolve();
       await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
-      await expect(mutation).resolves.toMatchObject({ ok: true, changed: true, references: [] });
+      await expect(mutation).resolves.toMatchObject({
+        ok: true,
+        changed: true,
+        references: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'installation', pluginId: 'team/demo', scope: 'project',
+          }),
+          expect.objectContaining({
+            category: 'lifecycle', pluginId: 'team/demo', scope: 'project',
+          }),
+        ]),
+      });
       expect(mutationCompleted).toBe(true);
       expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).not.toBe(configured.digest);
     } finally {

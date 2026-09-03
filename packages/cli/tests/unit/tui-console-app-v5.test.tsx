@@ -24,6 +24,7 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
+import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 
 afterEach(() => cleanup());
 
@@ -5192,6 +5193,96 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('token:secret');
   });
 
+  it('shows structured candidate capability diagnostics while preserving the old Active', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const value = controller({
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('Active Catalog 2.4.0 仍可浏览和使用');
+    expect(detail).not.toContain('更新到候选版本');
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 重新检查');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 完整验证');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
+  });
+
+  it('shows no-Active capability diagnostics without offering an activation action', async () => {
+    const missing = ['aw.catalog.future-one.v1', 'aw.catalog.future-two.v1'];
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.map((source) => {
+      if (source.id !== 'team-tools') return source;
+      const { resolvedCommit: _resolvedCommit, catalogVersion: _catalogVersion,
+        channel: _channel, freshness: _freshness, ...rest } = source;
+      return { ...rest, error: 'unavailable', errorCode: 'catalogSourceUnavailable' };
+    });
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools' ? {
+        sourceId: 'team-tools', sourceType: 'git' as const,
+        state: 'activationRequired' as const,
+        errorCode: 'catalogGenerationUnavailable',
+      } : generation);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => {
+        if (sourceId === 'team-tools') throw new CatalogProviderCompatibilityError({
+          sourceId,
+          requiredCapabilities: missing,
+          missingCapabilities: missing,
+          availableCapabilities: ['aw.current.v1'],
+        });
+        return { sourceId, state: 'current' as const };
+      }),
+    });
+    await value.load();
+    await nextTurn(5);
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 28 }} />);
+    await nextTurn(2);
+
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前 AW 缺少 2 项候选 Catalog 能力');
+    expect(detail).toContain('这个来源没有可用 Active Catalog');
+    expect(detail).toContain('编辑来源…');
+    expect(detail).toContain('重新检查');
+    expect(detail).toContain('完整验证');
+    expect(detail).not.toContain('获取并启用');
+    expect(detail).not.toContain('启用并设为主来源');
+    expect(detail).not.toContain('当前 Active Catalog 保持不变');
+
+    value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
+    await nextTurn(2);
+    const technical = instance.lastFrame() ?? '';
+    expect(technical).toContain('awCapabilityUnsupported');
+    expect(technical).toContain(missing[0]);
+    expect(technical).toContain(missing[1]);
+    expect(technical).not.toContain('aw.current.v1');
+    instance.unmount();
+  });
+
   it('never echoes Git credentials or query tokens while S06 is receiving input', async () => {
     const value = controller();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
@@ -5221,8 +5312,39 @@ describe('ConsoleAppV4', () => {
         scope: 'project',
       }],
     });
+    const executeIntent = vi.fn().mockResolvedValue({ ok: true });
     const value = controller({
       inspectSourceRemoval,
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        sourceWrite: {
+          configDigest: 'sha256:before',
+          proposedConfigDigest: 'sha256:after',
+          inventoryDigest: 'sha256:inventory',
+          referenceCount: 4,
+          inventoryComplete: false,
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            affectedReferences: [
+              { category: 'installation', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'config', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
+              { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
+            ],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'stateInventoryFailed', kind: 'nativeStateRead' }],
+          },
+        },
+      }),
+      executeIntent,
     });
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const screens = new Set<ConsoleV4ScreenId>();
@@ -5233,6 +5355,74 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('S18');
     expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
     expect(inspectSourceRemoval).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('安装引用受影响');
+    expect(instance.lastFrame()).toContain('生命周期意图引用受影响');
+    expect(instance.lastFrame()).toContain('来源影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('opens the damaged Active replacement Review and requires explicit impact confirmation', async () => {
+    const loaded = loadResult();
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools'
+        ? { ...generation, state: 'repairRequired' as const }
+        : generation);
+    const executeIntent = vi.fn().mockResolvedValue({ status: 'succeeded' });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      const prepared = evidenceForIntent(intent);
+      if (intent.kind !== 'catalogGeneration' || !prepared.catalogGeneration) return prepared;
+      return {
+        ...prepared,
+        catalogGeneration: {
+          ...prepared.catalogGeneration,
+          previousActive: {
+            sourceConfigFingerprint: 'sha256:old-config',
+            sourceIdentity: 'identity:team-tools',
+            logicalIdentity: 'workspace:team-tools',
+            requestedRef: 'catalog/stable',
+            resolvedCommit: 'old123',
+            manifestDigest: 'sha256:old-manifest',
+            snapshotDigest: 'sha256:old-snapshot',
+            activatedAt: 500,
+          },
+          impact: {
+            impactSchemaVersion: 1,
+            sourceId: 'team-tools',
+            inventoryComplete: false,
+            references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],
+            affectedReferences: [],
+            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            errors: [{ code: 'catalogManifestUnavailable' as const, kind: 'currentManifestRead' }],
+          },
+        },
+      };
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+      executeIntent,
+    });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('使用当前候选替换损坏的 Active');
+
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'team-tools',
+    }), expect.anything());
+    expect(instance.lastFrame()).toContain('替换损坏的 Active Catalog');
+    expect(instance.lastFrame()).toContain('候选影响未知');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('已确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).toHaveBeenCalledOnce();
   });
 
   it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {

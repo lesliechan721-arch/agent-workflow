@@ -1,6 +1,7 @@
 import type { CatalogGenerationCandidateEvidence } from '../../types.js';
 import type {
   CatalogGenerationFreshnessState,
+  CatalogGenerationReusableCandidate,
 } from '../../utils/catalog-generation-service.js';
 
 export interface CatalogGenerationViewModel {
@@ -34,6 +35,12 @@ export interface CatalogSourceFreshnessViewModel {
   activeResolvedCommit?: string;
   candidate?: CatalogGenerationCandidateEvidence;
   errorCode?: string;
+  requiredCapabilities?: string[];
+  missingCapabilities?: string[];
+}
+
+export interface CatalogSessionReusableCandidate extends CatalogGenerationReusableCandidate {
+  sourceId: string;
 }
 
 export interface CatalogSourceSessionDescriptor {
