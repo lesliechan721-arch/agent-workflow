@@ -95,7 +95,7 @@ async function createWorkspace(): Promise<{
   const pluginManifest = await fs.readJson(manifestPath)
   pluginManifest.dependencies = ['participant-plugin']
   pluginManifest.config = {
-    schema: {
+    fields: {
       mode: { type: 'string', default: 'default-mode' },
       token: { type: 'string', sensitive: true },
     },

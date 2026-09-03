@@ -38,7 +38,7 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
       },
     },
     config: {
-      schema: {
+      fields: {
         enableLightweightInstruction: {
           type: 'boolean',
           default: true,
@@ -48,8 +48,15 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
           default: 'gpt-5.4-mini',
         },
         modelReasoningEffort: {
-          type: 'enum',
-          values: ['low', 'medium', 'high', 'xhigh'],
+          type: 'string',
+          choices: {
+            allowCustom: false,
+            presets: ['low', 'medium', 'high', 'xhigh'].map((value) => ({
+              id: value,
+              title: value,
+              value,
+            })),
+          },
           default: 'medium',
         },
       },
@@ -723,12 +730,33 @@ describe('artifact plan validation', () => {
       configValues: renderConfig.values,
       digestSalt: 'sha256:renderer-a',
     });
+    const objectChildDigest = createArtifactConfigDigest({
+      artifact: {
+        id: 'lightweight-instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        refreshKeys: ['credentials'],
+      },
+      configValues: { credentials: { region: 'us', token: 'two' } },
+      digestSalt: 'sha256:renderer-a',
+    });
+    const objectBaseDigest = createArtifactConfigDigest({
+      artifact: {
+        id: 'lightweight-instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        refreshKeys: ['credentials'],
+      },
+      configValues: { credentials: { region: 'us', token: 'one' } },
+      digestSalt: 'sha256:renderer-a',
+    });
 
     expect(unrelatedDigest).toBe(baseDigest);
     expect(relevantDigest).not.toBe(baseDigest);
     expect(otherSaltDigest).not.toBe(baseDigest);
     expect(otherIdDigest).not.toBe(baseDigest);
     expect(otherTargetDigest).not.toBe(baseDigest);
+    expect(objectChildDigest).not.toBe(objectBaseDigest);
   });
 
   it('keeps user-scope digests stable when project config changes', async () => {

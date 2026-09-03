@@ -7,7 +7,6 @@ import fs from 'fs-extra';
 import { resolveAwProjectRoot } from './plugin-config.js';
 
 const execFileAsync = promisify(execFile);
-const LOCAL_CONFIG_PATTERN = '.agent-workflows/plugin-config.local/';
 
 function isInsidePath(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
@@ -52,13 +51,6 @@ export async function assertCanonicalProjectManagedRoots(options: {
   return canonicalRepoRoot;
 }
 
-export interface ProjectBoundaryWarning {
-  code: 'projectPrivateStateIgnoreNotEnsured';
-  message: string;
-  targetRelativePath: string;
-  suggestedPatterns: string[];
-}
-
 interface GitIgnoreMatch {
   pattern?: string;
 }
@@ -80,33 +72,6 @@ async function inspectGitIgnore(repoRoot: string, targetRelativePath: string): P
   }
 }
 
-export async function ensureProjectPrivateStateIgnore(options: {
-  cwd: string;
-  targetPath: string;
-}): Promise<{ warning?: ProjectBoundaryWarning }> {
-  const repoRoot = resolveAwProjectRoot(options.cwd);
-  const targetRelativePath = relativePath(repoRoot, options.targetPath);
-  if (!targetRelativePath.startsWith(LOCAL_CONFIG_PATTERN)) return {};
-  if ((await inspectGitIgnore(repoRoot, targetRelativePath))?.pattern) return {};
-  const ignoreFilePath = path.join(repoRoot, '.gitignore');
-  try {
-    const existing = await fs.readFile(ignoreFilePath, 'utf8').catch(() => '');
-    const next = `${existing}${existing && !existing.endsWith('\n') ? '\n' : ''}${LOCAL_CONFIG_PATTERN}\n`;
-    await fs.writeFile(ignoreFilePath, next, 'utf8');
-    if ((await inspectGitIgnore(repoRoot, targetRelativePath))?.pattern) return {};
-  } catch {
-    // Return one actionable warning below.
-  }
-  return {
-    warning: {
-      code: 'projectPrivateStateIgnoreNotEnsured',
-      targetRelativePath,
-      suggestedPatterns: [LOCAL_CONFIG_PATTERN],
-      message: `无法确保 ${targetRelativePath} 已被 Git 忽略。请在 .gitignore 中加入 ${LOCAL_CONFIG_PATTERN}。`,
-    },
-  };
-}
-
 export async function assertProjectSharedConfigPathVisible(options: {
   cwd: string;
   targetPath: string;
@@ -116,7 +81,7 @@ export async function assertProjectSharedConfigPathVisible(options: {
   const match = await inspectGitIgnore(repoRoot, targetRelativePath);
   if (match?.pattern) {
     throw new Error(
-      `project shared config 路径 ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match.pattern)} 覆盖。请修正规则，或使用 \`--scope project --local\`。`,
+      `Project shared state path ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match.pattern)} 排除。写入前必须修正规则。`,
     );
   }
 }

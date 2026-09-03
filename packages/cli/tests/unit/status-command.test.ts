@@ -226,7 +226,7 @@ describe('status v7 current behavior', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
       manifest.apps = './.app.json';
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const { env } = await configurePathSource(sourceRoot);
     for (const scope of ['user', 'project'] as const) {

@@ -40,7 +40,7 @@ describe('real ConsoleAppV4 progress chain', () => {
         name: 'real-progress',
         version: '1.0.0',
         description: 'real V4 progress fixture',
-        schemaVersion: 2,
+        schemaVersion: 3,
         marketplace: {
           category: 'test',
           strict: true,

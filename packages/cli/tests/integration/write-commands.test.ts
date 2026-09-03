@@ -48,7 +48,11 @@ import {
   resolveCatalogSourceRef,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  readPluginConfigStore,
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
   setNativeCliRunnerOverrideForTests,
@@ -470,7 +474,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Warm.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -555,7 +559,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'warm', title: 'Warm', content: 'Changed.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     });
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
@@ -583,7 +587,7 @@ describe('five namespaced write commands', () => {
       manifest.extensions = {
         instructions: [{ name: 'transport', title: 'Transport', content: 'Transport.' }],
       };
-      manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
     };
     await Promise.all([
       createCatalogSnapshotFixture(httpsRoot, 'demo', [], 'https\n', configureManifest),
@@ -687,7 +691,7 @@ describe('five namespaced write commands', () => {
     ]);
     const captured = createCapturedCliIo();
     await expect(runCli([
-      'config', 'set', 'official/demo', 'mode', 'ssh', '--scope', 'project', '--json',
+      'config', 'set', 'official/demo', 'mode', '--value-json', '"ssh"', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -718,7 +722,7 @@ describe('five namespaced write commands', () => {
           instructions: [{ name: 'session', title: 'Session', content }],
         };
         manifest.config = {
-          schema: {
+          fields: {
             oldMode: { type: 'string', title: 'oldMode' },
             ...(field === 'oldMode' ? {} : { [field]: { type: 'string', title: field } }),
           },
@@ -884,6 +888,92 @@ describe('five namespaced write commands', () => {
       scope: 'user',
     }, { env, nativeCliRunner });
     expect(reinstalled.overallState, JSON.stringify(reinstalled.rebuildResults)).toBe('succeeded');
+  });
+
+  it('isolates user lifecycle planning from project config', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'target-scoped-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'target-scoped', [], 'config\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'target-scoped', title: 'Target scoped', content: 'Target scoped.' }],
+      };
+      manifest.config = { fields: { mode: { type: 'string', default: 'default' } } };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'user' },
+    });
+    await fs.outputFile(resolvePluginConfigStorePath({
+      sourceId: source.id,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    }), '{invalid');
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(installWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'stateInventoryFailed' })],
+    });
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'project-before' },
+    });
+    const reviewed = await reinstallWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { ...runtime, previewOperationPlan: true });
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      pluginName: 'target-scoped',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'project-after' },
+    });
+    await expect(reinstallWriteCommand(['team/target-scoped'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, {
+      ...runtime,
+      expectedPlanFingerprint: reviewed.operationPlan!.planFingerprint,
+    })).resolves.toMatchObject({ overallState: 'succeeded' });
   });
 
   it.each(['direct', 'symlink'] as const)(
@@ -3917,7 +4007,7 @@ describe('five namespaced write commands', () => {
         dependencies: ['leaf'],
         configureManifest: (manifest) => {
           manifest.config = {
-            schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+            fields: { mode: { type: 'string', default: 'safe' } },
           };
         },
       },
@@ -3943,7 +4033,7 @@ describe('five namespaced write commands', () => {
 
     const captured = createCapturedCliIo();
     const exitCode = await runCli([
-      'config', 'set', 'team/root', 'mode', 'fast', '--scope', 'project', '--apply', '--json',
+      'config', 'set', 'team/root', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -4100,8 +4190,8 @@ describe('five namespaced write commands', () => {
     ]);
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
-        schema: {
-          mode: { type: 'enum', values: ['safe', 'strict'], default: 'safe' },
+        fields: {
+          mode: { type: 'string', default: 'safe' },
         },
       };
       manifest.scripts = {
@@ -4144,7 +4234,7 @@ describe('five namespaced write commands', () => {
     }]);
     const configWrite = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'team/demo', 'mode', 'strict', '--scope', 'project', '--json',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"strict"', '--scope', 'project', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -4712,7 +4802,7 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-removal-config-source');
     const configure = (manifest: PluginMeta['manifest']) => {
       manifest.marketplace.policy.products = ['CODEX'];
-      manifest.config = { schema: { mode: { type: 'string', required: true } } };
+      manifest.config = { fields: { mode: { type: 'string', required: true } } };
     };
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'cleanup-target', configureManifest: configure },
@@ -4760,7 +4850,7 @@ describe('five namespaced write commands', () => {
       await expect(readPluginConfigStore({
         sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
         cwd: isolation.layout.fixtureCwd, env: isolation.env,
-      })).resolves.toMatchObject({ exists: true, values: {} });
+      })).resolves.toMatchObject({ exists: false, values: {} });
     }
   });
 
@@ -5105,7 +5195,7 @@ describe('five namespaced write commands', () => {
         manifest.extensions = {
           instructions: [{ name: 'review', title: 'Review', content }],
         };
-        manifest.config = { schema: { mode: { type: 'string', title: 'Mode' } } };
+        manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
       },
     );
     await writeSource('review B');
@@ -7763,16 +7853,24 @@ describe('five namespaced write commands', () => {
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-config-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
-        schema: {
-          level: { type: 'enum', values: ['fast', 'strict'], title: '审查级别' },
-          count: { type: 'number', min: 1, max: 10, title: '重试次数' },
+        fields: {
+          level: {
+            type: 'string',
+            title: '审查级别',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'fast', title: '快速', value: 'fast' },
+                { id: 'strict', title: '严格', value: 'strict', recommended: true },
+              ],
+            },
+          },
+          count: { type: 'number', validation: { minimum: 1, maximum: 10 }, title: '重试次数' },
           token: { type: 'string', sensitive: true, title: '令牌' },
-          rules: { type: 'file', title: '规则文件' },
+          rules: { type: 'string', validation: { format: 'path' }, title: '规则文件' },
         },
         presentation: {
           groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
-          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' } },
-          presets: [{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }],
         },
       };
     });
@@ -7783,13 +7881,11 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const debugLog = vi.fn();
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       interactive: false,
-      debugLogger: { log: debugLog },
     }));
     const page = await dependencies.getConfigPage!(
       'team/demo',
@@ -7800,31 +7896,22 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({
         title: '基本设置',
         fields: expect.arrayContaining([
-          expect.objectContaining({ key: 'level', valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' }),
+          expect.objectContaining({
+            key: 'level',
+            choices: expect.arrayContaining([
+              expect.objectContaining({ id: 'fast', title: '快速', value: 'fast' }),
+              expect.objectContaining({ id: 'strict', title: '严格', value: 'strict', recommended: true }),
+            ]),
+          }),
           expect.objectContaining({ key: 'count', min: 1, max: 10 }),
           expect.objectContaining({ key: 'token', sensitive: true }),
         ]),
       }),
     ]);
-    expect(page.presets).toEqual([{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }]);
+    expect(page.presets).toEqual([]);
 
     const controller = new TuiController(dependencies);
     await controller.load();
-    const privatePath = path.join(isolation.layout.fixtureCwd, 'private-secret-rules.json');
-    await expect(controller.buildOperationReview({
-      kind: 'configSave',
-      pluginId: 'team/demo',
-      scope: 'user',
-      projectLayer: 'shared',
-      updates: { rules: privatePath },
-      privateKeys: ['rules'],
-    })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
-    expect(JSON.stringify(debugLog.mock.calls)).not.toContain(privatePath);
-    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
-      message: 'TUI config operation failed.',
-      data: expect.objectContaining({ code: expect.any(String) }),
-    }));
-
     const save = await controller.buildOperationReview({
       kind: 'configSave',
       pluginId: 'team/demo',
@@ -7860,8 +7947,11 @@ describe('five namespaced write commands', () => {
       'team/demo',
       { scope: 'user', projectLayer: 'shared' },
     );
-    expect(availability).toMatchObject({ exists: true, sourceIdentityPresent: true });
-    expect(availability).not.toHaveProperty('sourceIdentity');
+    expect(availability).toMatchObject({
+      exists: true,
+      sourceIdentityPresent: true,
+      sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
     expect(JSON.stringify(availability)).not.toContain('sk-private');
     expect(JSON.stringify(availability)).not.toContain(sourceRoot);
 
@@ -7926,7 +8016,7 @@ describe('five namespaced write commands', () => {
           skillKey: 'review',
         })),
       };
-      manifest.config = { schema: { mode: { type: 'string', title: '模式' } } };
+      manifest.config = { fields: { mode: { type: 'string', title: '模式' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -8474,7 +8564,7 @@ describe('five namespaced write commands', () => {
       createCatalogSnapshotFixture(dualRoot, 'config-dual', [], 'dual\n', (manifest) => {
         manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
         manifest.config = {
-          schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+          fields: { mode: { type: 'string', default: 'safe' } },
         };
         manifest.scripts = {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
@@ -8723,7 +8813,7 @@ describe('five namespaced write commands', () => {
 
     const captured = createCapturedCliIo();
     expect(await runCli([
-      'config', 'set', 'dual/config-dual', 'mode', 'fast', '--scope', 'project', '--apply', '--json',
+      'config', 'set', 'dual/config-dual', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -8788,7 +8878,7 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'config-native', [], 'config\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.config = {
-        schema: { mode: { type: 'enum', values: ['safe', 'fast'], default: 'safe' } },
+        fields: { mode: { type: 'string', default: 'safe' } },
       };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -8859,7 +8949,7 @@ describe('five namespaced write commands', () => {
     const captured = createCapturedCliIo();
 
     expect(await runCli([
-      'config', 'set', 'team/config-native', 'mode', 'fast', '--scope', 'user', '--apply', '--json',
+      'config', 'set', 'team/config-native', 'mode', '--value-json', '"fast"', '--scope', 'user', '--apply', '--json',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -9364,8 +9454,8 @@ describe('five namespaced write commands', () => {
     ].join('\n'));
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
-        schema: {
-          mode: { type: 'enum', values: ['safe', 'fast', 'fail'], default: 'safe' },
+        fields: {
+          mode: { type: 'string', default: 'safe' },
         },
       };
       manifest.scripts = {
@@ -9440,7 +9530,7 @@ describe('five namespaced write commands', () => {
     });
 
     const set = await runPublic([
-      'config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project', '--apply',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply',
     ]);
     expect(set).toMatchObject({
       exitCode: 0,
@@ -9464,7 +9554,7 @@ describe('five namespaced write commands', () => {
     expect((await readStore()).values).toEqual({});
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
-    await runPublic(['config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project', '--apply']);
+    await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
     const reset = await runPublic([
       'config', 'reset', 'team/demo', '--scope', 'project', '--yes', '--apply',
     ]);
@@ -9475,9 +9565,9 @@ describe('five namespaced write commands', () => {
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
-    await runPublic(['config', 'set', 'team/demo', 'mode', 'fast', '--scope', 'project', '--apply']);
+    await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
     const failed = await runPublic([
-      'config', 'set', 'team/demo', 'mode', 'fail', '--scope', 'project', '--apply',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project', '--apply',
     ]);
     expect(failed).toMatchObject({
       exitCode: 1,

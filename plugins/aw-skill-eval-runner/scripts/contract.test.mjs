@@ -15,6 +15,13 @@ const pluginContext = process.env.AW_PLUGIN_CONTEXT
 const sourceRoot = pluginContext?.sourceRoot ?? root;
 const runtimeRoot = pluginContext?.platform ? path.join(root, pluginContext.platform) : root;
 const runtimeSkillRoot = path.join(runtimeRoot, 'skills', 'run-aw-skill-evals');
+const repoRoot = path.resolve(sourceRoot, '..', '..');
+const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
+const declaredCapabilities = ['aw.skill-eval.v2'];
+const derivedCapabilities = [
+  'aw.plugin-manifest.v3',
+  'aw.plugin-skills.v1',
+];
 
 async function readRuntime(relativePath) {
   return readFile(path.join(runtimeSkillRoot, relativePath), 'utf8');
@@ -39,6 +46,29 @@ async function runEval(args, cwd) {
   return execFileAsync(process.execPath, [bin, ...args], { cwd, encoding: 'utf8' });
 }
 
+function parseSingleJson(stdout, label) {
+  const trimmed = stdout.trim();
+  assert.notEqual(trimmed, '', `${label} must return JSON`);
+  return JSON.parse(trimmed);
+}
+
+async function runCli(args, cwd) {
+  try {
+    const result = await execFileAsync(process.execPath, [cliEntry, ...args], {
+      cwd,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return { exitCode: 0, ...result };
+  } catch (error) {
+    if (typeof error?.code !== 'number') throw error;
+    return {
+      exitCode: error.code,
+      stdout: error.stdout ?? '',
+      stderr: error.stderr ?? '',
+    };
+  }
+}
+
 test('Runner declares the Auditor dependency and v2 runtime capability', async () => {
   const manifest = JSON.parse(await readFile(
     path.join(sourceRoot, '.agents-plugin', 'plugin.json'),
@@ -46,9 +76,35 @@ test('Runner declares the Auditor dependency and v2 runtime capability', async (
   ));
   assert.equal(manifest.name, 'aw-skill-eval-runner');
   assert.deepEqual(manifest.dependencies, ['agent-skill-toolkit']);
-  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.buildConfig, undefined);
-  assert.deepEqual(manifest.requires.aw.capabilities, ['aw.skill-eval.v2']);
+  assert.deepEqual(manifest.requires.aw.capabilities, declaredCapabilities);
+
+  const result = await runCli([
+    'plugin', 'requirements', sourceRoot, '--workspace-root', repoRoot, '--json',
+  ], repoRoot);
+  assert.equal(result.exitCode, 0, result.stderr);
+  const receipt = parseSingleJson(result.stdout, 'plugin requirements');
+  assert.deepEqual(receipt.declared, declaredCapabilities);
+  assert.deepEqual(receipt.derived, derivedCapabilities);
+  assert.deepEqual(receipt.effective, [...declaredCapabilities, ...derivedCapabilities].sort());
+  assert.deepEqual(receipt.unsupportedByCurrentAw, []);
+  assert.deepEqual(receipt.detected, declaredCapabilities);
+  assert.deepEqual(receipt.observations.map((observation) => ({
+    code: observation.code,
+    blocking: observation.blocking,
+    path: observation.path,
+    provenance: observation.provenance,
+    command: observation.command,
+    capability: observation.capability,
+  })), [{
+    code: 'aw-command-detected',
+    blocking: false,
+    path: 'skills/run-aw-skill-evals/SKILL.md',
+    provenance: 'shell-fence',
+    command: 'aw skill eval',
+    capability: 'aw.skill-eval.v2',
+  }]);
   for (const relativePath of ['schemas', 'providers', 'scripts']) {
     assert.equal(await exists(relativePath), false, relativePath);
   }

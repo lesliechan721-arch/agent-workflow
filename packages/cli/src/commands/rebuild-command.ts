@@ -83,9 +83,11 @@ import {
   assertCatalogSourceInventoryComplete,
   canonicalMarketplaceRegistrationNames,
   inventoryCatalogSourceReferences,
+  type CatalogSourceReferenceInventory,
 } from '../utils/catalog-source-references.js';
 import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import {
   inspectOwnedComponents,
   parseOwnedTextHeader,
@@ -273,6 +275,23 @@ export function setRebuildCommandTestHooksForTests(
   hooks: RebuildCommandTestHooks | undefined,
 ): void {
   rebuildCommandTestHooks = hooks;
+}
+
+function assertRebuildCatalogSourceInventoryComplete(
+  inventory: CatalogSourceReferenceInventory,
+  targetScope: Scope,
+): void {
+  if (targetScope !== 'user') {
+    assertCatalogSourceInventoryComplete(inventory);
+    return;
+  }
+  assertCatalogSourceInventoryComplete({
+    ...inventory,
+    errors: inventory.errors.filter((error) =>
+      error.relevance.global
+      || error.relevance.scope !== 'project'
+      || !error.kind.startsWith('config')),
+  });
 }
 
 function selectedPlatforms(selection: CommandOptions['platform']): PlatformName[] {
@@ -1734,7 +1753,9 @@ export async function runRebuildCommand(options: {
   }
   if (options.all) {
     const inventory = await readOrdinaryInventory();
-    if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(inventory);
+    if (options.command !== 'cleanup') {
+      assertRebuildCatalogSourceInventoryComplete(inventory, options.commandOptions.scope);
+    }
     const requestedPlatforms = new Set(selectedPlatforms(options.commandOptions.platform));
     legacyLiveTargets = projectLegacyTargets(selectedLegacyLiveReferences(
       inventory.references,
@@ -2275,14 +2296,14 @@ export async function runRebuildCommand(options: {
             error.location.replaceAll('\\', '/'),
           ].join('\0'));
         };
-        assertCatalogSourceInventoryComplete(options.command === 'reinstall'
+        assertRebuildCatalogSourceInventoryComplete(options.command === 'reinstall'
           ? {
               ...inventory,
               errors: inventory.errors.filter((error) =>
                 !isExpectedSkillMarkerError(error)
                 && !isExpectedOwnedTextHeaderError(error)),
             }
-          : inventory);
+          : inventory, options.commandOptions.scope);
       };
       assertWriteInventoryComplete(stateInventory);
       const hasCodexSelection = executionSelections.some((selection) =>
@@ -2743,16 +2764,27 @@ export async function runRebuildCommand(options: {
             state = resolvedInspection.state;
             errorCode ??= 'dependencyNotReady';
           }
-          if (entry.plugin.manifest.config?.schema
+          if (entry.plugin.manifest.config?.fields
             && (action === 'install' || action === 'reinstall')) {
-            const effective = await resolveEffectivePluginConfig({
-              sourceId: entry.source.sourceId,
-              sourceIdentity: entry.source.sourceIdentity,
-              pluginName: entry.plugin.manifest.name,
-              manifest: entry.plugin.manifest,
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-            });
+            const effective = resolvedScope === 'project'
+              ? await resolveArtifactRenderConfig({
+                  sourceId: entry.source.sourceId,
+                  sourceIdentity: entry.source.sourceIdentity,
+                  pluginName: entry.plugin.manifest.name,
+                  manifest: entry.plugin.manifest,
+                  scope: 'project',
+                  cwd: options.commandOptions.cwd,
+                  env: runtimeEnv,
+                })
+              : await resolveEffectivePluginConfig({
+                  sourceId: entry.source.sourceId,
+                  sourceIdentity: entry.source.sourceIdentity,
+                  pluginName: entry.plugin.manifest.name,
+                  manifest: entry.plugin.manifest,
+                  targetScope: 'user',
+                  cwd: options.commandOptions.cwd,
+                  env: runtimeEnv,
+                });
             if (effective.issues.length > 0) {
               action = 'block';
               errorCode = 'invalidConfig';
@@ -3377,7 +3409,7 @@ export async function runRebuildCommand(options: {
           for (const { entry, platform } of executionSelections) {
             const planned = plan.targets.find((candidate) =>
               candidate.pluginId === entry.pluginId && candidate.platform === platform)!;
-            if (!entry.plugin.manifest.config?.schema
+            if (!entry.plugin.manifest.config?.fields
               || planned.action === 'block'
               || !preparedTargets.has(`${entry.pluginId}\0${platform}`)) continue;
             configTargets.set(`${entry.pluginId}\0${planned.resolvedScope}`, {
@@ -3395,6 +3427,7 @@ export async function runRebuildCommand(options: {
             sourceIdentity: entry.source.sourceIdentity,
             pluginName: entry.plugin.manifest.name,
             manifest: entry.plugin.manifest,
+            targetScope: scope,
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
           });
@@ -3680,7 +3713,12 @@ export async function runRebuildCommand(options: {
             cwd: options.commandOptions.cwd,
             env: runtimeEnv,
           });
-          if (options.command !== 'cleanup') assertCatalogSourceInventoryComplete(removalStateInventory);
+          if (options.command !== 'cleanup') {
+            assertRebuildCatalogSourceInventoryComplete(
+              removalStateInventory,
+              options.commandOptions.scope,
+            );
+          }
           const inspectConsumer = async (options_: {
             entry: (typeof available)[number];
             platform: PlatformName;

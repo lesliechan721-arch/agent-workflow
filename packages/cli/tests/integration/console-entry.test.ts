@@ -121,7 +121,8 @@ describe('console entry', () => {
     const secret = 'unknown-config-secret-value';
 
     const exitCode = await runCli([
-      'config', 'set', 'missing/demo', 'unknown-sensitive-key', secret,
+      'config', 'set', 'missing/demo', 'unknown-sensitive-key',
+      '--scope', 'user', '--value-json', JSON.stringify(secret),
       '--debug', '--log-file', logFile,
     ], {
       cwd: isolation.layout.fixtureCwd,

@@ -60,7 +60,10 @@ import {
   getCodexHome,
   resolveCanonicalRepoProjectKey,
 } from '../utils/state-paths.js';
-import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import {
+  resolveEffectivePluginConfig,
+  resolveProjectArtifactRenderConfig,
+} from '../utils/plugin-config.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
   readPluginIntentState,
@@ -400,12 +403,13 @@ export interface StatusV7PluginSummary {
   configFieldCount?: number;
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
-    type: 'missing-required' | 'invalid-config';
+    scope: Scope;
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
     key: string;
     title: string;
-    source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
+    source: 'default' | 'user' | 'project' | 'missing';
   }>;
-  configDiagnostic?: { code: 'configReadFailed'; message: string };
+  configDiagnostic?: { scope: Scope; code: 'configReadFailed'; message: string };
   dependencyDirectCount?: number;
   dependencyTotalCount?: number;
   dependencyIssueCount?: number;
@@ -1301,24 +1305,50 @@ export async function statusCommandV7(options: {
               plugin.sourceId = item.resolution!.sourceId;
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
-              let effectiveConfig: Awaited<ReturnType<typeof resolveEffectivePluginConfig>> | undefined;
+              let configIssues: StatusV7PluginSummary['configIssues'];
               let configDiagnostic: StatusV7PluginSummary['configDiagnostic'];
-              if (plugin.manifest.config?.schema) {
-                try {
-                  effectiveConfig = await resolveEffectivePluginConfig({
-                    sourceId: plugin.sourceId,
-                    sourceIdentity: plugin.sourceIdentity,
-                    pluginName: plugin.manifest.name,
-                    manifest: plugin.manifest,
-                    cwd: options.cwd,
-                    env,
-                  });
-                } catch {
-                  configDiagnostic = {
-                    code: 'configReadFailed',
-                    message: '插件设置当前不可读。未读取或显示设置值。',
-                  };
+              if (plugin.manifest.config?.fields) {
+                const issues = new Map<string, NonNullable<StatusV7PluginSummary['configIssues']>[number]>();
+                for (const scope of scopes) {
+                  try {
+                    const resolved = scope === 'project'
+                      ? await resolveProjectArtifactRenderConfig({
+                          sourceId: plugin.sourceId,
+                          sourceIdentity: plugin.sourceIdentity,
+                          pluginName: plugin.manifest.name,
+                          manifest: plugin.manifest,
+                          cwd: options.cwd,
+                          env,
+                        })
+                      : await resolveEffectivePluginConfig({
+                          sourceId: plugin.sourceId,
+                          sourceIdentity: plugin.sourceIdentity,
+                          pluginName: plugin.manifest.name,
+                          manifest: plugin.manifest,
+                          targetScope: 'user',
+                          cwd: options.cwd,
+                          env,
+                        });
+                    for (const issue of resolved.issues) {
+                      const source = issue.source ?? 'missing';
+                      const configIssue = {
+                        scope,
+                        type: issue.type,
+                        key: issue.key,
+                        title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
+                        source,
+                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                    }
+                  } catch {
+                    configDiagnostic ??= {
+                      scope,
+                      code: 'configReadFailed',
+                      message: '插件设置当前不可读。未读取或显示设置值。',
+                    };
+                  }
                 }
+                configIssues = [...issues.values()];
               }
               const states: StatusPluginCapability['states'] = {};
               const defaultMarketplaceName = item.resolution!.sourceId === resolution.primarySourceId
@@ -1853,19 +1883,10 @@ export async function statusCommandV7(options: {
                 shortDescription: plugin.manifest.interface?.shortDescription
                   ?? plugin.manifest.description,
                 description: plugin.manifest.description,
-                ...(plugin.manifest.config?.schema
-                  ? { configSchema: plugin.manifest.config.schema }
+                ...(plugin.manifest.config?.fields
+                  ? { configSchema: plugin.manifest.config.fields }
                   : {}),
-                ...(effectiveConfig?.issues.length
-                  ? {
-                      configIssues: effectiveConfig.issues.map((issue) => ({
-                        type: issue.type,
-                        key: issue.key,
-                        title: plugin.manifest.config!.schema[issue.key]?.title ?? issue.key,
-                        source: issue.source ?? 'missing',
-                      })),
-                    }
-                  : {}),
+                ...(configIssues?.length ? { configIssues } : {}),
                 ...(configDiagnostic ? { configDiagnostic } : {}),
                 targets: {
                   claude: { user: claude, project: claude },

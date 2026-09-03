@@ -16,6 +16,31 @@ export type PluginPath = string
  */
 export type StringArray = string[]
 export type Capabilities = string[]
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configField".
+ */
+export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField) | undefined
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalar".
+ */
+export type ConfigScalar = (string | number | boolean) | undefined
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarChildField".
+ */
+export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChildField | ConfigBooleanChildField) | undefined
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarDynamicField".
+ */
+export type ConfigScalarDynamicField = (ConfigStringDynamicField | ConfigNumberDynamicField | ConfigBooleanDynamicField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configScalarField".
+ */
+export type ConfigScalarField = (ConfigStringField | ConfigNumberField | ConfigBooleanField)
 
 export interface PluginManifestSourceV3 {
 schemaVersion: 3
@@ -326,7 +351,7 @@ args?: StringArray
  * via the `definition` "config".
  */
 export interface Config {
-schema: {
+fields: {
 [k: string]: ConfigField | undefined
 }
 presentation?: {
@@ -337,39 +362,224 @@ description?: string
 fields: StringArray
 advanced?: boolean
 }[]
-fields?: {
-[k: string]: {
-valueLabels?: {
-[k: string]: string | undefined
-}
-recommendedValue?: (string | number | boolean)
-placeholder?: string
-unit?: string
-advanced?: boolean
-} | undefined
-}
-presets?: {
-id: string
-title: string
-description?: string
-values: {
-[k: string]: (string | number | boolean) | undefined
-}
-}[]
 }
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configField".
+ * via the `definition` "configStringField".
  */
-export interface ConfigField {
-type: ("string" | "number" | "boolean" | "enum" | "file" | "directory")
+export interface ConfigStringField {
+type: "string"
 title?: string
 description?: string
-default?: (string | number | boolean)
+default?: string
 required?: boolean
 sensitive?: boolean
-values?: StringArray
-min?: number
-max?: number
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringChoices".
+ */
+export interface ConfigStringChoices {
+allowCustom: boolean
+presets: ConfigStringPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringPreset".
+ */
+export interface ConfigStringPreset {
+id: string
+title: string
+description?: string
+value: string
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringValidation".
+ */
+export interface ConfigStringValidation {
+minLength?: number
+maxLength?: number
+pattern?: string
+format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email" | "path" | "file" | "directory")
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberField".
+ */
+export interface ConfigNumberField {
+type: "number"
+title?: string
+description?: string
+default?: number
+required?: boolean
+sensitive?: boolean
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberChoices".
+ */
+export interface ConfigNumberChoices {
+allowCustom: boolean
+presets: ConfigNumberPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberPreset".
+ */
+export interface ConfigNumberPreset {
+id: string
+title: string
+description?: string
+value: number
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberValidation".
+ */
+export interface ConfigNumberValidation {
+integer?: boolean
+minimum?: number
+maximum?: number
+multipleOf?: number
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configBooleanField".
+ */
+export interface ConfigBooleanField {
+type: "boolean"
+title?: string
+description?: string
+default?: boolean
+required?: boolean
+sensitive?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectField".
+ */
+export interface ConfigObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar | undefined
+}
+required?: boolean
+sensitive?: boolean
+choices?: ConfigObjectChoices
+properties?: {
+[k: string]: ConfigScalarChildField | undefined
+}
+additionalProperties?: (false | ConfigScalarDynamicField)
+validation?: ConfigObjectValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectChoices".
+ */
+export interface ConfigObjectChoices {
+allowCustom: boolean
+presets: ConfigObjectPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectPreset".
+ */
+export interface ConfigObjectPreset {
+id: string
+title: string
+description?: string
+value: {
+[k: string]: ConfigScalar | undefined
+}
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringChildField".
+ */
+export interface ConfigStringChildField {
+type: "string"
+title?: string
+description?: string
+required?: boolean
+sensitive?: boolean
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberChildField".
+ */
+export interface ConfigNumberChildField {
+type: "number"
+title?: string
+description?: string
+required?: boolean
+sensitive?: boolean
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configBooleanChildField".
+ */
+export interface ConfigBooleanChildField {
+type: "boolean"
+title?: string
+description?: string
+required?: boolean
+sensitive?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringDynamicField".
+ */
+export interface ConfigStringDynamicField {
+type: "string"
+title?: string
+description?: string
+sensitive?: boolean
+choices?: ConfigStringChoices
+validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configNumberDynamicField".
+ */
+export interface ConfigNumberDynamicField {
+type: "number"
+title?: string
+description?: string
+sensitive?: boolean
+choices?: ConfigNumberChoices
+validation?: ConfigNumberValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configBooleanDynamicField".
+ */
+export interface ConfigBooleanDynamicField {
+type: "boolean"
+title?: string
+description?: string
+sensitive?: boolean
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectValidation".
+ */
+export interface ConfigObjectValidation {
+minProperties?: number
+maxProperties?: number
+key?: ConfigStringValidation
 }

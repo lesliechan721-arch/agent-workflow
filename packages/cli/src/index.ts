@@ -56,13 +56,13 @@ import {
   normalizeUninstallCommandOptions,
   normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
-  resolveConfigProjectLayer,
   resolveConfigWriteScope,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
 } from './commands/options.js';
 import {
   isCommandWarningError,
+  type RebuildReceiptOverallState,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
 import { redactString, redactValue } from './output/redact.js';
@@ -79,7 +79,6 @@ import {
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
-  coercePluginConfigUpdates,
   findConfigFieldEntry,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
@@ -102,6 +101,7 @@ import {
 import {
   parsePluginId,
   withResolvedCatalogPlugin,
+  withResolvedMultiSourceCatalog,
   type ResolvedCatalogPlugin,
 } from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
@@ -111,10 +111,6 @@ import {
   type CatalogOperationContext,
 } from './utils/catalog-operation-context.js';
 import {
-  formatConfigCommandValue,
-  parseConfigValue,
-} from './utils/config-value.js';
-import {
   withAwHomeMutationLock,
   type AwHomeMutationToken,
 } from './utils/aw-home-mutation-lock.js';
@@ -122,8 +118,6 @@ import type {
   ConfigFieldEntry,
   PlatformName,
   PlatformSelection,
-  PluginConfigSchemaField,
-  RebuildReceiptOverallState,
   Scope,
 } from './types.js';
 import {
@@ -230,9 +224,9 @@ interface RawDiagnosticsOptions {
 interface RawConfigOptions extends RawDiagnosticsOptions {
   scope?: string;
   json?: boolean;
-  valueJson?: boolean;
+  valueJson?: string;
+  preset?: string;
   yes?: boolean;
-  local?: boolean;
   apply?: boolean;
 }
 
@@ -476,14 +470,14 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
   const argumentsByCommand = {
     list: '<plugin>',
     get: '<plugin> [key]',
-    set: '<plugin> <key> <value>',
+    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --preset <id>)',
     unset: '<plugin> <key>',
     reset: '<plugin> --scope <project|user> --yes',
   } as const;
   return [
     `config ${command} 命令缺少必要参数。`,
     `Usage: aw config ${command} ${argumentsByCommand[command]}`,
-    `Example: aw config ${command} example-plugin${command === 'set' ? ' key value' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
+    `Example: aw config ${command} example-plugin${command === 'set' ? ' mode --scope user --value-json \'"safe"\'' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
   ].join('\n');
 }
 
@@ -524,8 +518,8 @@ interface EquivalentConfigCommandOptions {
   key?: string;
   value?: string;
   scope?: string;
-  projectLayer?: 'shared' | 'local';
-  valueJson?: boolean;
+  valueJson?: string;
+  preset?: string;
   confirmed?: boolean;
 }
 
@@ -545,34 +539,6 @@ function equivalentConfigCommandProjection(
   };
 }
 
-function configSetEquivalentOptions(
-  selection: CommandWizardSelection,
-  candidates: CommandWizardPluginCandidate[],
-  rawOptions: RawConfigOptions,
-): EquivalentConfigCommandOptions {
-  const field = candidates.find((entry) => entry.pluginName === selection.plugins[0])
-    ?.configSchema?.[selection.key ?? ''];
-  const placeholder = configFieldPlaceholder(field);
-  return {
-    command: 'set',
-    plugin: selection.plugins[0]!,
-    key: selection.key!,
-    value: placeholder
-      ? rawOptions.valueJson ? JSON.stringify(placeholder) : placeholder
-      : formatConfigCommandValue(selection.value, rawOptions.valueJson === true),
-    scope: selection.scope ?? 'user',
-    projectLayer: selection.projectLayer,
-    valueJson: rawOptions.valueJson,
-  };
-}
-
-function configFieldPlaceholder(field: PluginConfigSchemaField | undefined): string | undefined {
-  if (field?.sensitive) return '<sensitive-value>';
-  if (field?.type === 'file') return '<file-path>';
-  if (field?.type === 'directory') return '<directory-path>';
-  return undefined;
-}
-
 export function buildEquivalentConfigCommandTokens(
   options: EquivalentConfigCommandOptions,
 ): string[] {
@@ -581,8 +547,8 @@ export function buildEquivalentConfigCommandTokens(
     'config',
     options.command,
     ...optionTokens('--scope', options.scope),
-    ...(options.projectLayer === 'local' ? ['--local'] : []),
-    ...(options.valueJson ? ['--value-json'] : []),
+    ...optionTokens('--value-json', options.valueJson),
+    ...optionTokens('--preset', options.preset),
     ...(options.confirmed ? ['--yes'] : []),
     '--',
     options.plugin,
@@ -623,7 +589,6 @@ async function loadWizardCandidates(
 
 interface ConfigWizardStoreLocation {
   scope: Scope;
-  projectLayer: 'shared' | 'local';
 }
 
 function mergeWizardCandidates(
@@ -653,6 +618,7 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
+    sourceIdentity: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -660,15 +626,18 @@ async function loadStoredConfigWizardCandidates(
       cwd: context.cwd,
       env: context.env,
       scope: location.scope,
-      ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
     });
     for (const store of stores) {
       const keys = Object.keys(store.values);
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
+        sourceIdentity: store.sourceIdentity,
         keys: new Set<string>(),
       };
+      if (existing.sourceIdentity !== store.sourceIdentity) {
+        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
+      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -679,19 +648,18 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
+      sourceIdentity: store.sourceIdentity,
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
 }
 
 function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardStoreLocation[] {
-  if (rawOptions.local) return [{ scope: 'project', projectLayer: 'local' }];
-  if (rawOptions.scope === 'user') return [{ scope: 'user', projectLayer: 'shared' }];
-  if (rawOptions.scope === 'project') return [{ scope: 'project', projectLayer: 'shared' }];
+  if (rawOptions.scope === 'user') return [{ scope: 'user' }];
+  if (rawOptions.scope === 'project') return [{ scope: 'project' }];
   return [
-    { scope: 'user', projectLayer: 'shared' },
-    { scope: 'project', projectLayer: 'shared' },
-    { scope: 'project', projectLayer: 'local' },
+    { scope: 'user' },
+    { scope: 'project' },
   ];
 }
 
@@ -699,63 +667,50 @@ function overallResultState(value: { overallState: RebuildReceiptOverallState })
   return value.overallState === 'succeeded' ? 'succeeded' : 'failed';
 }
 
-async function resolveStoredOnlyConfigIdentity(options: {
-  selector: string;
-  context: CliExecutionContext;
-  locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string }> {
-  const parsed = parsePluginId(options.selector);
-  if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
-  const stores = (await Promise.all(options.locations.map((location) =>
-    listNamespacedPluginConfigStores({
-      cwd: options.context.cwd,
-      env: options.context.env,
-      scope: location.scope,
-      ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
-    })))).flat().filter((store) => store.pluginId === options.selector);
-  if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
-  return {
-    pluginName: parsed.pluginName,
-    pluginId: options.selector,
-    sourceId: parsed.sourceId,
-  };
-}
-
 async function resolveStoredConfigResetIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   scope: Scope;
-  projectLayer: 'shared' | 'local';
-}): Promise<{
-  pluginName: string;
-  pluginId: string;
-  sourceId: string;
-  sourceIdentity?: string;
-}> {
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity?: string }> {
   const parsed = parsePluginId(options.selector);
   if (parsed.sourceId) {
-    const located = await readNamespacedPluginConfigStoreIdentity({
-      sourceId: parsed.sourceId,
-      pluginName: parsed.pluginName,
-      scope: options.scope,
-      projectLayer: options.projectLayer,
-      cwd: options.context.cwd,
-      env: options.context.env,
-    });
-    if (!located) {
+    let sourceIdentity: string | undefined;
+    let exists = false;
+    try {
+      const located = await readNamespacedPluginConfigStoreIdentity({
+        sourceId: parsed.sourceId,
+        pluginName: parsed.pluginName,
+        scope: options.scope,
+        cwd: options.context.cwd,
+        env: options.context.env,
+      });
+      sourceIdentity = located?.sourceIdentity;
+      exists = located !== null;
+    } catch {
+      const store = await readPluginConfigStore({
+        sourceId: parsed.sourceId,
+        sourceIdentity: `sha256:${'0'.repeat(64)}`,
+        pluginName: parsed.pluginName,
+        scope: options.scope,
+        cwd: options.context.cwd,
+        env: options.context.env,
+      });
+      exists = store.exists;
+    }
+    if (!exists) {
       throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
     }
     return {
       pluginName: parsed.pluginName,
       pluginId: options.selector,
       sourceId: parsed.sourceId,
+      ...(sourceIdentity ? { sourceIdentity } : {}),
     };
   }
   const matches = (await listNamespacedPluginConfigStores({
     cwd: options.context.cwd,
     env: options.context.env,
     scope: options.scope,
-    projectLayer: options.projectLayer,
   })).filter((store) => store.pluginName === parsed.pluginName);
   if (matches.length === 0) {
     throw new Error(`configStoreMissing: ${options.selector} has no config in the selected store.`);
@@ -770,6 +725,48 @@ async function resolveStoredConfigResetIdentity(options: {
     pluginName: match!.pluginName,
     pluginId: match!.pluginId,
     sourceId: match!.sourceId,
+    sourceIdentity: match!.sourceIdentity,
+  };
+}
+
+async function resolveStoredOnlyConfigIdentity(options: {
+  selector: string;
+  context: CliExecutionContext;
+  locations: ConfigWizardStoreLocation[];
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+  const parsed = parsePluginId(options.selector);
+  if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
+  const stores = (await Promise.all(options.locations.map((location) =>
+    listNamespacedPluginConfigStores({
+      cwd: options.context.cwd,
+      env: options.context.env,
+      scope: location.scope,
+    })))).flat().filter((store) => store.pluginId === options.selector);
+  if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
+  const identities = new Set(stores.map((store) => store.sourceIdentity));
+  if (identities.size !== 1) {
+    throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
+  }
+  const sourceIdentity = [...identities][0]!;
+  await withResolvedMultiSourceCatalog({
+    cliVersion: resolveCliVersion(),
+    sourceIds: [parsed.sourceId],
+    env: options.context.env,
+    consume: async (catalog) => {
+      const source = catalog.sources.find((entry) => entry.sourceId === parsed.sourceId);
+      if (!source?.resolution) {
+        throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
+      }
+      if (source.resolution.sourceIdentity !== sourceIdentity) {
+        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
+      }
+    },
+  });
+  return {
+    pluginName: parsed.pluginName,
+    pluginId: options.selector,
+    sourceId: parsed.sourceId,
+    sourceIdentity,
   };
 }
 
@@ -790,7 +787,6 @@ async function resolveMultiSourceConfigRead(options: {
     env: options.context.env,
   });
   assertCatalogSourceReferencesSupported(inventory);
-  const projectLayer = resolveConfigProjectLayer(options.rawOptions);
   return withResolvedCatalogPlugin({
     selector: options.selector,
     cliVersion: resolveCliVersion(),
@@ -799,16 +795,13 @@ async function resolveMultiSourceConfigRead(options: {
       const result = await resolveConfigRead({
         pluginName: plugin.manifest.name,
         plugin,
-        scope: options.rawOptions.local
-          ? 'project'
-          : resolveConfigReadResolution(options.rawOptions.scope),
-        projectLayer,
+        scope: resolveConfigReadResolution(options.rawOptions.scope),
         cwd: options.context.cwd,
         env: options.context.env,
       });
       if (options.key !== undefined) {
         const field = findConfigFieldEntry(result.fields, options.key);
-        if (!field && plugin.manifest.config?.schema?.[options.key] === undefined) {
+        if (!field && plugin.manifest.config?.fields?.[options.key] === undefined) {
           throw new Error(`Unknown config key "${options.key}".`);
         }
         if (field) result.fields = [field];
@@ -831,12 +824,10 @@ async function resolveMultiSourceConfigRead(options: {
     });
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
+      sourceIdentity: stored.sourceIdentity,
       pluginName: stored.pluginName,
       plugin: null,
-      scope: options.rawOptions.local
-        ? 'project'
-        : resolveConfigReadResolution(options.rawOptions.scope),
-      projectLayer,
+      scope: resolveConfigReadResolution(options.rawOptions.scope),
       cwd: options.context.cwd,
       env: options.context.env,
     });
@@ -1117,11 +1108,11 @@ function writeJsonReceipt(write: (text: string) => void, payload: unknown): void
   writeLine(write, JSON.stringify(payload, null, 2));
 }
 
-function configLayerLabel(scope: Scope, projectLayer: 'shared' | 'local' = 'shared'): string {
+function configLayerLabel(scope: Scope): string {
   if (scope === 'user') {
     return '个人';
   }
-  return projectLayer === 'local' ? '当前项目（本机私有覆盖）' : '当前项目';
+  return '当前项目';
 }
 
 function writeConfigApplyNotice(
@@ -1160,9 +1151,6 @@ function writeConfigApplyNotice(
   }
 }
 
-function writeProjectLocalConfigNotice(write: (text: string) => void): void {
-  writeLine(write, '当前显示的是当前项目的本机私有覆盖层，不作为 repo-visible artifact 渲染输入。');
-}
 function renderConfigFieldState(field: ConfigFieldEntry): string {
   if (field.valueState === 'invalid') {
     return 'invalid-config';
@@ -1190,10 +1178,8 @@ function writeConfigReadHuman(
     if (field.kind === 'manifest' && field.valueState === 'invalid') {
       const sourceScope = field.sourceLayer === 'project'
         ? ' -s project'
-        : field.sourceLayer === 'local'
-          ? ' -s project --local'
-          : ' -s user';
-      writeLine(write, `  aw config set ${pluginName} ${field.key} <value>${sourceScope}`);
+        : ' -s user';
+      writeLine(write, `  aw config set ${pluginName} ${field.key}${sourceScope} --value-json '<json>'`);
       writeLine(write, `  aw config unset ${pluginName} ${field.key}${sourceScope}`);
       writeLine(write, `  aw config reset ${pluginName}${sourceScope}`);
     }
@@ -2485,6 +2471,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--ref <ref>', 'use an explicit Git ref'))
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .option('--subdir <path>', 'use a catalog snapshot below the Git repository root')
+    .option('--no-auto-check', 'disable automatic update checks for this source')
     .option('--primary', 'make this source primary', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
@@ -2493,6 +2480,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string;
+      autoCheck?: boolean;
       primary?: boolean;
       json?: boolean;
     }) => {
@@ -2506,7 +2494,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
         )) {
-          throw new Error('Path catalog source add only accepts `--path` and `--primary`.');
+          throw new Error('Path catalog source add only accepts `--path`, `--primary`, and `--no-auto-check`.');
         }
         const source = rawOptions.git !== undefined
           ? {
@@ -2516,12 +2504,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               url: rawOptions.git,
               refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true),
               ...(rawOptions.subdir ? { subdir: rawOptions.subdir } : {}),
+              ...(rawOptions.autoCheck === false ? { autoCheck: false } : {}),
             }
           : {
               id,
               type: 'path' as const,
               primary: rawOptions.primary === true,
               path: rawOptions.path!,
+              ...(rawOptions.autoCheck === false ? { autoCheck: false } : {}),
             };
         const receipt = await addCatalogSourceCommand({
           source,
@@ -2552,6 +2542,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
     .addOption(new Option('--subdir <path>', 'update the Git catalog subdirectory'))
     .addOption(new Option('--no-subdir', 'remove the Git catalog subdirectory'))
+    .addOption(new Option('--auto-check', 'enable automatic update checks for this source'))
+    .addOption(new Option('--no-auto-check', 'disable automatic update checks for this source'))
     .option('-y, --yes', 'confirm a source identity change', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
@@ -2560,6 +2552,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       ref?: string;
       defaultRef?: boolean;
       subdir?: string | false;
+      autoCheck?: boolean;
       yes?: boolean;
       json?: boolean;
     }) => {
@@ -2574,15 +2567,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           || rawOptions.path !== undefined
           || rawOptions.ref !== undefined
           || rawOptions.defaultRef === true
-          || rawOptions.subdir !== undefined;
+          || rawOptions.subdir !== undefined
+          || rawOptions.autoCheck !== undefined;
         if (!hasUpdate) throw new Error('catalog source update requires at least one update option.');
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
-        )) throw new Error('Path catalog source update only accepts `--path`.');
+        )) throw new Error('Path catalog source update only accepts `--path` and auto-check options.');
+        const hasGitUpdate = rawOptions.git !== undefined
+          || rawOptions.ref !== undefined
+          || rawOptions.defaultRef === true
+          || rawOptions.subdir !== undefined;
         const update = rawOptions.path !== undefined
-          ? { type: 'path' as const, path: rawOptions.path }
-          : {
+          ? {
+              type: 'path' as const,
+              path: rawOptions.path,
+              ...(rawOptions.autoCheck !== undefined ? { autoCheck: rawOptions.autoCheck } : {}),
+            }
+          : hasGitUpdate ? {
               type: 'git' as const,
+              ...(rawOptions.autoCheck !== undefined ? { autoCheck: rawOptions.autoCheck } : {}),
               ...(rawOptions.git !== undefined ? { url: rawOptions.git } : {}),
               ...(rawOptions.ref !== undefined || rawOptions.defaultRef === true
                 ? { refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true) }
@@ -2590,7 +2593,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               ...(rawOptions.subdir !== undefined
                 ? { subdir: rawOptions.subdir === false ? null : rawOptions.subdir }
                 : {}),
-            };
+            }
+            : { autoCheck: rawOptions.autoCheck! };
         const receipt = await updateCatalogSourceCommand({
           sourceId: id,
           update,
@@ -2902,7 +2906,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('list')
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'read only project or user config')
-    .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2910,8 +2913,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:list', rawOptions);
       const outcome = await runActionWithContext(context, async () => {
-        resolveConfigProjectLayer(rawOptions);
-        if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
+        resolveConfigReadResolution(rawOptions.scope);
         const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
           selector: selectedPlugin,
           rawOptions,
@@ -2937,7 +2939,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             command: 'list',
             plugin: selection.plugins[0]!,
             scope: rawOptions.scope,
-            projectLayer: rawOptions.local ? 'local' : 'shared',
           })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
@@ -2958,8 +2959,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           pluginId: resolved.pluginId,
           sourceId: resolved.sourceId,
           sourceIdentity: resolved.sourceIdentity,
-          scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
-          projectLayer: rawOptions.local ? 'local' : 'shared',
+          scope: rawOptions.scope ?? 'effective',
           ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
           fields: resolved.result.fields,
         });
@@ -2973,7 +2973,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .argument('[key]')
     .option('-s, --scope <scope>', 'read only project or user config')
-    .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -2981,8 +2980,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:get', rawOptions);
       const outcome = await runActionWithContext(context, async () => {
-        resolveConfigProjectLayer(rawOptions);
-        if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
+        resolveConfigReadResolution(rawOptions.scope);
         const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
           selector: selectedPlugin,
           ...(key === undefined ? {} : { key }),
@@ -3010,7 +3008,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             plugin: selection.plugins[0]!,
             key,
             scope: rawOptions.scope,
-            projectLayer: rawOptions.local ? 'local' : 'shared',
           })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
@@ -3032,8 +3029,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceId: resolved.sourceId,
           sourceIdentity: resolved.sourceIdentity,
           key,
-          scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
-          projectLayer: rawOptions.local ? 'local' : 'shared',
+          scope: rawOptions.scope ?? 'effective',
           ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
           fields: resolved.result.fields,
         });
@@ -3045,11 +3041,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   config
     .command('set')
     .argument('[plugin]')
-    .argument('[key]')
-    .argument('[value]')
+    .argument('[field]')
     .option('-s, --scope <scope>', 'project or user')
-    .option('--local', 'write only the current project local override layer', false)
-    .option('--value-json', 'parse value as a JSON literal', false)
+    .option('--value-json <json>', 'set the field to an exact JSON value')
+    .option('--preset <id>', 'set the field to the current manifest preset value')
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3058,31 +3053,46 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (
       pluginName: string | undefined,
       key: string | undefined,
-      rawValue: string | undefined,
       rawOptions: RawConfigOptions,
     ) => {
+      if (!pluginName || !key) throw new Error(configCommandUsage('set'));
       const context = createActionContext('config:set', rawOptions);
       let outcome;
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const execute = async (selectedPlugin: string, selectedKey: string, inputValue: unknown) =>
-          withResolvedConfigMutationPlugin(
-            context,
-            selectedPlugin,
-            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (!plugin.manifest.config?.schema) {
-          throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
+        if ((rawOptions.valueJson === undefined) === (rawOptions.preset === undefined)) {
+          throw new Error('Use exactly one of --value-json <json> or --preset <id>.');
         }
-        if (!plugin.manifest.config.schema[selectedKey]) {
-          throw new Error(`Unknown config key "${selectedKey}".`);
+        return withResolvedConfigMutationPlugin(
+            context,
+            pluginName,
+            async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
+        if (!plugin.manifest.config?.fields) {
+          throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
+        }
+        const field = plugin.manifest.config.fields[key];
+        if (!field) {
+          throw new Error(`Unknown config key "${key}".`);
+        }
+        let inputValue: unknown;
+        if (rawOptions.valueJson !== undefined) {
+          try {
+            inputValue = JSON.parse(rawOptions.valueJson) as unknown;
+          } catch {
+            throw new Error('--value-json must contain valid JSON.');
+          }
+        } else {
+          const preset = field.type === 'boolean'
+            ? undefined
+            : field.choices?.presets.find((entry) => entry.id === rawOptions.preset);
+          if (!preset) throw new Error(`Unknown preset "${rawOptions.preset}" for config key "${key}".`);
+          inputValue = structuredClone(preset.value);
         }
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
           pluginName: plugin.manifest.name,
           scope,
-          projectLayer,
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
@@ -3094,7 +3104,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           awHomeMutationToken,
           request: {
-            updates: { [selectedKey]: inputValue },
+            updates: { [key]: inputValue },
           },
           apply: rawOptions.apply === true,
         });
@@ -3109,95 +3119,26 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceId: source.sourceId,
           sourceIdentity: source.sourceIdentity,
           affectedFields: [{
-            key: selectedKey,
-            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
+            key,
+            title: field.title ?? key,
             kind: 'manifest' as const,
             reserved: false,
             action: 'set' as const,
             scope,
-            ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
             },
           );
-
-        if (pluginName && key && rawValue !== undefined) {
-          const inputValue = parseConfigValue(rawValue, rawOptions.valueJson === true);
-          return {
-            cancelled: false as const,
-            key,
-            value: await execute(pluginName, key, inputValue),
-          };
-        }
-        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('set'));
-        const candidates = await loadWizardCandidates(context, {});
-        if (pluginName) {
-          const candidate = candidates.find((entry) => entry.pluginName === pluginName);
-          if (!candidate) throw new Error(`Unknown plugin "${pluginName}".`);
-          if (!hasConfigSchemaKeys(candidate)) {
-            throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
-          }
-          if (key && !candidate.configSchema?.[key]) throw new Error(`Unknown config key "${key}".`);
-        }
-        const configurableCandidates = candidates.filter(hasConfigSchemaKeys);
-        if (configurableCandidates.length === 0) {
-          throw new Error('configSchemaUnavailable: No current plugin declares an AW config schema.');
-        }
-        const result = await runCommandWizard(context, {
-          command: 'config:set',
-          candidates: configurableCandidates,
-          initial: {
-            plugins: pluginName ? [pluginName] : [],
-            key,
-            ...(rawValue !== undefined ? { value: rawValue } : {}),
-            scope,
-            projectLayer,
-          },
-          pluginMode: pluginName ? 'none' : 'single',
-          valueJson: rawOptions.valueJson === true,
-          promptForKey: key === undefined,
-          promptForValue: rawValue === undefined,
-          ...equivalentConfigCommandProjection((selection) =>
-            configSetEquivalentOptions(selection, candidates, rawOptions)),
-          commandIsTemplate: (selection) => candidates.find(
-            (entry) => entry.pluginName === selection.plugins[0],
-          )?.configSchema?.[selection.key ?? ''] !== undefined
-            && configFieldPlaceholder(candidates.find(
-              (entry) => entry.pluginName === selection.plugins[0],
-            )?.configSchema?.[selection.key ?? '']) !== undefined,
-          resultState: overallResultState,
-          execute: async (selection) => {
-            const selectedPlugin = selection.plugins[0]!;
-            const selectedKey = selection.key!;
-            const schema = candidates.find((entry) => entry.pluginName === selectedPlugin)!.configSchema!;
-            const updates = await coercePluginConfigUpdates({
-              schema,
-              updates: {
-                [selectedKey]: parseConfigValue(selection.value, rawOptions.valueJson === true),
-              },
-              cwd: context.cwd,
-            });
-            return execute(selectedPlugin, selectedKey, updates[selectedKey]);
-          },
-        });
-        return result.cancelled
-          ? { cancelled: true as const }
-          : { cancelled: false as const, key: result.selection!.key!, value: result.value! };
         });
       } catch (error) {
         writeConfigMutationFailure('config:set', pluginName, rawOptions.json === true, error);
         return;
       }
-      if (outcome.cancelled) return;
-      const receipt = outcome.value;
-      const selectedKey = outcome.key;
+      const receipt = outcome;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
-        writeLine(io.stdout, `已写入 ${receipt.plugin}.${selectedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`);
-        if (receipt.projectLayer === 'local') {
-          writeProjectLocalConfigNotice(io.stdout);
-        }
+        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configLayerLabel(receipt.scope)}配置）。`);
         writeConfigApplyNotice(io.stderr, receipt);
       }
       commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
@@ -3208,7 +3149,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
-    .option('--local', 'write only the current project local override layer', false)
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3220,13 +3160,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const execute = async (selectedPlugin: string, selectedKey: string) =>
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
             async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (plugin.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
+        if (plugin.manifest.config?.fields && !plugin.manifest.config.fields[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
         const store = await readPluginConfigStore({
@@ -3234,9 +3173,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           sourceIdentity: source.sourceIdentity,
           pluginName: plugin.manifest.name,
           scope,
-          ...(scope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
+          schema: plugin.manifest.config?.fields,
         });
         const existed = Object.hasOwn(store.values, selectedKey);
         if (!existed) throw new Error(`Unknown config key "${selectedKey}".`);
@@ -3244,7 +3183,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           plugin,
           pluginName: plugin.manifest.name,
           scope,
-          projectLayer,
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
@@ -3274,12 +3212,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           existed,
           affectedFields: [{
             key: selectedKey,
-            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
+            title: plugin?.manifest.config?.fields?.[selectedKey]?.title ?? selectedKey,
             kind: 'manifest' as const,
             reserved: false,
             action: 'unset' as const,
             scope,
-            ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
             },
@@ -3300,7 +3237,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const result = await runCommandWizard(context, {
           command: 'config:unset',
           candidates,
-          initial: { plugins: pluginName ? [pluginName] : [], key, scope, projectLayer },
+          initial: { plugins: pluginName ? [pluginName] : [], key, scope },
           pluginMode: pluginName ? 'none' : 'single',
           promptForKey: key === undefined,
           destructive: true,
@@ -3309,7 +3246,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             plugin: selection.plugins[0]!,
             key: selection.key!,
             scope: selection.scope ?? 'user',
-            projectLayer: selection.projectLayer,
           })),
           resultState: overallResultState,
           execute: (selection) => execute(selection.plugins[0]!, selection.key!),
@@ -3328,11 +3264,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.existed
-          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`
-          : `${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）原本不存在。`);
-        if (receipt.projectLayer === 'local') {
-          writeProjectLocalConfigNotice(io.stdout);
-        }
+          ? `已删除 ${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope)}配置）。`
+          : `${receipt.plugin}.${receipt.removedKey}（${configLayerLabel(receipt.scope)}配置）原本不存在。`);
         writeConfigApplyNotice(io.stderr, receipt);
       }
       commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
@@ -3342,7 +3275,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('reset')
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
-    .option('--local', 'reset only the current project local override layer', false)
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -3357,19 +3289,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const execute = async (
           selectedPlugin: string,
           selectedScope: Scope,
-          projectLayer: 'shared' | 'local',
           confirmed: boolean,
         ) => {
           if (!confirmed) {
             throw new Error(
-              `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
+              `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope} --yes\` to delete this store.`,
             );
           }
           const located = await resolveStoredConfigResetIdentity({
             selector: selectedPlugin,
             context,
             scope: selectedScope,
-            projectLayer,
           });
           const resetLocatedStore = async (
             plugin: ResolvedCatalogPlugin['plugin'] | null,
@@ -3382,7 +3312,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               plugin,
               pluginError,
               scope: selectedScope,
-              projectLayer,
               cwd: context.cwd,
               env: context.env,
             });
@@ -3391,9 +3320,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               sourceIdentity: located.sourceIdentity,
               pluginName: located.pluginName,
               scope: selectedScope,
-              projectLayer,
               cwd: context.cwd,
               env: context.env,
+              nativeCliRunner: context.nativeCliRunner,
               plugin,
               pluginError,
               apply: rawOptions.apply === true,
@@ -3407,7 +3336,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               pluginName: located.pluginName,
               pluginId: located.pluginId,
               sourceId: located.sourceId,
-              sourceIdentity: located.sourceIdentity,
+              ...(located.sourceIdentity ? { sourceIdentity: located.sourceIdentity } : {}),
               affectedFields,
             };
           };
@@ -3432,19 +3361,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         };
 
         const scope = resolveConfigWriteScope(rawOptions.scope);
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
         const needsWizard = pluginName === undefined || rawOptions.yes !== true;
         if (!needsWizard) {
           return {
             cancelled: false as const,
-            value: await execute(pluginName, scope, projectLayer, true),
+            value: await execute(pluginName, scope, true),
           };
         }
         if (!isWizardAvailable(context, rawOptions)) {
           if (!pluginName) throw new Error(configCommandUsage('reset'));
           return {
             cancelled: false as const,
-            value: await execute(pluginName, scope, projectLayer, false),
+            value: await execute(pluginName, scope, false),
           };
         }
         const currentCandidates = pluginName ? [] : await loadWizardCandidates(context, {});
@@ -3454,7 +3382,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             currentCandidates,
             await loadStoredConfigWizardCandidates(
               context,
-              [{ scope: 'user', projectLayer: 'shared' }],
+              [{ scope: 'user' }],
               { includeEmptyStores: true },
             ),
           ));
@@ -3464,7 +3392,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             currentCandidates,
             await loadStoredConfigWizardCandidates(
               context,
-              [{ scope: 'project', projectLayer }],
+              [{ scope: 'project' }],
               { includeEmptyStores: true },
             ),
           ));
@@ -3479,7 +3407,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const result = await runCommandWizard(context, {
           command: 'config:reset',
           candidates,
-          initial: { plugins: pluginName ? [pluginName] : [], scope, projectLayer },
+          initial: { plugins: pluginName ? [pluginName] : [], scope },
           pluginMode: pluginName ? 'none' : 'single',
           promptForScope: rawOptions.scope === undefined,
           destructive: true,
@@ -3490,14 +3418,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             command: 'reset',
             plugin: selection.plugins[0]!,
             scope: selection.scope ?? 'user',
-            projectLayer: selection.projectLayer,
             confirmed: true,
           })),
           resultState: overallResultState,
           execute: (selection) => execute(
             selection.plugins[0]!,
             selection.scope ?? 'user',
-            selection.projectLayer ?? 'shared',
             true,
           ),
         });
@@ -3515,11 +3441,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         writeJsonReceipt(io.stdout, receipt);
       } else {
         writeLine(io.stdout, receipt.deleted
-          ? `已重置 ${receipt.plugin} 的${configLayerLabel(receipt.scope, receipt.projectLayer)}配置。`
-          : `${receipt.plugin} 没有可重置的${configLayerLabel(receipt.scope, receipt.projectLayer)}配置。`);
-        if (receipt.projectLayer === 'local') {
-          writeProjectLocalConfigNotice(io.stdout);
-        }
+          ? `已重置 ${receipt.plugin} 的${configLayerLabel(receipt.scope)}配置。`
+          : `${receipt.plugin} 没有可重置的${configLayerLabel(receipt.scope)}配置。`);
         writeConfigApplyNotice(io.stderr, receipt);
       }
       commandExitState.exitCode = receipt.overallState === 'succeeded' ? 0 : 1;
@@ -3680,6 +3603,23 @@ export async function runCli(
       && argv.includes('--no-subdir')) {
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
+        writeJsonReceipt(io.stdout, {
+          receiptSchemaVersion: 5,
+          command: 'catalog:source:update',
+          ok: false,
+          changed: false,
+          sourceId: argv[3] ?? '',
+          references: [],
+          errors: [{ code: 'catalogSourceOptionConflict', message }],
+        });
+      }
+      writeLine(io.stderr, `error: ${message}`);
+      return 1;
+    }
+    if (argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update'
+      && argv.includes('--auto-check') && argv.includes('--no-auto-check')) {
+      const message = 'option --auto-check cannot be used with option --no-auto-check';
+      if (argv.includes('--json') || argv.includes('-j')) {
         writeJsonReceipt(io.stdout, {
           receiptSchemaVersion: 5,
           command: 'catalog:source:update',

@@ -4,7 +4,10 @@ import path from 'node:path'
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { validateAwSkillEvalManifest } from '../../src/eval/manifest-v1.js'
+import {
+  assertNoSensitiveProfileConfig,
+  validateAwSkillEvalManifest,
+} from '../../src/eval/manifest-v1.js'
 import type { PluginMeta } from '../../src/types.js'
 
 const roots: string[] = []
@@ -63,6 +66,52 @@ afterEach(async () => {
 })
 
 describe('AwSkillEvalManifest v1 reader', () => {
+  it('rejects fixed and dynamic sensitive object children without leaking values', () => {
+    const plugin = {
+      rootDir: '/fixture',
+      manifestPath: '/fixture/.agents-plugin/plugin.json',
+      manifest: {
+        name: 'fixture-plugin',
+        config: {
+          fields: {
+            settings: {
+              type: 'object',
+              properties: {
+                public: { type: 'string' },
+                token: { type: 'string', sensitive: true },
+              },
+              additionalProperties: { type: 'string', sensitive: true },
+            },
+          },
+        },
+      },
+    } as PluginMeta
+    const profile = (config: Record<string, unknown>) => ({
+      id: 'selected',
+      scope: 'project' as const,
+      plugins: [{ name: 'fixture-plugin', config }],
+    })
+
+    expect(() => assertNoSensitiveProfileConfig(
+      profile({ settings: { public: 'safe' } }),
+      [plugin],
+    )).not.toThrow()
+
+    for (const [config, sensitiveValue] of [
+      [{ settings: { token: 'fixed-secret-must-not-leak' } }, 'fixed-secret-must-not-leak'],
+      [{ settings: { custom: 'dynamic-secret-must-not-leak' } }, 'dynamic-secret-must-not-leak'],
+    ] as const) {
+      let message = ''
+      try {
+        assertNoSensitiveProfileConfig(profile(config), [plugin])
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error)
+      }
+      expect(message).toContain('provides a sensitive config field')
+      expect(message).not.toContain(sensitiveValue)
+    }
+  })
+
   it('accepts canonical v1 and rejects invalid release/profile selections', async () => {
     const fixture = await createFixture()
     const validManifest = manifest()

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
-import type { DistributionName, GeneratedArtifact, NormalizedPluginManifest, PlatformName, PluginMeta, Scope } from '../types.js';
+import type { DistributionName, GeneratedArtifact, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
 import { redactString } from '../output/redact.js';
 import { observeProcessTree, terminateProcessTree, type ProcessTreeObservation } from './process-tree.js';
 import { resolveAwHome } from './paths.js';
@@ -61,8 +61,18 @@ export function resolvePluginScriptTimeoutMs(options: { cliTimeoutMs?: number; m
   return value;
 }
 
-export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, string | number | boolean>): string[] {
-  return Object.entries(manifest.config?.schema ?? {}).filter(([, field]) => field.sensitive).map(([key]) => values[key]).filter((value) => value !== undefined).map(String).filter(Boolean);
+export function collectSensitivePluginConfigValues(manifest: NormalizedPluginManifest, values: Record<string, PluginConfigValue>): string[] {
+  return Object.entries(manifest.config?.fields ?? {}).flatMap(([key, field]) => {
+    const value = values[key];
+    if (value === undefined) return [];
+    if (field.sensitive) return typeof value === 'object' ? Object.values(value).map(String) : [String(value)];
+    if (field.type !== 'object' || typeof value !== 'object') return [];
+    return Object.entries(value).flatMap(([property, childValue]) => {
+      const child = field.properties?.[property]
+        ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
+      return child?.sensitive ? [String(childValue)] : [];
+    });
+  }).filter(Boolean);
 }
 export function redactPluginScriptOutput(value: string, sensitiveValues: readonly string[]): string {
   let output = redactString(value); for (const sensitiveValue of sensitiveValues) output = output.split(sensitiveValue).join('[REDACTED]'); return output;
@@ -104,7 +114,7 @@ export interface PostApplyContextV1 {
   schemaVersion: 1;
   plugin: { pluginId: string; name: string; version: string; rootDir: string };
   target: { platform: PlatformName; scope: Scope; projectRoot?: string };
-  config: { values: Record<string, string | number | boolean> };
+  config: { values: Record<string, PluginConfigValue> };
   components: Array<{ kind: string; key: string; outcome: 'created' | 'updated' | 'removed' | 'unchanged' }>;
 }
 
@@ -116,8 +126,8 @@ export async function runPostApplyScript(options: {
 }): Promise<void> {
   const declaration = options.plugin.manifest.scripts?.postApply; if (!declaration) return;
   const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'postApply script' });
-  const effective = options.plugin.manifest.config?.schema
-    ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, cwd: options.cwd, env: options.context.env })
+  const effective = options.plugin.manifest.config?.fields
+    ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env })
     : { values: {}, issues: [] };
   if (effective.issues.length > 0) throw new Error(`postApply config is invalid for ${options.plugin.manifest.name}.`);
   const payload: PostApplyContextV1 = {

@@ -140,6 +140,22 @@ try {
   ], { encoding: 'utf8', env, cwd: os.tmpdir() });
   assert.equal(JSON.parse(run.stdout).ready, true);
 
+  const manifestPath = path.join(plugin, '.agents-plugin', 'plugin.json');
+  const currentManifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  await writeFile(manifestPath, JSON.stringify({ ...currentManifest, schemaVersion: 2 }));
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      releaseCheck,
+      plugin,
+      '--workspace-root', temp,
+      '--review', review,
+      '--profile', 'codex-project',
+      '--final', `codex-project=${finalRoot}`,
+      '--format', 'json'
+    ], { encoding: 'utf8', env, cwd: os.tmpdir() }),
+  );
+  await writeFile(manifestPath, JSON.stringify(currentManifest));
+
   const executableOverrideSentinel = path.join(temp, 'executable-override-ran');
   const executableOverride = path.join(temp, 'executable-override.mjs');
   await writeFile(executableOverride, `

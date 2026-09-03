@@ -189,7 +189,7 @@
       "input": {
         "workspaceFiles": {
           ".aw-workspace.json": "{\"schemaVersion\":1,\"kind\":\"aw-catalog-workspace\",\"workspaceIdentity\":\"incident-policy-artifact-fixture\"}\n",
-          "plugins/incident-policy/.agents-plugin/plugin.json": "{\"schemaVersion\":2,\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\"]}}}\n",
+          "plugins/incident-policy/.agents-plugin/plugin.json": "{\"schemaVersion\":3,\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"marketplace\":{\"category\":\"workflow\",\"strict\":true,\"policy\":{\"installation\":\"AVAILABLE\",\"authentication\":\"ON_INSTALL\",\"products\":[\"CODEX\"]}}}\n",
           "plugins/incident-policy/README.md": "# Incident Policy\n",
           "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest and scripts directory.\n"
         }
@@ -210,7 +210,7 @@
       },
       "assertions": [
         "AWAuthoringContext components 直接包含 manifest 和 dynamic-artifact，并在后续实现与验证中保留两项",
-        "manifest 声明 config.schema.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target，且 refreshKeys 包含 severityPrefix",
+        "manifest 声明 config.fields.severityPrefix、scripts.artifacts.render 和 codex.developerInstructionsBlock target，且 refreshKeys 包含 severityPrefix",
         "renderer 只输出 ArtifactPlan V2；默认值和一个非默认 severityPrefix 产生不同的 instructions content",
         "trace 读取并调用稳定 aw plugin validate，且使用工作区声明的直接测试验证 renderer 配置变化",
         "只改请求的 manifest/renderer 源码面，不增加静态 extension、config helper、Skill、App 或发布动作",

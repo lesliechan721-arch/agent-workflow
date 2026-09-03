@@ -238,7 +238,7 @@ async function writeDynamicArtifactPlugin(
       },
     },
     config: {
-      schema: {
+      fields: {
         enableInstruction: {
           type: 'boolean',
           default: true,
@@ -2472,6 +2472,7 @@ describe('authoring tools', () => {
   it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
     tempDirs.push(tempRoot);
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
 
     const helperPath = path.join(
       repoRoot(),
@@ -2487,7 +2488,9 @@ describe('authoring tools', () => {
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
       schemaVersion: 3,
-      pluginId: 'team/context-helper',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
       values: {
         apiKey: 'user-store-secret',
         mode: 'standard',
@@ -2496,11 +2499,18 @@ describe('authoring tools', () => {
     });
     await fs.writeJson(projectStorePath, {
       schemaVersion: 3,
-      pluginId: 'team/context-helper',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
       values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
-      plugin: { name: 'context-helper', sourceId: 'team', pluginId: 'team/context-helper' },
+      plugin: {
+        name: 'context-helper',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/context-helper',
+      },
       config: {
         values: {
           apiKey: 'context-secret',
@@ -2512,7 +2522,17 @@ describe('authoring tools', () => {
         },
         schema: {
           apiKey: { type: 'string', required: true, sensitive: true },
-          mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' },
+          mode: {
+            type: 'string',
+            default: 'standard',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'standard', title: 'Standard', value: 'standard' },
+                { id: 'strict', title: 'Strict', value: 'strict' },
+              ],
+            },
+          },
         },
       },
       paths: {
@@ -2544,7 +2564,7 @@ describe('authoring tools', () => {
       pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
-        apiKey: 'context-secret',
+        apiKey: '[redacted]',
         mode: 'strict',
       },
       sources: {
@@ -2571,7 +2591,7 @@ describe('authoring tools', () => {
       pluginName: 'context-helper',
       scope: 'user',
       values: {
-        apiKey: 'user-store-secret',
+        apiKey: '[redacted]',
         mode: 'standard',
       },
       diagnostics: {
@@ -2586,6 +2606,7 @@ describe('authoring tools', () => {
 
     const awHome = path.join(tempRoot, 'aw-home');
     const sourceId = 'team';
+    const sourceIdentity = `sha256:${'2'.repeat(64)}`;
     const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
     const bundleRoot = path.join(marketplaceRoot, 'plugins', 'config-demo');
     await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
@@ -2615,10 +2636,36 @@ describe('authoring tools', () => {
         helpers: { config: './scripts/aw-config.mjs' },
       },
       config: {
-        schema: {
+        fields: {
           token: { type: 'string', sensitive: true, required: true },
-          mode: { type: 'enum', values: ['standard', 'strict'], default: 'standard' },
-          configFile: { type: 'file', default: './config.txt' },
+          mode: {
+            type: 'string',
+            default: 'standard',
+            choices: {
+              allowCustom: false,
+              presets: [
+                { id: 'standard', title: 'Standard', value: 'standard' },
+                { id: 'strict', title: 'Strict', value: 'strict' },
+              ],
+            },
+          },
+          configFile: {
+            type: 'string',
+            default: './config.txt',
+            validation: { format: 'path' },
+          },
+          constructor: { type: 'string', default: 'declared-constructor' },
+          metadata: {
+            type: 'object',
+            properties: Object.fromEntries([
+              ['__proto__', { type: 'string' }],
+              ['constructor', { type: 'string' }],
+            ]),
+          },
+          labels: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+          },
         },
       },
     }), { spaces: 2 });
@@ -2628,6 +2675,7 @@ describe('authoring tools', () => {
     await fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
       schemaVersion: 2,
       sourceId,
+      sourceIdentity,
       marketplaceName: `aw-${sourceId}`,
     });
     await fs.ensureDir(projectSubdir);
@@ -2638,7 +2686,9 @@ describe('authoring tools', () => {
       path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
         schemaVersion: 3,
-        pluginId: `${sourceId}/config-demo`,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
         values: {
           token: 'user-secret',
           staleUserSecret: 'do-not-print-user',
@@ -2653,10 +2703,21 @@ describe('authoring tools', () => {
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
         schemaVersion: 3,
-        pluginId: `${sourceId}/config-demo`,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
         values: {
           token: 'project-secret',
           mode: 'strict',
+          metadata: Object.fromEntries([
+            ['__proto__', 'fixed-prototype'],
+            ['constructor', 'fixed-constructor'],
+          ]),
+          labels: Object.fromEntries([
+            ['__proto__', 'dynamic-prototype'],
+            ['constructor', 'dynamic-constructor'],
+            ['toString', 'dynamic-to-string'],
+          ]),
           staleProjectSecret: 'do-not-print-project',
         },
       },
@@ -2685,21 +2746,31 @@ describe('authoring tools', () => {
       sourceId,
       pluginId: `${sourceId}/config-demo`,
     });
-    const expectedConfigFile = await fs.realpath(path.join(projectRoot, 'config.txt'));
     expect(payload.values).toMatchObject({
-      token: 'project-secret',
+      token: '[redacted]',
       mode: 'strict',
-      configFile: expectedConfigFile,
+      configFile: './config.txt',
+      constructor: 'declared-constructor',
     });
     expect(payload.sources).toMatchObject({
-      token: 'projectShared',
-      mode: 'projectShared',
+      token: 'project',
+      mode: 'project',
       configFile: 'default',
+      constructor: 'default',
     });
+    expect(payload.values.metadata).toEqual(Object.fromEntries([
+      ['__proto__', 'fixed-prototype'],
+      ['constructor', 'fixed-constructor'],
+    ]));
+    expect(payload.values.labels).toEqual(Object.fromEntries([
+      ['__proto__', 'dynamic-prototype'],
+      ['constructor', 'dynamic-constructor'],
+      ['toString', 'dynamic-to-string'],
+    ]));
     expect(payload.diagnostics.ignoredUnknownKeys).toEqual(
       expect.arrayContaining([
         { scope: 'user', key: 'staleUserSecret' },
-        { scope: 'projectShared', key: 'staleProjectSecret' },
+        { scope: 'project', key: 'staleProjectSecret' },
       ]),
     );
 
@@ -2718,14 +2789,84 @@ describe('authoring tools', () => {
         },
       ),
     ).resolves.toMatchObject({
-      stdout: 'project-secret\n',
+      stdout: '[redacted]\n',
+    });
+
+    const userStorePath = path.join(
+      awHome, 'plugin-config', sourceId, 'config-demo', 'config.json',
+    );
+    const projectStorePath = path.join(
+      projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json',
+    );
+    const userStoreContent = await fs.readFile(userStorePath);
+    const projectStoreContent = await fs.readFile(projectStorePath);
+    await fs.writeFile(projectStorePath, '{invalid');
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json', '--scope', 'user'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: expect.stringContaining('"scope": "user"'),
+    });
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).rejects.toMatchObject({ stderr: expect.stringContaining('invalidJson') });
+    await fs.writeFile(projectStorePath, projectStoreContent);
+    await fs.writeFile(userStorePath, '{invalid');
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json', '--scope', 'project'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: expect.stringContaining('"scope": "project"'),
+    });
+    await fs.writeFile(userStorePath, userStoreContent);
+
+    const extraValue = 'prototype-extra-must-not-leak';
+    await fs.writeJson(
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
+      {
+        schemaVersion: 3,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
+        values: { token: 'project-secret', metadata: { toString: extraValue } },
+      },
+      { spaces: 2 },
+    );
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).rejects.toMatchObject({
+      stderr: expect.not.stringContaining(extraValue),
     });
 
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 2,
-        pluginId: `${sourceId}/config-demo`,
+        schemaVersion: 3,
+        sourceId,
+        sourceIdentity: `sha256:${'3'.repeat(64)}`,
+        pluginName: 'config-demo',
         values: { token: 'wrong-source-secret' },
       },
       { spaces: 2 },
@@ -2738,7 +2879,7 @@ describe('authoring tools', () => {
         env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
       },
     )).rejects.toMatchObject({
-      stderr: expect.stringContaining('schema 3 plugin identity'),
+      stderr: expect.stringContaining('identityMismatch'),
     });
   });
 
@@ -2831,7 +2972,7 @@ describe('authoring tools', () => {
         },
       },
       config: {
-        schema: {
+        fields: {
           apiKey: {
             type: 'string',
             required: true,
@@ -2845,6 +2986,16 @@ describe('authoring tools', () => {
     await expect(
       fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
     ).resolves.toBe(true);
+    const generatedTest = await execFileAsync(
+      process.execPath,
+      ['--test', path.join(pluginDir, 'scripts', 'generated-script.test.mjs')],
+      {
+        cwd: pluginDir,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    expect(generatedTest.stdout).toContain('pass 2');
     await expect(
       execFileAsync('node', [validateScriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -2997,7 +3148,7 @@ describe('authoring tools', () => {
         },
       },
       config: {
-        schema: {
+        fields: {
           badMin: {
             type: 'string',
             min: 1,
@@ -3028,7 +3179,7 @@ describe('authoring tools', () => {
         },
       },
       config: {
-        schema: {
+        fields: {
           goodKey: {
             type: 'string',
           },
@@ -3058,7 +3209,7 @@ describe('authoring tools', () => {
         },
       },
       config: {
-        schema: {
+        fields: {
           goodKey: {
             type: 'string',
           },
@@ -3092,15 +3243,20 @@ describe('authoring tools', () => {
     const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'presentation-contract', {});
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    const schema = {
+    const fields = {
       mode: {
-        type: 'enum',
-        values: ['safe', 'fast'],
+        type: 'string',
+        choices: {
+          allowCustom: false,
+          presets: [
+            { id: 'safe', title: 'Safe', value: 'safe', recommended: true },
+            { id: 'fast', title: 'Fast', value: 'fast' },
+          ],
+        },
       },
       limit: {
         type: 'number',
-        min: 1,
-        max: 20,
+        validation: { minimum: 1, maximum: 20 },
       },
       trace: {
         type: 'boolean',
@@ -3110,10 +3266,12 @@ describe('authoring tools', () => {
         sensitive: true,
       },
       rules: {
-        type: 'file',
+        type: 'string',
+        validation: { format: 'path' },
       },
       workspace: {
-        type: 'directory',
+        type: 'string',
+        validation: { format: 'path' },
       },
     };
     const scriptPath = path.join(
@@ -3127,7 +3285,7 @@ describe('authoring tools', () => {
 
     await fs.writeJson(manifestPath, {
       ...manifest,
-      config: { schema },
+      config: { fields },
     }, { spaces: 2 });
     await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
       cwd: repoRoot(),
@@ -3137,50 +3295,37 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
-    for (const [key, value] of [
-      ['token', 'private'],
-      ['rules', '/private/rules'],
-      ['workspace', '/private/workspace'],
-    ] as const) {
-      await fs.writeJson(manifestPath, {
-        ...manifest,
-        config: {
-          schema,
-          presentation: {
-            presets: [{ id: 'private', title: 'Private', values: { [key]: value } }],
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        fields: {
+          ...fields,
+          token: {
+            ...fields.token,
+            choices: {
+              allowCustom: true,
+              presets: [{ id: 'private', title: 'Private', value: 'private' }],
+            },
           },
         },
-      }, { spaces: 2 });
-      await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      })).rejects.toMatchObject({
-        stdout: expect.stringContaining('cannot contain sensitive, file, or directory config values'),
-      });
-    }
+      },
+    }, { spaces: 2 });
+    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('sensitive config cannot declare choices'),
+    });
 
     await fs.writeJson(manifestPath, {
       ...manifest,
       config: {
-        schema,
+        fields,
         presentation: {
           groups: [
             { id: 'general', title: 'General', fields: ['mode', 'limit'] },
-          ],
-          fields: {
-            mode: {
-              valueLabels: { safe: 'Safe', fast: 'Fast' },
-              recommendedValue: 'safe',
-            },
-            limit: {
-              recommendedValue: 10,
-              unit: 'minutes',
-              advanced: true,
-            },
-          },
-          presets: [
-            { id: 'fast', title: 'Fast', values: { mode: 'fast' } },
+            { id: 'advanced', title: 'Advanced', fields: ['trace'], advanced: true },
           ],
         },
       },
@@ -3196,23 +3341,11 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, {
       ...manifest,
       config: {
-        schema,
+        fields,
         presentation: {
           groups: [
             { id: 'general', title: 'General', fields: ['mode', 'missing'] },
             { id: 'general', title: 'Duplicate', fields: ['mode'] },
-          ],
-          fields: {
-            missing: { advanced: true },
-            mode: {
-              valueLabels: { balanced: 'Balanced' },
-              recommendedValue: 'balanced',
-            },
-            limit: { recommendedValue: 21 },
-          },
-          presets: [
-            { id: 'bad', title: 'Bad', values: { trace: 'yes', missing: true } },
-            { id: 'bad', title: 'Duplicate', values: {} },
           ],
         },
       },
@@ -3227,12 +3360,42 @@ describe('authoring tools', () => {
     } catch (caught) {
       invalidStdout = (caught as { stdout?: string }).stdout ?? '';
     }
-    expect(invalidStdout).toContain('references unknown config key "missing"');
-    expect(invalidStdout).toContain('duplicate group id "general"');
-    expect(invalidStdout).toContain('unknown enum token "balanced"');
-    expect(invalidStdout).toContain('recommendedValue must be less than or equal to 20');
-    expect(invalidStdout).toContain('values.trace must be a boolean');
-    expect(invalidStdout).toContain('duplicate preset id "bad"');
+    expect(invalidStdout).toContain('unknown config key "missing"');
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        fields,
+        presentation: {
+          groups: [
+            { id: 'general', title: 'General', fields: ['mode'] },
+            { id: 'general', title: 'Duplicate', fields: ['limit'] },
+          ],
+        },
+      },
+    }, { spaces: 2 });
+    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('duplicate group id "general"'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        fields,
+        presentation: { presets: [] },
+      },
+    }, { spaces: 2 });
+    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('must NOT have additional properties'),
+    });
   });
 
   it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {
@@ -3510,7 +3673,7 @@ describe('authoring tools', () => {
           artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
         },
         config: {
-          schema: { variant: { type: 'string', default: 'standard' } },
+          fields: { variant: { type: 'string', default: 'standard' } },
         },
         artifacts: {
           targets: [{
