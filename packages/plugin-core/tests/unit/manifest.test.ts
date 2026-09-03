@@ -81,6 +81,56 @@ describe('plugin manifest v3 structure', () => {
       },
     }],
     ['missing object shape', { fields: { value: { type: 'object' } } }],
+    ['mixed fixed and key-value object', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: { child: { type: 'string' } },
+          additionalProperties: { type: 'string' },
+        },
+      },
+    }],
+    ['undefined top-level field', { fields: { value: undefined } }],
+    ['undefined fixed property', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: { child: undefined },
+        },
+      },
+    }],
+    ['undefined object default value', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: {},
+          default: { child: undefined },
+        },
+      },
+    }],
+    ['undefined object preset value', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: {},
+          choices: {
+            allowCustom: false,
+            presets: [{ id: 'managed', title: 'Managed', value: { child: undefined } }],
+          },
+        },
+      },
+    }],
+    ['dangerous top-level key', {
+      fields: Object.fromEntries([['constructor', { type: 'string' }]]),
+    }],
+    ['dangerous fixed property key', {
+      fields: {
+        value: {
+          type: 'object',
+          properties: Object.fromEntries([['prototype', { type: 'string' }]]),
+        },
+      },
+    }],
     ['removed presentation fields', {
       fields: { value: { type: 'string' } },
       presentation: { fields: {} },
@@ -103,23 +153,11 @@ describe('plugin manifest v3 structure', () => {
     }))).not.toThrow()
   })
 
-  it('accepts file and directory string validation formats', () => {
+  it.each(['path', 'file', 'directory'])('rejects removed %s string validation format', (format) => {
     expect(() => assertPluginManifestStructure(manifest({
       schemaVersion: 3,
-      config: {
-        fields: {
-          certificate: { type: 'string', validation: { format: 'file' } },
-          workspace: { type: 'string', validation: { format: 'directory' } },
-          locations: {
-            type: 'object',
-            properties: {
-              certificate: { type: 'string', validation: { format: 'file' } },
-            },
-            additionalProperties: { type: 'string', validation: { format: 'directory' } },
-          },
-        },
-      },
-    }))).not.toThrow()
+      config: { fields: { value: { type: 'string', validation: { format } } } },
+    }))).toThrow(PluginManifestStructureError)
   })
 
   it('fails closed for reserved imports and accepts only injected exports', () => {

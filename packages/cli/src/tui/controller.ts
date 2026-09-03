@@ -117,6 +117,7 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       apply: boolean;
+      retryApply?: true;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
@@ -198,6 +199,13 @@ export interface OperationEvidence {
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+  };
+  resetTarget?: {
+    sourceId: string;
+    pluginName: string;
+    scope: Scope;
+    kind: 'absent' | 'regularFile' | 'symbolicLink' | 'directory';
+    fingerprint: string;
   };
   sourceWrite?: {
     configDigest: string;
@@ -363,6 +371,11 @@ export interface OperationResultSummary {
   elapsedMs?: number;
   messages?: string[];
   configApplied?: boolean;
+  configApplySkippedReason?: 'invalidConfig';
+  configScope?: Scope;
+  configApplyRetryAvailable?: boolean;
+  resetDisposition?: 'absent' | 'deletedFile' | 'unlinkedSymlink' | 'quarantinedDirectory';
+  quarantineBasename?: string;
   changes?: string[];
   warnings?: string[];
   recoveryActions?: string[];
@@ -493,6 +506,8 @@ export interface TuiControllerDependencies {
 export interface ConfigResetAvailability {
   exists: boolean;
   state: 'missing' | 'ready' | 'invalid';
+  targetKind?: 'absent' | 'regularFile' | 'symbolicLink' | 'directory' | 'special';
+  resettable?: boolean;
   invalidCode?: ConfigInvalidStoreEvidence['code'];
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
@@ -606,10 +621,35 @@ function publicReviewPreparation(
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
+  if (evidence.resetTarget) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        resetTarget: evidence.resetTarget,
+        ...(evidence.source ? { source: evidence.source } : {}),
+      })))
+      .digest('hex');
+  }
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
   return crypto.createHash('sha256')
     .update(JSON.stringify(stableValue(staleEvidence)))
     .digest('hex');
+}
+
+export function operationEvidenceMatches(
+  expected: OperationEvidence,
+  current: OperationEvidence,
+): boolean {
+  if (expected.resetTarget && current.resetTarget) {
+    if (JSON.stringify(stableValue(expected.resetTarget))
+      !== JSON.stringify(stableValue(current.resetTarget))) {
+      return false;
+    }
+    if (!expected.source) return true;
+    return current.source !== undefined
+      && JSON.stringify(stableValue(expected.source))
+        === JSON.stringify(stableValue(current.source));
+  }
+  return operationEvidenceFingerprint(expected) === operationEvidenceFingerprint(current);
 }
 
 function sourceIdFromPluginId(pluginId: string): string {
@@ -2152,7 +2192,7 @@ export class TuiController {
         return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-      if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
+      if (!operationEvidenceMatches(ticket.evidence, current)) {
         return this.#rebuildStaleReview(ticket, operationId, current, generation);
       }
     }
@@ -2751,18 +2791,49 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
               : entry.state as 'completed' | 'failed',
       }];
     });
-    const partial = targets.some((target) => target.state === 'failed' || target.state === 'skipped')
+    const overallState = typeof execution === 'object' && execution !== null
+      ? (execution as { overallState?: unknown }).overallState
+      : undefined;
+    const applySkippedReason = typeof execution === 'object' && execution !== null
+      ? (execution as { applySkippedReason?: unknown }).applySkippedReason
+      : undefined;
+    const invalidConfig = applySkippedReason === 'invalidConfig';
+    const resetDisposition = typeof execution === 'object' && execution !== null
+      ? (execution as { resetDisposition?: unknown }).resetDisposition
+      : undefined;
+    const quarantineBasename = typeof execution === 'object' && execution !== null
+      ? (execution as { quarantineBasename?: unknown }).quarantineBasename
+      : undefined;
+    const partial = overallState === 'partial'
+      || invalidConfig
+      || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
       && targets.some((target) => target.state === 'completed' || target.state === 'kept');
-    const failed = typeof execution === 'object' && execution !== null
-      && (execution as { overallState?: unknown }).overallState === 'failed'
+    const failed = overallState === 'failed'
       || (targets.length > 0
         && targets.every((target) => target.state === 'failed' || target.state === 'skipped'));
     return {
-      code: failed && !partial ? 'operationFailed'
-        : partial ? 'operationPartial' : 'operationSucceeded',
-      message: failed && !partial ? '操作结果无法确认。'
-        : partial ? '操作只完成了一部分。' : '操作已完成。',
-      ...(intent.kind === 'configSave' ? { configApplied: intent.apply } : {}),
+      code: failed || partial ? 'operationPartial' : 'operationSucceeded',
+      message: invalidConfig ? '设置已保存，但没有应用。当前配置仍无效。'
+        : failed || partial ? '设置已保存，但插件内容重新应用失败或部分失败。' : '操作已完成。',
+      pluginId: intent.pluginId,
+      configScope: intent.scope,
+      configApplyRetryAvailable: intent.kind === 'configSave'
+        && intent.apply && !invalidConfig && (failed || partial),
+      ...(intent.kind === 'configSave'
+        ? { configApplied: invalidConfig ? false : intent.apply }
+        : invalidConfig ? { configApplied: false } : {}),
+      ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
+      ...(intent.kind === 'configReset'
+        && (resetDisposition === 'absent'
+          || resetDisposition === 'deletedFile'
+          || resetDisposition === 'unlinkedSymlink'
+          || resetDisposition === 'quarantinedDirectory')
+        ? {
+            resetDisposition,
+            ...(resetDisposition === 'quarantinedDirectory' && typeof quarantineBasename === 'string'
+              ? { quarantineBasename } : {}),
+          }
+        : {}),
       ...(targets.length > 0 ? { targets } : {}),
     };
   }

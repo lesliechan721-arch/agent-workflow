@@ -20,17 +20,22 @@ export type Capabilities = string[]
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configField".
  */
-export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField) | undefined
+export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectField".
+ */
+export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalar".
  */
-export type ConfigScalar = (string | number | boolean) | undefined
+export type ConfigScalar = (string | number | boolean)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarChildField".
  */
-export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChildField | ConfigBooleanChildField) | undefined
+export type ConfigScalarChildField = (ConfigStringChildField | ConfigNumberChildField | ConfigBooleanChildField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configScalarDynamicField".
@@ -137,10 +142,10 @@ agentOverrides?: PlatformOverrides
  */
 export interface PlatformOverrides {
 claude?: ({
-[k: string]: unknown | undefined
+[k: string]: unknown
 } | null)
 codex?: ({
-[k: string]: unknown | undefined
+[k: string]: unknown
 } | null)
 }
 /**
@@ -232,7 +237,7 @@ export interface BuildConfig {
 cacheable?: true
 templates?: {
 vars: {
-[k: string]: PlatformTemplateValue | undefined
+[k: string]: PlatformTemplateValue
 }
 include: StringArray
 }
@@ -249,7 +254,7 @@ userConfig?: unknown
 channels?: unknown
 }
 codex?: {
-[k: string]: unknown | undefined
+[k: string]: unknown
 }
 }
 runtimeExports?: {
@@ -352,7 +357,7 @@ args?: StringArray
  */
 export interface Config {
 fields: {
-[k: string]: ConfigField | undefined
+[k: string]: ConfigField
 }
 presentation?: {
 groups?: {
@@ -405,7 +410,7 @@ export interface ConfigStringValidation {
 minLength?: number
 maxLength?: number
 pattern?: string
-format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email" | "path" | "file" | "directory")
+format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email")
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -461,25 +466,45 @@ description?: string
 default?: boolean
 required?: boolean
 sensitive?: boolean
+choices?: ConfigBooleanChoices
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectField".
+ * via the `definition` "configBooleanChoices".
  */
-export interface ConfigObjectField {
+export interface ConfigBooleanChoices {
+allowCustom: boolean
+presets: ConfigBooleanPreset[]
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configBooleanPreset".
+ */
+export interface ConfigBooleanPreset {
+id: string
+title: string
+description?: string
+value: boolean
+recommended?: true
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configFixedObjectField".
+ */
+export interface ConfigFixedObjectField {
 type: "object"
 title?: string
 description?: string
 default?: {
-[k: string]: ConfigScalar | undefined
+[k: string]: ConfigScalar
 }
 required?: boolean
 sensitive?: boolean
 choices?: ConfigObjectChoices
-properties?: {
-[k: string]: ConfigScalarChildField | undefined
+properties: {
+[k: string]: ConfigScalarChildField
 }
-additionalProperties?: (false | ConfigScalarDynamicField)
+additionalProperties?: false
 validation?: ConfigObjectValidation
 }
 /**
@@ -499,7 +524,7 @@ id: string
 title: string
 description?: string
 value: {
-[k: string]: ConfigScalar | undefined
+[k: string]: ConfigScalar
 }
 recommended?: true
 }
@@ -539,6 +564,33 @@ title?: string
 description?: string
 required?: boolean
 sensitive?: boolean
+choices?: ConfigBooleanChoices
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configObjectValidation".
+ */
+export interface ConfigObjectValidation {
+minProperties?: number
+maxProperties?: number
+key?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configKeyValueObjectField".
+ */
+export interface ConfigKeyValueObjectField {
+type: "object"
+title?: string
+description?: string
+default?: {
+[k: string]: ConfigScalar
+}
+required?: boolean
+sensitive?: boolean
+choices?: ConfigObjectChoices
+additionalProperties: ConfigScalarDynamicField
+validation?: ConfigObjectValidation
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
@@ -573,13 +625,5 @@ type: "boolean"
 title?: string
 description?: string
 sensitive?: boolean
-}
-/**
- * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configObjectValidation".
- */
-export interface ConfigObjectValidation {
-minProperties?: number
-maxProperties?: number
-key?: ConfigStringValidation
+choices?: ConfigBooleanChoices
 }

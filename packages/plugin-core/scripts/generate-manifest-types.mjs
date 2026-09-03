@@ -14,7 +14,6 @@ const generated = await compile(schema, 'PluginManifestSourceV3', {
   declareExternallyReferenced: true,
   enableConstEnums: false,
   format: false,
-  strictIndexSignatures: true,
   style: {
     singleQuote: true,
     semi: false,
