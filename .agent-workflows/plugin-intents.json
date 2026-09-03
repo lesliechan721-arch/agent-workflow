@@ -1,28 +1,6 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kind": "aw-plugin-intents",
-  "roots": [
-    {
-      "pluginId": "official/aw-catalog-development",
-      "platforms": [
-        "codex"
-      ]
-    },
-    {
-      "pluginId": "official/aw-skill-eval-runner",
-      "platforms": [
-        "codex"
-      ]
-    }
-  ],
-  "dependencyScopeOverrides": [],
-  "managed": {
-    "codexPluginIds": [
-      "agent-content-toolkit@aw",
-      "agent-skill-toolkit@aw",
-      "aw-catalog-development@aw",
-      "aw-plugin-development@aw",
-      "aw-skill-eval-runner@aw"
-    ]
-  }
+  "roots": [],
+  "dependencyScopeOverrides": []
 }
