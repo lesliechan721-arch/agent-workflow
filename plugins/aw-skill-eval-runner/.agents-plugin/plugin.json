@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 3,
+  "name": "aw-skill-eval-runner",
+  "version": "0.1.0-beta.1",
+  "description": "准备、审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证 EvalResult。",
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-manifest.v3",
+        "aw.plugin-skills.v1",
+        "aw.skill-eval.v2"
+      ]
+    }
+  },
+  "dependencies": [
+    "agent-skill-toolkit"
+  ],
+  "skills": "./skills",
+  "interface": {
+    "displayName": "AW Skill Eval Runner",
+    "shortDescription": "准备、审核并执行 Agent Skill Eval，验证结果",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "scripts": {}
+}

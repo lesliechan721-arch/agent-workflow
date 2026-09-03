@@ -1,0 +1,13 @@
+{
+  "name": "dev-workflow",
+  "version": "0.1.0-beta.1",
+  "description": "按保障等级和生命周期 gate 组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+  "interface": {
+    "displayName": "Dev Workflow",
+    "shortDescription": "从最早未满足的生命周期 gate 继续开发任务",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./codex/skills"
+}

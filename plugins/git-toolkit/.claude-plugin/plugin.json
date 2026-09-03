@@ -1,0 +1,13 @@
+{
+  "name": "git-toolkit",
+  "version": "0.1.0-beta.1",
+  "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
+  "interface": {
+    "displayName": "Git Toolkit",
+    "shortDescription": "精确创建本地提交、安全隔离 Git worktree，或协调 Git merge 双方意图",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./claude/skills"
+}

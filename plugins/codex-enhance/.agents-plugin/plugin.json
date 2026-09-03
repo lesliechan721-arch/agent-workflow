@@ -1,0 +1,700 @@
+{
+  "schemaVersion": 3,
+  "name": "codex-enhance",
+  "version": "0.2.0-beta.1",
+  "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
+  "marketplace": {
+    "category": "workflow",
+    "tags": [
+      "codex",
+      "subagent",
+      "explorer",
+      "research",
+      "reasoning",
+      "wait"
+    ],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX"
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Codex Enhance",
+    "shortDescription": "Codex 只读探索与通用子代理编排增强",
+    "capabilities": [
+      "Skills",
+      "Agents"
+    ]
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  },
+  "config": {
+    "fields": {
+      "quickProfile": {
+        "type": "object",
+        "title": "Quick 探索配置",
+        "description": "quick 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "medium"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "standardProfile": {
+        "type": "object",
+        "title": "Standard 探索配置",
+        "description": "standard 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "high"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "deepProfile": {
+        "type": "object",
+        "title": "Deep 探索配置",
+        "description": "deep 探索 role 使用的模型与推理强度。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                },
+                {
+                  "id": "ultra",
+                  "title": "ultra",
+                  "value": "ultra"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "simpleTaskProfile": {
+        "type": "object",
+        "title": "简单任务配置",
+        "description": "简单任务 agent type 使用的模型与推理强度，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。",
+        "default": {
+          "model": "gpt-5.6-luna",
+          "reasoningEffort": "max"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "generalTaskProfile": {
+        "type": "object",
+        "title": "通用任务配置",
+        "description": "通用任务 agent type 使用的模型与推理强度，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。",
+        "default": {
+          "model": "gpt-5.6-terra",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "complexTaskProfile": {
+        "type": "object",
+        "title": "复杂任务配置",
+        "description": "复杂任务 agent type 使用的模型与推理强度，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。",
+        "default": {
+          "model": "gpt-5.6-sol",
+          "reasoningEffort": "medium"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "advancedTaskProfile": {
+        "type": "object",
+        "title": "高难任务配置",
+        "description": "高难任务 agent type 使用的模型与推理强度，适用于系统级、高歧义、高风险或要求极高完整性的任务。",
+        "default": {
+          "model": "gpt-5.6-sol",
+          "reasoningEffort": "xhigh"
+        },
+        "required": true,
+        "properties": {
+          "model": {
+            "type": "string",
+            "required": true,
+            "validation": {
+              "minLength": 1
+            }
+          },
+          "reasoningEffort": {
+            "type": "string",
+            "required": true,
+            "choices": {
+              "allowCustom": false,
+              "presets": [
+                {
+                  "id": "low",
+                  "title": "low",
+                  "value": "low"
+                },
+                {
+                  "id": "medium",
+                  "title": "medium",
+                  "value": "medium"
+                },
+                {
+                  "id": "high",
+                  "title": "high",
+                  "value": "high"
+                },
+                {
+                  "id": "xhigh",
+                  "title": "xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "id": "max",
+                  "title": "max",
+                  "value": "max"
+                }
+              ]
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "exploreMinimumInitialWaitMinutes": {
+        "type": "number",
+        "title": "探索首次响应式等待窗口（分钟）",
+        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "default": 10,
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 60
+        }
+      },
+      "subagentMinimumInitialWaitMinutes": {
+        "type": "number",
+        "title": "子代理首次响应式等待窗口（分钟）",
+        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。",
+        "default": 10,
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 60
+        }
+      }
+    },
+    "presentation": {
+      "groups": [
+        {
+          "id": "codex-explore",
+          "title": "codex-explore",
+          "fields": [
+            "quickProfile",
+            "standardProfile",
+            "deepProfile",
+            "exploreMinimumInitialWaitMinutes"
+          ]
+        },
+        {
+          "id": "codex-subagent-guide",
+          "title": "codex-subagent-guide",
+          "fields": [
+            "simpleTaskProfile",
+            "generalTaskProfile",
+            "complexTaskProfile",
+            "advancedTaskProfile",
+            "subagentMinimumInitialWaitMinutes"
+          ]
+        }
+      ]
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "codex-explore-skill",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.skill",
+        "kind": "skill",
+        "projectManagedKind": "skill",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "exploreMinimumInitialWaitMinutes"
+        ],
+        "delivery": {
+          "mode": "codex-native",
+          "identity": "shared",
+          "renderProfile": "user"
+        },
+        "skillKey": "codex-explore",
+        "sourceDirs": [
+          "./skills/codex-explore"
+        ]
+      },
+      {
+        "id": "codex-explore-quick-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "quickProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-quick"
+      },
+      {
+        "id": "codex-explore-standard-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "standardProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-standard"
+      },
+      {
+        "id": "codex-explore-deep-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "deepProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-deep"
+      },
+      {
+        "id": "codex-explore-custom-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-explore-custom"
+      },
+      {
+        "id": "codex-subagent-guide-skill",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.skill",
+        "kind": "skill",
+        "projectManagedKind": "skill",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "subagentMinimumInitialWaitMinutes"
+        ],
+        "delivery": {
+          "mode": "codex-native",
+          "identity": "shared",
+          "renderProfile": "user"
+        },
+        "skillKey": "codex-subagent-guide",
+        "sourceDirs": [
+          "./skills/codex-subagent-guide"
+        ]
+      },
+      {
+        "id": "codex-subagent-simple-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "simpleTaskProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-simple"
+      },
+      {
+        "id": "codex-subagent-general-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "generalTaskProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-general"
+      },
+      {
+        "id": "codex-subagent-complex-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "complexTaskProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-complex"
+      },
+      {
+        "id": "codex-subagent-advanced-role",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.agentRole",
+        "kind": "codexRole",
+        "projectManagedKind": "agent",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "advancedTaskProfile"
+        ],
+        "requiresCodexProjectConfig": true,
+        "roleKey": "codex-subagent-advanced"
+      }
+    ]
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.dynamic-artifacts.v2",
+        "aw.plugin-config.v2",
+        "aw.plugin-manifest.v3"
+      ]
+    }
+  }
+}

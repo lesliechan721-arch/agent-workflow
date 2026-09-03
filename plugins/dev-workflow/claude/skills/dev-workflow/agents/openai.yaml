@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Workflow"
+  short_description: "按风险、工件和审查结果，从最早未满足的生命周期 gate 继续开发"
+  default_prompt: "使用 $dev-workflow 为当前开发任务选择最低足够保障，并从最早未完成阶段继续。"
+policy:
+  allow_implicit_invocation: true

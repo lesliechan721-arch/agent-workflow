@@ -1,0 +1,13 @@
+{
+  "name": "aw-catalog-development",
+  "version": "0.1.0-beta.1",
+  "description": "创建、维护和只读评审 AW Catalog Workspace，并通过显式授权发布 Catalog。",
+  "interface": {
+    "displayName": "AW Catalog Development",
+    "shortDescription": "维护、评审和显式发布 AW Catalog Workspace",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./codex/skills"
+}
