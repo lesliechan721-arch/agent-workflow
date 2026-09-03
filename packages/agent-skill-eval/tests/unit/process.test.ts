@@ -4,6 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { describe, expect, it } from 'vitest'
 import {
+  assertProcessTreeInspectionAvailable,
   observeProcessTree,
   ProviderProcessCleanupError,
   runProviderProcess,
@@ -113,6 +114,33 @@ describe('managed provider containment gate', () => {
 })
 
 describe('shared provider process behavior', () => {
+  it('retries a transient POSIX marker lookup inside the original deadline', async () => {
+    let marker = ''
+    let markerLookups = 0
+    await expect(assertProcessTreeInspectionAvailable({
+      platform: 'linux',
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      createSentinel: async (_markerEnvironmentVariable, value) => {
+        marker = value
+        return { pid: 900_011, stop: async () => undefined }
+      },
+      execFile: (_command, args, _options, callback) => {
+        if (!args.includes('pid=,command=')) {
+          callback(null, '900011 1 900011 S Mon Aug 24 12:00:00 2026')
+          return
+        }
+        markerLookups += 1
+        callback(
+          markerLookups === 1 ? Object.assign(new Error('transient'), { code: 'EAGAIN' }) : null,
+          markerLookups === 1
+            ? ''
+            : `900011 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
+        )
+      },
+    })).resolves.toBeUndefined()
+    expect(markerLookups).toBe(2)
+  })
+
   it('keeps the provider exit and stderr when inspection lease release fails', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-release-'))
     let marker = ''
@@ -178,9 +206,16 @@ describe('shared provider process behavior', () => {
     ): void => {
       if (args.includes('pid=,command=')) {
         markerLookup += 1
+        const failed = markerLookup === 3 || markerLookup === 4
         callback(
-          markerLookup === 3 ? new Error('marker refresh failed') : null,
-          markerLookup === 3
+          failed
+            ? Object.assign(new Error(`marker refresh failed ${marker}`), {
+                code: 'ETIMEDOUT',
+                signal: 'SIGTERM',
+                killed: true,
+              })
+            : null,
+          failed
             ? ''
             : [...processes.keys()].map((pid) =>
               `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
@@ -204,12 +239,23 @@ describe('shared provider process behavior', () => {
     }
     const observation = observeProcessTree(100, marker, dependencies)
 
-    await expect(terminateProcessTree(
-      100,
-      () => undefined,
-      dependencies,
-      { observation },
-    )).rejects.toThrow('POSIX process marker lookup failed')
+    let error: unknown
+    try {
+      await terminateProcessTree(
+        100,
+        () => undefined,
+        dependencies,
+        { observation },
+      )
+    } catch (caught) {
+      error = caught
+    }
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toMatch(
+      /POSIX process marker lookup failed \(stage=termination-freeze, attempts=2, reason=callback-error, code=ETIMEDOUT, signal=SIGTERM, killed=true\)/u,
+    )
+    expect((error as Error).message).not.toContain(marker)
 
     expect(processes.has(101)).toBe(false)
   })

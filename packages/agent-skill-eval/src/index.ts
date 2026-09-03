@@ -62,6 +62,7 @@ export type {
   EvalResultBinding,
   EvalResultFileCalculated,
   EvalResultRun,
+  EvalResultProcessManagement,
   EvalResultSummary,
   EvalRunError,
 } from './eval-result.js'
@@ -152,6 +153,12 @@ export type {
 export { runEvalSpec } from './eval-run.js'
 export type { RunEvalSpecOptions, RunEvalSpecResult } from './eval-run.js'
 export {
+  codexPermissionProfileStatus,
+  normalizedCodexPermissionProfile,
+  resolveEvalProcessManagement,
+} from './eval-process-management.js'
+export type { EvalProcessManagementDependencies } from './eval-process-management.js'
+export {
   parseSelectedCases,
   validateSelectedCases,
   validateSelectedCasesFile,
@@ -212,12 +219,14 @@ export type {
   ResolveCodexEvalRuntimeOptions,
 } from './codex-eval-runtime-config.js'
 export {
+  applyCodexEvalGitIsolation,
   assertCodexEvalKeychainWrapperAbsent,
   codexEvalConfigOverrides,
   CODEX_EVAL_CREDENTIAL_CONFIG_LINES,
   CODEX_EVAL_STRICT_OVERRIDES,
   codexEvalIsolationEvidence,
   inspectCodexEvalHostIsolation,
+  inspectCodexEvalKeychain,
   validateCodexEvalConfigIsolation,
   validateCodexEvalRpcIsolation,
 } from './codex-eval-isolation.js'
@@ -226,6 +235,7 @@ export type {
   CodexEvalIsolationEvidence,
   CodexEvalRpcIsolationEvidence,
   InspectCodexEvalHostOptions,
+  CodexEvalKeychainInspection,
 } from './codex-eval-isolation.js'
 export {
   CODEX_EVAL_PROCESS_TREE_ID_ENV,

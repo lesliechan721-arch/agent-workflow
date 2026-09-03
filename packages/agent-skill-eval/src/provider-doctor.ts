@@ -7,6 +7,14 @@ import { BUILTIN_EVAL_PROVIDER_IDS, type BuiltinEvalProviderId } from './provide
 import { CODEX_PROVIDER_ENVIRONMENT_ALLOWLIST } from './custom-process.js'
 import { credentialEnvironmentNames } from './credentials.js'
 import {
+  codexPermissionProfileStatus,
+  normalizedCodexPermissionProfile,
+} from './eval-process-management.js'
+import {
+  inspectCodexEvalKeychain,
+  type CodexEvalKeychainInspection,
+} from './codex-eval-isolation.js'
+import {
   assertProcessTreeInspectionAvailable,
   type ProcessTreeDependencies,
 } from './process-tree.js'
@@ -23,6 +31,16 @@ export interface EvalProviderDoctorResult {
     }
   }
   credentials: Array<{ name: string; present: boolean }>
+  permission: {
+    profile: string | null
+    status: 'full-access' | 'restricted' | 'unknown'
+  }
+  keychain: CodexEvalKeychainInspection
+  processManagement: {
+    managedAvailable: boolean
+    unmanagedAvailable: boolean
+    defaultMode: 'managed' | 'blocked'
+  }
   cleanup: {
     platform: NodeJS.Platform
     supported: boolean
@@ -38,6 +56,7 @@ export interface EvalProviderDoctorOptions {
   processTree?: ProcessTreeDependencies
   canAccess?: (candidate: string) => Promise<boolean>
   checkCleanup?: (platform: NodeJS.Platform) => Promise<boolean>
+  readUserKeychainSearchList?: () => Promise<string>
 }
 
 async function defaultCanAccess(candidate: string): Promise<boolean> {
@@ -100,6 +119,23 @@ export async function doctorEvalProviders(
       }
     })
   )(platform)
+  const permission = {
+    profile: normalizedCodexPermissionProfile(sourceEnv),
+    status: codexPermissionProfileStatus(sourceEnv),
+  }
+  const keychain = await inspectCodexEvalKeychain({
+    platform,
+    sourceEnv,
+    codexBin: requestedExecutable,
+    resolveCodexExecutable: async () => resolvedExecutable,
+    ...(options.readUserKeychainSearchList
+      ? { readUserKeychainSearchList: options.readUserKeychainSearchList }
+      : {}),
+  })
+  const keychainAllowsRun = keychain.status === 'safe' || keychain.status === 'not-applicable'
+  const managedAvailable = permission.status !== 'restricted'
+    && keychainAllowsRun
+    && cleanupSupported
   return {
     providers: [...BUILTIN_EVAL_PROVIDER_IDS],
     codex: {
@@ -118,6 +154,13 @@ export async function doctorEvalProviders(
       name,
       present: sourceEnv[name] !== undefined && sourceEnv[name] !== '',
     })),
+    permission,
+    keychain,
+    processManagement: {
+      managedAvailable,
+      unmanagedAvailable: keychainAllowsRun,
+      defaultMode: managedAvailable ? 'managed' : 'blocked',
+    },
     cleanup: {
       platform,
       supported: cleanupSupported,

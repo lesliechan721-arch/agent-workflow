@@ -3,14 +3,15 @@
   "$id": "https://agent-skill-eval.invalid/schemas/eval-result.schema.json",
   "title": "EvalResult",
   "type": "object",
-  "required": ["version", "specDigest", "auditDigest", "targetDigest", "caseDigest", "provider", "startedAt", "finishedAt", "runs", "summary"],
+  "required": ["version", "specDigest", "auditDigest", "targetDigest", "caseDigest", "provider", "processManagement", "startedAt", "finishedAt", "runs", "summary"],
   "properties": {
-    "version": { "const": 1 },
+    "version": { "const": 2 },
     "specDigest": { "$ref": "#/$defs/digest" },
     "auditDigest": { "$ref": "#/$defs/digest" },
     "targetDigest": { "$ref": "#/$defs/digest" },
     "caseDigest": { "$ref": "#/$defs/digest" },
     "provider": { "$ref": "#/$defs/provider" },
+    "processManagement": { "$ref": "#/$defs/processManagement" },
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
     "runs": {
@@ -192,6 +193,35 @@
               "items": { "type": "string", "minLength": 1 },
               "uniqueItems": true
             }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "processManagement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "inspectionAvailable", "userAcknowledged", "descendantCleanupGuaranteed", "limitation"],
+          "properties": {
+            "mode": { "const": "managed" },
+            "inspectionAvailable": { "const": true },
+            "userAcknowledged": { "const": false },
+            "descendantCleanupGuaranteed": { "const": false },
+            "limitation": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mode", "inspectionAvailable", "userAcknowledged", "descendantCleanupGuaranteed", "limitation"],
+          "properties": {
+            "mode": { "const": "unmanaged-confirmed" },
+            "inspectionAvailable": { "const": false },
+            "userAcknowledged": { "const": true },
+            "descendantCleanupGuaranteed": { "const": false },
+            "limitation": { "type": "string", "minLength": 1 },
+            "diagnostic": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         }

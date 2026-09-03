@@ -30,6 +30,7 @@ export interface AwSkillEvalManifestV1Suite {
   timeoutMs?: number
   requiredForRelease?: boolean
   releaseSplits?: string[]
+  releaseProcessManagement?: 'managed-only' | 'allow-unmanaged-confirmed'
   provider?:
     | { type: 'custom-process'; command: [string, ...string[]] }
     | { type: 'codex-workflow'; command: [string, ...string[]]; allowedModels: string[] }
@@ -265,7 +266,7 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     const row = record(entry, label)
     onlyKeys(row, [
       'id', 'kind', 'cases', 'profiles', 'runs', 'timeoutMs', 'requiredForRelease',
-      'releaseSplits', 'provider',
+      'releaseSplits', 'releaseProcessManagement', 'provider',
     ], label)
     const id = safeId(row.id, `${label}.id`)
     if (
@@ -285,6 +286,15 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
     const releaseSplits = row.releaseSplits === undefined
       ? undefined
       : safeIdArray(row.releaseSplits, `${label}.releaseSplits`, true)
+    if (
+      row.releaseProcessManagement !== undefined
+      && row.releaseProcessManagement !== 'managed-only'
+      && row.releaseProcessManagement !== 'allow-unmanaged-confirmed'
+    ) {
+      throw new Error(
+        `${label}.releaseProcessManagement must be managed-only or allow-unmanaged-confirmed.`,
+      )
+    }
     const provider = row.provider === undefined ? undefined : parseProvider(row.provider, `${label}.provider`)
     if ((row.kind === 'custom-process' || row.kind === 'codex-workflow') && !provider) {
       throw new Error(`${label} ${row.kind} requires provider.`)
@@ -306,6 +316,9 @@ function parseSuites(value: unknown, profileIds: ReadonlySet<string>): AwSkillEv
         : { timeoutMs: positiveInteger(row.timeoutMs, `${label}.timeoutMs`) }),
       ...(row.requiredForRelease === undefined ? {} : { requiredForRelease: row.requiredForRelease }),
       ...(releaseSplits ? { releaseSplits } : {}),
+      ...(row.releaseProcessManagement === undefined
+        ? {}
+        : { releaseProcessManagement: row.releaseProcessManagement }),
       ...(provider ? { provider } : {}),
     } as AwSkillEvalManifestV1Suite
   })

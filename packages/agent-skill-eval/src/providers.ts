@@ -7,6 +7,7 @@ import {
   runCodexConversationProviderCase,
   runCodexEvalIsolationProbe,
   type AppServerRunEvidence,
+  type CodexEvalProcessManagementEvidence,
   type ConversationEvalCase,
 } from './codex-eval-app-server.js'
 import {
@@ -108,6 +109,7 @@ export interface BuiltinEvalProviderDependencies {
   codexBin?: string
   model?: string
   codexRuntime?: CodexEvalRuntimeConfig
+  processManagement?: CodexEvalProcessManagementEvidence
 }
 
 export interface BuiltinEvalProvider {
@@ -133,7 +135,9 @@ const MANAGED_PROCESS_EVIDENCE = {
   mode: 'managed',
   inspectionAvailable: true,
   userAcknowledged: false,
-  descendantCleanupGuaranteed: true,
+  descendantCleanupGuaranteed: false,
+  limitation:
+    'Process-tree inspection verifies cooperative descendants, but it is not OS-enforced containment and does not guarantee descendant cleanup.',
 } as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -461,6 +465,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
   const model = dependencies.model ?? runtime.model ?? undefined
   const runConversationProviderCase = dependencies.runConversationProviderCase ??
     runCodexConversationProviderCase
+  const processManagement = dependencies.processManagement ?? MANAGED_PROCESS_EVIDENCE
   const redact = <T>(value: T): T => redactCodexEvalValue(value, runtime)
   const runRedacted = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {
@@ -492,7 +497,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
             codexBin,
             codexRuntime: runtime,
             sourceEnv,
-            processManagement: MANAGED_PROCESS_EVIDENCE,
+            processManagement,
             timeoutMs: control.remaining('isolation probe'),
             signal: control.signal,
           })
@@ -506,7 +511,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           ...(model ? { model } : {}),
           codexRuntime: runtime,
           sourceEnv,
-          processManagement: MANAGED_PROCESS_EVIDENCE,
+          processManagement,
           workRoot: path.join(input.outputDir, '.codex-trigger-work'),
           manageTimeout: true,
           timeoutMs: control.remaining('evaluation'),
@@ -562,7 +567,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
               relativePath,
             })),
           ],
-          processManagement: MANAGED_PROCESS_EVIDENCE,
+          processManagement,
           manageTimeout: true,
           signal: control.signal,
         })
@@ -593,7 +598,7 @@ function defaultTransport(dependencies: BuiltinEvalProviderDependencies): CodexE
           isolation: 'standard',
           forbiddenHostRoots: [input.outputDir],
           environmentFixtures: [],
-          processManagement: MANAGED_PROCESS_EVIDENCE,
+          processManagement,
           manageTimeout: true,
           ...(input.signal ? { signal: input.signal } : {}),
         })

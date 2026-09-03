@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "decision-prototype",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "持久化 Artifact 留在主代理会显著污染长任务上下文；无需保存的小示例也委派则会增加等待和模型成本。"
+    },
+    "runtime": {
+      "minimumPassRate": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "persistent-artifact-uses-builder",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "persistent-artifact",
+        "platform-codex"
+      ],
+      "input": {
+        "prompt": "$decision-prototype 设置页的信息密度必须看到候选后才能决定。请在 prototypes/settings-density/ 制作第一轮持久化原型：创建 brief.md、schema v2 的 prototype.json，以及 artifact/compact.html 和 artifact/comfortable.html。两个候选都要标明是临时原型。不要创建 verdict.md，不要询问交互式问题，也不要修改其它路径。完成后说明查看路径和当前仍待用户决定的问题，然后结束。"
+      },
+      "expected": {
+        "criteria": {
+          "spawnCalls": {
+            "min": 1,
+            "max": 1
+          },
+          "rootOwnedFiles": [
+            "prototypes/settings-density/brief.md",
+            "prototypes/settings-density/prototype.json"
+          ],
+          "builderOwnedFiles": [
+            "prototypes/settings-density/artifact/compact.html",
+            "prototypes/settings-density/artifact/comfortable.html"
+          ],
+          "prototypeIdentity": {
+            "schemaVersion": 2,
+            "id": "settings-density",
+            "revision": 1
+          },
+          "forbiddenFiles": [
+            "prototypes/settings-density/verdict.md"
+          ],
+          "requiredContent": {
+            "prototypes/settings-density/brief.md": [
+              "设置页"
+            ],
+            "prototypes/settings-density/artifact/compact.html": [
+              "临时原型"
+            ],
+            "prototypes/settings-density/artifact/comfortable.html": [
+              "临时原型"
+            ]
+          }
+        },
+        "outcome": "主代理保留决定工件 ownership，真实 Builder 子代理构建两个 artifact 候选，决定保持开放。"
+      },
+      "audit": {
+        "rationale": "此前 conversation grader 看不到工具轨迹，无法证明 Builder 委派和文件 ownership。",
+        "minimalCounterexample": "如果原型无需保存或迭代，主代理可以直接在聊天中展示最小示例，不应启动 Builder。"
+      }
+    },
+    {
+      "id": "technical-spike-builder-runs-evidence",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "technical-evidence",
+        "platform-codex"
+      ],
+      "input": {
+        "prompt": "$decision-prototype 用最小持久化 spike 判断当前 Node.js 是否提供 Web Crypto。请在 prototypes/web-crypto-runtime/ 创建第一轮原型：brief.md、schema v2 的 prototype.json、artifact/spike.mjs，以及运行该脚本得到的 artifact/result.txt。不要创建 verdict.md，不要询问交互式问题，也不要修改其它路径。完成后说明实际证据和仍未覆盖的浏览器兼容范围，然后结束。"
+      },
+      "expected": {
+        "criteria": {
+          "spawnCalls": {
+            "min": 1,
+            "max": 1
+          },
+          "rootOwnedFiles": [
+            "prototypes/web-crypto-runtime/brief.md",
+            "prototypes/web-crypto-runtime/prototype.json"
+          ],
+          "builderOwnedFiles": [
+            "prototypes/web-crypto-runtime/artifact/spike.mjs"
+          ],
+          "builderGeneratedFiles": [
+            "prototypes/web-crypto-runtime/artifact/result.txt"
+          ],
+          "builderCommandContains": [
+            "node",
+            "prototypes/web-crypto-runtime/artifact/spike.mjs"
+          ],
+          "technicalEvidenceFile": "prototypes/web-crypto-runtime/artifact/result.txt",
+          "prototypeIdentity": {
+            "schemaVersion": 2,
+            "id": "web-crypto-runtime",
+            "revision": 1
+          },
+          "forbiddenFiles": [
+            "prototypes/web-crypto-runtime/verdict.md"
+          ],
+          "requiredContent": {
+            "prototypes/web-crypto-runtime/brief.md": [
+              "Node.js",
+              "浏览器"
+            ]
+          }
+        },
+        "outcome": "真实 Builder 子线程创建并运行技术 spike，运行证据保存在 artifact/result.txt，决定保持开放。"
+      },
+      "audit": {
+        "rationale": "只有 result.txt 不能证明 spike 被执行；必须同时观察 Builder 子线程的执行命令和生成文件。",
+        "minimalCounterexample": "只有 artifact/result.txt 内容、但 normalized workflow evidence 中没有 Builder 执行命令时，不能判定实际运行。"
+      }
+    },
+    {
+      "id": "direct-chat-example-stays-local",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "direct-feedback",
+        "platform-codex"
+      ],
+      "input": {
+        "prompt": "$decision-prototype 我只需要比较三个很短的审批按钮文案：批准、请求修改、拒绝。请直接在聊天中展示，不保存、不迭代，也不要修改文件。"
+      },
+      "expected": {
+        "criteria": {
+          "spawnCalls": {
+            "min": 0,
+            "max": 0
+          },
+          "workspaceUnchanged": true,
+          "modelOutputContains": [
+            "批准",
+            "请求修改",
+            "拒绝"
+          ]
+        },
+        "outcome": "无需保存的低成本示例由主代理直接展示，不启动 Builder。"
+      },
+      "audit": {
+        "rationale": "把轻量直接反馈也强制委派会增加固定成本，并违反最低足够形式边界。",
+        "minimalCounterexample": "如果候选需要保存、后续迭代或构建可点击 Artifact，则应优先委派 Builder。"
+      }
+    }
+  ]
+}

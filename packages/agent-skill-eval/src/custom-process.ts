@@ -1,11 +1,13 @@
 import { chmod, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import type { CodexEvalProcessManagementEvidence } from './codex-eval-app-server.js'
 import {
   applyCodexEvalProviderEnvironment,
   materializeCodexEvalRuntimeHome,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js'
+import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js'
 import { credentialValues, redactSecrets, secretVariants } from './credentials.js'
 import type { ProcessTreeDependencies } from './process-tree.js'
 import { ProviderProcessCleanupError, runProviderProcess } from './process.js'
@@ -310,7 +312,7 @@ function cleanEnvironment(
   }
   const home = path.join(evalRoot, '.custom-provider-home')
   const temp = path.join(evalRoot, '.custom-provider-tmp')
-  return {
+  return applyCodexEvalGitIsolation({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -322,7 +324,7 @@ function cleanEnvironment(
     TEMP: temp,
     TMP: temp,
     NO_COLOR: '1',
-  }
+  })
 }
 
 export interface CustomProcessExecutorOptions {
@@ -333,6 +335,7 @@ export interface CustomProcessExecutorOptions {
   codexRuntime?: CodexEvalRuntimeConfig
   maxBufferBytes?: number
   processTree?: ProcessTreeDependencies
+  processManagement?: CodexEvalProcessManagementEvidence
 }
 
 export async function executeCustomProcessProvider(
@@ -370,7 +373,19 @@ export async function executeCustomProcessProvider(
     throw new Error('custom process input contains an allowlisted credential value.')
   }
   const cleanupPlatform = options.processTree?.platform ?? process.platform
-  if (cleanupPlatform !== 'darwin' && cleanupPlatform !== 'linux') {
+  const processManagement = options.processManagement ?? {
+    mode: 'managed',
+    inspectionAvailable: true,
+    userAcknowledged: false,
+    descendantCleanupGuaranteed: false,
+    limitation:
+      'Process-tree inspection verifies cooperative descendants, but it is not OS-enforced containment and does not guarantee descendant cleanup.',
+  } as const
+  if (
+    processManagement.mode !== 'unmanaged-confirmed'
+    && cleanupPlatform !== 'darwin'
+    && cleanupPlatform !== 'linux'
+  ) {
     throw new Error(`custom process cleanup is unsupported on ${cleanupPlatform}.`)
   }
   if (options.codexRuntime) {
@@ -419,8 +434,12 @@ export async function executeCustomProcessProvider(
       maxBufferBytes: options.maxBufferBytes ?? 4 * 1024 * 1024,
       ...(options.input.signal ? { signal: options.input.signal } : {}),
     }, {}, {
-      containment: 'verified-observed',
-      processTree: options.processTree,
+      containment: processManagement.mode === 'unmanaged-confirmed'
+        ? 'unmanaged-confirmed'
+        : 'verified-observed',
+      ...(processManagement.mode === 'unmanaged-confirmed'
+        ? {}
+        : { processTree: options.processTree }),
     })
   } catch (error) {
     if (error instanceof ProviderProcessCleanupError) {

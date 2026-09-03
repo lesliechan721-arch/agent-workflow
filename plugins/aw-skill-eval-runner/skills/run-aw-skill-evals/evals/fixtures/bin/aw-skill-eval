@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+
+const { appendFileSync } = require('node:fs');
+const path = require('node:path');
+
+const args = process.argv.slice(2);
+const trace = path.join(process.cwd(), 'fixtures', 'runner-trace.txt');
+appendFileSync(trace, `aw-skill-eval ${args.join(' ')}\n`, 'utf8');
+
+if (args[0] === 'spec' && args[1] === 'validate') {
+  process.stdout.write('{"valid":true,"errors":[]}\n');
+  process.exit(0);
+}
+if (args[0] === 'audit' && args[1] === 'validate') {
+  process.stdout.write('{"valid":true,"errors":[]}\n');
+  process.exit(0);
+}
+if (args[0] === 'run') {
+  process.stderr.write([
+    'Engine preflight blocked before model start.',
+    'Recovery options:',
+    '1. Switch the entire session to Full Access.',
+    '2. Explicitly accept unmanaged process risk for this run.',
+    '',
+  ].join('\n'));
+  process.exit(2);
+}
+
+process.stderr.write(`Unexpected fixture command: aw-skill-eval ${args.join(' ')}\n`);
+process.exit(9);

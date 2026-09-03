@@ -8,6 +8,7 @@ import {
   CodexEvalAttemptControl,
   EvalAppServerSession,
   extractAppServerThreadId,
+  type CodexEvalProcessManagementEvidence,
 } from './codex-eval-app-server.js'
 import {
   applyCodexEvalProviderEnvironment,
@@ -16,6 +17,7 @@ import {
   redactCodexEvalValue,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js'
+import { applyCodexEvalGitIsolation } from './codex-eval-isolation.js'
 import type { ProcessTreeDependencies } from './process-tree.js'
 import { runProviderProcess } from './process.js'
 import { assertProviderRunPaths } from './run-paths.js'
@@ -164,6 +166,7 @@ export interface CodexWorkflowTransportInput {
   codexBin: string
   sourceEnv: NodeJS.ProcessEnv
   timeoutMs: number
+  processManagement: CodexEvalProcessManagementEvidence
   signal?: AbortSignal
 }
 
@@ -180,6 +183,7 @@ export interface CodexWorkflowExecutorOptions {
   codexBin?: string
   platform?: NodeJS.Platform
   processTree?: ProcessTreeDependencies
+  processManagement?: CodexEvalProcessManagementEvidence
   transport?: CodexWorkflowTransport
 }
 
@@ -349,7 +353,7 @@ export function codexWorkflowAdapterEnvironment(
   }
   const home = path.join(evalRoot, `.workflow-adapter-${phase}-home`)
   const temporary = path.join(evalRoot, `.workflow-adapter-${phase}-tmp`)
-  return {
+  return applyCodexEvalGitIsolation({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -360,7 +364,7 @@ export function codexWorkflowAdapterEnvironment(
     TEMP: temporary,
     TMP: temporary,
     NO_COLOR: '1',
-  }
+  })
 }
 
 async function runAdapter(options: {
@@ -371,6 +375,7 @@ async function runAdapter(options: {
   timeoutMs: number
   signal?: AbortSignal
   processTree?: ProcessTreeDependencies
+  processManagement: CodexEvalProcessManagementEvidence
 }): Promise<Record<string, unknown>> {
   const env = codexWorkflowAdapterEnvironment(options.sourceEnv, options.evalRoot, options.input.phase)
   await Promise.all([fs.mkdir(env.HOME!, { mode: 0o700 }), fs.mkdir(env.TMPDIR!, { mode: 0o700 })])
@@ -385,13 +390,20 @@ async function runAdapter(options: {
       maxBufferBytes: MAX_ADAPTER_OUTPUT_BYTES,
       ...(options.signal ? { signal: options.signal } : {}),
     }, {}, {
-      containment: 'verified-observed',
-      processTree: options.processTree,
+      containment: options.processManagement.mode === 'unmanaged-confirmed'
+        ? 'unmanaged-confirmed'
+        : 'verified-observed',
+      ...(options.processManagement.mode === 'unmanaged-confirmed'
+        ? {}
+        : { processTree: options.processTree }),
     })
     if (result.timedOut) throw new Error(`workflow ${options.input.phase} timed out.`)
     if (result.cancelled) throw new Error(`workflow ${options.input.phase} was aborted.`)
     if (result.maxBufferExceeded) throw new Error(`workflow ${options.input.phase} output is too large.`)
-    if (!result.gradingEvidenceAccepted) {
+    if (
+      options.processManagement.mode !== 'unmanaged-confirmed'
+      && !result.gradingEvidenceAccepted
+    ) {
       throw new Error(`workflow ${options.input.phase} process containment was not verified.`)
     }
     if (result.signal || result.exitCode !== 0) {
@@ -470,7 +482,7 @@ function buildEngineEnvironment(
   }
   const home = path.join(root, 'home')
   const temporary = path.join(root, 'tmp')
-  return applyCodexEvalProviderEnvironment({
+  return applyCodexEvalProviderEnvironment(applyCodexEvalGitIsolation({
     ...env,
     HOME: home,
     USERPROFILE: home,
@@ -482,8 +494,7 @@ function buildEngineEnvironment(
     TEMP: temporary,
     TMP: temporary,
     NO_COLOR: '1',
-    GIT_OPTIONAL_LOCKS: '0',
-  }, runtime)
+  }), runtime)
 }
 
 function configValue(value: unknown): string {
@@ -917,6 +928,25 @@ function contentText(payload: Record<string, unknown>): string {
     .filter((entry) => entry.type === 'input_text' && typeof entry.text === 'string')
     .map((entry) => entry.text as string)
     .join('\n')
+}
+
+function selectedSkillName(event: unknown): string | null {
+  if (!isRecord(event)) return null
+  const payload = responseItem(event)
+  if (!payload || payload.type !== 'message' || payload.role !== 'user') return null
+  const metadata = isRecord(payload.internal_chat_message_metadata_passthrough)
+    ? payload.internal_chat_message_metadata_passthrough
+    : null
+  if (
+    !metadata
+    || !Array.isArray(metadata.content_item_kinds)
+    || !metadata.content_item_kinds.includes('skills.selected_skill_instructions')
+  ) return null
+  const text = contentText(payload).replaceAll('\\', '/')
+  const name = text.match(/<name>([^/<>]+)<\/name>/u)?.[1]
+  const skillPath = text.match(/<path>([^<>]+)<\/path>/u)?.[1]
+  if (!name || !skillPath || !skillPath.endsWith(`/.agents/skills/${name}/SKILL.md`)) return null
+  return name
 }
 
 function encryptedContent(payload: Record<string, unknown>): string | null {
@@ -1756,6 +1786,16 @@ export async function normalizeCodexWorkflowRollouts(options: {
   })
   const skillLoads: CodexWorkflowEvidence['skillLoads'] = []
   const seenLoads = new Set<string>()
+  for (const record of selected) {
+    for (const event of record.trace) {
+      const skill = selectedSkillName(event)
+      if (!skill) continue
+      const key = `${record.threadId}\0${skill}`
+      if (seenLoads.has(key)) continue
+      seenLoads.add(key)
+      skillLoads.push({ threadId: record.threadId, skill, callId: null })
+    }
+  }
   for (const call of collaborationCalls) {
     const serialized = JSON.stringify(call.arguments).replaceAll('\\', '/')
     for (const match of serialized.matchAll(/\.agents\/skills\/([^/"\\]+)\/SKILL\.md/gu)) {
@@ -1836,12 +1876,7 @@ const defaultTransport: CodexWorkflowTransport = {
         modelProvider: input.codexRuntime.modelProvider,
         sensitiveEnvironmentNames: input.codexRuntime.sensitiveEnvironmentNames,
         isolation: 'standard',
-        processManagement: {
-          mode: 'managed',
-          inspectionAvailable: true,
-          userAcknowledged: false,
-          descendantCleanupGuaranteed: true,
-        },
+        processManagement: input.processManagement,
         configOverrides: workflowConfig(input.request, input.input.workspacePath),
       })
       await session.initialize(control.rpcTimeout('initialize'))
@@ -2080,6 +2115,14 @@ export async function executeCodexWorkflowProvider(
     outputDir: options.input.outputDir,
   })
   const sourceEnv = options.sourceEnv ?? process.env
+  const processManagement = options.processManagement ?? {
+    mode: 'managed',
+    inspectionAvailable: true,
+    userAcknowledged: false,
+    descendantCleanupGuaranteed: false,
+    limitation:
+      'Process-tree inspection verifies cooperative descendants, but it is not OS-enforced containment and does not guarantee descendant cleanup.',
+  } as const
   const control = new CodexEvalAttemptControl({
     label: 'codex-workflow provider',
     timeoutMs: options.input.timeoutMs,
@@ -2110,6 +2153,7 @@ export async function executeCodexWorkflowProvider(
         timeoutMs: control.remaining('prepare'),
         signal: control.signal,
         processTree: options.processTree,
+        processManagement,
       })
     } catch (error) {
       control.throwIfStopped('prepare')
@@ -2130,6 +2174,7 @@ export async function executeCodexWorkflowProvider(
         codexBin: options.codexBin ?? sourceEnv.AW_SKILL_EVAL_CODEX_BIN ?? 'codex',
         sourceEnv,
         timeoutMs: control.remaining('Codex execution'),
+        processManagement,
         signal: control.signal,
       })
     } catch (error) {
@@ -2164,6 +2209,7 @@ export async function executeCodexWorkflowProvider(
         timeoutMs: control.remaining('grade'),
         signal: control.signal,
         processTree: options.processTree,
+        processManagement,
       })
     } catch (error) {
       control.throwIfStopped('grade')

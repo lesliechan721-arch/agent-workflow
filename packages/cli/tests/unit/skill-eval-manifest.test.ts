@@ -100,6 +100,38 @@ describe('AwSkillEvalManifest v1 reader', () => {
       valid: false,
       errors: [expect.stringContaining('profiles must be a non-empty array')],
     })
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      ...validManifest,
+      suites: [{
+        ...(validManifest.suites as Record<string, unknown>[])[0],
+        releaseProcessManagement: 'allow-unmanaged-confirmed',
+      }],
+    }, { spaces: 2 })
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: true,
+      manifest: {
+        suites: [{ releaseProcessManagement: 'allow-unmanaged-confirmed' }],
+      },
+    })
+
+    await fs.writeJson(path.join(fixture.evalRoot, 'manifest.json'), {
+      ...validManifest,
+      suites: [{
+        ...(validManifest.suites as Record<string, unknown>[])[0],
+        releaseProcessManagement: 'unmanaged',
+      }],
+    }, { spaces: 2 })
+    await expect(validateAwSkillEvalManifest({
+      plugin: fixture.plugin,
+      skill: 'owner-skill',
+    })).resolves.toMatchObject({
+      valid: false,
+      errors: [expect.stringContaining('releaseProcessManagement must be managed-only or allow-unmanaged-confirmed')],
+    })
   })
 
   it('requires the owner plugin in every profile', async () => {

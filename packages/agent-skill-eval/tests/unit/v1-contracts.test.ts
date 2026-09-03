@@ -82,12 +82,19 @@ function validAudit(spec: EvalSpec): EvalAudit {
 
 function validResult(binding: EvalResultBinding): EvalResult {
   return {
-    version: 1,
+    version: 2,
     specDigest: binding.specDigest,
     auditDigest: binding.auditDigest,
     targetDigest: binding.targetDigest,
     caseDigest: binding.caseDigest,
     provider: binding.provider,
+    processManagement: {
+      mode: 'managed',
+      inspectionAvailable: true,
+      userAcknowledged: false,
+      descendantCleanupGuaranteed: false,
+      limitation: 'Process-tree inspection is not OS-enforced containment.',
+    },
     startedAt: '2026-08-30T00:00:00Z',
     finishedAt: '2026-08-30T00:00:01Z',
     runs: [
@@ -140,12 +147,12 @@ function validResult(binding: EvalResultBinding): EvalResult {
   }
 }
 
-describe('independent Eval v1 contracts', () => {
+describe('independent Eval Spec/Audit v1 and Result v2 contracts', () => {
   it('exports canonical schemas and accepts valid strict contracts', async () => {
     const { spec, specPath } = await createSpecFixture()
     await expect(getSchema('eval-spec')).resolves.toMatchObject({ properties: { version: { const: 1 } } })
     await expect(getSchema('eval-audit')).resolves.toMatchObject({ properties: { version: { const: 1 } } })
-    await expect(getSchema('eval-result')).resolves.toMatchObject({ properties: { version: { const: 1 } } })
+    await expect(getSchema('eval-result')).resolves.toMatchObject({ properties: { version: { const: 2 } } })
     await expect(parseEvalSpec(spec)).resolves.toEqual(spec)
     const specValidation = await validateEvalSpecFile(specPath)
     expect(specValidation).toMatchObject({ valid: true, errors: [] })
@@ -215,7 +222,10 @@ describe('independent Eval v1 contracts', () => {
       runs: spec.runs,
     }
     const result = validResult(binding)
-    await expect(validateEvalResult({ ...result, version: 2 })).resolves.toMatchObject({ valid: false })
+    await expect(validateEvalResult({ ...result, version: 1 })).resolves.toMatchObject({ valid: false })
+    const missingProcessManagement = structuredClone(result) as Partial<EvalResult>
+    delete missingProcessManagement.processManagement
+    await expect(validateEvalResult(missingProcessManagement)).resolves.toMatchObject({ valid: false })
     await expect(validateEvalResult({ ...result, unexpected: true })).resolves.toMatchObject({ valid: false })
   })
 
@@ -270,12 +280,19 @@ describe('independent Eval v1 contracts', () => {
       ],
     }
     const result: EvalResult = {
-      version: 1,
+      version: 2,
       specDigest: binding.specDigest,
       auditDigest: binding.auditDigest,
       targetDigest: binding.targetDigest,
       caseDigest: binding.caseDigest,
       provider,
+      processManagement: {
+        mode: 'managed',
+        inspectionAvailable: true,
+        userAcknowledged: false,
+        descendantCleanupGuaranteed: false,
+        limitation: 'Process-tree inspection is not OS-enforced containment.',
+      },
       startedAt: '2026-08-30T00:00:00Z',
       finishedAt: '2026-08-30T00:00:01Z',
       runs: [run],

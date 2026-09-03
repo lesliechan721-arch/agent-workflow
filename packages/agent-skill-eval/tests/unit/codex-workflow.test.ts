@@ -194,7 +194,15 @@ describe('codex-workflow provider', () => {
       CODEX_HOME: '/private/codex',
       AW_SKILL_EVAL_CODEX_MODEL: 'private-model',
     }, '/attempt', 'prepare')
-    expect(env).toMatchObject({ PATH: '/bin', LANG: 'C', LC_ALL: 'C', NO_COLOR: '1' })
+    expect(env).toMatchObject({
+      PATH: '/bin',
+      LANG: 'C',
+      LC_ALL: 'C',
+      NO_COLOR: '1',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_OPTIONAL_LOCKS: '0',
+    })
     expect(env).not.toHaveProperty('OPENAI_API_KEY')
     expect(env).not.toHaveProperty('HTTP_PROXY')
     expect(env).not.toHaveProperty('HTTPS_PROXY')
@@ -264,6 +272,47 @@ describe('codex-workflow provider', () => {
         readFile(path.join(fixture.output, artifact.path), 'utf8')))
       expect(artifacts.join('\n')).not.toContain('workflow-runtime-secret')
       expect(artifacts.join('\n')).toContain('[redacted]')
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'passes explicitly unmanaged execution to both adapters and the Codex transport',
+    async () => {
+      const fixture = await adapterFixture()
+      const run: CodexWorkflowTransport['run'] = vi.fn(async (input) => {
+        expect(input.processManagement).toMatchObject({ mode: 'unmanaged-confirmed' })
+        return execution()
+      })
+      await expect(executeCodexWorkflowProvider({
+        provider: {
+          type: 'codex-workflow',
+          command: [process.execPath, fixture.adapter],
+          allowedModels: ['allowed-model'],
+        },
+        evalRoot: fixture.root,
+        input: {
+          case: {},
+          variant: 'current',
+          attempt: 1,
+          workspacePath: fixture.workspace,
+          fixturesPath: fixture.fixtures,
+          outputDir: fixture.output,
+          timeoutMs: 5_000,
+        },
+        sourceEnv: { PATH: process.env.PATH },
+        codexRuntime: runtime(fixture.root),
+        processManagement: {
+          mode: 'unmanaged-confirmed',
+          inspectionAvailable: false,
+          userAcknowledged: true,
+          descendantCleanupGuaranteed: false,
+          limitation: 'Only the direct child is targeted.',
+        },
+        transport: { run },
+      })).resolves.toMatchObject({
+        grade: { passed: true, score: 1 },
+      })
+      expect(run).toHaveBeenCalledOnce()
     },
   )
 
@@ -1177,6 +1226,20 @@ describe('codex-workflow raw rollout normalization', () => {
       {
         type: 'response_item',
         payload: {
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: '<skill>\n<name>decision-prototype</name>\n<path>/workspace/.agents/skills/decision-prototype/SKILL.md</path>\n</skill>',
+          }],
+          internal_chat_message_metadata_passthrough: {
+            content_item_kinds: ['skills.selected_skill_instructions'],
+          },
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
           type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-1',
           arguments: JSON.stringify({ agent_type: 'explorer', message: 'child prompt' }),
         },
@@ -1275,6 +1338,7 @@ describe('codex-workflow raw rollout normalization', () => {
       }),
     ])
     expect(normalized.skillLoads).toEqual([
+      { threadId: 'root', skill: 'decision-prototype', callId: null },
       expect.objectContaining({ threadId: 'root', skill: 'codex-explore' }),
     ])
     expect(JSON.stringify(normalized.trace)).not.toContain('developer full text')

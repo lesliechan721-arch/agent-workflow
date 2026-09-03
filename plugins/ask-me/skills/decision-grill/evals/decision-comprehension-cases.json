@@ -15,6 +15,42 @@
   },
   "cases": [
     {
+      "id": "simple-owner-choice-stays-compact",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "reference-locality",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "只决定内部试点先覆盖 20 人还是 50 人。已知 20 人更容易一周内支持，50 人能更快发现协作问题但会占用两倍支持时间。请只问这一题。",
+      "assertions": [
+        "使用一段简短结果对照或具体场景",
+        "说明两项选择最重要的收益和代价",
+        "不给出时间线、关系图、完整系统背景或多层分析",
+        "让用户直接选择或补充条件"
+      ],
+      "input": {
+        "scriptedReplies": [
+          {
+            "expectedQuestionCount": 1,
+            "answersByIndex": [
+              "暂不决定，请结束本轮。"
+            ],
+            "unexpectedQuestionAnswer": "暂不决定。"
+          }
+        ]
+      },
+      "expected": {
+        "output": "用紧凑对照帮助用户选择 20 人或 50 人，不扩大表现形式。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "普通二选一被扩展为复杂图示或完整背景会增加理解负担，并使按需 reference 失去边界。",
+        "minimalCounterexample": "如果决定本身具有流程、时间、责任、定量或空间结构，普通短文字不足时可以加载复杂呈现 reference。"
+      }
+    },
+    {
       "id": "nontechnical-user-gets-outcome-scenario",
       "split": "validation",
       "tags": [
@@ -86,7 +122,7 @@
         "platform-codex",
         "platform-claude"
       ],
-      "prompt": "我们需要决定旧 token 保留 7 天还是 30 天。已确认 Decision frame：优先降低消费者迁移失败，可以接受最多 30 天同时维护新旧 token 的成本。请用时间线提出这一题。",
+      "prompt": "我们需要决定旧 token 保留 7 天还是 30 天。已确认共享决策方向（Decision frame）：优先降低消费者迁移失败，可以接受最多 30 天同时维护新旧 token 的成本。请用时间线提出这一题。",
       "assertions": [
         "使用时间线或时间结果对照",
         "只包含影响选择的事实",
