@@ -19,6 +19,7 @@ const INPUT_PATHS = [
   'packages/agent-skill-eval/vitest.config.ts',
   'packages/agent-skill-eval/src',
   'packages/agent-skill-eval/schemas',
+  'packages/agent-skill-eval/native/windows',
   'packages/agent-skill-eval/scripts',
   'packages/plugin-core/package.json',
   'packages/plugin-core/tsconfig.json',
@@ -53,6 +54,9 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/agent-skill-eval/dist/index.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/bin.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/schemas/digests.json', type: 'text' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/manifest.json', type: 'json' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/x64/aw-windows-job.exe', type: 'file' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/arm64/aw-windows-job.exe', type: 'file' },
   { path: 'packages/plugin-core/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/scripts/bundle-plugins.js', type: 'text' },
@@ -537,17 +541,17 @@ export async function validateRequiredOutputs(repoRoot, outputs = REQUIRED_OUTPU
     const outputPath = path.join(repoRoot, output.path);
     let contents;
     try {
-      contents = await fs.readFile(outputPath, 'utf8');
+      contents = await fs.readFile(outputPath, output.type === 'file' ? undefined : 'utf8');
     } catch (error) {
       if (error?.code === 'ENOENT') {
         return { valid: false, reason: `missing output ${output.path}` };
       }
       return { valid: false, reason: `unreadable output ${output.path}` };
     }
-    if (contents.trim().length === 0) {
+    if (contents.length === 0 || (typeof contents === 'string' && contents.trim().length === 0)) {
       return { valid: false, reason: `empty output ${output.path}` };
     }
-    if (output.type !== 'text') {
+    if (output.type !== 'text' && output.type !== 'file') {
       try {
         const parsed = JSON.parse(contents);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

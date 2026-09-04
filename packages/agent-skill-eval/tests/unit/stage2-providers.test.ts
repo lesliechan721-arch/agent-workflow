@@ -1909,6 +1909,25 @@ describe('custom process provider', () => {
 })
 
 describe('provider doctor', () => {
+  it('reports Windows Job cleanup without probing the process table', async () => {
+    const { root } = await runRoot()
+    const resolveWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root },
+      platform: 'win32',
+      canAccess: async () => false,
+      resolveWindowsJobHelper,
+    })
+
+    expect(result.cleanup).toEqual({
+      platform: 'win32',
+      supported: true,
+      mechanism: 'windows-job',
+    })
+    expect(result.processManagement.managedAvailable).toBe(true)
+    expect(resolveWindowsJobHelper).toHaveBeenCalledOnce()
+  })
+
   it('reports cleanup only after a live sentinel probe and immediately releases it', async () => {
     const { root } = await runRoot()
     let marker = ''

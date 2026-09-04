@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { lstatSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_CLEANUP_SETTLE_MS = 500;
@@ -8,12 +11,63 @@ const DEFAULT_DESCENDANT_MONITOR_INTERVAL_MS = 250;
 const TASKKILL_TIMEOUT_MS = 400;
 const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
 const TEST_TREE_ID_ENV = 'AW_TEST_PROCESS_TREE_ID';
+const WINDOWS_JOB_CONFIG_SCHEMA_VERSION = 1;
+const WINDOWS_JOB_PACKAGE_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../packages/agent-skill-eval',
+);
 
 export class ProcessTreeTimeoutError extends Error {
   constructor(label, timeoutMs, stdout, stderr) {
     super(`${label} exceeded its hard timeout of ${timeoutMs}ms.\nstdout:\n${stdout}\nstderr:\n${stderr}`);
     this.name = 'ProcessTreeTimeoutError';
   }
+}
+
+function isRegularFile(filePath) {
+  try {
+    const stats = lstatSync(filePath);
+    return stats.isFile() && !stats.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveWindowsJobHelperPath(options = {}) {
+  const arch = options.arch ?? process.arch;
+  if (arch !== 'x64' && arch !== 'arm64') {
+    throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`);
+  }
+  const packageRoot = options.packageRoot ?? WINDOWS_JOB_PACKAGE_ROOT;
+  const candidates = [
+    path.join(packageRoot, 'dist', 'native', 'windows', arch, 'aw-windows-job.exe'),
+    path.join(packageRoot, 'native', 'windows', arch, 'aw-windows-job.exe'),
+  ];
+  const helperPath = candidates.find(isRegularFile);
+  if (!helperPath) {
+    throw new Error(`Windows Job containment helper is missing for architecture ${arch}.`);
+  }
+  return helperPath;
+}
+
+export function createWindowsJobInvocation(executable, args, options = {}) {
+  if (/\.(?:cmd|bat)$/iu.test(executable)) {
+    throw new Error(
+      'Windows Job containment requires an executable file; .cmd and .bat targets are unsupported.',
+    );
+  }
+  const config = {
+    schemaVersion: WINDOWS_JOB_CONFIG_SCHEMA_VERSION,
+    executable,
+    args: [...args],
+    parentPid: options.parentPid ?? process.pid,
+  };
+  const encoded = Buffer.from(JSON.stringify(config), 'utf8').toString('base64url');
+  return {
+    command: options.helperPath ?? resolveWindowsJobHelperPath(options),
+    args: ['--config', encoded],
+    config,
+  };
 }
 
 function createTaskkillInvocation(pid, force) {
@@ -153,15 +207,57 @@ export function parsePosixProcessTree(rootPid, processTable) {
 
 export function parseWindowsProcessTree(rootPid, rawProcessTable) {
   const records = Array.isArray(rawProcessTable) ? rawProcessTable : [rawProcessTable];
-  const rows = records
-    .filter((record) => record && typeof record === 'object')
-    .map((record) => [
-      String(record.ProcessId ?? ''),
-      String(record.ParentProcessId ?? ''),
-      String(record.CreationDate ?? '').trim(),
-    ].join(' '))
-    .join('\n');
-  return parsePosixProcessTree(rootPid, rows);
+  const identitiesByPid = new Map();
+  const childrenByParent = new Map();
+  for (const record of records) {
+    if (!record || typeof record !== 'object') continue;
+    const pid = Number(record.ProcessId);
+    const parentPid = Number(record.ParentProcessId);
+    const startIdentity = String(record.CreationDateTicks ?? '').trim();
+    if (!Number.isInteger(pid) || !Number.isInteger(parentPid) || !startIdentity) continue;
+    const identity = { pid, parentPid, startIdentity };
+    identitiesByPid.set(pid, identity);
+    const children = childrenByParent.get(parentPid) ?? [];
+    children.push(pid);
+    childrenByParent.set(parentPid, children);
+  }
+
+  const startOrder = (identity) => {
+    const value = identity?.startIdentity;
+    return value && /^\d+$/u.test(value) ? BigInt(value) : null;
+  };
+  const descendants = [];
+  const unconfirmedDescendants = [];
+  const visited = new Set([rootPid]);
+  const pending = [{ pid: rootPid, depth: 0, chainVerified: true }];
+  while (pending.length > 0) {
+    const parent = pending.pop();
+    const parentIdentity = identitiesByPid.get(parent.pid);
+    const parentOrder = startOrder(parentIdentity);
+    for (const pid of childrenByParent.get(parent.pid) ?? []) {
+      if (visited.has(pid)) continue;
+      visited.add(pid);
+      const identity = identitiesByPid.get(pid);
+      if (!identity) continue;
+      const childOrder = startOrder(identity);
+      const chainVerified = Boolean(
+        parent.chainVerified &&
+        parentOrder !== null &&
+        childOrder !== null &&
+        childOrder >= parentOrder,
+      );
+      const descendant = { ...identity, depth: parent.depth + 1 };
+      (chainVerified ? descendants : unconfirmedDescendants).push(descendant);
+      pending.push({ ...descendant, chainVerified });
+    }
+  }
+  const leafFirst = (left, right) => right.depth - left.depth || right.pid - left.pid;
+  return {
+    rootIdentity: identitiesByPid.get(rootPid) ?? null,
+    descendants: descendants.sort(leafFirst),
+    unconfirmedDescendants: unconfirmedDescendants.sort(leafFirst),
+    identitiesByPid,
+  };
 }
 
 export function snapshotPosixProcessTree(rootPid, signal) {
@@ -212,7 +308,7 @@ export function snapshotWindowsProcessTree(rootPid, signal) {
   return new Promise((resolve, reject) => {
     const command = [
       'Get-CimInstance Win32_Process',
-      '| Select-Object ProcessId,ParentProcessId,CreationDate',
+      "| Select-Object ProcessId,ParentProcessId,@{Name='CreationDateTicks';Expression={($_.CreationDate.ToUniversalTime().Ticks).ToString()}}",
       '| ConvertTo-Json -Compress',
     ].join(' ');
     const powershell = spawn('powershell.exe', [
@@ -666,10 +762,161 @@ function runPosixProcessTree(options, dependencies) {
   });
 }
 
+function runWindowsJobProcessTree(options, dependencies) {
+  const metrics = options.metrics;
+  const createInvocation = dependencies.createWindowsJobInvocation ?? createWindowsJobInvocation;
+  let invocation;
+  try {
+    invocation = createInvocation(options.command, options.args ?? [], {
+      arch: dependencies.arch,
+      packageRoot: dependencies.windowsJobPackageRoot,
+      parentPid: process.pid,
+    });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (metrics) {
+    metrics.managedSpawnCount = (metrics.managedSpawnCount ?? 0) + 1;
+    metrics.processTableScanCount = 0;
+    metrics.peakLiveDescendants = null;
+    metrics.cleanupFailureCount ??= 0;
+    metrics.leakedProcessCount ??= 0;
+  }
+  if (options.signal?.aborted) {
+    return Promise.reject(
+      options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Process-tree run aborted.'),
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const spawnProcess = dependencies.spawn ?? spawn;
+    let child;
+    try {
+      child = spawnProcess(invocation.command, invocation.args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: false,
+        windowsHide: true,
+      });
+    } catch (error) {
+      if (metrics) {
+        metrics.cleanupFailureCount += 1;
+        metrics.leakedProcessCount = null;
+      }
+      reject(new Error(`${options.label} Windows Job helper failed to start: ${error.message}`));
+      return;
+    }
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let termination;
+
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      options.signal?.removeEventListener('abort', abortRun);
+      options.forceSignal?.removeEventListener('abort', forceRun);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const terminateHelper = (kind, reason) => {
+      if (termination) return;
+      termination = { kind, reason };
+      let signaled = childHasExited(child);
+      if (!signaled) {
+        try {
+          signaled = child.kill('SIGKILL');
+        } catch {
+          signaled = false;
+        }
+      }
+      if (!signaled && !childHasExited(child)) {
+        if (metrics) {
+          metrics.cleanupFailureCount += 1;
+          metrics.leakedProcessCount = null;
+        }
+        finish(new Error(`${options.label} could not close the Windows Job helper.`));
+      }
+    };
+    const abortRun = () => terminateHelper(
+      'abort',
+      options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Process-tree run aborted.'),
+    );
+    const forceRun = () => terminateHelper(
+      'abort',
+      options.forceSignal.reason instanceof Error
+        ? options.forceSignal.reason
+        : new Error('Process-tree run force-aborted.'),
+    );
+    options.signal?.addEventListener('abort', abortRun, { once: true });
+    options.forceSignal?.addEventListener('abort', forceRun, { once: true });
+    const timeoutTimer = options.timeoutMs == null ? undefined : setTimeout(() => {
+      terminateHelper('timeout');
+    }, options.timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      const text = String(chunk);
+      if (options.captureOutput !== false) stdout += text;
+      options.onStdout?.(text);
+    });
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk);
+      if (options.captureOutput !== false) stderr += text;
+      options.onStderr?.(text);
+    });
+    child.once('error', (error) => {
+      if (metrics) {
+        metrics.cleanupFailureCount += 1;
+        metrics.leakedProcessCount = null;
+      }
+      finish(new Error(`${options.label} Windows Job helper failed: ${error.message}`));
+    });
+    child.once('close', (code, signal) => {
+      if (termination?.kind === 'timeout') {
+        if (metrics) metrics.leakedProcessCount = 0;
+        finish(new ProcessTreeTimeoutError(options.label, options.timeoutMs, stdout, stderr));
+        return;
+      }
+      if (termination?.kind === 'abort') {
+        if (metrics) metrics.leakedProcessCount = 0;
+        finish(termination.reason);
+        return;
+      }
+      if (code !== 0 && !options.allowNonZeroExitCode) {
+        finish(new Error(
+          `${options.label} failed with exit code ${code ?? 'null'}${
+            signal ? ` and signal ${signal}` : ''
+          }.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+        ));
+        return;
+      }
+      if (metrics) metrics.leakedProcessCount = 0;
+      finish(undefined, { stdout, stderr, exitCode: code, signal });
+    });
+    if (options.signal?.aborted) abortRun();
+    if (options.forceSignal?.aborted) forceRun();
+  });
+}
+
 export function runProcessTree(options, dependencies = {}) {
   const metrics = options.metrics;
   const platform = dependencies.platform ?? process.platform;
   if (platform !== 'win32') return runPosixProcessTree(options, dependencies);
+  const useLegacyWindowsContainment = Boolean(
+    dependencies.snapshotWindowsProcessTree || dependencies.taskkillProcessTree,
+  );
+  if (!useLegacyWindowsContainment) {
+    return runWindowsJobProcessTree(options, dependencies);
+  }
   const snapshotProcessTree = platform === 'win32'
     ? dependencies.snapshotWindowsProcessTree ?? snapshotWindowsProcessTree
     : dependencies.snapshotPosixProcessTree ?? snapshotPosixProcessTree;
@@ -726,6 +973,7 @@ export function runProcessTree(options, dependencies = {}) {
     let cleanupStarted = false;
     let cleanupSucceeded = false;
     let lastKnownLiveDescendants = 0;
+    let successfulSnapshotCount = 0;
     let resolveChildClose;
     let resolveForceCleanup;
     const childClose = new Promise((resolveClose) => {
@@ -783,9 +1031,11 @@ export function runProcessTree(options, dependencies = {}) {
         (signal) => snapshotProcessTree(child.pid, signal),
         activeControllers,
       );
-      return result.ok && result.value?.identitiesByPid instanceof Map
-        ? result.value
-        : null;
+      if (!result.ok || !(result.value?.identitiesByPid instanceof Map)) {
+        return null;
+      }
+      successfulSnapshotCount += 1;
+      return result.value;
     };
     const captureVerificationSnapshot = async () => {
       if (metrics) {
@@ -869,6 +1119,13 @@ export function runProcessTree(options, dependencies = {}) {
       const matchingPids = new Set(matching.map((identity) => identity.pid));
       return matching.filter((identity) => !matchingPids.has(identity.parentPid));
     };
+    const unconfirmedWindowsCandidates = (snapshot) => {
+      const observedKeys = new Set(observedDescendants.keys());
+      return [
+        ...snapshot.descendants,
+        ...(snapshot.unconfirmedDescendants ?? []),
+      ].filter((identity) => !observedKeys.has(identityKey(identity)));
+    };
     const cleanupPosixAfterClose = async () => {
       await monitorInFlight;
       if (observedDescendants.size === 0) {
@@ -914,29 +1171,39 @@ export function runProcessTree(options, dependencies = {}) {
     };
     const cleanupWindowsAfterClose = async () => {
       await monitorInFlight;
-      if (observedDescendants.size === 0) {
-        return;
-      }
+      const successfulScansBeforeFinal = successfulSnapshotCount;
       const termSnapshot = await captureSnapshot();
-      if (!termSnapshot) {
+      if (!termSnapshot || successfulSnapshotCount === successfulScansBeforeFinal) {
         throw new Error(`${options.label} exited, but Windows descendant cleanup could not be verified.`);
       }
       const termRoots = matchingWindowsRoots(termSnapshot);
-      if (termRoots.length === 0) {
-        return;
+      let finalSnapshot = termSnapshot;
+      if (termRoots.length > 0) {
+        await Promise.all(termRoots.map((identity) => runWindowsSignal(identity.pid, false)));
+        await delay(terminationGraceMs);
+        const killSnapshot = await captureSnapshot();
+        if (!killSnapshot) {
+          throw new Error(`${options.label} exited, but Windows descendant KILL could not be verified.`);
+        }
+        const killRoots = matchingWindowsRoots(killSnapshot);
+        await Promise.all(killRoots.map((identity) => runWindowsSignal(identity.pid, true)));
+        await delay(cleanupSettleMs);
+        finalSnapshot = await captureSnapshot();
+        if (!finalSnapshot) {
+          throw new Error(`${options.label} exited, but Windows descendant cleanup could not be verified.`);
+        }
       }
-      await Promise.all(termRoots.map((identity) => runWindowsSignal(identity.pid, false)));
-      await delay(terminationGraceMs);
-      const killSnapshot = await captureSnapshot();
-      if (!killSnapshot) {
-        throw new Error(`${options.label} exited, but Windows descendant KILL could not be verified.`);
-      }
-      const killRoots = matchingWindowsRoots(killSnapshot);
-      await Promise.all(killRoots.map((identity) => runWindowsSignal(identity.pid, true)));
-      await delay(cleanupSettleMs);
-      const finalSnapshot = await captureSnapshot();
-      if (!finalSnapshot || collectMatchingDescendants(observedDescendants, finalSnapshot).length > 0) {
-        throw new Error(`${options.label} exited, but an observed Windows descendant remains alive.`);
+      const currentRoot = finalSnapshot.identitiesByPid.get(child.pid);
+      const rootRemains = rootIdentity
+        ? sameIdentity(rootIdentity, currentRoot)
+        : Boolean(currentRoot);
+      const observedRemain = collectMatchingDescendants(
+        observedDescendants,
+        finalSnapshot,
+      ).length > 0;
+      const candidatesRemain = unconfirmedWindowsCandidates(finalSnapshot).length > 0;
+      if (rootRemains || observedRemain || candidatesRemain) {
+        throw new Error(`${options.label} exited, but Windows process-tree cleanup is unconfirmed.`);
       }
     };
     const cleanupAfterClose = async (code, signal) => {
@@ -1049,7 +1316,8 @@ export function runProcessTree(options, dependencies = {}) {
           observedDescendants,
           finalSnapshot,
         ).length > 0;
-        if (!childHasExited(child) || rootRemains || descendantsRemain) {
+        const candidatesRemain = unconfirmedWindowsCandidates(finalSnapshot).length > 0;
+        if (!childHasExited(child) || rootRemains || descendantsRemain || candidatesRemain) {
           throw new Error(`${options.label} cleanup could not confirm Windows process-tree termination.`);
         }
       } else if (!childHasExited(child)) {

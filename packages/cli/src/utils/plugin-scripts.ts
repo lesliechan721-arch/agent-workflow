@@ -5,7 +5,13 @@ import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
 import type { DistributionName, GeneratedArtifact, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
 import { redactString } from '../output/redact.js';
-import { observeProcessTree, terminateProcessTree, type ProcessTreeObservation } from './process-tree.js';
+import {
+  createWindowsJobInvocation,
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeObservation,
+  type WindowsJobInvocation,
+} from './process-tree.js';
 import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -16,6 +22,7 @@ export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
 const OUTPUT_LIMIT = 64 * 1024;
 const TOKEN_BOUNDARY_LOOKAHEAD = 2;
+const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
@@ -31,6 +38,10 @@ interface DefaultPluginProcessRunnerDependencies {
   spawn?: typeof spawn;
   observeProcessTree?: typeof observeProcessTree;
   terminateProcessTree?: typeof terminateProcessTree;
+  createWindowsJobInvocation?: (
+    executable: string,
+    args: readonly string[],
+  ) => WindowsJobInvocation;
 }
 
 export async function resolveBundledPluginFilePath(options: { bundleRoot: string; pluginRelativePath: string; fieldName: string }): Promise<string> {
@@ -173,19 +184,25 @@ export function createDefaultPluginProcessRunner(
   const spawnImpl = dependencies.spawn ?? spawn;
   const observeProcessTreeImpl = dependencies.observeProcessTree ?? observeProcessTree;
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
+    (dependencies.spawn ? undefined : createWindowsJobInvocation);
   return {
   run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
     return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
       const marker = randomUUID();
-      const child = spawnImpl(invocation.command, invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
+      const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
+        ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
+        : undefined;
+      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       child.stdin?.end(invocation.stdin ?? '');
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
+      let windowsJobCloseTimer: NodeJS.Timeout | undefined;
       const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
-      let observation: ProcessTreeObservation | undefined; if (child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
+      let observation: ProcessTreeObservation | undefined; if (!windowsJobInvocation && child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
-      const cleanup = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
+      const cleanup = (): void => { clearTimeout(timer); if (windowsJobCloseTimer) clearTimeout(windowsJobCloseTimer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
       const result = (): PluginProcessResult => ({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut });
       const settle = (cleanupError?: unknown): void => {
         if (settled) return;
@@ -200,18 +217,43 @@ export function createDefaultPluginProcessRunner(
         }
         resolve(result());
       };
-      function terminate(requireConfirmedCleanup: boolean = false): void {
+      function terminate(
+        requireConfirmedCleanup: boolean = false,
+        allowUnobservedWindowsProcessOnNormalCompletion: boolean = false,
+      ): void {
         if (settled || terminating) return;
         terminating = true;
         clearTimeout(timer);
         const direct = (signal: 'SIGTERM' | 'SIGKILL'): void => { if (child.exitCode === null && child.signalCode === null) child.kill(signal); };
+        if (windowsJobInvocation) {
+          try {
+            if (child.exitCode === null && child.signalCode === null && child.kill('SIGKILL') === false) {
+              throw new Error('Windows Job helper did not accept termination.');
+            }
+          } catch (error) {
+            settle(error);
+            return;
+          }
+          windowsJobCloseTimer = setTimeout(
+            () => settle(new Error('Windows Job helper exit could not be confirmed.')),
+            WINDOWS_JOB_CLOSE_TIMEOUT_MS,
+          );
+          windowsJobCloseTimer.unref();
+          return;
+        }
         const termination = child.pid === undefined
           ? Promise.resolve(direct('SIGKILL'))
           : terminateProcessTreeImpl(
               child.pid,
               direct,
               {},
-              { observation, requireConfirmedCleanup },
+              {
+                observation,
+                requireConfirmedCleanup,
+                ...(allowUnobservedWindowsProcessOnNormalCompletion
+                  ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+                  : {}),
+              },
             );
         void Promise.resolve(termination).then(
           () => settle(),
@@ -221,10 +263,18 @@ export function createDefaultPluginProcessRunner(
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
-      child.on('error', (error) => { if (!settled && !terminating) { settled = true; cleanup(); reject(error); } });
-      const complete = (_exitCode: number | null, _signal: NodeJS.Signals | null): void => {
-        if (settled || terminating) return;
-        terminate(true);
+      child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settle(error); });
+      const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+        if (settled) return;
+        if (windowsJobInvocation) {
+          settle();
+          return;
+        }
+        if (terminating) return;
+        terminate(
+          true,
+          platform === 'win32' && exitCode === 0 && signal === null,
+        );
       };
       child.on(platform === 'win32' ? 'close' : 'exit', complete);
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();

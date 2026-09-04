@@ -95,6 +95,39 @@ describe('Eval process management preflight', () => {
     })
   })
 
+  it('admits Windows managed mode through the Job helper without process-table inspection', async () => {
+    const inspectProcessTree = vi.fn(async () => undefined)
+    const resolveWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
+
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: false,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access' },
+      dependencies: {
+        platform: 'win32',
+        inspectProcessTree,
+        resolveWindowsJobHelper,
+      },
+    })).resolves.toMatchObject({
+      mode: 'managed',
+      inspectionAvailable: true,
+      descendantCleanupGuaranteed: false,
+      limitation: expect.stringContaining('Job containment'),
+    })
+    expect(resolveWindowsJobHelper).toHaveBeenCalledOnce()
+    expect(inspectProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('fails Windows managed admission when the Job helper is unavailable', async () => {
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: false,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access' },
+      dependencies: {
+        platform: 'win32',
+        resolveWindowsJobHelper: () => { throw new Error('helper missing') },
+      },
+    })).rejects.toThrow('Full Access process management is unavailable')
+  })
+
   it('blocks an injected keychain before process inspection', async () => {
     const inspectProcessTree = vi.fn(async () => undefined)
     await expect(resolveEvalProcessManagement({

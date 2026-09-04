@@ -61,11 +61,66 @@ afterEach(async () => {
 });
 
 describe('postApply script', () => {
+  it('routes a Windows script through the Job helper and waits for helper close after abort', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const spawn = vi.fn(() => child);
+    const observeProcessTree = vi.fn();
+    const terminateProcessTree = vi.fn();
+    const runner = createDefaultPluginProcessRunner({
+      platform: 'win32',
+      spawn: spawn as unknown as typeof import('node:child_process').spawn,
+      createWindowsJobInvocation: () => ({
+        command: 'C:\\aw\\aw-windows-job.exe',
+        args: ['--config', 'encoded'],
+        config: { schemaVersion: 1, executable: 'node.exe', args: ['script.js'], parentPid: 42 },
+      }),
+      observeProcessTree,
+      terminateProcessTree,
+    });
+    const controller = new AbortController();
+    const running = runner.run({
+      command: 'node.exe',
+      args: ['script.js'],
+      cwd: '/',
+      env: {},
+    }, { timeoutMs: 2_000, signal: controller.signal });
+    let settled = false;
+    void running.then(() => { settled = true; }, () => { settled = true; });
+
+    controller.abort(new Error('script aborted'));
+    await Promise.resolve();
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(settled).toBe(false);
+    child.signalCode = 'SIGKILL';
+    child.emit('close', null, 'SIGKILL');
+
+    await expect(running).rejects.toThrow('script aborted');
+    expect(spawn).toHaveBeenCalledWith(
+      'C:\\aw\\aw-windows-job.exe',
+      ['--config', 'encoded'],
+      expect.objectContaining({ detached: false }),
+    );
+    expect(observeProcessTree).not.toHaveBeenCalled();
+    expect(terminateProcessTree).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ['normal POSIX exit', 'linux', 'exit', false, true, true],
-    ['normal POSIX cleanup rejection', 'linux', 'exit', true, true, true],
-    ['POSIX abort cleanup rejection', 'linux', 'abort', true, false, true],
-    ['normal Windows close', 'win32', 'close', false, true, false],
+    ['normal POSIX exit', 'linux', 'exit', false, true, true, false],
+    ['normal POSIX cleanup rejection', 'linux', 'exit', true, true, true, false],
+    ['POSIX abort cleanup rejection', 'linux', 'abort', true, false, true, false],
+    ['normal Windows close', 'win32', 'close', false, true, false, true],
+    ['Windows abort cleanup rejection', 'win32', 'abort', true, false, false, false],
   ] as const)('settles only after process-tree cleanup on %s', async (
     _name,
     platform,
@@ -73,6 +128,7 @@ describe('postApply script', () => {
     rejectCleanup,
     requireConfirmedCleanup,
     detached,
+    allowUnobservedWindowsProcessOnNormalCompletion,
   ) => {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
@@ -120,7 +176,13 @@ describe('postApply script', () => {
       321,
       expect.any(Function),
       {},
-      { observation, requireConfirmedCleanup },
+      {
+        observation,
+        requireConfirmedCleanup,
+        ...(allowUnobservedWindowsProcessOnNormalCompletion
+          ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+          : {}),
+      },
     );
     expect(spawn).toHaveBeenCalledWith(
       'node',

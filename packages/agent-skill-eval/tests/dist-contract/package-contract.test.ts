@@ -11,6 +11,7 @@ import {
   computeEvalResultSummary,
   getSchema,
   getSchemaDigest,
+  resolveWindowsJobHelperPath,
 } from '@lesliechan721/agent-skill-eval'
 
 const execFileAsync = promisify(execFile)
@@ -53,6 +54,17 @@ describe('published Eval package contract', () => {
     expect(help.stdout).toContain('spec validate <spec.json>')
     expect(help.stdout).toContain('run <spec.json> --audit <audit.json>')
     expect(help.stdout).toContain('doctor --json')
+  })
+
+  it.each([
+    ['x64', 0x8664],
+    ['arm64', 0xaa64],
+  ] as const)('ships the %s Windows Job helper in the published dist', async (arch, machine) => {
+    const helperPath = resolveWindowsJobHelperPath({ arch })
+    const bytes = await readFile(helperPath)
+    const peOffset = bytes.readUInt32LE(0x3c)
+    expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ')
+    expect(bytes.readUInt16LE(peOffset + 4)).toBe(machine)
   })
 
   it.skipIf(process.platform === 'win32')(

@@ -385,6 +385,7 @@ export async function executeCustomProcessProvider(
     processManagement.mode !== 'unmanaged-confirmed'
     && cleanupPlatform !== 'darwin'
     && cleanupPlatform !== 'linux'
+    && !(cleanupPlatform === 'win32' && process.platform === 'win32')
   ) {
     throw new Error(`custom process cleanup is unsupported on ${cleanupPlatform}.`)
   }

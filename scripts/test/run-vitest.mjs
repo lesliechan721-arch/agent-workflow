@@ -22,7 +22,8 @@ function resolveVitestEntry(cwd) {
 
 export async function runVitest(args = process.argv.slice(2)) {
   const startedAt = performance.now();
-  const runId = process.env[TEST_RUN_ID_ENV] || randomUUID();
+  const correlationRunId = process.env[TEST_RUN_ID_ENV] || undefined;
+  const runId = randomUUID();
   const processTreeMetrics = {};
   const controller = new AbortController();
   const forceController = new AbortController();
@@ -80,11 +81,14 @@ export async function runVitest(args = process.argv.slice(2)) {
       const resourceUsage = process.resourceUsage();
       const metrics = {
         runId,
+        correlationRunId,
         wallMs: performance.now() - startedAt,
         maxRssMb: resourceUsage.maxRSS / 1024,
         managedSpawnCount: processTreeMetrics.managedSpawnCount ?? 0,
         processTableScanCount: processTreeMetrics.processTableScanCount ?? 0,
-        peakLiveDescendants: processTreeMetrics.peakLiveDescendants ?? 0,
+        peakLiveDescendants: processTreeMetrics.peakLiveDescendants === undefined
+          ? 0
+          : processTreeMetrics.peakLiveDescendants,
         cleanupFailureCount: processTreeMetrics.cleanupFailureCount ?? 0,
         leakedProcessCount: processTreeMetrics.leakedProcessCount === undefined
           ? 0
@@ -94,6 +98,7 @@ export async function runVitest(args = process.argv.slice(2)) {
       await fs.writeFile(
         path.join(metricsDir, `${encodeURIComponent(runId)}.json`),
         `${JSON.stringify(metrics)}${os.EOL}`,
+        { flag: 'wx' },
       );
     }
   }

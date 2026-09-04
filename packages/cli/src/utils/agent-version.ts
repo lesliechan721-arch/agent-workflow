@@ -208,7 +208,7 @@ async function probeAgentVersionUncached(
         env: requirement.platform === 'codex'
           ? { ...env, CODEX_HOME: getCodexHome(env) }
           : options.env,
-        ...(requirement.platform === 'codex' ? { agentKind: 'codex' as const } : {}),
+        agentKind: requirement.platform,
         timeoutMs: options.timeoutMs ?? DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS,
       },
       runner,

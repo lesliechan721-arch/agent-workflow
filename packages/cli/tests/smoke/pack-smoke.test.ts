@@ -367,6 +367,17 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
+  it('packs both Windows Job helper architectures in the Eval tarball', async () => {
+    const { evalTarballPath } = await preparePackedCli();
+    const { stdout } = await execFileAsync('tar', ['-tzf', evalTarballPath], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const entries = new Set(stdout.trim().split('\n'));
+    expect(entries).toContain('package/dist/native/windows/manifest.json');
+    expect(entries).toContain('package/dist/native/windows/x64/aw-windows-job.exe');
+    expect(entries).toContain('package/dist/native/windows/arm64/aw-windows-job.exe');
+  }, 300_000);
+
   it('runs external authoring workflow from installed tarballs', async () => {
     const { packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot } = await preparePackedCli();
     const installPrefix = path.join(tempRoot, 'install-prefix');

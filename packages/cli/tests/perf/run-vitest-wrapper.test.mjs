@@ -172,7 +172,6 @@ describe('Vitest process-tree wrapper', () => {
     const metricsDir = path.join(fixture, 'metrics');
     const binDir = await createEmptyPsShim(fixture);
     const runIdFile = path.join(fixture, 'run-id');
-    const secondRunIdFile = path.join(fixture, 'second-run-id');
     const result = await spawnWrapper(fixture, ['run'], {
       AW_TEST_METRICS_DIR: metricsDir,
       AW_TEST_RUN_ID: '',
@@ -184,18 +183,8 @@ describe('Vitest process-tree wrapper', () => {
       path.join(metricsDir, `${encodeURIComponent(runId)}.json`),
       'utf8',
     ));
-    const secondResult = await spawnWrapper(fixture, ['run'], {
-      AW_TEST_METRICS_DIR: metricsDir,
-      AW_TEST_RUN_ID: '',
-      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
-      RUN_ID_FILE: secondRunIdFile,
-    }).closed;
-    const secondRunId = await fs.readFile(secondRunIdFile, 'utf8');
-
     expect(result.code).toBe(0);
-    expect(secondResult.code).toBe(0);
     expect(runId).toMatch(/^[0-9a-f-]{36}$/u);
-    expect(secondRunId).not.toBe(runId);
     expect(metrics).toMatchObject({
       runId,
       managedSpawnCount: 1,
@@ -203,6 +192,7 @@ describe('Vitest process-tree wrapper', () => {
       leakedProcessCount: 0,
       maxRssScope: 'vitest-wrapper',
     });
+    expect(metrics).not.toHaveProperty('correlationRunId');
     for (const name of [
       'wallMs',
       'maxRssMb',
@@ -215,17 +205,49 @@ describe('Vitest process-tree wrapper', () => {
     expect(metrics.processTableScanCount).toBeLessThanOrEqual(1);
   });
 
-  it('preserves an upstream run ID for nested wrapper audit correlation', async () => {
-    const fixture = await createFixture(
-      "process.stdout.write(process.env.AW_TEST_RUN_ID);",
-    );
+  it('uses distinct invocation IDs while preserving an upstream correlation ID', async () => {
+    const fixture = await createFixture([
+      "import fs from 'node:fs';",
+      "fs.writeFileSync(process.env.RUN_ID_FILE, process.env.AW_TEST_RUN_ID);",
+    ].join('\n'));
     const binDir = await createEmptyPsShim(fixture);
-    const result = await spawnWrapper(fixture, ['run'], {
-      AW_TEST_RUN_ID: 'parent/run-id',
-      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
-    }).closed;
+    const metricsDir = path.join(fixture, 'metrics');
+    const runIdFiles = [
+      path.join(fixture, 'run-id-1'),
+      path.join(fixture, 'run-id-2'),
+    ];
+    const results = [];
+    for (const runIdFile of runIdFiles) {
+      results.push(await spawnWrapper(fixture, ['run'], {
+        AW_TEST_METRICS_DIR: metricsDir,
+        AW_TEST_RUN_ID: 'parent/run-id',
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        RUN_ID_FILE: runIdFile,
+      }).closed);
+    }
+    const childRunIds = await Promise.all(
+      runIdFiles.map((runIdFile) => fs.readFile(runIdFile, 'utf8')),
+    );
+    const metricFileNames = (await fs.readdir(metricsDir)).sort();
+    const metrics = await Promise.all(metricFileNames.map(async (fileName) =>
+      JSON.parse(await fs.readFile(path.join(metricsDir, fileName), 'utf8'))
+    ));
 
-    expect(result).toMatchObject({ code: 0, stdout: 'parent/run-id' });
+    expect(results).toEqual([
+      expect.objectContaining({ code: 0 }),
+      expect.objectContaining({ code: 0 }),
+    ]);
+    expect(new Set(childRunIds).size).toBe(2);
+    expect(childRunIds).toEqual([
+      expect.stringMatching(/^[0-9a-f-]{36}$/u),
+      expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    ]);
+    expect(metricFileNames).toHaveLength(2);
+    expect(metrics.map(({ runId }) => runId).sort()).toEqual([...childRunIds].sort());
+    for (const [index, metric] of metrics.entries()) {
+      expect(metric).toMatchObject({ correlationRunId: 'parent/run-id' });
+      expect(metricFileNames[index]).toBe(`${encodeURIComponent(metric.runId)}.json`);
+    }
   });
 
   it('does not write metrics when measurement mode is disabled', async () => {
@@ -403,11 +425,10 @@ describe('Vitest process-tree wrapper', () => {
     const failFile = path.join(fixture, 'fail-ps');
     const pidFile = path.join(fixture, 'pids.json');
     const metricsDir = path.join(fixture, 'metrics');
-    const runId = 'cleanup-failure';
     await createPsShim(fixture, failFile);
     const run = spawnWrapper(fixture, ['run'], {
       AW_TEST_METRICS_DIR: metricsDir,
-      AW_TEST_RUN_ID: runId,
+      AW_TEST_RUN_ID: 'cleanup-failure',
       PID_FILE: pidFile,
       PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     });
@@ -420,11 +441,14 @@ describe('Vitest process-tree wrapper', () => {
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('cleanup could not verify process-tree ownership');
-    await expect(readJsonEventually(path.join(metricsDir, `${runId}.json`))).resolves.toMatchObject({
-      runId,
+    const [metricsFileName] = await fs.readdir(metricsDir);
+    const metrics = await readJsonEventually(path.join(metricsDir, metricsFileName));
+    expect(metrics).toMatchObject({
+      correlationRunId: 'cleanup-failure',
       cleanupFailureCount: 1,
       leakedProcessCount: null,
     });
+    expect(metricsFileName).toBe(`${encodeURIComponent(metrics.runId)}.json`);
   });
 
   itOnPosix('fails cleanup without leaking a worker when snapshots never establish ownership', async () => {

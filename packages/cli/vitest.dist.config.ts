@@ -3,7 +3,10 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['tests/integration/authoring-tools.test.ts'],
+    include: [
+      'tests/integration/authoring-tools.test.ts',
+      'tests/dist-contract/**/*.test.ts',
+    ],
     setupFiles: ['tests/setup/test-isolation.ts'],
     pool: 'forks',
     fileParallelism: false,

@@ -17,12 +17,14 @@ interface ProcessEntry {
   ppid: number;
   pgid?: number;
   startTime: string;
+  creationTime?: bigint;
   state?: string;
 }
 
 interface ProcessIdentity {
   pid: number;
   startTime: string;
+  creationTime?: bigint;
 }
 
 interface ProcessCommandFailure {
@@ -87,6 +89,7 @@ export interface ProcessTreeObservation {
 export interface ProcessTreeTerminationOptions {
   observation?: ProcessTreeObservation;
   requireConfirmedCleanup?: boolean;
+  allowUnobservedWindowsProcessOnNormalCompletion?: boolean;
   allowInspectionUnavailable?: boolean;
   requireDescendantsExitedBeforeCompletion?: boolean;
 }
@@ -103,7 +106,7 @@ interface ObservationState {
   rootPgidMode?: 'owned' | 'shared' | 'missing';
   rootDiscoveryPending: boolean;
   unmarkedRootCandidate?: ProcessIdentity;
-  identityObserved: boolean;
+  initialWindowsLookupSucceeded: boolean;
   descendants: Map<number, ProcessIdentity>;
   failure?: Error;
   failureListeners: Set<(error: Error) => void>;
@@ -474,9 +477,12 @@ function parseWindowsProcessTable(stdout: string): Map<number, ProcessEntry> {
   for (const line of stdout.split('\n')) {
     const match = /^\s*(\d+)\|(\d+)\|(.+?)\s*$/u.exec(line);
     if (!match) continue;
+    const startTime = match[3];
+    const creationTime = /^\d+$/u.test(startTime) ? BigInt(startTime) : undefined;
     table.set(Number(match[1]), {
       ppid: Number(match[2]),
-      startTime: match[3],
+      startTime,
+      ...(creationTime !== undefined ? { creationTime } : {}),
     });
   }
   return table;
@@ -498,10 +504,72 @@ function readWindowsProcessTable(
   ).then((stdout) => stdout === null ? null : parseWindowsProcessTable(stdout));
 }
 
+function collectDescendantProcessIds(
+  rootPid: number,
+  table: ReadonlyMap<number, ProcessEntry>,
+): Set<number> {
+  const childrenByParent = new Map<number, number[]>();
+  for (const [processId, entry] of table) {
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(processId);
+    childrenByParent.set(entry.ppid, children);
+  }
+  const descendants = new Set<number>();
+  const visited = new Set([rootPid]);
+  const pending = [rootPid];
+  while (pending.length > 0) {
+    const parent = pending.shift()!;
+    for (const childPid of childrenByParent.get(parent) ?? []) {
+      if (visited.has(childPid)) continue;
+      visited.add(childPid);
+      descendants.add(childPid);
+      pending.push(childPid);
+    }
+  }
+  return descendants;
+}
+
+function collectComparableWindowsDescendantProcessIds(
+  root: ProcessIdentity | undefined,
+  table: ReadonlyMap<number, ProcessEntry>,
+): Set<number> {
+  if (root?.creationTime === undefined) return new Set();
+  const childrenByParent = new Map<number, number[]>();
+  for (const [processId, entry] of table) {
+    const children = childrenByParent.get(entry.ppid) ?? [];
+    children.push(processId);
+    childrenByParent.set(entry.ppid, children);
+  }
+  const descendants = new Set<number>();
+  const visited = new Set([root.pid]);
+  const pending = [root];
+  while (pending.length > 0) {
+    const parent = pending.shift()!;
+    for (const childPid of childrenByParent.get(parent.pid) ?? []) {
+      if (visited.has(childPid)) continue;
+      visited.add(childPid);
+      const entry = table.get(childPid)!;
+      if (
+        entry.creationTime === undefined ||
+        parent.creationTime === undefined ||
+        entry.creationTime < parent.creationTime
+      ) continue;
+      descendants.add(childPid);
+      pending.push({
+        pid: childPid,
+        startTime: entry.startTime,
+        creationTime: entry.creationTime,
+      });
+    }
+  }
+  return descendants;
+}
+
 function refreshDescendants(
   root: ProcessIdentity | undefined,
   knownDescendants: Map<number, ProcessIdentity>,
   table: ReadonlyMap<number, ProcessEntry>,
+  requireComparableCreationOrder: boolean = false,
 ): void {
   const childrenByParent = new Map<number, number[]>();
   for (const [processId, entry] of table) {
@@ -513,18 +581,31 @@ function refreshDescendants(
     (identity): identity is ProcessIdentity =>
       identity !== undefined && table.get(identity.pid)?.startTime === identity.startTime,
   );
-  const pending = roots.map((identity) => identity.pid);
-  const visited = new Set(pending);
+  const pending = [...roots];
+  const visited = new Set(pending.map((identity) => identity.pid));
   while (pending.length > 0) {
     const parent = pending.shift()!;
-    for (const descendantPid of childrenByParent.get(parent) ?? []) {
+    for (const descendantPid of childrenByParent.get(parent.pid) ?? []) {
       if (visited.has(descendantPid)) continue;
       visited.add(descendantPid);
       const entry = table.get(descendantPid)!;
+      if (
+        requireComparableCreationOrder &&
+        (
+          parent.creationTime === undefined ||
+          entry.creationTime === undefined ||
+          entry.creationTime < parent.creationTime
+        )
+      ) continue;
       const knownIdentity = knownDescendants.get(descendantPid);
       if (knownIdentity && knownIdentity.startTime !== entry.startTime) continue;
-      knownDescendants.set(descendantPid, { pid: descendantPid, startTime: entry.startTime });
-      pending.push(descendantPid);
+      const identity = {
+        pid: descendantPid,
+        startTime: entry.startTime,
+        ...(entry.creationTime !== undefined ? { creationTime: entry.creationTime } : {}),
+      };
+      knownDescendants.set(descendantPid, identity);
+      pending.push(identity);
     }
   }
 }
@@ -542,9 +623,12 @@ function refreshObservedProcesses(
       (state.rootDiscoveryPending && (state.platform === 'win32' || state.marker === undefined)))
   ) {
     const entry = table.get(state.pid);
-    if (entry) {
-      state.root = { pid: state.pid, startTime: entry.startTime };
-      state.identityObserved = true;
+    if (entry && (state.platform !== 'win32' || entry.creationTime !== undefined)) {
+      state.root = {
+        pid: state.pid,
+        startTime: entry.startTime,
+        ...(entry.creationTime !== undefined ? { creationTime: entry.creationTime } : {}),
+      };
     }
   }
   state.rootDiscoveryPending = false;
@@ -553,14 +637,23 @@ function refreshObservedProcesses(
     if (processId === state.root?.pid) continue;
     const entry = table.get(processId);
     if (!entry) continue;
+    if (state.platform === 'win32' && entry.creationTime === undefined) continue;
     const known = state.descendants.get(processId);
     if (!known || known.startTime === entry.startTime) {
-      state.descendants.set(processId, { pid: processId, startTime: entry.startTime });
-      state.identityObserved = true;
+      state.descendants.set(processId, {
+        pid: processId,
+        startTime: entry.startTime,
+        ...(entry.creationTime !== undefined ? { creationTime: entry.creationTime } : {}),
+      });
     }
   }
-  if (state.marker === undefined) {
-    refreshDescendants(state.root, state.descendants, table);
+  if (state.platform === 'win32' || state.marker === undefined) {
+    refreshDescendants(
+      state.root,
+      state.descendants,
+      table,
+      state.platform === 'win32',
+    );
   }
 }
 
@@ -977,7 +1070,7 @@ function createProcessTreeObservation(
     lease,
     dependencies,
     rootDiscoveryPending: true,
-    identityObserved: false,
+    initialWindowsLookupSucceeded: false,
     descendants: new Map<number, ProcessIdentity>(),
     failureListeners: new Set<(error: Error) => void>(),
     disposed: false,
@@ -988,7 +1081,10 @@ function createProcessTreeObservation(
   const execFileImpl = dependencies.execFile ?? defaultExecFile;
   if (state.platform === 'win32') {
     state.initialLookup = readWindowsProcessTable(execFileImpl).then((table) => {
-      if (!state.disposed && table) refreshObservedProcesses(state, table);
+      if (!state.disposed && table) {
+        state.initialWindowsLookupSucceeded = true;
+        refreshObservedProcesses(state, table);
+      }
     });
     return observation;
   }
@@ -1139,6 +1235,7 @@ async function runTaskkill(
 async function terminateWindowsProcessTree(
   state: ObservationState,
   requireConfirmedCleanup: boolean,
+  allowUnobservedProcessOnNormalCompletion: boolean,
 ): Promise<void> {
   const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
   if (!requireConfirmedCleanup) {
@@ -1147,22 +1244,40 @@ async function terminateWindowsProcessTree(
     }
     return;
   }
+  const identitiesBeforeNormalCompletion = allowUnobservedProcessOnNormalCompletion
+    ? {
+        root: state.root,
+        descendants: new Map(state.descendants),
+      }
+    : undefined;
   await state.initialLookup;
   const table = await readWindowsProcessTable(execFileImpl);
   if (!table) {
     throw cleanupUnconfirmed('Windows process identity lookup failed.');
   }
   refreshObservedProcesses(state, table);
-  const observedIdentities = [state.root, ...state.descendants.values()].filter(
+  const root = identitiesBeforeNormalCompletion
+    ? identitiesBeforeNormalCompletion.root
+    : state.root;
+  const descendants = identitiesBeforeNormalCompletion?.descendants ?? state.descendants;
+  const observedIdentities = [root, ...descendants.values()].filter(
     (identity): identity is ProcessIdentity => identity !== undefined,
+  );
+  const candidatePids = collectDescendantProcessIds(state.pid, table);
+  const comparableCandidatePids = collectComparableWindowsDescendantProcessIds(root, table);
+  const hasInvalidCandidateEdge = [...candidatePids].some(
+    (pid) => !comparableCandidatePids.has(pid),
+  );
+  const hasUnobservedCandidate = [...candidatePids].some((pid) =>
+    !identityMatches(descendants.get(pid), table)
   );
   const observedPidWasReused = (candidateTable: ReadonlyMap<number, ProcessEntry>): boolean =>
     observedIdentities.some((identity) => {
       const entry = candidateTable.get(identity.pid);
       return entry !== undefined && entry.startTime !== identity.startTime;
     });
-  const rootTarget = identityMatches(state.root, table) ? state.root : undefined;
-  const liveDescendants = [...state.descendants.values()].filter((identity) =>
+  const rootTarget = identityMatches(root, table) ? root : undefined;
+  const liveDescendants = [...descendants.values()].filter((identity) =>
     identityMatches(identity, table)
   );
   const liveDescendantPids = new Set(liveDescendants.map((identity) => identity.pid));
@@ -1171,27 +1286,56 @@ async function terminateWindowsProcessTree(
     : liveDescendants.filter((identity) =>
       !liveDescendantPids.has(table.get(identity.pid)!.ppid)
     );
-  const taskkillResults = await Promise.all(
-    targets.map((identity) => runTaskkill(identity.pid, execFileImpl)),
-  );
+  const taskkillResults = hasInvalidCandidateEdge || hasUnobservedCandidate
+    ? []
+    : await Promise.all(
+      targets.map((identity) => runTaskkill(identity.pid, execFileImpl)),
+    );
   if (taskkillResults.some((result) => !result)) {
     throw cleanupUnconfirmed('taskkill did not confirm termination.');
   }
   const verifiedTable = await readWindowsProcessTable(execFileImpl);
   if (!verifiedTable) throw cleanupUnconfirmed('Windows termination verification failed.');
+  const verifiedCandidatePids = collectDescendantProcessIds(state.pid, verifiedTable);
   const verifiedIdentities = [rootTarget, ...liveDescendants].filter(
     (identity): identity is ProcessIdentity => identity !== undefined,
   );
   if (verifiedIdentities.some((identity) => identityMatches(identity, verifiedTable))) {
     throw cleanupUnconfirmed('a verified Windows process is still running.');
   }
+  if (hasInvalidCandidateEdge) {
+    throw cleanupUnconfirmed(
+      hasUnobservedCandidate
+        ? 'an unobserved Windows descendant candidate has invalid process creation order.'
+        : 'a Windows descendant candidate has invalid process creation order.',
+    );
+  }
+  if (hasUnobservedCandidate) {
+    throw cleanupUnconfirmed(
+      'an unobserved Windows descendant candidate was found after the root exited.',
+    );
+  }
+  if (verifiedCandidatePids.size > 0) {
+    throw cleanupUnconfirmed('a Windows descendant candidate is still running.');
+  }
+  const unobservedNormalCompletionIsAllowed =
+    allowUnobservedProcessOnNormalCompletion &&
+    state.initialWindowsLookupSucceeded &&
+    !table.has(state.pid) &&
+    candidatePids.size === 0 &&
+    !verifiedTable.has(state.pid) &&
+    verifiedCandidatePids.size === 0;
   if (
     requireConfirmedCleanup &&
     targets.length === 0 &&
-    (!state.identityObserved || observedPidWasReused(table) || observedPidWasReused(verifiedTable))
+    (
+      observedPidWasReused(table) ||
+      observedPidWasReused(verifiedTable) ||
+      (observedIdentities.length === 0 && !unobservedNormalCompletionIsAllowed)
+    )
   ) {
     throw cleanupUnconfirmed(
-      state.identityObserved
+      observedIdentities.length > 0
         ? 'an observed Windows process identifier was reused.'
         : 'no inherited-pipe process identity was observed.',
     );
@@ -1296,6 +1440,7 @@ export async function terminateProcessTree(
       await terminateWindowsProcessTree(
         state,
         options.requireConfirmedCleanup ?? false,
+        options.allowUnobservedWindowsProcessOnNormalCompletion ?? false,
       );
       return;
     }

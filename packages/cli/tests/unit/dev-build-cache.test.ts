@@ -27,6 +27,11 @@ async function createRepo(): Promise<string> {
     'packages/agent-skill-eval/src/index.ts': 'export const evalValue = 1\n',
     'packages/agent-skill-eval/schemas/eval-result.schema.json': '{}\n',
     'packages/agent-skill-eval/scripts/embed-schemas.mjs': 'export {}\n',
+    'packages/agent-skill-eval/scripts/copy-windows-job-helper.mjs': 'export {}\n',
+    'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs': 'export {}\n',
+    'packages/agent-skill-eval/native/windows/manifest.json': '{}\n',
+    'packages/agent-skill-eval/native/windows/x64/aw-windows-job.exe': 'x64 source fixture\n',
+    'packages/agent-skill-eval/native/windows/arm64/aw-windows-job.exe': 'arm64 source fixture\n',
     'packages/plugin-core/package.json': '{}\n',
     'packages/plugin-core/tsconfig.json': '{}\n',
     'packages/plugin-core/tsconfig.dev.json': '{}\n',
@@ -67,6 +72,9 @@ function createBuilders(repoRoot: string, builds: string[], generations: Map<str
         await write('packages/agent-skill-eval/dist/index.js', `export const generation = ${generation}\n`);
         await write('packages/agent-skill-eval/dist/bin.js', 'export {}\n');
         await write('packages/agent-skill-eval/dist/schemas/digests.json', '{}\n');
+        await write('packages/agent-skill-eval/dist/native/windows/manifest.json', '{}\n');
+        await write('packages/agent-skill-eval/dist/native/windows/x64/aw-windows-job.exe', 'x64 fixture\n');
+        await write('packages/agent-skill-eval/dist/native/windows/arm64/aw-windows-job.exe', 'arm64 fixture\n');
       } else if (target.id === 'plugin-core') {
         await write('packages/plugin-core/dist/index.js', `export const generation = ${generation}\n`);
       } else if (target.id === 'cli-typescript') {
@@ -281,6 +289,41 @@ describe('development build cache', () => {
       .toEqual(['plugin-core']);
     expect(builds).toContain('plugin-core:clean');
     expect(builds.filter((build) => build.endsWith(':clean'))).toEqual(['plugin-core:clean']);
+  });
+
+  it('cleans and rebuilds Eval when a copied Windows helper is missing', async () => {
+    const repoRoot = await createRepo();
+    const builds: string[] = [];
+    const builders = createBuilders(repoRoot, builds, new Map());
+    await buildDevWithCache(repoRoot, { builders });
+    builds.length = 0;
+
+    await fs.rm(path.join(
+      repoRoot,
+      'packages',
+      'agent-skill-eval',
+      'dist',
+      'native',
+      'windows',
+      'x64',
+      'aw-windows-job.exe',
+    ));
+    const result = await buildDevWithCache(repoRoot, { builders });
+
+    expect(result.targets.find((target) => target.target === 'agent-skill-eval')).toMatchObject({
+      reused: false,
+      cleaned: true,
+    });
+    await expect(fs.readFile(path.join(
+      repoRoot,
+      'packages',
+      'agent-skill-eval',
+      'dist',
+      'native',
+      'windows',
+      'x64',
+      'aw-windows-job.exe',
+    ), 'utf8')).resolves.toBe('x64 fixture\n');
   });
 
   it('fails closed when output digest validation still cannot read the rebuilt tree', async () => {

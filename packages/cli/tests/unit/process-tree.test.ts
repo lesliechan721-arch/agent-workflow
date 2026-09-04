@@ -393,6 +393,7 @@ describe('process-tree', () => {
     const processes = new Map([
       [100, { ppid: 1, startTime: '1000' }],
       [101, { ppid: 100, startTime: '1001' }],
+      [300, { ppid: 1, startTime: '900' }],
     ]);
     const renderTable = () => [...processes].map(([pid, entry]) =>
       `${pid}|${entry.ppid}|${entry.startTime}`
@@ -405,13 +406,12 @@ describe('process-tree', () => {
       }
       callback(null, renderTable());
     });
-    const observation = observeProcessTree(100, undefined, {
+    const observation = observeProcessTree(100, 'marker-value', {
       platform: 'win32',
       execFile,
     });
     await Promise.resolve();
     processes.delete(100);
-    processes.set(101, { ...processes.get(101)!, ppid: 1 });
 
     await terminateProcessTree(
       100,
@@ -426,6 +426,81 @@ describe('process-tree', () => {
       { timeout: 1_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       expect.any(Function),
     );
+    expect(processes.has(300)).toBe(true);
+  });
+
+  it.each([
+    ['explicit termination', true, false],
+    ['normal success before the first identity', false, true],
+  ] as const)(
+    'rejects an unobserved late Windows descendant during %s',
+    async (_name, rootInitiallyPresent, allowNormalCompletion) => {
+      const processes = new Map<number, { ppid: number; startTime: string }>(
+        rootInitiallyPresent ? [[100, { ppid: 1, startTime: '1000' }]] : [],
+      );
+      const taskkillPids: number[] = [];
+      const execFile = vi.fn((command, args, _options, callback) => {
+        if (command === 'taskkill') {
+          taskkillPids.push(Number(args[1]));
+          callback(null, 'SUCCESS');
+          return;
+        }
+        callback(null, [...processes].map(([pid, entry]) =>
+          `${pid}|${entry.ppid}|${entry.startTime}`
+        ).join('\n'));
+      });
+      const observation = observeProcessTree(100, 'marker-value', {
+        platform: 'win32',
+        execFile,
+      });
+      await Promise.resolve();
+      processes.delete(100);
+      processes.set(201, { ppid: 100, startTime: '1001' });
+
+      await expect(terminateProcessTree(
+        100,
+        vi.fn(),
+        { platform: 'win32', execFile },
+        {
+          observation,
+          requireConfirmedCleanup: true,
+          ...(allowNormalCompletion
+            ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+            : {}),
+        },
+      )).rejects.toThrow('unobserved Windows descendant candidate');
+      expect(taskkillPids).toEqual([]);
+    },
+  );
+
+  it('rejects a Windows descendant candidate that appears during final verification', async () => {
+    let lookup = 0;
+    const taskkillPids: number[] = [];
+    const execFile = vi.fn((command, args, _options, callback) => {
+      if (command === 'taskkill') {
+        taskkillPids.push(Number(args[1]));
+        callback(null, 'SUCCESS');
+        return;
+      }
+      lookup += 1;
+      callback(null, lookup === 1
+        ? '100|1|1000'
+        : lookup === 2
+          ? ''
+          : '201|100|1001');
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      { observation, requireConfirmedCleanup: true },
+    )).rejects.toThrow('Windows descendant candidate is still running');
+    expect(taskkillPids).toEqual([]);
   });
 
   it('confirms Windows cleanup when the observed root has already exited', async () => {
@@ -433,7 +508,7 @@ describe('process-tree', () => {
     const execFile = vi.fn((command, _args, _options, callback) => {
       expect(command).toBe('powershell.exe');
       lookup += 1;
-      callback(null, lookup === 1 ? '100|1|root-start' : '');
+      callback(null, lookup === 1 ? '100|1|1000' : '');
     });
     const observation = observeProcessTree(100, undefined, {
       platform: 'win32',
@@ -469,6 +544,104 @@ describe('process-tree', () => {
     )).rejects.toThrow('no inherited-pipe process identity was observed');
   });
 
+  it('allows a normally completed Windows process to exit before its first identity scan', async () => {
+    const execFile = vi.fn((command, _args, _options, callback) => {
+      expect(command).toBe('powershell.exe');
+      callback(null, '');
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    )).resolves.toBeUndefined();
+  });
+
+  it('does not taskkill a root PID first observed after normal completion', async () => {
+    const taskkillPids: number[] = [];
+    const execFile = vi.fn((command, args, _options, callback) => {
+      if (command === 'taskkill') {
+        taskkillPids.push(Number(args[1]));
+        callback(null, 'SUCCESS');
+        return;
+      }
+      callback(null, '100|1|2000');
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    )).rejects.toThrow('no inherited-pipe process identity was observed');
+    expect(taskkillPids).toEqual([]);
+  });
+
+  it('does not apply the Windows normal-completion exception after inspection failure', async () => {
+    let lookup = 0;
+    const execFile = vi.fn((command, _args, _options, callback) => {
+      expect(command).toBe('powershell.exe');
+      lookup += 1;
+      callback(lookup === 1 ? new Error('inspection failed') : null, '');
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    )).rejects.toThrow('no inherited-pipe process identity was observed');
+  });
+
+  it('does not apply the Windows normal-completion exception while the root PID is live', async () => {
+    let lookup = 0;
+    const execFile = vi.fn((command, _args, _options, callback) => {
+      expect(command).toBe('powershell.exe');
+      lookup += 1;
+      callback(null, lookup === 1 ? '' : '100|1|1000');
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    )).rejects.toThrow('no inherited-pipe process identity was observed');
+  });
+
   it('taskkills only the Windows root while it still owns the process tree', async () => {
     const processes = new Map([
       [100, { ppid: 1, startTime: '1000' }],
@@ -500,6 +673,35 @@ describe('process-tree', () => {
     );
 
     expect(taskkillPids).toEqual([100]);
+  });
+
+  it.each([
+    ['a child older than the root', '100|1|200\n777|100|100'],
+    ['a nested child older than its parent', '100|1|100\n500|100|200\n777|500|150'],
+    ['an incomparable child creation time', '100|1|100\n777|100|not-a-tick'],
+  ] as const)('does not taskkill Windows processes across %s', async (_name, table) => {
+    const taskkillPids: number[] = [];
+    const execFile = vi.fn((command, args, _options, callback) => {
+      if (command === 'taskkill') {
+        taskkillPids.push(Number(args[1]));
+        callback(null, 'SUCCESS');
+        return;
+      }
+      callback(null, table);
+    });
+    const observation = observeProcessTree(100, 'marker-value', {
+      platform: 'win32',
+      execFile,
+    });
+    await Promise.resolve();
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      { observation, requireConfirmedCleanup: true },
+    )).rejects.toThrow('cleanup unconfirmed');
+    expect(taskkillPids).toEqual([]);
   });
 
   it('taskkills the active Windows root when initial observation misses it', async () => {
@@ -613,13 +815,17 @@ describe('process-tree', () => {
     });
     await Promise.resolve();
     processes.delete(100);
-    processes.set(101, { ppid: 1, startTime: 'reused-start' });
+    processes.set(101, { ppid: 100, startTime: '2001' });
 
     await expect(terminateProcessTree(
       100,
       vi.fn(),
       { platform: 'win32', execFile },
-      { observation, requireConfirmedCleanup: true },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
     )).rejects.toThrow('cleanup unconfirmed');
     expect(execFile).not.toHaveBeenCalledWith(
       'taskkill',
@@ -738,6 +944,27 @@ describe('process-tree', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not apply the Windows normal-completion exception to POSIX cleanup', async () => {
+    const execFile = vi.fn((_command, _args, _options, callback) => {
+      callback(null, '');
+    });
+    const observation = observeProcessTree(100, undefined, {
+      platform: 'linux',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'linux', execFile },
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    )).rejects.toThrow('no inherited-pipe process identity was observed');
   });
 
   it('bounds taskkill and reports unconfirmed Windows cleanup', async () => {

@@ -266,6 +266,21 @@ describe('build smoke', () => {
       }
     }
 
+    for (const arch of ['x64', 'arm64']) {
+      const helperPath = path.join(
+        snapshot.root,
+        'packages',
+        'agent-skill-eval',
+        'dist',
+        'native',
+        'windows',
+        arch,
+        'aw-windows-job.exe',
+      );
+      const bytes = await fs.readFile(helperPath);
+      expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
+    }
+
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);

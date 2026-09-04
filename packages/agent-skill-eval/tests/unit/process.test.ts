@@ -108,6 +108,40 @@ function renderMarkerScan(
 }
 
 describe('managed provider containment gate', () => {
+  it('routes a Windows provider through the Job helper before spawn', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-windows-job-'))
+    const createWindowsJobInvocation = vi.fn(() => ({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write("job-helper")'] as ['--config', string],
+      config: {
+        schemaVersion: 1 as const,
+        executable: 'provider.exe',
+        args: ['--flag'],
+        parentPid: 42,
+      },
+    }))
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        executable: 'provider.exe',
+        args: ['--flag'],
+      }, {}, {
+        containment: 'unmanaged-confirmed',
+        processTree: { platform: 'win32' },
+        createWindowsJobInvocation,
+      })
+
+      expect(createWindowsJobInvocation).toHaveBeenCalledWith('provider.exe', ['--flag'])
+      expect(result).toMatchObject({
+        stdout: 'job-helper',
+        exitCode: 0,
+        descendantCleanupGuaranteed: true,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed before spawn without confirmed external containment', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-contained-'))
     const startedPath = path.join(root, 'started')

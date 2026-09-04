@@ -6,10 +6,13 @@ import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createWindowsJobInvocation,
   ProcessTreeTimeoutError,
   parsePosixProcessTree,
   parseWindowsProcessTree,
+  resolveWindowsJobHelperPath,
   runProcessTree,
+  snapshotWindowsProcessTree,
 } from '../../../../scripts/perf/process-tree.mjs';
 
 const roots = [];
@@ -514,6 +517,199 @@ describe('performance gate process tree cleanup', () => {
     expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([30, 40, 20]);
   });
 
+  it('validates every Windows PPID edge by creation order', () => {
+    const snapshot = parseWindowsProcessTree(10, [
+      { ProcessId: 10, ParentProcessId: 1, CreationDateTicks: '638000000000002000' },
+      { ProcessId: 20, ParentProcessId: 10, CreationDateTicks: '638000000000003000' },
+      { ProcessId: 30, ParentProcessId: 20, CreationDateTicks: '638000000000002500' },
+      { ProcessId: 40, ParentProcessId: 30, CreationDateTicks: '638000000000004000' },
+    ]);
+
+    expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
+    expect(snapshot.unconfirmedDescendants.map((identity) => identity.pid)).toEqual([40, 30]);
+  });
+
+  itOnPosix('projects PowerShell CreationDate to exact UTC ticks before parsing', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-snapshot-contract-'));
+    roots.push(root);
+    const executable = path.join(root, 'powershell.exe');
+    const argsFile = path.join(root, 'args.json');
+    await fs.writeFile(executable, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.POWERSHELL_ARGS_FILE, JSON.stringify(process.argv.slice(2)));",
+      'process.stdout.write(JSON.stringify([',
+      "  { ProcessId: 10, ParentProcessId: 1, CreationDateTicks: '638000000000001001' },",
+      "  { ProcessId: 20, ParentProcessId: 10, CreationDateTicks: '638000000000001002' },",
+      ']));',
+    ].join('\n'));
+    await fs.chmod(executable, 0o755);
+    const originalPath = process.env.PATH;
+    const originalArgsFile = process.env.POWERSHELL_ARGS_FILE;
+    process.env.PATH = `${root}${path.delimiter}${originalPath}`;
+    process.env.POWERSHELL_ARGS_FILE = argsFile;
+    let snapshot;
+    try {
+      snapshot = await snapshotWindowsProcessTree(10, new AbortController().signal);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalArgsFile === undefined) delete process.env.POWERSHELL_ARGS_FILE;
+      else process.env.POWERSHELL_ARGS_FILE = originalArgsFile;
+    }
+    const args = JSON.parse(await fs.readFile(argsFile, 'utf8'));
+    const command = args[args.indexOf('-Command') + 1];
+
+    expect(command).toContain("($_.CreationDate.ToUniversalTime().Ticks).ToString()");
+    expect(snapshot.rootIdentity.startIdentity).toBe('638000000000001001');
+    expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
+  });
+
+  itOnPosix('resolves source and built Windows Job helpers and launches the fixed protocol', async () => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-path-'));
+    roots.push(packageRoot);
+    const sourceHelper = path.join(
+      packageRoot,
+      'native/windows/x64/aw-windows-job.exe',
+    );
+    const distHelper = path.join(
+      packageRoot,
+      'dist/native/windows/x64/aw-windows-job.exe',
+    );
+    const configFile = path.join(packageRoot, 'config.json');
+    await fs.mkdir(path.dirname(sourceHelper), { recursive: true });
+    await fs.writeFile(sourceHelper, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const encoded = process.argv[process.argv.indexOf('--config') + 1];",
+      "fs.writeFileSync(process.env.WINDOWS_JOB_CONFIG_FILE, Buffer.from(encoded, 'base64url'));",
+      "process.stdout.write('helper stdout');",
+    ].join('\n'));
+    await fs.chmod(sourceHelper, 0o755);
+
+    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(sourceHelper);
+    const invocation = createWindowsJobInvocation('target.exe', ['two words'], {
+      helperPath: sourceHelper,
+      parentPid: 42,
+    });
+    expect(invocation.args).toEqual([
+      '--config',
+      expect.stringMatching(/^[A-Za-z0-9_-]+$/u),
+    ]);
+    expect(JSON.parse(Buffer.from(invocation.args[1], 'base64url').toString('utf8'))).toEqual({
+      schemaVersion: 1,
+      executable: 'target.exe',
+      args: ['two words'],
+      parentPid: 42,
+    });
+    const metrics = {};
+    const result = await runProcessTree({
+      label: 'Windows Job protocol fixture',
+      command: 'target.exe',
+      args: ['two words', 'quote"value'],
+      env: { ...process.env, WINDOWS_JOB_CONFIG_FILE: configFile },
+      timeoutMs: 1_000,
+      metrics,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    });
+    const config = JSON.parse(await fs.readFile(configFile, 'utf8'));
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: 'helper stdout' });
+    expect(config).toEqual({
+      schemaVersion: 1,
+      executable: 'target.exe',
+      args: ['two words', 'quote"value'],
+      parentPid: process.pid,
+    });
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      processTableScanCount: 0,
+      peakLiveDescendants: null,
+      cleanupFailureCount: 0,
+      leakedProcessCount: 0,
+    });
+
+    await fs.mkdir(path.dirname(distHelper), { recursive: true });
+    await fs.writeFile(distHelper, 'built helper');
+    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(distHelper);
+  });
+
+  it('fails closed for unsupported, missing, and shell-script Windows Job targets', async () => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-missing-'));
+    roots.push(packageRoot);
+
+    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'ia32' }))
+      .toThrow('unsupported on architecture ia32');
+    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' }))
+      .toThrow('helper is missing for architecture x64');
+    expect(() => createWindowsJobInvocation('target.cmd', [], {
+      helperPath: 'aw-windows-job.exe',
+    })).toThrow('.cmd and .bat targets are unsupported');
+    await expect(runProcessTree({
+      label: 'missing Windows Job helper fixture',
+      command: 'target.exe',
+      args: [],
+      env: process.env,
+      timeoutMs: 1_000,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    })).rejects.toThrow('helper is missing for architecture x64');
+    await expect(runProcessTree({
+      label: 'Windows Job startup failure fixture',
+      command: 'target.exe',
+      args: [],
+      env: process.env,
+      timeoutMs: 1_000,
+    }, {
+      platform: 'win32',
+      createWindowsJobInvocation: () => ({
+        command: path.join(packageRoot, 'does-not-exist.exe'),
+        args: ['--config', 'invalid'],
+      }),
+    })).rejects.toThrow('Windows Job helper failed');
+  });
+
+  it.each(['timeout', 'abort'])('closes the Windows Job helper on %s', async (reason) => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-windows-job-${reason}-`));
+    roots.push(packageRoot);
+    const helperPath = path.join(packageRoot, 'native/windows/x64/aw-windows-job.exe');
+    const pidFile = path.join(packageRoot, 'helper.pid');
+    await fs.mkdir(path.dirname(helperPath), { recursive: true });
+    await fs.writeFile(helperPath, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.WINDOWS_JOB_PID_FILE, String(process.pid));",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    await fs.chmod(helperPath, 0o755);
+    const controller = new AbortController();
+    const abortReason = new Error('synthetic Windows Job abort');
+    const run = runProcessTree({
+      label: `Windows Job ${reason} fixture`,
+      command: 'target.exe',
+      args: [],
+      env: { ...process.env, WINDOWS_JOB_PID_FILE: pidFile },
+      signal: controller.signal,
+      timeoutMs: reason === 'timeout' ? 100 : null,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    });
+    const helperPid = await readJsonEventually(pidFile);
+    observedPids.push(helperPid);
+    if (reason === 'abort') controller.abort(abortReason);
+
+    if (reason === 'timeout') await expect(run).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    else await expect(run).rejects.toBe(abortReason);
+    await waitForProcessesToExit([helperPid], 500);
+    expect(isProcessAlive(helperPid)).toBe(false);
+  });
+
   itOnPosix('bounds ps pending and throw fallback without leaving the direct child', async () => {
     const providers = [
       async () => await new Promise(() => {}),
@@ -592,7 +788,7 @@ describe('performance gate process tree cleanup', () => {
         rootKilled ? [] : {
           ProcessId: rootPid,
           ParentProcessId: 1,
-          CreationDate: 'root-created',
+          CreationDateTicks: '100',
         }),
       taskkillProcessTree: async (invocation) => {
         invocations.push(invocation);
@@ -634,7 +830,7 @@ describe('performance gate process tree cleanup', () => {
       snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, {
         ProcessId: rootPid,
         ParentProcessId: 1,
-        CreationDate: 'original-root',
+        CreationDateTicks: '100',
       }),
       taskkillProcessTree: async (invocation) => {
         taskkillInvocations.push(invocation);
@@ -653,7 +849,7 @@ describe('performance gate process tree cleanup', () => {
 
   it.each([
     ['disappears', null],
-    ['changes identity', 'reused-root'],
+    ['changes identity', '200'],
   ])('accepts Windows external abort when the original identity %s', async (_label, finalIdentity) => {
     const controller = new AbortController();
     const reason = new Error('synthetic Windows abort');
@@ -674,7 +870,7 @@ describe('performance gate process tree cleanup', () => {
         cleanupCompleted && finalIdentity === null ? [] : {
           ProcessId: rootPid,
           ParentProcessId: 1,
-          CreationDate: cleanupCompleted ? finalIdentity : 'original-root',
+          CreationDateTicks: cleanupCompleted ? finalIdentity : '100',
         }),
       taskkillProcessTree: async (invocation) => {
         if (invocation.force) {
@@ -713,11 +909,11 @@ describe('performance gate process tree cleanup', () => {
         snapshotCalls += 1;
         await new Promise((resolve) => setTimeout(resolve, 300));
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: rootPid, ParentProcessId: 1, CreationDate: 'reused-created' },
+          { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: '200' },
           {
             ProcessId: newChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'new-child-created',
+            CreationDateTicks: '300',
           },
         ]);
       },
@@ -725,7 +921,7 @@ describe('performance gate process tree cleanup', () => {
         taskkillInvocations.push(invocation);
         return true;
       },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
 
     expect(snapshotCalls).toBeGreaterThanOrEqual(3);
     expect(taskkillInvocations).toEqual([]);
@@ -753,18 +949,18 @@ describe('performance gate process tree cleanup', () => {
       platform: 'win32',
       snapshotWindowsProcessTree: async (rootPid) => {
         snapshotCalls += 1;
-        const rootCreationDate = snapshotCalls === 1 ? 'original-root' : 'reused-root';
+        const rootCreationDate = snapshotCalls === 1 ? '100' : '300';
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: rootPid, ParentProcessId: 1, CreationDate: rootCreationDate },
+          { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: rootCreationDate },
           ...(!oldChildKilled ? [{
             ProcessId: oldChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'old-child-created',
+            CreationDateTicks: '200',
           }] : []),
           ...(snapshotCalls === 1 ? [] : [{
             ProcessId: newChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'new-child-created',
+            CreationDateTicks: '400',
           }]),
         ]);
       },
@@ -775,7 +971,7 @@ describe('performance gate process tree cleanup', () => {
         }
         return true;
       },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
 
     expect(taskkillInvocations.map((invocation) => ({
       pid: invocation.pid,
@@ -785,6 +981,149 @@ describe('performance gate process tree cleanup', () => {
       { pid: oldChildPid, force: true },
     ]);
     expect(taskkillInvocations.some((invocation) => invocation.pid === newChildPid)).toBe(false);
+  });
+
+  it('fails a normal Windows exit when every process snapshot fails', async () => {
+    const taskkillInvocations = [];
+    const metrics = {};
+
+    await expect(runProcessTree({
+      label: 'Windows normal exit snapshot failure fixture',
+      command: process.execPath,
+      args: ['-e', 'process.exit(0);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantSnapshotTimeoutMs: 25,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+      metrics,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async () => {
+        throw new Error('synthetic Windows snapshot failure');
+      },
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows descendant cleanup could not be verified');
+
+    expect(taskkillInvocations).toEqual([]);
+    expect(metrics).toMatchObject({
+      cleanupFailureCount: 1,
+      leakedProcessCount: null,
+    });
+  });
+
+  it('fails a normal Windows exit when the root identity still appears alive', async () => {
+    const taskkillInvocations = [];
+
+    await expect(runProcessTree({
+      label: 'Windows live root after exit fixture',
+      command: process.execPath,
+      args: ['-e', 'process.exit(0);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, {
+        ProcessId: rootPid,
+        ParentProcessId: 1,
+        CreationDateTicks: '100',
+      }),
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows process-tree cleanup is unconfirmed');
+
+    expect(taskkillInvocations).toEqual([]);
+  });
+
+  it('fails a normal Windows exit without killing an unverified late child candidate', async () => {
+    const candidatePid = 900_103;
+    const taskkillInvocations = [];
+    let snapshotCalls = 0;
+
+    await expect(runProcessTree({
+      label: 'Windows late child candidate fixture',
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => {
+        snapshotCalls += 1;
+        return parseWindowsProcessTree(rootPid, snapshotCalls === 1
+          ? { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: '100' }
+          : {
+              ProcessId: candidatePid,
+              ParentProcessId: rootPid,
+              CreationDateTicks: '200',
+            });
+      },
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows process-tree cleanup is unconfirmed');
+
+    expect(snapshotCalls).toBeGreaterThanOrEqual(2);
+    expect(taskkillInvocations).toEqual([]);
+  });
+
+  it('does not kill a same-millisecond Windows PPID candidate that started before its parent', async () => {
+    const candidatePid = 777;
+    const taskkillInvocations = [];
+    let rootKilled = false;
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
+
+    await expect(runProcessTree({
+      label: 'Windows reused PPID edge fixture',
+      command: process.execPath,
+      args: ['-e', childSource],
+      env: process.env,
+      timeoutMs: 300,
+      descendantMonitorIntervalMs: 25,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, [
+        ...(!rootKilled ? [{
+          ProcessId: rootPid,
+          ParentProcessId: 1,
+          CreationDateTicks: '638000000000002000',
+        }] : []),
+        {
+          ProcessId: candidatePid,
+          ParentProcessId: rootPid,
+          CreationDateTicks: '638000000000001000',
+        },
+      ]),
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        if (invocation.pid !== candidatePid && invocation.force) {
+          rootKilled = true;
+          process.kill(invocation.pid, 'SIGKILL');
+        }
+        return true;
+      },
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
+
+    expect(taskkillInvocations.some((invocation) => invocation.pid === candidatePid)).toBe(false);
   });
 
   it('cleans an observed Windows detached child after root exit zero', async () => {
@@ -817,11 +1156,15 @@ describe('performance gate process tree cleanup', () => {
       snapshotWindowsProcessTree: async (rootPid) => {
         const pids = await readJsonEventually(pidFile);
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: pids.child, ParentProcessId: 1, CreationDate: 'child-created' },
+          ...(isProcessAlive(pids.child) ? [{
+            ProcessId: pids.child,
+            ParentProcessId: 1,
+            CreationDateTicks: '100',
+          }] : []),
           ...(!grandchildKilled ? [{
             ProcessId: pids.grandchild,
             ParentProcessId: pids.child,
-            CreationDate: 'grandchild-created',
+            CreationDateTicks: '200',
           }] : []),
         ]);
       },
@@ -879,7 +1222,7 @@ describe('performance gate process tree cleanup', () => {
           isProcessAlive(rootPid) ? {
             ProcessId: rootPid,
             ParentProcessId: 1,
-            CreationDate: 'root-created',
+            CreationDateTicks: '100',
           } : []),
         taskkillProcessTree,
       })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
