@@ -28,6 +28,7 @@ import {
   type CodexManager,
   type NativeCliRunner,
 } from '../utils/native-cli.js';
+import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { readPluginManifest } from '../utils/manifest.js';
 import { resolveAwHome, resolveCodexPaths } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
@@ -679,6 +680,7 @@ async function runSingleSourceRebuildCommand(options: {
     ...(options.runtime?.codexManager ? { codexManager: options.runtime.codexManager } : {}),
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
+    codexObservationSession: options.runtime?.codexObservationSession,
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -1702,7 +1704,7 @@ async function mergeForceCleanupPlans(
   };
 }
 
-export async function runRebuildCommand(options: {
+async function runRebuildCommandInSession(options: {
   command: RebuildCommand;
   pluginNames: string[];
   commandOptions: CommandOptions;
@@ -2502,6 +2504,7 @@ export async function runRebuildCommand(options: {
         reporter: options.runtime?.reporter ?? createNoopReporter(),
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         expectedCatalogConfigDigest: catalog.configDigest,
+        codexObservationSession: options.runtime?.codexObservationSession,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -2674,6 +2677,7 @@ export async function runRebuildCommand(options: {
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
                 nativeCliRunner: executionContext.nativeCliRunner,
+                observationSession: executionContext.codexObservationSession,
                 ...(codexManager ? { manager: codexManager } : {}),
               })
             : undefined;
@@ -3098,6 +3102,7 @@ export async function runRebuildCommand(options: {
                   entry.source.sourceId,
                 ),
                 nativeCliRunner: executionContext.nativeCliRunner,
+                observationSession: executionContext.codexObservationSession,
                 ...(codexManager ? { manager: codexManager } : {}),
                 ...(plannedCodexRegistrations.get(codexPluginId)
                   ? { pluginRegistration: plannedCodexRegistrations.get(codexPluginId)! }
@@ -3622,6 +3627,7 @@ export async function runRebuildCommand(options: {
               candidate.name === entry.plugin.manifest.name)?.contentDigest,
           });
       }
+        executionContext.codexObservationSession?.invalidate();
         let lockedPlan = await measureCommandPerformanceStage(
           options.runtime,
           'dependency.plan',
@@ -3657,6 +3663,7 @@ export async function runRebuildCommand(options: {
           : undefined;
         if (activationConsumer?.support === 'observed') {
           executionContext.codexManager = activationConsumer.manager;
+          executionContext.codexObservationSession?.setManager(activationConsumer.manager);
         }
         if (codexManagerRequired) {
           const codexRequirementScope: Scope = provisionalLockedCodexPlans.some((plan) =>
@@ -3671,6 +3678,7 @@ export async function runRebuildCommand(options: {
               authorizer: options.runtime?.managedCodexAuthorizer,
               operationRequirement: getCodexOperationRequirement(codexRequirementScope),
             });
+            executionContext.codexObservationSession?.setManager(executionContext.codexManager);
           } else {
             const consumer = await (
               options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
@@ -3686,6 +3694,7 @@ export async function runRebuildCommand(options: {
               throw new Error('Codex native materialization requires an observed CLI consumer.');
             }
             executionContext.codexManager = consumer.manager;
+            executionContext.codexObservationSession?.setManager(consumer.manager);
           }
         }
         let lockedCodexPlans = activationConsumer?.support === 'assumed'
@@ -3705,6 +3714,7 @@ export async function runRebuildCommand(options: {
           );
         }
         const lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
+        executionContext.codexObservationSession?.invalidate();
         const lockedOperationPlan = createRebuildOperationPlan({
           command: options.command,
           scope: options.commandOptions.scope,
@@ -4257,6 +4267,7 @@ export async function runRebuildCommand(options: {
               env: runtimeEnv,
               manager: executionContext.codexManager,
               runner: executionContext.nativeCliRunner,
+              observationSession: executionContext.codexObservationSession,
             });
           }
         } catch (error) {
@@ -4457,5 +4468,29 @@ export async function runRebuildCommand(options: {
       );
     }
     throw error;
+  }
+}
+
+export async function runRebuildCommand(options: {
+  command: RebuildCommand;
+  pluginNames: string[];
+  commandOptions: CommandOptions;
+  runtime?: RebuildCommandRuntime;
+  all?: boolean;
+}): Promise<RebuildCommandResult> {
+  const env = options.runtime?.env ?? process.env;
+  const session = await createCodexNativeObservationSession({
+    exactCwd: options.commandOptions.cwd,
+    env,
+    runner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
+    manager: options.runtime?.codexManager,
+  });
+  try {
+    return await runRebuildCommandInSession({
+      ...options,
+      runtime: { ...options.runtime, codexObservationSession: session },
+    });
+  } finally {
+    await session.dispose();
   }
 }

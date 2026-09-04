@@ -8,10 +8,8 @@ import {
   CodexProjectConfigNotEffectiveError,
   SYSTEM_CODEX_MANAGER,
   buildCodexMarketplaceAddInvocation,
-  buildCodexMarketplaceListInvocation,
   buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
-  buildCodexPluginListInvocation,
   buildCodexPluginListJsonInvocation,
   buildCodexPluginRemoveInvocation,
   buildCodexProjectPluginListInvocations,
@@ -105,10 +103,8 @@ describe('native-cli', () => {
 
     const invocations = [
       buildCodexPluginAddInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
-      buildCodexPluginListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
       buildCodexPluginRemoveInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
       buildCodexMarketplaceAddInvocation(SYSTEM_CODEX_MANAGER, '/tmp/aw-home', cwd, env),
-      buildCodexMarketplaceListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
       buildCodexMarketplaceRemoveInvocation(SYSTEM_CODEX_MANAGER, 'aw', cwd, env),
     ];
 
@@ -120,10 +116,8 @@ describe('native-cli', () => {
       codexHome: invocationEnv?.CODEX_HOME,
     }))).toEqual([
       { command: 'codex', args: ['plugin', 'add', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
-      { command: 'codex', args: ['plugin', 'list'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'remove', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'marketplace', 'add', '/tmp/aw-home'], agentKind: 'codex', cwd, codexHome },
-      { command: 'codex', args: ['plugin', 'marketplace', 'list'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'marketplace', 'remove', 'aw'], agentKind: 'codex', cwd, codexHome },
     ]);
   });
@@ -131,6 +125,7 @@ describe('native-cli', () => {
   it('builds exact and neutral Codex JSON postcheck invocations without changing trust', () => {
     const env = { ...process.env, CODEX_HOME: '/ignored' };
     const invocations = buildCodexProjectPluginListInvocations(SYSTEM_CODEX_MANAGER, {
+      marketplaceName: 'aw-team',
       exactCwd: '/tmp/project',
       neutralCwd: '/tmp/neutral',
       env,
@@ -139,17 +134,23 @@ describe('native-cli', () => {
     expect(invocations).toEqual({
       exact: buildCodexPluginListJsonInvocation(
         SYSTEM_CODEX_MANAGER,
+        'aw-team',
         '/tmp/project',
         env,
       ),
       neutral: buildCodexPluginListJsonInvocation(
         SYSTEM_CODEX_MANAGER,
+        'aw-team',
         '/tmp/neutral',
         env,
       ),
     });
-    expect(invocations.exact.args).toEqual(['plugin', 'list', '--json']);
-    expect(invocations.neutral.args).toEqual(['plugin', 'list', '--json']);
+    expect(invocations.exact.args).toEqual([
+      'plugin', 'list', '--marketplace', 'aw-team', '--json',
+    ]);
+    expect(invocations.neutral.args).toEqual([
+      'plugin', 'list', '--marketplace', 'aw-team', '--json',
+    ]);
     expect([...invocations.exact.args, ...invocations.neutral.args]).not.toContain('trust');
   });
 
@@ -237,7 +238,7 @@ describe('native-cli', () => {
     let receivedInvocation: NativeCliInvocation | undefined;
 
     await runNativeCli(
-      buildCodexPluginListInvocation(manager, '/tmp/workspace', process.env),
+      buildCodexPluginListJsonInvocation(manager, 'aw', '/tmp/workspace', process.env),
       async (invocation) => {
         receivedInvocation = invocation;
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -246,7 +247,10 @@ describe('native-cli', () => {
 
     expect(receivedInvocation).toMatchObject({
       command: process.execPath,
-      args: ['/tmp/codex-launcher.js', 'plugin', 'list'],
+      args: [
+        '/tmp/codex-launcher.js',
+        'plugin', 'list', '--marketplace', 'aw', '--json',
+      ],
       agentKind: 'codex',
       timeoutMs: 60_000,
       env: { CODEX_HOME: process.env.AW_CODEX_HOME },

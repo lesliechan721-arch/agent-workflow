@@ -248,12 +248,13 @@ function createCodexNativeTestRuntime(
         readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),
       ]);
       const invocationCwd = path.resolve(invocation.cwd ?? '.');
-      const exact = invocationCwd !== path.resolve(isolation.env.TMPDIR!)
-        && !path.basename(invocationCwd).startsWith('aw-codex-postcheck-');
+      const exact = invocationCwd === path.resolve(isolation.layout.fixtureCwd);
+      const marketplaceName = pluginArgs[pluginArgs.indexOf('--marketplace') + 1];
       return {
         exitCode: 0,
         stdout: JSON.stringify({
-          installed: [...installed].sort().map((pluginId) => ({
+          installed: [...installed].filter((pluginId) =>
+            pluginId.endsWith(`@${marketplaceName}`)).sort().map((pluginId) => ({
             pluginId,
             installed: true,
             enabled: user.snapshot.plugins[pluginId]?.enabled === true
@@ -1710,7 +1711,7 @@ describe('five namespaced write commands', () => {
       const pluginArgs = pluginIndex >= 0
         ? invocation.args.slice(pluginIndex)
         : invocation.args;
-      if (pluginArgs.join(' ') === 'plugin list --json') {
+      if (pluginArgs.join(' ') === 'plugin list --marketplace aw --json') {
         return { exitCode: 0, stdout: '{invalid', stderr: '' };
       }
       return runtime.nativeCliRunner(invocation);
@@ -1817,7 +1818,7 @@ describe('five namespaced write commands', () => {
         const pluginArgs = pluginIndex >= 0
           ? invocation.args.slice(pluginIndex)
           : invocation.args;
-        if (rejectObservation && pluginArgs.join(' ') === 'plugin list --json') {
+        if (rejectObservation && pluginArgs.join(' ') === 'plugin list --marketplace aw --json') {
           if (failure === 'ENOENT') {
             throw Object.assign(new Error('Codex unavailable'), { code: 'ENOENT' });
           }
@@ -1913,7 +1914,7 @@ describe('five namespaced write commands', () => {
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const pluginArgs = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
-      if (rejectObservation && pluginArgs.join(' ') === 'plugin list --json') {
+      if (rejectObservation && pluginArgs.join(' ') === 'plugin list --marketplace aw --json') {
         throw Object.assign(new Error('private native failure'), { code: 'ENOENT' });
       }
       return runtime.nativeCliRunner(invocation);
@@ -2027,7 +2028,7 @@ describe('five namespaced write commands', () => {
       const pluginArgs = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
       const result = await runtime.nativeCliRunner(invocation);
       if (pluginArgs[1] === 'add') addObserved = true;
-      if (addObserved && pluginArgs.join(' ') === 'plugin list --json') {
+      if (addObserved && pluginArgs.join(' ') === 'plugin list --marketplace aw --json') {
         const entry = {
           pluginId: 'demo@aw', installed: true, enabled: true, version: '1.0.0',
         };
@@ -2095,7 +2096,7 @@ describe('five namespaced write commands', () => {
         const pluginArgs = pluginIndex >= 0
           ? invocation.args.slice(pluginIndex)
           : invocation.args;
-        if (pluginArgs.join(' ') === 'plugin list --json') {
+        if (pluginArgs.join(' ') === 'plugin list --marketplace aw --json') {
           if (observation === 'unobserved') {
             throw Object.assign(new Error('Codex unavailable'), { code: 'ENOENT' });
           }
@@ -2126,7 +2127,7 @@ describe('five namespaced write commands', () => {
       }
       expect(nativeCliRunner.mock.calls.every(([invocation]) =>
         invocation.args.includes('--version')
-        || invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+        || invocation.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
     },
   );
 
@@ -2180,7 +2181,7 @@ describe('five namespaced write commands', () => {
     expect(staleInspectionCalls).not.toEqual([]);
     expect(staleInspectionCalls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
-        === 'plugin list --json')).toBe(true);
+        === 'plugin list --marketplace aw --json')).toBe(true);
     await expect(fs.readFile(payloadReadme, 'utf8')).resolves.toBe('tampered payload\n');
 
     const callsBeforeStatus = runtime.nativeCliRunner.mock.calls.length;
@@ -3261,7 +3262,7 @@ describe('five namespaced write commands', () => {
     expect(statusRunner).toHaveBeenCalledTimes(2);
     expect(statusRunner.mock.calls.every(([invocation]) =>
       invocation.command === 'codex'
-      && invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+      && invocation.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   }, 30_000);
 
   it('installs a supported target without parsing an unrelated future bundle', async () => {
@@ -9318,7 +9319,7 @@ describe('five namespaced write commands', () => {
     expect(nativeCliRunner).toHaveBeenCalled();
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
-        === 'plugin list --json')).toBe(true);
+        === 'plugin list --marketplace aw --json')).toBe(true);
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
 
     const installedResult = await installWriteCommand(['team/demo'], {
@@ -9355,7 +9356,7 @@ describe('five namespaced write commands', () => {
     expect(codexManagerResolver).toHaveBeenCalledTimes(4);
     const materializationCalls = nativeCliRunner.mock.calls.filter(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
-        !== 'plugin list --json');
+        !== 'plugin list --marketplace aw --json');
     expect(materializationCalls.every(([invocation]) =>
       invocation.command === manager.command && invocation.args[0] === manager.argsPrefix[0]))
       .toBe(true);
@@ -9371,7 +9372,7 @@ describe('five namespaced write commands', () => {
     expect(nativeCliRunner).toHaveBeenCalledTimes(2);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
-        === 'plugin list --json')).toBe(true);
+        === 'plugin list --marketplace aw --json')).toBe(true);
   });
 
   it('replans with managed registration before shared replacement writes', async () => {
@@ -9420,19 +9421,7 @@ describe('five namespaced write commands', () => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const args = invocation.args.slice(pluginIndex);
       if (invocation.command === 'codex' && args[1] === 'list' && args.includes('--json')) {
-        return {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            installed: registeredVersion ? [{
-              pluginId: 'demo@aw',
-              installed: true,
-              enabled: true,
-              version: registeredVersion,
-            }] : [],
-            available: [],
-          }),
-          stderr: '',
-        };
+        throw Object.assign(new Error('system Codex is unavailable'), { code: 'ENOENT' });
       }
       if (invocation.command === manager.command && args[1] === 'list' && args.includes('--json')) {
         return {
@@ -9525,6 +9514,10 @@ describe('five namespaced write commands', () => {
     expect(authorizedActions.indexOf('plugin remove demo@aw')).toBeGreaterThanOrEqual(0);
     expect(authorizedActions.indexOf('plugin add demo@aw'))
       .toBeGreaterThan(authorizedActions.indexOf('plugin remove demo@aw'));
+    expect(nativeCliRunner.mock.calls.slice(callsBeforeAuthorized).some(([invocation]) =>
+      invocation.command === manager.command
+      && invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin list --marketplace aw --json')).toBe(true);
     expect(registeredVersion).toBe('2.0.0');
   }, 30_000);
 

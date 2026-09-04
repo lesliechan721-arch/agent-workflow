@@ -60,6 +60,7 @@ import {
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
 import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from '../../src/utils/codex-native-render-receipt.js';
+import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -335,9 +336,12 @@ describe('rebuild adapter integration', () => {
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
       isolation.layout.fixtureCwd,
-      isolation.env.TMPDIR,
+      expect.stringMatching(/aw-codex-observation-/u),
     ]));
-    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+    expect(calls.every((call) =>
+      call.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
+    await expect(fs.pathExists(calls.find((call) =>
+      call.cwd !== isolation.layout.fixtureCwd)!.cwd!)).resolves.toBe(false);
   });
 
   it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
@@ -365,7 +369,8 @@ describe('rebuild adapter integration', () => {
       activationObservations: { user: false, project: false },
     });
     expect(calls).toHaveLength(2);
-    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+    expect(calls.every((call) =>
+      call.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   });
 
   it('fails closed when one Codex list succeeds and the other fails', async () => {
@@ -1620,11 +1625,19 @@ describe('rebuild adapter integration', () => {
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     await fs.ensureDir(isolation.layout.awHomeDir);
+    let installed = false;
+    let listCalls = 0;
     const nativeCliRunner: NativeCliRunner = async (invocation) => {
       if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+        listCalls += 1;
         return {
           exitCode: 0,
-          stdout: JSON.stringify({ installed: [], available: [] }),
+          stdout: JSON.stringify({
+            installed: installed ? [{
+              pluginId: 'ask-me@aw-team', installed: true, enabled: true,
+            }] : [],
+            available: [],
+          }),
           stderr: '',
         };
       }
@@ -1640,10 +1653,20 @@ describe('rebuild adapter integration', () => {
       ) as { plugins: Array<{ policy: { products?: string[] } }> };
       expect(codexManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CODEX']]);
       expect(claudeManifest.plugins.map((entry) => entry.policy.products)).toEqual([['CLAUDE']]);
+      installed = true;
       throw new Error('projection observed');
     };
+    const observationSession = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runner: nativeCliRunner,
+      manager: SYSTEM_CODEX_MANAGER,
+    });
     const integration = createRebuildIntegration({
-      context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+      context: {
+        ...createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+        codexObservationSession: observationSession,
+      },
     });
     const target = await integration.buildTarget({
       sourceId: 'team',
@@ -1659,8 +1682,15 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: catalogRoot, source: 'local' },
     });
 
-    await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
-    await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+    try {
+      await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
+      await expect(observationSession.inspectPlugin({ pluginId: 'ask-me@aw-team' }))
+        .resolves.toMatchObject({ observation: { state: 'observed', value: 'installed' } });
+      expect(listCalls).toBe(4);
+      await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+    } finally {
+      await observationSession.dispose();
+    }
   });
 
   it.each([
@@ -1727,7 +1757,7 @@ describe('rebuild adapter integration', () => {
       await expect(integration.driver.writeNative(target)).rejects.toThrow(errorCode);
       expect(calls).toHaveLength(4);
       expect(calls.every((invocation) =>
-        invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+        invocation.args.slice(-5).join(' ') === 'plugin list --marketplace aw-team --json')).toBe(true);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
       for (const skillPath of skillPaths) {
         await expect(fs.pathExists(skillPath)).resolves.toBe(false);
@@ -2664,8 +2694,9 @@ describe('rebuild adapter integration', () => {
         expect.objectContaining({ message: expect.stringContaining('codexActivationPostcheckFailed') }),
       ]));
     }
-    expect(calls).toHaveLength(exactEnabled ? 6 : 4);
-    expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls.every((call) =>
+      call.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   });
 
   it.each([

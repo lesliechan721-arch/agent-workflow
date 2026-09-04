@@ -722,33 +722,42 @@ export function buildCodexPluginAddInvocation(
   return buildCodexInvocation(manager, ['plugin', 'add', pluginId], cwd, env);
 }
 
-export function buildCodexPluginListInvocation(
-  manager: CodexManager,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'list'], cwd, env);
-}
-
 export function buildCodexPluginListJsonInvocation(
   manager: CodexManager,
+  marketplaceName: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'list', '--json'], cwd, env);
+  return buildCodexInvocation(
+    manager,
+    ['plugin', 'list', '--marketplace', marketplaceName, '--json'],
+    cwd,
+    env,
+  );
 }
 
 export function buildCodexProjectPluginListInvocations(
   manager: CodexManager,
   options: {
+    marketplaceName: string;
     exactCwd: string;
     neutralCwd: string;
     env: NodeJS.ProcessEnv;
   },
 ): CodexProjectPluginListInvocations {
   return {
-    exact: buildCodexPluginListJsonInvocation(manager, options.exactCwd, options.env),
-    neutral: buildCodexPluginListJsonInvocation(manager, options.neutralCwd, options.env),
+    exact: buildCodexPluginListJsonInvocation(
+      manager,
+      options.marketplaceName,
+      options.exactCwd,
+      options.env,
+    ),
+    neutral: buildCodexPluginListJsonInvocation(
+      manager,
+      options.marketplaceName,
+      options.neutralCwd,
+      options.env,
+    ),
   };
 }
 
@@ -862,14 +871,6 @@ export function buildCodexMarketplaceAddInvocation(
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
   return buildCodexInvocation(manager, ['plugin', 'marketplace', 'add', awHome], cwd, env);
-}
-
-export function buildCodexMarketplaceListInvocation(
-  manager: CodexManager,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'marketplace', 'list'], cwd, env);
 }
 
 export function buildCodexMarketplaceRemoveInvocation(

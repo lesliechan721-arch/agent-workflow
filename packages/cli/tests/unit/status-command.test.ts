@@ -945,7 +945,53 @@ describe('status v7 current behavior', () => {
     expect(nativeRunner).toHaveBeenCalledTimes(2);
     expect(nativeRunner.mock.calls.every(([invocation]) =>
       invocation.command === 'codex'
-      && invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+      && invocation.args.slice(0, 3).join(' ') === 'plugin list --marketplace'
+      && invocation.args[4] === '--json')).toBe(true);
+  });
+
+  it('uses one marketplace snapshot for twenty Codex native status targets', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'bulk-codex-source');
+    const pluginNames = Array.from({ length: 20 }, (_, index) => `native-${index}`);
+    await Promise.all(pluginNames.map((name) =>
+      fs.outputJson(path.join(sourceRoot, 'plugins', name, '.app.json'), { apps: {} })));
+    await createDependencyCatalogSnapshotFixture(sourceRoot, pluginNames.map((name) => ({
+      name,
+      configureManifest: (manifest) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.apps = './.app.json';
+      },
+    })));
+    const { env } = await configurePathSource(sourceRoot);
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'bulk-system-prefix'),
+      version: '0.151.0',
+    });
+    const calls: Array<{ args: string[]; cwd?: string }> = [];
+    const nativeRunner = vi.fn(async (invocation) => {
+      calls.push(invocation);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ installed: [], available: [] }),
+        stderr: '',
+      };
+    });
+
+    await statusCommandV7({
+      plugins: pluginNames.map((name) => `local/${name}`),
+      cwd: isolation.layout.fixtureCwd,
+      env: { ...env, PATH: binRoot },
+      platform: 'codex',
+      json: true,
+      nativeCliRunner: nativeRunner,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) =>
+      call.args.slice(0, 3).join(' ') === 'plugin list --marketplace'
+      && call.args[4] === '--json')).toBe(true);
+    const neutralCwd = calls.find((call) => call.cwd !== isolation.layout.fixtureCwd)!.cwd!;
+    await expect(fs.pathExists(neutralCwd)).resolves.toBe(false);
   });
 
   it('merges exact installed with neutral absent and blocks duplicate official IDs', async () => {
@@ -1106,7 +1152,7 @@ describe('status v7 current behavior', () => {
 
     expect(nativeRunner.mock.calls.every(([invocation]) =>
       invocation.command === 'codex'
-      && invocation.args.join(' ') === 'plugin list --json')).toBe(true);
+      && invocation.args.join(' ') === 'plugin list --marketplace aw-local --json')).toBe(true);
   });
 
   it('reports a filesystem-validated Codex 0.150 consumer as unresolved', async () => {

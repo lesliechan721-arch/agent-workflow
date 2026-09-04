@@ -1230,19 +1230,23 @@ describe('phase 3B namespaced runtime stores', () => {
         if (command === 'codex'
           && invocation.args[0] === 'plugin'
           && invocation.args[1] === 'list'
-          && invocation.args[2] === '--json') {
+          && invocation.args[2] === '--marketplace'
+          && invocation.args[3] === 'aw-team'
+          && invocation.args[4] === '--json') {
           const config = await readCodexConfigFile(
             path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'),
           );
           return {
             exitCode: 0,
             stdout: JSON.stringify({
-              installed: Object.entries(config.snapshot.plugins).map(([pluginId, plugin]) => ({
-                pluginId,
-                installed: true,
-                enabled: plugin.enabled === true,
-                version: '1.0.0',
-              })),
+              installed: Object.entries(config.snapshot.plugins)
+                .filter(([pluginId]) => pluginId.endsWith('@aw-team'))
+                .map(([pluginId, plugin]) => ({
+                  pluginId,
+                  installed: true,
+                  enabled: plugin.enabled === true,
+                  version: '1.0.0',
+                })),
               available: [],
             }),
             stderr: '',

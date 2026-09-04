@@ -17,7 +17,7 @@ import {
 import { getCodexOperationRequirement } from '../../src/utils/agent-version.js';
 import {
   buildCodexMarketplaceAddInvocation,
-  buildCodexPluginListInvocation,
+  buildCodexPluginListJsonInvocation,
   execFileNativeCliRunner,
   runNativeCli,
   type NativeCliInvocation,
@@ -523,7 +523,7 @@ describe('Codex manager resolver', () => {
       });
 
       await runNativeCli(
-        buildCodexPluginListInvocation(manager, isolation.layout.fixtureCwd, env),
+        buildCodexPluginListJsonInvocation(manager, 'aw', isolation.layout.fixtureCwd, env),
         runner,
       );
 
