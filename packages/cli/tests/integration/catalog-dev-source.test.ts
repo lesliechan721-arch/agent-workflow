@@ -72,7 +72,7 @@ describe('Catalog Workspace development source', () => {
   it.each([
     ['activate', 2],
     ['status', 4],
-    ['deactivate', 3],
+    ['deactivate', 4],
   ] as const)('reports the current receipt schema in %s help', async (command, schemaVersion) => {
     const output = capture();
     const exitCode = await runCli(['catalog', 'dev', command, '--help'], { io: output.io });
@@ -121,9 +121,9 @@ describe('Catalog Workspace development source', () => {
     const deactivated = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(deactivated.exitCode, deactivated.stderr).toBe(0);
     expect(deactivated.receipt).toMatchObject({
-      receiptSchemaVersion: 3, ok: true,
+      receiptSchemaVersion: 4, ok: true,
       source: { id: activated.receipt.source.id, action: 'removed' },
-      impact: { inventorySchemaVersion: 1, inventoryComplete: true, references: [], errors: [] },
+      impact: { inventorySchemaVersion: 2, primaryChange: null, inventoryComplete: true, references: [], errors: [] },
     });
     await expect(fs.pathExists(snapshotPath)).resolves.toBe(true);
     await expect(fs.pathExists(storeRoot)).resolves.toBe(true);
@@ -165,7 +165,7 @@ describe('Catalog Workspace development source', () => {
     const absent = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(absent.exitCode, absent.stderr).toBe(0);
     expect(absent.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: true,
       source: { action: 'absent' },
       impact: null,
@@ -175,7 +175,7 @@ describe('Catalog Workspace development source', () => {
     const invalid = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(invalid.exitCode).toBe(1);
     expect(invalid.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: false,
       impact: null,
       errors: [{ code: 'sourceConfigInvalid' }],
@@ -318,7 +318,7 @@ describe('Catalog Workspace development source', () => {
     const blocked = await jsonCommand(['catalog', 'dev', 'deactivate', '--json'], workspaceRoot, env);
     expect(blocked.exitCode).toBe(1);
     expect(blocked.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: false,
       state: 'failed',
       source: { id: sourceId, action: 'retained' },
@@ -360,19 +360,28 @@ describe('Catalog Workspace development source', () => {
     expect(blocked.receipt).toMatchObject({
       source: { id: sourceId, action: 'retained', previousPrimary: true },
       replacementPrimarySourceId: 'official',
-      impact: { references: [expect.objectContaining({ category: 'lifecycle' })] },
+      impact: {
+        primaryChange: { fromSourceId: sourceId, toSourceId: 'official' },
+        references: [expect.objectContaining({ category: 'lifecycle' })],
+      },
     });
 
+    let sourceConfigCommits = 0;
+    setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
+      if (path.basename(filePath) === 'catalog-sources.json') sourceConfigCommits += 1;
+    });
     const confirmed = await jsonCommand([
       'catalog', 'dev', 'deactivate', '--yes', '--json',
     ], workspaceRoot, env);
     expect(confirmed.exitCode, confirmed.stderr).toBe(0);
     expect(confirmed.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: true,
       source: { id: sourceId, action: 'removed', previousPrimary: true },
       replacementPrimarySourceId: 'official',
+      impact: { primaryChange: { fromSourceId: sourceId, toSourceId: 'official' } },
     });
+    expect(sourceConfigCommits).toBe(1);
     expect((await readCatalogSourcesConfigSnapshot(env)).config.sources).toEqual([
       expect.objectContaining({ id: 'official', primary: true }),
     ]);
@@ -392,7 +401,7 @@ describe('Catalog Workspace development source', () => {
     const result = await deactivateCatalogDevSource({ cwd: workspaceRoot, env });
 
     expect(result).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: false,
       state: 'failed',
       source: { id: activated.receipt.source.id, action: 'retained', previousPrimary: true },
@@ -490,9 +499,9 @@ describe('Catalog Workspace development source', () => {
 
     expect(blocked.exitCode).toBe(1);
     expect(blocked.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       source: { id: sourceId, action: 'retained' },
-      impact: { inventorySchemaVersion: 1, inventoryComplete: true },
+      impact: { inventorySchemaVersion: 2, inventoryComplete: true },
       errors: [{ code: 'confirmationRequired' }],
     });
     expect((await readCatalogSourcesConfigSnapshot(env)).config.sources)

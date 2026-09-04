@@ -4146,6 +4146,103 @@ describe('TUI v4 Review safety', () => {
     controller.dispose();
   });
 
+  it('shows the reviewed primary transition impact in the source Review', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before',
+        proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory',
+        impactDigest: 'sha256:impact',
+        referenceCount: 2,
+        inventoryComplete: true,
+        impact: {
+          impactSchemaVersion: 3,
+          sourceId: 'team',
+          primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+          inventoryComplete: true,
+          references: [],
+          affectedReferences: [
+            { category: 'config', sourceId: 'official', pluginId: 'official/demo', scope: 'user' },
+            { category: 'marketplace', sourceId: 'official', marketplaceName: 'aw' },
+          ],
+          changes: {
+            added: [], removed: [], changed: [], newlyIncompatible: [],
+            dependencyChanged: [], platformSupportChanged: [],
+          },
+          errors: [],
+        },
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation', action: 'setPrimary', sourceId: 'team',
+    });
+
+    expect(review).toMatchObject({
+      requiresConfirmation: true,
+      changes: expect.arrayContaining([
+        expect.objectContaining({ title: '设置引用受影响', description: '1 项' }),
+        expect.objectContaining({ title: 'Marketplace引用受影响', description: '1 项' }),
+      ]),
+    });
+  });
+
+  it('shows primary references in an activate-then-primary Review', async () => {
+    const candidate = {
+      sourceId: 'team', sourceConfigFingerprint: 'sha256:source', sourceIdentity: 'sha256:identity',
+      logicalIdentity: 'workspace:team', requestedRef: 'path', resolvedCommit: 'path',
+      catalogVersion: '1.0.0', channel: 'latest' as const,
+      manifestDigest: `sha256:${'1'.repeat(64)}`, snapshotDigest: `sha256:${'2'.repeat(64)}`,
+    };
+    const evidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: candidate.snapshotDigest },
+      catalogGeneration: {
+        action: 'activate', candidate, activationMode: 'normal', configDigest: 'sha256:config',
+        setPrimaryAfterActivation: true,
+        primaryConfigDigest: 'sha256:config',
+        primaryImpactDigest: 'sha256:primary-impact',
+        primaryImpact: {
+          impactSchemaVersion: 3,
+          sourceId: 'team',
+          primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+          inventoryComplete: true,
+          references: [],
+          affectedReferences: [
+            { category: 'config', sourceId: 'official', pluginId: 'official/demo', scope: 'user' },
+          ],
+          changes: {
+            added: [], removed: [], changed: [], newlyIncompatible: [],
+            dependencyChanged: [], platformSupportChanged: [],
+          },
+          errors: [],
+        },
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'activate', sourceId: 'team',
+      setPrimaryAfterActivation: true,
+    });
+
+    expect(review).toMatchObject({
+      requiresConfirmation: true,
+      changes: expect.arrayContaining([expect.objectContaining({
+        title: '切换主来源会影响现有引用',
+        description: '1 项；切换将在 Catalog 启用后执行。',
+      })]),
+      sharedImpact: { pluginIds: ['official/demo'] },
+    });
+  });
+
   it('rebuilds a source Review with zero writes when config evidence becomes stale', async () => {
     const first: OperationEvidence = {
       catalog: { configDigest: 'sha256:one', compositeDigest: 'sha256:candidate-one' },

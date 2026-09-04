@@ -105,7 +105,7 @@ aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --yes --json
 ```
 
-`activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest；schema 4 receipt 的 `active.compatibility` 为 `null`、`supported` 或带 required/missing capability 的 `unsupported`。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。停用检测到 installation、lifecycle 或 config 引用，或 inventory 不完整时需要 `--yes`；schema 3 receipt 返回脱敏 `impact`。
+`activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest；schema 4 receipt 的 `active.compatibility` 为 `null`、`supported` 或带 required/missing capability 的 `unsupported`。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。停用检测到 installation、lifecycle、config 或 marketplace 引用，或 inventory 不完整时需要 `--yes`；schema 4 receipt 返回 inventory v2 的脱敏 `impact`。primary source 停用把 remove 和 primary change 作为同一个 impact 和最终 config 提交。
 
 Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`。完整 resolve 默认 180000 ms；ref probe 最多 30000 ms；`0` 表示无 deadline。每次 probe 或完整 resolve 内的命令共享各自 deadline，probe 后的完整 resolve 使用新的 deadline。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
 

@@ -230,6 +230,9 @@ export interface OperationEvidence {
     impact?: CatalogSourceImpact;
     impactDigest?: string;
     impactMode?: 'generation' | 'identityChange';
+    primaryImpact?: CatalogSourceImpact;
+    primaryImpactDigest?: string;
+    primaryConfigDigest?: string;
     configDigest: string;
     proposedConfigDigest?: string;
     proposedSource?: CatalogSource;

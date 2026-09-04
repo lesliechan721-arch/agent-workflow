@@ -34,7 +34,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('catalog source mutation v4', () => {
+describe('catalog source mutation v6', () => {
   it('requires confirmation to remove a source with lifecycle intent references', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('referenced-source');
@@ -215,7 +215,7 @@ describe('catalog source mutation v4', () => {
     expect(preview).toMatchObject({
       sourceId: 'team',
       configDigest: before.digest,
-      references: { inventorySchemaVersion: 1, references: [], errors: [] },
+      references: { inventorySchemaVersion: 2, primaryChange: null, references: [], errors: [] },
     });
     expect(preview.proposedConfigDigest).not.toBe(before.digest);
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
@@ -232,7 +232,8 @@ describe('catalog source mutation v4', () => {
       env: isolation.env,
     });
     expect(receipt).toMatchObject({
-      receiptSchemaVersion: 5,
+      receiptSchemaVersion: 6,
+      primaryChange: null,
       ok: true,
       changed: true,
       sourceId: 'team',
@@ -347,6 +348,61 @@ describe('catalog source mutation v4', () => {
     await expect(removeCatalogSourceCommand({
       sourceId: 'official', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ ok: true, changed: true, primarySourceId: 'team', references: [] });
+  });
+
+  it('requires confirmation for primary legacy references and rejects reviewed impact drift', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('primary-impact');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const legacyConfig = path.join(
+      isolation.env.AW_HOME!, 'plugin-config', 'legacy-demo', 'config.json',
+    );
+    await fs.outputJson(legacyConfig, { enabled: true });
+
+    await expect(setPrimaryCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true,
+    })).rejects.toMatchObject({
+      code: 'catalogSourceImpactConfirmationRequired',
+      impact: {
+        inventorySchemaVersion: 2,
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
+      },
+    });
+    await expect(setPrimaryCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true, confirmImpact: true,
+    })).resolves.toMatchObject({
+      receiptSchemaVersion: 6,
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      primarySourceId: 'team',
+    });
+
+    await fs.remove(legacyConfig);
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'setPrimary', sourceId: 'official' },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    await expect(setPrimaryCatalogSourceCommand({
+      sourceId: 'official', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      expectedConfigDigest: preview.configDigest,
+      expectedImpactDigest: preview.impactDigest,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+      runtime: {
+        afterImpactInspected: async () => {
+          await fs.outputJson(legacyConfig, { enabled: true });
+        },
+      },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
+      .find((source) => source.id === 'team')).toMatchObject({ primary: true });
   });
 
   it('remove deletes only the configured source and its state while retaining the store', async () => {

@@ -563,6 +563,15 @@ function ownerReferenceFromRaw(
   entryPath: string,
   raw: Record<string, unknown> | null,
 ): CatalogSourceReference | null {
+  if (raw?.schemaVersion === 1 && raw.owner === 'agent-workflows') {
+    return {
+      kind: 'legacyOwner',
+      location: entryPath,
+      ...(typeof raw.plugin === 'string' ? { pluginName: raw.plugin } : {}),
+      ...(typeof raw.platform === 'string' ? { platform: raw.platform } : {}),
+      ...(typeof raw.scope === 'string' ? { scope: raw.scope } : {}),
+    };
+  }
   if (raw?.schemaVersion === 3 && raw.owner === 'agent-workflows'
     && typeof raw.sourceId === 'string'
     && raw.pluginId === `${raw.sourceId}/${raw.plugin}`) {
@@ -576,6 +585,29 @@ function ownerReferenceFromRaw(
     };
   }
   return null;
+}
+
+function legacyOwnedHeaderReference(
+  filePath: string,
+  content: string,
+): CatalogSourceReference | null {
+  const normalized = content.replace(/\r\n/gu, '\n');
+  const frontmatterEnd = normalized.startsWith('---\n')
+    ? normalized.indexOf('\n---\n', 4)
+    : -1;
+  const headerIndex = frontmatterEnd === -1 ? 0 : frontmatterEnd + '\n---\n'.length;
+  const lineEnd = normalized.indexOf('\n', headerIndex);
+  const line = normalized.slice(headerIndex, lineEnd === -1 ? normalized.length : lineEnd);
+  if (!line.startsWith(OWNED_TEXT_HEADER_PREFIX)) return null;
+  const raw = (() => {
+    try {
+      return JSON.parse(line.slice(OWNED_TEXT_HEADER_PREFIX.length)) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
+  const reference = ownerReferenceFromRaw(filePath, raw);
+  return reference?.kind === 'legacyOwner' ? reference : null;
 }
 
 async function readOwnedHeaderReference(
@@ -606,6 +638,22 @@ async function readOwnedHeaderReference(
   });
   if (content === null) return null;
   if (!content.includes(OWNED_TEXT_HEADER_PREFIX)) return null;
+  const legacyReference = legacyOwnedHeaderReference(filePath, content);
+  if (legacyReference) {
+    if (requireGeneratedName
+      && legacyReference.pluginName
+      && !path.basename(filePath).startsWith(`aw-${legacyReference.pluginName}-`)) {
+      errors.push(inventoryError(
+        new Error('Owned text header path does not match its plugin identity.'),
+        filePath,
+        'ownerHeaderPathValidation',
+        env,
+        cwd,
+      ));
+      return null;
+    }
+    return legacyReference;
+  }
   let parsed: ReturnType<typeof parseOwnedTextHeader>;
   try {
     parsed = parseOwnedTextHeader(content);
@@ -750,6 +798,12 @@ async function findDirectSkillOwnerMarkers(
     try {
       marker = await readSkillOwnerMarker({ skillRoot, allowedRoot: root });
     } catch (error) {
+      const legacy = await fs.readJson(markerPath).catch(() => null) as Record<string, unknown> | null;
+      const legacyReference = ownerReferenceFromRaw(markerPath, legacy);
+      if (legacyReference?.kind === 'legacyOwner') {
+        output.push(legacyReference);
+        continue;
+      }
       if (!isAbsentState(error)) {
         const code = (error as NodeJS.ErrnoException).code;
         const message = error instanceof Error ? error.message : String(error);
@@ -801,7 +855,7 @@ function sharedOwnerTokenReferences(
 
 async function codexSharedOwnerReferences(
   filePath: string,
-  _scope: 'user' | 'project',
+  scope: 'user' | 'project',
   errors: CatalogSourceInventoryError[],
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -820,12 +874,25 @@ async function codexSharedOwnerReferences(
     env,
     cwd,
   );
+  if (scope === 'user') {
+    for (const { value, location } of ownerValues) {
+      if (value.startsWith(SHARED_OWNER_TOKEN_PREFIX)
+        || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)) continue;
+      references.push({
+        kind: 'legacyOwner',
+        location,
+        pluginName: value,
+        platform: 'codex',
+        scope,
+      });
+    }
+  }
   return references;
 }
 
 async function claudeSharedOwnerReferences(
   filePath: string,
-  _scope: 'user' | 'project',
+  scope: 'user' | 'project',
   errors: CatalogSourceInventoryError[],
   env: NodeJS.ProcessEnv,
   cwd: string,
@@ -841,6 +908,19 @@ async function claudeSharedOwnerReferences(
     env,
     cwd,
   );
+  if (scope === 'user') {
+    for (const key of keys) {
+      if (key.startsWith(SHARED_OWNER_TOKEN_PREFIX)
+        || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(key)) continue;
+      references.push({
+        kind: 'legacyOwner',
+        location: filePath,
+        pluginName: key,
+        platform: 'claude',
+        scope,
+      });
+    }
+  }
   return references;
 }
 

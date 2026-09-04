@@ -2354,7 +2354,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--source-id <id>', 'recover one managed source by exact ID')
     .option('--replacement-primary <id>', 'replacement when the target source is primary')
     .option('-y, --yes', 'confirm source impact or recovery by source ID', false)
-    .requiredOption('--json', 'emit one schema 3 JSON receipt')
+    .requiredOption('--json', 'emit one schema 4 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
@@ -2396,16 +2396,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     const failure = sanitizeCatalogSourceError(error, env, sensitiveRoots) as Error & {
       code?: string;
       inventory?: { references?: CatalogSourceMutationReceipt['references'] };
-      impact?: { references?: CatalogSourceMutationReceipt['references'] };
+      impact?: {
+        primaryChange?: CatalogSourceMutationReceipt['primaryChange'];
+        references?: CatalogSourceMutationReceipt['references'];
+      };
     };
     const message = failure instanceof Error ? failure.message : String(error);
     if (json) {
       writeJsonReceipt(io.stdout, {
-        receiptSchemaVersion: 5,
+        receiptSchemaVersion: 6,
         command,
         ok: false,
         changed: false,
         sourceId,
+        primaryChange: failure.impact?.primaryChange ?? null,
         references: failure.impact?.references ?? failure.inventory?.references ?? [],
         errors: [{ code: failure.code ?? failure.name ?? 'catalogSourceMutationFailed', message }],
       });
@@ -2746,10 +2750,17 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogSource
     .command('set-primary')
     .argument('<id>')
+    .option('-y, --yes', 'confirm affected or unknown primary source references', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
-    .action(async (id: string, rawOptions: { json?: boolean }) => {
+    .action(async (id: string, rawOptions: { yes?: boolean; json?: boolean }) => {
       try {
-        const receipt = await setPrimaryCatalogSourceCommand({ sourceId: id, cwd, env });
+        const receipt = await setPrimaryCatalogSourceCommand({
+          sourceId: id,
+          cwd,
+          env,
+          requireImpactConfirmation: true,
+          confirmImpact: rawOptions.yes === true,
+        });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Primary catalog source set to ${id}.`);
       } catch (error) {
@@ -3827,11 +3838,12 @@ export async function runCli(
       const message = 'option --subdir cannot be used with option --no-subdir';
       if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 5,
+          receiptSchemaVersion: 6,
           command: 'catalog:source:update',
           ok: false,
           changed: false,
           sourceId: argv[3] ?? '',
+          primaryChange: null,
           references: [],
           errors: [{ code: 'catalogSourceOptionConflict', message }],
         });
@@ -3844,11 +3856,12 @@ export async function runCli(
       const message = 'option --auto-check cannot be used with option --no-auto-check';
       if (argv.includes('--json') || argv.includes('-j')) {
         writeJsonReceipt(io.stdout, {
-          receiptSchemaVersion: 5,
+          receiptSchemaVersion: 6,
           command: 'catalog:source:update',
           ok: false,
           changed: false,
           sourceId: argv[3] ?? '',
+          primaryChange: null,
           references: [],
           errors: [{ code: 'catalogSourceOptionConflict', message }],
         });

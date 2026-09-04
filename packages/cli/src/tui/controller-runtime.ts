@@ -913,8 +913,9 @@ export function createTuiControllerDependencies(
         explicitSourceChange = preview.proposedConfigDigest !== preview.configDigest
           && (preview.identityChanged || sourceFingerprintChanged);
         if (preview.identityChanged) sourceIdentityChangeImpact = {
-          impactSchemaVersion: 2,
+          impactSchemaVersion: 3,
           sourceId: preview.sourceId,
+          primaryChange: preview.references.primaryChange,
           inventoryComplete: preview.references.inventoryComplete,
           references: preview.references.references,
           affectedReferences: preview.references.references,
@@ -1073,6 +1074,29 @@ export function createTuiControllerDependencies(
           mode: 'generation',
           candidateManifest: probe.manifest,
         });
+      const primaryPreview = intent.setPrimaryAfterActivation
+        ? await preflightCatalogSourceMutation({
+            request: { action: 'setPrimary', sourceId: intent.sourceId },
+            cwd: context.cwd,
+            env: context.env,
+          })
+        : undefined;
+      if (primaryPreview && primaryPreview.configDigest !== config.digest) {
+        throw operationReviewStale('准备主来源切换期间来源配置发生变化。');
+      }
+      const primaryImpact = primaryPreview ? {
+        impactSchemaVersion: 3 as const,
+        sourceId: primaryPreview.sourceId,
+        primaryChange: primaryPreview.references.primaryChange,
+        inventoryComplete: primaryPreview.references.inventoryComplete,
+        references: primaryPreview.references.references,
+        affectedReferences: primaryPreview.references.references,
+        changes: {
+          added: [], removed: [], changed: [], newlyIncompatible: [],
+          dependencyChanged: [], platformSupportChanged: [],
+        },
+        errors: primaryPreview.references.errors,
+      } : undefined;
       return {
         catalog: {
           configDigest: config.digest,
@@ -1092,6 +1116,11 @@ export function createTuiControllerDependencies(
             impact,
             impactDigest: calculateCatalogSourceImpactDigest(impact),
             impactMode: sourceIdentityChangeImpact ? 'identityChange' as const : 'generation' as const,
+          } : {}),
+          ...(primaryPreview && primaryImpact ? {
+            primaryImpact,
+            primaryImpactDigest: primaryPreview.impactDigest,
+            primaryConfigDigest: primaryPreview.configDigest,
           } : {}),
           configDigest: config.digest,
           ...(proposedConfigDigest ? { proposedConfigDigest } : {}),
@@ -1132,8 +1161,9 @@ export function createTuiControllerDependencies(
           referenceCount: preview.references.references.length,
           inventoryComplete: preview.references.inventoryComplete,
           impact: {
-            impactSchemaVersion: 2,
+            impactSchemaVersion: 3,
             sourceId: preview.sourceId,
+            primaryChange: preview.references.primaryChange,
             inventoryComplete: preview.references.inventoryComplete,
             references: preview.references.references,
             affectedReferences: preview.references.references,
@@ -2012,6 +2042,10 @@ export function createTuiControllerDependencies(
                 sourceId: intent.sourceId,
                 cwd: context.cwd,
                 env: context.env,
+                expectedConfigDigest: expected.primaryConfigDigest,
+                expectedImpactDigest: expected.primaryImpactDigest,
+                requireImpactConfirmation: true,
+                confirmImpact: true,
               });
               primaryChanged = true;
             } catch (error) {
@@ -2021,7 +2055,10 @@ export function createTuiControllerDependencies(
                 configSaved,
                 generation,
                 activeAvailable: true,
-                errorCode: error instanceof Error ? error.name : 'catalogSourcePrimaryFailed',
+                errorCode: typeof error === 'object' && error !== null
+                  && 'code' in error && typeof error.code === 'string'
+                  ? error.code
+                  : error instanceof Error ? error.name : 'catalogSourcePrimaryFailed',
               };
             }
           }
@@ -2104,7 +2141,12 @@ export function createTuiControllerDependencies(
           });
         }
         if (intent.action === 'setPrimary') {
-          return setPrimaryCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+          return setPrimaryCatalogSourceCommand({
+            ...common,
+            sourceId: intent.sourceId,
+            requireImpactConfirmation: true,
+            confirmImpact: true,
+          });
         }
         if (intent.action === 'remove') {
           return removeCatalogSourceCommand({

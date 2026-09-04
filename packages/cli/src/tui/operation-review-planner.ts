@@ -460,6 +460,16 @@ function reviewChanges(
         title: '候选影响未知',
         description: '部分状态或旧 Manifest 无法读取；不能把影响视为零。',
       }] : []),
+      ...((generation.primaryImpact?.affectedReferences ?? []).length > 0 ? [{
+        kind: 'warning' as const,
+        title: '切换主来源会影响现有引用',
+        description: `${generation.primaryImpact!.affectedReferences.length} 项；切换将在 Catalog 启用后执行。`,
+      }] : []),
+      ...(generation.primaryImpact && !generation.primaryImpact.inventoryComplete ? [{
+        kind: 'warning' as const,
+        title: '主来源切换影响未知',
+        description: '部分状态无法读取；不能把影响视为零。',
+      }] : []),
       { kind: 'keep', title: '不会升级已安装 Plugin' },
       { kind: 'keep', title: intent.action === 'recoverState'
         ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
@@ -639,7 +649,10 @@ export function buildOperationReviewProjection(options: {
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
     || Boolean(evidence.catalogGeneration?.impact
       && (!evidence.catalogGeneration.impact.inventoryComplete
-        || evidence.catalogGeneration.impact.affectedReferences.length > 0));
+        || evidence.catalogGeneration.impact.affectedReferences.length > 0))
+    || Boolean(evidence.catalogGeneration?.primaryImpact
+      && (!evidence.catalogGeneration.primaryImpact.inventoryComplete
+        || evidence.catalogGeneration.primaryImpact.affectedReferences.length > 0));
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
     plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
@@ -672,12 +685,16 @@ export function buildOperationReviewProjection(options: {
           reference.pluginId ? [reference.pluginId] : []),
         ...(evidence.catalogGeneration?.impact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),
+        ...(evidence.catalogGeneration?.primaryImpact?.affectedReferences ?? []).flatMap((reference) =>
+          reference.pluginId ? [reference.pluginId] : []),
         ...(sharedNativeConfigApply && 'pluginId' in intent ? [intent.pluginId] : []),
       ])],
       ...(warning ? { warning }
         : sharedNativeConfigApply
           ? { warning: '更新共享 Codex native 动态 Skill 会影响所有启用项目。' }
-        : requiresConfirmation && (evidence.sourceWrite || evidence.catalogGeneration?.impact)
+        : requiresConfirmation && (evidence.sourceWrite
+          || evidence.catalogGeneration?.impact
+          || evidence.catalogGeneration?.primaryImpact)
           ? { warning: '确认来源影响后才会继续。未知影响不会按零处理。' }
           : {}),
     },
