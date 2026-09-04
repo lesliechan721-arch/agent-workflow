@@ -1,5 +1,6 @@
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { resolveActiveCatalogGeneration } from '../utils/catalog-generation-resolver.js';
+import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
@@ -86,6 +87,7 @@ export async function loadCatalogGenerationViewModels(options: {
           digestShort: shortDigest(active.snapshotDigest),
         },
         state: 'ready',
+        compatibility: { state: 'supported' },
         technicalCommand: instruction,
       };
     } catch (error) {
@@ -97,6 +99,41 @@ export async function loadCatalogGenerationViewModels(options: {
       const sourceState = await readCatalogGenerationState(env)
         .then((value) => value.sources[source.id])
         .catch(() => undefined);
+      const statusEntry = await readCatalogGenerationStatus({
+        sourceId: source.id,
+        env,
+        validatedStoreEntries: options.validatedStoreEntries,
+        validatingStoreEntries: options.validatingStoreEntries,
+      })
+        .then((status) => status.sources[0])
+        .catch(() => undefined);
+      const compatibility = statusEntry?.compatibility ?? null;
+      if (
+        compatibility?.state === 'unsupported'
+        && statusEntry?.active
+        && statusEntry.catalogVersion
+        && statusEntry.channel
+        && statusEntry.storeKey
+      ) {
+        if ((options.validatedStoreEntries?.size ?? 0) > wasValidated) fullValidationCount += 1;
+        else reusedValidationCount += 1;
+        return {
+          sourceId: source.id,
+          sourceType: source.type,
+          active: {
+            catalogVersion: statusEntry.catalogVersion,
+            channel: statusEntry.channel,
+            requestedRef: statusEntry.active.requestedRef,
+            resolvedCommit: statusEntry.active.resolvedCommit,
+            storeKey: statusEntry.storeKey,
+            digestShort: shortDigest(statusEntry.active.snapshotDigest),
+          },
+          errorCode: 'awCapabilityUnsupported',
+          state: 'incompatible',
+          compatibility,
+          technicalCommand: instruction,
+        };
+      }
       const configMismatch = Boolean(sourceState?.active)
         && (sourceState!.active!.sourceConfigFingerprint
             !== calculateCatalogSourceConfigFingerprint(source)
@@ -109,7 +146,8 @@ export async function loadCatalogGenerationViewModels(options: {
           }).then(() => false).catch(() => true)
         : false;
       if (activeEntryDamaged) errorCode = 'catalogGenerationMetadataInvalid';
-      if (errorCode === 'catalogGenerationStateInvalid') state = 'stateInvalid';
+      if (compatibility?.state === 'unsupported') state = 'incompatible';
+      else if (errorCode === 'catalogGenerationStateInvalid') state = 'stateInvalid';
       else if (errorCode === 'catalogGenerationMetadataInvalid') state = 'repairRequired';
       else if (!sourceState?.active) state = 'activationRequired';
       else if (configMismatch) state = 'configMismatch';
@@ -128,6 +166,7 @@ export async function loadCatalogGenerationViewModels(options: {
         sourceType: source.type,
         errorCode,
         state,
+        compatibility,
         ...(configMismatch ? { configMismatch: true } : {}),
         ...(recoveryEntryPath ? { recoveryEntryPath } : {}),
         technicalCommand: instruction,

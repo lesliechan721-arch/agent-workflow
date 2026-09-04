@@ -36,7 +36,7 @@ import {
   tryParseStrictSemVer,
 } from '../utils/manifest.js';
 import { resolveCliPackageRoot, resolveCodexPaths } from '../utils/paths.js';
-import { supportsPlatform } from '../utils/platform-support.js';
+import { resolveSupportedPlatforms, supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
 import {
   inspectCodexPluginRegistrationLive,
@@ -395,6 +395,10 @@ export interface StatusV7Payload {
     cwd: string;
   };
   targets: StatusV7Target[];
+  configIssues?: Array<NonNullable<StatusV7PluginSummary['configIssues']>[number] & {
+    pluginId: string;
+    pluginName: string;
+  }>;
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -438,6 +442,12 @@ interface StatusPluginCapability {
   };
 }
 
+function resolveCatalogEntrySupportedPlatforms(
+  policy: PluginMeta['manifest']['marketplace']['policy'],
+): ReturnType<typeof resolveSupportedPlatforms> {
+  return resolveSupportedPlatforms({ marketplace: { policy } } as PluginMeta['manifest']);
+}
+
 export interface StatusV7PluginSummary {
   pluginName: string;
   pluginId: string;
@@ -449,7 +459,7 @@ export interface StatusV7PluginSummary {
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
     scope: Scope;
-    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
     key: string;
     title: string;
     source: 'default' | 'user' | 'project' | 'missing';
@@ -771,6 +781,7 @@ function statusRecovery(options: {
   desired: DesiredTargetState;
   platform: PlatformName;
   pluginId: string;
+  dependencyMoves?: Array<{ pluginId: string; fromScope: Scope; toScope: Scope }>;
   sharedNative?: StatusSharedNativeProjection;
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
@@ -826,6 +837,16 @@ function statusRecovery(options: {
         description: `先移除或重命名 ${collision}，再运行 aw sync ${options.pluginId} --platform ${options.platform}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
       },
     ];
+  }
+  if (options.dependencyMoves?.length) {
+    const cleanupCommands = options.dependencyMoves.map((move) =>
+      `aw cleanup ${move.pluginId} --platform ${options.platform} --scope ${move.fromScope}`);
+    const targetScope = options.dependencyMoves[0]!.toScope;
+    return [{
+      command: 'cleanup',
+      scope: options.dependencyMoves[0]!.fromScope,
+      description: `运行 ${cleanupCommands.join('，再运行 ')}，再运行 aw sync --all --platform ${options.platform} --scope ${targetScope}。`,
+    }];
   }
   return [{
     command: options.errorCodes?.some((code) =>
@@ -935,6 +956,9 @@ function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
         lines.push(`  recovery ${action.command}: ${action.description}`);
       }
     }
+  }
+  for (const issue of payload.configIssues ?? []) {
+    lines.push(`Warning: ${issue.pluginId} config ${issue.key} has an unsupported project override; user/default is effective. Unset the project value.`);
   }
   for (const error of payload.errors) lines.push(`Error: ${error.message}`);
   return lines.join('\n');
@@ -1282,16 +1306,20 @@ async function statusCommandV7InSession(options: {
         }
         try {
           const placementEntries = item.resolution!.manifest.entries.map((entry) => {
-            const products = entry.policy.products;
-            const supports = (platform: PlatformName): boolean => products === undefined
-              || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+            const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
             return {
               name: entry.name,
               dependencies: entry.dependencies,
               source: { id: item.resolution!.sourceId },
               targets: {
-                codex: { user: supports('codex'), project: supports('codex') },
-                claude: { user: supports('claude'), project: supports('claude') },
+                codex: {
+                  user: supportedPlatforms.has('codex'),
+                  project: supportedPlatforms.has('codex'),
+                },
+                claude: {
+                  user: supportedPlatforms.has('claude'),
+                  project: supportedPlatforms.has('claude'),
+                },
               },
             };
           });
@@ -1330,13 +1358,11 @@ async function statusCommandV7InSession(options: {
                 IMPLEMENTED_AW_CAPABILITIES,
               );
               if (!capabilitySupport.supported) {
-                const products = entry.policy.products;
-                const supports = (platform: PlatformName): boolean => products === undefined
-                  || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+                const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
                 const states: StatusPluginCapability['states'] = {};
                 const message = `awCapabilityUnsupported: ${item.resolution!.sourceId}/${entry.name} requires unsupported AW capabilities: ${capabilitySupport.missing.join(', ')}.`;
                 for (const platform of ['codex', 'claude'] as const) {
-                  if (!supports(platform)) continue;
+                  if (!supportedPlatforms.has(platform)) continue;
                   states[platform] = {};
                   for (const scope of ['user', 'project'] as const) {
                     states[platform]![scope] = {
@@ -1353,8 +1379,14 @@ async function statusCommandV7InSession(options: {
                   shortDescription: entry.interface?.shortDescription ?? entry.description,
                   description: entry.description,
                   targets: {
-                    claude: { user: supports('claude'), project: supports('claude') },
-                    codex: { user: supports('codex'), project: supports('codex') },
+                    claude: {
+                      user: supportedPlatforms.has('claude'),
+                      project: supportedPlatforms.has('claude'),
+                    },
+                    codex: {
+                      user: supportedPlatforms.has('codex'),
+                      project: supportedPlatforms.has('codex'),
+                    },
                   },
                   states,
                   dependencies: entry.dependencies,
@@ -1403,6 +1435,16 @@ async function statusCommandV7InSession(options: {
                         key: issue.key,
                         title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
                         source,
+                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                    }
+                    for (const override of resolved.unsupportedLayerOverrides) {
+                      const configIssue = {
+                        scope,
+                        type: override.type,
+                        key: override.key,
+                        title: plugin.manifest.config.fields[override.key]?.title ?? override.key,
+                        source: override.source,
                       } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
                       issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
@@ -2514,6 +2556,30 @@ async function statusCommandV7InSession(options: {
         ?? (groupedScopes.includes('user') ? 'user' : groupedScopes[0] ?? target.scope));
     const representativeTarget = observedTargets.find((candidate) =>
       candidate.scope === representativeScope) ?? target;
+    const dependencyMoves = (representativeTarget.dependencyReadiness ?? []).flatMap((dependency) => {
+      if (dependency.state !== 'incomplete' || dependency.dependencyScope !== 'project') return [];
+      const parsed = parsePluginId(dependency.dependencyPluginId);
+      const override = projectIntent.dependencyScopeOverrides.find((candidate) =>
+        candidate.pluginId === dependency.dependencyPluginId
+        && candidate.scope === 'project'
+        && (candidate.platform === undefined || candidate.platform === target.platform));
+      const dependencyDesired = desiredTargetStates.get(desiredTargetKey(
+        dependency.dependencyPluginId,
+        target.platform,
+      ));
+      const hasPreservedUserActual = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === parsed.sourceId
+        && reference.pluginName === parsed.pluginName
+        && reference.platform === target.platform
+        && reference.scope === 'user');
+      return override && !dependencyDesired?.scopes.includes('user') && hasPreservedUserActual
+        ? [{ pluginId: dependency.dependencyPluginId, fromScope: 'user' as const, toScope: 'project' as const }]
+        : [];
+    });
+    const projectedState: StatusV7State = state === 'ready' && dependencyMoves.length > 0
+      ? 'needsSync'
+      : state;
     const components: StatusV7Component[] = [
       {
         kind: 'intent',
@@ -2607,14 +2673,15 @@ async function statusCommandV7InSession(options: {
     return {
       ...identity,
       scope: representativeScope,
-      state,
+      state: projectedState,
       components,
       reasons: dedupedErrors,
       recoveryActions: statusRecovery({
-        state,
+        state: projectedState,
         desired,
         platform: target.platform,
         pluginId: target.pluginId,
+        ...(dependencyMoves.length > 0 ? { dependencyMoves } : {}),
         ...(sharedNative ? { sharedNative } : {}),
         conflictRoots: rootIntentsForTarget({
           pluginId: target.pluginId,
@@ -2659,6 +2726,13 @@ async function statusCommandV7InSession(options: {
       ),
     };
   });
+  const publicConfigIssues = available.flatMap((entry) => (entry.configIssues ?? [])
+    .filter((issue) => issue.type === 'configLayerUnsupported')
+    .map((issue) => ({
+      pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+      pluginName: entry.name,
+      ...issue,
+    })));
   const payload: StatusV7Payload = {
     schemaVersion: 7,
     catalog: {
@@ -2681,6 +2755,7 @@ async function statusCommandV7InSession(options: {
       cwd: path.resolve(options.cwd),
     },
     targets: projectedTargets,
+    ...(publicConfigIssues.length > 0 ? { configIssues: publicConfigIssues } : {}),
     errors,
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)

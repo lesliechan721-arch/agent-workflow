@@ -31,8 +31,11 @@ import {
   createCatalogStoreKey,
   resolveCatalogStoreLocation,
 } from '../../src/utils/catalog-generation-store.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { git } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  git,
+  rewriteActiveCatalogCapabilities,
+} from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 afterEach(() => {
@@ -200,6 +203,41 @@ async function pushGitCatalogVersion(
 }
 
 describe('TUI v4 real catalog source boundary', () => {
+  it('maps a healthy incompatible Active without offering repair actions', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller } = await configuredController();
+    await rewriteActiveCatalogCapabilities({
+      sourceId: 'local',
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+      env: isolation.env,
+    });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 110, rows: 32 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'incompatible Active load');
+    expect(controller.getCatalogGeneration('local')).toMatchObject({
+      state: 'incompatible',
+      compatibility: {
+        state: 'unsupported',
+        requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+        missingCapabilities: ['aw.future-feature.v99'],
+      },
+    });
+
+    controller.push({ name: 'sourceDetail', sourceId: 'local' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Active Catalog 与当前 AW 不兼容');
+    expect(instance.lastFrame()).toContain('缺少 1 项能力');
+    expect(instance.lastFrame()).toContain('查看不兼容详情');
+    expect(instance.lastFrame()).not.toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
+
+    controller.push({ name: 'sourceTechnical', sourceId: 'local' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('required: aw.catalog-snapshot.v7、aw.future-feature.v99');
+    expect(instance.lastFrame()).toContain('missing: aw.future-feature.v99');
+    expect(instance.lastFrame()).not.toContain('availableCapabilities');
+    controller.dispose();
+  });
+
   it('reuses a complete background candidate for Review and resolves again for Execute', async () => {
     const pathResolve = vi.fn(catalogPathProviderInternal.resolve);
     const { controller, firstRoot } = await configuredController(undefined, {
@@ -1035,6 +1073,27 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
+  it('does not require source impact confirmation for an update exact repair', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller } = await configuredController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    const entryDir = path.join(
+      isolation.env.AW_HOME!,
+      'catalog-store',
+      createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
+    );
+    await fs.writeFile(path.join(entryDir, 'snapshot', 'catalog-manifest.json'), 'damaged');
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+
+    expect(review.requiresConfirmation).toBe(false);
+    expect(review.sharedImpact).toEqual({ pluginIds: [] });
+    controller.dispose();
+  });
+
   it('recovers invalid generation state and activates only the reviewed source through Ink', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller } = await configuredController();
@@ -1171,6 +1230,114 @@ describe('TUI v4 real catalog source boundary', () => {
       .toEqual(stateBeforeReview.sources['git-local']!.active);
     await expect(fs.pathExists(candidateEntry)).resolves.toBe(false);
     expect(controller.getCatalogGeneration('git-local')).toMatchObject({ state: 'configMismatch' });
+    controller.dispose();
+  });
+
+  it('repairs a damaged old Git Active when the current candidate requires a newer AW', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work } = await configuredGitController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources['git-local']!.active!;
+    await createCatalogSnapshotFixture(
+      path.join(work, 'catalog'),
+      'one',
+      ['aw.future-feature.v99'],
+      'incompatible current candidate\n',
+    );
+    const manifestPath = path.join(work, 'catalog', 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      catalogVersion: '2.0.0',
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'] } },
+    }, { spaces: 2 });
+    await git(work, ['add', '.']);
+    await git(work, ['commit', '-m', 'incompatible current candidate']);
+    await git(work, ['push', 'origin', 'HEAD:refs/heads/main']);
+    const currentCommit = await git(work, ['rev-parse', 'HEAD']);
+    expect(currentCommit).not.toBe(active.resolvedCommit);
+
+    const activeEntry = path.join(
+      isolation.env.AW_HOME!,
+      'catalog-store',
+      createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
+    );
+    await fs.writeFile(path.join(activeEntry, 'metadata.json'), 'damaged\n');
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 110, rows: 32 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'damaged Git Active');
+    await controller.fullValidateCatalogSource('git-local');
+    await waitFor(
+      () => controller.getCatalogFreshness('git-local')?.state === 'incompatible',
+      'incompatible current candidate',
+      () => controller.getCatalogFreshness('git-local'),
+    );
+    controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
+    await input(instance, '\r');
+    await waitFor(
+      () => controller.snapshot.activeReview?.operationKind === 'catalogGeneration',
+      'exact old Active repair Review',
+    );
+    expect(controller.snapshot.activeReview?.primaryLabel).toBe('重新下载并修复');
+    await confirmReview(instance, controller);
+
+    expect(controller.snapshot.result).toMatchObject({ state: 'succeeded' });
+    expect((await readCatalogGenerationState(isolation.env)).sources['git-local']!.active)
+      .toEqual(active);
+    expect(controller.getCatalogGeneration('git-local')).toMatchObject({
+      state: 'ready',
+      active: { resolvedCommit: active.resolvedCommit },
+    });
+    controller.dispose();
+  });
+
+  it('does not offer incompatible replacement after exact repair cannot match Active', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller, work } = await configuredGitController();
+    await createCatalogSnapshotFixture(
+      path.join(work, 'catalog'),
+      'one',
+      ['aw.future-feature.v99'],
+      'incompatible current candidate\n',
+    );
+    const manifestPath = path.join(work, 'catalog', 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'] } },
+    }, { spaces: 2 });
+    await git(work, ['add', '.']);
+    await git(work, ['commit', '-m', 'incompatible current candidate']);
+    await git(work, ['push', 'origin', 'HEAD:refs/heads/main']);
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const state = await fs.readJson(statePath) as {
+      sources: Record<string, { active?: { snapshotDigest: string } }>;
+    };
+    const active = state.sources['git-local']!.active!;
+    active.snapshotDigest = `${active.snapshotDigest.slice(0, -1)}${active.snapshotDigest.endsWith('0') ? '1' : '0'}`;
+    await fs.writeJson(statePath, state, { spaces: 2 });
+
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 110, rows: 32 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'unmatched damaged Git Active');
+    await controller.fullValidateCatalogSource('git-local');
+    await waitFor(
+      () => controller.getCatalogFreshness('git-local')?.state === 'incompatible',
+      'incompatible replacement candidate',
+      () => controller.getCatalogFreshness('git-local'),
+    );
+    controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
+
+    await input(instance, '\r');
+    await waitFor(
+      () => controller.snapshot.reviewPreparation?.state === 'failed',
+      'exact repair mismatch recovery',
+    );
+    expect(instance.lastFrame()).toContain('请升级 AW 或修改来源');
+    expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
     controller.dispose();
   });
 

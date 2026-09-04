@@ -15,7 +15,14 @@ import {
   normalizeAwCapabilities,
   readPluginManifest,
 } from '../../src/utils/manifest.js';
+import { resolveSupportedPlatforms } from '../../src/utils/platform-support.js';
 import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
+import {
+  readCatalogGenerationState,
+  withCatalogGenerationStateTransaction,
+} from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
+import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,16 +72,16 @@ export async function createCatalogSnapshotFixture(
     strict: manifest.marketplace.strict,
     policy: manifest.marketplace.policy,
   };
-  const products = manifest.marketplace.policy.products;
-  const supportedPlatforms = (['claude', 'codex'] as const).filter((platform) =>
-    products === undefined || products.includes(platform === 'claude' ? 'CLAUDE' : 'CODEX'));
+  const supportedPlatforms = resolveSupportedPlatforms(manifest);
   await Promise.all((['claude', 'codex'] as const).map((platform) =>
     fs.remove(path.join(pluginRoot, `.${platform}-plugin`))));
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
-    plugins: products === undefined || products.includes(platform) ? [marketplaceEntry] : [],
+    plugins: supportedPlatforms.has(platform === 'CLAUDE' ? 'claude' : 'codex')
+      ? [marketplaceEntry]
+      : [],
   });
   const platformManifest = (platform: 'claude' | 'codex') => {
     const projected = {
@@ -102,12 +109,12 @@ export async function createCatalogSnapshotFixture(
   });
   await Promise.all([
     fs.outputJson(manifestPath, manifest, { spaces: 2 }),
-    ...supportedPlatforms.map((platform) => fs.outputJson(
+    ...[...supportedPlatforms].map((platform) => fs.outputJson(
       path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
       platformManifest(platform),
       { spaces: 2 },
     )),
-    ...(supportedPlatforms.includes('claude')
+    ...(supportedPlatforms.has('claude')
       ? projectedAgentPaths.map((agentPath) => fs.outputFile(agentPath, '# Agent\n'))
       : []),
     fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
@@ -133,6 +140,77 @@ export async function createCatalogSnapshotFixture(
     workspaceIdentity: `fixture:${crypto.createHash('sha256').update(path.resolve(rootDir)).digest('hex')}`,
     sourceIdentity: `sha256:${crypto.createHash('sha256').update(`source:${path.resolve(rootDir)}`).digest('hex')}`,
   }, { spaces: 2 });
+}
+
+export async function rewriteActiveCatalogCapabilities(options: {
+  sourceId: string;
+  requiredCapabilities: readonly string[];
+  env: NodeJS.ProcessEnv;
+  workspaceSnapshotRoot?: string;
+}): Promise<void> {
+  const state = await readCatalogGenerationState(options.env);
+  const active = state.sources[options.sourceId]?.active;
+  if (!active) throw new Error(`Catalog source ${options.sourceId} has no Active snapshot.`);
+  const currentLocation = resolveCatalogStoreLocation({
+    logicalIdentity: active.logicalIdentity,
+    snapshotDigest: active.snapshotDigest,
+    env: options.env,
+  });
+  const manifestPath = path.join(currentLocation.snapshotRoot, 'catalog-manifest.json');
+  const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+  const requiredCapabilities = normalizeAwCapabilities(options.requiredCapabilities);
+  await fs.writeJson(manifestPath, {
+    ...manifest,
+    requires: { aw: { capabilities: requiredCapabilities } },
+  }, { spaces: 2 });
+  if (options.workspaceSnapshotRoot) {
+    const workspaceManifestPath = path.join(options.workspaceSnapshotRoot, 'catalog-manifest.json');
+    const workspaceManifest = await fs.readJson(workspaceManifestPath) as Record<string, unknown>;
+    await fs.writeJson(workspaceManifestPath, {
+      ...workspaceManifest,
+      requires: { aw: { capabilities: requiredCapabilities } },
+    }, { spaces: 2 });
+  }
+  const validation = await validateCatalogSnapshotTransport(currentLocation.snapshotRoot);
+  if (options.workspaceSnapshotRoot) {
+    const workspaceValidation = await validateCatalogSnapshotTransport(options.workspaceSnapshotRoot);
+    if (workspaceValidation.snapshotDigest !== validation.snapshotDigest) {
+      throw new Error('Workspace and Active snapshot digests differ after capability rewrite.');
+    }
+  }
+  const metadata = await fs.readJson(currentLocation.metadataPath) as Record<string, unknown>;
+  await fs.writeJson(currentLocation.metadataPath, {
+    ...metadata,
+    manifestDigest: validation.manifestDigest,
+    snapshotDigest: validation.snapshotDigest,
+    requiredAwCapabilities: requiredCapabilities,
+  }, { spaces: 2 });
+  const nextLocation = resolveCatalogStoreLocation({
+    logicalIdentity: active.logicalIdentity,
+    snapshotDigest: validation.snapshotDigest,
+    env: options.env,
+  });
+  await fs.move(currentLocation.entryDir, nextLocation.entryDir);
+  await withCatalogGenerationStateTransaction({
+    env: options.env,
+    action: async (current) => ({
+      state: {
+        ...current,
+        sources: {
+          ...current.sources,
+          [options.sourceId]: {
+            ...current.sources[options.sourceId],
+            active: {
+              ...active,
+              manifestDigest: validation.manifestDigest,
+              snapshotDigest: validation.snapshotDigest,
+            },
+          },
+        },
+      },
+      result: undefined,
+    }),
+  });
 }
 
 export async function createDependencyCatalogSnapshotFixture(
@@ -181,8 +259,8 @@ export async function createDependencyCatalogSnapshotFixture(
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
     plugins: metas
-      .filter((meta) => meta.manifest.marketplace.policy.products === undefined
-        || meta.manifest.marketplace.policy.products.includes(platform))
+      .filter((meta) => resolveSupportedPlatforms(meta.manifest)
+        .has(platform === 'CLAUDE' ? 'claude' : 'codex'))
       .map(marketplaceEntry),
   });
   await Promise.all([

@@ -4665,6 +4665,66 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('▌');
   });
 
+  it.each([
+    { columns: 60, rows: 18 },
+    { columns: 80, rows: 24 },
+  ])('shows and unsets a legacy project native override at $columns x $rows', async (size) => {
+    const page = configPage();
+    page.layer = { scope: 'project' };
+    page.storedCount = 1;
+    const legacy = page.groups[0]!.fields[0]!;
+    page.groups = [{
+      id: 'basic', title: '基本设置', advanced: false,
+      fields: [{
+        ...legacy,
+        title: '共享模式',
+        writable: false,
+        canSet: false,
+        canUnset: true,
+        sharedNativeRender: true,
+        configured: true,
+        inherited: false,
+        displayValue: '旧项目值',
+        effectiveDisplayValue: '个人默认值',
+        effectiveSourceLabel: '个人默认',
+        fallbackDisplayValue: '个人默认值',
+        fallbackSourceLabel: '个人默认',
+      }],
+    }];
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
+    const value = controller({
+      getConfigPage: vi.fn().mockResolvedValue(page),
+      captureEvidence,
+    });
+    value.push({
+      name: 'configFields', pluginId: page.pluginId, layer: { scope: 'project' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).toContain('不再支持的');
+    expect(instance.lastFrame()).toContain('project override');
+    expect(instance.lastFrame()).toContain('user/default');
+    expect(instance.lastFrame()).toContain('删除旧值');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldAction', fieldKey: legacy.key,
+    });
+    expect(instance.lastFrame()).not.toContain('修改值');
+    expect(instance.lastFrame()).toContain('删除当前项目中的值');
+    await input(instance, '\r', 's');
+    await nextTurn(4);
+
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'configSave',
+      scope: 'project',
+      updates: {},
+      removeKeys: [legacy.key],
+    }), expect.any(AbortSignal));
+    expect(instance.lastFrame()).not.toContain('Shared impact 需要显式确认');
+    instance.unmount();
+  });
+
   it('does not present a user invalid override as a project-layer unset or fallback', async () => {
     const page = configPage();
     page.layer = { scope: 'project' };
@@ -5357,7 +5417,7 @@ describe('ConsoleAppV4', () => {
           referenceCount: 4,
           inventoryComplete: false,
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [
@@ -5372,7 +5432,10 @@ describe('ConsoleAppV4', () => {
               { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
               { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
             ],
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: [{ code: 'stateInventoryFailed', kind: 'nativeStateRead' }],
           },
         },
@@ -5421,12 +5484,15 @@ describe('ConsoleAppV4', () => {
             activatedAt: 500,
           },
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],
             affectedReferences: [],
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: [{ code: 'catalogManifestUnavailable' as const, kind: 'currentManifestRead' }],
           },
         },
@@ -6326,6 +6392,74 @@ describe('ConsoleAppV4', () => {
       expect(executeIntent).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('requires explicit confirmation before a shared native config retry executes', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded', targetResults: [],
+    });
+    const value = controller({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        config: {
+          scope: 'user',
+          schemaIdentity: 'sha256:schema',
+          storeDigest: 'sha256:store',
+          affectedTargets: [{ platform: 'codex', scope: 'user' }],
+          sharedNativeRenderTargets: [{
+            id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'],
+          }],
+        },
+      }),
+      executeIntent,
+    });
+    await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
+      apply: true, retryApply: true,
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('Shared impact 需要显式确认');
+    expect(instance.lastFrame()).toContain('请先显式确认 shared impact');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('已确认 shared impact');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(executeIntent).toHaveBeenCalledOnce();
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'configSave', retryApply: true,
+    }), expect.anything());
+  });
+
+  it('executes an ordinary config retry without shared confirmation', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded', targetResults: [],
+    });
+    const value = controller({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        config: {
+          scope: 'user',
+          schemaIdentity: 'sha256:schema',
+          storeDigest: 'sha256:store',
+          affectedTargets: [{ platform: 'claude', scope: 'user' }],
+        },
+      }),
+      executeIntent,
+    });
+    await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'user',
+      apply: true, retryApply: true,
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).not.toContain('Shared impact 需要显式确认');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(executeIntent).toHaveBeenCalledOnce();
+  });
 
   it('enters the existing Review chain from a mounted needsSync platform action', async () => {
     const loaded = loadResult();

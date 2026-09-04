@@ -34,8 +34,15 @@ import { calculateCatalogSourceConfigFingerprint, calculateCatalogSourceIdentity
 import { readCatalogSourcesConfigSnapshot } from './catalog-sources.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
-import { resolveActiveCatalogGeneration } from './catalog-generation-resolver.js';
+import {
+  readValidatedCatalogGenerationStoreEntry,
+  resolveValidatedActiveCatalogGeneration,
+} from './catalog-generation-resolver.js';
 import { compareStrictSemVer } from './manifest.js';
+import {
+  projectCatalogCapabilityCompatibility,
+  type CatalogCapabilityCompatibility,
+} from './catalog-capability-projection.js';
 import {
   calculateCatalogSourceImpactDigest,
   catalogSourceImpactRequiresConfirmation,
@@ -55,6 +62,8 @@ export interface CatalogGenerationServiceRuntime {
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   afterCandidateResolved?: () => Promise<void>;
   afterRecoveryStorePublished?: () => Promise<void>;
+  afterInactiveStoreRepairPrepared?: () => Promise<void>;
+  inspectSourceImpact?: typeof inspectCatalogSourceImpact;
 }
 
 export interface CatalogGenerationProbeResult {
@@ -98,11 +107,12 @@ export interface CatalogGenerationStatusEntry {
   channel?: 'latest' | 'beta';
   storeKey?: string;
   lastSync?: CatalogGenerationLastSyncV1;
+  compatibility: CatalogCapabilityCompatibility | null;
   errorCode?: string;
 }
 
 export interface CatalogGenerationStatusPayload {
-  catalogGenerationStatusSchemaVersion: 1;
+  catalogGenerationStatusSchemaVersion: 2;
   sources: CatalogGenerationStatusEntry[];
 }
 
@@ -319,15 +329,13 @@ async function assertCurrentSource(options: {
   return source;
 }
 
-async function enforceCatalogActivationPolicy(options: {
+async function enforceCatalogActivationCandidatePolicy(options: {
   sourceId: string;
   source: CatalogSource;
   active: CatalogGenerationActiveV1 | undefined;
   candidate: CatalogGenerationCandidateEvidence;
   mode: CatalogActivationMode;
   env: NodeJS.ProcessEnv;
-  impact: CatalogSourceImpact;
-  impactConfirmed: boolean;
 }): Promise<{ preserveActive: boolean }> {
   const configuredChanged = Boolean(options.active)
     && (options.active!.sourceConfigFingerprint !== options.candidate.sourceConfigFingerprint
@@ -363,13 +371,6 @@ async function enforceCatalogActivationPolicy(options: {
         && error.code === 'catalogGenerationReviewStale') throw error;
     });
     return { preserveActive: true };
-  }
-  if (catalogSourceImpactRequiresConfirmation(options.impact) && !options.impactConfirmed) {
-    throw new CatalogGenerationError({
-      code: 'catalogImpactConfirmationRequired', sourceId: options.sourceId,
-      message: `Catalog source "${options.sourceId}" has affected or unknown references. Use --yes after reviewing the impact.`,
-      impact: options.impact,
-    });
   }
   if (!options.active) return { preserveActive: false };
   if (options.mode === 'normal'
@@ -415,6 +416,11 @@ async function enforceCatalogActivationPolicy(options: {
       cause: error,
     });
   }
+  if (options.source.type === 'git'
+    && options.active.logicalIdentity === options.candidate.logicalIdentity
+    && options.active.snapshotDigest === options.candidate.snapshotDigest) {
+    return { preserveActive: true };
+  }
   if (options.mode === 'explicitSourceChange') return { preserveActive: false };
   if (options.source.type === 'path') {
     return { preserveActive: options.active.snapshotDigest === options.candidate.snapshotDigest };
@@ -435,6 +441,20 @@ async function enforceCatalogActivationPolicy(options: {
     message: `Catalog source "${options.sourceId}" candidate version is lower than the Active version.`,
   });
   return { preserveActive: false };
+}
+
+function enforceCatalogActivationImpactPolicy(options: {
+  sourceId: string;
+  impact: CatalogSourceImpact;
+  impactConfirmed: boolean;
+}): void {
+  if (catalogSourceImpactRequiresConfirmation(options.impact) && !options.impactConfirmed) {
+    throw new CatalogGenerationError({
+      code: 'catalogImpactConfirmationRequired', sourceId: options.sourceId,
+      message: `Catalog source "${options.sourceId}" has affected or unknown references. Use --yes after reviewing the impact.`,
+      impact: options.impact,
+    });
+  }
 }
 
 function assertExpectedImpact(options: {
@@ -460,8 +480,9 @@ async function inspectActivationImpact(options: {
   env: NodeJS.ProcessEnv;
   mode: 'generation' | 'identityChange';
   candidateManifest: CatalogManifestV7;
+  runtime?: CatalogGenerationServiceRuntime;
 }): Promise<CatalogSourceImpact> {
-  return inspectCatalogSourceImpact({
+  return (options.runtime?.inspectSourceImpact ?? inspectCatalogSourceImpact)({
     sourceId: options.sourceId,
     cwd: options.cwd,
     env: options.env,
@@ -650,7 +671,7 @@ export async function probeCatalogSourceFreshness(options: {
     sourceId: options.sourceId,
     message: `Catalog source "${options.sourceId}" is not configured.`,
   });
-  const active = await resolveActiveCatalogGeneration({
+  const active = await resolveValidatedActiveCatalogGeneration({
     sourceId: source.id,
     env,
     validatedStoreEntries: options.runtime?.validatedStoreEntries,
@@ -757,6 +778,7 @@ async function activateResolvedCandidate(options: {
   const candidate = options.resolved.candidate;
   const store = options.store ?? await publishCatalogStoreEntry({
     resolution: options.resolved.resolution, env: options.env, signal: options.signal,
+    afterInactiveRepairPrepared: options.runtime?.afterInactiveStoreRepairPrepared,
   });
   assertStoreMatchesCandidate(options.sourceId, store, candidate);
   return withAwHomeMutationLock({
@@ -788,6 +810,14 @@ async function activateResolvedCandidate(options: {
         action: async (current) => {
           const previous = current.sources[options.sourceId]?.active;
           assertExpectedActive(options.sourceId, previous, options.expectedActive);
+          const policy = await enforceCatalogActivationCandidatePolicy({
+            sourceId: options.sourceId,
+            source,
+            active: previous,
+            candidate,
+            mode: options.activationMode,
+            env: options.env,
+          });
           const impact = await inspectActivationImpact({
             sourceId: options.sourceId,
             source,
@@ -795,19 +825,15 @@ async function activateResolvedCandidate(options: {
             env: options.env,
             mode: options.impactMode ?? 'generation',
             candidateManifest: options.resolved.resolution.manifest,
+            runtime: options.runtime,
           });
           assertExpectedImpact({
             sourceId: options.sourceId,
             impact,
             expectedImpactDigest: options.expectedImpactDigest,
           });
-          const policy = await enforceCatalogActivationPolicy({
+          enforceCatalogActivationImpactPolicy({
             sourceId: options.sourceId,
-            source,
-            active: previous,
-            candidate,
-            mode: options.activationMode,
-            env: options.env,
             impact,
             impactConfirmed: options.impactConfirmed,
           });
@@ -822,7 +848,9 @@ async function activateResolvedCandidate(options: {
           };
           const unchanged = policy.preserveActive || sameActive(previous, activeInput);
           const active: CatalogGenerationActiveV1 = unchanged
-            ? previous!
+            ? policy.preserveActive && source.type === 'git'
+              ? { ...activeInput, activatedAt: previous!.activatedAt }
+              : previous!
             : { ...activeInput, activatedAt: syncedAt };
           const lastSync: CatalogGenerationLastSyncV1 = {
             syncedAt, mode: 'sync', state: 'succeeded', resolvedCommit: candidate.resolvedCommit,
@@ -872,6 +900,17 @@ export async function activateCatalogSourceGeneration(options: {
         message: `Catalog source "${options.sourceId}" changed after review. Review it again.`,
       });
     }
+    const activationMode = options.activationMode ?? 'normal';
+    const active = (await readCatalogGenerationState(env)).sources[options.sourceId]?.active;
+    assertExpectedActive(options.sourceId, active, options.expectedActive);
+    await enforceCatalogActivationCandidatePolicy({
+      sourceId: options.sourceId,
+      source: resolved.source,
+      active,
+      candidate: resolved.candidate,
+      mode: activationMode,
+      env,
+    });
     const impact = await inspectActivationImpact({
       sourceId: options.sourceId,
       cwd: options.cwd ?? process.cwd(),
@@ -879,6 +918,7 @@ export async function activateCatalogSourceGeneration(options: {
       source: resolved.source,
       mode: options.impactMode ?? 'generation',
       candidateManifest: resolved.resolution.manifest,
+      runtime: options.runtime,
     });
     assertExpectedImpact({
       sourceId: options.sourceId,
@@ -890,7 +930,7 @@ export async function activateCatalogSourceGeneration(options: {
       ...options,
       env,
       resolved,
-      activationMode: options.activationMode ?? 'normal',
+      activationMode,
       impactConfirmed: options.impactConfirmed === true,
     });
   } catch (error) {
@@ -951,6 +991,7 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
     await options.runtime?.afterCandidateResolved?.();
     const store = await publishCatalogStoreEntry({
       resolution: resolved.resolution, env, signal: options.signal,
+      afterInactiveRepairPrepared: options.runtime?.afterInactiveStoreRepairPrepared,
     });
     assertStoreMatchesCandidate(options.sourceId, store, resolved.candidate);
     await options.runtime?.afterRecoveryStorePublished?.();
@@ -969,6 +1010,14 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
           candidate: resolved!.candidate,
           env,
         });
+        await enforceCatalogActivationCandidatePolicy({
+          sourceId: options.sourceId,
+          source,
+          active: undefined,
+          candidate: resolved!.candidate,
+          mode: 'normal',
+          env,
+        });
         const lockedImpact = await inspectActivationImpact({
           sourceId: options.sourceId,
           source,
@@ -976,19 +1025,15 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
           env,
           mode: 'generation',
           candidateManifest: resolved!.resolution.manifest,
+          runtime: options.runtime,
         });
         assertExpectedImpact({
           sourceId: options.sourceId,
           impact: lockedImpact,
           expectedImpactDigest: options.expectedImpactDigest,
         });
-        await enforceCatalogActivationPolicy({
+        enforceCatalogActivationImpactPolicy({
           sourceId: options.sourceId,
-          source,
-          active: undefined,
-          candidate: resolved!.candidate,
-          mode: 'normal',
-          env,
           impact: lockedImpact,
           impactConfirmed: options.impactConfirmed === true,
         });
@@ -1118,23 +1163,13 @@ export async function repairCatalogSourceGeneration(options: {
         const current = currentState.sources[options.sourceId]?.active;
         assertExpectedActive(options.sourceId, current, options.expectedActive);
         if (options.expectedActive === undefined) assertExpectedActive(options.sourceId, current, target);
-        await enforceCatalogActivationPolicy({
+        await enforceCatalogActivationCandidatePolicy({
           sourceId: options.sourceId,
           source: currentSource,
           active: current,
           candidate: resolved!.candidate,
           mode: 'exactRepair',
           env,
-          impact: {
-            impactSchemaVersion: 1,
-            sourceId: options.sourceId,
-            inventoryComplete: true,
-            references: [],
-            affectedReferences: [],
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
-            errors: [],
-          },
-          impactConfirmed: true,
         });
         const store = await preparedRepair!.commit();
         assertStoreMatchesCandidate(options.sourceId, store, resolved!.candidate);
@@ -1270,6 +1305,14 @@ export async function replaceDamagedCatalogSourceGeneration(options: {
             action: async (current) => {
               const previous = current.sources[options.sourceId]?.active;
               assertExpectedActive(options.sourceId, previous, options.expectedActive);
+              await enforceCatalogActivationCandidatePolicy({
+                sourceId: options.sourceId,
+                source,
+                active: previous,
+                candidate: resolved!.candidate,
+                mode: 'replaceDamaged',
+                env,
+              });
               const lockedImpact = await inspectActivationImpact({
                 sourceId: options.sourceId,
                 source,
@@ -1277,19 +1320,15 @@ export async function replaceDamagedCatalogSourceGeneration(options: {
                 env,
                 mode: 'generation',
                 candidateManifest: resolved!.resolution.manifest,
+                runtime: options.runtime,
               });
               assertExpectedImpact({
                 sourceId: options.sourceId,
                 impact: lockedImpact,
                 expectedImpactDigest: options.expectedImpactDigest,
               });
-              await enforceCatalogActivationPolicy({
+              enforceCatalogActivationImpactPolicy({
                 sourceId: options.sourceId,
-                source,
-                active: previous,
-                candidate: resolved!.candidate,
-                mode: 'replaceDamaged',
-                env,
                 impact: lockedImpact,
                 impactConfirmed: options.impactConfirmed === true,
               });
@@ -1465,6 +1504,8 @@ export async function syncCatalogSourceGeneration(options: {
 export async function readCatalogGenerationStatus(options: {
   sourceId?: string;
   env?: NodeJS.ProcessEnv;
+  validatedStoreEntries?: Map<string, CatalogStoreEntry>;
+  validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
 } = {}): Promise<CatalogGenerationStatusPayload> {
   const env = options.env ?? process.env;
   const config = await readCatalogSourcesConfigSnapshot(env);
@@ -1486,28 +1527,38 @@ export async function readCatalogGenerationStatus(options: {
     if (!active) return {
       sourceId: source.id, configuredSourceIdentity, activeReady: false,
       configMatchesActive: false, lastSync: sourceState?.lastSync,
+      compatibility: null,
     };
     try {
-      const entry = await readCatalogStoreEntry({
-        logicalIdentity: active.logicalIdentity, snapshotDigest: active.snapshotDigest, env,
+      const entry = await readValidatedCatalogGenerationStoreEntry({
+        logicalIdentity: active.logicalIdentity,
+        snapshotDigest: active.snapshotDigest,
+        env,
+        validatedStoreEntries: options.validatedStoreEntries,
+        validatingStoreEntries: options.validatingStoreEntries,
       });
       if (entry.metadata.manifestDigest !== active.manifestDigest) throw new CatalogGenerationError({
         code: 'catalogGenerationIdentityMismatch', message: 'Active does not match store metadata.',
       });
+      const compatibility = projectCatalogCapabilityCompatibility(
+        entry.metadata.requiredAwCapabilities,
+      );
       return {
         sourceId: source.id, configuredSourceIdentity, active,
-        activeReady: configMatchesActive, configMatchesActive,
+        activeReady: configMatchesActive && compatibility.state === 'supported',
+        configMatchesActive,
         catalogVersion: entry.metadata.catalogVersion, channel: entry.metadata.channel,
         storeKey: createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
-        lastSync: sourceState?.lastSync,
+        lastSync: sourceState?.lastSync, compatibility,
       };
     } catch (error) {
       return {
         sourceId: source.id, configuredSourceIdentity, active, activeReady: false,
         configMatchesActive, lastSync: sourceState?.lastSync,
+        compatibility: null,
         errorCode: catalogGenerationErrorCode(error),
       };
     }
   }));
-  return { catalogGenerationStatusSchemaVersion: 1, sources };
+  return { catalogGenerationStatusSchemaVersion: 2, sources };
 }

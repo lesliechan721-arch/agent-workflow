@@ -135,7 +135,10 @@ import {
   type OperationAction,
   type OperationPlanEvidence,
 } from './operation-plan.js';
-import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
+import {
+  validateCatalogSnapshotComplete,
+  validateCatalogSnapshotPluginEntriesComplete,
+} from '../utils/catalog-snapshot.js';
 import { runPostApplyScript } from '../utils/plugin-scripts.js';
 import {
   AwCapabilityUnsupportedError,
@@ -1864,7 +1867,7 @@ async function runRebuildCommandInSession(options: {
     }
     return mergeRebuildCommandResults([]);
   }
-  if (options.command === 'cleanup') {
+  if (options.command === 'cleanup' && !options.all) {
     if (cleanupForce) {
       const requestedPlatforms = selectedPlatforms(options.commandOptions.platform);
       const cleanupSourceSnapshot = await readCatalogSourcesConfigSnapshot(runtimeEnv).catch(() => undefined);
@@ -2154,13 +2157,6 @@ async function runRebuildCommandInSession(options: {
           pluginId: formatPluginId({ sourceId: source.sourceId, pluginName: entry.name }),
         }));
       });
-      const intentCatalogEntries: IntentCatalogDependencyEntry[] = availableEntries.map((candidate) => ({
-        pluginId: candidate.pluginId,
-        dependencyPluginIds: candidate.entry.dependencies.map((dependency) => formatPluginId({
-          sourceId: candidate.source.sourceId,
-          pluginName: dependency,
-        })),
-      }));
       const selectedEntries = selectors.map((selector, index) => {
         const matches = availableEntries.filter((candidate) =>
           candidate.entry.name === selector.pluginName
@@ -2173,6 +2169,24 @@ async function runRebuildCommandInSession(options: {
         }
         return matches[0]!;
       });
+      if (options.command === 'uninstall' || (options.command === 'cleanup' && options.all)) {
+        await measureCommandPerformanceStage(options.runtime, 'catalog.validation', async () => {
+          const selectedSources = new Map(selectedEntries.map((candidate) => [
+            candidate.source.sourceId,
+            candidate.source,
+          ]));
+          for (const source of selectedSources.values()) {
+            await validateCatalogSnapshotComplete(source.rootDir);
+          }
+        });
+      }
+      const intentCatalogEntries: IntentCatalogDependencyEntry[] = availableEntries.map((candidate) => ({
+        pluginId: candidate.pluginId,
+        dependencyPluginIds: candidate.entry.dependencies.map((dependency) => formatPluginId({
+          sourceId: candidate.source.sourceId,
+          pluginName: dependency,
+        })),
+      }));
       const dependencyEnabled = options.command === 'install'
         || options.command === 'sync'
         || options.command === 'reinstall';
@@ -3524,12 +3538,20 @@ async function runRebuildCommandInSession(options: {
               ].some((action) =>
                 action.pluginId === entry.pluginId
                 && action.scope === planned.resolvedScope));
+              const hasActivationMutation = codexPlans.some((codexPlan) => [
+                ...codexPlan.activationActions.user,
+                ...codexPlan.activationActions.project,
+              ].some((action) =>
+                action.pluginId === entry.pluginId
+                && action.action !== 'none'));
               target.codexNativeObservationExpectation = preserveSharedNative && hasExtensionMutation
                 ? (plannedNative.action === 'reuse' ? 'installed' : 'observed')
                 : undefined;
               const removesSharedNative = !writesSharedNative
                 && !preserveSharedNative
                 && (buildCommand === 'cleanup' || buildCommand === 'uninstall');
+              target.codexNativeSensitivePreflightRequired = preserveSharedNative
+                && hasActivationMutation;
               if (!writesSharedNative && !removesSharedNative) {
                 const isSharedNativeComponent = (component: OwnedComponent) =>
                   component.kind === 'native-plugin'
@@ -3544,6 +3566,9 @@ async function runRebuildCommandInSession(options: {
                   !isSharedNativeComponent(component));
                 target.operationActions = target.operationActions?.filter((action) =>
                   action.kind !== 'ensureNativeRegistration');
+              }
+              if (target.codexNativeSensitivePreflightRequired && !hasExtensionMutation) {
+                await integration.driver.preflightMutation?.(target);
               }
             }
             preparedTargets.set(`${entry.pluginId}\0${platform}`, {

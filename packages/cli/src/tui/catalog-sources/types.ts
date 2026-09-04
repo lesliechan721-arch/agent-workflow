@@ -2,6 +2,7 @@ import type { CatalogGenerationCandidateEvidence } from '../../types.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationReusableCandidate,
+  CatalogGenerationStatusEntry,
 } from '../../utils/catalog-generation-service.js';
 
 export interface CatalogGenerationViewModel {
@@ -20,8 +21,9 @@ export interface CatalogSourceGenerationViewModel {
   errorCode?: string;
   recoveryEntryPath?: string;
   configMismatch?: boolean;
+  compatibility?: CatalogGenerationStatusEntry['compatibility'];
   state?: 'ready' | 'activationRequired' | 'repairRequired' | 'configMismatch'
-    | 'stateInvalid' | 'unavailable';
+    | 'stateInvalid' | 'incompatible' | 'unavailable';
   technicalCommand?: string;
 }
 

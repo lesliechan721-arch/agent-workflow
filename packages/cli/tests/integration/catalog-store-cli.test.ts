@@ -148,4 +148,32 @@ describe('Catalog store CLI', () => {
     expect(failed.stderr).not.toContain(fixture.env.AW_HOME!);
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
   });
+
+  it('reports and removes an old safe delete claim left by an earlier partial prune', async () => {
+    const fixture = await setupInactiveEntry();
+    const claimName = '.delete-11111111-1111-4111-8111-111111111111.tmp';
+    const claimPath = path.join(path.dirname(fixture.entryDir), claimName);
+    await fs.rename(fixture.entryDir, claimPath);
+
+    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.parseJsonStdout().entries).toContainEqual(expect.objectContaining({
+      storeKey: `${fixture.storeKey.split('/')[0]}/${claimName}`,
+      category: 'deleteClaim',
+      status: 'reclaimable',
+      reason: 'deleteClaimOlderThan24Hours',
+    }));
+
+    const pruned = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(pruned.exitCode, pruned.stderr).toBe(0);
+    expect(pruned.parseJsonStdout().deleted).toContainEqual(expect.objectContaining({
+      storeKey: `${fixture.storeKey.split('/')[0]}/${claimName}`,
+    }));
+    expect(pruned.stdout).not.toContain(fixture.env.AW_HOME!);
+    await expect(fs.pathExists(claimPath)).resolves.toBe(false);
+  });
 });

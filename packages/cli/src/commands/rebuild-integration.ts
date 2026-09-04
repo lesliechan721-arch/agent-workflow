@@ -100,7 +100,11 @@ import {
   resolveRepoRoot,
   getCodexHome,
 } from '../utils/paths.js';
-import { runPostApplyScript } from '../utils/plugin-scripts.js';
+import {
+  collectSensitivePluginConfigValues,
+  runPostApplyScript,
+} from '../utils/plugin-scripts.js';
+import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
@@ -2381,6 +2385,51 @@ async function lstatIfPresent(filePath: string) {
   });
 }
 
+async function lstatCodexResidueIfPresent(filePath: string) {
+  return fs.lstat(filePath).catch((error) => {
+    if (isAbsentPath(error)) return null;
+    throw error;
+  });
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+async function codexReadPathSafe(root: string, candidate: string): Promise<boolean> {
+  if (!isPathWithin(root, candidate)) return false;
+  const rootStats = await lstatCodexResidueIfPresent(root);
+  if (rootStats && (!rootStats.isDirectory() || rootStats.isSymbolicLink())) return false;
+  const [physicalRoot, physicalCandidate] = await Promise.all([
+    canonicalizePathThroughExistingAncestor(root),
+    canonicalizePathThroughExistingAncestor(candidate),
+  ]);
+  return isPathWithin(physicalRoot, physicalCandidate);
+}
+
+async function codexPayloadPathSafe(
+  payloadRoot: string,
+  allowedRoot = payloadRoot,
+): Promise<boolean> {
+  if (!await codexReadPathSafe(allowedRoot, payloadRoot)) return false;
+  const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
+  const pending = [payloadRoot];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) return false;
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (!entry.isFile()) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
 export interface CodexSharedNativeLiveInspection {
   sharedNative: CodexSharedNativeInspection;
   expectedPayloadDigest?: string;
@@ -2418,9 +2467,12 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   marketplaceName: string;
   env: NodeJS.ProcessEnv;
 }): Promise<{
+  state: 'present';
   payloadDigest: string;
   projection?: CodexNativeRenderProjection;
   sourceProjection: 'current' | 'drifted';
+} | {
+  state: 'foreign';
 }> {
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
@@ -2428,6 +2480,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     throw new Error('Codex native render projection requires namespaced source identity.');
   }
   const marketplace = await readStrictNamespacedMarketplaceRoot({
+    trustedMarketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces'),
     rootDir: options.marketplaceRoot,
     sourceId: options.plugin.sourceId,
     marketplaceName: options.marketplaceName,
@@ -2435,7 +2488,13 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (!marketplace) {
     throw new Error('Codex native render canonical marketplace generation is missing.');
   }
+  if (marketplace.config.sourceIdentity !== options.plugin.sourceIdentity) {
+    return { state: 'foreign' };
+  }
   const payloadRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
+  if (!await codexPayloadPathSafe(payloadRoot, options.marketplaceRoot)) {
+    throw new Error('Codex native render canonical marketplace payload path is unsafe.');
+  }
   const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
   if (receiptEvidence.state !== 'present') {
     throw new Error('Codex native render canonical marketplace receipt is missing or unreadable.');
@@ -2498,7 +2557,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (targets.length === 0
     || targets.length !== receipt.targets.length
     || targets.some((target) => receiptTargets.get(target.id)?.skillKey !== target.skillKey)) {
-    return { payloadDigest, sourceProjection: 'drifted' };
+    return { state: 'present', payloadDigest, sourceProjection: 'drifted' };
   }
   const renderer = await resolveArtifactRendererTarget(options.plugin);
   if (renderer.noOp || !renderer.rendererDigest) {
@@ -2538,12 +2597,46 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     })),
   });
   return {
+    state: 'present',
     projection,
     payloadDigest,
     sourceProjection: codexNativeRenderProjectionsEqual(receipt, projection)
       ? 'current'
       : 'drifted',
   };
+}
+
+async function assertNoSensitiveValuesInCanonicalCodexNativePayload(options: {
+  plugin: PluginMeta;
+  marketplaceRoot: string;
+  env: NodeJS.ProcessEnv;
+  sensitiveValues: readonly string[];
+}): Promise<void> {
+  if (options.sensitiveValues.length === 0
+    || !pluginHasCodexNativeSkillSurface(options.plugin)) return;
+  const sourceId = options.plugin.sourceId;
+  if (!sourceId) {
+    throw new Error('Codex native sensitive scan requires namespaced source identity.');
+  }
+  const awHome = resolveAwHome(options.env);
+  if (!await isSafeCodexMarketplaceRoot({
+    awHome,
+    sourceId,
+    marketplaceRoot: options.marketplaceRoot,
+  })) {
+    throw new Error('Codex native sensitive scan canonical marketplace path is unsafe.');
+  }
+  const payloadRoot = path.join(
+    options.marketplaceRoot,
+    'plugins',
+    options.plugin.manifest.name,
+  );
+  await assertNoSensitiveValuesInCodexNativePayload({
+    plugin: options.plugin,
+    payloadRoot,
+    allowedRoot: options.marketplaceRoot,
+    sensitiveValues: options.sensitiveValues,
+  });
 }
 
 export interface CodexPluginRegistrationLiveInspection {
@@ -2648,6 +2741,11 @@ export async function inspectCodexSharedNativeLive(options: {
     'marketplaces',
     options.sourceId,
   );
+  const marketplacePathSafe = await isSafeCodexMarketplaceRoot({
+    awHome: resolveAwHome(options.env),
+    sourceId: options.sourceId,
+    marketplaceRoot,
+  });
   const pluginId = `${options.pluginName}@${marketplaceName}`;
   const config = await readCodexConfigFile(
     resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
@@ -2663,6 +2761,7 @@ export async function inspectCodexSharedNativeLive(options: {
   });
   let expectedPayloadDigest = dynamicProjectionExpected ? undefined : options.expectedPayloadDigest;
   let sourceProjection: 'current' | 'drifted' | undefined;
+  let expectedMarketplaceForeign = false;
   const installed = pluginList.observation.state === 'observed'
     && pluginList.observation.value === 'installed';
   if (installed && dynamicProjectionExpected && options.nativeRenderPlugin) {
@@ -2673,13 +2772,19 @@ export async function inspectCodexSharedNativeLive(options: {
         marketplaceName,
         env: options.env,
       });
-      expectedPayloadDigest = expected.payloadDigest;
-      sourceProjection = expected.sourceProjection;
+      if (expected.state === 'foreign') {
+        expectedMarketplaceForeign = true;
+      } else {
+        expectedPayloadDigest = expected.payloadDigest;
+        sourceProjection = expected.sourceProjection;
+      }
     } catch {
       sourceProjection = 'drifted';
     }
   }
-  const sharedNative = inspectCodexSharedNative({
+  const sharedNative: CodexSharedNativeInspection = expectedMarketplaceForeign
+    ? { state: 'blocked', reason: 'foreign', diagnostic: 'marketplaceRegistrationForeign' }
+    : inspectCodexSharedNative({
     pluginName: options.pluginName,
     pluginId,
     marketplaceName,
@@ -2687,11 +2792,7 @@ export async function inspectCodexSharedNativeLive(options: {
     desiredVersion: options.desiredVersion,
     expectedPayloadDigest,
     marketplaceRegistration: config.snapshot.marketplaces[marketplaceName],
-    marketplacePathSafe: await isSafeCodexMarketplaceRoot({
-      awHome: resolveAwHome(options.env),
-      sourceId: options.sourceId,
-      marketplaceRoot,
-    }),
+    marketplacePathSafe,
     observation: pluginList.observation,
     ...(sourceProjection ? { sourceProjection } : {}),
   });
@@ -3177,6 +3278,111 @@ interface StagedCodexNativeRender {
   projection: CodexNativeRenderProjection;
   presentSkillKeys: string[];
   targetSkillKeys: string[];
+}
+
+function pluginHasCodexNativeSkillSurface(plugin: PluginMeta): boolean {
+  return plugin.manifest.skills !== undefined
+    || codexNativeRenderTargets(plugin).length > 0;
+}
+
+async function resolveSensitiveUserConfigValues(
+  plugin: PluginMeta,
+  env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+  const hasSensitiveFields = Object.values(plugin.manifest.config?.fields ?? {}).some((field) =>
+    field.sensitive === true
+    || (field.type === 'object'
+      && (Object.values(field.properties ?? {}).some((child) => child.sensitive === true)
+        || (field.additionalProperties !== false
+          && field.additionalProperties?.sensitive === true))));
+  if (!hasSensitiveFields) return [];
+  const config = await resolveArtifactRenderConfig({
+    sourceId: plugin.sourceId,
+    sourceIdentity: plugin.sourceIdentity,
+    pluginName: plugin.manifest.name,
+    manifest: plugin.manifest,
+    scope: 'user',
+    cwd: plugin.rootDir,
+    env,
+  });
+  return collectSensitivePluginConfigValues(plugin.manifest, config.values);
+}
+
+async function assertNoSensitiveValuesInCodexNativePayload(options: {
+  plugin: PluginMeta;
+  payloadRoot: string;
+  allowedRoot?: string;
+  sensitiveValues: readonly string[];
+}): Promise<void> {
+  if (options.sensitiveValues.length === 0) return;
+  if (!await codexPayloadPathSafe(options.payloadRoot, options.allowedRoot)) {
+    throw new Error('Codex native sensitive scan payload path is unsafe.');
+  }
+  const codexManifestPath = path.join(options.payloadRoot, '.codex-plugin', 'plugin.json');
+  const codexManifestStats = await lstatCodexResidueIfPresent(codexManifestPath);
+  if (!codexManifestStats?.isFile()) {
+    throw new Error('Codex native sensitive scan manifest is missing or unsafe.');
+  }
+  const codexManifest = await fs.readJson(codexManifestPath).catch(() => null) as Record<string, unknown> | null;
+  if (!codexManifest
+    || codexManifest.name !== options.plugin.manifest.name
+    || codexManifest.version !== options.plugin.manifest.version) {
+    throw new Error('Codex native sensitive scan manifest identity is invalid.');
+  }
+  const rawSkillsRoot = codexManifest.skills;
+  if (rawSkillsRoot !== undefined) {
+    if (typeof rawSkillsRoot !== 'string' || rawSkillsRoot.trim() === '') {
+      throw new Error('Codex native sensitive scan Skills root is invalid.');
+    }
+    const skillsRelativeRoot = path.posix.normalize(rawSkillsRoot.replace(/^\.\//u, ''));
+    if (!skillsRelativeRoot
+      || skillsRelativeRoot === '.'
+      || skillsRelativeRoot === '..'
+      || skillsRelativeRoot.startsWith('../')
+      || path.posix.isAbsolute(skillsRelativeRoot)) {
+      throw new Error('Codex native sensitive scan Skills root is invalid.');
+    }
+    const skillsRoot = path.join(options.payloadRoot, ...skillsRelativeRoot.split('/'));
+    const skillsRootStats = await lstatCodexResidueIfPresent(skillsRoot);
+    if (!skillsRootStats?.isDirectory()) {
+      throw new Error('Codex native sensitive scan Skills root is missing or unsafe.');
+    }
+    for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const skillRoot = path.join(skillsRoot, entry.name);
+      const skillFileStats = await lstatCodexResidueIfPresent(path.join(skillRoot, 'SKILL.md'));
+      if (!skillFileStats) continue;
+      if (!skillFileStats.isFile()) {
+        throw new Error('Codex native sensitive scan Skill entry is unsafe.');
+      }
+      const tree = await readDynamicSkillTree(skillRoot, 'codex.skill');
+      if (!tree) continue;
+      const leakedPath = findSensitiveTokenPath(tree.files, options.sensitiveValues);
+      if (leakedPath) {
+        throw new Error(
+          `codexNativeRenderSensitiveValue: Codex native Skill "${entry.name}" exposes ` +
+            `sensitive config in "${leakedPath}".`,
+        );
+      }
+    }
+  }
+  const receiptPath = path.join(options.payloadRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
+  const receiptStats = await lstatCodexResidueIfPresent(receiptPath);
+  if (receiptStats) {
+    if (!receiptStats.isFile()) {
+      throw new Error('Codex native sensitive scan render receipt path is unsafe.');
+    }
+    const receiptLeak = findSensitiveTokenPath(
+      { [CODEX_NATIVE_RENDER_RECEIPT_PATH]: await fs.readFile(receiptPath) },
+      options.sensitiveValues,
+    );
+    if (receiptLeak) {
+      throw new Error(
+        `codexNativeRenderSensitiveValue: Codex native render receipt exposes sensitive config in ` +
+          `"${receiptLeak}".`,
+      );
+    }
+  }
 }
 
 async function materializeCodexNativeRender(options: {
@@ -3746,6 +3952,17 @@ function createNativeDriver(options: {
                   hasRequiredSkills: hasStaticSkills,
                 });
               }
+              if (pluginHasCodexNativeSkillSurface(candidate.plugin)) {
+                await assertNoSensitiveValuesInCodexNativePayload({
+                  plugin: candidate.plugin,
+                  payloadRoot: path.join(stagingRoot, 'plugins', candidate.identity.pluginName),
+                  allowedRoot: stagingRoot,
+                  sensitiveValues: await resolveSensitiveUserConfigValues(
+                    candidate.plugin,
+                    options.context.env,
+                  ),
+                });
+              }
             }
           } : undefined,
         );
@@ -4141,6 +4358,19 @@ function createNativeDriver(options: {
         )));
     },
     preflightMutation: async (target) => {
+      if (!target.codexNativeObservationExpectation
+        && !target.codexNativeSensitivePreflightRequired) return;
+      const sensitiveValues = pluginHasCodexNativeSkillSurface(target.plugin)
+        ? await resolveSensitiveUserConfigValues(target.plugin, options.context.env)
+        : [];
+      if (sensitiveValues.length > 0) {
+        await assertNoSensitiveValuesInCanonicalCodexNativePayload({
+          plugin: target.plugin,
+          marketplaceRoot: target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
+          env: options.context.env,
+          sensitiveValues,
+        });
+      }
       if (!target.codexNativeObservationExpectation) return;
       const pluginId = `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`;
       const registration = await inspectCodexPluginRegistrationLive({
