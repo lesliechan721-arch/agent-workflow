@@ -46,6 +46,7 @@ import {
 import { createNoopReporter } from '../output/reporter.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
+import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type {
   ArtifactCollisionEvidence,
@@ -1026,7 +1027,7 @@ function collisionRootIssueId(options: {
   ].join(':');
 }
 
-export async function statusCommandV7(options: {
+async function statusCommandV7InSession(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1038,6 +1039,7 @@ export async function statusCommandV7(options: {
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+  codexObservationSession: Awaited<ReturnType<typeof createCodexNativeObservationSession>>;
 }): Promise<{
   payload: StatusV7Payload;
   output: string;
@@ -1140,7 +1142,6 @@ export async function statusCommandV7(options: {
       return {
         observation: { state: 'unobserved' as const },
         observations: { user: false, project: false },
-        activations: {},
       };
     }
     let inspection = codexRegistrationCache.get(pluginId);
@@ -1150,6 +1151,8 @@ export async function statusCommandV7(options: {
         cwd: options.cwd,
         env,
         nativeCliRunner,
+        scope: options.scope === 'user' ? 'user' : 'both',
+        observationSession: options.codexObservationSession,
       });
       codexRegistrationCache.set(pluginId, inspection);
     }
@@ -1196,7 +1199,17 @@ export async function statusCommandV7(options: {
               return probe.desired || hasLocalResidue ? 'partial' as const : 'absent' as const;
             }
             if (registration.observation.value === 'absent') return 'absent' as const;
-            return registration.activations[probe.scope] === true
+            if (!userCodexConfig || (probe.scope === 'project' && !projectCodexConfig)) {
+              return 'partial' as const;
+            }
+            const configEnabled = userCodexConfig.snapshot.plugins[
+              `${probe.pluginName}@${probe.marketplaceName}`
+            ]?.enabled === true
+              || (probe.scope === 'project'
+                && projectCodexConfig?.snapshot.plugins[
+                  `${probe.pluginName}@${probe.marketplaceName}`
+                ]?.enabled === true);
+            return configEnabled
               ? 'present' as const
               : 'partial' as const;
           })
@@ -1569,6 +1582,7 @@ export async function statusCommandV7(options: {
                         nativeCliRunner,
                         reporter: createNoopReporter(),
                         debugLogger: createNoopDebugLogger(),
+                        codexObservationSession: options.codexObservationSession,
                       },
                       userActivationDesired: codexDesiredUserActivationIds,
                       nativeProbe: readOnlyNativeProbe({
@@ -1732,6 +1746,7 @@ export async function statusCommandV7(options: {
                                   nativeCliRunner,
                                   reporter: createNoopReporter(),
                                   debugLogger: createNoopDebugLogger(),
+                                  codexObservationSession: options.codexObservationSession,
                                 },
                                 userActivationDesired: codexDesiredUserActivationIds,
                                 nativeProbe: readOnlyNativeProbe({
@@ -1928,7 +1943,6 @@ export async function statusCommandV7(options: {
                   : {
                       observation: { state: 'unobserved' as const },
                       observations: { user: false, project: false },
-                      activations: {},
                     };
                 let residueFailed = false;
                 const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
@@ -1997,16 +2011,11 @@ export async function statusCommandV7(options: {
                   ?.snapshot.plugins[codexPluginId]?.enabled;
                 const configuredProjectActivation = projectCodexConfig
                   ?.snapshot.plugins[codexPluginId]?.enabled;
-                const userActivation = sharedInspection?.activationObservations.user
-                  ? sharedInspection.activations.user === true
-                  : configuredUserActivation;
-                const projectActivation = sharedInspection?.activationObservations.project
-                  && configuredProjectActivation !== undefined
-                  ? configuredProjectActivation && sharedInspection.activations.project === true
-                  : configuredProjectActivation;
+                const userActivation = configuredUserActivation;
+                const projectActivation = configuredProjectActivation;
                 const activationObserved = registrationScope === 'project'
-                  ? sharedInspection?.activationObservations.project === true
-                  : sharedInspection?.activationObservations.user === true;
+                  ? userCodexConfig !== undefined && projectCodexConfig !== undefined
+                  : userCodexConfig !== undefined;
                 codexStatus = {
                   pluginId: codexPluginId,
                   nativeKinds: codexSurface.nativeKinds,
@@ -2452,7 +2461,7 @@ export async function statusCommandV7(options: {
     const activation = baseActivation && systemConsumer
       ? {
           ...baseActivation,
-          evidence: baseActivation.evidence === 'observed'
+          evidence: systemConsumer.state === 'compatible'
             ? 'observed' as const
             : systemConsumer.state === 'missing' ? 'assumed' as const : 'unobserved' as const,
           systemConsumer,
@@ -2863,4 +2872,30 @@ export async function statusCommandV7(options: {
       };
     }),
   };
+}
+
+export async function statusCommandV7(options: {
+  plugins?: string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  nativeCliRunner?: NativeCliRunner;
+  cliVersion?: string;
+  platform?: string;
+  scope?: string;
+  json?: boolean;
+  verbose?: boolean;
+  catalogOperationContext?: CatalogOperationContext;
+  inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+}): ReturnType<typeof statusCommandV7InSession> {
+  const env = options.env ?? process.env;
+  const session = await createCodexNativeObservationSession({
+    exactCwd: options.cwd,
+    env,
+    runner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+  });
+  try {
+    return await statusCommandV7InSession({ ...options, codexObservationSession: session });
+  } finally {
+    await session.dispose();
+  }
 }

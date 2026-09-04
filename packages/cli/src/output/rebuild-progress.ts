@@ -8,8 +8,6 @@ const ACTION_LABELS: Record<RebuildActionName, string> = {
   'artifacts.write': '写入插件文件',
   preApply: '运行 preApply',
   'postcheck.inspect': '检查写入结果',
-  'marketplace.commit': '提交 marketplace generation',
-  'marketplace.rollback': '回滚 marketplace generation',
   'recovery.cleanup': '清理失败写入',
   'cleanup.owned': '清理 AW 组件',
 };

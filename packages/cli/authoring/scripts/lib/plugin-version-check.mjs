@@ -1,8 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -15,6 +17,12 @@ import {
 const execFileAsync = promisify(execFile);
 const EXPECTED_MANIFEST_CONTRACT_VERSION = 12;
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
+const MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024;
+const MAX_GIT_BATCH_HEADER_BYTES = 1024;
+const GIT_BATCH_OPERATION_TIMEOUT_MS = 30_000;
+const GIT_BATCH_TERM_GRACE_MS = 250;
+const GIT_BATCH_CLOSE_TIMEOUT_MS = 2_000;
 const CLI_PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -162,13 +170,229 @@ async function loadProductionBundler(cliPackageRoot) {
 
 function parseTreeRecord(record) {
   const tabIndex = record.indexOf('\t');
+  if (tabIndex < 0) {
+    throw codedError('gitFailed', 'Git authoring source tree returned a malformed record.');
+  }
   const metadata = record.slice(0, tabIndex).split(' ');
+  if (
+    metadata.length !== 3
+    || !metadata[0]
+    || !metadata[1]
+    || !GIT_OBJECT_ID_PATTERN.test(metadata[2] ?? '')
+  ) {
+    throw codedError('gitFailed', 'Git authoring source tree returned malformed metadata.');
+  }
   return {
     mode: metadata[0],
     type: metadata[1],
     objectId: metadata[2],
     filePath: record.slice(tabIndex + 1),
   };
+}
+
+function createBatchReader(stream) {
+  const iterator = stream[Symbol.asyncIterator]();
+  let chunk = Buffer.alloc(0);
+  let offset = 0;
+  let ended = false;
+
+  async function nextChunk() {
+    if (offset < chunk.length) return true;
+    const next = await iterator.next();
+    if (next.done) {
+      ended = true;
+      chunk = Buffer.alloc(0);
+      offset = 0;
+      return false;
+    }
+    chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+    offset = 0;
+    return true;
+  }
+
+  return {
+    async readLine() {
+      const parts = [];
+      let size = 0;
+      while (await nextChunk()) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const end = newline < 0 ? chunk.length : newline;
+        const part = chunk.subarray(offset, end);
+        parts.push(part);
+        size += part.length;
+        if (size > MAX_GIT_BATCH_HEADER_BYTES) {
+          throw codedError('gitFailed', 'Git cat-file batch returned an oversized header.');
+        }
+        offset = newline < 0 ? chunk.length : newline + 1;
+        if (newline >= 0) return Buffer.concat(parts, size).toString('ascii');
+      }
+      if (size === 0 && ended) return null;
+      throw codedError('gitFailed', 'Git cat-file batch stdout ended during a header.');
+    },
+    async readExact(size) {
+      const output = Buffer.allocUnsafe(size);
+      let written = 0;
+      while (written < size && await nextChunk()) {
+        const available = Math.min(size - written, chunk.length - offset);
+        chunk.copy(output, written, offset, offset + available);
+        offset += available;
+        written += available;
+      }
+      if (written !== size) {
+        throw codedError('gitFailed', 'Git cat-file batch stdout ended during a blob.');
+      }
+      return output;
+    },
+  };
+}
+
+export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
+  const uniqueObjectIds = [...new Set(objectIds)];
+  for (const objectId of uniqueObjectIds) {
+    if (!GIT_OBJECT_ID_PATTERN.test(objectId)) {
+      throw codedError('gitFailed', `Git authoring source tree returned an invalid object ID.`);
+    }
+  }
+  if (uniqueObjectIds.length === 0) return new Map();
+
+  const child = spawn('git', ['cat-file', '--batch'], {
+    cwd: repoRoot,
+    env: options.env ?? process.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let cleanupStarted = false;
+  let operationTimedOut = false;
+  let operationTimeoutTimer;
+  let forceKillTimer;
+  let closeTimeoutTimer;
+  let settleExit;
+  let onStderrData;
+  const exitTask = new Promise((resolve, reject) => {
+    const finish = (settle, value) => {
+      if (!settleExit) return;
+      settleExit = null;
+      clearTimeout(operationTimeoutTimer);
+      clearTimeout(forceKillTimer);
+      clearTimeout(closeTimeoutTimer);
+      child.removeListener('error', onError);
+      child.removeListener('close', onClose);
+      if (onStderrData) child.stderr.removeListener('data', onStderrData);
+      settle(value);
+    };
+    const onError = (error) => finish(reject, error);
+    const onClose = (code, signal) => finish(resolve, { code, signal });
+    settleExit = (error) => finish(reject, error);
+    child.once('error', onError);
+    child.once('close', onClose);
+  });
+  function requestCleanup() {
+    if (cleanupStarted || !settleExit) return;
+    cleanupStarted = true;
+    child.stdin.destroy();
+    child.kill('SIGTERM');
+    forceKillTimer = setTimeout(() => child.kill('SIGKILL'), GIT_BATCH_TERM_GRACE_MS);
+    closeTimeoutTimer = setTimeout(() => {
+      child.kill('SIGKILL');
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      settleExit(codedError(
+        'gitFailed',
+        'Git cat-file batch did not exit after forced termination.',
+      ));
+    }, GIT_BATCH_CLOSE_TIMEOUT_MS);
+  }
+  operationTimeoutTimer = setTimeout(() => {
+    operationTimedOut = true;
+    requestCleanup();
+  }, options.operationTimeoutMs ?? GIT_BATCH_OPERATION_TIMEOUT_MS);
+  const stderrChunks = [];
+  let stderrBytes = 0;
+  onStderrData = (value) => {
+    const valueBuffer = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    stderrBytes += valueBuffer.length;
+    if (stderrBytes <= MAX_GIT_BLOB_BYTES) stderrChunks.push(valueBuffer);
+    requestCleanup();
+  };
+  child.stderr.on('data', onStderrData);
+
+  const readTask = (async () => {
+    const reader = createBatchReader(child.stdout);
+    const contents = new Map();
+    for (const expectedObjectId of uniqueObjectIds) {
+      const header = await reader.readLine();
+      if (header === null) {
+        throw codedError('gitFailed', 'Git cat-file batch stdout ended before all blobs were returned.');
+      }
+      if (header === `${expectedObjectId} missing`) {
+        throw codedError('gitFailed', `Git blob ${expectedObjectId} is missing.`);
+      }
+      const match = /^(\S+) (\S+) (\S+)$/u.exec(header);
+      if (!match || match[1] !== expectedObjectId) {
+        throw codedError('gitFailed', 'Git cat-file batch returned a malformed header.');
+      }
+      if (match[2] !== 'blob') {
+        throw codedError('gitFailed', `Git object ${expectedObjectId} is not a blob.`);
+      }
+      if (!/^(?:0|[1-9][0-9]*)$/u.test(match[3])) {
+        throw codedError('gitFailed', `Git blob ${expectedObjectId} has an invalid size.`);
+      }
+      const size = Number(match[3]);
+      if (!Number.isSafeInteger(size) || size > MAX_GIT_BLOB_BYTES) {
+        throw codedError('gitFailed', `Git blob ${expectedObjectId} exceeds the size limit.`);
+      }
+      const content = await reader.readExact(size);
+      const separator = await reader.readExact(1);
+      if (separator[0] !== 0x0a) {
+        throw codedError('gitFailed', `Git blob ${expectedObjectId} has an invalid separator.`);
+      }
+      contents.set(expectedObjectId, content);
+    }
+    if (await reader.readLine() !== null) {
+      throw codedError('gitFailed', 'Git cat-file batch returned unexpected output.');
+    }
+    return contents;
+  })();
+  const writeTask = pipeline(
+    Readable.from(uniqueObjectIds.map((objectId) => `${objectId}\n`)),
+    child.stdin,
+  );
+  for (const task of [readTask, writeTask]) {
+    task.catch(requestCleanup);
+  }
+  const [readResult, writeResult, exitResult] = await Promise.allSettled([
+    readTask,
+    writeTask,
+    exitTask,
+  ]);
+  if (operationTimedOut) {
+    throw codedError('gitFailed', 'Git cat-file batch timed out.');
+  }
+  if (
+    exitResult.status === 'rejected'
+    && exitResult.reason instanceof PluginVersionCheckError
+  ) {
+    throw exitResult.reason;
+  }
+  if (readResult.status === 'rejected') throw readResult.reason;
+  if (writeResult.status === 'rejected') {
+    throw codedError('gitFailed', `Git cat-file batch input failed: ${writeResult.reason.message}`);
+  }
+  if (exitResult.status === 'rejected') {
+    throw codedError('gitFailed', `Git cat-file batch failed: ${exitResult.reason.message}`);
+  }
+  const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();
+  if (stderrBytes > MAX_GIT_BLOB_BYTES) {
+    throw codedError('gitFailed', 'Git cat-file batch stderr exceeded the size limit.');
+  }
+  if (exitResult.value.signal) {
+    throw codedError('gitFailed', `Git cat-file batch ended from signal ${exitResult.value.signal}${stderr ? `: ${stderr}` : '.'}`);
+  }
+  if (exitResult.value.code !== 0 || stderr) {
+    throw codedError('gitFailed', `Git cat-file batch failed${stderr ? `: ${stderr}` : ` with exit code ${exitResult.value.code}.`}`);
+  }
+  return readResult.value;
 }
 
 async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoot, pluginRootPath) {
@@ -184,7 +408,16 @@ async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoo
   const records = output.toString('utf8').split('\0').filter(Boolean).map(parseTreeRecord);
 
   for (const record of records) {
-    if (record.type !== 'blob') continue;
+    if (record.type !== 'blob') {
+      throw codedError('gitFailed', `Git authoring source object ${record.objectId} is not a blob.`);
+    }
+  }
+  const contentsByObjectId = await readGitBlobsBatch(
+    repoRoot,
+    records.map((record) => record.objectId),
+  );
+
+  for (const record of records) {
     const normalizedPath = path.posix.normalize(record.filePath);
     if (
       normalizedPath !== record.filePath
@@ -196,10 +429,10 @@ async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoo
     }
     const targetPath = path.join(outputRoot, ...normalizedPath.split('/'));
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
-    const content = await runGit(repoRoot, ['cat-file', 'blob', record.objectId], {
-      buffer: true,
-      label: `Git blob ${record.objectId}`,
-    });
+    const content = contentsByObjectId.get(record.objectId);
+    if (!content) {
+      throw codedError('gitFailed', `Git blob ${record.objectId} was not returned.`);
+    }
     if (record.mode === '120000') {
       await fs.symlink(content.toString('utf8'), targetPath);
     } else {

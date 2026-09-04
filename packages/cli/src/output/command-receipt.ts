@@ -223,8 +223,6 @@ const MUTATING_REBUILD_ACTIONS = new Set([
   'stale.cleanup',
   'native.write',
   'artifacts.write',
-  'marketplace.commit',
-  'marketplace.rollback',
   'recovery.cleanup',
   'cleanup.owned',
 ]);
@@ -321,7 +319,7 @@ function overallState(
     target.relation === 'requested'
     && target.state === 'completed'
     && target.action !== 'skipped');
-  return successfulRequested ? 'partial' : 'failed';
+  return successfulRequested || fallback === 'partial' ? 'partial' : 'failed';
 }
 
 export function buildRebuildReceiptJson(

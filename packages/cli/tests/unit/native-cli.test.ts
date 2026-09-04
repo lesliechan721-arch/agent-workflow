@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -9,10 +8,8 @@ import {
   CodexProjectConfigNotEffectiveError,
   SYSTEM_CODEX_MANAGER,
   buildCodexMarketplaceAddInvocation,
-  buildCodexMarketplaceListInvocation,
   buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
-  buildCodexPluginListInvocation,
   buildCodexPluginListJsonInvocation,
   buildCodexPluginRemoveInvocation,
   buildCodexProjectPluginListInvocations,
@@ -28,16 +25,7 @@ import {
   type NativeCliInvocation,
   type NativeCliResult,
 } from '../../src/utils/native-cli.js';
-import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
-
-let hostProcessInspectionAvailable = false;
-try {
-  await assertProcessTreeInspectionAvailable();
-  hostProcessInspectionAvailable = true;
-} catch {
-  // This integration test requires permission to inspect the host process table.
-}
 
 function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
   return { stdout, stderr, exitCode };
@@ -115,10 +103,8 @@ describe('native-cli', () => {
 
     const invocations = [
       buildCodexPluginAddInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
-      buildCodexPluginListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
       buildCodexPluginRemoveInvocation(SYSTEM_CODEX_MANAGER, 'demo@aw', cwd, env),
       buildCodexMarketplaceAddInvocation(SYSTEM_CODEX_MANAGER, '/tmp/aw-home', cwd, env),
-      buildCodexMarketplaceListInvocation(SYSTEM_CODEX_MANAGER, cwd, env),
       buildCodexMarketplaceRemoveInvocation(SYSTEM_CODEX_MANAGER, 'aw', cwd, env),
     ];
 
@@ -130,10 +116,8 @@ describe('native-cli', () => {
       codexHome: invocationEnv?.CODEX_HOME,
     }))).toEqual([
       { command: 'codex', args: ['plugin', 'add', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
-      { command: 'codex', args: ['plugin', 'list'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'remove', 'demo@aw'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'marketplace', 'add', '/tmp/aw-home'], agentKind: 'codex', cwd, codexHome },
-      { command: 'codex', args: ['plugin', 'marketplace', 'list'], agentKind: 'codex', cwd, codexHome },
       { command: 'codex', args: ['plugin', 'marketplace', 'remove', 'aw'], agentKind: 'codex', cwd, codexHome },
     ]);
   });
@@ -141,6 +125,7 @@ describe('native-cli', () => {
   it('builds exact and neutral Codex JSON postcheck invocations without changing trust', () => {
     const env = { ...process.env, CODEX_HOME: '/ignored' };
     const invocations = buildCodexProjectPluginListInvocations(SYSTEM_CODEX_MANAGER, {
+      marketplaceName: 'aw-team',
       exactCwd: '/tmp/project',
       neutralCwd: '/tmp/neutral',
       env,
@@ -149,17 +134,23 @@ describe('native-cli', () => {
     expect(invocations).toEqual({
       exact: buildCodexPluginListJsonInvocation(
         SYSTEM_CODEX_MANAGER,
+        'aw-team',
         '/tmp/project',
         env,
       ),
       neutral: buildCodexPluginListJsonInvocation(
         SYSTEM_CODEX_MANAGER,
+        'aw-team',
         '/tmp/neutral',
         env,
       ),
     });
-    expect(invocations.exact.args).toEqual(['plugin', 'list', '--json']);
-    expect(invocations.neutral.args).toEqual(['plugin', 'list', '--json']);
+    expect(invocations.exact.args).toEqual([
+      'plugin', 'list', '--marketplace', 'aw-team', '--json',
+    ]);
+    expect(invocations.neutral.args).toEqual([
+      'plugin', 'list', '--marketplace', 'aw-team', '--json',
+    ]);
     expect([...invocations.exact.args, ...invocations.neutral.args]).not.toContain('trust');
   });
 
@@ -247,7 +238,7 @@ describe('native-cli', () => {
     let receivedInvocation: NativeCliInvocation | undefined;
 
     await runNativeCli(
-      buildCodexPluginListInvocation(manager, '/tmp/workspace', process.env),
+      buildCodexPluginListJsonInvocation(manager, 'aw', '/tmp/workspace', process.env),
       async (invocation) => {
         receivedInvocation = invocation;
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -256,7 +247,10 @@ describe('native-cli', () => {
 
     expect(receivedInvocation).toMatchObject({
       command: process.execPath,
-      args: ['/tmp/codex-launcher.js', 'plugin', 'list'],
+      args: [
+        '/tmp/codex-launcher.js',
+        'plugin', 'list', '--marketplace', 'aw', '--json',
+      ],
       agentKind: 'codex',
       timeoutMs: 60_000,
       env: { CODEX_HOME: process.env.AW_CODEX_HOME },
@@ -407,6 +401,33 @@ describe('native-cli', () => {
     );
   });
 
+  it.each(['darwin', 'win32'] as const)(
+    'does not observe the process table for a successful trusted CLI on %s',
+    async (platform) => {
+      const observe = vi.fn();
+      let receivedOptions: { detached: boolean } | undefined;
+      const child = Object.assign(new EventEmitter(), {
+        kill: vi.fn(() => true),
+      });
+      const runner = createExecFileNativeCliRunner({
+        platform,
+        observeProcessTree: observe,
+        execFile: (_command, _args, options, callback) => {
+          receivedOptions = options;
+          callback(null, 'ok', '');
+          return child;
+        },
+      });
+
+      await expect(runner({ command: 'codex', args: [] })).resolves.toMatchObject({
+        exitCode: 0,
+        stdout: 'ok',
+      });
+      expect(observe).not.toHaveBeenCalled();
+      expect(receivedOptions?.detached).toBe(platform !== 'win32');
+    },
+  );
+
   it('converts non-zero exits into NativeCliError', async () => {
     await expect(
       execFileNativeCliRunner({
@@ -462,7 +483,7 @@ describe('native-cli', () => {
       });
 
       const promise = runner({
-        command: 'codex',
+        command: 'tar',
         args: [],
         timeoutMs: 100,
       });
@@ -516,7 +537,7 @@ describe('native-cli', () => {
       });
 
       const promise = runner({
-        command: 'codex',
+        command: 'tar',
         args: [],
         timeoutMs: 100,
       });
@@ -565,7 +586,7 @@ describe('native-cli', () => {
       });
 
       const promise = runner({
-        command: 'codex',
+        command: 'tar',
         args: [],
         timeoutMs: 100,
       });
@@ -655,7 +676,7 @@ describe('native-cli', () => {
       });
 
       const promise = runner({
-        command: 'codex',
+        command: 'tar',
         args: [],
         timeoutMs: 100,
       });
@@ -688,14 +709,22 @@ describe('native-cli', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
-    'terminates a detached inherited-output descendant after the root exits',
+  it.skipIf(process.platform === 'win32')(
+    'finishes group cleanup when the root exits on TERM and an ignored-stdio descendant ignores TERM',
     async () => {
       let descendantPid: number | undefined;
       try {
+        const startedAt = Date.now();
         const promise = execFileNativeCliRunner({
           command: process.execPath,
-          args: [fileURLToPath(new URL('../fixtures/native-cli-detached-descendant.mjs', import.meta.url))],
+          agentKind: 'codex',
+          args: ['-e', [
+            'const { spawn } = require("node:child_process")',
+            'const child = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => process.exit(0), 10000); setInterval(() => {}, 1000)"], { stdio: "ignore" })',
+            'process.stdout.write(String(child.pid))',
+            'process.on("SIGTERM", () => process.exit(0))',
+            'setInterval(() => {}, 1000)',
+          ].join(';')],
           timeoutMs: 200,
         });
         const error = await promise.catch((cause: unknown) => cause) as NativeCliError;
@@ -703,7 +732,7 @@ describe('native-cli', () => {
         expect(error.cleanupError).toBeUndefined();
         descendantPid = Number.parseInt(error.stdout.trim(), 10);
         expect(descendantPid).toBeGreaterThan(0);
-        expect(() => process.kill(descendantPid!, 0)).toThrow();
+        expect(Date.now() - startedAt).toBeLessThan(3_000);
       } finally {
         if (descendantPid !== undefined) {
           try {
@@ -715,6 +744,152 @@ describe('native-cli', () => {
       }
     },
   );
+
+  it('signals a trusted POSIX CLI process group with TERM then KILL', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        kill: vi.fn(() => true),
+      });
+      const signals: Array<number | NodeJS.Signals> = [];
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        signals.push(signal ?? 'SIGTERM');
+        if (signal === 0) {
+          throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+        }
+        return true;
+      });
+      const terminate = vi.fn(async () => {});
+      const runner = createExecFileNativeCliRunner({
+        platform: 'linux',
+        execFile: () => child,
+        killProcess,
+        terminateProcessTree: terminate,
+      });
+      const promise = runner({ command: 'codex', args: [], timeoutMs: 100 });
+      const errorPromise = promise.catch((error: unknown) => error);
+
+      child.emit('spawn');
+      await vi.advanceTimersByTimeAsync(200);
+
+      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
+        exitCode: 124,
+        reason: 'timeout',
+        cleanupError: undefined,
+      });
+      expect(killProcess.mock.calls.map(([, signal]) => signal)).toEqual([
+        'SIGTERM',
+        'SIGKILL',
+        0,
+      ]);
+      expect(killProcess.mock.calls.every(([pid]) => pid === -321)).toBe(true);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(terminate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when trusted POSIX CLI process-group exit cannot be confirmed', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        kill: vi.fn(() => true),
+      });
+      const runner = createExecFileNativeCliRunner({
+        platform: 'linux',
+        execFile: () => child,
+        killProcess: vi.fn(() => true),
+      });
+      const promise = runner({ command: 'claude', args: [], timeoutMs: 100 });
+      const errorPromise = promise.catch((error: unknown) => error);
+
+      child.emit('spawn');
+      await vi.advanceTimersByTimeAsync(4_500);
+
+      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
+        reason: 'timeout',
+        cleanupError: expect.objectContaining({
+          message: 'Native CLI cleanup unconfirmed: process group is still running.',
+        }),
+      });
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('discovers and terminates a trusted Windows CLI tree only after abort', async () => {
+    const controller = new AbortController();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      kill: vi.fn(() => true),
+    });
+    const observation = { pid: 321, dispose: vi.fn() };
+    const observe = vi.fn(() => observation);
+    const terminate = vi.fn(async () => {});
+    let detached: boolean | undefined;
+    const runner = createExecFileNativeCliRunner({
+      platform: 'win32',
+      execFile: (_command, _args, options) => {
+        detached = options.detached;
+        return child;
+      },
+      observeProcessTree: observe,
+      terminateProcessTree: terminate,
+    });
+    const promise = runner({
+      command: 'claude',
+      args: [],
+      signal: controller.signal,
+    });
+    const errorPromise = promise.catch((error: unknown) => error);
+
+    expect(observe).not.toHaveBeenCalled();
+    controller.abort(new Error('cancelled'));
+
+    await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
+      reason: 'aborted',
+      cleanupError: undefined,
+    });
+    expect(detached).toBe(false);
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(terminate).toHaveBeenCalledWith(
+      321,
+      expect.any(Function),
+      {},
+      { observation, requireConfirmedCleanup: true },
+    );
+  });
+
+  it('fails closed when trusted Windows CLI tree discovery cannot start', async () => {
+    const controller = new AbortController();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      kill: vi.fn(() => true),
+    });
+    const runner = createExecFileNativeCliRunner({
+      platform: 'win32',
+      execFile: () => child,
+      observeProcessTree: () => { throw new Error('inspection unavailable'); },
+    });
+    const promise = runner({
+      command: 'codex',
+      args: [],
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(promise).rejects.toMatchObject<Partial<NativeCliError>>({
+      reason: 'aborted',
+      cleanupError: expect.objectContaining({ message: 'inspection unavailable' }),
+    });
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+  });
 
   it('does not start an already-aborted invocation', async () => {
     const controller = new AbortController();

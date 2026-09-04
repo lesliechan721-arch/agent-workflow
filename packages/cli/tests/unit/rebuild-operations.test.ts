@@ -204,37 +204,44 @@ describe('rebuild preApply boundary', () => {
     ]);
   });
 
-  it('runs preApply before writes and commits only after postcheck', async () => {
+  it('maps a deferred postcheck failure back to its target after all target writes', async () => {
     const fixture = createFixture();
-    fixture.driver.commitMaterialize = async () => { fixture.calls.push('commit'); };
-    const result = await executeRebuildOperation({
-      command: 'install', target: fixture.target, driver: fixture.driver,
+    let deferred: Array<{ target: DesiredTarget; postcheck: () => Promise<void> }> = [];
+    fixture.driver.deferPostcheck = (target, postcheck) => {
+      deferred.push({ target, postcheck });
+      return true;
+    };
+    fixture.driver.completePostchecks = async () => {
+      const failures = deferred.map(({ target }) => ({ target, error: new Error('post failed') }));
+      deferred = [];
+      return failures;
+    };
+    const results = await executeRebuildTargets({
+      command: 'install', targets: [fixture.target], driver: fixture.driver,
     });
-    expect(result.status).toBe('succeeded');
-    expect(result.actions.map((entry) => entry.name)).toEqual([
-      'preflight.inspect', 'preApply', 'artifacts.write', 'postcheck.inspect', 'marketplace.commit',
-    ]);
-    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'artifacts', 'commit']);
+    expect(results[0]).toMatchObject({
+      status: 'failed',
+      error: { phase: 'postcheck.inspect', message: 'post failed' },
+    });
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'artifacts']);
   });
 
-  it('rolls back the marketplace generation when native materialization fails', async () => {
+  it('does not run target recovery cleanup after a shared marketplace group failure', async () => {
     const fixture = createFixture();
     fixture.target.writeNativeRequired = true;
     fixture.driver.writeNative = async () => {
       fixture.calls.push('native');
-      throw new Error('manager failed');
+      throw Object.assign(new Error('group commit failed'), { nativeMarketplaceGroupFailure: true });
     };
-    fixture.driver.commitMaterialize = async () => { fixture.calls.push('commit'); };
-    fixture.driver.rollbackMaterialize = async () => { fixture.calls.push('rollback'); };
     const result = await executeRebuildOperation({
       command: 'install', target: fixture.target, driver: fixture.driver,
     });
     expect(result).toMatchObject({
       status: 'failed',
-      error: { phase: 'native.write', message: 'manager failed' },
+      error: { phase: 'native.write', message: 'group commit failed' },
     });
-    expect(result.actions).toContainEqual({ name: 'marketplace.rollback', status: 'succeeded' });
-    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'native', 'rollback']);
+    expect(result.actions.map((action) => action.name)).not.toContain('recovery.cleanup');
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'native']);
   });
 
   it('continues later targets after an earlier target fails', async () => {
