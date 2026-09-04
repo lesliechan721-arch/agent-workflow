@@ -10,7 +10,9 @@ import type {
   CatalogSourceImpactCategory,
   CatalogSourceImpactError,
   CatalogSourceImpactReference,
+  CatalogSourcePlatformSupportChange,
   CatalogSourcePluginChanges,
+  PlatformName,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
 import {
@@ -28,15 +30,24 @@ export type {
   CatalogSourceImpactCategory,
   CatalogSourceImpactError,
   CatalogSourceImpactReference,
+  CatalogSourcePlatformSupportChange,
   CatalogSourcePluginChanges,
 } from '../types.js';
+import { normalizeMarketplaceProductToken } from './platform-support.js';
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function emptyChanges(): CatalogSourcePluginChanges {
-  return { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] };
+  return {
+    added: [],
+    removed: [],
+    changed: [],
+    newlyIncompatible: [],
+    dependencyChanged: [],
+    platformSupportChanged: [],
+  };
 }
 
 function pluginId(sourceId: string, pluginName: string): string {
@@ -103,6 +114,36 @@ function sameDependencies(
   return JSON.stringify(left.dependencies) === JSON.stringify(right.dependencies);
 }
 
+const PLATFORM_NAMES: readonly PlatformName[] = ['claude', 'codex'];
+
+function supportedPlatforms(entry: CatalogManifestV7Entry): Set<PlatformName> {
+  const products = entry.policy.products;
+  if (!products || products.length === 0) return new Set(PLATFORM_NAMES);
+  const normalized = new Set(products.map(normalizeMarketplaceProductToken));
+  return new Set(PLATFORM_NAMES.filter((platform) =>
+    normalized.has(platform.toUpperCase())));
+}
+
+function platformSupportChange(options: {
+  sourceId: string;
+  name: string;
+  current: CatalogManifestV7Entry;
+  candidate: CatalogManifestV7Entry;
+}): CatalogSourcePlatformSupportChange | undefined {
+  const current = supportedPlatforms(options.current);
+  const candidate = supportedPlatforms(options.candidate);
+  const removedPlatforms = PLATFORM_NAMES.filter((platform) =>
+    current.has(platform) && !candidate.has(platform));
+  const addedPlatforms = PLATFORM_NAMES.filter((platform) =>
+    !current.has(platform) && candidate.has(platform));
+  if (removedPlatforms.length === 0 && addedPlatforms.length === 0) return undefined;
+  return {
+    pluginId: pluginId(options.sourceId, options.name),
+    removedPlatforms,
+    addedPlatforms,
+  };
+}
+
 export function compareCatalogSourcePluginChanges(options: {
   sourceId: string;
   currentManifest: CatalogManifestV7;
@@ -124,10 +165,19 @@ export function compareCatalogSourcePluginChanges(options: {
       supported(current.get(name)!) && !supported(candidate.get(name)!))),
     dependencyChanged: qualify(shared.filter((name) =>
       !sameDependencies(current.get(name)!, candidate.get(name)!))),
+    platformSupportChanged: shared
+      .map((name) => platformSupportChange({
+        sourceId: options.sourceId,
+        name,
+        current: current.get(name)!,
+        candidate: candidate.get(name)!,
+      }))
+      .filter((change): change is CatalogSourcePlatformSupportChange => change !== undefined)
+      .sort((left, right) => compareText(left.pluginId, right.pluginId)),
   };
 }
 
-function affectedPluginIds(options: {
+function globallyAffectedPluginIds(options: {
   sourceId: string;
   currentManifest: CatalogManifestV7;
   candidateManifest: CatalogManifestV7;
@@ -156,6 +206,51 @@ function affectedPluginIds(options: {
       if (affected.has(consumer)) continue;
       affected.add(consumer);
       queue.push(consumer);
+    }
+  }
+  return affected;
+}
+
+function platformAffectedPluginIds(options: {
+  sourceId: string;
+  currentManifest: CatalogManifestV7;
+  candidateManifest: CatalogManifestV7;
+  changes: CatalogSourcePluginChanges;
+}): Map<PlatformName, Set<string>> {
+  const reverse = new Map<PlatformName, Map<string, Set<string>>>(
+    PLATFORM_NAMES.map((platform) => [platform, new Map()]),
+  );
+  for (const manifest of [options.currentManifest, options.candidateManifest]) {
+    for (const entry of manifest.entries) {
+      const consumer = pluginId(options.sourceId, entry.name);
+      for (const platform of supportedPlatforms(entry)) {
+        const platformReverse = reverse.get(platform)!;
+        for (const dependencyName of entry.dependencies) {
+          const dependency = pluginId(options.sourceId, dependencyName);
+          const consumers = platformReverse.get(dependency) ?? new Set<string>();
+          consumers.add(consumer);
+          platformReverse.set(dependency, consumers);
+        }
+      }
+    }
+  }
+  const affected = new Map<PlatformName, Set<string>>(
+    PLATFORM_NAMES.map((platform) => [platform, new Set()]),
+  );
+  for (const change of options.changes.platformSupportChanged) {
+    for (const platform of change.removedPlatforms) {
+      affected.get(platform)!.add(change.pluginId);
+    }
+  }
+  for (const platform of PLATFORM_NAMES) {
+    const platformAffected = affected.get(platform)!;
+    const queue = [...platformAffected];
+    for (let index = 0; index < queue.length; index += 1) {
+      for (const consumer of reverse.get(platform)!.get(queue[index]!) ?? []) {
+        if (platformAffected.has(consumer)) continue;
+        platformAffected.add(consumer);
+        queue.push(consumer);
+      }
     }
   }
   return affected;
@@ -250,14 +345,23 @@ export async function inspectCatalogSourceImpact(options: {
         currentManifest,
         candidateManifest: options.candidateManifest,
       });
-      const affected = affectedPluginIds({
+      const globallyAffected = globallyAffectedPluginIds({
+        sourceId: options.sourceId,
+        currentManifest,
+        candidateManifest: options.candidateManifest,
+        changes,
+      });
+      const platformAffected = platformAffectedPluginIds({
         sourceId: options.sourceId,
         currentManifest,
         candidateManifest: options.candidateManifest,
         changes,
       });
       affectedReferences = references.filter((reference) =>
-        reference.pluginId !== undefined && affected.has(reference.pluginId));
+        reference.pluginId !== undefined
+        && (globallyAffected.has(reference.pluginId)
+          || (reference.platform !== undefined
+            && platformAffected.get(reference.platform)!.has(reference.pluginId))));
     } else if (currentManifestUnavailable
       || references.some((reference) => reference.pluginId !== undefined)) {
       errors.push({ code: 'catalogManifestUnavailable', kind: 'currentManifestRead' });
@@ -268,7 +372,7 @@ export async function inspectCatalogSourceImpact(options: {
     error,
   ])).values()];
   return {
-    impactSchemaVersion: 1,
+    impactSchemaVersion: 2,
     sourceId: options.sourceId,
     inventoryComplete: uniqueErrors.length === 0,
     references,

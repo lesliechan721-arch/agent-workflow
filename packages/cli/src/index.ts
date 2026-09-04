@@ -2336,7 +2336,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogDev
     .command('status')
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
-    .requiredOption('--json', 'emit one schema 3 JSON receipt')
+    .requiredOption('--json', 'emit one schema 4 JSON receipt')
     .action(async (rawOptions: { workspaceRoot?: string }) => {
       const receipt = await getCatalogDevSourceStatus({
         cwd,
@@ -2353,8 +2353,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
     .option('--source-id <id>', 'recover one managed source by exact ID')
     .option('--replacement-primary <id>', 'replacement when the target source is primary')
-    .option('-y, --yes', 'confirm recovery by source ID', false)
-    .requiredOption('--json', 'emit one schema 2 JSON receipt')
+    .option('-y, --yes', 'confirm source impact or recovery by source ID', false)
+    .requiredOption('--json', 'emit one schema 3 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
@@ -2428,7 +2428,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeJsonReceipt(io.stdout, {
         ...(command === 'catalog:source:sync'
           ? { catalogGenerationSchemaVersion: 1 }
-          : { catalogGenerationStatusSchemaVersion: 1 }),
+          : { catalogGenerationStatusSchemaVersion: 2 }),
         command,
         ok: false,
         ...(sourceId ? { sourceId } : {}),
@@ -2561,7 +2561,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   catalogSource
     .command('status')
     .argument('[id]')
-    .option('-j, --json', 'print offline Catalog source status as JSON', false)
+    .option('-j, --json', 'print offline Catalog source status schema 2 as JSON', false)
     .action(async (id: string | undefined, rawOptions: { json?: boolean }) => {
       try {
         const result = await catalogSourceStatusCommand({ sourceId: id, env });
@@ -2572,7 +2572,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const active = source.active
               ? `Active ${source.active.snapshotDigest}`
               : 'no Active';
-            const readiness = source.activeReady ? 'ready' : 'not ready';
+            const readiness = source.compatibility?.state === 'unsupported'
+              ? `incompatible (required: ${source.compatibility.requiredCapabilities.join(', ')}; missing: ${source.compatibility.missingCapabilities.join(', ')})`
+              : source.activeReady ? 'ready' : 'not ready';
             writeLine(io.stdout, `${source.sourceId}: ${active}, ${readiness}`);
           }
         }

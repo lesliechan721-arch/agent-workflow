@@ -5357,7 +5357,7 @@ describe('ConsoleAppV4', () => {
           referenceCount: 4,
           inventoryComplete: false,
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [
@@ -5372,7 +5372,10 @@ describe('ConsoleAppV4', () => {
               { category: 'lifecycle', sourceId: 'team-tools', pluginId: 'team-tools/review-gate' },
               { category: 'marketplace', sourceId: 'team-tools', marketplaceName: 'aw-team' },
             ],
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: [{ code: 'stateInventoryFailed', kind: 'nativeStateRead' }],
           },
         },
@@ -5421,12 +5424,15 @@ describe('ConsoleAppV4', () => {
             activatedAt: 500,
           },
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],
             affectedReferences: [],
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: [{ code: 'catalogManifestUnavailable' as const, kind: 'currentManifestRead' }],
           },
         },

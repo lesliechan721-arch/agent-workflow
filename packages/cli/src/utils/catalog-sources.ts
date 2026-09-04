@@ -384,15 +384,33 @@ export function setPrimaryCatalogSource(
 export function removeCatalogSource(
   config: CatalogSourcesConfig,
   sourceId: CatalogSourceId,
+  replacementPrimarySourceId?: CatalogSourceId,
 ): CatalogSourcesConfig {
   const current = validateCatalogSourcesConfig(config);
   const source = current.sources.find((entry) => entry.id === sourceId);
   if (!source) throw new Error(`Catalog source "${sourceId}" does not exist.`);
   if (current.sources.length === 1) throw new Error('The last catalog source cannot be removed.');
-  if (source.primary) throw new Error('The primary catalog source cannot be removed.');
+  if (!source.primary && replacementPrimarySourceId !== undefined) {
+    throw new Error('A replacement primary source is only valid when removing the primary source.');
+  }
+  if (source.primary && replacementPrimarySourceId === undefined) {
+    throw new Error('The primary catalog source cannot be removed.');
+  }
+  if (replacementPrimarySourceId === sourceId) {
+    throw new Error('The replacement primary source must be another catalog source.');
+  }
+  if (replacementPrimarySourceId !== undefined
+    && !current.sources.some((entry) => entry.id === replacementPrimarySourceId)) {
+    throw new Error(`Catalog source "${replacementPrimarySourceId}" does not exist.`);
+  }
   return validateCatalogSourcesConfig({
     schemaVersion: 2,
-    sources: current.sources.filter((entry) => entry.id !== sourceId),
+    sources: current.sources
+      .filter((entry) => entry.id !== sourceId)
+      .map((entry) => replacementPrimarySourceId === undefined ? entry : {
+        ...entry,
+        primary: entry.id === replacementPrimarySourceId,
+      }),
   });
 }
 

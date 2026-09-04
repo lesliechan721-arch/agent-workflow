@@ -5,6 +5,7 @@ import {
   parseCatalogPublicationJournal,
   safeRemoteIdentity,
   sanitizedGitEnvironment,
+  type CatalogPublicationDescriptor,
 } from '../../src/commands/catalog-publish.js';
 
 const descriptor = {
@@ -21,6 +22,35 @@ const descriptor = {
   snapshotDigest: `sha256:${'3'.repeat(64)}`,
 };
 const expectedCommit = '4'.repeat(40);
+
+interface JournalOverrides {
+  descriptor?: Partial<CatalogPublicationDescriptor>;
+  expectedCommit?: string;
+}
+
+function preparedJournal(overrides: JournalOverrides = {}) {
+  const journalDescriptor = { ...descriptor, ...overrides.descriptor };
+  const journalExpectedCommit = overrides.expectedCommit ?? expectedCommit;
+  return {
+    schemaVersion: 2 as const,
+    state: 'prepared' as const,
+    planDigest: catalogPublicationPlanDigest(journalDescriptor, journalExpectedCommit),
+    descriptor: journalDescriptor,
+    expectedCommit: journalExpectedCommit,
+    repository: 'repository',
+    display: { catalogVersion: '1.2.3', channel: 'latest' as const, pluginCount: 2 },
+    preparedAt: '2026-08-31T00:00:00.000Z',
+  };
+}
+
+const invalidCommitValues = [
+  'a'.repeat(39),
+  'a'.repeat(41),
+  'a'.repeat(63),
+  'a'.repeat(65),
+  'A'.repeat(40),
+  'g'.repeat(40),
+];
 
 describe('public Catalog Git publication safety', () => {
   it('removes repository and config namespace injection while preserving Git authentication inputs', () => {
@@ -111,6 +141,39 @@ describe('public Catalog Git publication safety', () => {
       display: { catalogVersion: '1.2.3', channel: 'latest', pluginCount: 2 },
       preparedAt: '2026-08-31T00:00:00.000Z',
     };
+    expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
+      .toThrow('publication journal is damaged');
+  });
+
+  it.each([40, 64])('accepts a %s-character sourceHead', (length) => {
+    const journal = preparedJournal({ descriptor: { sourceHead: 'a'.repeat(length) } });
+    expect(parseCatalogPublicationJournal(journal, '1.2.3')).toEqual(journal);
+  });
+
+  it.each([40, 64])('accepts a %s-character parent', (length) => {
+    const journal = preparedJournal({ descriptor: { parent: 'b'.repeat(length) } });
+    expect(parseCatalogPublicationJournal(journal, '1.2.3')).toEqual(journal);
+  });
+
+  it.each([40, 64])('accepts a %s-character expectedCommit', (length) => {
+    const journal = preparedJournal({ expectedCommit: 'c'.repeat(length) });
+    expect(parseCatalogPublicationJournal(journal, '1.2.3')).toEqual(journal);
+  });
+
+  it.each(invalidCommitValues)('rejects invalid sourceHead %s', (value) => {
+    const journal = preparedJournal({ descriptor: { sourceHead: value } });
+    expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
+      .toThrow('publication journal is damaged');
+  });
+
+  it.each(invalidCommitValues)('rejects invalid parent %s', (value) => {
+    const journal = preparedJournal({ descriptor: { parent: value } });
+    expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
+      .toThrow('publication journal is damaged');
+  });
+
+  it.each(invalidCommitValues)('rejects invalid expectedCommit %s', (value) => {
+    const journal = preparedJournal({ expectedCommit: value });
     expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
       .toThrow('publication journal is damaged');
   });

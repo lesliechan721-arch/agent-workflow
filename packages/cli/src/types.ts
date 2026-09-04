@@ -215,6 +215,13 @@ export interface CatalogSourcePluginChanges {
   changed: string[];
   newlyIncompatible: string[];
   dependencyChanged: string[];
+  platformSupportChanged: CatalogSourcePlatformSupportChange[];
+}
+
+export interface CatalogSourcePlatformSupportChange {
+  pluginId: string;
+  removedPlatforms: PlatformName[];
+  addedPlatforms: PlatformName[];
 }
 
 export interface CatalogSourceImpactError {
@@ -232,7 +239,7 @@ export interface CatalogSourceImpactError {
 }
 
 export interface CatalogSourceImpact {
-  impactSchemaVersion: 1;
+  impactSchemaVersion: 2;
   sourceId: string;
   inventoryComplete: boolean;
   references: CatalogSourceImpactReference[];
