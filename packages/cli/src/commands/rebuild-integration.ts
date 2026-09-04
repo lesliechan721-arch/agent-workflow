@@ -2430,6 +2430,27 @@ async function codexPayloadPathSafe(
   }
   return true;
 }
+
+async function resolveCodexSkillsRoot(
+  payloadRoot: string,
+  rawSkillsRoot: string,
+): Promise<{ relativeRoot: string; root: string }> {
+  const normalizedSeparators = rawSkillsRoot.replace(/\\/gu, '/');
+  const relativeRoot = path.posix.normalize(normalizedSeparators.replace(/^\.\//u, ''));
+  if (!relativeRoot
+    || relativeRoot === '.'
+    || relativeRoot === '..'
+    || relativeRoot.startsWith('../')
+    || path.posix.isAbsolute(normalizedSeparators)
+    || path.win32.isAbsolute(rawSkillsRoot)) {
+    throw new Error('codexNativeSkillsRootInvalid: Codex native Skills root is invalid.');
+  }
+  const root = path.join(payloadRoot, ...relativeRoot.split('/'));
+  if (!await codexReadPathSafe(payloadRoot, root)) {
+    throw new Error('codexNativeSkillsRootInvalid: Codex native Skills root is unsafe.');
+  }
+  return { relativeRoot, root };
+}
 export interface CodexSharedNativeLiveInspection {
   sharedNative: CodexSharedNativeInspection;
   expectedPayloadDigest?: string;
@@ -2529,12 +2550,10 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   const rawSkillsRoot = typeof codexManifest.skills === 'string' && codexManifest.skills.trim() !== ''
     ? codexManifest.skills
     : './codex/skills';
-  const skillsRelativeRoot = path.posix.normalize(rawSkillsRoot.replace(/^\.\//u, ''));
-  if (skillsRelativeRoot === '..'
-    || skillsRelativeRoot.startsWith('../')
-    || path.posix.isAbsolute(skillsRelativeRoot)) {
-    throw new Error('Codex native render canonical marketplace skills root is invalid.');
-  }
+  const { relativeRoot: skillsRelativeRoot } = await resolveCodexSkillsRoot(
+    payloadRoot,
+    rawSkillsRoot,
+  );
   const emptyArtifactDigest = createCodexSkillStagingTreeContentDigest({
     skillKey: 'empty',
     files: {},
@@ -3334,15 +3353,10 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
     if (typeof rawSkillsRoot !== 'string' || rawSkillsRoot.trim() === '') {
       throw new Error('Codex native sensitive scan Skills root is invalid.');
     }
-    const skillsRelativeRoot = path.posix.normalize(rawSkillsRoot.replace(/^\.\//u, ''));
-    if (!skillsRelativeRoot
-      || skillsRelativeRoot === '.'
-      || skillsRelativeRoot === '..'
-      || skillsRelativeRoot.startsWith('../')
-      || path.posix.isAbsolute(skillsRelativeRoot)) {
-      throw new Error('Codex native sensitive scan Skills root is invalid.');
-    }
-    const skillsRoot = path.join(options.payloadRoot, ...skillsRelativeRoot.split('/'));
+    const { root: skillsRoot } = await resolveCodexSkillsRoot(
+      options.payloadRoot,
+      rawSkillsRoot,
+    );
     const skillsRootStats = await lstatCodexResidueIfPresent(skillsRoot);
     if (!skillsRootStats?.isDirectory()) {
       throw new Error('Codex native sensitive scan Skills root is missing or unsafe.');

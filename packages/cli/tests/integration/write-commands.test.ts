@@ -1800,6 +1800,10 @@ describe('five namespaced write commands', () => {
         ]),
       }),
     ]));
+    for (const target of receipt.targetResults.filter((entry) =>
+      entry.target.pluginId === 'team/leaf' || entry.target.pluginId === 'team/root')) {
+      expect(target.actions.map((action) => action.name)).not.toContain('postApply');
+    }
   }, 30_000);
 
   it('persists direct dependency placement overrides and upserts root scope', async () => {
@@ -2609,7 +2613,20 @@ describe('five namespaced write commands', () => {
   it('reports a late activation observation failure after the mutation and preserves shared native', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-only-late-gate-source');
-    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const definitions = [{
+      name: 'demo',
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.scripts = { postApply: { path: './scripts/postApply.mjs' } };
+      },
+    }];
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'postApply.mjs'), [
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'const counter = `${process.env.AW_HOME}/activation-late-post-apply-count.txt`;',
+      'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
+      'await writeFile(counter, String(previous + 1));',
+    ].join('\n'));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -2623,6 +2640,11 @@ describe('five namespaced write commands', () => {
     await expect(installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const postApplyCounter = path.join(
+      isolation.env.AW_HOME!,
+      'activation-late-post-apply-count.txt',
+    );
+    await expect(fs.readFile(postApplyCounter, 'utf8')).resolves.toBe('1');
     const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
     const installedPluginId = [...runtime.installed][0]!;
     const marketplaceName = installedPluginId.slice(installedPluginId.lastIndexOf('@') + 1);
@@ -2638,6 +2660,7 @@ describe('five namespaced write commands', () => {
       fs.readFile(projectConfigPath, 'utf8').catch(() => undefined),
     ]);
     let rejectObservation = false;
+    const postApplyEvents: string[] = [];
     const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const pluginArgs = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
@@ -2657,7 +2680,18 @@ describe('five namespaced write commands', () => {
     try {
       result = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-      }, { ...runtime, nativeCliRunner });
+      }, {
+        ...runtime,
+        nativeCliRunner,
+        reporter: {
+          event: (event) => {
+            if (event.type === 'rebuild:action' && event.data?.name === 'postApply') {
+              postApplyEvents.push(event.data.phase);
+            }
+          },
+          notice: () => {},
+        },
+      });
     } finally {
       setRebuildCommandTestHooksForTests(undefined);
     }
@@ -2686,6 +2720,10 @@ describe('five namespaced write commands', () => {
         recoveryActions: expect.arrayContaining(['run sync']),
       })],
     });
+    expect(receipt.targetResults[0]?.actions.map((action) => action.name))
+      .not.toContain('postApply');
+    await expect(fs.readFile(postApplyCounter, 'utf8')).resolves.toBe('1');
+    expect(postApplyEvents).toEqual([]);
   }, 30_000);
 
   it('allows an observed mixed Codex reuse target to write its project extension', async () => {
@@ -11184,6 +11222,82 @@ describe('five namespaced write commands', () => {
         || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
     })).toEqual([]);
     expect(runtime.installed).toContain(`${pluginName}@aw`);
+  }, 30_000);
+
+  it('rejects a Windows-style parent Skills root before activation-only sensitive scanning', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unsafe-native-skills-root-source');
+    const pluginName = 'unsafe-native-skills-root';
+    const configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.skills = './skills';
+      manifest.config = {
+        fields: { secret: { type: 'string', sensitive: true, default: 'safe-default' } },
+      };
+    };
+    await createCatalogSnapshotFixture(sourceRoot, pluginName, [], 'safe-default\n', configureManifest);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', pluginName, 'skills', 'safe', 'SKILL.md'),
+      '# Safe\n',
+    );
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', pluginName, 'skills', 'safe', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    await createCatalogSnapshotFixture(sourceRoot, pluginName, [], 'safe-default\n', configureManifest);
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    await expect(installWriteCommand([`team/${pluginName}`], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName,
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { secret: 'sensitive-value' },
+    });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    const codexManifestPath = path.join(
+      marketplaceRoot,
+      'plugins',
+      pluginName,
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const codexManifest = await fs.readJson(codexManifestPath);
+    await fs.outputJson(codexManifestPath, { ...codexManifest, skills: '..\\outside' });
+    const callsBefore = runtime.nativeCliRunner.mock.calls.length;
+
+    const result = await installWriteCommand([`team/${pluginName}`], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime);
+
+    expect(result, JSON.stringify(result, null, 2)).toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({
+        state: 'failed', errorCode: 'codexNativeSkillsRootInvalid',
+      })],
+    });
+    expect(runtime.nativeCliRunner.mock.calls.slice(callsBefore).filter(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'add' || args[1] === 'remove'
+        || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
+    })).toEqual([]);
   }, 30_000);
 
   it('requires --yes for native-refreshing user config with only a project Codex intent', async () => {

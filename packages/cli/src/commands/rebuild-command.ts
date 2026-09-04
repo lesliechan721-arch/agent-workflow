@@ -4415,6 +4415,7 @@ async function runRebuildCommandInSession(options: {
           return {
             ...rebuild,
             status: 'failed',
+            actions: rebuild.actions.filter((action) => action.name !== 'postApply'),
             error: { phase, message: options_.message },
           };
         });
