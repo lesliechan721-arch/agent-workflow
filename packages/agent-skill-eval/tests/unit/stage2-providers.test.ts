@@ -22,8 +22,8 @@ import {
   type CodexEvalTransport,
   type BuiltinEvalProviderRunInput,
   type TriggerRunEvidence,
-} from '../../dist/index.js'
-import { conversationModelOutputOf } from '../../dist/providers.js'
+} from '../../src/index.js'
+import { conversationModelOutputOf } from '../../src/providers.js'
 
 const roots: string[] = []
 const syntheticProcessPath = fileURLToPath(

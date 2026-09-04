@@ -15,9 +15,9 @@ import {
   type AwSkillEvalTriggerCase,
   type AwSkillEvalTriggerSuiteCaseContract,
   type CodexEvalRuntimeConfig,
-} from '../../dist/index.js'
-import { createDirectChildProcessMonitor } from '../../dist/index.js'
-import { CodexEvalAttemptControl } from '../../dist/codex-eval-app-server.js'
+} from '../../src/index.js'
+import { createDirectChildProcessMonitor } from '../../src/index.js'
+import { CodexEvalAttemptControl } from '../../src/codex-eval-app-server.js'
 
 describe('Codex provider app-server process boundary', () => {
   it('keeps the attempt budget separate from the 30 second RPC cap', () => {

@@ -9,7 +9,7 @@ import {
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
   resolveCodexEvalRuntimeConfig,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 const tempDirs: string[] = []
 

@@ -1582,20 +1582,6 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
-  it('accepts the current bundled Skill closures', async () => {
-    const pluginsRoot = path.resolve(import.meta.dirname, '../../plugins-dist/plugins');
-    const pluginEntries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-    for (const pluginEntry of pluginEntries) {
-      if (!pluginEntry.isDirectory()) continue;
-      for (const platform of ['claude', 'codex']) {
-        const skillsRoot = path.join(pluginsRoot, pluginEntry.name, platform, 'skills');
-        if (await fs.pathExists(skillsRoot)) {
-          await expect(validateRuntimeSkillClosuresRoot(skillsRoot)).resolves.toBeUndefined();
-        }
-      }
-    }
-  });
-
   it('does not exempt a Windows environment placeholder embedded in an inline local path', async () => {
     const skillRoot = await createRuntimeSkill('`type assets/%NAME%.svg`\n');
 

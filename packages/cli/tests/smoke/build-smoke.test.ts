@@ -21,6 +21,10 @@ import {
   createSmokeStagingRunner,
   type SmokeStagingRunner,
 } from '../support/smoke-staging-runner.js';
+import {
+  assertCompatibleRuntimeVersion,
+  assertRunnerSkillBundle,
+} from '../../../../scripts/verify-eval-runtime-owner.mjs';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -83,6 +87,30 @@ afterEach(async () => {
 
 describe('build smoke', () => {
   const root = repoRoot();
+
+  it.each(['claude', 'codex'])('ships the current %s Eval Runner bundle', async (platform) => {
+    const snapshot = await requireBuildSnapshot();
+    const runnerRoot = path.join(
+      snapshot.catalogOutputRoot,
+      'plugins',
+      'aw-skill-eval-runner',
+      platform,
+      'skills',
+      'run-aw-skill-evals',
+    );
+    const bundle = await assertRunnerSkillBundle(runnerRoot);
+
+    expect(new Set(bundle.files)).toEqual(new Set([
+      'README.md',
+      'SKILL.md',
+      'agents/openai.yaml',
+      'aw-plugin-requirements.json',
+    ]));
+    expect(() => assertCompatibleRuntimeVersion({
+      packageVersion: '0.1.0',
+      minimumPackageVersion: bundle.minimumPackageVersion,
+    })).not.toThrow();
+  });
 
   it('reports plugin development status through the built public entry', async () => {
     const snapshot = await requireBuildSnapshot();

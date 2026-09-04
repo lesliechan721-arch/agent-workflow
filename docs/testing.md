@@ -2,7 +2,9 @@
 
 本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为以[架构说明](architecture.md)为准；单插件作者合同见[插件作者指南](plugin-authoring.md)，Catalog 聚合与发布合同见[Catalog 作者指南](catalog-authoring.md)。
 
-`pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试，不要求预先生成 `dist/`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+
+默认多项目按资源顺序运行：pure 使用最多 4 workers，filesystem-isolated 和 integration 使用最多 2 workers，process-lifecycle 使用 `forks`、1 worker 且关闭 file parallelism。Performance 和 smoke 各使用 1 worker；performance gate 先完成 process-lifecycle 自测，再运行业务性能预算。
 
 日常开发使用以下三个入口：
 
@@ -29,8 +31,9 @@
 | 命令 | 责任 |
 |------|------|
 | `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
+| `pnpm test:dist` | 正式 build 一次，再运行 Eval、Core、CLI authoring 的 dist contract 和 CLI build smoke |
 | `pnpm test:smoke` | 运行完整 smoke suite |
-| `pnpm test:smoke:build` | 校验 `pnpm build` 产物，并证明官方入口使用 `--strict-requirements` 语义 |
+| `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |

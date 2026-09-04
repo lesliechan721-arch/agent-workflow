@@ -1,13 +1,10 @@
 import os from 'node:os'
 import path from 'node:path'
-import { readFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
-  assertCompatibleRuntimeVersion,
   assertRunnerSkillBundle,
 } from '../../../../scripts/verify-eval-runtime-owner.mjs'
 
@@ -41,35 +38,6 @@ afterEach(async () => {
 })
 
 describe('Eval runtime owner gate', () => {
-  it.each(['claude', 'codex'])('accepts the current built %s Runner bundle', async (platform) => {
-    const root = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      '../../plugins-dist/plugins/aw-skill-eval-runner',
-      platform,
-      'skills/run-aw-skill-evals',
-    )
-    const bundle = await assertRunnerSkillBundle(root)
-
-    expect(new Set(bundle.files)).toEqual(new Set([
-      'README.md',
-      'SKILL.md',
-      'agents/openai.yaml',
-      'aw-plugin-requirements.json',
-    ]))
-    expect(() => assertCompatibleRuntimeVersion({
-      packageVersion: '0.1.0',
-      minimumPackageVersion: bundle.minimumPackageVersion,
-    })).not.toThrow()
-
-    const verifier = await readFile(
-      fileURLToPath(new URL('../../../../scripts/verify-eval-runtime-owner.mjs', import.meta.url)),
-      'utf8',
-    )
-    expect(verifier).toContain("{ name: 'eval-spec', version: 1 }")
-    expect(verifier).toContain("{ name: 'eval-audit', version: 1 }")
-    expect(verifier).toContain("{ name: 'eval-result', version: 2 }")
-  })
-
   it.each([
     ['prepare help', 'aw skill eval prepare --help'],
     [

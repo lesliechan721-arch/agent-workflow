@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,14 +20,22 @@ import {
   validateEvalAudit,
   type EvalAudit,
   type EvalSpec,
-} from '../../dist/index.js'
-import { adaptConversationProviderCase } from '../../dist/eval-run.js'
+} from '../../src/index.js'
+import { adaptConversationProviderCase } from '../../src/eval-run.js'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
 const syntheticProcessPath = fileURLToPath(
   new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
 )
+const vitestPackagePath = realpathSync(fileURLToPath(
+  new URL('../../node_modules/vitest/package.json', import.meta.url),
+))
+const viteNodePath = path.resolve(path.dirname(vitestPackagePath), '..', 'vite-node', 'vite-node.mjs')
+
+function evalCliArgs(...args: string[]): string[] {
+  return [viteNodePath, path.resolve('src/bin.ts'), ...args]
+}
 
 let hostProcessInspectionAvailable = false
 try {
@@ -1495,10 +1504,9 @@ describe('EvalSpec v1 execution', () => {
         await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
         data.audit.providerDigest = computeEvalProviderDigest(data.spec.provider)
         await writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`)
-        const bin = path.resolve('dist/bin.js')
-        const runner = spawn(process.execPath, [
-          bin, 'run', data.specPath, '--audit', data.auditPath,
-        ], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const runner = spawn(process.execPath, evalCliArgs(
+          'run', data.specPath, '--audit', data.auditPath,
+        ), { stdio: ['ignore', 'pipe', 'pipe'] })
         const closedPromise = waitForClose(runner)
         let stdout = ''
         let stderr = ''
@@ -1559,27 +1567,26 @@ describe('EvalSpec v1 execution', () => {
         grade: { passed: true, score: 1 },
       })) as never,
     })
-    const bin = path.resolve('dist/bin.js')
-    await expect(execFileAsync(process.execPath, [bin, '--help']))
+    await expect(execFileAsync(process.execPath, evalCliArgs('--help')))
       .resolves.toMatchObject({ stdout: expect.stringContaining('--allow-unmanaged-processes') })
-    const specOutput = JSON.parse((await execFileAsync(process.execPath, [
-      bin, 'spec', 'validate', data.specPath,
-    ])).stdout) as { valid: boolean; calculated: { providerDigest: string } }
+    const specOutput = JSON.parse((await execFileAsync(process.execPath, evalCliArgs(
+      'spec', 'validate', data.specPath,
+    ))).stdout) as { valid: boolean; calculated: { providerDigest: string } }
     expect(specOutput.valid).toBe(true)
     expect(specOutput.calculated.providerDigest).toBe(computeEvalProviderDigest(data.spec.provider))
-    const auditOutput = JSON.parse((await execFileAsync(process.execPath, [
-      bin, 'audit', 'validate', data.auditPath, '--spec', data.specPath,
-    ])).stdout) as { valid: boolean }
+    const auditOutput = JSON.parse((await execFileAsync(process.execPath, evalCliArgs(
+      'audit', 'validate', data.auditPath, '--spec', data.specPath,
+    ))).stdout) as { valid: boolean }
     expect(auditOutput.valid).toBe(true)
-    const resultOutput = JSON.parse((await execFileAsync(process.execPath, [
-      bin, 'result', 'validate', result.resultPath,
+    const resultOutput = JSON.parse((await execFileAsync(process.execPath, evalCliArgs(
+      'result', 'validate', result.resultPath,
       '--spec', data.specPath, '--audit', data.auditPath,
-    ])).stdout) as { valid: boolean }
+    ))).stdout) as { valid: boolean }
     expect(resultOutput.valid).toBe(true)
-    const inspection = JSON.parse((await execFileAsync(process.execPath, [
-      bin, 'inspect-result', result.resultPath,
+    const inspection = JSON.parse((await execFileAsync(process.execPath, evalCliArgs(
+      'inspect-result', result.resultPath,
       '--spec', data.specPath, '--audit', data.auditPath,
-    ])).stdout) as { groups: unknown[] }
+    ))).stdout) as { groups: unknown[] }
     expect(inspection.groups).toEqual([expect.objectContaining({
       caseId: 'case-1',
       attempt: 1,
@@ -1593,14 +1600,14 @@ describe('EvalSpec v1 execution', () => {
     unknownCaseResult.runs[0]!.caseId = 'not-selected'
     const unknownCaseResultPath = path.join(data.root, 'unknown-case-result.json')
     await writeFile(unknownCaseResultPath, `${JSON.stringify(unknownCaseResult, null, 2)}\n`)
-    await expect(execFileAsync(process.execPath, [
-      bin, 'result', 'validate', unknownCaseResultPath,
+    await expect(execFileAsync(process.execPath, evalCliArgs(
+      'result', 'validate', unknownCaseResultPath,
       '--spec', data.specPath, '--audit', data.auditPath,
-    ])).rejects.toMatchObject({ code: 1 })
-    await expect(execFileAsync(process.execPath, [
-      bin, 'inspect-result', unknownCaseResultPath,
+    ))).rejects.toMatchObject({ code: 1 })
+    await expect(execFileAsync(process.execPath, evalCliArgs(
+      'inspect-result', unknownCaseResultPath,
       '--spec', data.specPath, '--audit', data.auditPath,
-    ])).rejects.toMatchObject({ code: 1 })
+    ))).rejects.toMatchObject({ code: 1 })
   })
 
   it.skipIf(process.platform !== 'linux')(
@@ -1625,12 +1632,11 @@ describe('EvalSpec v1 execution', () => {
         writeFile(data.auditPath, `${JSON.stringify(data.audit, null, 2)}\n`),
       ])
 
-      const completed = await execFileAsync(process.execPath, [
-        path.resolve('dist/bin.js'),
+      const completed = await execFileAsync(process.execPath, evalCliArgs(
         'run', data.specPath,
         '--audit', data.auditPath,
         '--allow-unmanaged-processes',
-      ], {
+      ), {
         env: {
           PATH: process.env.PATH,
           CODEX_HOME: process.env.CODEX_HOME,
@@ -1649,7 +1655,6 @@ describe('EvalSpec v1 execution', () => {
   )
 
   it('rejects every provider and suite kind mismatch during spec validation', async () => {
-    const bin = path.resolve('dist/bin.js')
     const mismatches = [
       {
         provider: 'codex-trigger' as const,
@@ -1687,9 +1692,9 @@ describe('EvalSpec v1 execution', () => {
       data.spec.cases.digest = await computeEvalFileDigest(casesPath)
       data.spec.provider = mismatch.provider
       await writeFile(data.specPath, `${JSON.stringify(data.spec, null, 2)}\n`)
-      const error = await execFileAsync(process.execPath, [
-        bin, 'spec', 'validate', data.specPath,
-      ]).catch((caught) => caught as { code: number; stdout: string })
+      const error = await execFileAsync(process.execPath, evalCliArgs(
+        'spec', 'validate', data.specPath,
+      )).catch((caught) => caught as { code: number; stdout: string })
       expect(error).toMatchObject({ code: 1 })
       expect(JSON.parse((error as { stdout: string }).stdout)).toMatchObject({
         valid: false,

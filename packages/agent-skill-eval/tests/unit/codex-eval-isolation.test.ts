@@ -12,7 +12,7 @@ import {
   codexEvalConfigOverrides,
   inspectCodexEvalHostIsolation,
   validateCodexEvalRpcIsolation,
-} from '../../dist/index.js';
+} from '../../src/index.js';
 
 const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);

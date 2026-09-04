@@ -11,7 +11,7 @@ import {
   runProviderProcess,
   terminateProcessTree,
   type ProcessLifecycleHooks,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
 const syntheticProcessPath = fileURLToPath(

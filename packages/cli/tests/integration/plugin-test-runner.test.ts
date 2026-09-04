@@ -308,7 +308,6 @@ describe('plugin script test runner', () => {
         '..',
         'packages',
         'cli',
-        'dist',
         'authoring',
         'assets',
         'aw-config.mjs',

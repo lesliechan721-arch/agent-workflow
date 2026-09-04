@@ -3,7 +3,7 @@ import {
   codexPermissionProfileStatus,
   normalizedCodexPermissionProfile,
   resolveEvalProcessManagement,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 describe('Eval process management preflight', () => {
   it('normalizes the permission profile and blocks restricted sessions before other probes', async () => {

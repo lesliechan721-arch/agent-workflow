@@ -16,8 +16,8 @@ import {
   type CodexWorkflowRequest,
   type CodexWorkflowTransport,
   type ProcessTreeDependencies,
-} from '../../dist/index.js'
-import { codexWorkflowMissingFinalMessageDiagnostic } from '../../dist/codex-workflow.js'
+} from '../../src/index.js'
+import { codexWorkflowMissingFinalMessageDiagnostic } from '../../src/codex-workflow.js'
 
 const roots: string[] = []
 
