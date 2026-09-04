@@ -1991,7 +1991,8 @@ export function buildConfigGroups(options: {
       sensitive: schema.sensitive === true,
       writable: (entry?.writable ?? effectivePage)
         && !(options.read.scope === 'project' && privateValue),
-      canSet: entry?.canSet ?? effectivePage,
+      canSet: (entry?.canSet ?? effectivePage)
+        && !(options.read.scope === 'project' && privateValue),
       canUnset: entry?.canUnset ?? false,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,

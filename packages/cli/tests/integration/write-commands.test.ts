@@ -2806,7 +2806,8 @@ describe('five namespaced write commands', () => {
           };
         },
       },
-      { name: 'root', dependencies: ['leaf'] },
+      { name: 'bridge', dependencies: ['leaf'] },
+      { name: 'root', dependencies: ['bridge'] },
     ]);
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -2908,11 +2909,19 @@ describe('five namespaced write commands', () => {
     });
     const root = status.payload.targets.find((target) => target.pluginId === 'team/root');
     expect(root, JSON.stringify(status.payload.targets)).toMatchObject({
-      state: 'ready',
+      state: 'needsSync',
       components: expect.arrayContaining([expect.objectContaining({
-        kind: 'dependency', key: 'team/leaf', state: 'incomplete',
+        kind: 'dependency', key: 'team/bridge', state: 'ready',
         metadata: expect.objectContaining({ scope: 'project', project: 'current' }),
       })]),
+      reasons: [expect.objectContaining({
+        code: 'dependencyScopeMigrationCleanupRequired',
+        severity: 'warning',
+        dependencyPluginId: 'team/leaf',
+        dependencyPlatform: 'codex',
+        dependencyScope: 'project',
+        dependencyProject: 'current',
+      })],
       recoveryActions: [{
         command: 'cleanup',
         scope: 'user',

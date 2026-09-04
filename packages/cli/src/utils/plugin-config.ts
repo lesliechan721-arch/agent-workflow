@@ -2091,13 +2091,15 @@ async function buildManifestFieldEntries(options: {
 
   const fields: ConfigFieldEntry[] = [];
   for (const [key, field] of Object.entries(schema)) {
+    const canSet = options.scope !== 'project'
+      || (!userOnlyKeys.has(key) && field.sensitive !== true);
     const base: ConfigFieldEntry = {
       key,
       title: field.title ?? key,
       kind: 'manifest',
       reserved: false,
-      writable: options.scope !== 'project' || !userOnlyKeys.has(key),
-      canSet: options.scope !== 'project' || !userOnlyKeys.has(key),
+      writable: canSet,
+      canSet,
       canUnset: options.scope === 'user'
         ? Object.hasOwn(userPlainEntries, key)
         : options.scope === 'project' && Object.hasOwn(projectPlainEntries, key),

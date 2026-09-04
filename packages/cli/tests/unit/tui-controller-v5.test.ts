@@ -752,7 +752,7 @@ describe('TUI v4 router and ViewModel', () => {
     const fields = [
       { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
       { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
-      { key: 'token', title: '令牌', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'sk-private', sourceLayer: 'user' as const, storedValue: 'sk-private', storedSourceLayer: 'user' as const },
+      { key: 'token', title: '令牌', kind: 'manifest' as const, reserved: false, writable: true, canSet: true, valueState: 'configured' as const, effectiveValue: 'sk-private', sourceLayer: 'user' as const, storedValue: 'sk-private', storedSourceLayer: 'user' as const },
     ];
     const page = buildConfigPage({
       pluginId: 'official/demo',
@@ -813,7 +813,11 @@ describe('TUI v4 router and ViewModel', () => {
         fields: [fields[2]!],
       },
     });
-    expect(projectPage.groups[0]!.fields[0]).toMatchObject({ sensitive: true, writable: false });
+    expect(projectPage.groups[0]!.fields[0]).toMatchObject({
+      sensitive: true,
+      writable: false,
+      canSet: false,
+    });
     expect(JSON.stringify(projectPage)).not.toContain('sk-private');
 
     const fallback = buildConfigPage({

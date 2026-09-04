@@ -527,13 +527,16 @@ async function resolveConfigApplyTargets(options: {
   });
 }
 
-async function configApplyHasIssues(options: {
+async function configApplyHasValidCodexTarget(options: {
   plugin: PluginMeta;
   targets: ReceiptTargetIdentity[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<boolean> {
-  for (const scope of new Set(options.targets.map((target) => target.scope))) {
+  const codexScopes = new Set(options.targets
+    .filter((target) => target.platform === 'codex')
+    .map((target) => target.scope));
+  for (const scope of codexScopes) {
     const effective = await resolveEffectivePluginConfig({
       ...(options.plugin.sourceId ? {
         sourceId: options.plugin.sourceId,
@@ -546,7 +549,7 @@ async function configApplyHasIssues(options: {
       cwd: options.cwd,
       env: options.env,
     });
-    if (effective.issues.length > 0) return true;
+    if (effective.issues.length === 0) return true;
   }
   return false;
 }
@@ -640,18 +643,16 @@ export async function replayConfigRuntimeWrites(options: {
           otherProjectsMayRequireSync: false,
         };
       }
-      const applyHasIssues = await configApplyHasIssues({
-        plugin: options.plugin,
-        targets: discovered.targets,
-        cwd: options.cwd,
-        env,
-      });
       if (
-        !applyHasIssues
-        && options.scope === 'user'
+        options.scope === 'user'
         && options.sharedNativeApplyConfirmed !== true
         && pluginHasSharedNativeRefreshKeys(options.plugin)
-        && discovered.targets.some((target) => target.platform === 'codex')
+        && await configApplyHasValidCodexTarget({
+          plugin: options.plugin,
+          targets: discovered.targets,
+          cwd: options.cwd,
+          env,
+        })
       ) {
         throwSharedNativeApplyConfirmationRequired();
       }

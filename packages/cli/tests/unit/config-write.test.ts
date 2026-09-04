@@ -716,6 +716,19 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(read)).not.toContain(privateDirectory);
     expect(JSON.stringify(read)).not.toContain(privateFile);
     expect(JSON.stringify(read)).not.toContain('private-token');
+
+    const projectRead = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    expect(projectRead.fields).toContainEqual(expect.objectContaining({
+      key: 'token',
+      writable: false,
+      canSet: false,
+    }));
   });
 
   it('keeps submitted strings literal without a filesystem path contract', async () => {
@@ -1054,6 +1067,48 @@ describe('config write full reinstall apply', () => {
       expect(reinstall).not.toHaveBeenCalled();
     },
   );
+
+  it('requires shared native confirmation when another replay target has invalid config', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    const reinstall = createReinstallMock();
+
+    await expect(replayConfigRuntimeWrites({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }, {
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'claude',
+        scope: 'project',
+      }],
+      reinstallCommandImpl: reinstall,
+    })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
 
   it('allows a confirmed shared native replay', async () => {
     const fixture = await createFixture();
