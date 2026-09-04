@@ -106,6 +106,14 @@ async function createPsShim(root, failFile) {
   return binDir;
 }
 
+async function createEmptyPsShim(root) {
+  const binDir = path.join(root, 'empty-ps-bin');
+  await fs.mkdir(binDir, { recursive: true });
+  await fs.writeFile(path.join(binDir, 'ps'), '#!/usr/bin/env node\nprocess.exit(0);\n');
+  await fs.chmod(path.join(binDir, 'ps'), 0o755);
+  return binDir;
+}
+
 function spawnWrapper(cwd, args, env) {
   const child = spawn(process.execPath, [wrapperPath, ...args], {
     cwd,
@@ -158,14 +166,17 @@ describe('Vitest process-tree wrapper', () => {
   it('sets a unique run ID and writes opt-in machine-readable metrics', async () => {
     const fixture = await createFixture([
       "import fs from 'node:fs';",
+      'await new Promise((resolve) => setTimeout(resolve, 600));',
       "fs.writeFileSync(process.env.RUN_ID_FILE, process.env.AW_TEST_RUN_ID);",
     ].join('\n'));
     const metricsDir = path.join(fixture, 'metrics');
+    const binDir = await createEmptyPsShim(fixture);
     const runIdFile = path.join(fixture, 'run-id');
     const secondRunIdFile = path.join(fixture, 'second-run-id');
     const result = await spawnWrapper(fixture, ['run'], {
       AW_TEST_METRICS_DIR: metricsDir,
       AW_TEST_RUN_ID: '',
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
       RUN_ID_FILE: runIdFile,
     }).closed;
     const runId = await fs.readFile(runIdFile, 'utf8');
@@ -176,6 +187,7 @@ describe('Vitest process-tree wrapper', () => {
     const secondResult = await spawnWrapper(fixture, ['run'], {
       AW_TEST_METRICS_DIR: metricsDir,
       AW_TEST_RUN_ID: '',
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
       RUN_ID_FILE: secondRunIdFile,
     }).closed;
     const secondRunId = await fs.readFile(secondRunIdFile, 'utf8');
@@ -200,14 +212,17 @@ describe('Vitest process-tree wrapper', () => {
       expect(metrics[name]).toBeTypeOf('number');
       expect(metrics[name]).toBeGreaterThanOrEqual(0);
     }
+    expect(metrics.processTableScanCount).toBeLessThanOrEqual(1);
   });
 
   it('preserves an upstream run ID for nested wrapper audit correlation', async () => {
     const fixture = await createFixture(
       "process.stdout.write(process.env.AW_TEST_RUN_ID);",
     );
+    const binDir = await createEmptyPsShim(fixture);
     const result = await spawnWrapper(fixture, ['run'], {
       AW_TEST_RUN_ID: 'parent/run-id',
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     }).closed;
 
     expect(result).toMatchObject({ code: 0, stdout: 'parent/run-id' });
@@ -216,8 +231,10 @@ describe('Vitest process-tree wrapper', () => {
   it('does not write metrics when measurement mode is disabled', async () => {
     const fixture = await createFixture('process.exit(0);');
     const metricsDir = path.join(fixture, 'metrics');
+    const binDir = await createEmptyPsShim(fixture);
     const result = await spawnWrapper(fixture, ['run'], {
       AW_TEST_METRICS_DIR: '',
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     }).closed;
 
     expect(result.code).toBe(0);
@@ -258,8 +275,12 @@ describe('Vitest process-tree wrapper', () => {
       'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
+    const binDir = await createEmptyPsShim(fixture);
     const pidFile = path.join(fixture, 'pid.json');
-    const run = spawnWrapper(fixture, ['run'], { PID_FILE: pidFile });
+    const run = spawnWrapper(fixture, ['run'], {
+      PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+      PID_FILE: pidFile,
+    });
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.root);
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -271,6 +292,7 @@ describe('Vitest process-tree wrapper', () => {
   itWithPosixInspection('forwards arguments, output, and exit code while cleaning inherited-output descendants', async () => {
     const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
+      env: { ...process.env, AW_TEST_RUN_ID: 'parent/run-id' },
       stdio: 'ignore',
     });
     foreign.unref();
@@ -285,7 +307,10 @@ describe('Vitest process-tree wrapper', () => {
       'setTimeout(() => process.exit(7), 500);',
     ].join('\n'));
     const pidFile = path.join(fixture, 'pids.json');
-    const run = spawnWrapper(fixture, ['run', '--config', 'fixture.config.ts'], { PID_FILE: pidFile });
+    const run = spawnWrapper(fixture, ['run', '--config', 'fixture.config.ts'], {
+      AW_TEST_RUN_ID: 'parent/run-id',
+      PID_FILE: pidFile,
+    });
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.root, pids.descendant);
     const result = await run.closed;
@@ -348,7 +373,7 @@ describe('Vitest process-tree wrapper', () => {
       run.once('error', reject);
       run.once('close', (code, signal) => resolve({ code, signal }));
     });
-    const { worker: workerPid } = await readJsonEventually(workerPidFile);
+    const { worker: workerPid } = await readJsonEventually(workerPidFile, 10_000);
     observedPids.push(workerPid);
 
     process.kill(-run.pid, 'SIGINT');
@@ -394,7 +419,7 @@ describe('Vitest process-tree wrapper', () => {
     const result = await run.closed;
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain('cleanup could not verify descendant termination');
+    expect(result.stderr).toContain('cleanup could not verify process-tree ownership');
     await expect(readJsonEventually(path.join(metricsDir, `${runId}.json`))).resolves.toMatchObject({
       runId,
       cleanupFailureCount: 1,

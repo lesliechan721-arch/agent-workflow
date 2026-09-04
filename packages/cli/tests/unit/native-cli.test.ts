@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -25,7 +26,16 @@ import {
   type NativeCliInvocation,
   type NativeCliResult,
 } from '../../src/utils/native-cli.js';
+import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
+
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // This integration test requires permission to inspect the host process table.
+}
 
 function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
   return { stdout, stderr, exitCode };
@@ -361,7 +371,9 @@ describe('native-cli', () => {
   });
 
   it('captures stdout and stderr from execFile', async () => {
-    const result = await execFileNativeCliRunner({
+    const result = await createExecFileNativeCliRunner({
+      terminateProcessTree: async () => {},
+    })({
       command: process.execPath,
       args: ['-e', 'process.stdout.write("ready"); process.stderr.write("warn");'],
     });
@@ -373,17 +385,67 @@ describe('native-cli', () => {
     });
   });
 
+  it.each([
+    ['confirms cleanup before returning success', async () => {}, false],
+    ['reports cleanup failure instead of returning success', async () => {
+      throw new Error('cleanup rejected');
+    }, true],
+  ])('%s', async (_name, terminateProcessTreeImpl, rejects) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: 0 as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(() => true),
+    });
+    const observation = {
+      pid: 321,
+      onFailure: () => () => undefined,
+      dispose: vi.fn(),
+    };
+    const terminateProcessTree = vi.fn(terminateProcessTreeImpl);
+    const runner = createExecFileNativeCliRunner({
+      platform: 'win32',
+      execFile: (_command, _args, _options, callback) => {
+        queueMicrotask(() => callback(null, 'ready', ''));
+        return child;
+      },
+      observeProcessTree: () => observation,
+      terminateProcessTree,
+    });
+    const running = runner({ command: 'tar', args: [] });
+
+    if (rejects) {
+      await expect(running).rejects.toMatchObject({
+        reason: 'exit',
+        cleanupError: expect.objectContaining({ message: 'cleanup rejected' }),
+      });
+    } else {
+      await expect(running).resolves.toEqual({ exitCode: 0, stdout: 'ready', stderr: '' });
+    }
+    expect(terminateProcessTree).toHaveBeenCalledWith(
+      321,
+      expect.any(Function),
+      {},
+      { observation, requireConfirmedCleanup: true },
+    );
+  });
+
   it('overwrites a caller-supplied process marker with a per-run UUID', async () => {
     let receivedEnv: NodeJS.ProcessEnv | undefined;
+    let receivedDetached: boolean | undefined;
     const child = Object.assign(new EventEmitter(), {
+      pid: 321,
       kill: vi.fn(() => true),
     });
     const runner = createExecFileNativeCliRunner({
+      platform: 'linux',
       execFile: (_command, _args, options, callback) => {
         receivedEnv = options.env;
+        receivedDetached = options.detached;
         callback(null, '', '');
         return child;
       },
+      terminateProcessTree: async () => {},
     });
 
     await runner({
@@ -396,6 +458,7 @@ describe('native-cli', () => {
     });
 
     expect(receivedEnv).toMatchObject({ KEEP_ME: 'yes' });
+    expect(receivedDetached).toBe(true);
     expect(receivedEnv?.AW_NATIVE_CLI_PROCESS_MARKER).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
@@ -407,11 +470,21 @@ describe('native-cli', () => {
       const observe = vi.fn();
       let receivedOptions: { detached: boolean } | undefined;
       const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        exitCode: 0 as number | null,
+        signalCode: null as NodeJS.Signals | null,
         kill: vi.fn(() => true),
+      });
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === 0) {
+          throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+        }
+        return true;
       });
       const runner = createExecFileNativeCliRunner({
         platform,
         observeProcessTree: observe,
+        killProcess,
         execFile: (_command, _args, options, callback) => {
           receivedOptions = options;
           callback(null, 'ok', '');
@@ -425,6 +498,7 @@ describe('native-cli', () => {
       });
       expect(observe).not.toHaveBeenCalled();
       expect(receivedOptions?.detached).toBe(platform !== 'win32');
+      expect(killProcess).toHaveBeenCalledTimes(platform === 'win32' ? 0 : 3);
     },
   );
 
@@ -564,7 +638,7 @@ describe('native-cli', () => {
     }
   });
 
-  it('runs observed cleanup after root exit without signaling the root PID', async () => {
+  it('returns the original success after root-exit cleanup without signaling the root PID', async () => {
     vi.useFakeTimers();
     try {
       const stdout = new PassThrough();
@@ -590,19 +664,14 @@ describe('native-cli', () => {
         args: [],
         timeoutMs: 100,
       });
-      const errorPromise = promise.catch((error: unknown) => error);
       child.emit('spawn');
       stdout.write('partial');
       stderr.write('warning');
       child.exitCode = 0;
       child.emit('exit');
 
-      expect(vi.getTimerCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(100);
-
-      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
-        exitCode: 124,
-        reason: 'timeout',
+      await expect(promise).resolves.toEqual({
+        exitCode: 0,
         stdout: 'partial',
         stderr: 'warning',
       });
@@ -709,30 +778,23 @@ describe('native-cli', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'finishes group cleanup when the root exits on TERM and an ignored-stdio descendant ignores TERM',
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'cleans a detached marked descendant after a generic POSIX command exits normally',
     async () => {
       let descendantPid: number | undefined;
       try {
-        const startedAt = Date.now();
-        const promise = execFileNativeCliRunner({
+        const result = await execFileNativeCliRunner({
           command: process.execPath,
-          agentKind: 'codex',
-          args: ['-e', [
-            'const { spawn } = require("node:child_process")',
-            'const child = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => process.exit(0), 10000); setInterval(() => {}, 1000)"], { stdio: "ignore" })',
-            'process.stdout.write(String(child.pid))',
-            'process.on("SIGTERM", () => process.exit(0))',
-            'setInterval(() => {}, 1000)',
-          ].join(';')],
+          args: [fileURLToPath(new URL(
+            '../fixtures/native-cli-detached-descendant.mjs',
+            import.meta.url,
+          ))],
           timeoutMs: 200,
         });
-        const error = await promise.catch((cause: unknown) => cause) as NativeCliError;
-        expect(error).toMatchObject({ exitCode: 124, reason: 'timeout' });
-        expect(error.cleanupError).toBeUndefined();
-        descendantPid = Number.parseInt(error.stdout.trim(), 10);
+        expect(result.exitCode).toBe(0);
+        descendantPid = Number.parseInt(result.stdout.trim(), 10);
         expect(descendantPid).toBeGreaterThan(0);
-        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        expect(() => process.kill(descendantPid!, 0)).toThrow();
       } finally {
         if (descendantPid !== undefined) {
           try {

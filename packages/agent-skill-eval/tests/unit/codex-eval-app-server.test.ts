@@ -125,6 +125,64 @@ describe('Codex provider app-server process boundary', () => {
     await expect(monitor.terminate()).resolves.toEqual([])
   })
 
+  it('uses shared POSIX cleanup for a tagged app-server tree', async () => {
+    const marker = 'tree-id'
+    const processes = new Map([
+      [100, { ppid: 1, pgid: 100, state: 'S', startTime: 'root-start', marked: true }],
+      [101, { ppid: 100, pgid: 100, state: 'S', startTime: 'child-start', marked: true }],
+      [200, { ppid: 1, pgid: 200, state: 'S', startTime: 'foreign-start', marked: false }],
+    ])
+    const signals: Array<[number, string]> = []
+    const monitor = createPosixProcessTreeMonitor(100, {
+      treeId: marker,
+      execFile: (_command, args, _options, callback) => callback(
+        null,
+        args.some((arg) => arg.includes('command='))
+          ? [...processes]
+              .map(([pid, entry]) => [
+                pid,
+                entry.ppid,
+                entry.pgid,
+                entry.state,
+                entry.startTime,
+                'node',
+                ...(entry.marked ? [`AW_CODEX_EVAL_PROCESS_TREE_ID=${marker}`] : []),
+              ].join(' '))
+              .join('\n')
+          : [...processes]
+              .map(([pid, entry]) =>
+                `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
+              .join('\n'),
+      ),
+      kill: (pid, signal) => {
+        signals.push([pid, String(signal)])
+        if (pid === -100 && signal === 'SIGTERM') {
+          for (const [candidatePid, entry] of processes) {
+            if (entry.pgid === 100) processes.set(candidatePid, { ...entry, state: 'T' })
+          }
+        }
+        if (signal === 'SIGKILL') {
+          if (pid === -100) {
+            for (const [candidatePid, entry] of processes) {
+              if (entry.pgid === 100) processes.delete(candidatePid)
+            }
+          } else {
+            processes.delete(pid)
+          }
+        }
+        return true
+      },
+    })
+
+    await expect(monitor.terminate()).resolves.toEqual([])
+
+    expect(signals).toContainEqual([-100, 'SIGTERM'])
+    expect(signals).toContainEqual([-100, 'SIGKILL'])
+    expect(processes.has(100)).toBe(false)
+    expect(processes.has(101)).toBe(false)
+    expect(processes.has(200)).toBe(true)
+  })
+
   it('times out a delayed initialize before turn/start', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-delayed-initialize-'))
     try {

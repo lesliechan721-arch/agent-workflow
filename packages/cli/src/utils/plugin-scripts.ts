@@ -25,6 +25,14 @@ export interface PluginProcessRunner {
 
 interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[] }
 
+/** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
+interface DefaultPluginProcessRunnerDependencies {
+  platform?: NodeJS.Platform;
+  spawn?: typeof spawn;
+  observeProcessTree?: typeof observeProcessTree;
+  terminateProcessTree?: typeof terminateProcessTree;
+}
+
 export async function resolveBundledPluginFilePath(options: { bundleRoot: string; pluginRelativePath: string; fieldName: string }): Promise<string> {
   const bundleRoot = await fs.realpath(options.bundleRoot);
   const relativePath = options.pluginRelativePath.startsWith('./') ? options.pluginRelativePath.slice(2) : options.pluginRelativePath;
@@ -158,35 +166,74 @@ function resolveOutputCaptureLimit(sensitiveValues: readonly string[]): number {
   return OUTPUT_LIMIT + maxSensitiveTokenLength + TOKEN_BOUNDARY_LOOKAHEAD;
 }
 
-export const defaultPluginProcessRunner = {
+export function createDefaultPluginProcessRunner(
+  dependencies: DefaultPluginProcessRunnerDependencies = {},
+) {
+  const platform = dependencies.platform ?? process.platform;
+  const spawnImpl = dependencies.spawn ?? spawn;
+  const observeProcessTreeImpl = dependencies.observeProcessTree ?? observeProcessTree;
+  const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
+  return {
   run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
     return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
       const marker = randomUUID();
-      const child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawnImpl(invocation.command, invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       child.stdin?.end(invocation.stdin ?? '');
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
       const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
-      let observation: ProcessTreeObservation | undefined; if (child.pid !== undefined) observation = observeProcessTree(child.pid, marker);
+      let observation: ProcessTreeObservation | undefined; if (child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
       const cleanup = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
-      const settle = (): void => { if (settled) return; settled = true; cleanup(); if (aborted) { try { options.signal?.throwIfAborted(); } catch (error) { reject(error); return; } } resolve({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut }); };
-      function terminate(): void {
-        if (settled || terminating) return; terminating = true;
+      const result = (): PluginProcessResult => ({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut });
+      const settle = (cleanupError?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (cleanupError) {
+          reject(cleanupError);
+          return;
+        }
+        if (aborted) {
+          try { options.signal?.throwIfAborted(); } catch (error) { reject(error); return; }
+        }
+        resolve(result());
+      };
+      function terminate(requireConfirmedCleanup: boolean = false): void {
+        if (settled || terminating) return;
+        terminating = true;
+        clearTimeout(timer);
         const direct = (signal: 'SIGTERM' | 'SIGKILL'): void => { if (child.exitCode === null && child.signalCode === null) child.kill(signal); };
-        const termination = child.pid === undefined ? Promise.resolve(direct('SIGKILL')) : terminateProcessTree(child.pid, direct, {}, { observation });
-        void Promise.resolve(termination).then(settle, settle);
+        const termination = child.pid === undefined
+          ? Promise.resolve(direct('SIGKILL'))
+          : terminateProcessTreeImpl(
+              child.pid,
+              direct,
+              {},
+              { observation, requireConfirmedCleanup },
+            );
+        void Promise.resolve(termination).then(
+          () => settle(),
+          (error: unknown) => settle(error),
+        );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
       child.on('error', (error) => { if (!settled && !terminating) { settled = true; cleanup(); reject(error); } });
-      child.on('close', (exitCode, signal) => { if (!settled && !terminating) { settled = true; cleanup(); resolve({ exitCode, signal, stdout, stderr, timedOut }); } });
+      const complete = (_exitCode: number | null, _signal: NodeJS.Signals | null): void => {
+        if (settled || terminating) return;
+        terminate(true);
+      };
+      child.on(platform === 'win32' ? 'close' : 'exit', complete);
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();
     });
   },
-} satisfies PluginProcessRunner;
+  };
+}
+
+export const defaultPluginProcessRunner = createDefaultPluginProcessRunner();
 
 export interface PostApplyContextV1 {
   schemaVersion: 1;

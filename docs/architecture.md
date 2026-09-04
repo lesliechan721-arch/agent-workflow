@@ -171,7 +171,7 @@ TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup�
 
 Manifest v3 只允许 `scripts.postApply: { path, timeoutMs? }`。AW 固定使用 Node，以 plugin root 为 cwd，并从 stdin 发送 JSON context v1。context 只含 plugin identity 和 root、target、effective config values，以及 `created | updated | removed | unchanged` component outcomes；它不含平台 home、store path、artifact 内容或 `sourceIdentity`。
 
-每个 core target 成功 apply 和 verify 后运行 postApply。每次显式 reconcile 都运行，包括 no-op sync、root 和 dependency closure。blocked 或 failed target 不运行。脚本失败或超时只增加 warning；core 结果保持成功，不回滚，不写持久失败状态，后续 sync 会重试。
+每个 core target 成功 apply 和 verify 后运行 postApply。每次显式 reconcile 都运行，包括 no-op sync、root 和 dependency closure。blocked 或 failed target 不运行。postApply 不允许遗留后台后代；AW 在脚本正常退出、超时或中断后先终止并确认本次脚本的进程树，再完成该 target。脚本失败、超时或进程树清理无法确认只增加可见 warning；core 结果保持成功，不回滚，不写持久失败状态，后续 sync 会重试。身份无法证明属于本次脚本的 foreign 进程不会被终止。
 
 ## Live Status and Config
 

@@ -47,9 +47,9 @@ const availableProcessTree = {
     args: string[],
     _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
-  ): void => callback(null, args.includes('pid=,command=')
+  ): void => callback(null, args.some((arg) => arg.includes('command='))
     ? sentinelAlive
-      ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
+      ? `900001 1 900001 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
       : ''
     : sentinelAlive
       ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
@@ -74,8 +74,8 @@ function releaseFailingProcessTree(message = 'inspection release failed') {
       callback: (error: Error | null, stdout: string) => void,
     ): void => callback(
       null,
-      args.includes('pid=,command=')
-        ? `900011 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
+      args.some((arg) => arg.includes('command='))
+        ? `900011 1 900011 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
         : '900011 1 900011 S Mon Aug 24 12:00:00 2026',
     ),
   }
@@ -1148,6 +1148,7 @@ describe('custom process provider', () => {
     let childPid = 0
     let marker = ''
     let inspectionRounds = 0
+    let cleanupSignalSent = false
     let sentinelAlive = false
     const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
@@ -1163,7 +1164,7 @@ describe('custom process provider', () => {
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       `fs.writeFileSync(${JSON.stringify(secretPath)}, process.env.OPENAI_API_KEY)`,
       `fs.chmodSync(${JSON.stringify(secretPath)}, 0o400)`,
-      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
+      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 500)",
     ].join(';')
     const readProviderPids = async (): Promise<[string, string]> => {
       for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -1195,25 +1196,26 @@ describe('custom process provider', () => {
               }
             },
             execFile: (_command, args, _options, callback) => {
-              if (!args.includes('pid=,command=')) inspectionRounds += 1
-              if (inspectionRounds >= 3) {
+              const markerScan = args.some((arg) => arg.includes('command='))
+              if (!markerScan) inspectionRounds += 1
+              if (markerScan && cleanupSignalSent) {
                 callback(new Error('inspection failed after startup'), '')
                 return
               }
-              void (inspectionRounds === 2
+              void (inspectionRounds >= 2
                 ? readProviderPids()
                 : Promise.resolve(['', ''] as [string, string]))
                 .then(([rootPid, providerChildPid]) => {
-                  if (args.includes('pid=,command=')) {
+                  if (markerScan) {
                     callback(null, [
                       ...(sentinelAlive
-                        ? [`900005 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`900005 1 900005 S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                       ...(rootPid
-                        ? [`${rootPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`${rootPid} 1 ${rootPid} S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                       ...(providerChildPid
-                        ? [`${providerChildPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`${providerChildPid} ${rootPid} ${rootPid} S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                     ].join('\n'))
                     return
@@ -1230,6 +1232,10 @@ describe('custom process provider', () => {
                       : []),
                   ].join('\n'))
                 })
+            },
+            kill: (pid, signal) => {
+              cleanupSignalSent = true
+              process.kill(pid, signal)
             },
           },
         })
@@ -1921,8 +1927,8 @@ describe('provider doctor', () => {
         },
         execFile: (_command, args, _options, callback) => callback(
           null,
-          args.includes('pid=,command=')
-            ? `900008 node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
+          args.some((arg) => arg.includes('command='))
+            ? `900008 1 900008 S sentinel-start node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
             : '900008 1 900008 S Mon Aug 24 12:00:00 2026',
         ),
       },

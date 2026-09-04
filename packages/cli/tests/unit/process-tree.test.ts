@@ -17,8 +17,24 @@ function renderPosixTable(processes: ReadonlyMap<number, FakeProcess>): string {
   ).join('\n');
 }
 
+function renderPosixMarkerTable(
+  processes: ReadonlyMap<number, FakeProcess>,
+  marked: ReadonlySet<number>,
+  marker: string,
+): string {
+  return [...processes].map(([pid, entry]) => [
+    pid,
+    entry.ppid,
+    100,
+    entry.state,
+    entry.startTime,
+    'node',
+    ...(marked.has(pid) ? [`AW_NATIVE_CLI_PROCESS_MARKER=${marker}`] : []),
+  ].join(' ')).join('\n');
+}
+
 describe('process-tree', () => {
-  it('freezes, verifies, and terminates POSIX descendants before the direct child', async () => {
+  it('terminates verified POSIX descendants with TERM before KILL', async () => {
     const processes = new Map<number, FakeProcess>([
       [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
       [101, { ppid: 100, state: 'S', startTime: 'first-start' }],
@@ -26,7 +42,7 @@ describe('process-tree', () => {
     ]);
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
       if (signal === 'SIGKILL') processes.delete(pid);
     });
     const killDirectChild = vi.fn();
@@ -40,16 +56,15 @@ describe('process-tree', () => {
       execFile,
     });
 
-    expect(kill.mock.calls[0]).toEqual([100, 'SIGSTOP']);
-    for (const descendantPid of [101, 102]) {
-      const stopIndex = kill.mock.calls.findIndex((call) =>
-        call[0] === descendantPid && call[1] === 'SIGSTOP'
+    for (const descendantPid of [100, 101, 102]) {
+      const termIndex = kill.mock.calls.findIndex((call) =>
+        call[0] === descendantPid && call[1] === 'SIGTERM'
       );
       const killIndex = kill.mock.calls.findIndex((call) =>
         call[0] === descendantPid && call[1] === 'SIGKILL'
       );
-      expect(stopIndex).toBeGreaterThanOrEqual(0);
-      expect(killIndex).toBeGreaterThan(stopIndex);
+      expect(termIndex).toBeGreaterThanOrEqual(0);
+      expect(killIndex).toBeGreaterThan(termIndex);
     }
     expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');
   });
@@ -62,17 +77,15 @@ describe('process-tree', () => {
     ]);
     const marked = new Set([100, 101]);
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
-        callback(null, [...marked].map((pid) =>
-          `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-        ).join('\n'));
+      if (args.some((arg) => arg.includes('command='))) {
+        callback(null, renderPosixMarkerTable(processes, marked, marker));
         return;
       }
       callback(null, renderPosixTable(processes));
     });
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
       if (signal === 'SIGKILL') {
         processes.delete(pid);
         marked.delete(pid);
@@ -96,7 +109,7 @@ describe('process-tree', () => {
       { observation, requireConfirmedCleanup: true },
     );
 
-    expect(kill).toHaveBeenCalledWith(101, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(101, 'SIGTERM');
     expect(kill).toHaveBeenCalledWith(101, 'SIGKILL');
     expect(killDirectChild).toHaveBeenCalledOnce();
     expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');
@@ -110,12 +123,10 @@ describe('process-tree', () => {
     ]);
     let markerLookup = 0;
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
+      if (args.some((arg) => arg.includes('command='))) {
         markerLookup += 1;
         if (markerLookup === 1) {
-          callback(null, [100, 101].map((pid) =>
-            `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-          ).join('\n'));
+          callback(null, renderPosixMarkerTable(processes, new Set([100, 101]), marker));
         } else {
           callback(new Error('marker ps failed'), '');
         }
@@ -125,7 +136,7 @@ describe('process-tree', () => {
     });
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
       if (signal === 'SIGKILL') processes.delete(pid);
     });
     const observation = observeProcessTree(100, marker, {
@@ -155,12 +166,10 @@ describe('process-tree', () => {
     ]);
     let markerLookup = 0;
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
+      if (args.some((arg) => arg.includes('command='))) {
         markerLookup += 1;
         if (markerLookup === 1) {
-          callback(null, [100, 101].map((pid) =>
-            `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-          ).join('\n'));
+          callback(null, renderPosixMarkerTable(processes, new Set([100, 101]), marker));
         } else {
           callback(new Error('marker ps failed'), '');
         }
@@ -170,7 +179,7 @@ describe('process-tree', () => {
     });
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
     });
     const observation = observeProcessTree(100, marker, {
       platform: 'linux',
@@ -192,7 +201,7 @@ describe('process-tree', () => {
     )).rejects.toThrow('cleanup unconfirmed');
 
     expect(kill).not.toHaveBeenCalled();
-    expect(kill).not.toHaveBeenCalledWith(101, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(101, 'SIGTERM');
     expect(kill).not.toHaveBeenCalledWith(101, 'SIGKILL');
   });
 
@@ -204,12 +213,10 @@ describe('process-tree', () => {
     ]);
     let markerLookup = 0;
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
+      if (args.some((arg) => arg.includes('command='))) {
         markerLookup += 1;
         if (markerLookup === 1) {
-          callback(null, [100, 101].map((pid) =>
-            `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-          ).join('\n'));
+          callback(null, renderPosixMarkerTable(processes, new Set([100, 101]), marker));
         } else {
           callback(new Error('marker ps failed'), '');
         }
@@ -249,17 +256,15 @@ describe('process-tree', () => {
     ]);
     const marked = new Set([100, 101]);
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
-        callback(null, [...marked].map((pid) =>
-          `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-        ).join('\n'));
+      if (args.some((arg) => arg.includes('command='))) {
+        callback(null, renderPosixMarkerTable(processes, marked, marker));
         return;
       }
       callback(null, renderPosixTable(processes));
     });
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
       if (signal === 'SIGKILL') processes.delete(pid);
     });
     const observation = observeProcessTree(100, marker, {
@@ -278,9 +283,9 @@ describe('process-tree', () => {
       { observation },
     );
 
-    expect(kill).toHaveBeenCalledWith(101, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(101, 'SIGTERM');
     expect(kill).toHaveBeenCalledWith(101, 'SIGKILL');
-    expect(kill).toHaveBeenCalledWith(100, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(100, 'SIGTERM');
   });
 
   it('does not signal a reused POSIX PID after its marker disappears', async () => {
@@ -291,17 +296,15 @@ describe('process-tree', () => {
     ]);
     const marked = new Set([100, 101]);
     const execFile = vi.fn((_command, args, _options, callback) => {
-      if (args.includes('pid=,command=')) {
-        callback(null, [...marked].map((pid) =>
-          `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
-        ).join('\n'));
+      if (args.some((arg) => arg.includes('command='))) {
+        callback(null, renderPosixMarkerTable(processes, marked, marker));
         return;
       }
       callback(null, renderPosixTable(processes));
     });
     const kill = vi.fn((pid: number, signal: string) => {
       const entry = processes.get(pid);
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
       if (signal === 'SIGKILL') processes.delete(pid);
     });
     const observation = observeProcessTree(100, marker, {
@@ -320,14 +323,14 @@ describe('process-tree', () => {
       { observation },
     );
 
-    expect(kill).not.toHaveBeenCalledWith(101, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(101, 'SIGTERM');
     expect(kill).not.toHaveBeenCalledWith(101, 'SIGKILL');
     expect(processes.has(101)).toBe(true);
   });
 
   it('falls back to the direct child when POSIX observation cannot see its marker', async () => {
     const execFile = vi.fn((_command, args, _options, callback) => {
-      callback(null, args.includes('pid=,command=') ? '' : '100 1 S root-start');
+      callback(null, args.some((arg) => arg.includes('command=')) ? '' : '100 1 S root-start');
     });
     const kill = vi.fn();
     const observation = observeProcessTree(100, 'missing-marker', {
@@ -349,51 +352,6 @@ describe('process-tree', () => {
     expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');
   });
 
-  it('freezes a descendant returned at the POSIX lookup deadline before killing it', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    try {
-      const processes = new Map<number, FakeProcess>([
-        [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
-      ]);
-      const kill = vi.fn((pid: number, signal: string) => {
-        const entry = processes.get(pid);
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
-        if (signal === 'SIGKILL') processes.delete(pid);
-      });
-      let lookup = 0;
-      const execFile = vi.fn((_command, _args, _options, callback) => {
-        lookup += 1;
-        if (lookup === 2) {
-          vi.setSystemTime(1_000);
-          processes.set(101, {
-            ppid: 100,
-            state: 'S',
-            startTime: 'deadline-child-start',
-          });
-        }
-        callback(null, renderPosixTable(processes));
-      });
-
-      await terminateProcessTree(100, vi.fn(), {
-        platform: 'linux',
-        execFile,
-        kill,
-      });
-
-      const stopIndex = kill.mock.calls.findIndex((call) =>
-        call[0] === 101 && call[1] === 'SIGSTOP'
-      );
-      const killIndex = kill.mock.calls.findIndex((call) =>
-        call[0] === 101 && call[1] === 'SIGKILL'
-      );
-      expect(stopIndex).toBeGreaterThanOrEqual(0);
-      expect(killIndex).toBeGreaterThan(stopIndex);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it('uses the termination budget for the first POSIX process lookup', async () => {
     vi.useFakeTimers();
     try {
@@ -403,7 +361,7 @@ describe('process-tree', () => {
       ]);
       const kill = vi.fn((pid: number, signal: string) => {
         const entry = processes.get(pid);
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' });
         if (signal === 'SIGKILL') processes.delete(pid);
       });
       let lookup = 0;
@@ -421,10 +379,10 @@ describe('process-tree', () => {
         kill,
       });
 
-      await vi.advanceTimersByTimeAsync(300);
+      await vi.runAllTimersAsync();
       await promise;
 
-      expect(kill).toHaveBeenCalledWith(101, 'SIGSTOP');
+      expect(kill).toHaveBeenCalledWith(101, 'SIGTERM');
       expect(kill).toHaveBeenCalledWith(101, 'SIGKILL');
     } finally {
       vi.useRealTimers();
@@ -468,6 +426,47 @@ describe('process-tree', () => {
       { timeout: 1_000, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
       expect.any(Function),
     );
+  });
+
+  it('confirms Windows cleanup when the observed root has already exited', async () => {
+    let lookup = 0;
+    const execFile = vi.fn((command, _args, _options, callback) => {
+      expect(command).toBe('powershell.exe');
+      lookup += 1;
+      callback(null, lookup === 1 ? '100|1|root-start' : '');
+    });
+    const observation = observeProcessTree(100, undefined, {
+      platform: 'win32',
+      execFile,
+    });
+    await Promise.resolve();
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      { observation, requireConfirmedCleanup: true },
+    )).resolves.toBeUndefined();
+
+    expect(lookup).toBe(3);
+  });
+
+  it('does not confirm Windows cleanup when no identity was ever observed', async () => {
+    const execFile = vi.fn((command, _args, _options, callback) => {
+      expect(command).toBe('powershell.exe');
+      callback(null, '');
+    });
+    const observation = observeProcessTree(100, undefined, {
+      platform: 'win32',
+      execFile,
+    });
+
+    await expect(terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'win32', execFile },
+      { observation, requireConfirmedCleanup: true },
+    )).rejects.toThrow('no inherited-pipe process identity was observed');
   });
 
   it('taskkills only the Windows root while it still owns the process tree', async () => {
@@ -731,7 +730,7 @@ describe('process-tree', () => {
         { platform: 'linux', execFile: vi.fn() },
       );
       const assertion = expect(promise).rejects.toThrow('cleanup unconfirmed');
-      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
       await assertion;
 
       expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');

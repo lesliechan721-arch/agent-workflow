@@ -1,22 +1,33 @@
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
   redactPluginScriptOutput,
+  createDefaultPluginProcessRunner,
   runPostApplyScript,
   summarizePluginScriptOutput,
   type PluginProcessRunner,
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
 
 const tempDirs: string[] = [];
 const OUTPUT_LIMIT = 64 * 1024;
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // Default-runner process-tree tests require host process inspection permission.
+}
 
 async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-post-apply-'));
@@ -50,6 +61,74 @@ afterEach(async () => {
 });
 
 describe('postApply script', () => {
+  it.each([
+    ['normal POSIX exit', 'linux', 'exit', false, true, true],
+    ['normal POSIX cleanup rejection', 'linux', 'exit', true, true, true],
+    ['POSIX abort cleanup rejection', 'linux', 'abort', true, false, true],
+    ['normal Windows close', 'win32', 'close', false, true, false],
+  ] as const)('settles only after process-tree cleanup on %s', async (
+    _name,
+    platform,
+    completion,
+    rejectCleanup,
+    requireConfirmedCleanup,
+    detached,
+  ) => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: 0 as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const observation = {
+      pid: 321,
+      onFailure: () => () => undefined,
+      dispose: vi.fn(),
+    };
+    const terminateProcessTree = vi.fn(async () => {
+      if (rejectCleanup) throw new Error('cleanup rejected');
+    });
+    const spawn = vi.fn(() => child);
+    const runner = createDefaultPluginProcessRunner({
+      platform,
+      spawn: spawn as unknown as typeof import('node:child_process').spawn,
+      observeProcessTree: () => observation,
+      terminateProcessTree,
+    });
+    const controller = new AbortController();
+    const running = runner.run({
+      command: 'node',
+      args: [],
+      cwd: '/',
+      env: {},
+    }, { timeoutMs: 2_000, signal: controller.signal });
+    if (completion === 'abort') controller.abort(new Error('script aborted'));
+    else child.emit(completion, 0, null);
+
+    if (rejectCleanup) {
+      await expect(running).rejects.toThrow('cleanup rejected');
+    } else {
+      await expect(running).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+    }
+    expect(terminateProcessTree).toHaveBeenCalledWith(
+      321,
+      expect.any(Function),
+      {},
+      { observation, requireConfirmedCleanup },
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      'node',
+      [],
+      expect.objectContaining({ detached }),
+    );
+  });
+
   it('redacts short sensitive scalar tokens only at token boundaries', () => {
     expect(summarizePluginScriptOutput(
       'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
@@ -137,7 +216,8 @@ describe('postApply script', () => {
     expect(summary).not.toContain('tail');
   });
 
-  it('redacts a sensitive token split across the output limit by the default runner', async () => {
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'redacts a sensitive token split across the output limit by the default runner', async () => {
     const secret = '§post-apply-cross-boundary-sensitive-token';
     const plugin = await createPlugin({ sensitiveDefault: secret });
     await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
@@ -169,9 +249,11 @@ describe('postApply script', () => {
     for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
       expect(error.message).not.toContain(secret.slice(0, prefixLength));
     }
-  });
+    },
+  );
 
-  it('keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
     const plugin = await createPlugin();
     await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
       'process.stdin.resume();',
@@ -195,7 +277,8 @@ describe('postApply script', () => {
     expect(error.message.startsWith(prefix)).toBe(true);
     expect(error.message.slice(prefix.length)).toHaveLength(OUTPUT_LIMIT);
     expect(error.message).not.toContain('tail');
-  });
+    },
+  );
 
   it('uses only user config for a user target', async () => {
     const plugin = await createPlugin({ sensitiveDefault: 'default-value' });

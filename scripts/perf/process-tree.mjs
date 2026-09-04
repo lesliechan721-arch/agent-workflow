@@ -1,10 +1,13 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_CLEANUP_SETTLE_MS = 500;
 const DEFAULT_DESCENDANT_SNAPSHOT_TIMEOUT_MS = 500;
 const DEFAULT_DESCENDANT_MONITOR_INTERVAL_MS = 250;
 const TASKKILL_TIMEOUT_MS = 400;
+const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
+const TEST_TREE_ID_ENV = 'AW_TEST_PROCESS_TREE_ID';
 
 export class ProcessTreeTimeoutError extends Error {
   constructor(label, timeoutMs, stdout, stderr) {
@@ -264,6 +267,80 @@ export function snapshotWindowsProcessTree(rootPid, signal) {
   });
 }
 
+export function snapshotPosixRunProcesses(
+  rootPid,
+  runId,
+  treeId,
+  signal,
+) {
+  return new Promise((resolve, reject) => {
+    const ps = spawn('ps', [
+      'eww',
+      '-Ao',
+      'pid=,ppid=,pgid=,state=,lstart=,command=',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let output = '';
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', abort);
+      if (error) {
+        ps.stdout.destroy();
+        ps.unref();
+        reject(error);
+        return;
+      }
+      const identitiesByPid = new Map();
+      const owned = [];
+      const runAssignment = `${TEST_RUN_ID_ENV}=${runId}`;
+      const treeAssignment = `${TEST_TREE_ID_ENV}=${treeId}`;
+      for (const line of output.split('\n')) {
+        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+\S+\s+\d+)\s+(.*)$/u.exec(line);
+        if (!match) continue;
+        const identity = {
+          pid: Number(match[1]),
+          parentPid: Number(match[2]),
+          processGroupId: Number(match[3]),
+          state: match[4],
+          startIdentity: match[5].replace(/\s+/gu, ' '),
+          depth: 0,
+        };
+        identitiesByPid.set(identity.pid, identity);
+        const commandTokens = match[6].split(/\s+/u);
+        if (
+          identity.pid !== process.pid &&
+          commandTokens.includes(runAssignment) &&
+          commandTokens.includes(treeAssignment)
+        ) owned.push(identity);
+      }
+      resolve({
+        rootIdentity: identitiesByPid.get(rootPid) ?? null,
+        descendants: owned.filter((identity) => identity.pid !== rootPid),
+        identitiesByPid,
+        owned,
+      });
+    };
+    const abort = () => {
+      killDirectChild(ps, 'SIGKILL');
+      finish(signal.reason instanceof Error
+        ? signal.reason
+        : new Error('POSIX run audit aborted'));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    ps.stdout.on('data', (chunk) => { output += String(chunk); });
+    ps.once('error', finish);
+    ps.once('close', (code, closeSignal) => {
+      if (code === 0) finish();
+      else finish(new Error(
+        `POSIX run audit failed with exit code ${code ?? 'null'}${
+          closeSignal ? ` and signal ${closeSignal}` : ''
+        }.`,
+      ));
+    });
+  });
+}
+
 async function runBoundedOperation(timeoutMs, operation, activeControllers) {
   const controller = new AbortController();
   activeControllers.add(controller);
@@ -333,9 +410,266 @@ function signalPosixIdentities(options) {
   return { matchingDescendants, rootMatches };
 }
 
+function runPosixProcessTree(options, dependencies) {
+  const metrics = options.metrics;
+  const terminationGraceMs = options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+  const cleanupSettleMs = options.cleanupSettleMs ?? DEFAULT_CLEANUP_SETTLE_MS;
+  const auditTimeoutMs = options.descendantSnapshotTimeoutMs ??
+    DEFAULT_DESCENDANT_SNAPSHOT_TIMEOUT_MS;
+  const killProcess = dependencies.killPosixProcess ??
+    ((pid, signal) => process.kill(pid, signal));
+  const killProcessGroup = dependencies.killPosixProcessGroup ??
+    ((pid, signal) => process.kill(-pid, signal));
+  const legacySnapshot = dependencies.snapshotPosixProcessTree;
+  const auditProcessTree = dependencies.auditPosixProcessTree ?? (
+    legacySnapshot
+      ? async (rootPid, _runId, _treeId, signal) => {
+          const snapshot = await legacySnapshot(rootPid, signal);
+          return {
+            ...snapshot,
+            owned: [...snapshot.descendants],
+          };
+        }
+      : snapshotPosixRunProcesses
+  );
+  const runId = options.env?.[TEST_RUN_ID_ENV] || randomUUID();
+  const treeId = randomUUID();
+
+  if (options.signal?.aborted) {
+    return Promise.reject(
+      options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Process-tree run aborted.'),
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(options.command, options.args ?? [], {
+      cwd: options.cwd,
+      env: {
+        ...options.env,
+        [TEST_RUN_ID_ENV]: runId,
+        [TEST_TREE_ID_ENV]: treeId,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+      windowsHide: true,
+    });
+    if (metrics) {
+      metrics.managedSpawnCount = (metrics.managedSpawnCount ?? 0) + 1;
+      metrics.processTableScanCount ??= 0;
+      metrics.peakLiveDescendants ??= 0;
+      metrics.cleanupFailureCount ??= 0;
+      metrics.leakedProcessCount ??= 0;
+    }
+    const activeControllers = new Set();
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let cleanupPromise;
+    let cleanupSucceeded = false;
+    let outcome;
+    let forceRequested = Boolean(options.forceSignal?.aborted);
+    let resolveForce;
+    const force = new Promise((resolveForceSignal) => { resolveForce = resolveForceSignal; });
+
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      options.signal?.removeEventListener('abort', abortRun);
+      options.forceSignal?.removeEventListener('abort', forceRun);
+      for (const controller of activeControllers) controller.abort();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      if (metrics && cleanupPromise && !cleanupSucceeded && error) {
+        metrics.cleanupFailureCount += 1;
+        metrics.leakedProcessCount = null;
+      }
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const delay = (milliseconds) => new Promise((resolveDelay) => {
+      setTimeout(resolveDelay, milliseconds);
+    });
+    const signalGroup = (signal) => {
+      if (child.pid === undefined) return;
+      try {
+        killProcessGroup(child.pid, signal);
+      } catch {
+        if (!childHasExited(child)) killDirectChild(child, signal);
+      }
+    };
+    const captureAudit = async () => {
+      if (child.pid === undefined) {
+        throw new Error(`${options.label} cleanup could not verify process-tree ownership.`);
+      }
+      if (metrics) metrics.processTableScanCount += 1;
+      const result = await runBoundedOperation(
+        auditTimeoutMs,
+        (signal) => auditProcessTree(child.pid, runId, treeId, signal),
+        activeControllers,
+      );
+      if (!result.ok || !Array.isArray(result.value?.owned)) {
+        throw new Error(`${options.label} cleanup could not verify process-tree ownership.`);
+      }
+      const live = result.value.owned.filter((identity) =>
+        identity.pid !== process.pid && !String(identity.state ?? '').startsWith('Z')
+      );
+      if (metrics) {
+        metrics.peakLiveDescendants = Math.max(
+          metrics.peakLiveDescendants,
+          live.filter((identity) => identity.pid !== child.pid).length,
+        );
+      }
+      return { ...result.value, live };
+    };
+    const signalAudited = (audit, signal) => {
+      for (const identity of [...audit.live].reverse()) {
+        const current = audit.identitiesByPid.get(identity.pid);
+        if (!sameIdentity(identity, current)) continue;
+        try {
+          killProcess(identity.pid, signal);
+        } catch {
+          // The audited process can exit before the signal.
+        }
+      }
+    };
+    const auditOwnsProcessGroup = (audit) => {
+      if (child.pid === undefined) return false;
+      const ownedKeys = new Set(audit.live.map(identityKey));
+      const groupMembers = [...audit.identitiesByPid.values()].filter((identity) =>
+        identity.processGroupId === child.pid &&
+        !String(identity.state ?? '').startsWith('Z')
+      );
+      return groupMembers.length > 0 && groupMembers.every((identity) =>
+        ownedKeys.has(identityKey(identity))
+      );
+    };
+    const cleanup = async () => {
+      const firstSignal = 'SIGTERM';
+      if (!childHasExited(child)) signalGroup(firstSignal);
+      let audit;
+      try {
+        audit = await captureAudit();
+      } catch (error) {
+        if (!childHasExited(child)) killDirectChild(child, 'SIGKILL');
+        throw error;
+      }
+      if (childHasExited(child) && auditOwnsProcessGroup(audit)) {
+        signalGroup(firstSignal);
+      }
+      signalAudited(audit, firstSignal);
+      if (audit.live.length > 0 && !forceRequested) {
+        await Promise.race([delay(terminationGraceMs), force]);
+      }
+      if (audit.live.length > 0) {
+        audit = await captureAudit();
+        if (auditOwnsProcessGroup(audit)) signalGroup('SIGKILL');
+        signalAudited(audit, 'SIGKILL');
+        if (!childHasExited(child)) killDirectChild(child, 'SIGKILL');
+        await delay(cleanupSettleMs);
+        audit = await captureAudit();
+      }
+      if (!childHasExited(child)) {
+        killDirectChild(child, 'SIGKILL');
+        await delay(cleanupSettleMs);
+      }
+      if (
+        audit.live.length > 0 ||
+        !childHasExited(child)
+      ) {
+        throw new Error(`${options.label} cleanup could not confirm descendant termination.`);
+      }
+      if (metrics) metrics.leakedProcessCount = 0;
+      cleanupSucceeded = true;
+    };
+    const complete = () => {
+      const currentOutcome = outcome;
+      if (currentOutcome.kind === 'timeout') {
+        finish(new ProcessTreeTimeoutError(
+          options.label,
+          options.timeoutMs,
+          stdout,
+          stderr,
+        ));
+        return;
+      }
+      if (currentOutcome.kind === 'abort') {
+        finish(currentOutcome.reason);
+        return;
+      }
+      if (currentOutcome.code !== 0 && !options.allowNonZeroExitCode) {
+        finish(new Error(
+          `${options.label} failed with exit code ${currentOutcome.code ?? 'null'}${
+            currentOutcome.signal ? ` and signal ${currentOutcome.signal}` : ''
+          }.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+        ));
+        return;
+      }
+      finish(undefined, {
+        stdout,
+        stderr,
+        exitCode: currentOutcome.code,
+        signal: currentOutcome.signal,
+      });
+    };
+    const startCleanup = () => {
+      if (cleanupPromise) return;
+      cleanupPromise = cleanup();
+      void cleanupPromise.then(complete, (error) => finish(error));
+    };
+    const abortRun = () => {
+      if (settled || outcome) return;
+      outcome = {
+        kind: 'abort',
+        reason: options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new Error('Process-tree run aborted.'),
+      };
+      startCleanup();
+    };
+    const forceRun = () => {
+      forceRequested = true;
+      resolveForce();
+    };
+    options.signal?.addEventListener('abort', abortRun, { once: true });
+    options.forceSignal?.addEventListener('abort', forceRun, { once: true });
+
+    const timeoutTimer = options.timeoutMs == null ? undefined : setTimeout(() => {
+      if (settled || outcome) return;
+      outcome = { kind: 'timeout' };
+      startCleanup();
+    }, options.timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      const text = String(chunk);
+      if (options.captureOutput !== false) stdout += text;
+      options.onStdout?.(text);
+    });
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk);
+      if (options.captureOutput !== false) stderr += text;
+      options.onStderr?.(text);
+    });
+    child.once('error', (error) => {
+      if (!outcome) finish(new Error(`${options.label} failed to start: ${error.message}`));
+    });
+    child.once('exit', (code, signal) => {
+      if (settled || outcome) return;
+      outcome = { kind: 'exit', code, signal };
+      startCleanup();
+    });
+    if (options.signal?.aborted) abortRun();
+    if (options.forceSignal?.aborted) forceRun();
+  });
+}
+
 export function runProcessTree(options, dependencies = {}) {
   const metrics = options.metrics;
   const platform = dependencies.platform ?? process.platform;
+  if (platform !== 'win32') return runPosixProcessTree(options, dependencies);
   const snapshotProcessTree = platform === 'win32'
     ? dependencies.snapshotWindowsProcessTree ?? snapshotWindowsProcessTree
     : dependencies.snapshotPosixProcessTree ?? snapshotPosixProcessTree;

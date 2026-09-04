@@ -433,9 +433,23 @@ export function createExecFileNativeCliRunner(
       let streamedStderr = '';
       let timeout: NodeJS.Timeout | undefined;
       let processTreeObservation: ProcessTreeObservation | undefined;
+      let processTreeCleanup: Promise<Error | undefined> | undefined;
+      let completionStarted = false;
       let detachOutputListeners = (): void => {};
       const abortListener = (): void => {
         startTermination('aborted', invocation.signal?.reason);
+      };
+
+      const cleanupProcessTree = (requireConfirmedCleanup: boolean): Promise<Error | undefined> => {
+        processTreeCleanup ??= settleNativeCliTerminationCleanup(
+          child,
+          terminateProcessTreeImpl,
+          processTreeObservation,
+          requireConfirmedCleanup,
+          cleanupStrategy === 'process-group',
+          killProcess,
+        );
+        return processTreeCleanup;
       };
 
       const clearLifecycle = (): void => {
@@ -526,24 +540,73 @@ export function createExecFileNativeCliRunner(
           }
         }
         Promise.resolve()
-          .then(() => settleNativeCliTerminationCleanup(
-            child,
-            terminateProcessTreeImpl,
-            processTreeObservation,
+          .then(() => cleanupProcessTree(
             cleanupStrategy === 'observed-tree'
               ? (child.exitCode != null || child.signalCode != null) && callbackOutput === undefined
               : true,
-            cleanupStrategy === 'process-group',
-            killProcess,
           ))
           .then(finishTermination);
       }
 
+      const finishCallback = (cleanupError?: Error): void => {
+        if (terminationReason) return;
+        const output = callbackOutput ?? { stdout: streamedStdout, stderr: streamedStderr };
+        const childFailed =
+          child.exitCode != null && child.exitCode !== 0 || child.signalCode != null;
+        if (callbackError || childFailed) {
+          const callbackExitCode = callbackError && typeof callbackError === 'object' &&
+            typeof (callbackError as { code?: number | string }).code === 'number'
+            ? (callbackError as { code: number }).code
+            : undefined;
+          const exitCode =
+            callbackExitCode !== undefined
+              ? callbackExitCode
+              : child.exitCode != null
+                ? child.exitCode
+              : isAbortLikeError(callbackError) ||
+                  isTimeoutLikeError(callbackError, invocation.timeoutMs)
+                ? 124
+                : 1;
+          rejectOnce(new NativeCliError({
+            invocation,
+            exitCode,
+            ...output,
+            cause: callbackError ?? new Error(
+              `Command exited with ${child.signalCode ?? `code ${exitCode}`}.`,
+            ),
+            cleanupError,
+          }));
+          return;
+        }
+        if (cleanupError) {
+          rejectOnce(new NativeCliError({
+            invocation,
+            exitCode: 1,
+            ...output,
+            cause: cleanupError,
+            cleanupError,
+            reason: 'exit',
+          }));
+          return;
+        }
+        resolveOnce({ exitCode: 0, ...output });
+      };
+
+      const startCompletion = (): void => {
+        if (settled || terminationReason || completionStarted) return;
+        completionStarted = true;
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+        void cleanupProcessTree(true).then(finishCallback);
+      };
+
       const processMarker = randomUUID();
       const trustedAgentCli = isAgentNativeCliInvocation(invocation);
-      const cleanupStrategy = trustedAgentCli
-        ? platform === 'win32' ? 'on-demand-tree' : 'process-group'
-        : 'observed-tree';
+      const cleanupStrategy = platform !== 'win32'
+        ? trustedAgentCli ? 'process-group' : 'observed-tree'
+        : trustedAgentCli ? 'on-demand-tree' : 'observed-tree';
       child = execFileImpl(
         invocation.command,
         invocation.args,
@@ -553,7 +616,7 @@ export function createExecFileNativeCliRunner(
             ...(invocation.env ?? process.env),
             [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
           },
-          detached: cleanupStrategy === 'process-group',
+          detached: platform !== 'win32',
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -566,30 +629,11 @@ export function createExecFileNativeCliRunner(
           if (terminationReason) {
             return;
           }
-
-          if (!error) {
-            resolveOnce({
-              exitCode: 0,
-              stdout,
-              stderr,
-            });
+          if (cleanupStrategy === 'on-demand-tree') {
+            queueMicrotask(() => finishCallback());
             return;
           }
-
-          const exitCode =
-            typeof (error as { code?: number | string }).code === 'number'
-              ? ((error as { code: number }).code)
-              : isAbortLikeError(error) || isTimeoutLikeError(error, invocation.timeoutMs)
-                ? 124
-                : 1;
-
-          rejectOnce(new NativeCliError({
-            invocation,
-            exitCode,
-            stdout,
-            stderr,
-            cause: error,
-          }));
+          queueMicrotask(startCompletion);
         },
       );
       if (cleanupStrategy === 'observed-tree' && child.pid !== undefined) {
@@ -608,6 +652,11 @@ export function createExecFileNativeCliRunner(
         child.stdout?.removeListener?.('data', stdoutListener);
         child.stderr?.removeListener?.('data', stderrListener);
       };
+      if (cleanupStrategy !== 'on-demand-tree') {
+        child.once('exit', () => {
+          if (!terminationReason) startCompletion();
+        });
+      }
 
       if (invocation.timeoutMs && invocation.timeoutMs > 0) {
         child.once('spawn', () => {

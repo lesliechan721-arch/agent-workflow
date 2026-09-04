@@ -140,7 +140,7 @@ describe('performance gate process tree cleanup', () => {
       cleanupFailureCount: 0,
       leakedProcessCount: 0,
     });
-    expect(metrics.processTableScanCount).toBeGreaterThanOrEqual(3);
+    expect(metrics.processTableScanCount).toBeLessThanOrEqual(3);
   });
 
   itOnPosix('aborts an active tree through an external signal', async () => {
@@ -264,10 +264,23 @@ describe('performance gate process tree cleanup', () => {
     const fakeDescendantPid = 900_001;
     const descendantSignals = [];
     let termObserved = false;
-    const snapshotPosixProcessTree = async (rootPid) => parsePosixProcessTree(rootPid, [
-      `${rootPid} 1 child-start`,
-      `${fakeDescendantPid} ${rootPid} ${termObserved ? 'reused-start' : 'original-start'}`,
-    ].join('\n'));
+    const auditPosixProcessTree = async (rootPid) => {
+      const rootIdentity = { pid: rootPid, parentPid: 1, startIdentity: 'child-start' };
+      const descendant = {
+        pid: fakeDescendantPid,
+        parentPid: rootPid,
+        startIdentity: termObserved ? 'reused-start' : 'original-start',
+      };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([
+          [rootPid, rootIdentity],
+          [fakeDescendantPid, descendant],
+        ]),
+        owned: termObserved ? [] : [descendant],
+      };
+    };
 
     await expect(runProcessTree({
       label: 'reused PID fixture',
@@ -279,8 +292,7 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcess: (pid, signal) => {
         if (pid === fakeDescendantPid) {
           descendantSignals.push(signal);
@@ -302,15 +314,20 @@ describe('performance gate process tree cleanup', () => {
     const descendantSignals = [];
     let snapshotCalls = 0;
     let newChildKilled = false;
-    const snapshotPosixProcessTree = async (rootPid) => {
+    const auditPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
       const rootStart = snapshotCalls === 1 ? 'original-root' : 'reused-root';
-      return parsePosixProcessTree(rootPid, [
-        `${rootPid} 1 ${rootStart}`,
-        ...(snapshotCalls === 1 || newChildKilled
-          ? []
-          : [`${newChildPid} ${rootPid} new-child-start`]),
-      ].join('\n'));
+      const rootIdentity = { pid: rootPid, parentPid: 1, startIdentity: rootStart };
+      const newChild = { pid: newChildPid, parentPid: rootPid, startIdentity: 'new-child-start' };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([
+          [rootPid, rootIdentity],
+          ...(snapshotCalls === 1 || newChildKilled ? [] : [[newChildPid, newChild]]),
+        ]),
+        owned: snapshotCalls === 1 ? [rootIdentity] : [],
+      };
     };
 
     await expect(runProcessTree({
@@ -323,8 +340,7 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcess: (pid, signal) => {
         if (pid === newChildPid) {
           descendantSignals.push(signal);
@@ -339,18 +355,26 @@ describe('performance gate process tree cleanup', () => {
     expect(descendantSignals).toEqual([]);
   });
 
-  itOnPosix('does not force KILL a process group after the root identity changes', async () => {
+  itOnPosix('does not force KILL a process group after the audited root identity changes', async () => {
     const controller = new AbortController();
     const forceController = new AbortController();
     const abortReason = new Error('interrupt fixture');
     const groupSignals = [];
     let snapshotCalls = 0;
-    const snapshotPosixProcessTree = async (rootPid) => {
+    const auditPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
-      return parsePosixProcessTree(
-        rootPid,
-        `${rootPid} 1 ${snapshotCalls === 1 ? 'original-root' : 'reused-root'}`,
-      );
+      const rootIdentity = {
+        pid: rootPid,
+        parentPid: 1,
+        processGroupId: rootPid,
+        startIdentity: snapshotCalls === 1 ? 'original-root' : 'reused-root',
+      };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([[rootPid, rootIdentity]]),
+        owned: snapshotCalls === 1 ? [rootIdentity] : [],
+      };
     };
     const running = runProcessTree({
       label: 'reused POSIX group fixture',
@@ -364,22 +388,19 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 10_000,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcessGroup: (_pid, signal) => groupSignals.push(signal),
     });
-    while (snapshotCalls === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     controller.abort(abortReason);
     forceController.abort(new Error('repeat interrupt fixture'));
     await expect(running).rejects.toBe(abortReason);
 
-    expect(groupSignals).toEqual([]);
+    expect(groupSignals).toEqual(['SIGTERM']);
   });
 
-  itOnPosix('discovers root and detached grandchild on the third snapshot', async () => {
+  itOnPosix('reports a final audit failure after killing the direct root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-third-snapshot-root-'));
     roots.push(root);
     const pidFile = path.join(root, 'pids.json');
@@ -398,13 +419,9 @@ describe('performance gate process tree cleanup', () => {
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
-    let grandchildKilled = false;
     const snapshotPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
-      if (snapshotCalls < 3) {
-        throw new Error(`synthetic snapshot failure ${snapshotCalls}`);
-      }
-      return processTreeSnapshot(rootPid, await readJsonEventually(pidFile));
+      throw new Error(`synthetic snapshot failure ${snapshotCalls}`);
     };
 
     await expect(runProcessTree({
@@ -419,25 +436,14 @@ describe('performance gate process tree cleanup', () => {
       cleanupSettleMs: 100,
     }, {
       snapshotPosixProcessTree,
-      verifyPosixProcessTree: async (rootPid) => processTreeSnapshot(
-        rootPid,
-        await readJsonEventually(pidFile),
-        { omitGrandchild: grandchildKilled },
-      ),
-      killPosixProcess: (pid, signal) => {
-        if (signal === 'SIGKILL') {
-          grandchildKilled = true;
-        }
-        process.kill(pid, signal);
-      },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not verify process-tree ownership');
 
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.child, pids.grandchild);
-    await waitForProcessesToExit([pids.child, pids.grandchild], 500);
-    expect(snapshotCalls).toBe(3);
+    await waitForProcessesToExit([pids.child], 500);
+    expect(snapshotCalls).toBe(1);
     expect(isProcessAlive(pids.child)).toBe(false);
-    expect(isProcessAlive(pids.grandchild)).toBe(false);
+    expect(isProcessAlive(pids.grandchild)).toBe(true);
   });
 
   itOnPosix('falls back to the owned process group when snapshots lack root identity', async () => {
@@ -486,8 +492,8 @@ describe('performance gate process tree cleanup', () => {
     const pid = Number(await fs.readFile(pidFile, 'utf8'));
     observedPids.push(pid);
     await waitForProcessesToExit([pid], 500);
-    expect(snapshotCalls).toBe(3);
-    expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(snapshotCalls).toBe(1);
+    expect(groupSignals).toEqual(['SIGTERM']);
     expect(isProcessAlive(pid)).toBe(false);
     expect(metrics).toMatchObject({
       managedSpawnCount: 1,

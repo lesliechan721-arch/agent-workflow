@@ -109,7 +109,7 @@ AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-re
 
 renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。配置 helper 在 `config.mode` 为 `artifact-render` 的 context 下只支持 effective 读取，显式 user/project 读取会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
-插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。安装或执行前必须把 executable source 作为受信任代码评审。
+插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。postApply 必须在返回前等待自己的全部后代退出，不得 daemonize 或遗留后台任务；AW 会在正常退出、超时和中断后清理本次脚本进程树，清理无法确认时把该 postApply 报告为失败 warning。安装或执行前必须把 executable source 作为受信任代码评审。
 
 ## 版本与恢复
 

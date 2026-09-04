@@ -53,9 +53,9 @@ const availableProcessTree = {
     args: string[],
     _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
-  ): void => callback(null, args.includes('pid=,command=')
+  ): void => callback(null, args.some((arg) => arg.includes('command='))
     ? sentinelAlive
-      ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
+      ? `900001 1 900001 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
       : ''
     : sentinelAlive
       ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
