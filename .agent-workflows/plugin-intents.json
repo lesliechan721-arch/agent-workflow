@@ -1,6 +1,13 @@
 {
   "schemaVersion": 2,
   "kind": "aw-plugin-intents",
-  "roots": [],
+  "roots": [
+    {
+      "pluginId": "official/aw-plugin-development",
+      "platforms": [
+        "codex"
+      ]
+    }
+  ],
   "dependencyScopeOverrides": []
 }

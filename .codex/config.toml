@@ -1,0 +1,8 @@
+[plugins."agent-content-toolkit@aw"]
+enabled = true
+
+[plugins."agent-skill-toolkit@aw"]
+enabled = true
+
+[plugins."aw-plugin-development@aw"]
+enabled = true
