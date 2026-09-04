@@ -108,7 +108,7 @@ function isDigest(value: unknown): value is string {
 }
 
 function isCommit(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{40,64}$/u.test(value);
+  return typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
 }
 
 function isTimestamp(value: unknown): value is string {

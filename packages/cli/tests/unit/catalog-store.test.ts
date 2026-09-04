@@ -18,6 +18,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 const NOW = new Date('2026-09-02T12:00:00.000Z');
 const OLD_FORMAL = new Date(NOW.getTime() - 31 * 24 * 60 * 60 * 1000);
 const OLD_TEMP = new Date(NOW.getTime() - 25 * 60 * 60 * 1000);
+const AFTER_TEMP_RETENTION = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
 
 async function setTreeTime(root: string, date: Date): Promise<void> {
   const stat = await fs.lstat(root);
@@ -81,8 +82,25 @@ describe('Catalog immutable store maintenance', () => {
     }));
     await expect(fs.pathExists(firstLocation.entryDir)).resolves.toBe(true);
 
-    const pruned = await catalogStorePrune({ dryRun: false, env, now: NOW });
+    let claimedPath: string | undefined;
+    const pruned = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      runtime: {
+        afterDeleteClaim: async ({ claimPath, storeKey }) => {
+          expect(storeKey).toBe(firstLocation.storeKey);
+          await expect(fs.realpath(path.dirname(claimPath)))
+            .resolves.toBe(await fs.realpath(path.dirname(firstLocation.entryDir)));
+          expect(path.basename(claimPath)).toMatch(/^\.delete-[0-9a-f-]+\.tmp$/u);
+          await expect(fs.pathExists(firstLocation.entryDir)).resolves.toBe(false);
+          await expect(fs.pathExists(claimPath)).resolves.toBe(true);
+          claimedPath = claimPath;
+        },
+      },
+    });
     expect(pruned.deleted).toContainEqual(expect.objectContaining({ storeKey: firstLocation.storeKey }));
+    expect(claimedPath).toBeDefined();
     await expect(fs.pathExists(firstLocation.entryDir)).resolves.toBe(false);
     const active = (await readCatalogGenerationState(env)).sources.local!.active!;
     await expect(fs.pathExists(resolveCatalogStoreLocation({
@@ -200,25 +218,219 @@ describe('Catalog immutable store maintenance', () => {
     await Promise.all(locations.map((location) => setTreeTime(location.entryDir, OLD_FORMAL)));
 
     let removeCalls = 0;
+    let failedClaimPath: string | undefined;
     const result = await catalogStorePrune({
       dryRun: false,
       env,
       now: NOW,
       remove: async (target) => {
         removeCalls += 1;
-        if (removeCalls === 1) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        if (removeCalls === 1) {
+          failedClaimPath = target;
+          throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        }
         await fs.remove(target);
       },
     });
-    expect(result.entries.filter((entry) => entry.status === 'reclaimable').map((entry) => entry.storeKey))
-      .toEqual(locations.map((location) => location.storeKey));
     expect(result).toMatchObject({ ok: false, overallState: 'partial' });
-    expect(result.errors).toContainEqual(expect.objectContaining({
-      storeKey: locations[0]!.storeKey, code: 'catalogStoreDeleteFailed',
-    }));
     expect(result.deleted).toContainEqual(expect.objectContaining({ storeKey: locations[1]!.storeKey }));
-    await expect(fs.pathExists(locations[0]!.entryDir)).resolves.toBe(true);
+    expect(failedClaimPath).toBeDefined();
+    await expect(fs.realpath(path.dirname(failedClaimPath!)))
+      .resolves.toBe(await fs.realpath(path.dirname(locations[0]!.entryDir)));
+    expect(path.basename(failedClaimPath!)).toMatch(/^\.delete-[0-9a-f-]+\.tmp$/u);
+    const failedClaimStoreKey = `${locations[0]!.storeKey.split('/')[0]}/${path.basename(failedClaimPath!)}`;
+    expect(result.entries).toContainEqual(expect.objectContaining({
+      storeKey: failedClaimStoreKey,
+      category: 'deleteClaim',
+      status: 'retained',
+      reason: 'deleteClaimWithin24Hours',
+    }));
+    expect(result.retained).toContainEqual({
+      storeKey: failedClaimStoreKey,
+      reason: 'deleteClaimWithin24Hours',
+    });
+    expect(result.errors).toContainEqual(expect.objectContaining({
+      storeKey: failedClaimStoreKey,
+      code: 'catalogStoreDeleteFailed',
+    }));
+    expect(JSON.stringify(result)).not.toContain(locations[0]!.entryDir);
+    await expect(fs.pathExists(locations[0]!.entryDir)).resolves.toBe(false);
+    await expect(fs.pathExists(failedClaimPath!)).resolves.toBe(true);
     await expect(fs.pathExists(locations[1]!.entryDir)).resolves.toBe(false);
+
+    const retry = await catalogStorePrune({ dryRun: false, env, now: NOW });
+    expect(retry.deleted).toEqual([]);
+    expect(retry.entries).toContainEqual(expect.objectContaining({
+      storeKey: failedClaimStoreKey,
+      category: 'deleteClaim',
+      status: 'retained',
+      reason: 'deleteClaimWithin24Hours',
+    }));
+    await expect(fs.pathExists(failedClaimPath!)).resolves.toBe(true);
+
+    const expiredRetry = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: AFTER_TEMP_RETENTION,
+    });
+    expect(expiredRetry.deleted).toContainEqual(expect.objectContaining({
+      storeKey: failedClaimStoreKey,
+    }));
+    await expect(fs.pathExists(failedClaimPath!)).resolves.toBe(false);
+  });
+
+  it('restores the original entry when setting the delete claim time fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-claim-time-failure');
+    const env = await configureSource(root);
+    const first = (await sync(root, env)).active!;
+    await sync(root, env, 'second\n');
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: first.logicalIdentity,
+      snapshotDigest: first.snapshotDigest,
+      env,
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+
+    let claimPath: string | undefined;
+    const result = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      runtime: {
+        updateDeleteClaimTime: async (target) => {
+          claimPath = target;
+          throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        },
+      },
+    });
+
+    expect(result.deleted).toEqual([]);
+    expect(result.retained).toContainEqual({
+      storeKey: location.storeKey,
+      reason: 'staleBeforeDelete',
+    });
+    expect(result.entries).toContainEqual(expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'retained',
+      reason: 'staleBeforeDelete',
+    }));
+    expect(claimPath).toBeDefined();
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+    await expect(fs.pathExists(claimPath!)).resolves.toBe(false);
+  });
+
+  it('reports deletion when remove throws after the claim is gone', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-remove-after-delete');
+    const env = await configureSource(root);
+    const first = (await sync(root, env)).active!;
+    await sync(root, env, 'second\n');
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: first.logicalIdentity,
+      snapshotDigest: first.snapshotDigest,
+      env,
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+
+    const result = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      remove: async (target) => {
+        await fs.remove(target);
+        throw new Error('completion status unavailable');
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, overallState: 'succeeded', errors: [] });
+    expect(result.deleted).toContainEqual(expect.objectContaining({ storeKey: location.storeKey }));
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(false);
+  });
+
+  it('retains entries whose path, retention evidence, or identity changes after inspection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-stale');
+    const env = await configureSource(root);
+    const first = (await sync(root, env)).active!;
+    const second = (await sync(root, env, 'second\n')).active!;
+    const third = (await sync(root, env, 'third\n')).active!;
+    await sync(root, env, 'fourth\n');
+    const locations = [first, second, third].map((active) => resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity, snapshotDigest: active.snapshotDigest, env,
+    })).sort((left, right) => left.storeKey.localeCompare(right.storeKey));
+    await Promise.all(locations.map((location) => setTreeTime(location.entryDir, OLD_FORMAL)));
+    const replacementSentinel = path.join(locations[0]!.entryDir, 'new-content.txt');
+
+    const result = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      runtime: {
+        afterInitialInspection: async () => {
+          await fs.remove(locations[0]!.entryDir);
+          await fs.outputFile(replacementSentinel, 'replacement must survive\n');
+          await setTreeTime(locations[0]!.entryDir, OLD_FORMAL);
+          await setTreeTime(locations[1]!.entryDir, NOW);
+          const metadataPath = path.join(locations[2]!.entryDir, 'metadata.json');
+          const metadata = await fs.readJson(metadataPath) as Record<string, unknown>;
+          await fs.writeJson(metadataPath, { ...metadata, logicalIdentity: 'catalog-store-tost' });
+          await setTreeTime(locations[2]!.entryDir, OLD_FORMAL);
+        },
+      },
+    });
+
+    expect(result.deleted).toEqual([]);
+    expect(result.retained).toEqual(expect.arrayContaining(locations.map((location) => ({
+      storeKey: location.storeKey,
+      reason: 'staleBeforeDelete',
+    }))));
+    expect(result.entries).toEqual(expect.arrayContaining(locations.map((location) => expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'retained',
+      reason: 'staleBeforeDelete',
+    }))));
+    await expect(fs.readFile(replacementSentinel, 'utf8')).resolves.toBe('replacement must survive\n');
+    await expect(fs.pathExists(locations[1]!.entryDir)).resolves.toBe(true);
+    await expect(fs.pathExists(locations[2]!.entryDir)).resolves.toBe(true);
+  });
+
+  it('retains an entry that becomes Active after initial inspection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-active-recheck');
+    const env = await configureSource(root);
+    const first = (await sync(root, env)).active!;
+    await sync(root, env, 'second\n');
+    const firstLocation = resolveCatalogStoreLocation({
+      logicalIdentity: first.logicalIdentity, snapshotDigest: first.snapshotDigest, env,
+    });
+    await setTreeTime(firstLocation.entryDir, OLD_FORMAL);
+
+    const result = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      runtime: {
+        afterInitialInspection: async () => {
+          const state = await readCatalogGenerationState(env);
+          await fs.writeJson(path.join(env.AW_HOME!, 'catalog-state.json'), {
+            ...state,
+            sources: {
+              ...state.sources,
+              local: { ...state.sources.local, active: first },
+            },
+          });
+        },
+      },
+    });
+
+    expect(result.deleted).toEqual([]);
+    expect(result.entries).toContainEqual(expect.objectContaining({
+      storeKey: firstLocation.storeKey,
+      status: 'active',
+      reason: 'active',
+    }));
+    await expect(fs.pathExists(firstLocation.entryDir)).resolves.toBe(true);
   });
 
   it('serializes prune with activation and preserves the entry that becomes Active', async () => {

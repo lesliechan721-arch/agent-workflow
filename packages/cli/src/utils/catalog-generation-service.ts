@@ -62,6 +62,7 @@ export interface CatalogGenerationServiceRuntime {
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
   afterCandidateResolved?: () => Promise<void>;
   afterRecoveryStorePublished?: () => Promise<void>;
+  afterInactiveStoreRepairPrepared?: () => Promise<void>;
   inspectSourceImpact?: typeof inspectCatalogSourceImpact;
 }
 
@@ -777,6 +778,7 @@ async function activateResolvedCandidate(options: {
   const candidate = options.resolved.candidate;
   const store = options.store ?? await publishCatalogStoreEntry({
     resolution: options.resolved.resolution, env: options.env, signal: options.signal,
+    afterInactiveRepairPrepared: options.runtime?.afterInactiveStoreRepairPrepared,
   });
   assertStoreMatchesCandidate(options.sourceId, store, candidate);
   return withAwHomeMutationLock({
@@ -989,6 +991,7 @@ export async function recoverCatalogGenerationStateAndActivate(options: {
     await options.runtime?.afterCandidateResolved?.();
     const store = await publishCatalogStoreEntry({
       resolution: resolved.resolution, env, signal: options.signal,
+      afterInactiveRepairPrepared: options.runtime?.afterInactiveStoreRepairPrepared,
     });
     assertStoreMatchesCandidate(options.sourceId, store, resolved.candidate);
     await options.runtime?.afterRecoveryStorePublished?.();

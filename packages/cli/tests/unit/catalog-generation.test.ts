@@ -17,9 +17,15 @@ import {
   syncCatalogSourceGeneration,
 } from '../../src/utils/catalog-generation-service.js';
 import type { CatalogGenerationCandidateEvidence, GitCatalogSource } from '../../src/types.js';
-import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import {
+  readCatalogGenerationState,
+  withCatalogGenerationStateTransaction,
+} from '../../src/utils/catalog-generation-state.js';
 import {
   createCatalogStoreKey,
+  publishCatalogStoreEntry,
+  readCatalogStoreEntry,
+  replaceDamagedCatalogStoreEntry,
   resolveCatalogStoreLocation,
 } from '../../src/utils/catalog-generation-store.js';
 import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
@@ -67,7 +73,167 @@ async function configurePathSource(sourcePath: string): Promise<void> {
   await replaceCatalogSourcesConfig({ config, expectedDigest: current.digest, env: isolation.env });
 }
 
+async function arrangeDamagedInactiveCandidate(name: string) {
+  const isolation = getCurrentSourceTestIsolation();
+  const sourceRoot = fixturePath(name);
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active content\n');
+  await configurePathSource(sourceRoot);
+  const first = await syncCatalogSourceGeneration({
+    sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+  });
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'inactive candidate\n');
+  const candidate = await syncCatalogSourceGeneration({
+    sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+  });
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active content\n');
+  const active = await syncCatalogSourceGeneration({
+    sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+  });
+  expect(active.active!.snapshotDigest).toBe(first.active!.snapshotDigest);
+  const candidateLocation = resolveCatalogStoreLocation({
+    logicalIdentity: candidate.active!.logicalIdentity,
+    snapshotDigest: candidate.active!.snapshotDigest,
+    env: isolation.env,
+  });
+  await fs.writeFile(candidateLocation.metadataPath, 'damaged inactive entry\n');
+  await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'inactive candidate\n');
+  const resolution = await catalogPathProviderInternal.resolve({
+    id: 'team', type: 'path', path: sourceRoot, primary: true,
+  }, { cliVersion: '1.0.0', env: isolation.env });
+  return {
+    isolation,
+    resolution,
+    active: active.active!,
+    candidate: candidate.active!,
+    candidateLocation,
+  };
+}
+
 describe('Catalog Active store and state', () => {
+  it('automatically replaces a damaged inactive candidate during ordinary sync', async () => {
+    const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-repair');
+
+    const synced = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: fixture.isolation.env,
+    });
+
+    expect(synced).toMatchObject({
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: fixture.candidate.snapshotDigest },
+    });
+    await expect(readCatalogStoreEntry({
+      logicalIdentity: fixture.candidate.logicalIdentity,
+      snapshotDigest: fixture.candidate.snapshotDigest,
+      env: fixture.isolation.env,
+    })).resolves.toMatchObject({ reused: true });
+  });
+
+  it('keeps a damaged candidate when it becomes Active before inactive repair takes the lock', async () => {
+    const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-active-race');
+    let raced = false;
+
+    await expect(syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: fixture.isolation.env,
+      runtime: {
+        afterInactiveStoreRepairPrepared: async () => {
+          raced = true;
+          await withCatalogGenerationStateTransaction({
+            env: fixture.isolation.env,
+            action: async (current) => ({
+              state: {
+                ...current,
+                sources: {
+                  ...current.sources,
+                  racer: { active: fixture.candidate },
+                },
+              },
+              result: undefined,
+            }),
+          });
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogGenerationMetadataInvalid' });
+
+    expect(raced).toBe(true);
+    await expect(fs.readFile(fixture.candidateLocation.metadataPath, 'utf8'))
+      .resolves.toBe('damaged inactive entry\n');
+    expect((await readCatalogGenerationState(fixture.isolation.env)).sources.racer!.active)
+      .toEqual(fixture.candidate);
+  });
+
+  it('reuses a candidate repaired by another writer before inactive repair takes the lock', async () => {
+    const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-concurrent-repair');
+    let repaired = false;
+
+    const synced = await syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: fixture.isolation.env,
+      runtime: {
+        afterInactiveStoreRepairPrepared: async () => {
+          repaired = true;
+          await replaceDamagedCatalogStoreEntry({
+            resolution: fixture.resolution,
+            logicalIdentity: fixture.candidate.logicalIdentity,
+            snapshotDigest: fixture.candidate.snapshotDigest,
+            env: fixture.isolation.env,
+          });
+        },
+      },
+    });
+
+    expect(repaired).toBe(true);
+    expect(synced.active!.snapshotDigest).toBe(fixture.candidate.snapshotDigest);
+    await expect(readCatalogStoreEntry({
+      logicalIdentity: fixture.candidate.logicalIdentity,
+      snapshotDigest: fixture.candidate.snapshotDigest,
+      env: fixture.isolation.env,
+    })).resolves.toMatchObject({ reused: true });
+  });
+
+  it('keeps a damaged inactive candidate when generation state is invalid', async () => {
+    const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-invalid-state');
+    const statePath = path.join(fixture.isolation.env.AW_HOME!, 'catalog-state.json');
+    const invalidState = '{ invalid state\n';
+    await fs.writeFile(statePath, invalidState);
+
+    await expect(publishCatalogStoreEntry({
+      resolution: fixture.resolution,
+      env: fixture.isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogGenerationStateInvalid' });
+
+    await expect(fs.readFile(fixture.candidateLocation.metadataPath, 'utf8'))
+      .resolves.toBe('damaged inactive entry\n');
+    await expect(fs.readFile(statePath, 'utf8')).resolves.toBe(invalidState);
+  });
+
+  it('restores a damaged inactive candidate when automatic replacement fails', async () => {
+    const fixture = await arrangeDamagedInactiveCandidate('inactive-candidate-restore');
+    const rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (source, target) => {
+      if (path.basename(String(source)).startsWith('.replacement-')
+        && String(target) === fixture.candidateLocation.entryDir) {
+        throw Object.assign(new Error('injected inactive replacement failure'), { code: 'EIO' });
+      }
+      return rename(source, target);
+    });
+    try {
+      await expect(syncCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: fixture.isolation.env,
+      })).rejects.toMatchObject({ code: 'catalogGenerationPublishFailed' });
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    await expect(fs.readFile(fixture.candidateLocation.metadataPath, 'utf8'))
+      .resolves.toBe('damaged inactive entry\n');
+    expect((await readCatalogGenerationState(fixture.isolation.env)).sources.team!.active)
+      .toEqual(fixture.active);
+  });
+
   it('enforces Git version policy in the generation service and permits a verified ref change', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const roots = {

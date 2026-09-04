@@ -21,15 +21,19 @@ import {
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-async function configurePathSource(root: string): Promise<NodeJS.ProcessEnv> {
-  const isolation = getCurrentSourceTestIsolation();
-  await createCatalogSnapshotFixture(root);
+async function writeCliSourceSnapshot(root: string, readme = 'demo\n'): Promise<void> {
+  await createCatalogSnapshotFixture(root, 'demo', [], readme);
   await fs.writeJson(path.join(root, '.aw-generated.json'), {
     schemaVersion: 1,
     kind: 'catalog',
     workspaceIdentity: 'workspace:cli-source-sync',
     sourceIdentity: `sha256:${crypto.createHash('sha256').update('cli-source-sync').digest('hex')}`,
   }, { spaces: 2 });
+}
+
+async function configurePathSource(root: string): Promise<NodeJS.ProcessEnv> {
+  const isolation = getCurrentSourceTestIsolation();
+  await writeCliSourceSnapshot(root);
   const current = await readCatalogSourcesConfigSnapshot(isolation.env);
   await replaceCatalogSourcesConfig({
     config: { schemaVersion: 2, sources: [{ id: 'local', type: 'path', primary: true, path: root }] },
@@ -40,6 +44,52 @@ async function configurePathSource(root: string): Promise<NodeJS.ProcessEnv> {
 }
 
 describe('Catalog source sync CLI', () => {
+  it('repairs a damaged inactive candidate during ordinary sync without repair flags', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-inactive-repair-cli');
+    const env = await configurePathSource(root);
+    const first = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(first.exitCode, first.stderr).toBe(0);
+    await writeCliSourceSnapshot(root, 'inactive candidate\n');
+    const candidate = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(candidate.exitCode, candidate.stderr).toBe(0);
+    await writeCliSourceSnapshot(root);
+    const active = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(active.exitCode, active.stderr).toBe(0);
+    expect(active.parseJsonStdout().active.snapshotDigest)
+      .toBe(first.parseJsonStdout().active.snapshotDigest);
+    const candidateActive = candidate.parseJsonStdout().active;
+    const candidateLocation = resolveCatalogStoreLocation({
+      logicalIdentity: candidateActive.logicalIdentity,
+      snapshotDigest: candidateActive.snapshotDigest,
+      env,
+    });
+    await fs.writeFile(candidateLocation.metadataPath, 'damaged inactive entry\n');
+    await writeCliSourceSnapshot(root, 'inactive candidate\n');
+
+    const repaired = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+
+    expect(repaired.exitCode, repaired.stderr).toBe(0);
+    expect(repaired.parseJsonStdout()).toMatchObject({
+      command: 'catalog:source:sync',
+      ok: true,
+      outcome: 'activated',
+      activeChanged: true,
+      active: { snapshotDigest: candidateActive.snapshotDigest },
+    });
+    await expect(fs.readJson(candidateLocation.metadataPath)).resolves.toMatchObject({
+      snapshotDigest: candidateActive.snapshotDigest,
+    });
+  });
+
   it('checks without creating Active, then syncs and reports ready offline status', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-sync-cli');
