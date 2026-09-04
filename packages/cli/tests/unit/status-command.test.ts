@@ -151,6 +151,64 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v7 current behavior', () => {
+  it.each([
+    { label: 'an empty product list on Codex', products: [] as string[], platform: 'codex' as const },
+    { label: 'an empty product list on Claude', products: [] as string[], platform: 'claude' as const },
+    { label: 'a lowercase Codex token', products: ['codex'], platform: 'codex' as const },
+    { label: 'a lowercase Claude token', products: ['claude'], platform: 'claude' as const },
+  ])(
+    'keeps desired dependency placement and capability blockers visible for $label',
+    async ({ products, platform }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `product-support-${platform}-${products.join('-') || 'empty'}`,
+      );
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [
+        {
+          name: 'leaf',
+          requiredCapabilities: ['aw.future-status-capability.v1'],
+          configureManifest: (manifest) => {
+            manifest.marketplace.policy.products = products;
+          },
+        },
+        {
+          name: 'root',
+          dependencies: ['leaf'],
+          configureManifest: (manifest) => {
+            manifest.marketplace.policy.products = products;
+          },
+        },
+      ]);
+      const { env } = await configurePathSource(sourceRoot);
+      await writePluginIntentState({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env,
+      }, {
+        ...createEmptyPluginIntentState(),
+        roots: [{ pluginId: 'local/root', platforms: [platform] }],
+      });
+
+      const result = await statusCommandV7({
+        plugins: ['local/leaf'], cwd: isolation.layout.fixtureCwd, env,
+        platform, scope: 'project', json: true,
+      });
+
+      expect(result.payload.targets).toEqual([expect.objectContaining({
+        pluginId: 'local/leaf',
+        platform,
+        state: 'blocked',
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ code: 'awCapabilityUnsupported' }),
+        ]),
+      })]);
+      expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+        enabled: true, scopes: ['project'], relation: 'dependency',
+      });
+      expect(result.pluginSummaries.find((plugin) => plugin.pluginId === 'local/leaf')?.supportedTargets)
+        .toMatchObject({ [platform]: ['user', 'project'] });
+    },
+  );
+
   it('preserves render drift as a recoverable shared-native status reason', () => {
     const target = {
       components: [{

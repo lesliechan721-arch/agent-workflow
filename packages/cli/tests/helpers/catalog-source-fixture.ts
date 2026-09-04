@@ -15,6 +15,7 @@ import {
   normalizeAwCapabilities,
   readPluginManifest,
 } from '../../src/utils/manifest.js';
+import { resolveSupportedPlatforms } from '../../src/utils/platform-support.js';
 import { resolvePlatformEntries } from '../../src/utils/platform-entries.js';
 import {
   readCatalogGenerationState,
@@ -71,16 +72,16 @@ export async function createCatalogSnapshotFixture(
     strict: manifest.marketplace.strict,
     policy: manifest.marketplace.policy,
   };
-  const products = manifest.marketplace.policy.products;
-  const supportedPlatforms = (['claude', 'codex'] as const).filter((platform) =>
-    products === undefined || products.includes(platform === 'claude' ? 'CLAUDE' : 'CODEX'));
+  const supportedPlatforms = resolveSupportedPlatforms(manifest);
   await Promise.all((['claude', 'codex'] as const).map((platform) =>
     fs.remove(path.join(pluginRoot, `.${platform}-plugin`))));
   const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
     name: 'aw',
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
-    plugins: products === undefined || products.includes(platform) ? [marketplaceEntry] : [],
+    plugins: supportedPlatforms.has(platform === 'CLAUDE' ? 'claude' : 'codex')
+      ? [marketplaceEntry]
+      : [],
   });
   const platformManifest = (platform: 'claude' | 'codex') => {
     const projected = {
@@ -108,12 +109,12 @@ export async function createCatalogSnapshotFixture(
   });
   await Promise.all([
     fs.outputJson(manifestPath, manifest, { spaces: 2 }),
-    ...supportedPlatforms.map((platform) => fs.outputJson(
+    ...[...supportedPlatforms].map((platform) => fs.outputJson(
       path.join(pluginRoot, `.${platform}-plugin`, 'plugin.json'),
       platformManifest(platform),
       { spaces: 2 },
     )),
-    ...(supportedPlatforms.includes('claude')
+    ...(supportedPlatforms.has('claude')
       ? projectedAgentPaths.map((agentPath) => fs.outputFile(agentPath, '# Agent\n'))
       : []),
     fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
@@ -258,8 +259,8 @@ export async function createDependencyCatalogSnapshotFixture(
     owner: { name: 'Fixture Owner', url: 'https://example.invalid/fixture' },
     interface: { displayName: 'Fixture Marketplace' },
     plugins: metas
-      .filter((meta) => meta.manifest.marketplace.policy.products === undefined
-        || meta.manifest.marketplace.policy.products.includes(platform))
+      .filter((meta) => resolveSupportedPlatforms(meta.manifest)
+        .has(platform === 'CLAUDE' ? 'claude' : 'codex'))
       .map(marketplaceEntry),
   });
   await Promise.all([

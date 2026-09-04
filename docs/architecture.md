@@ -176,6 +176,7 @@ Manifest v3 只允许 `scripts.postApply: { path, timeoutMs? }`。AW 固定使�
 ## Live Status and Config
 
 `aw status` 输出 Status v7。它组合 user/project intent、当前 Active Catalog、live native/config evidence 和 AW extension projection。它严格只读：不创建 `.agent-workflows`、AW_HOME 或平台目录，不运行 postApply，不下载或授权 manager，不调用 native add/remove，不修改 trust/config，也不调用 Catalog provider。对于 static native，status 只作 registration、plugin ID、active version 和必要文件存在性检查，不计算完整 payload digest；完整 payload digest 只在 `sync`、`reinstall` 或 replace 操作中计算。receipt-backed dynamic `codex-native` 是只读检查例外：status 会计算 actual payload digest，并与 canonical marketplace expected、live receipt 三方比较，但绝不运行 renderer；输入不一致报告 `renderDrift`，payload 不一致报告 `damaged`/`corrupt`。Active 缺失或来源不可用时，它保留可识别的 desired intent，并从 live AW ownership 输出结构化 `blocked`、`orphaned` 与恢复动作。PATH 中没有 Codex consumer 时，activation evidence 只标为 `assumed`，不把缺失 PATH 当成命令失败。
+Status v7 的平台支持投影与 Core manifest 合同一致：`policy.products` 缺失或为空表示同时支持 Codex 和 Claude，token 按统一规则规范化。
 
 每个 target 的 intent component 说明 enabled、scope 和 `root | dependency | managed | none` relation。target 顶层 `state` 的公开状态只能是：
 
