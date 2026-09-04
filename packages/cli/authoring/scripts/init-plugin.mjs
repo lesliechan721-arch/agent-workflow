@@ -544,12 +544,9 @@ function main() {
   }
   if (args.withConfigApi) {
     const helperTemplatePath = path.join(__dirname, '..', 'assets', 'aw-config.mjs');
-    const helperRuntimeTemplatePath = path.join(__dirname, '..', 'assets', 're2-wasm');
     const helperPath = path.join(pluginRoot, 'scripts', 'aw-config.mjs');
-    const helperRuntimePath = path.join(pluginRoot, 'scripts', 're2-wasm');
     writeText(helperPath, fs.readFileSync(helperTemplatePath, 'utf8'));
-    fs.cpSync(helperRuntimeTemplatePath, helperRuntimePath, { recursive: true });
-    createdPaths.push(helperPath, helperRuntimePath);
+    createdPaths.push(helperPath);
   }
   if (args.withPreApply) {
     const preApplyPath = path.join(pluginRoot, 'scripts', 'preApply.mjs');

@@ -1228,6 +1228,51 @@ describe('local-plugin generator', () => {
     expect(bundleManifest.scripts.node.build).toBeUndefined();
   });
 
+  it('keeps the vendored WASM closure runnable for an existing config helper', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    const runtimeRoot = path.join(pluginRoot, 'scripts', 're2-wasm');
+    await fs.ensureDir(path.join(runtimeRoot, 'build', 'src'));
+    await fs.ensureDir(path.join(runtimeRoot, 'build', 'wasm'));
+    await fs.writeFile(
+      path.join(pluginRoot, 'scripts', 'aw-config.mjs'),
+      [
+        "import fs from 'node:fs';",
+        "import './re2-wasm/build/src/re2.js';",
+        "for (const file of ['./re2-wasm/build/wasm/re2.wasm', './re2-wasm/LICENSE']) {",
+        '  if (!fs.existsSync(new URL(file, import.meta.url))) throw new Error(`Missing ${file}`);',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(runtimeRoot, 'build', 'src', 're2.js'),
+      "import '../wasm/re2.js';\n",
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(runtimeRoot, 'build', 'wasm', 're2.js'),
+      'export const RE2 = true;\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(runtimeRoot, 'build', 'wasm', 're2.wasm'), 'wasm fixture', 'utf8');
+    await fs.writeFile(path.join(runtimeRoot, 'LICENSE'), 'license fixture\n', 'utf8');
+    manifest.scripts = {
+      helpers: { config: './scripts/aw-config.mjs' },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    await bundleLocalPlugin(await readPluginManifest(pluginRoot), outputRoot);
+
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(outputRoot, 'scripts', 'aw-config.mjs')],
+      { cwd: outputRoot },
+    )).resolves.toMatchObject({ stderr: '' });
+  });
+
   it('copies installed darwin and linux transitive optional dependencies into an isolated runnable bundle', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

@@ -278,7 +278,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('bad-neighbor');
   });
 
-  it('runs the standard author helper against two namespaced schema 4 test stores', async () => {
+  it('runs the standard author helper against validated effective test config', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.config = {
@@ -294,7 +294,7 @@ describe('plugin script test runner', () => {
         config: './scripts/aw-config.mjs',
       },
       tests: {
-        node: ['./scripts/config-scopes.test.mjs'],
+        node: ['./scripts/config-effective.test.mjs'],
       },
     };
     await writeManifest(repoRoot, manifest);
@@ -315,47 +315,19 @@ describe('plugin script test runner', () => {
       ),
       pluginScriptPath(repoRoot, 'aw-config.mjs'),
     );
-    await fs.copy(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '..',
-        '..',
-        '..',
-        '..',
-        'packages',
-        'cli',
-        'dist',
-        'authoring',
-        'assets',
-        're2-wasm',
-      ),
-      pluginScriptPath(repoRoot, 're2-wasm'),
-    );
-    await writeNodeTestFile(repoRoot, 'config-scopes.test.mjs', [
+    await writeNodeTestFile(repoRoot, 'config-effective.test.mjs', [
       'import assert from "node:assert/strict";',
       'import { execFile } from "node:child_process";',
-      'import { readFile, writeFile } from "node:fs/promises";',
       'import path from "node:path";',
       'import test from "node:test";',
       'import { promisify } from "node:util";',
       'const execFileAsync = promisify(execFile);',
-      'test("namespaced config scopes", async () => {',
-      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      '  const { sourceId, sourceIdentity, logicalIdentity, name, pluginId } = context.plugin;',
-      '  assert.equal(pluginId, `${sourceId}/${name}`);',
-      '  for (const [scope, key] of [["user", "user"], ["project", "project"]]) {',
-      '    const storePath = context.paths.configStores[key];',
-      '    assert.equal(storePath.includes(path.join(sourceId, name, "config.json")), true);',
-      '    const envelope = JSON.parse(await readFile(storePath, "utf8"));',
-      '    assert.deepEqual(envelope, { schemaVersion: 4, sourceId, pluginName: name, binding: scope === "user" ? { kind: "source", sourceIdentity } : { kind: "catalog", logicalIdentity }, values: {} });',
-      '    envelope.values.mode = `${scope}-mode`;',
-      '    await writeFile(storePath, `${JSON.stringify(envelope)}\\n`, "utf8");',
-      '    const result = await execFileAsync(process.execPath, [',
-      '      path.join(context.plugin.rootDir, "scripts", "aw-config.mjs"),',
-      '      "get", "mode", "--scope", scope,',
-      '    ], { cwd: context.cwd, env: process.env });',
-      '    assert.equal(result.stdout.trim(), `${scope}-mode`);',
-      '  }',
+      'test("effective config", async () => {',
+      '  const result = await execFileAsync(process.execPath, [',
+      '    path.join(process.env.AW_PLUGIN_ROOT, "scripts", "aw-config.mjs"),',
+      '    "get", "mode",',
+      '  ], { env: process.env });',
+      '  assert.equal(result.stdout.trim(), "default-mode");',
       '});',
     ].join('\n'));
     const output = captureOutput();

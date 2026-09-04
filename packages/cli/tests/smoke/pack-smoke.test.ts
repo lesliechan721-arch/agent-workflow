@@ -1133,10 +1133,7 @@ describe('pack smoke', () => {
     await expect(fs.pathExists(path.join(
       path.dirname(helperPath),
       're2-wasm',
-      'build',
-      'wasm',
-      're2.wasm',
-    ))).resolves.toBe(true);
+    ))).resolves.toBe(false);
     await expect(execFileAsync(awBin, [
       'plugin',
       'validate',
@@ -1160,13 +1157,12 @@ describe('pack smoke', () => {
     await expect(fs.pathExists(path.join(
       path.dirname(builtHelperPath),
       're2-wasm',
-      'LICENSE',
-    ))).resolves.toBe(true);
+    ))).resolves.toBe(false);
     const helperHelp = await execFileAsync(process.execPath, [builtHelperPath, '--help'], {
       cwd: authorRepo,
       env: externalAuthoringEnv,
     });
-    expect(helperHelp.stdout).toContain('effective|user|project');
+    expect(helperHelp.stdout).toContain('--scope effective');
     expect(helperHelp.stderr).toBe('');
     await execFileAsync(awBin, [
       'plugin',
