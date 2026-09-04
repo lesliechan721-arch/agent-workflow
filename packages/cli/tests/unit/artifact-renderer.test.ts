@@ -323,7 +323,13 @@ describe('artifact renderer runtime', () => {
     const awHome = path.join(root, 'aw-home');
     await fs.ensureDir(cwd);
     const plugin = await writePlugin(root);
-    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+    const realCodexHome = path.join(root, 'real-codex-home');
+    const realClaudeHome = path.join(root, 'real-claude-home');
+    const env = {
+      AW_HOME: awHome,
+      AW_CODEX_HOME: realCodexHome,
+      AW_CLAUDE_HOME: realClaudeHome,
+    } as NodeJS.ProcessEnv;
 
     await writePluginConfigStore({
       pluginName: plugin.manifest.name,
@@ -332,6 +338,7 @@ describe('artifact renderer runtime', () => {
       env,
       values: {
         token: 'secret-token',
+        enableLightweightInstruction: 'invalid' as unknown as boolean,
         explorerModel: 'gpt-5.4',
       },
     });
@@ -354,7 +361,7 @@ describe('artifact renderer runtime', () => {
       scope: 'user',
       cwd,
       commandEnv: env,
-      changedConfigKeys: ['explorerModel'],
+      changedConfigKeys: ['token', 'enableLightweightInstruction', 'explorerModel'],
       previousArtifacts: [{ id: 'lightweight-instruction', state: 'present' }],
       requestedArtifactIds: ['codex-explorer-role'],
     });
@@ -362,18 +369,19 @@ describe('artifact renderer runtime', () => {
       mode: 'artifact-render',
       targetScope: 'user',
       values: {
-        token: 'secret-token',
         explorerModel: 'gpt-5.4',
-        enableLightweightInstruction: true,
         modelReasoningEffort: 'medium',
       },
       sources: {
-        token: 'user',
         explorerModel: 'user',
-        enableLightweightInstruction: 'default',
         modelReasoningEffort: 'default',
       },
     });
+    expect(Object.keys(userContext.context.config.schema ?? {}).sort()).toEqual([
+      'explorerModel',
+      'modelReasoningEffort',
+    ]);
+    expect(userContext.context.config.issues).toEqual([]);
     expect(userContext.context.changedConfigKeys).toEqual(['explorerModel']);
     expect(userContext.context.requestedArtifactIds).toEqual(['codex-explorer-role']);
     expect(userContext.context.artifactSources.map((source) => source.id)).toEqual([
@@ -382,9 +390,16 @@ describe('artifact renderer runtime', () => {
     expect(userContext.context.previousArtifacts).toEqual([
       { id: 'lightweight-instruction', state: 'present' },
     ]);
-    expect(userContext.context.paths.configStores.user).toContain('/plugin-config/');
-    expect(userContext.context.paths.configStores.project).toContain('/plugin-config/');
-    expect(Object.keys(userContext.context.paths.configStores).sort()).toEqual(['project', 'user']);
+    expect(userContext.context.paths).not.toHaveProperty('configStores');
+    expect(userContext.context.paths.awHome).toBe(path.join(userContext.tempDir, 'aw-home'));
+    expect(userContext.context.paths.codexHome).toBe(path.join(userContext.tempDir, 'codex-home'));
+    expect(userContext.context.paths.claudeHome).toBe(path.join(userContext.tempDir, 'claude-home'));
+    const serializedUserContext = await fs.readFile(userContext.contextPath, 'utf8');
+    expect(serializedUserContext).not.toContain('secret-token');
+    expect(serializedUserContext).not.toContain(awHome);
+    expect(serializedUserContext).not.toContain(realCodexHome);
+    expect(serializedUserContext).not.toContain(realClaudeHome);
+    expect(userContext.sensitiveValues).toContain('secret-token');
     if (process.platform !== 'win32') {
       expect((await fs.stat(userContext.contextPath)).mode & 0o777).toBe(0o600);
     }
@@ -402,6 +417,13 @@ describe('artifact renderer runtime', () => {
     expect(projectContext.context.config.values.modelReasoningEffort).toBe('high');
     expect(projectContext.context.config.sources.explorerModel).toBe('project');
     expect(projectContext.context.config.sources.modelReasoningEffort).toBe('project');
+    expect(Object.keys(projectContext.context.config.schema ?? {}).sort()).toEqual([
+      'enableLightweightInstruction',
+      'explorerModel',
+      'modelReasoningEffort',
+    ]);
+    expect(projectContext.context.config.issues.map((issue) => issue.key))
+      .toEqual(['enableLightweightInstruction']);
     expect(projectContext.context.changedConfigKeys).toEqual([]);
     expect(projectContext.context.requestedArtifactIds).toEqual([
       'lightweight-instruction',
@@ -485,6 +507,75 @@ describe('artifact renderer runtime', () => {
 
     expect(result.context.requestedArtifactIds).toEqual(['lightweight-instruction']);
     expect(result.plan.artifacts.map((artifact) => artifact.id)).toEqual(['lightweight-instruction']);
+  });
+
+  it('runs each renderer with the isolated homes declared in its context', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-isolated-home-');
+    const cwd = path.join(root, 'repo');
+    const realHomes = {
+      aw: path.join(root, 'real-aw-home'),
+      codex: path.join(root, 'real-codex-home'),
+      claude: path.join(root, 'real-claude-home'),
+    };
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    let observedContextPath = '';
+
+    const result = await runArtifactRenderer({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: {
+        AW_HOME: realHomes.aw,
+        AW_CODEX_HOME: realHomes.codex,
+        AW_CLAUDE_HOME: realHomes.claude,
+      },
+      requestedArtifactIds: ['codex-explorer-role'],
+      runner: {
+        async run(invocation) {
+          observedContextPath = invocation.env.AW_PLUGIN_CONTEXT!;
+          const context = await fs.readJson(observedContextPath);
+          expect(invocation.env.AW_HOME).toBe(context.paths.awHome);
+          expect(invocation.env.AW_CODEX_HOME).toBe(context.paths.codexHome);
+          expect(invocation.env.AW_CLAUDE_HOME).toBe(context.paths.claudeHome);
+          expect(Object.values(context.paths)).not.toContain(realHomes.aw);
+          expect(Object.values(context.paths)).not.toContain(realHomes.codex);
+          expect(Object.values(context.paths)).not.toContain(realHomes.claude);
+          expect(context.paths).not.toHaveProperty('configStores');
+          await expect(Promise.all([
+            fs.pathExists(context.paths.awHome),
+            fs.pathExists(context.paths.codexHome),
+            fs.pathExists(context.paths.claudeHome),
+          ])).resolves.toEqual([true, true, true]);
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: JSON.stringify({ version: 2, artifacts: [{
+              id: 'codex-explorer-role',
+              kind: 'codexRole',
+              platform: 'codex',
+              target: 'codex.agentRole',
+              state: 'present',
+              roleKey: 'codex-explorer',
+              refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+              content: {
+                roleFile: {
+                  name: 'codex-explorer',
+                  developer_instructions: 'Inspect the repository.',
+                },
+              },
+            }] }),
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      },
+    });
+
+    expect(result.plan.artifacts).toHaveLength(1);
+    expect(await fs.pathExists(observedContextPath)).toBe(false);
   });
 
   it('runs renderer with empty changed keys for install and upgrade, and explicit keys for refresh', async () => {
@@ -603,7 +694,9 @@ describe('artifact renderer runtime', () => {
     const awHome = path.join(root, 'aw-home');
     const secret = '§renderer-cross-boundary-sensitive-token';
     await fs.ensureDir(cwd);
-    const plugin = await writePlugin(root, createManifest(), [
+    const manifest = createManifest();
+    manifest.artifacts!.targets[0]!.refreshKeys.push('token');
+    const plugin = await writePlugin(root, manifest, [
       'import { readFileSync } from "node:fs";',
       'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
       'const token = context.config.values.token;',

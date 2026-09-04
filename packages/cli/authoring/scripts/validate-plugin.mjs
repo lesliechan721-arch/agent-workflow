@@ -1969,6 +1969,38 @@ function defaultConfigValues(manifest) {
   return values;
 }
 
+function configFieldContainsSensitiveValue(field) {
+  if (!isRecord(field)) return false;
+  if (field.sensitive === true) return true;
+  if (field.type !== 'object') return false;
+  return (
+    (isRecord(field.properties)
+      && Object.values(field.properties).some((child) =>
+        isRecord(child) && child.sensitive === true))
+    || (isRecord(field.additionalProperties)
+      && field.additionalProperties.sensitive === true)
+  );
+}
+
+function codexStaticNativeComponentKeys(manifest) {
+  if (!isCodexTargeted(manifest)) return [];
+  const keys = [];
+  if (manifest.skills) keys.push('skills');
+  if (manifest.mcpServers) keys.push('mcpServers');
+  if (
+    (
+      Array.isArray(manifest.extensions?.hooks)
+      && manifest.extensions.hooks.some((hook) => hook?.agentOverrides?.codex !== null)
+    )
+    || (
+      Array.isArray(manifest.extensions?.nativeHooks?.codex)
+      && manifest.extensions.nativeHooks.codex.length > 0
+    )
+  ) keys.push('hooks');
+  if (manifest.apps) keys.push('apps');
+  return keys;
+}
+
 function validateArtifactId(value, fieldName) {
   const id = validateManifestString(value, fieldName);
   if (!id) return null;
@@ -2153,6 +2185,15 @@ function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
       error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
       continue;
     }
+    if (
+      delivery?.mode === 'codex-native'
+      && configFieldContainsSensitiveValue(manifest.config?.fields?.[refreshKey])
+    ) {
+      error(
+        `codexNativeRenderSensitiveRefreshKey: ${fieldName}.refreshKeys[${refreshIndex}]: ` +
+          `codex-native renderers cannot read sensitive config field "${refreshKey}"`,
+      );
+    }
   }
 
   if (
@@ -2305,6 +2346,29 @@ function validateArtifactsConfigLightweight(pluginDir, manifest) {
       } else {
         nativeSkillKeys.set(declaration.skillKey, declarationIndex);
       }
+    }
+  }
+  const nativeComponents = codexStaticNativeComponentKeys(manifest).map((key) => ({
+    key,
+    scopes: ['project', 'user'],
+  }));
+  declarations.forEach((declaration, index) => {
+    if (declaration.delivery?.mode === 'codex-native') {
+      nativeComponents.push({ key: `artifacts.targets[${index}]`, scopes: declaration.scopes });
+    }
+  });
+  const expectedNativeComponent = nativeComponents[0];
+  if (expectedNativeComponent) {
+    const canonicalScopes = (component) => [...component.scopes].sort().join(',');
+    const expectedScopes = canonicalScopes(expectedNativeComponent);
+    const mismatch = nativeComponents.find((component) =>
+      canonicalScopes(component) !== expectedScopes);
+    if (mismatch) {
+      error(
+        `codexSharedNativeScopeMismatch: Codex native component scope sets must match exactly; ` +
+          `${expectedNativeComponent.key} has {${expectedScopes}} but ${mismatch.key} has ` +
+          `{${canonicalScopes(mismatch)}}`,
+      );
     }
   }
   const staticSkillNames = new Set(collectDeclaredSkillNames(pluginDir, manifest).static);
@@ -2875,14 +2939,16 @@ function runArtifactRendererFixture(
       const scopedDeclarations = declarations.filter((target) =>
         (distribution ? target.distribution === distribution : target.platform === platform)
         && target.scopes.includes(scope));
-      const contextPath = path.join(tempRoot, `context-${surface}-${scope}.json`);
+      const requestRoot = path.join(tempRoot, `${surface}-${scope}`);
+      fs.mkdirSync(requestRoot, { recursive: true });
+      const contextPath = path.join(requestRoot, 'context.json');
       const runtimeImports = scopedDeclarations.flatMap((target) =>
         target.runtimeImports.map((runtimeImport, importIndex) => {
           const resolved = resolvedRuntimeImports?.artifactImports.get(
             authorRuntimeImportKey(target.id, importIndex),
           );
           if (!resolved) return null;
-          const importPath = path.join(tempRoot, `runtime-${target.id}-${importIndex}`);
+          const importPath = path.join(requestRoot, `runtime-${target.id}-${importIndex}`);
           fs.writeFileSync(importPath, resolved.bytes);
           return {
             artifactId: target.id,
@@ -2893,6 +2959,14 @@ function runArtifactRendererFixture(
             digest: resolved.digest,
           };
         }).filter(Boolean));
+      const refreshKeys = [...new Set(scopedDeclarations.flatMap((target) =>
+        target.refreshKeys))];
+      const scopedSchema = Object.fromEntries(refreshKeys.flatMap((key) =>
+        manifest.config?.fields?.[key] === undefined
+          ? []
+          : [[key, manifest.config.fields[key]]]));
+      const scopedValues = Object.fromEntries(refreshKeys.flatMap((key) =>
+        Object.prototype.hasOwnProperty.call(values, key) ? [[key, values[key]]] : []));
       fs.writeFileSync(
         contextPath,
         JSON.stringify({
@@ -2911,9 +2985,9 @@ function runArtifactRendererFixture(
           config: {
             mode: 'artifact-render',
             targetScope: scope,
-            schema: manifest.config?.fields ?? {},
-            values,
-            sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
+            schema: scopedSchema,
+            values: scopedValues,
+            sources: Object.fromEntries(Object.keys(scopedValues).map((key) => [key, 'default'])),
             issues: [],
           },
           changedConfigKeys: [],
@@ -2927,14 +3001,10 @@ function runArtifactRendererFixture(
           })),
           runtimeImports,
           paths: {
-            awHome: path.join(tempRoot, 'aw-home'),
-            codexHome: path.join(tempRoot, 'codex-home'),
-            claudeHome: path.join(tempRoot, 'claude-home'),
+            awHome: path.join(requestRoot, 'aw-home'),
+            codexHome: path.join(requestRoot, 'codex-home'),
+            claudeHome: path.join(requestRoot, 'claude-home'),
             manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
-            configStores: {
-              user: path.join(tempRoot, 'config-user.json'),
-              project: path.join(tempRoot, 'config-project.json'),
-            },
           },
           renderer: {
             runner: renderEntry.runner,
@@ -2946,14 +3016,14 @@ function runArtifactRendererFixture(
         }),
         'utf8',
       );
-      const rendererHome = path.join(tempRoot, 'home');
-      const rendererTemp = path.join(tempRoot, 'tmp');
+      const rendererHome = path.join(requestRoot, 'home');
+      const rendererTemp = path.join(requestRoot, 'tmp');
       fs.mkdirSync(rendererHome, { recursive: true });
       fs.mkdirSync(rendererTemp, { recursive: true });
       const rendererEnv = {
-        AW_HOME: path.join(tempRoot, 'aw-home'),
-        AW_CODEX_HOME: path.join(tempRoot, 'codex-home'),
-        AW_CLAUDE_HOME: path.join(tempRoot, 'claude-home'),
+        AW_HOME: path.join(requestRoot, 'aw-home'),
+        AW_CODEX_HOME: path.join(requestRoot, 'codex-home'),
+        AW_CLAUDE_HOME: path.join(requestRoot, 'claude-home'),
         PATH: process.env.PATH ?? process.env.Path ?? '',
         AW_PLUGIN_CONTEXT: contextPath,
         AW_PLUGIN_ROOT: pluginDir,

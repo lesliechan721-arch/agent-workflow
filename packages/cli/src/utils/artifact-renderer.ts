@@ -1,3 +1,4 @@
+import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -23,7 +24,6 @@ import {
   assertReadyPluginConfigStore,
   readPluginConfigStore,
   resolveEffectivePluginConfig,
-  resolvePluginConfigStorePath,
 } from './plugin-config.js';
 import {
   buildNodeScriptInvocation,
@@ -39,7 +39,6 @@ import {
   type PluginProcessResult,
   type PluginScriptInvocation,
 } from './plugin-scripts.js';
-import { resolveAwHome } from './paths.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import { resolveArtifactRequest } from './artifact-request.js';
 import { validateArtifactPlan } from './artifact-plan.js';
@@ -96,7 +95,6 @@ export interface ArtifactRendererContext {
     codexHome: string;
     claudeHome: string;
     manifestPath: string;
-    configStores: Record<Scope, string>;
   };
   renderer: {
     runner: PluginArtifactRenderScriptEntry['runner'];
@@ -143,14 +141,6 @@ const SUPPORTED_ARTIFACT_RENDER_EVENTS = new Set<ArtifactRenderEvent>([
   'materialize',
 ]);
 
-function artifactRendererCodexHome(env: NodeJS.ProcessEnv): string {
-  return env.AW_CODEX_HOME || path.join(resolveAwHome(env), 'isolated-codex-home');
-}
-
-function artifactRendererClaudeHome(env: NodeJS.ProcessEnv): string {
-  return env.AW_CLAUDE_HOME || path.join(resolveAwHome(env), 'isolated-claude-home');
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -162,6 +152,15 @@ function assertArtifactRenderEvent(value: string): ArtifactRenderEvent {
     );
   }
   return value as ArtifactRenderEvent;
+}
+
+function selectConfigKeys<Value>(
+  values: Record<string, Value>,
+  selectedKeys: ReadonlySet<string>,
+): Record<string, Value> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([key]) => selectedKeys.has(key)),
+  );
 }
 
 export async function resolveArtifactRenderConfig(options: {
@@ -295,6 +294,17 @@ export async function writeArtifactRendererContext(options: {
     throw new Error('Cannot write artifact renderer context for a no-op target.');
   }
 
+  const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
+  const platform = distribution ? undefined : options.platform as PlatformName;
+  const request = resolveArtifactRequest({
+    manifest: options.target.sourceManifest,
+    platform: options.platform,
+    scope: options.scope,
+    requestedArtifactIds: options.requestedArtifactIds,
+  });
+  const requestedConfigKeys = new Set(
+    request.declarations.flatMap((target) => target.refreshKeys),
+  );
   const config = await resolveArtifactRenderConfig({
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
@@ -304,14 +314,16 @@ export async function writeArtifactRendererContext(options: {
     cwd: options.cwd,
     env: options.commandEnv,
   });
-  const distribution = options.platform === 'agent-skills' ? options.platform : undefined;
-  const platform = distribution ? undefined : options.platform as PlatformName;
-  const request = resolveArtifactRequest({
-    manifest: options.target.sourceManifest,
-    platform: options.platform,
-    scope: options.scope,
-    requestedArtifactIds: options.requestedArtifactIds,
-  });
+  const rendererConfig = {
+    mode: config.mode,
+    targetScope: config.targetScope,
+    schema: config.schema === undefined
+      ? undefined
+      : selectConfigKeys(config.schema, requestedConfigKeys),
+    values: selectConfigKeys(config.values, requestedConfigKeys),
+    sources: selectConfigKeys(config.sources, requestedConfigKeys),
+    issues: config.issues.filter((issue) => requestedConfigKeys.has(issue.key)),
+  };
 
   const artifactSources = await Promise.all(
     request.declarations
@@ -335,6 +347,7 @@ export async function writeArtifactRendererContext(options: {
       })),
   );
 
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
   const context: ArtifactRendererContext = {
     event,
     surface: distribution
@@ -348,15 +361,9 @@ export async function writeArtifactRendererContext(options: {
       version: options.target.sourceManifest.version,
       rootDir: options.target.bundleRoot,
     },
-    config: {
-      mode: config.mode,
-      targetScope: config.targetScope,
-      schema: config.schema,
-      values: config.values,
-      sources: config.sources,
-      issues: config.issues,
-    },
-    changedConfigKeys: options.changedConfigKeys ?? [],
+    config: rendererConfig,
+    changedConfigKeys: (options.changedConfigKeys ?? [])
+      .filter((key) => requestedConfigKeys.has(key)),
     requestedArtifactIds: request.requestedArtifactIds,
     previousArtifacts: options.previousArtifacts ?? [],
     artifactSources,
@@ -375,26 +382,10 @@ export async function writeArtifactRendererContext(options: {
         };
       })),
     paths: {
-      awHome: resolveAwHome(options.commandEnv),
-      codexHome: artifactRendererCodexHome(options.commandEnv),
-      claudeHome: artifactRendererClaudeHome(options.commandEnv),
+      awHome: path.join(tempDir, 'aw-home'),
+      codexHome: path.join(tempDir, 'codex-home'),
+      claudeHome: path.join(tempDir, 'claude-home'),
       manifestPath: options.target.manifestPath,
-      configStores: {
-        user: resolvePluginConfigStorePath({
-          sourceId: options.sourceId,
-          pluginName: options.target.sourceManifest.name,
-          scope: 'user',
-          cwd: options.cwd,
-          env: options.commandEnv,
-        }),
-        project: resolvePluginConfigStorePath({
-          sourceId: options.sourceId,
-          pluginName: options.target.sourceManifest.name,
-          scope: 'project',
-          cwd: options.cwd,
-          env: options.commandEnv,
-        }),
-      },
     },
     renderer: {
       runner: options.target.entry.runner,
@@ -405,9 +396,6 @@ export async function writeArtifactRendererContext(options: {
     },
   };
 
-  const tempRoot = path.join(resolveAwHome(options.commandEnv), 'tmp');
-  await fs.ensureDir(tempRoot);
-  const tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-artifact-render-'));
   const contextPath = path.join(tempDir, 'context.json');
   await fs.writeJson(contextPath, context, { spaces: 2 });
   try {
@@ -553,14 +541,24 @@ export async function runArtifactRenderer(options: {
         `Invalid AW config for ${writtenContext.context.plugin.name}: ${writtenContext.context.config.issues.map((issue) => `${issue.key} (${issue.type})`).join(', ')}.`,
       );
     }
-    await fs.ensureDir(path.join(writtenContext.tempDir, 'home'));
-    await fs.ensureDir(path.join(writtenContext.tempDir, 'tmp'));
+    await Promise.all([
+      fs.ensureDir(path.join(writtenContext.tempDir, 'home')),
+      fs.ensureDir(path.join(writtenContext.tempDir, 'tmp')),
+      fs.ensureDir(writtenContext.context.paths.awHome),
+      fs.ensureDir(writtenContext.context.paths.codexHome),
+      fs.ensureDir(writtenContext.context.paths.claudeHome),
+    ]);
     const timeoutMs = resolvePluginScriptTimeoutMs({
       cliTimeoutMs: options.scriptTimeoutMs,
       manifestTimeoutMs: undefined,
     });
     const spawnEnv = buildPluginScriptSpawnEnv({
-      commandEnv,
+      commandEnv: {
+        ...commandEnv,
+        AW_HOME: writtenContext.context.paths.awHome,
+        AW_CODEX_HOME: writtenContext.context.paths.codexHome,
+        AW_CLAUDE_HOME: writtenContext.context.paths.claudeHome,
+      },
       contextPath: writtenContext.contextPath,
       tempDir: writtenContext.tempDir,
       plugin: writtenContext.context.plugin,

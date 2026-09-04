@@ -150,6 +150,7 @@ describe('generated aw-config helper', () => {
               additionalProperties: false,
             },
           },
+          mode: 'artifact-render',
           values: { credentials: { token: 'nested-secret', endpoint: 'https://example.test' } },
           sources: { credentials: 'user', ignored: 'projectLocal' },
           issues: [],
@@ -184,4 +185,92 @@ describe('generated aw-config helper', () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(['user', 'project'])(
+    'rejects an explicit %s store read when AW_PLUGIN_CONTEXT is present',
+    async (scope) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-context-scope-'));
+      try {
+        const contextPath = path.join(root, 'context.json');
+        const helperPath = path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs');
+        await fs.writeFile(contextPath, `${JSON.stringify({
+          plugin: { name: 'fixture-plugin' },
+          config: {
+            mode: 'artifact-render',
+            schema: { mode: { type: 'string' } },
+            values: { mode: 'context-only' },
+            sources: { mode: 'user' },
+            issues: [],
+          },
+        }, null, 2)}\n`, 'utf8');
+
+        await expect(execFileAsync(
+          process.execPath,
+          [helperPath, 'json', '--scope', scope],
+          {
+            cwd: root,
+            env: {
+              ...process.env,
+              AW_PLUGIN_CONTEXT: contextPath,
+              AW_HOME: path.join(root, 'real-aw-home'),
+              NODE_PATH: '',
+            },
+          },
+        )).rejects.toMatchObject({
+          stderr: '[aw-config] AW_PLUGIN_CONTEXT only supports effective config reads; explicit user and project store reads are unavailable.\n',
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['user', 'project'])(
+    'reads an explicit %s store for a non-renderer context',
+    async (scope) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-test-context-scope-'));
+      try {
+        const sourceId = 'fixture-source';
+        const sourceIdentity = `sha256:${'b'.repeat(64)}`;
+        const contextPath = path.join(root, 'context.json');
+        const storePaths = {
+          user: path.join(root, 'user.json'),
+          project: path.join(root, 'project.json'),
+        };
+        await Promise.all(Object.entries(storePaths).map(([storeScope, storePath]) =>
+          fs.writeFile(storePath, `${JSON.stringify({
+            schemaVersion: 3,
+            sourceId,
+            sourceIdentity,
+            pluginName: 'fixture-plugin',
+            values: { mode: `${storeScope}-mode` },
+          })}\n`, 'utf8')));
+        await fs.writeFile(contextPath, `${JSON.stringify({
+          plugin: { name: 'fixture-plugin', sourceId, sourceIdentity },
+          config: {
+            schema: { mode: { type: 'string' } },
+            values: {},
+            sources: { mode: 'missing' },
+            issues: [],
+          },
+          paths: { configStores: storePaths },
+        }, null, 2)}\n`, 'utf8');
+
+        const result = await execFileAsync(
+          process.execPath,
+          [path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs'), 'json', '--scope', scope],
+          {
+            cwd: root,
+            env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath, NODE_PATH: '' },
+          },
+        );
+        expect(JSON.parse(result.stdout)).toMatchObject({
+          scope,
+          values: { mode: `${scope}-mode` },
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

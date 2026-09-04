@@ -865,7 +865,8 @@ function resolveFromContext(scope) {
         && ['default', 'user', 'project', 'missing'].includes(source)
       ) state.sources[key] = source;
     }
-    const contextStorePaths = isRecord(context.paths?.configStores)
+    const contextStorePaths = context.config.mode !== 'artifact-render'
+      && isRecord(context.paths?.configStores)
       ? context.paths.configStores
       : {};
     return {
@@ -892,6 +893,11 @@ function resolveFromContext(scope) {
         },
       },
     };
+  }
+  if (context.config.mode === 'artifact-render') {
+    fail(
+      'AW_PLUGIN_CONTEXT only supports effective config reads; explicit user and project store reads are unavailable.',
+    );
   }
   if (!identity) fail('AW_PLUGIN_CONTEXT must provide a source identity for scoped config reads.');
   const storePath = context.paths?.configStores?.[scope];

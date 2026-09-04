@@ -212,12 +212,6 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
           default: 'standard'
         }
       }
-    },
-    paths: {
-      configStores: {
-        user: join(tempDir, 'missing-user.json'),
-        project: join(tempDir, 'missing-project.json')
-      }
     }
   }), 'utf8');
 

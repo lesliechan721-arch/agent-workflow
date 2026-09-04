@@ -2470,7 +2470,7 @@ describe('authoring tools', () => {
     }
   });
 
-  it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
+  it('standard aw-config helper uses only effective AW_PLUGIN_CONTEXT data', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
     tempDirs.push(tempRoot);
     const sourceIdentity = `sha256:${'1'.repeat(64)}`;
@@ -2485,26 +2485,6 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
-    const userStorePath = path.join(tempRoot, 'user-config.json');
-    const projectStorePath = path.join(tempRoot, 'project-config.json');
-    await fs.writeJson(userStorePath, {
-      schemaVersion: 3,
-      sourceId: 'team',
-      sourceIdentity,
-      pluginName: 'context-helper',
-      values: {
-        apiKey: 'user-store-secret',
-        mode: 'standard',
-        ignored: true,
-      },
-    });
-    await fs.writeJson(projectStorePath, {
-      schemaVersion: 3,
-      sourceId: 'team',
-      sourceIdentity,
-      pluginName: 'context-helper',
-      values: { mode: 'strict' },
-    });
     await fs.writeJson(contextPath, {
       plugin: {
         name: 'context-helper',
@@ -2513,6 +2493,7 @@ describe('authoring tools', () => {
         pluginId: 'team/context-helper',
       },
       config: {
+        mode: 'artifact-render',
         values: {
           apiKey: 'context-secret',
           mode: 'strict',
@@ -2534,12 +2515,6 @@ describe('authoring tools', () => {
               ],
             },
           },
-        },
-      },
-      paths: {
-        configStores: {
-          user: userStorePath,
-          project: projectStorePath,
         },
       },
     });
@@ -2574,7 +2549,7 @@ describe('authoring tools', () => {
       },
     });
 
-    const { stdout: scopedStdout } = await execFileAsync(
+    await expect(execFileAsync(
       'node',
       [helperPath, 'json', '--scope', 'user'],
       {
@@ -2586,18 +2561,8 @@ describe('authoring tools', () => {
         },
         maxBuffer: 10 * 1024 * 1024,
       },
-    );
-    const scopedPayload = JSON.parse(scopedStdout);
-    expect(scopedPayload).toMatchObject({
-      pluginName: 'context-helper',
-      scope: 'user',
-      values: {
-        apiKey: '[redacted]',
-        mode: 'standard',
-      },
-      diagnostics: {
-        ignoredUnknownKeys: [{ scope: 'user', key: 'ignored' }],
-      },
+    )).rejects.toMatchObject({
+      stderr: expect.stringContaining('AW_PLUGIN_CONTEXT only supports effective config reads'),
     });
   });
 
@@ -3494,6 +3459,84 @@ describe('authoring tools', () => {
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
+    });
+
+    for (const secretField of [
+      { type: 'string', sensitive: true },
+      {
+        type: 'object',
+        properties: { token: { type: 'string', sensitive: true } },
+        additionalProperties: false,
+      },
+      {
+        type: 'object',
+        additionalProperties: { type: 'string', sensitive: true },
+      },
+    ]) {
+      await fs.writeJson(manifestPath, {
+        ...validManifest,
+        config: { fields: { secret: secretField } },
+        artifacts: { targets: [{
+          id: 'native-secret',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: ['secret'],
+          skillKey: 'native-secret',
+        }] },
+      }, { spaces: 2 });
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining('codexNativeRenderSensitiveRefreshKey:'),
+      });
+    }
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      skills: undefined,
+      artifacts: { targets: [
+        {
+          id: 'native-user',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-user',
+        },
+        {
+          id: 'native-project',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-project',
+        },
+      ] },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('codexSharedNativeScopeMismatch:'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...validManifest,
+      artifacts: { targets: [{
+        id: 'native-user',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'native-user',
+      }] },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('codexSharedNativeScopeMismatch:'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -4469,6 +4512,69 @@ describe('authoring tools', () => {
     await fs.writeJson(fixture.manifestPath, manifest, { spaces: 2 });
     await expect(runValidatePlugin(fixture.pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('duplicate codex-native skillKey "review" in the shared projection'),
+    });
+  });
+
+  it('accepts a user-only native Codex target when public hooks disable Codex', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-null-hook-authoring-'));
+    tempDirs.push(tempRoot);
+    const fixture = await writeSourcePlugin(
+      tempRoot,
+      'codex-null-hook-authoring',
+      createBaseManifest('codex-null-hook-authoring', {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CODEX', 'CLAUDE'],
+          },
+        },
+        extensions: {
+          hooks: [{
+            event: 'before_tool',
+            matcher: '*',
+            command: 'echo claude only',
+            agentOverrides: { codex: null },
+          }],
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        artifacts: {
+          targets: [{
+            id: 'user-native',
+            platform: 'codex',
+            target: 'codex.skill',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            scopes: ['user'],
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'user-native',
+            sourceDirs: ['./skills/user-native'],
+          }],
+        },
+      }),
+      {
+        'skills/user-native/SKILL.md': '---\nname: user-native\ndescription: User native Skill.\n---\n\n# User Native\n',
+        'skills/user-native/README.md': '# User Native\n',
+        'skills/user-native/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+        'scripts/render.mjs': [
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "user-native", platform: "codex", target: "codex.skill", kind: "skill",',
+          '  state: "present", refreshKeys: [], skillKey: "user-native",',
+          '  content: { files: {} }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+
+    await expect(readPluginManifest(fixture.pluginDir)).resolves.toMatchObject({
+      manifest: { name: 'codex-null-hook-authoring' },
+    });
+    await expect(runValidatePlugin(fixture.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 
