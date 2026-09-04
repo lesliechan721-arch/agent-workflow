@@ -32,6 +32,7 @@ import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js'
 import type { PlatformName, PluginMeta, ReceiptTargetIdentity, Scope } from '../../src/types.js';
 import {
   applyPluginConfigWrite,
+  replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import {
@@ -848,6 +849,207 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     })).exists).toBe(false);
+  });
+
+  it.each([undefined, false])(
+    'fails closed before reset or platform mutation when shared native confirmation is %s',
+    async (sharedNativeApplyConfirmed) => {
+      const fixture = await createFixture();
+      fixture.plugin.manifest.artifacts = {
+        targets: [{
+          id: 'native-skill',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-skill',
+        }],
+      };
+      await writePluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        values: { mode: 'fast' },
+      });
+      const reinstall = createReinstallMock();
+
+      await expect(resetPluginConfigWithHelper({
+        pluginName: fixture.plugin.manifest.name,
+        plugin: fixture.plugin,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        applyTargets: [{
+          pluginName: fixture.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        }],
+        reinstallCommandImpl: reinstall,
+        sharedNativeApplyConfirmed,
+      })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+
+      expect((await readPluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      })).values).toEqual({ mode: 'fast' });
+      expect(reinstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a confirmed shared native reset and does not require confirmation without apply', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    const store = {
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    const target = [{
+      pluginName: fixture.plugin.manifest.name,
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    }];
+    await writePluginConfigStore({ ...store, values: { mode: 'fast' } });
+    const reinstall = createReinstallMock();
+
+    await expect(resetPluginConfigWithHelper({
+      ...store,
+      plugin: fixture.plugin,
+      applyTargets: target,
+      reinstallCommandImpl: reinstall,
+      sharedNativeApplyConfirmed: true,
+    })).resolves.toMatchObject({ deleted: true, overallState: 'succeeded' });
+    expect(reinstall).toHaveBeenCalledOnce();
+
+    await writePluginConfigStore({ ...store, values: { mode: 'fast' } });
+    await expect(resetPluginConfigWithHelper({
+      ...store,
+      plugin: fixture.plugin,
+      apply: false,
+    })).resolves.toMatchObject({ deleted: true, applySkippedReason: 'notRequested' });
+  });
+
+  it('does not require shared native confirmation when reset removes only unrelated keys', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { token: 'unrelated' },
+    });
+    const reinstall = createReinstallMock();
+
+    await expect(resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }],
+      reinstallCommandImpl: reinstall,
+    })).resolves.toMatchObject({ deleted: true, overallState: 'succeeded' });
+    expect(reinstall).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, false])(
+    'fails closed before replay platform mutation when shared native confirmation is %s',
+    async (sharedNativeApplyConfirmed) => {
+      const fixture = await createFixture();
+      fixture.plugin.manifest.artifacts = {
+        targets: [{
+          id: 'native-skill',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-skill',
+        }],
+      };
+      const reinstall = createReinstallMock();
+
+      await expect(replayConfigRuntimeWrites({
+        plugin: fixture.plugin,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        applyTargets: [{
+          pluginName: fixture.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+        }],
+        reinstallCommandImpl: reinstall,
+        sharedNativeApplyConfirmed,
+      })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+      expect(reinstall).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows a confirmed shared native replay', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    const reinstall = createReinstallMock();
+
+    await expect(replayConfigRuntimeWrites({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }],
+      reinstallCommandImpl: reinstall,
+      sharedNativeApplyConfirmed: true,
+    })).resolves.toMatchObject({ overallState: 'succeeded' });
+    expect(reinstall).toHaveBeenCalledOnce();
   });
 
   it('allows project unset to remove a legacy native refresh-key override', async () => {

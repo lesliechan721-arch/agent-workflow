@@ -1969,6 +1969,33 @@ function defaultConfigValues(manifest) {
   return values;
 }
 
+function collectScalarLeafTokens(value) {
+  if (typeof value === 'string') return value === '' ? [] : [value];
+  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
+  if (value === null || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(collectScalarLeafTokens);
+}
+
+function collectSensitiveDefaultConfigValues(manifest) {
+  return Object.values(manifest.config?.fields ?? {}).flatMap((field) => {
+    if (!isRecord(field) || !Object.prototype.hasOwnProperty.call(field, 'default')) {
+      return [];
+    }
+    const value = field.default;
+    if (field.sensitive === true) return collectScalarLeafTokens(value);
+    if (field.type !== 'object' || value === null || typeof value !== 'object') {
+      return [];
+    }
+    return Object.entries(value).flatMap(([property, childValue]) => {
+      const child = field.properties?.[property]
+        ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
+      return isRecord(child) && child.sensitive === true
+        ? collectScalarLeafTokens(childValue)
+        : [];
+    });
+  });
+}
+
 function configFieldContainsSensitiveValue(field) {
   if (!isRecord(field)) return false;
   if (field.sensitive === true) return true;
@@ -2691,12 +2718,7 @@ function validateRenderedSkillTree(options) {
     error(`${fieldName} final file tree must contain a non-empty README.md`);
   }
 
-  const sensitiveValues = Object.entries(manifest.config?.fields ?? {})
-    .filter(([, field]) => isRecord(field) && field.sensitive === true)
-    .map(([key, field]) => Object.prototype.hasOwnProperty.call(field, 'default')
-      ? String(field.default)
-      : String(defaultConfigValues(manifest)[key] ?? ''))
-    .filter(Boolean);
+  const sensitiveValues = collectSensitiveDefaultConfigValues(manifest);
   for (const [relativePath, content] of files) {
     const text = content.toString('utf8');
     if (/\{\{[^{}]+\}\}/u.test(text)) {
@@ -2916,6 +2938,42 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   }
 }
 
+function resolveArtifactRendererFixtureRequests(declarations) {
+  const awOwned = new Map();
+  const codexNative = new Map();
+  for (const declaration of declarations) {
+    if (declaration.delivery?.mode === 'codex-native') {
+      const scope = declaration.scopes.includes('user') ? 'user' : 'project';
+      const request = codexNative.get(scope) ?? {
+        kind: 'codex-native',
+        surface: 'codex',
+        scope,
+        configScope: 'user',
+        declarations: [],
+      };
+      request.declarations.push(declaration);
+      codexNative.set(scope, request);
+      continue;
+    }
+
+    const surface = declaration.platform ?? declaration.distribution;
+    if (!surface) continue;
+    for (const scope of declaration.scopes) {
+      const key = `${surface}:${scope}`;
+      const request = awOwned.get(key) ?? {
+        kind: 'aw-owned',
+        surface,
+        scope,
+        configScope: scope,
+        declarations: [],
+      };
+      request.declarations.push(declaration);
+      awOwned.set(key, request);
+    }
+  }
+  return [...awOwned.values(), ...codexNative.values()];
+}
+
 function runArtifactRendererFixture(
   pluginDir,
   manifest,
@@ -2926,20 +2984,25 @@ function runArtifactRendererFixture(
 ) {
   if (!renderEntry || declarations.length === 0) return;
 
-  const surfaceScopes = [...new Set(declarations.flatMap((target) =>
-    target.scopes.map((scope) => `${target.platform ?? target.distribution}:${scope}`)))];
+  const requests = resolveArtifactRendererFixtureRequests(declarations);
   const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
   try {
-    for (const surfaceScope of surfaceScopes) {
-      const [surface, scope] = surfaceScope.split(':');
+    for (const request of requests) {
+      const {
+        kind,
+        surface,
+        scope,
+        configScope,
+        declarations: scopedDeclarations,
+      } = request;
       const distribution = surface === 'agent-skills' ? surface : undefined;
       const platform = distribution ? undefined : surface;
       const event = distribution ? 'materialize' : 'install';
-      const scopedDeclarations = declarations.filter((target) =>
-        (distribution ? target.distribution === distribution : target.platform === platform)
-        && target.scopes.includes(scope));
-      const requestRoot = path.join(tempRoot, `${surface}-${scope}`);
+      const requestRoot = path.join(tempRoot, `${kind}-${surface}-${scope}`);
+      const rendererAwHome = path.join(requestRoot, 'aw-home');
+      const rendererCodexHome = path.join(requestRoot, 'codex-home');
+      const rendererClaudeHome = path.join(requestRoot, 'claude-home');
       fs.mkdirSync(requestRoot, { recursive: true });
       const contextPath = path.join(requestRoot, 'context.json');
       const runtimeImports = scopedDeclarations.flatMap((target) =>
@@ -2984,8 +3047,8 @@ function runArtifactRendererFixture(
           },
           config: {
             mode: 'artifact-render',
-            targetScope: scope,
-            schema: scopedSchema,
+            targetScope: configScope,
+            ...(manifest.config?.fields === undefined ? {} : { schema: scopedSchema }),
             values: scopedValues,
             sources: Object.fromEntries(Object.keys(scopedValues).map((key) => [key, 'default'])),
             issues: [],
@@ -3001,9 +3064,9 @@ function runArtifactRendererFixture(
           })),
           runtimeImports,
           paths: {
-            awHome: path.join(requestRoot, 'aw-home'),
-            codexHome: path.join(requestRoot, 'codex-home'),
-            claudeHome: path.join(requestRoot, 'claude-home'),
+            awHome: rendererAwHome,
+            codexHome: rendererCodexHome,
+            claudeHome: rendererClaudeHome,
             manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
           },
           renderer: {
@@ -3018,12 +3081,15 @@ function runArtifactRendererFixture(
       );
       const rendererHome = path.join(requestRoot, 'home');
       const rendererTemp = path.join(requestRoot, 'tmp');
+      for (const rendererStateHome of [rendererAwHome, rendererCodexHome, rendererClaudeHome]) {
+        fs.mkdirSync(rendererStateHome, { recursive: true });
+      }
       fs.mkdirSync(rendererHome, { recursive: true });
       fs.mkdirSync(rendererTemp, { recursive: true });
       const rendererEnv = {
-        AW_HOME: path.join(requestRoot, 'aw-home'),
-        AW_CODEX_HOME: path.join(requestRoot, 'codex-home'),
-        AW_CLAUDE_HOME: path.join(requestRoot, 'claude-home'),
+        AW_HOME: rendererAwHome,
+        AW_CODEX_HOME: rendererCodexHome,
+        AW_CLAUDE_HOME: rendererClaudeHome,
         PATH: process.env.PATH ?? process.env.Path ?? '',
         AW_PLUGIN_CONTEXT: contextPath,
         AW_PLUGIN_ROOT: pluginDir,

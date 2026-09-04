@@ -3985,6 +3985,7 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const { pluginDir } = await writeDynamicArtifactPlugin(tempRoot);
     const rendererPath = path.join(pluginDir, 'scripts', 'render-artifacts.mjs');
+    const rendererHomeProbesPath = path.join(pluginDir, 'renderer-home-probes.jsonl');
     const renderer = await fs.readFile(rendererPath, 'utf8');
     await fs.writeFile(
       rendererPath,
@@ -3993,7 +3994,12 @@ describe('authoring tools', () => {
         'if (!process.env.AW_PLUGIN_CONTEXT) throw new Error("missing renderer context");',
         'if (process.env.AW_PLUGIN_NAME !== "dynamic-authoring-test") throw new Error("missing plugin identity");',
         'if (process.env.AW_PLUGIN_EVENT !== "install") throw new Error("missing fixture event");',
-        'const context = JSON.parse((await import("node:fs")).readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'const fs = await import("node:fs");',
+        'const path = await import("node:path");',
+        'const rendererHomes = [process.env.AW_HOME, process.env.AW_CODEX_HOME, process.env.AW_CLAUDE_HOME];',
+        'for (const rendererHome of rendererHomes) fs.writeFileSync(path.join(rendererHome, "probe"), "probe");',
+        'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-home-probes.jsonl"), JSON.stringify(rendererHomes) + "\\n");',
+        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         'if (context.config.mode !== "artifact-render") throw new Error("missing config mode");',
         'if (context.config.values.explorerModel !== "gpt-5.4-mini") throw new Error("missing config values");',
         'if (context.renderConfig || context.artifactRenderConfig) throw new Error("validator-only context alias");',
@@ -4006,6 +4012,76 @@ describe('authoring tools', () => {
       ...process.env,
       AW_VALIDATOR_SECRET_SENTINEL: 'must-not-reach-renderer',
     })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    const rendererHomes = (await fs.readFile(rendererHomeProbesPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .flatMap((line) => JSON.parse(line) as string[]);
+    const actualHomes = [
+      os.homedir(),
+      process.env.AW_HOME,
+      process.env.AW_CODEX_HOME,
+      process.env.AW_CLAUDE_HOME,
+    ].filter((home): home is string => typeof home === 'string' && home !== '');
+    expect(rendererHomes).not.toHaveLength(0);
+    for (const rendererHome of rendererHomes) {
+      expect(actualHomes).not.toContain(rendererHome);
+      expect(await fs.pathExists(rendererHome)).toBe(false);
+    }
+  });
+
+  it('validate_plugin.mjs omits the renderer config schema when the manifest has none', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-no-config-renderer-'));
+    tempDirs.push(tempRoot);
+    const skillKey = 'no-config-renderer';
+    const { pluginDir } = await writeSourcePlugin(
+      tempRoot,
+      skillKey,
+      createBaseManifest(skillKey, {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CLAUDE'],
+          },
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        artifacts: {
+          targets: [{
+            id: skillKey,
+            platform: 'claude',
+            target: 'claude.skill',
+            scopes: ['user'],
+            states: ['present'],
+            refreshKeys: [],
+            skillKey,
+            sourceDirs: [`./skills/${skillKey}`],
+          }],
+        },
+      }),
+      {
+        [`skills/${skillKey}/SKILL.md`]: `---\nname: ${skillKey}\ndescription: Render without config.\n---\n`,
+        'scripts/render.mjs': [
+          'const fs = await import("node:fs");',
+          'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'if (Object.hasOwn(context.config, "schema")) throw new Error("unexpected config schema");',
+          'if (Object.keys(context.config.values).length !== 0 || Object.keys(context.config.sources).length !== 0) {',
+          '  throw new Error("unexpected config values");',
+          '}',
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          `  id: ${JSON.stringify(skillKey)}, platform: "claude", target: "claude.skill", kind: "skill",`,
+          `  state: "present", refreshKeys: [], skillKey: ${JSON.stringify(skillKey)}, content: { files: {} }`,
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
@@ -4452,6 +4528,246 @@ describe('authoring tools', () => {
       })(),
     ]);
   });
+
+  it('validate_plugin.mjs rejects sensitive default scalar leaves in final Skill trees', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-sensitive-default-scan-'));
+    tempDirs.push(tempRoot);
+    const skillKey = 'sensitive-default-scan';
+    const { pluginDir } = await writeSourcePlugin(
+      tempRoot,
+      skillKey,
+      createBaseManifest(skillKey, {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CLAUDE'],
+          },
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        config: {
+          fields: {
+            fixedSecrets: {
+              type: 'object',
+              properties: {
+                token: { type: 'string', sensitive: true },
+                label: { type: 'string' },
+              },
+              default: {
+                token: 'fixed-sensitive-default',
+                label: 'ordinary-fixed-label',
+              },
+            },
+            kvSecrets: {
+              type: 'object',
+              additionalProperties: { type: 'string', sensitive: true },
+              default: { account: 'kv-sensitive-default' },
+            },
+            topLevelSecret: {
+              type: 'object',
+              sensitive: true,
+              additionalProperties: { type: 'string' },
+              default: { token: 'top-level-sensitive-default' },
+            },
+            ordinaryObject: {
+              type: 'object',
+              properties: { label: { type: 'string' } },
+              default: { label: 'ordinary-object-default' },
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'sensitive-default-scan',
+            platform: 'claude',
+            scopes: ['user', 'project'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey,
+            sourceDirs: [`./skills/${skillKey}`],
+          }],
+        },
+      }),
+      {
+        [`skills/${skillKey}/SKILL.md`]: `---\nname: ${skillKey}\ndescription: Scan sensitive defaults.\n---\n`,
+      },
+    );
+    const sourceFile = path.join(pluginDir, 'skills', skillKey, 'references', 'source.md');
+    const rendererPath = path.join(pluginDir, 'scripts', 'render.mjs');
+    const writeRenderer = async (content: string): Promise<void> => {
+      await fs.outputFile(rendererPath, [
+        'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+        '  id: "sensitive-default-scan", platform: "claude", target: "claude.skill", kind: "skill",',
+        '  state: "present", refreshKeys: [], skillKey: "sensitive-default-scan",',
+        `  content: { files: { "references/rendered.md": ${JSON.stringify(content)} } }`,
+        '}] }));',
+      ].join('\n'), 'utf8');
+    };
+
+    await fs.outputFile(sourceFile, 'fixed-sensitive-default\n');
+    await writeRenderer('renderer-safe\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'final file tree exposes sensitive config in "references/source.md"',
+      ),
+    });
+
+    await fs.outputFile(sourceFile, 'source-safe\n');
+    await writeRenderer('kv-sensitive-default\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'final file tree exposes sensitive config in "references/rendered.md"',
+      ),
+    });
+
+    await writeRenderer('top-level-sensitive-default\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'final file tree exposes sensitive config in "references/rendered.md"',
+      ),
+    });
+
+    await fs.outputFile(sourceFile, 'ordinary-object-default\n');
+    await writeRenderer('renderer-safe\n');
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+  }, 60_000);
+
+  it('validate_plugin.mjs uses production-equivalent renderer request partitions', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-renderer-partitions-'));
+    tempDirs.push(tempRoot);
+    const pluginName = 'renderer-partitions';
+    const nativeId = 'native-shared';
+    const extensionId = 'extension-skill';
+    const { pluginDir, manifestPath } = await writeSourcePlugin(
+      tempRoot,
+      pluginName,
+      createBaseManifest(pluginName, {
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CODEX'],
+          },
+        },
+        config: {
+          fields: {
+            nativeMode: { type: 'string', default: 'native-default' },
+            extensionMode: { type: 'string', default: 'extension-default' },
+          },
+        },
+        scripts: {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        },
+        artifacts: {
+          targets: [{
+            id: nativeId,
+            platform: 'codex',
+            target: 'codex.skill',
+            delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            scopes: ['user', 'project'],
+            states: ['present'],
+            refreshKeys: ['nativeMode'],
+            skillKey: nativeId,
+            sourceDirs: [`./skills/${nativeId}`],
+          }],
+        },
+      }),
+      {
+        [`skills/${nativeId}/SKILL.md`]: `---\nname: ${nativeId}\ndescription: Shared native Skill.\n---\n`,
+        [`skills/${nativeId}/agents/openai.yaml`]: 'policy:\n  allow_implicit_invocation: true\n',
+        'scripts/render.mjs': [
+          'const fs = await import("node:fs");',
+          'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+          'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
+          `if (JSON.stringify(context.requestedArtifactIds) !== ${JSON.stringify(JSON.stringify([nativeId]))}) process.exit(2);`,
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          `  id: ${JSON.stringify(nativeId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
+          `  state: "present", refreshKeys: ["nativeMode"], skillKey: ${JSON.stringify(nativeId)},`,
+          '  content: { files: {} }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.artifacts.targets.push({
+      id: extensionId,
+      platform: 'codex',
+      target: 'codex.skill',
+      delivery: { mode: 'aw-extension' },
+      scopes: ['user'],
+      states: ['present'],
+      refreshKeys: ['extensionMode'],
+      skillKey: extensionId,
+      sourceDirs: [`./skills/${extensionId}`],
+    });
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await waitForAll([
+      fs.outputFile(
+        path.join(pluginDir, 'skills', extensionId, 'SKILL.md'),
+        `---\nname: ${extensionId}\ndescription: AW extension Skill.\n---\n`,
+      ),
+      fs.outputFile(
+        path.join(pluginDir, 'skills', extensionId, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+      fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
+        'const fs = await import("node:fs");',
+        'const path = await import("node:path");',
+        'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-calls.jsonl"), JSON.stringify({',
+        '  scope: context.scope, targetScope: context.config.targetScope, requestedArtifactIds: context.requestedArtifactIds',
+        '}) + "\\n");',
+        'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
+        'const id = context.requestedArtifactIds[0];',
+        'if (context.requestedArtifactIds.length !== 1 || (id !== "native-shared" && id !== "extension-skill")) process.exit(2);',
+        'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+        '  id, platform: "codex", target: "codex.skill", kind: "skill", state: "present",',
+        '  refreshKeys: id === "native-shared" ? ["nativeMode"] : ["extensionMode"],',
+        '  skillKey: id, content: { files: {} }',
+        '}] }));',
+      ].join('\n'), 'utf8'),
+    ]);
+
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    const calls = (await fs.readFile(path.join(pluginDir, 'renderer-calls.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(calls).toHaveLength(2);
+    expect(calls).toEqual(expect.arrayContaining([
+      { scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId] },
+      { scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId] },
+    ]));
+
+    await fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
+      'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+      `  id: ${JSON.stringify(nativeId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
+      `  state: "present", refreshKeys: ["nativeMode"], skillKey: ${JSON.stringify(nativeId)}, content: { files: {} }`,
+      '}, {',
+      `  id: ${JSON.stringify(extensionId)}, platform: "codex", target: "codex.skill", kind: "skill",`,
+      `  state: "present", refreshKeys: ["extensionMode"], skillKey: ${JSON.stringify(extensionId)}, content: { files: {} }`,
+      '}] }));',
+    ].join('\n'), 'utf8');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('is not declared for codex/user'),
+    });
+  }, 60_000);
 
   it('validate_plugin.mjs enforces native Codex Skill identity contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-native-dynamic-contract-'));

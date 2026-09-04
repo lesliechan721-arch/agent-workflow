@@ -3427,9 +3427,17 @@ export async function runRebuildCommand(options: {
               ].some((action) =>
                 action.pluginId === entry.pluginId
                 && action.scope === planned.resolvedScope));
+              const hasActivationMutation = codexPlans.some((codexPlan) => [
+                ...codexPlan.activationActions.user,
+                ...codexPlan.activationActions.project,
+              ].some((action) =>
+                action.pluginId === entry.pluginId
+                && action.action !== 'none'));
               target.codexNativeObservationExpectation = preserveSharedNative && hasExtensionMutation
                 ? (plannedNative.action === 'reuse' ? 'installed' : 'observed')
                 : undefined;
+              target.codexNativeSensitivePreflightRequired = preserveSharedNative
+                && hasActivationMutation;
               if (!writesSharedNative) {
                 const isSharedNativeComponent = (component: OwnedComponent) =>
                   component.kind === 'native-plugin'
@@ -3444,6 +3452,9 @@ export async function runRebuildCommand(options: {
                   !isSharedNativeComponent(component));
                 target.operationActions = target.operationActions?.filter((action) =>
                   action.kind !== 'ensureNativeRegistration');
+              }
+              if (target.codexNativeSensitivePreflightRequired && !hasExtensionMutation) {
+                await integration.driver.preflightMutation?.(target);
               }
             }
             preparedTargets.set(`${entry.pluginId}\0${platform}`, {

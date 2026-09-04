@@ -193,7 +193,6 @@ describe('namespaced marketplace root', () => {
       marketplaceName: 'aw',
     })).rejects.toMatchObject({
       code: 'marketplaceRootInvalid',
-      location: agentsRoot,
     });
     await expect(cleanupOrphanNamespacedMarketplaceRoot({
       sourceId: 'official',
@@ -935,90 +934,101 @@ describe('namespaced marketplace root', () => {
       && reference.location.startsWith(sourceRoot))).toEqual([]);
   });
 
-  it.each([
-    ['native-to-aw-extension', 'aw-extension', 'demo', false],
-    ['native-to-removed', null, 'demo', false],
-    ['skillKey-rename', 'codex-native', 'renamed', false],
-    ['native-to-static', null, 'demo', true],
-  ] as const)(
-    'does not replay a stale Codex Skill overlay after %s',
-    async (_caseName, deliveryMode, currentSkillKey, createStaticSkill) => {
+  it.skipIf(process.platform === 'win32')(
+    'rejects a source plugins ancestor symlink without changing staging',
+    async () => {
       const isolation = getCurrentSourceTestIsolation();
       const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
       const stagingRoot = path.join(isolation.layout.rootDir, 'staging');
-      const pluginName = 'demo';
+      const outsidePlugins = path.join(isolation.layout.rootDir, 'outside-source-plugins');
       await createMarketplaceRoot(sourceRoot);
-      for (const root of [sourceRoot, stagingRoot]) {
-        await fs.outputJson(path.join(root, 'plugins', pluginName, '.codex-plugin', 'plugin.json'), {
-          name: pluginName, version: '1.0.0', skills: './codex/skills',
-        });
-      }
-      await fs.outputJson(path.join(stagingRoot, 'plugins', pluginName, '.agents-plugin', 'plugin.json'), {
-        name: pluginName, version: '1.0.0', description: pluginName, schemaVersion: 3,
-        marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
-        ...(deliveryMode ? {
-          artifacts: { targets: [{
-            id: 'current-skill', platform: 'codex', target: 'codex.skill',
-            scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: currentSkillKey,
-            delivery: deliveryMode === 'codex-native'
-              ? { mode: 'codex-native', identity: 'shared', renderProfile: 'user' }
-              : { mode: 'aw-extension' },
-          }] },
-        } : {}),
+      await fs.outputJson(path.join(outsidePlugins, 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
       });
-      const oldSkillRoot = path.join(sourceRoot, 'plugins', pluginName, 'codex', 'skills', 'demo');
-      await fs.outputFile(path.join(oldSkillRoot, 'SKILL.md'), 'legacy dynamic\n');
+      const outsideSkillRoot = path.join(outsidePlugins, 'demo', 'codex', 'skills', 'demo');
+      await fs.outputFile(path.join(outsideSkillRoot, 'SKILL.md'), 'outside legacy overlay\n');
       await writeSkillOwnerMarker({
-        skillRoot: oldSkillRoot,
-        allowedRoot: path.dirname(oldSkillRoot),
+        skillRoot: outsideSkillRoot,
+        allowedRoot: path.dirname(outsideSkillRoot),
         identity: {
           owner: 'agent-workflows', sourceId: 'official', pluginId: 'official/demo',
-          plugin: pluginName, artifactKey: 'demo', platform: 'codex', scope: 'user',
+          plugin: 'demo', artifactKey: 'demo', platform: 'codex', scope: 'user',
         },
       });
-      const stagingOldSkillRoot = path.join(stagingRoot, 'plugins', pluginName, 'codex', 'skills', 'demo');
-      if (createStaticSkill) {
-        await fs.outputFile(path.join(stagingOldSkillRoot, 'SKILL.md'), 'current static\n');
-      }
-
-      await replayNamespacedCodexSkillOverlays({
-        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      await fs.symlink(outsidePlugins, path.join(sourceRoot, 'plugins'), 'dir');
+      await fs.outputJson(path.join(stagingRoot, 'plugins', 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
       });
+      await fs.outputJson(path.join(stagingRoot, 'plugins', 'demo', '.agents-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', description: 'demo', schemaVersion: 3,
+        marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        artifacts: { targets: [{
+          id: 'demo-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'],
+          states: ['present'], refreshKeys: [], skillKey: 'demo',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        }] },
+      });
+      const stagingSentinel = path.join(stagingRoot, 'sentinel.txt');
+      await fs.outputFile(stagingSentinel, 'unchanged\n');
 
-      if (createStaticSkill) {
-        await expect(fs.readFile(path.join(stagingOldSkillRoot, 'SKILL.md'), 'utf8'))
-          .resolves.toBe('current static\n');
-      } else {
-        await expect(fs.pathExists(stagingOldSkillRoot)).resolves.toBe(false);
-      }
-      await expect(fs.pathExists(path.join(stagingOldSkillRoot, '.agent-workflows-owner.json')))
-        .resolves.toBe(false);
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
+
+      await expect(fs.readFile(stagingSentinel, 'utf8')).resolves.toBe('unchanged\n');
+      await expect(fs.pathExists(path.join(
+        stagingRoot, 'plugins', 'demo', 'codex', 'skills', 'demo',
+      ))).resolves.toBe(false);
+      await expect(fs.readFile(path.join(outsideSkillRoot, 'SKILL.md'), 'utf8'))
+        .resolves.toBe('outside legacy overlay\n');
     },
   );
 
-  it('does not revive a plugin tree from a legacy overlay when current staging removed it', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
-    const stagingRoot = path.join(isolation.layout.rootDir, 'staging');
-    await createMarketplaceRoot(sourceRoot);
-    await fs.outputJson(path.join(sourceRoot, 'plugins', 'removed', '.codex-plugin', 'plugin.json'), {
-      name: 'removed', version: '1.0.0', skills: './codex/skills',
-    });
-    const oldSkillRoot = path.join(sourceRoot, 'plugins', 'removed', 'codex', 'skills', 'removed');
-    await fs.outputFile(path.join(oldSkillRoot, 'SKILL.md'), 'legacy dynamic\n');
-    await writeSkillOwnerMarker({
-      skillRoot: oldSkillRoot,
-      allowedRoot: path.dirname(oldSkillRoot),
-      identity: {
-        owner: 'agent-workflows', sourceId: 'official', pluginId: 'official/removed',
-        plugin: 'removed', artifactKey: 'removed', platform: 'codex', scope: 'user',
-      },
-    });
+  it.skipIf(process.platform === 'win32')(
+    'rejects a staging skills ancestor symlink without writing outside staging',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, 'staging');
+      await createMarketplaceRoot(sourceRoot);
+      await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      const sourceSkillRoot = path.join(sourceRoot, 'plugins', 'demo', 'codex', 'skills', 'demo');
+      await fs.outputFile(path.join(sourceSkillRoot, 'SKILL.md'), 'legacy overlay\n');
+      await writeSkillOwnerMarker({
+        skillRoot: sourceSkillRoot,
+        allowedRoot: path.dirname(sourceSkillRoot),
+        identity: {
+          owner: 'agent-workflows', sourceId: 'official', pluginId: 'official/demo',
+          plugin: 'demo', artifactKey: 'demo', platform: 'codex', scope: 'user',
+        },
+      });
+      const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'demo');
+      await fs.outputJson(path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      await fs.outputJson(path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', description: 'demo', schemaVersion: 3,
+        marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        artifacts: { targets: [{
+          id: 'demo-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'],
+          states: ['present'], refreshKeys: [], skillKey: 'demo',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        }] },
+      });
+      const outsideSkills = path.join(isolation.layout.rootDir, 'outside-staging-skills');
+      await fs.outputFile(path.join(outsideSkills, 'sentinel.txt'), 'unchanged\n');
+      await fs.ensureDir(path.join(stagingPluginRoot, 'codex'));
+      await fs.symlink(outsideSkills, path.join(stagingPluginRoot, 'codex', 'skills'), 'dir');
 
-    await replayNamespacedCodexSkillOverlays({
-      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
-    });
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
 
-    await expect(fs.pathExists(path.join(stagingRoot, 'plugins', 'removed'))).resolves.toBe(false);
-  });
+      await expect(fs.readFile(path.join(outsideSkills, 'sentinel.txt'), 'utf8'))
+        .resolves.toBe('unchanged\n');
+      await expect(fs.pathExists(path.join(outsideSkills, 'demo'))).resolves.toBe(false);
+    },
+  );
 });

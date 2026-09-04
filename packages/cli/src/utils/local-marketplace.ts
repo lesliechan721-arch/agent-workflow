@@ -4,10 +4,11 @@ import type { Dirent } from 'node:fs';
 import fs from 'fs-extra';
 
 import type { MarketplaceManifest, PlatformName } from '../types.js';
-import { SKILL_OWNER_MARKER, readSkillOwnerMarker } from './ownership.js';
+import { readSkillOwnerMarker } from './ownership.js';
 import { readJsonFile } from './json.js';
 import { assertStrictSemVer } from './manifest.js';
 import { resolveCliPackageRoot } from './paths.js';
+import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
 import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 import { normalizeMarketplaceProductToken } from './platform-support.js';
 
@@ -122,38 +123,46 @@ async function inspectMarketplacePath(
   finalKind: 'directory' | 'file',
 ): Promise<fs.Stats | null> {
   const { root, candidate } = assertMarketplacePathBoundary(trustedRoot, candidatePath);
-  const paths = [root];
-  let current = root;
-  for (const segment of path.relative(root, candidate).split(path.sep).filter(Boolean)) {
-    current = path.join(current, segment);
-    paths.push(current);
+  let rootStats: fs.Stats | null;
+  let candidateStats: fs.Stats | null;
+  try {
+    [rootStats, candidateStats] = await Promise.all([
+      lstatMarketplacePath(root),
+      lstatMarketplacePath(candidate),
+    ]);
+  } catch (error) {
+    throw new MarketplaceRootValidationError(candidate, 'marketplace path cannot be inspected.', error);
   }
-  let candidateStats: fs.Stats | null = null;
-  for (const currentPath of paths) {
-    let stats: fs.Stats | null;
-    try {
-      stats = await lstatMarketplacePath(currentPath);
-    } catch (error) {
-      throw new MarketplaceRootValidationError(
-        currentPath,
-        'marketplace path cannot be inspected.',
-        error,
-      );
-    }
-    if (!stats) return null;
-    const isFinal = currentPath === candidate;
-    const valid = isFinal && finalKind === 'file'
-      ? stats.isFile() && !stats.isSymbolicLink()
-      : stats.isDirectory() && !stats.isSymbolicLink();
-    if (!valid) {
-      throw new MarketplaceRootValidationError(
-        currentPath,
-        isFinal && finalKind === 'file'
-          ? 'marketplace JSON target must be a regular file.'
-          : 'marketplace path must be a regular directory.',
-      );
-    }
-    if (isFinal) candidateStats = stats;
+  if (!rootStats) return null;
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new MarketplaceRootValidationError(root, 'marketplace root must be a regular directory.');
+  }
+  let physicalRoot: string;
+  let physicalCandidate: string;
+  try {
+    [physicalRoot, physicalCandidate] = await Promise.all([
+      canonicalizePathThroughExistingAncestor(root),
+      canonicalizePathThroughExistingAncestor(candidate),
+    ]);
+  } catch (error) {
+    throw new MarketplaceRootValidationError(candidate, 'marketplace path cannot be resolved.', error);
+  }
+  try {
+    assertMarketplacePathBoundary(physicalRoot, physicalCandidate);
+  } catch {
+    throw new MarketplaceRootValidationError(candidate, 'marketplace physical path escapes its trusted root.');
+  }
+  if (!candidateStats) return null;
+  const valid = finalKind === 'file'
+    ? candidateStats.isFile() && !candidateStats.isSymbolicLink()
+    : candidateStats.isDirectory() && !candidateStats.isSymbolicLink();
+  if (!valid) {
+    throw new MarketplaceRootValidationError(
+      candidate,
+      finalKind === 'file'
+        ? 'marketplace JSON target must be a regular file.'
+        : 'marketplace path must be a regular directory.',
+    );
   }
   return candidateStats;
 }
@@ -172,18 +181,6 @@ async function readStrictOptionalJsonObject(
   } catch (error) {
     if (error instanceof MarketplaceRootValidationError) throw error;
     throw new MarketplaceRootValidationError(filePath, 'marketplace JSON cannot be read.', error);
-  }
-}
-
-async function readOptionalJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
-  try {
-    const value = await fs.readJson(filePath) as unknown;
-    if (!isRecord(value)) throw new Error(`Expected a JSON object at ${filePath}.`);
-    return value;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
-    throw error;
   }
 }
 
@@ -267,21 +264,34 @@ async function assertTreeHasNoSymlinks(root: string): Promise<void> {
   }
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
+async function inspectOverlayPath(
+  trustedRoot: string,
+  targetPath: string,
+  finalKind: 'directory' | 'file',
+  redactedRoots: string[],
+): Promise<fs.Stats | null> {
   try {
-    await fs.lstat(filePath);
-    return true;
+    return await inspectMarketplacePath(trustedRoot, targetPath, finalKind);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return false;
-    throw error;
+    throw new Error(`marketplaceOverlayReadFailed: ${sanitizeCatalogSourceErrorMessage(
+      error instanceof Error ? error.message : String(error),
+      process.env,
+      redactedRoots,
+    )}`);
   }
 }
 
 async function readOverlayDirectory(
+  trustedRoot: string,
   directoryPath: string,
   redactedRoots: string[],
 ): Promise<Dirent[]> {
+  if (!await inspectOverlayPath(
+    trustedRoot,
+    directoryPath,
+    'directory',
+    redactedRoots,
+  )) return [];
   try {
     return await fs.readdir(directoryPath, { withFileTypes: true });
   } catch (error) {
@@ -323,14 +333,19 @@ export async function replayNamespacedCodexSkillOverlays(options: {
 
   const pluginsRoot = path.join(options.sourceRoot, 'plugins');
   const redactedRoots = [options.sourceRoot, options.stagingRoot];
-  for (const pluginEntry of await readOverlayDirectory(pluginsRoot, redactedRoots)) {
+  for (const pluginEntry of await readOverlayDirectory(
+    options.sourceRoot,
+    pluginsRoot,
+    redactedRoots,
+  )) {
     if (pluginEntry.isSymbolicLink()) {
       throw new Error(`Codex Skill overlay plugin root cannot be a symlink: ${pluginEntry.name}`);
     }
     if (!pluginEntry.isDirectory()) continue;
     const pluginName = pluginEntry.name;
     const sourcePluginRoot = path.join(pluginsRoot, pluginName);
-    const sourcePlatformManifest = await readOptionalJsonObject(
+    const sourcePlatformManifest = await readStrictOptionalJsonObject(
+      options.sourceRoot,
       path.join(sourcePluginRoot, '.codex-plugin', 'plugin.json'),
     );
     const sourceSkillsRelative = normalizePluginRelativeDirectory(
@@ -340,14 +355,17 @@ export async function replayNamespacedCodexSkillOverlays(options: {
     if (!sourceSkillsRelative) continue;
     const sourceSkillsRoot = path.join(sourcePluginRoot, ...sourceSkillsRelative.split('/'));
     const overlays: Array<{ key: string; root: string }> = [];
-    for (const entry of await readOverlayDirectory(sourceSkillsRoot, redactedRoots)) {
+    for (const entry of await readOverlayDirectory(
+      options.sourceRoot,
+      sourceSkillsRoot,
+      redactedRoots,
+    )) {
       if (entry.isSymbolicLink()) {
         throw new Error(`Codex Skill overlay cannot be a symlink: ${path.join(sourceSkillsRoot, entry.name)}`);
       }
       if (!entry.isDirectory()) continue;
       const skillRoot = path.join(sourceSkillsRoot, entry.name);
-      if (!await pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))) continue;
-      await readSkillOwnerMarker({
+      const owner = await readSkillOwnerMarker({
         skillRoot,
         allowedRoot: sourceSkillsRoot,
         expectedIdentity: {
@@ -360,13 +378,20 @@ export async function replayNamespacedCodexSkillOverlays(options: {
           scope: 'user',
         },
       });
+      if (!owner) continue;
       overlays.push({ key: entry.name, root: skillRoot });
     }
     if (overlays.length === 0) continue;
 
     const stagingPluginRoot = path.join(options.stagingRoot, 'plugins', pluginName);
-    if (!await pathExists(stagingPluginRoot)) continue;
-    const stagingManifest = await readOptionalJsonObject(
+    if (!await inspectOverlayPath(
+      options.stagingRoot,
+      stagingPluginRoot,
+      'directory',
+      redactedRoots,
+    )) continue;
+    const stagingManifest = await readStrictOptionalJsonObject(
+      options.stagingRoot,
       path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'),
     );
     const targets = (stagingManifest?.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
@@ -382,7 +407,8 @@ export async function replayNamespacedCodexSkillOverlays(options: {
         ? [target.skillKey]
         : [];
     }));
-    const stagingPlatformManifest = await readOptionalJsonObject(
+    const stagingPlatformManifest = await readStrictOptionalJsonObject(
+      options.stagingRoot,
       path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'),
     );
     const stagingSkillsRelative = normalizePluginRelativeDirectory(
@@ -391,6 +417,7 @@ export async function replayNamespacedCodexSkillOverlays(options: {
     );
     if (!stagingSkillsRelative) continue;
     const stagingSkillsRoot = path.join(stagingPluginRoot, ...stagingSkillsRelative.split('/'));
+    await inspectOverlayPath(options.stagingRoot, stagingSkillsRoot, 'directory', redactedRoots);
     for (const overlay of overlays) {
       if (!dynamicKeys.has(overlay.key)) continue;
       const destination = path.join(stagingSkillsRoot, overlay.key);

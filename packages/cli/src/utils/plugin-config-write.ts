@@ -443,6 +443,7 @@ export async function replayConfigRuntimeWrites(options: {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
   awHomeMutationToken?: AwHomeMutationToken;
+  sharedNativeApplyConfirmed?: boolean;
 }): Promise<ConfigRuntimeReplayReceipt> {
   return withAwHomeMutationLock({
     env: options.env,
@@ -459,12 +460,22 @@ export async function replayConfigRuntimeWrites(options: {
         nativeCliRunner: options.nativeCliRunner,
         rebuildRuntime,
       });
-      const applied = await configApplyHasIssues({
+      const applyHasIssues = await configApplyHasIssues({
         plugin: options.plugin,
         targets: discovered.targets,
         cwd: options.cwd,
         env,
-      }) ? {
+      });
+      if (
+        !applyHasIssues
+        && options.scope === 'user'
+        && options.sharedNativeApplyConfirmed !== true
+        && pluginHasSharedNativeRefreshKeys(options.plugin)
+        && discovered.targets.some((target) => target.platform === 'codex')
+      ) {
+        throwSharedNativeApplyConfirmationRequired();
+      }
+      const applied = applyHasIssues ? {
           overallState: 'partial' as const,
           targetResults: [],
           applySkippedReason: 'invalidConfig' as const,
@@ -518,6 +529,22 @@ function changedKeysAffectSharedNativeTarget(options: {
     && target.target === 'codex.skill'
     && target.delivery?.mode === 'codex-native'
     && target.refreshKeys.some((key) => changedKeys.has(key)));
+}
+
+function pluginHasSharedNativeRefreshKeys(plugin: PluginMeta): boolean {
+  return (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === 'codex'
+    && target.target === 'codex.skill'
+    && target.delivery?.mode === 'codex-native'
+    && target.refreshKeys.length > 0);
+}
+
+function throwSharedNativeApplyConfirmationRequired(): never {
+  const error = new Error(
+    'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
+  ) as Error & { code: string };
+  error.code = 'sharedNativeConfigApplyConfirmationRequired';
+  throw error;
 }
 
 async function applyPluginConfigWriteUnlocked(
@@ -616,11 +643,7 @@ async function applyPluginConfigWriteUnlocked(
       rebuildRuntime: options.rebuildRuntime,
     })).targets;
     if (applyTargets.some((target) => target.platform === 'codex')) {
-      const error = new Error(
-        'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
-      ) as Error & { code: string };
-      error.code = 'sharedNativeConfigApplyConfirmationRequired';
-      throw error;
+      throwSharedNativeApplyConfirmationRequired();
     }
   }
   if (changedKeys.length > 0) {
@@ -805,6 +828,7 @@ type ResetPluginConfigWriteOptions = {
   awHomeMutationToken?: AwHomeMutationToken;
   reviewPreflight?: () => Promise<void> | void;
   apply?: boolean;
+  sharedNativeApplyConfirmed?: boolean;
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -843,6 +867,7 @@ async function resetPluginConfigWithHelperUnlocked(
     }
   }
   let removedKeys: string[] = [];
+  let removedKeysKnown = false;
   try {
     const store = await readPluginConfigStore({
       ...configIdentity,
@@ -852,10 +877,40 @@ async function resetPluginConfigWithHelperUnlocked(
       env: options.env,
     });
     removedKeys = collectRemovedConfigKeys(store.values);
+    removedKeysKnown = store.state !== 'invalid';
   } catch {
     // Reset is the final recovery boundary and does not require a readable store.
   }
   const warnings: string[] = [];
+
+  let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>> | undefined;
+  const sharedNativeAffected = schemaAccess?.plugin
+    && (removedKeysKnown
+      ? changedKeysAffectSharedNativeTarget({
+          plugin: schemaAccess.plugin,
+          changedKeys: removedKeys,
+        })
+      : pluginHasSharedNativeRefreshKeys(schemaAccess.plugin));
+  if (
+    schemaAccess?.plugin
+    && options.apply !== false
+    && options.scope === 'user'
+    && options.sharedNativeApplyConfirmed !== true
+    && sharedNativeAffected
+  ) {
+    discovered = await resolveConfigApplyTargets({
+      plugin: schemaAccess.plugin,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      applyTargets: options.applyTargets,
+      nativeCliRunner: options.nativeCliRunner,
+      rebuildRuntime: options.rebuildRuntime,
+    });
+    if (discovered.targets.some((target) => target.platform === 'codex')) {
+      throwSharedNativeApplyConfirmationRequired();
+    }
+  }
 
   const reset = await resetPluginConfigStore({
     ...configIdentity,
@@ -899,7 +954,7 @@ async function resetPluginConfigWithHelperUnlocked(
         applySkippedReason: 'invalidConfig',
       };
     } else if (reset.deleted && options.apply !== false && applied.applySkippedReason !== 'invalidConfig') {
-      const discovered = await resolveConfigApplyTargets({
+      discovered ??= await resolveConfigApplyTargets({
         plugin: schemaAccess.plugin,
         scope: options.scope,
         cwd: options.cwd,

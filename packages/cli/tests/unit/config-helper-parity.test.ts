@@ -273,4 +273,166 @@ describe('generated aw-config helper', () => {
       }
     },
   );
+
+  it('uses user/default values for native refresh keys, preserves raw project values, and isolates renderer context', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-native-fallback-'));
+    try {
+      const sourceId = 'fixture-source';
+      const sourceIdentity = `sha256:${'c'.repeat(64)}`;
+      const pluginName = 'fixture-plugin';
+      const awHome = path.join(root, 'aw-home');
+      const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
+      const bundleRoot = path.join(marketplaceRoot, 'plugins', pluginName);
+      const projectRoot = path.join(root, 'project');
+      const projectSubdir = path.join(projectRoot, 'nested');
+      const userStorePath = path.join(
+        awHome, 'plugin-config', sourceId, pluginName, 'config.json',
+      );
+      const projectStorePath = path.join(
+        projectRoot, '.agent-workflows', 'plugin-config', sourceId, pluginName, 'config.json',
+      );
+      const helperPath = path.join(bundleRoot, 'scripts', 'aw-config.mjs');
+
+      await Promise.all([
+        fs.mkdir(path.dirname(helperPath), { recursive: true }),
+        fs.mkdir(path.join(bundleRoot, '.agents-plugin'), { recursive: true }),
+        fs.mkdir(path.dirname(userStorePath), { recursive: true }),
+        fs.mkdir(path.dirname(projectStorePath), { recursive: true }),
+        fs.mkdir(projectSubdir, { recursive: true }),
+      ]);
+      await Promise.all([
+        fs.copyFile(path.join(packageRoot, 'authoring', 'assets', 'aw-config.mjs'), helperPath),
+        fs.writeFile(path.join(projectRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8'),
+        fs.writeFile(path.join(marketplaceRoot, 'config.json'), `${JSON.stringify({
+          schemaVersion: 2,
+          sourceId,
+          sourceIdentity,
+          marketplaceName: `aw-${sourceId}`,
+        })}\n`, 'utf8'),
+        fs.writeFile(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), `${JSON.stringify({
+          name: pluginName,
+          config: {
+            fields: {
+              nativeUser: { type: 'string', default: 'native-default' },
+              nativeDefault: { type: 'string', default: 'native-default' },
+              ordinary: { type: 'string', default: 'ordinary-default' },
+            },
+          },
+          artifacts: {
+            targets: [{
+              id: 'native-skill',
+              platform: 'codex',
+              target: 'codex.skill',
+              kind: 'skill',
+              scopes: ['user'],
+              states: ['present'],
+              refreshKeys: ['nativeUser', 'nativeDefault'],
+              delivery: {
+                mode: 'codex-native',
+                identity: 'shared',
+                renderProfile: 'user',
+              },
+              skillKey: 'native-skill',
+            }],
+          },
+        })}\n`, 'utf8'),
+        fs.writeFile(userStorePath, `${JSON.stringify({
+          schemaVersion: 3,
+          sourceId,
+          sourceIdentity,
+          pluginName,
+          values: {
+            nativeUser: 'user-native',
+            ordinary: 'user-ordinary',
+          },
+        })}\n`, 'utf8'),
+        fs.writeFile(projectStorePath, `${JSON.stringify({
+          schemaVersion: 3,
+          sourceId,
+          sourceIdentity,
+          pluginName,
+          values: {
+            nativeUser: 'legacy-project-native',
+            nativeDefault: 'legacy-project-native-default',
+            ordinary: 'project-ordinary',
+          },
+        })}\n`, 'utf8'),
+      ]);
+
+      const fallbackEnv = {
+        ...process.env,
+        AW_HOME: awHome,
+        AW_PLUGIN_CONTEXT: '',
+        NODE_PATH: '',
+      };
+      const [effective, project] = await Promise.all([
+        execFileAsync(process.execPath, [helperPath, 'json'], {
+          cwd: projectSubdir,
+          env: fallbackEnv,
+        }),
+        execFileAsync(process.execPath, [helperPath, 'json', '--scope', 'project'], {
+          cwd: projectSubdir,
+          env: fallbackEnv,
+        }),
+      ]);
+      expect(JSON.parse(effective.stdout)).toMatchObject({
+        scope: 'effective',
+        values: {
+          nativeUser: 'user-native',
+          nativeDefault: 'native-default',
+          ordinary: 'project-ordinary',
+        },
+        sources: {
+          nativeUser: 'user',
+          nativeDefault: 'default',
+          ordinary: 'project',
+        },
+      });
+      expect(JSON.parse(project.stdout)).toMatchObject({
+        scope: 'project',
+        values: {
+          nativeUser: 'legacy-project-native',
+          nativeDefault: 'legacy-project-native-default',
+          ordinary: 'project-ordinary',
+        },
+        sources: {
+          nativeUser: 'project',
+          nativeDefault: 'project',
+          ordinary: 'project',
+        },
+      });
+
+      const contextPath = path.join(root, 'artifact-render-context.json');
+      await fs.writeFile(contextPath, `${JSON.stringify({
+        plugin: { name: pluginName, sourceId, sourceIdentity },
+        config: {
+          mode: 'artifact-render',
+          schema: { nativeUser: { type: 'string' } },
+          values: { nativeUser: 'renderer-only' },
+          sources: { nativeUser: 'user' },
+          issues: [],
+        },
+        paths: { configStores: { user: userStorePath, project: projectStorePath } },
+      })}\n`, 'utf8');
+      const rendererEnv = { ...fallbackEnv, AW_PLUGIN_CONTEXT: contextPath };
+      const rendererResult = await execFileAsync(process.execPath, [helperPath, 'json'], {
+        cwd: projectSubdir,
+        env: rendererEnv,
+      });
+      expect(JSON.parse(rendererResult.stdout)).toMatchObject({
+        scope: 'effective',
+        values: { nativeUser: 'renderer-only' },
+        sources: { nativeUser: 'user' },
+        paths: { configStores: {} },
+      });
+      await expect(execFileAsync(process.execPath, [helperPath, 'json', '--scope', 'project'], {
+        cwd: projectSubdir,
+        env: rendererEnv,
+      })).rejects.toMatchObject({
+        stderr: '[aw-config] AW_PLUGIN_CONTEXT only supports effective config reads; explicit user and project store reads are unavailable.\n',
+      });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -381,13 +381,9 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32').each([
-    '.agents-plugin',
-    'codex/skills',
-    'codex/skills/demo',
-  ])('rejects an external payload ancestor symlink at %s before payload evidence reads', async (relativePath) => {
+  it.skipIf(process.platform === 'win32')('rejects an external payload symlink before payload evidence reads', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const pluginName = `unsafe-${relativePath.replaceAll('/', '-')}`;
+    const pluginName = 'unsafe-payload';
     const payloadRoot = path.join(
       isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
     );
@@ -396,7 +392,7 @@ describe('rebuild adapter integration', () => {
       name: pluginName, version: '1.0.0',
     });
     await fs.ensureDir(externalRoot);
-    const linkPath = path.join(payloadRoot, ...relativePath.split('/'));
+    const linkPath = path.join(payloadRoot, '.agents-plugin');
     await fs.ensureDir(path.dirname(linkPath));
     await fs.symlink(externalRoot, linkPath, 'dir');
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
@@ -425,51 +421,6 @@ describe('rebuild adapter integration', () => {
       state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
     });
   });
-
-  it.skipIf(process.platform === 'win32')(
-    'rejects installed candidate identity below an external ancestor symlink before reading it',
-    async () => {
-      const isolation = getCurrentSourceTestIsolation();
-      const pluginName = 'unsafe-installed-candidate';
-      const payloadRoot = path.join(
-        isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
-      );
-      await fs.outputJson(path.join(payloadRoot, 'plugin.json'), {
-        name: pluginName, version: '1.0.0',
-      });
-      const externalRoot = path.join(isolation.layout.fixtureCwd, 'external-installed-candidate');
-      await fs.outputJson(path.join(externalRoot, 'manifest.json'), { version: '1.0.0' });
-      const installedPluginRoot = path.join(
-        isolation.layout.codexHomeDir, 'plugins', `${pluginName}@aw`,
-      );
-      await fs.ensureDir(path.dirname(installedPluginRoot));
-      await fs.symlink(externalRoot, installedPluginRoot, 'dir');
-      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
-      await fs.ensureDir(marketplaceRoot);
-      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
-        '[marketplaces.aw]',
-        `source = ${JSON.stringify(marketplaceRoot)}`,
-        'source_type = "local"',
-        '',
-      ].join('\n'));
-
-      const inspected = await inspectCodexSharedNativeLive({
-        pluginName, sourceId: 'official', desiredVersion: '1.0.0', inspectionMode: 'shallow',
-        cwd: isolation.layout.fixtureCwd, env: isolation.env, marketplaceRoot,
-        nativeCliRunner: async () => ({
-          exitCode: 0,
-          stdout: JSON.stringify({ installed: [{
-            pluginId: `${pluginName}@aw`, installed: true, enabled: true, version: '1.0.0',
-          }], available: [] }),
-          stderr: '',
-        }),
-      });
-
-      expect(inspected.sharedNative).toMatchObject({
-        state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
-      });
-    },
-  );
 
   it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -2800,12 +2751,15 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each([
-    { extraPayload: false, rootManifest: false },
-    { extraPayload: false, rootManifest: true },
-    { extraPayload: true, rootManifest: false },
+    { extraPayload: false, rootManifest: false, modeMismatch: false },
+    { extraPayload: false, rootManifest: true, modeMismatch: false },
+    { extraPayload: true, rootManifest: false, modeMismatch: false },
+    ...(process.platform === 'win32'
+      ? []
+      : [{ extraPayload: false, rootManifest: false, modeMismatch: true }]),
   ])(
-    'validates exact Codex native cache payload ($extraPayload, root manifest: $rootManifest)',
-    async ({ extraPayload, rootManifest }) => {
+    'validates exact Codex native cache payload ($extraPayload, root manifest: $rootManifest, mode mismatch: $modeMismatch)',
+    async ({ extraPayload, rootManifest, modeMismatch }) => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
@@ -2844,12 +2798,19 @@ describe('rebuild adapter integration', () => {
           'enabled = true',
           '',
         ].join('\n'));
+        const expectedRoot = path.join(
+          isolation.layout.awHomeDir, 'plugins', plugin.manifest.name,
+        );
+        const expectedScript = path.join(expectedRoot, 'scripts', 'run.sh');
+        await fs.outputFile(expectedScript, '#!/bin/sh\nexit 0\n');
+        await fs.chmod(expectedScript, 0o755);
         await fs.copy(
-          path.join(isolation.layout.awHomeDir, 'plugins', plugin.manifest.name),
+          expectedRoot,
           path.dirname(path.dirname(cacheManifestPath)),
           { overwrite: true },
         );
         const cacheRoot = path.dirname(path.dirname(cacheManifestPath));
+        if (modeMismatch) await fs.chmod(path.join(cacheRoot, 'scripts', 'run.sh'), 0o644);
         if (rootManifest) {
           await fs.copyFile(cacheManifestPath, path.join(cacheRoot, 'plugin.json'));
           await fs.remove(cacheManifestPath);
@@ -2894,10 +2855,12 @@ describe('rebuild adapter integration', () => {
       target,
       driver: integration.driver,
     });
-    if (extraPayload) {
+    if (extraPayload || modeMismatch) {
       expect(result.status).toBe('failed');
       expect(result.failures.some((failure) =>
-        failure.message.includes('unexpected loadable payload'))).toBe(true);
+        failure.message.includes(extraPayload
+          ? 'unexpected loadable payload'
+          : 'executable mode 不匹配'))).toBe(true);
       return;
     }
     expect(result.status).toBe('succeeded');
@@ -2907,6 +2870,109 @@ describe('rebuild adapter integration', () => {
       ? path.join(path.dirname(path.dirname(cacheManifestPath)), 'plugin.json')
       : cacheManifestPath)).toBe(true);
   });
+
+  it.skipIf(process.platform === 'win32').each(['cache', 'marketplace'] as const)(
+    'rejects an external Codex native %s payload root during install postcheck',
+    async (unsafeRoot) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-toolkit')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-toolkit'), {
+        mode: 'bundle',
+      });
+      const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
+      const cacheRoot = path.join(
+        isolation.layout.codexHomeDir,
+        'plugins',
+        'cache',
+        'aw',
+        plugin.manifest.name,
+        plugin.manifest.version,
+      );
+      const pluginRoot = path.join(
+        isolation.layout.awHomeDir,
+        'plugins',
+        plugin.manifest.name,
+      );
+      const externalRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `external-native-${unsafeRoot}`,
+      );
+      let installed = false;
+      const runner: NativeCliRunner = async (invocation) => {
+        if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+          await fs.outputFile(configPath, [
+            '[marketplaces.aw]',
+            `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+            'source_type = "local"',
+            '',
+          ].join('\n'));
+        }
+        if (invocation.args[1] === 'add') {
+          installed = true;
+          await fs.appendFile(configPath, [
+            `[plugins."${plugin.manifest.name}@aw"]`,
+            'enabled = true',
+            '',
+          ].join('\n'));
+          await fs.copy(pluginRoot, externalRoot, { overwrite: true });
+          if (unsafeRoot === 'cache') {
+            await fs.ensureDir(path.dirname(cacheRoot));
+            await fs.symlink(externalRoot, cacheRoot, 'dir');
+          } else {
+            await fs.copy(pluginRoot, cacheRoot, { overwrite: true });
+            await fs.remove(pluginRoot);
+            await fs.symlink(externalRoot, pluginRoot, 'dir');
+          }
+        }
+        if (invocation.args[1] === 'list' && invocation.args.includes('--json')) {
+          return {
+            exitCode: 0,
+            stdout: JSON.stringify({
+              installed: installed ? [{
+                pluginId: `${plugin.manifest.name}@aw`, installed: true,
+                enabled: true, version: plugin.manifest.version,
+              }] : [],
+              available: [],
+            }),
+            stderr: '',
+          };
+        }
+        return { exitCode: 0, stdout: '', stderr: '' };
+      };
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
+      });
+      const target = await integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      });
+
+      const result = await executeRebuildOperation({
+        command: 'install',
+        target,
+        driver: integration.driver,
+      });
+
+      expect(result.status).toBe('failed');
+      expect(result.failures).toEqual(expect.arrayContaining([
+        expect.objectContaining({ message: expect.stringContaining('payload path 不安全') }),
+      ]));
+      expect((await fs.lstat(unsafeRoot === 'cache' ? cacheRoot : pluginRoot)).isSymbolicLink())
+        .toBe(true);
+      await expect(fs.pathExists(path.join(
+        externalRoot,
+        '.codex-plugin',
+        'plugin.json',
+      ))).resolves.toBe(true);
+    },
+  );
 
   it.each(['codex-enhance'])(
     'installs %s Skills in one shared native plugin while roles remain AW-owned',
