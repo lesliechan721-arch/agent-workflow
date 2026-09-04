@@ -91,6 +91,7 @@ import {
 import {
   applyPluginConfigWrite,
   buildConfigMutationReceipt,
+  configWriteStateForError,
   describeResetAffectedFields,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
@@ -477,11 +478,13 @@ function configMutationFailure(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string } {
+): { code: string; message: string; configWrite: 'notStarted' | 'failed' } {
+  const configWrite = configWriteStateForError(error);
   if (error instanceof CommanderError) {
     return {
       code: 'invalidArguments',
       message: 'error: invalid config mutation arguments',
+      configWrite,
     };
   }
   const message = catalogPublicationFailure({
@@ -489,31 +492,31 @@ function configMutationFailure(
     env,
     sensitiveRoots: [cwd],
   }).message;
-  if (message.includes('Usage:')) return { code: 'invalidArguments', message };
+  if (message.includes('Usage:')) return { code: 'invalidArguments', message, configWrite };
   const generationCode = catalogGenerationErrorCode(error);
   if (generationCode === 'catalogGenerationUnavailable'
     || generationCode === 'catalogGenerationSourceMissing') {
-    return { code: 'catalogSourceUnavailable', message };
+    return { code: 'catalogSourceUnavailable', message, configWrite };
   }
-  if (generationCode !== 'catalogGenerationFailed') return { code: generationCode, message };
+  if (generationCode !== 'catalogGenerationFailed') return { code: generationCode, message, configWrite };
   const explicitCode = (error as { code?: unknown })?.code;
   if (typeof explicitCode === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(explicitCode)) {
-    return { code: explicitCode, message };
+    return { code: explicitCode, message, configWrite };
   }
-  if (message.includes('legacyStateUnsupported')) return { code: 'legacyStateUnsupported', message };
-  if (message.includes('sourceChanged')) return { code: 'sourceChanged', message };
-  if (message.includes('sourceMissing')) return { code: 'sourceMissing', message };
+  if (message.includes('legacyStateUnsupported')) return { code: 'legacyStateUnsupported', message, configWrite };
+  if (message.includes('sourceChanged')) return { code: 'sourceChanged', message, configWrite };
+  if (message.includes('sourceMissing')) return { code: 'sourceMissing', message, configWrite };
   if (message.startsWith('Cannot resolve required catalog sources:')) {
-    return { code: 'catalogSourceUnavailable', message };
+    return { code: 'catalogSourceUnavailable', message, configWrite };
   }
   const prefix = message.match(/^([A-Za-z][A-Za-z0-9]*):/u)?.[1];
-  return { code: prefix ?? 'configMutationFailed', message };
+  return { code: prefix ?? 'configMutationFailed', message, configWrite };
 }
 
 function writeConfigMutationFailureReceipt(
   write: (text: string) => void,
   request: PreparsedConfigMutationJsonRequest,
-  failure: { code: string; message: string },
+  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' },
 ): void {
   let plugin: string | undefined;
   try {
@@ -527,6 +530,7 @@ function writeConfigMutationFailureReceipt(
   writeJsonReceipt(write, buildConfigMutationReceipt(request.command, {
     ok: false,
     overallState: 'failed',
+    configWrite: failure.configWrite,
     ...(plugin ? { plugin } : {}),
     errors: [failure],
   }));
@@ -1270,26 +1274,30 @@ function writeConfigApplyNotice(
   receipt: {
     plugin: string;
     overallState: RebuildReceiptOverallState;
-    targetResults: Array<{
-      target: { platform: string; scope: Scope };
-      state: string;
-      message?: string;
-    }>;
-    applySkippedReason?: string;
-    otherProjectsRequireReinstall: boolean;
+    apply: import('./types.js').ConfigApplyResult;
+    otherProjectsMayRequireSync: boolean;
   },
 ): void {
-  if (receipt.targetResults.length === 0) {
-    const message = receipt.applySkippedReason === 'noConfigChange'
+  const targetResults = receipt.apply.targetResults;
+  if (receipt.apply.state === 'skipped') {
+    const message = receipt.apply.reason === 'noConfigChange'
       ? '配置内容没有变化，因此没有运行 reinstall。'
-      : receipt.applySkippedReason === 'invalidConfig'
-        ? '配置已保存，但当前配置无效，因此没有运行 reinstall。请先修复无效字段。'
-      : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
+      : receipt.apply.reason === 'noEffectiveConfigChange'
+        ? '配置存储已更新，但有效配置没有变化，因此没有运行 reinstall。'
+      : receipt.apply.reason === 'notRequested'
+        ? '配置已保存，但未请求应用配置。'
+        : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
+    writeLine(write, message);
+  } else if (receipt.apply.state === 'unavailable') {
+    const message = receipt.apply.reason === 'invalidConfig'
+      ? '配置已保存，但可见目标的配置无效，因此没有应用。请先修复无效字段。'
+      : '配置已保存，但当前无法应用配置。请修复报告的问题后运行 aw sync。';
     writeLine(write, message);
   } else {
-    const completed = receipt.targetResults.filter((entry) => entry.state === 'completed').length;
-    const failed = receipt.targetResults.filter((entry) => entry.state === 'failed');
-    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个。`);
+    const completed = targetResults.filter((entry) => entry.state === 'completed').length;
+    const failed = targetResults.filter((entry) => entry.state === 'failed');
+    const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
+    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个；跳过 ${skipped} 个。`);
     for (const entry of failed) {
       writeLine(
         write,
@@ -1298,8 +1306,8 @@ function writeConfigApplyNotice(
       );
     }
   }
-  if (receipt.otherProjectsRequireReinstall) {
-    writeLine(write, '其它项目没有被扫描。请进入每个项目目录并运行对应的 aw reinstall 命令。');
+  if (receipt.otherProjectsMayRequireSync) {
+    writeLine(write, '其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。');
   }
 }
 
@@ -3472,9 +3480,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             context,
             selectedPlugin,
             async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (plugin.manifest.config?.fields && !plugin.manifest.config.fields[selectedKey]) {
-          throw new Error(`Unknown config key "${selectedKey}".`);
-        }
         const store = await readPluginConfigStore({
           sourceId: source.sourceId,
           sourceIdentity: source.sourceIdentity,
@@ -3525,6 +3530,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             reserved: false,
             action: 'unset' as const,
             scope,
+            ...(!plugin.manifest.config?.fields?.[selectedKey] ? { stale: true as const } : {}),
           }],
         });
             },

@@ -448,7 +448,7 @@ export interface StatusV7PluginSummary {
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
     scope: Scope;
-    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
+    type: 'missing-required' | 'invalid-config';
     key: string;
     title: string;
     source: 'default' | 'user' | 'project' | 'missing';

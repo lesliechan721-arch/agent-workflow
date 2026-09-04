@@ -324,8 +324,9 @@ describe('CLI entry v5', () => {
     expect(JSON.parse(output.stdout())).toMatchObject({
       ok: false,
       command: receiptCommand,
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: receiptCommand === 'config:set' ? 7 : 6,
       overallState: 'failed',
+      ...(receiptCommand === 'config:set' ? { configWrite: 'notStarted' } : {}),
       errors: [{ code: 'invalidArguments', message: expect.stringContaining(usage) }],
     });
     if (stderr === 'usage') expect(output.stderr()).toContain(usage);

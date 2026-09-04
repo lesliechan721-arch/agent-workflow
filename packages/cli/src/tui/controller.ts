@@ -2253,6 +2253,39 @@ export class TuiController {
           privateConfigOperation: true,
         });
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        const configCommitted = typeof execution === 'object'
+          && execution !== null
+          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
+        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+          && configCommitted) {
+          const baseSummary = operationResultSummary(ticket.intent, execution);
+          const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
+          const summary: OperationResultSummary = {
+            ...baseSummary,
+            code: 'operationPartial',
+            message: '设置已保存，但最终状态无法刷新。',
+            elapsedMs,
+            messages: [
+              ...this.#progress.messages,
+              ...(baseSummary.messages ?? []),
+              '状态刷新失败。配置写入已经提交；请稍后刷新状态。',
+            ].slice(-8),
+          };
+          this.#progress = { ...this.#progress, elapsedMs };
+          const result: OperationExecuteResult = {
+            state: 'partial',
+            operationId,
+            summary,
+            operationKind: ticket.intent.kind,
+            pluginId: ticket.intent.pluginId,
+            returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
+          };
+          this.#result = structuredClone(result);
+          this.#activeReview = undefined;
+          this.#router.replace({ name: 'result', operationId });
+          this.#publish();
+          return cloneFrozen(result);
+        }
         return this.#setBlocked(operationId, verificationCode, {
           intent: ticket.intent,
           navigation: 'result',
@@ -2771,9 +2804,13 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     };
   }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
-    const rawTargets = typeof execution === 'object' && execution !== null
-      && Array.isArray((execution as { targetResults?: unknown }).targetResults)
-      ? (execution as { targetResults: Array<Record<string, unknown>> }).targetResults
+    const rawApply = typeof execution === 'object' && execution !== null
+      && typeof (execution as { apply?: unknown }).apply === 'object'
+      && (execution as { apply?: unknown }).apply !== null
+      ? (execution as { apply: Record<string, unknown> }).apply
+      : {};
+    const rawTargets = Array.isArray(rawApply.targetResults)
+      ? rawApply.targetResults as Array<Record<string, unknown>>
       : [];
     const targets = rawTargets.flatMap((entry) => {
       const target = typeof entry.target === 'object' && entry.target !== null
@@ -2781,12 +2818,12 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         : entry;
       if ((target.platform !== 'codex' && target.platform !== 'claude')
         || (target.scope !== 'user' && target.scope !== 'project')
-        || (entry.state !== 'completed' && entry.state !== 'failed')) return [];
+        || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
       return [{
         ...(typeof target.pluginId === 'string' ? { pluginId: target.pluginId } : {}),
         platform: target.platform as PlatformName,
         scope: target.scope as Scope,
-        state: entry.action === 'skipped' ? 'skipped' as const
+        state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped' as const
           : entry.state === 'failed' ? 'failed' as const
             : entry.action === 'keep' ? 'kept' as const
               : entry.state as 'completed' | 'failed',
@@ -2795,10 +2832,9 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     const overallState = typeof execution === 'object' && execution !== null
       ? (execution as { overallState?: unknown }).overallState
       : undefined;
-    const applySkippedReason = typeof execution === 'object' && execution !== null
-      ? (execution as { applySkippedReason?: unknown }).applySkippedReason
-      : undefined;
-    const invalidConfig = applySkippedReason === 'invalidConfig';
+    const applyState = rawApply.state;
+    const applyReason = rawApply.reason;
+    const invalidConfig = applyState === 'unavailable' && applyReason === 'invalidConfig';
     const resetDisposition = typeof execution === 'object' && execution !== null
       ? (execution as { resetDisposition?: unknown }).resetDisposition
       : undefined;
@@ -2811,7 +2847,18 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
           typeof warning === 'string'
           && warning.startsWith('projectConfigShareabilityUnverified:'))
       : [];
+    const otherProjectsMayRequireSync = intent.scope === 'user'
+      && typeof execution === 'object' && execution !== null
+      && (execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true;
+    const publicMessages = [
+      ...publicWarnings.map((warning) => `警告：${warning}`),
+      ...(otherProjectsMayRequireSync
+        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+        : []),
+    ];
     const partial = overallState === 'partial'
+      || applyState === 'partial'
+      || applyState === 'unavailable'
       || invalidConfig
       || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
       && targets.some((target) => target.state === 'completed' || target.state === 'kept');
@@ -2825,10 +2872,10 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       pluginId: intent.pluginId,
       configScope: intent.scope,
       configApplyRetryAvailable: intent.kind === 'configSave'
-        && intent.apply && !invalidConfig && (failed || partial),
-      ...(publicWarnings.length > 0 ? { messages: publicWarnings.map((warning) => `警告：${warning}`) } : {}),
+        && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
+      ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'
-        ? { configApplied: invalidConfig ? false : intent.apply }
+        ? { configApplied: applyState === 'succeeded' || applyState === 'partial' }
         : invalidConfig ? { configApplied: false } : {}),
       ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
       ...(intent.kind === 'configReset'

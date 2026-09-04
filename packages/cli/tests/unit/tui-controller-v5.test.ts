@@ -1086,6 +1086,74 @@ describe('TUI v4 router and ViewModel', () => {
     expect(JSON.stringify(field.fallbackObjectChanges)).not.toContain('inherited-secret');
   });
 
+  it('projects an invalid user fallback instead of a schema default after project removal', () => {
+    const schema = {
+      fields: {
+        mode: { type: 'string' as const, default: 'safe' },
+      },
+    };
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema,
+      read: {
+        pluginName: 'demo',
+        scope: 'project',
+        fields: [{
+          key: 'mode',
+          title: 'mode',
+          kind: 'manifest',
+          reserved: false,
+          writable: true,
+          valueState: 'configured',
+          effectiveValue: 'fast',
+          sourceLayer: 'project',
+          storedValue: 'fast',
+          storedSourceLayer: 'project',
+          fallback: {
+            state: 'invalid',
+            sourceLayer: 'user',
+            issues: [{ type: 'invalid-config', key: 'mode', source: 'user' }],
+          },
+          value: 'fast',
+          source: 'project',
+          matchedPreset: null,
+          valid: true,
+          issues: [],
+        }],
+      },
+      layerReads: {
+        user: {
+          pluginName: 'demo',
+          scope: 'user',
+          fields: [{
+            key: 'mode',
+            title: 'mode',
+            kind: 'manifest',
+            reserved: false,
+            writable: true,
+            valueState: 'invalid',
+            effectiveValue: null,
+            sourceLayer: 'user',
+            storedSourceLayer: 'user',
+            value: null,
+            source: 'user',
+            matchedPreset: null,
+            valid: false,
+            issues: [{ type: 'invalid-config', key: 'mode', source: 'user' }],
+          }],
+        },
+      },
+      rawLayerValues: { user: { mode: 'invalid-user-secret' } },
+    });
+    const field = page.groups[0]!.fields[0]!;
+
+    expect(field.fallbackDisplayValue).toContain('值无效');
+    expect(field.fallbackDisplayValue).toContain('应用会被阻止');
+    expect(field.fallbackSourceLabel).toBe('个人默认');
+    expect(field.fallbackDisplayValue).not.toContain('safe');
+    expect(JSON.stringify(field)).not.toContain('invalid-user-secret');
+  });
+
   it('does not classify an object preset through sensitive KV values', () => {
     const schema = {
       fields: {
@@ -3350,11 +3418,14 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
-        overallState: 'failed',
-        targetResults: [
-          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
-          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
-        ],
+        overallState: 'partial',
+        apply: {
+          state: 'partial',
+          targetResults: [
+            { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+            { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+          ],
+        },
       }),
     }));
     controller.push({
@@ -3395,7 +3466,7 @@ describe('TUI v4 Review safety', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'succeeded',
-        targetResults: [],
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
         warnings: [
           'projectConfigShareabilityUnverified: Git evidence unavailable.',
           'private diagnostic /Users/example',
@@ -3423,13 +3494,48 @@ describe('TUI v4 Review safety', () => {
     ]);
   });
 
+  it.each([
+    ['user', true, ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']],
+    ['project', false, []],
+  ] as const)('projects the safe other-project sync fact for %s scope', async (
+    scope,
+    otherProjectsMayRequireSync,
+    messages,
+  ) => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+        otherProjectsMayRequireSync,
+        warnings: ['private diagnostic /Users/example'],
+      }),
+    }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope, projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope,
+      projectLayer: 'shared',
+      apply: false,
+      updates: { mode: 'strict' },
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result.summary.messages).toEqual(messages);
+  });
+
   it('reports a saved invalid config with no target writes as unapplied partial', async () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'partial',
-        applySkippedReason: 'invalidConfig',
-        targetResults: [],
+        apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
       }),
     }));
     controller.push({
@@ -3468,7 +3574,7 @@ describe('TUI v4 Review safety', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'succeeded',
-        targetResults: [],
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
         resetDisposition,
         ...(quarantineBasename ? { quarantineBasename } : {}),
       }),
@@ -3486,7 +3592,7 @@ describe('TUI v4 Review safety', () => {
     });
   });
 
-  it('reports a reset as unconfirmed when the post-write status reload fails', async () => {
+  it('reports a committed reset as partial when the post-write status reload fails', async () => {
     const initial = {
       payload: status({ sources: [source('official', { type: 'path', primary: true })] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -3497,7 +3603,9 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       loadStatus,
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', targetResults: [],
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
       }),
     }));
     await controller.load();
@@ -3510,9 +3618,12 @@ describe('TUI v4 Review safety', () => {
     });
 
     expect(await controller.executeOperation(review.reviewToken)).toMatchObject({
-      state: 'blocked', code: 'tuiStateReloadFailed', operationKind: 'configReset',
-      pluginId: 'official/demo', writeMayHaveCompleted: true,
-      message: '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。',
+      state: 'partial', operationKind: 'configReset', pluginId: 'official/demo',
+      summary: {
+        code: 'operationPartial',
+        message: '设置已保存，但最终状态无法刷新。',
+        messages: expect.arrayContaining(['状态刷新失败。配置写入已经提交；请稍后刷新状态。']),
+      },
       returnRoute: { name: 'configUnavailable', pluginId: 'official/demo' },
     });
     expect(controller.snapshot.phase).toBe('ready');
@@ -3536,7 +3647,9 @@ describe('TUI v4 Review safety', () => {
         .mockResolvedValueOnce(initial)
         .mockResolvedValueOnce(unavailable),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', targetResults: [],
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
       }),
     }));
     await controller.load();
@@ -3633,7 +3746,9 @@ describe('TUI v4 Review safety', () => {
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(readyStatus),
       executeIntent: vi.fn().mockResolvedValue({
-        configWrite: 'succeeded', targetResults: [],
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
       }),
     }));
     await controller.load();
@@ -3943,7 +4058,13 @@ describe('TUI v4 Review safety', () => {
   it('keeps only a safe result summary and reloads after a post-command failure', async () => {
     const secret = '/Users/private/config.json?token=private-token';
     const succeeded = new TuiController(dependencies({
-      executeIntent: vi.fn().mockResolvedValue({ configWrite: 'succeeded', effective: { token: secret }, path: secret }),
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+        effective: { token: secret },
+        path: secret,
+      }),
     }));
     const successReview = await succeeded.buildOperationReview({
       kind: 'configSave',
@@ -4061,7 +4182,11 @@ describe('TUI v4 Review safety', () => {
       executeIntent: vi.fn(async () => {
         listener?.({ messages: Array.from({ length: 10 }, (_, index) => `安全消息 ${index + 1}`) });
         now = 4_500;
-        return { configWrite: 'succeeded', overallState: 'succeeded', targetResults: [] };
+        return {
+          configWrite: 'succeeded',
+          overallState: 'succeeded',
+          apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+        };
       }),
     }), {
       subscribe: (next) => {

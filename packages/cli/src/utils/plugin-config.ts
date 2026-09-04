@@ -52,8 +52,7 @@ export type RedactedPluginConfigValue = ReturnType<typeof redactPluginConfigValu
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'missing';
 export type PluginConfigIssueType =
   | 'missing-required'
-  | 'invalid-config'
-  | 'sharedCompositeContainsLocalPath';
+  | 'invalid-config';
 type PluginConfigStorePathAccess = 'read' | 'write';
 
 export function codexNativeRefreshKeys(
@@ -1971,6 +1970,49 @@ async function buildManifestFieldEntries(options: {
     env: options.env,
   });
   const userOnlyKeys = codexNativeRefreshKeys(options.plugin.manifest);
+  const projectRemovalFallback = (key: string): ConfigFieldEntry['fallback'] => {
+    const field = schema[key]!;
+    if (Object.hasOwn(userPlainEntries, key)) {
+      const value = userPlainEntries[key] as PluginConfigValue;
+      const validationIssues = validateCorePluginConfigValue(field, value, key);
+      if (validationIssues.length > 0) {
+        return {
+          state: 'invalid',
+          sourceLayer: 'user',
+          issues: validationIssues.map((issue) => ({
+            type: 'invalid-config',
+            key,
+            source: 'user',
+            message: formatPluginConfigIssue(issue),
+          })),
+        };
+      }
+      return {
+        state: 'valid',
+        effectiveValue: redactValue(field, value),
+        sourceLayer: 'user',
+      };
+    }
+    if (field.default === undefined) return { state: 'missing' };
+    const validationIssues = validateCorePluginConfigValue(field, field.default, key);
+    if (validationIssues.length > 0) {
+      return {
+        state: 'invalid',
+        sourceLayer: 'default',
+        issues: validationIssues.map((issue) => ({
+          type: 'invalid-config',
+          key,
+          source: 'default',
+          message: formatPluginConfigIssue(issue),
+        })),
+      };
+    }
+    return {
+      state: 'valid',
+      effectiveValue: redactValue(field, field.default as PluginConfigValue),
+      sourceLayer: 'default',
+    };
+  };
   const effectiveFieldState = (key: string): Pick<ConfigFieldEntry,
     'valueState' | 'effectiveValue' | 'sourceLayer'
     | 'value' | 'source' | 'matchedPreset' | 'valid' | 'issues'
@@ -1980,6 +2022,15 @@ async function buildManifestFieldEntries(options: {
     const field = schema[key]!;
     const fieldIssues = effective.issues.filter((entry) => entry.key === key);
     const fieldState = effective.fieldStates[key];
+    const fallback = options.scope === 'project'
+      ? projectRemovalFallback(key)
+      : fieldState?.fallback
+        ? {
+            state: 'valid' as const,
+            effectiveValue: fieldState.fallback.redactedValue,
+            sourceLayer: fieldState.fallback.source,
+          }
+        : undefined;
     if (source === undefined || source === 'missing') {
       return {
         valueState: fieldIssues.length > 0 ? 'invalid' : 'default',
@@ -1999,12 +2050,7 @@ async function buildManifestFieldEntries(options: {
           issues: fieldState.invalidOverride.issues,
         },
       } : {}),
-      ...(fieldState?.fallback ? {
-        fallback: {
-          effectiveValue: fieldState.fallback.redactedValue,
-          sourceLayer: fieldState.fallback.source,
-        },
-      } : {}),
+      ...(fallback ? { fallback } : {}),
       ...configFieldProjection({
         field,
         value: issue ? undefined : effective.values[key],

@@ -57,6 +57,7 @@ import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-i
 import {
   readPluginConfigStore,
   resolvePluginConfigStorePath,
+  setAtomicConfigBeforeRenameHookForTests,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo, createTtyRuntimeStreams } from '../helpers/cli-entry.js';
@@ -823,7 +824,10 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).resolves.toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
-      configWrite: 'succeeded', overallState: 'succeeded',
+      receiptSchemaVersion: 7,
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     await expect(readPluginConfigStore({
       sourceId: 'official', sourceIdentity, logicalIdentity: 'workspace:official-transport',
@@ -4369,6 +4373,8 @@ describe('five namespaced write commands', () => {
     });
     expect(unauthorizedExitCode).toBe(1);
     expect(JSON.parse(unauthorized.readStdout())).toMatchObject({
+      receiptSchemaVersion: 7,
+      configWrite: 'notStarted',
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
     });
@@ -4393,18 +4399,21 @@ describe('five namespaced write commands', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: expect.arrayContaining([
-        expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'team/root' }),
-          action: 'reinstall',
-          state: 'completed',
-        }),
-        expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'team/leaf' }),
-          action: 'keep',
-          state: 'completed',
-        }),
-      ]),
+      apply: {
+        state: 'succeeded',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/root' }),
+            action: 'reinstall',
+            state: 'completed',
+          }),
+          expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/leaf' }),
+            action: 'keep',
+            state: 'completed',
+          }),
+        ]),
+      },
     });
     await expect(fs.readFile(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
@@ -4603,8 +4612,10 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).toBe(0);
     expect(JSON.parse(configWrite.readStdout())).toMatchObject({
+      receiptSchemaVersion: 7,
       configWrite: 'succeeded',
       overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const intentLocation = {
       scope: 'project' as const,
@@ -9255,12 +9266,15 @@ describe('five namespaced write commands', () => {
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      targetResults: expect.arrayContaining([
-        expect.objectContaining({
-          target: expect.objectContaining({ platform: 'claude' }),
-          state: 'failed',
-        }),
-      ]),
+      apply: {
+        state: 'partial',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({
+            target: expect.objectContaining({ platform: 'claude' }),
+            state: 'failed',
+          }),
+        ]),
+      },
     });
     const dualSourceIdentity = await calculateCatalogSourceIdentity({
       id: 'dual', type: 'path', primary: false, path: dualRoot,
@@ -9393,8 +9407,7 @@ describe('five namespaced write commands', () => {
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      applySkippedReason: 'noVisibleTarget',
-      targetResults: [],
+      apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
     });
     expect(nativeCliRunner).not.toHaveBeenCalled();
     expect((await readPluginConfigStore({
@@ -9977,23 +9990,87 @@ describe('five namespaced write commands', () => {
     expect(set).toMatchObject({
       exitCode: 0,
       payload: {
-        receiptSchemaVersion: 6,
+        receiptSchemaVersion: 7,
         configWrite: 'succeeded',
         overallState: 'succeeded',
-        targetResults: [expect.objectContaining({ state: 'completed' })],
+        apply: {
+          state: 'succeeded',
+          targetResults: [expect.objectContaining({ state: 'completed' })],
+        },
       },
     });
-    expect(set.payload).not.toHaveProperty('applySkippedReason');
+    expect(set.payload).not.toHaveProperty('targetResults');
     expect((await readStore()).values).toEqual({ mode: 'fast' });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+
+    const human = createCapturedCliIo();
+    await expect(runCli([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: human.io,
+      interactive: false,
+      nativeCliRunner,
+    })).resolves.toBe(0);
+    expect(human.readStdout()).toContain('已写入 demo.mode');
+    expect(human.readStderr()).toContain('配置内容没有变化，因此没有运行 reinstall');
+
+    setAtomicConfigBeforeRenameHookForTests(async () => {
+      throw new Error('injected config commit failure');
+    });
+    let atomicFailure;
+    try {
+      atomicFailure = await runPublic([
+        'config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--scope', 'project',
+      ]);
+    } finally {
+      setAtomicConfigBeforeRenameHookForTests(undefined);
+    }
+    expect(atomicFailure).toMatchObject({
+      exitCode: 1,
+      payload: {
+        receiptSchemaVersion: 7,
+        configWrite: 'failed',
+        overallState: 'failed',
+      },
+    });
+    expect((await readStore()).values).toEqual({ mode: 'fast' });
 
     const unset = await runPublic([
       'config', 'unset', 'team/demo', 'mode', '--scope', 'project', '--apply',
     ]);
     expect(unset).toMatchObject({
       exitCode: 0,
-      payload: { receiptSchemaVersion: 6, configWrite: 'succeeded', overallState: 'succeeded' },
+      payload: { receiptSchemaVersion: 7, configWrite: 'succeeded', overallState: 'succeeded' },
     });
+    expect((await readStore()).values).toEqual({});
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      logicalIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { obsolete: 'old' },
+    });
+    const staleUnset = await runPublic([
+      'config', 'unset', 'team/demo', 'obsolete', '--scope', 'project', '--apply',
+    ]);
+    expect(staleUnset).toMatchObject({
+      exitCode: 0,
+      payload: {
+        receiptSchemaVersion: 7,
+        configWrite: 'succeeded',
+        staleRemovedKeys: ['obsolete'],
+        affectedFields: [expect.objectContaining({ key: 'obsolete', stale: true })],
+        apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
+      },
+    });
+    expect(staleUnset.payload).not.toHaveProperty('targetResults');
     expect((await readStore()).values).toEqual({});
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
@@ -10004,7 +10081,7 @@ describe('five namespaced write commands', () => {
     expect(reset).toMatchObject({
       exitCode: 0,
       payload: {
-        receiptSchemaVersion: 6,
+        receiptSchemaVersion: 7,
         configWrite: 'succeeded',
         overallState: 'succeeded',
         deleted: true,
@@ -10029,11 +10106,14 @@ describe('five namespaced write commands', () => {
     expect(partial).toMatchObject({
       exitCode: 1,
       payload: {
-        receiptSchemaVersion: 6,
+        receiptSchemaVersion: 7,
         configWrite: 'succeeded',
         overallState: 'partial',
-        applySkippedReason: 'invalidConfig',
-        targetResults: [],
+        apply: {
+          state: 'unavailable',
+          reason: 'invalidConfig',
+          targetResults: [expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' })],
+        },
         effective: {
           fieldStates: {
             labels: { invalidOverride: { source: 'project' } },
@@ -10221,7 +10301,10 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"saved"', '--scope', 'user',
-    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+    });
 
     const blocked = await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"blocked"', '--scope', 'user', '--apply',
@@ -10325,7 +10408,10 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"drifted"', '--scope', 'user',
-    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+    });
     const driftStatus = await readNativeStatus();
     expect(driftStatus.status.payload.targets[0]).toMatchObject({ state: 'needsSync' });
     expect(statusTargetSharedNative(driftStatus.status.payload.targets[0]!))
@@ -10491,7 +10577,10 @@ describe('five namespaced write commands', () => {
 
     expect(await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"off"', '--scope', 'user',
-    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+    });
     await fs.outputFile(path.join(legacyProjectSkillRoot, 'SKILL.md'), 'legacy project again\n');
     await writeSkillOwnerMarker({
       skillRoot: legacyProjectSkillRoot,
@@ -10661,7 +10750,10 @@ describe('five namespaced write commands', () => {
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'standardProfile', '--scope', 'project',
       '--value-json', '{"model":"project-standard","reasoningEffort":"max"}',
-    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+    });
     const projectInstall = await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
     ]);
@@ -10751,7 +10843,10 @@ describe('five namespaced write commands', () => {
     expect(await runPublic([
       'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
       '--scope', 'user', '--value-json', '15',
-    ])).toMatchObject({ exitCode: 0, payload: { applySkippedReason: 'notRequested' } });
+    ])).toMatchObject({
+      exitCode: 0,
+      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
+    });
     await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
       .resolves.toEqual(receiptBeforeWaitSave);
     for (const [index, skillPath] of skillPaths.entries()) {

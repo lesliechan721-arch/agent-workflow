@@ -460,7 +460,7 @@ describe('phase 3B namespaced runtime stores', () => {
     },
   );
 
-  it('emits config receipt 6 and keeps a namespaced store after its source is removed', async () => {
+  it('emits config receipt 7 and keeps a namespaced store after its source is removed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const primaryRoot = path.join(isolation.layout.fixtureCwd, 'primary-source');
     const teamRoot = path.join(isolation.layout.fixtureCwd, 'team-source');
@@ -526,7 +526,7 @@ describe('phase 3B namespaced runtime stores', () => {
     })).toBe(0);
     const setReceipt = JSON.parse(setOutput.readStdout()) as { sourceIdentity: string };
     expect(setReceipt).toMatchObject({
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       command: 'config:set',
       pluginName: 'demo',
       pluginId: 'team/demo',
@@ -589,7 +589,7 @@ describe('phase 3B namespaced runtime stores', () => {
       interactive: false,
     })).toBe(0);
     expect(JSON.parse(confirmedReset.readStdout())).toMatchObject({
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       command: 'config:reset',
       configWrite: 'succeeded',
       deleted: true,

@@ -432,7 +432,7 @@ export interface UserIssueViewModel {
   requiredFields?: Array<{
     key: string;
     title: string;
-    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
+    type: 'missing-required' | 'invalid-config';
     source: 'default' | 'user' | 'project' | 'missing';
     scope: Scope;
   }>;
@@ -1328,7 +1328,7 @@ function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[
     }
     if (!summary.configIssues?.length) return issues;
     const types = new Set(summary.configIssues.map((issue) => issue.type));
-    const invalid = types.has('invalid-config') || types.has('sharedCompositeContainsLocalPath');
+    const invalid = types.has('invalid-config');
     const sources = new Set(summary.configIssues.map((issue) => issue.source));
     const onlySource = sources.size === 1 ? [...sources][0] : undefined;
     const configLayer = onlySource === 'user'
@@ -1917,12 +1917,31 @@ export function buildConfigGroups(options: {
         .filter((layer) => layer !== omittedLayer)
         .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
         .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
-    const fallbackValue = fallback?.entry?.storedValue ?? schema.default;
-    const fallbackRawValue = fallback
-      ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
-      : schema.default;
-    const fallbackConfigured = fallback !== undefined || schema.default !== undefined;
-    const fallbackSource = fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
+    const projectedFallback = entry?.fallback;
+    const fallbackInvalid = projectedFallback?.state === 'invalid';
+    const fallbackValue = projectedFallback?.state === 'valid'
+      ? projectedFallback.effectiveValue
+      : projectedFallback
+        ? undefined
+        : fallback?.entry?.storedValue ?? schema.default;
+    const fallbackRawValue = projectedFallback?.state === 'valid'
+      ? projectedFallback.sourceLayer === 'user'
+        ? options.rawLayerValues?.user?.[key] ?? fallbackValue
+        : fallbackValue
+      : projectedFallback
+        ? undefined
+        : fallback
+          ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
+          : schema.default;
+    const fallbackConfigured = projectedFallback
+      ? projectedFallback.state !== 'missing'
+      : fallback !== undefined || schema.default !== undefined;
+    const fallbackSource = projectedFallback?.state === 'valid'
+      || projectedFallback?.state === 'invalid'
+      ? projectedFallback.sourceLayer
+      : projectedFallback
+        ? undefined
+        : fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
     return {
       key,
       title: schema.title ?? key,
@@ -1965,15 +1984,17 @@ export function buildConfigGroups(options: {
           : `字段“${schema.title ?? key}”在${configSourceLabel(invalidOverrideSource ?? null)}中的值无效。请切换到该设置层修改或删除此字段。`,
       } : {}),
       ...(!effectivePage && configured ? {
-        fallbackDisplayValue: displayConfigValue({
-          field: schema,
-          privateValue,
-          inherited: false,
-          configured: fallbackConfigured,
-          value: schema.type === 'object' ? fallbackRawValue : fallbackValue,
-        }),
+        fallbackDisplayValue: fallbackInvalid
+          ? '值无效；保存可成功，但应用会被阻止'
+          : displayConfigValue({
+              field: schema,
+              privateValue,
+              inherited: false,
+              configured: fallbackConfigured,
+              value: schema.type === 'object' ? fallbackRawValue : fallbackValue,
+            }),
         fallbackSourceLabel: fallbackSource ? configSourceLabel(fallbackSource) : '未设置',
-        ...(schema.type === 'object'
+        ...(!fallbackInvalid && schema.type === 'object'
           && typeof (selectedRawValue ?? selectedValue) === 'object'
           && (selectedRawValue ?? selectedValue) !== null
           ? { fallbackObjectChanges: configObjectChildChanges(

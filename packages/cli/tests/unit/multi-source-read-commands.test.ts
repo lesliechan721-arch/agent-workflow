@@ -1127,8 +1127,9 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(config.readStdout())).toMatchObject({
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       command: 'config:set',
+      configWrite: 'notStarted',
       ok: false,
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'configSchemaUnavailable' })],

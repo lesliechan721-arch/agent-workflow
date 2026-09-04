@@ -566,7 +566,10 @@ describe('TUI controller runtime scope conflict validation', () => {
     }) => ({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
+      apply: {
+        state: 'succeeded',
+        targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
+      },
     }));
     const createController = async (targets: StatusV7Payload['targets']) => {
       runtimeMocks.statusCommandV7.mockResolvedValue(statusResult(targets));
@@ -614,8 +617,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     runtimeMocks.replayConfigRuntimeWrites.mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: [],
-      otherProjectsRequireReinstall: true,
+      apply: { state: 'succeeded', targetResults: [] },
+      otherProjectsMayRequireSync: true,
     });
     const retry = await createController([userTarget, projectTarget]);
     const retryReview = await retry.buildOperationReview({
@@ -773,7 +776,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
   });
 
-  it('keeps a schema-invalid project field editable with a redacted lower fallback', async () => {
+  it('keeps a schema-invalid project field editable and projects an invalid lower fallback', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-invalid-field-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
@@ -832,7 +835,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(fields.find((field) => field.key === 'token')).toMatchObject({
       displayValue: '值无效',
-      fallbackDisplayValue: '已设置',
+      fallbackDisplayValue: '值无效；保存可成功，但应用会被阻止',
+      fallbackSourceLabel: '个人默认',
     });
     expect(JSON.stringify(page)).not.toContain('lower-secret');
     expect(JSON.stringify(page)).not.toContain('project-secret');
@@ -938,7 +942,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
 
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
@@ -1415,7 +1421,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       targetRevisions: [],
     });
     runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,

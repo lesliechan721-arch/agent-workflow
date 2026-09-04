@@ -10,7 +10,7 @@
 
 AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。无 context fallback 的 helper 在 effective scope 读取 user 和 project；显式 user 或 project scope 只读取该 scope 的 store。旧 store 和 `plugin-config.local` 不读取或迁移。无效 store 必须先通过明确确认的整层 reset 恢复，不能静默回退。
 
-字段覆盖不符合当前 schema 时，runtime 不使用低层 fallback；该 fallback 只说明 unset 后会恢复什么。用户可修改或 unset 该字段，也可 reset 整层。`configWrite: succeeded` 表示配置已提交，不表示平台 apply 成功；`applySkippedReason: invalidConfig` 要求先修复配置。apply 失败不回滚设置。reset receipt 的 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 是实际处理结果，目录隔离只公开 basename。
+字段覆盖不符合当前 schema 时，runtime 不使用低层 fallback；该 fallback 只说明 unset 后会恢复什么。删除 project 覆盖后若会暴露无效 user 值，fallback 是 `invalid`，不能用 schema default 代替。用户可修改或 unset 该字段，也可 reset 整层。Config Mutation Receipt v7 的 `configWrite: succeeded` 表示配置已经越过 commit point，不表示平台 apply 成功；之后的解析、target discovery、target validation 或 apply 失败使用 `overallState: partial` 和 discriminated `apply` 报告。每个 target 按自己的 platform 和 scope 验证，健康 target 可以继续 apply，无效 target 报告 `skipped/invalidConfig`。apply 失败不回滚设置。reset receipt 的 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 是实际处理结果，目录隔离只公开 basename。
 
 写入命令是 `aw config set <plugin> <field> --scope <user|project> (--value-json <json> | --preset <id>)`。preset 保存其实际值，不保存 ID。敏感顶层 string 不进入 CLI 输出、stderr、日志或错误摘要。
 

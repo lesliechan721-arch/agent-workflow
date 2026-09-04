@@ -473,7 +473,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     ['set', ['config', 'set', '--json']],
     ['unset', ['config', 'unset', '-j']],
     ['reset', ['config', 'reset', '--json']],
-  ] as const)('emits one Config Mutation Receipt v6 when config %s arguments are missing', async (
+  ] as const)('emits one Config Mutation Receipt v7 when config %s arguments are missing', async (
     command,
     argv,
   ) => {
@@ -483,8 +483,9 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
     });
     expect(result.stderr.match(/Usage:/gu)).toHaveLength(1);
@@ -508,8 +509,9 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [{
         code: 'invalidArguments',
         message: 'error: invalid config mutation arguments',
@@ -526,7 +528,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     ]],
     ['unset', ['config', 'unset', 'official/demo', 'mode', '-j', '--unknown=private-value']],
     ['reset', ['config', 'reset', 'official/demo', '--yes', '--json', '--unknown=private-value']],
-  ] as const)('emits one safe Config Mutation Receipt v6 for config %s unknown options', async (
+  ] as const)('emits one safe Config Mutation Receipt v7 for config %s unknown options', async (
     command,
     argv,
   ) => {
@@ -536,8 +538,9 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: `config:${command}`,
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [{
         code: 'invalidArguments',
         message: 'error: invalid config mutation arguments',
@@ -547,7 +550,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(`${result.stdout}\n${result.stderr}`).not.toContain('private-value');
   });
 
-  it('emits one Config Mutation Receipt v6 for an action failure', async () => {
+  it('emits one Config Mutation Receipt v7 for an action failure', async () => {
     const result = await runCliEntry([
       'config', 'set', 'official/demo', 'mode', '--json',
     ]);
@@ -556,8 +559,9 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:set',
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [{
         code: 'configMutationFailed',
         message: 'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.',
@@ -596,8 +600,9 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:set',
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [{ code: 'invalidArguments', message: expect.stringContaining('Usage:') }],
     });
     expect(`${result.stdout}\n${result.stderr}`).not.toContain(secret);
@@ -640,7 +645,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(result.stderr).toContain('Usage: aw config set');
   });
 
-  it('emits a fail-closed config mutation receipt v6', async () => {
+  it('emits a fail-closed config mutation receipt v7', async () => {
     const workspace = await makeWorkspace();
     await setEmbeddedRootOverride(workspace.embeddedRoot);
 
@@ -652,9 +657,10 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     expect(noOp.parseJsonStdout()).toMatchObject({
       ok: false,
       command: 'config:reset',
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       plugin: 'git-commit',
       overallState: 'failed',
+      configWrite: 'notStarted',
       errors: [expect.objectContaining({ code: 'configStoreMissing' })],
     });
   });
