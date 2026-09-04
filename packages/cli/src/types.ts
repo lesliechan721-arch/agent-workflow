@@ -34,7 +34,7 @@ export type RebuildActionName =
   | 'stale.cleanup'
   | 'native.write'
   | 'artifacts.write'
-  | 'postApply'
+  | 'preApply'
   | 'postcheck.inspect'
   | 'marketplace.commit'
   | 'marketplace.rollback'

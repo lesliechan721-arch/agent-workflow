@@ -356,7 +356,7 @@ export: string
  * via the `definition` "scripts".
  */
 export interface Scripts {
-postApply?: PostApply
+preApply?: PreApply
 helpers?: {
 config: string
 }
@@ -373,9 +373,9 @@ node?: StringArray
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "postApply".
+ * via the `definition` "preApply".
  */
-export interface PostApply {
+export interface PreApply {
 path: PluginPath
 timeoutMs?: number
 }

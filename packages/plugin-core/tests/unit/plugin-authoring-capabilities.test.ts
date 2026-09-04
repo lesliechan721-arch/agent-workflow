@@ -68,12 +68,12 @@ describe('plugin authoring capability structure registry', () => {
       ))
   })
 
-  it('publishes postApply timeout and hook values from their Core contracts', () => {
+  it('publishes preApply timeout and hook values from their Core contracts', () => {
     expect(getPluginAuthoringAcceptedValues('extensions', 'extensions.hooks[].event'))
       .toEqual(PUBLIC_HOOK_EVENTS)
-    expect(getPluginAuthoringCapabilitySurface('post-apply').entries)
+    expect(getPluginAuthoringCapabilitySurface('pre-apply').entries)
       .toContainEqual(expect.objectContaining({
-        field: 'scripts.postApply.timeoutMs',
+        field: 'scripts.preApply.timeoutMs',
         acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}`,
       }))
   })

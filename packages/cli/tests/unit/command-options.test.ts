@@ -6,6 +6,7 @@ import {
   normalizeReinstallCommandOptions,
   normalizeUninstallCommandOptions,
   parseDependencyScopeOverrides,
+  parseScriptTimeoutMs,
 } from '../../src/commands/options.js';
 
 describe('write command options', () => {
@@ -62,5 +63,22 @@ describe('write command options', () => {
     ]) {
       expect(() => parseDependencyScopeOverrides([invalid])).toThrow();
     }
+  });
+
+  it('accepts the preApply timeout range and ignores it for cleanup and uninstall', () => {
+    expect(parseScriptTimeoutMs(1_000)).toBe(1_000);
+    expect(parseScriptTimeoutMs('1800000')).toBe(1_800_000);
+    expect(() => parseScriptTimeoutMs(999)).toThrow('between 1000 and 1800000');
+    expect(() => parseScriptTimeoutMs(1_800_001)).toThrow('between 1000 and 1800000');
+    expect(normalizeInstallCommandOptions({ platform: 'codex', scriptTimeout: 12_000 }))
+      .toMatchObject({ scriptTimeoutMs: 12_000 });
+    expect(normalizeReinstallCommandOptions({ platform: 'codex', scriptTimeout: 12_000 }))
+      .toMatchObject({ scriptTimeoutMs: 12_000 });
+    expect(normalizeCleanupCommandOptions({
+      platform: 'codex', scope: 'user', scriptTimeout: 12_000,
+    })).not.toHaveProperty('scriptTimeoutMs');
+    expect(normalizeUninstallCommandOptions({
+      platform: 'codex', scope: 'user', scriptTimeout: 12_000,
+    })).not.toHaveProperty('scriptTimeoutMs');
   });
 });

@@ -1158,7 +1158,7 @@ describe('local-plugin generator', () => {
     ).rejects.toThrow('build changed plugin name');
   });
 
-  it('copies postApply, helper/runtime closure, and production package files into the bundle', async () => {
+  it('copies preApply, helper/runtime closure, and production package files into the bundle', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
@@ -1176,7 +1176,7 @@ describe('local-plugin generator', () => {
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'config-shared.mjs'), 'export const config = true;\n', 'utf8');
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.test.mjs'), 'throw new Error("test-only");\n', 'utf8');
     manifest.scripts = {
-      postApply: { path: './scripts/linux.mjs' },
+      preApply: { path: './scripts/linux.mjs' },
       helpers: {
         config: './scripts/aw-config.mjs',
       },
@@ -1214,7 +1214,7 @@ describe('local-plugin generator', () => {
       fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
       scripts: {
-        postApply: { path: './scripts/linux.mjs' },
+        preApply: { path: './scripts/linux.mjs' },
         helpers: {
           config: './scripts/aw-config.mjs',
         },
@@ -1248,7 +1248,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1335,7 +1335,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1370,7 +1370,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1414,7 +1414,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1474,7 +1474,7 @@ describe('local-plugin generator', () => {
       'utf8',
     );
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1532,7 +1532,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },
@@ -1566,7 +1566,7 @@ describe('local-plugin generator', () => {
     });
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import bad from "bad-install-script";\n', 'utf8');
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs' },
+      preApply: { path: './scripts/lifecycle.mjs' },
       node: {
         packageRoot: './scripts',
       },

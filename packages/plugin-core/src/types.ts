@@ -80,7 +80,7 @@ export interface BuildConfig {
   generatedSkillRuntimeFiles?: BuildConfigGeneratedSkillRuntimeFile[];
 }
 
-export interface PluginPostApplyScript { path: string; timeoutMs?: number }
+export interface PluginPreApplyScript { path: string; timeoutMs?: number }
 export interface PluginScriptHelpersConfig { config: string }
 export interface PluginNodeBuildScript { runner: 'node'; path: string; args?: string[] }
 export interface PluginNodeScriptsConfig { packageRoot?: string; build?: PluginNodeBuildScript }
@@ -88,7 +88,7 @@ export interface PluginScriptTestsConfig { node?: string[] }
 export interface PluginArtifactRenderScriptEntry { runner: 'node'; path: string; args?: string[] }
 export interface PluginArtifactScriptsConfig { render?: PluginArtifactRenderScriptEntry }
 export interface PluginScriptsConfig {
-  postApply?: PluginPostApplyScript;
+  preApply?: PluginPreApplyScript;
   helpers?: PluginScriptHelpersConfig;
   node?: PluginNodeScriptsConfig;
   artifacts?: PluginArtifactScriptsConfig;

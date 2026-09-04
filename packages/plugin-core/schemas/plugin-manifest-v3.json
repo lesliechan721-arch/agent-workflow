@@ -311,17 +311,17 @@
       "type": "object", "additionalProperties": false, "required": ["runner", "path"],
       "properties": { "runner": { "const": "node" }, "path": { "type": "string" }, "args": { "$ref": "#/$defs/stringArray" } }
     },
-    "postApply": {
+    "preApply": {
       "type": "object", "additionalProperties": false, "required": ["path"],
       "properties": {
         "path": { "$ref": "#/$defs/pluginPath" },
-        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000 }
+        "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 1800000 }
       }
     },
     "scripts": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "postApply": { "$ref": "#/$defs/postApply" },
+        "preApply": { "$ref": "#/$defs/preApply" },
         "helpers": { "type": "object", "additionalProperties": false, "required": ["config"], "properties": { "config": { "type": "string" } } },
         "node": { "type": "object", "additionalProperties": false, "properties": { "packageRoot": { "type": "string" }, "build": { "$ref": "#/$defs/scriptEntry" } } },
         "artifacts": { "type": "object", "additionalProperties": false, "properties": { "render": { "$ref": "#/$defs/scriptEntry" } } },

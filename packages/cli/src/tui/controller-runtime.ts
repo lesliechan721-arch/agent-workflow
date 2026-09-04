@@ -2238,6 +2238,7 @@ export function createTuiControllerDependencies(
                       awHomeMutationToken,
                       applyTargets,
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
+                      sharedNativeApplyConfirmed: true,
                       });
                 return result;
               },

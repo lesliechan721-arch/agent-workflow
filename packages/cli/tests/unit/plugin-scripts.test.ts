@@ -8,20 +8,31 @@ import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
   redactPluginScriptOutput,
-  runPostApplyScript,
+  runPreApplyScript,
   summarizePluginScriptOutput,
   type PluginProcessRunner,
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
+import { waitForProcessExit } from '../support/process-tree.js';
 
 const tempDirs: string[] = [];
+const descendantPids = new Set<number>();
 const OUTPUT_LIMIT = 64 * 1024;
+const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // This integration-style unit test requires permission to inspect the host process table.
+}
 
 async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-post-apply-'));
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pre-apply-'));
   tempDirs.push(rootDir);
-  await fs.outputFile(path.join(rootDir, 'scripts', 'postApply.mjs'), 'process.stdin.resume();\n');
+  await fs.outputFile(path.join(rootDir, 'scripts', 'preApply.mjs'), 'process.stdin.resume();\n');
   return {
     sourceId: 'local',
     pluginId: 'local/demo',
@@ -31,13 +42,13 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
       schemaVersion: 3,
       name: 'demo',
       version: '1.0.0',
-      description: 'postApply fixture',
+      description: 'preApply fixture',
       marketplace: {
         category: 'test',
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
-      scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
+      scripts: { preApply: { path: './scripts/preApply.mjs', timeoutMs: 2_000 } },
       ...(options.sensitiveDefault ? {
         config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
       } : {}),
@@ -46,10 +57,18 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
 }
 
 afterEach(async () => {
+  for (const pid of descendantPids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // The preApply runner cleanup can already have terminated the descendant.
+    }
+  }
+  descendantPids.clear();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('postApply script', () => {
+describe('preApply script', () => {
   it('redacts short sensitive scalar tokens only at token boundaries', () => {
     expect(summarizePluginScriptOutput(
       'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
@@ -138,9 +157,9 @@ describe('postApply script', () => {
   });
 
   it('redacts a sensitive token split across the output limit by the default runner', async () => {
-    const secret = '§post-apply-cross-boundary-sensitive-token';
+    const secret = '§pre-apply-cross-boundary-sensitive-token';
     const plugin = await createPlugin({ sensitiveDefault: secret });
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'let input = "";',
       'process.stdin.setEncoding("utf8");',
       'process.stdin.on("data", (chunk) => { input += chunk; });',
@@ -156,13 +175,12 @@ describe('postApply script', () => {
       '});',
     ].join('\n'));
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
     }).catch((failure: unknown) => failure as Error);
 
     expect(error.message).toContain('[REDACTED]');
@@ -173,7 +191,7 @@ describe('postApply script', () => {
 
   it('keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
     const plugin = await createPlugin();
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'process.stdin.resume();',
       `process.stderr.write("x".repeat(${OUTPUT_LIMIT}), () => {`,
       '  setTimeout(() => {',
@@ -182,15 +200,14 @@ describe('postApply script', () => {
       '});',
     ].join('\n'));
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
     }).catch((failure: unknown) => failure as Error);
-    const prefix = 'postApply failed with exit code 7. stderr: ';
+    const prefix = 'preApply failed with exit code 7. stderr: ';
 
     expect(error.message.startsWith(prefix)).toBe(true);
     expect(error.message.slice(prefix.length)).toHaveLength(OUTPUT_LIMIT);
@@ -222,13 +239,12 @@ describe('postApply script', () => {
       values: { token: 'project-value' },
     });
     let invocation: PluginScriptInvocation | undefined;
-    await runPostApplyScript({
+    await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd,
       context: createCommandExecutionContext({ env }),
-      artifacts: [],
       runner: { async run(value) {
         invocation = value;
         return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
@@ -248,14 +264,17 @@ describe('postApply script', () => {
       },
     };
     const cwd = path.join(plugin.rootDir, 'project');
-    await runPostApplyScript({
+    let timeoutMs: number | undefined;
+    await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'project',
       cwd,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH } }),
-      artifacts: [],
-      runner,
+      runner: { async run(value, options) {
+        timeoutMs = options.timeoutMs;
+        return runner.run(value, options);
+      } },
     });
 
     expect(invocation?.command).toBe(process.execPath);
@@ -266,8 +285,8 @@ describe('postApply script', () => {
       plugin: { pluginId: 'local/demo', name: 'demo', version: '1.0.0', rootDir: plugin.rootDir },
       target: { platform: 'codex', scope: 'project', projectRoot: cwd },
       config: { values: {} },
-      components: [{ kind: 'target', key: 'codex:project', outcome: 'unchanged' }],
     });
+    expect(timeoutMs).toBe(2_000);
   });
 
   it('reports timeout and redacts sensitive stderr', async () => {
@@ -277,15 +296,50 @@ describe('postApply script', () => {
         return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: 'secret-value', timedOut: true };
       },
     };
-    await expect(runPostApplyScript({
+    await expect(runPreApplyScript({
       plugin,
       platform: 'claude',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
       runner,
-    })).rejects.toThrow('postApply timed out. stderr: [REDACTED]');
+    })).rejects.toThrow('preApply timed out. stderr: [REDACTED]');
+  });
+
+  it('redacts stdout and stderr in a non-zero failure', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    await expect(runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: 'stdout secret-value',
+          stderr: 'stderr secret-value',
+          timedOut: false,
+        };
+      } },
+    })).rejects.toThrow(
+      'preApply failed with exit code 7. stdout: stdout [REDACTED]; stderr: stderr [REDACTED]',
+    );
+  });
+
+  it('reports a stable spawn failure without exposing runner diagnostics', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() { throw new Error(`spawn ${plugin.rootDir} secret-value`); } },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toBe('preApply could not start.');
   });
 
   it('redacts every scalar leaf of a top-level sensitive object from stderr', async () => {
@@ -327,13 +381,12 @@ describe('postApply script', () => {
       },
     };
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env }),
-      artifacts: [],
       runner,
     }).catch((failure: unknown) => failure as Error);
     expect(error.message).not.toContain('object-secret');
@@ -349,15 +402,49 @@ describe('postApply script', () => {
         return { exitCode: 7, signal: null, stdout: '', stderr: 'failed', timedOut: false };
       },
     };
-    await expect(runPostApplyScript({
+    await expect(runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: awHome } }),
-      artifacts: [],
       runner,
-    })).rejects.toThrow('postApply failed with exit code 7');
+    })).rejects.toThrow('preApply failed with exit code 7');
     expect(await fs.pathExists(path.join(awHome, 'lifecycle'))).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'terminates a detached descendant when the preApply parent exits non-zero',
+    async () => {
+      const plugin = await createPlugin();
+      const descendantPidPath = path.join(plugin.rootDir, 'descendant.pid');
+      const descendantSource = [
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], { detached: true, stdio: 'ignore' });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+        'descendant.unref();',
+        'setTimeout(() => process.exit(7), 100);',
+      ].join('\n'));
+
+      await expect(runPreApplyScript({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: plugin.rootDir,
+        context: createCommandExecutionContext({
+          env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH },
+        }),
+      })).rejects.toThrow('preApply failed with exit code 7');
+
+      const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+      descendantPids.add(descendantPid);
+      await waitForProcessExit(descendantPid);
+      descendantPids.delete(descendantPid);
+    },
+  );
 });

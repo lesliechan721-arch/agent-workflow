@@ -16,18 +16,18 @@ function createPlugin(name = 'demo'): PluginMeta {
       schemaVersion: 3,
       name,
       version: '1.0.0',
-      description: 'postApply fixture',
+      description: 'preApply fixture',
       marketplace: {
         category: 'test',
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
-      scripts: { postApply: { path: './scripts/postApply.mjs' } },
+      scripts: { preApply: { path: './scripts/preApply.mjs' } },
     },
   };
 }
 
-function createFixture(options: { postApplyFailure?: boolean; preflightFailure?: boolean } = {}): {
+function createFixture(options: { preApplyFailure?: boolean; preflightFailure?: boolean } = {}): {
   target: DesiredTarget;
   driver: RebuildTargetDriver;
   calls: string[];
@@ -36,7 +36,7 @@ function createFixture(options: { postApplyFailure?: boolean; preflightFailure?:
   const calls: string[] = [];
   const target: DesiredTarget = {
     plugin,
-    postApplySource: plugin,
+    preApplySource: plugin,
     identity: {
       pluginName: 'demo',
       pluginVersion: '1.0.0',
@@ -64,16 +64,16 @@ function createFixture(options: { postApplyFailure?: boolean; preflightFailure?:
     async writeArtifacts() {
       calls.push('artifacts');
     },
-    async runPostApply(invocation) {
-      calls.push(`postApply:${invocation.plugin.manifest.name}`);
-      if (options.postApplyFailure) throw new Error('warning only');
+    async runPreApply(invocation) {
+      calls.push(`preApply:${invocation.plugin.manifest.name}`);
+      if (options.preApplyFailure) throw new Error('blocked before mutation');
     },
   };
   return { target, driver, calls };
 }
 
-describe('rebuild postApply boundary', () => {
-  it('runs postApply for an explicit no-op reconcile after verify', async () => {
+describe('rebuild preApply boundary', () => {
+  it('runs preApply once after readonly preflight and before writes', async () => {
     const fixture = createFixture();
     const result = await executeRebuildOperation({
       command: 'install',
@@ -81,23 +81,26 @@ describe('rebuild postApply boundary', () => {
       driver: fixture.driver,
     });
     expect(result.status).toBe('succeeded');
-    expect(fixture.calls).toEqual(['preflight', 'artifacts', 'postApply:demo']);
-    expect(result.actions).toContainEqual({ name: 'postApply', status: 'succeeded' });
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'artifacts']);
+    expect(result.actions).toContainEqual({ name: 'preApply', status: 'succeeded' });
   });
 
-  it('keeps the core result succeeded when postApply fails', async () => {
-    const fixture = createFixture({ postApplyFailure: true });
+  it('blocks target mutation when preApply fails', async () => {
+    const fixture = createFixture({ preApplyFailure: true });
     const result = await executeRebuildOperation({
       command: 'install',
       target: fixture.target,
       driver: fixture.driver,
     });
-    expect(result.status).toBe('succeeded');
-    expect(result.actions).toContainEqual({ name: 'postApply', status: 'failed' });
-    expect(result.failures).toEqual([]);
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { phase: 'preApply', message: 'blocked before mutation' },
+    });
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo']);
+    expect(result.cleanupAttempted).toBe(false);
   });
 
-  it('does not run postApply when core preflight is blocked', async () => {
+  it('does not run preApply when core preflight is blocked', async () => {
     const fixture = createFixture({ preflightFailure: true });
     const result = await executeRebuildOperation({
       command: 'install',
@@ -108,13 +111,13 @@ describe('rebuild postApply boundary', () => {
     expect(fixture.calls).toEqual(['preflight']);
   });
 
-  it('runs postApply for both dependency and root targets', async () => {
+  it('runs preApply once for both dependency and root targets', async () => {
     const fixture = createFixture();
     const dependencyPlugin = createPlugin('dependency');
     const dependency: DesiredTarget = {
       ...fixture.target,
       plugin: dependencyPlugin,
-      postApplySource: dependencyPlugin,
+      preApplySource: dependencyPlugin,
       identity: {
         ...fixture.target.identity,
         pluginName: 'dependency',
@@ -126,36 +129,58 @@ describe('rebuild postApply boundary', () => {
       driver: fixture.driver,
     });
     expect(results.map((result) => result.status)).toEqual(['succeeded', 'succeeded']);
-    expect(fixture.calls.filter((call) => call.startsWith('postApply:'))).toEqual([
-      'postApply:dependency',
-      'postApply:demo',
+    expect(fixture.calls.filter((call) => call.startsWith('preApply:'))).toEqual([
+      'preApply:dependency',
+      'preApply:demo',
     ]);
   });
 
-  it('reports a present optional component as unchanged in the exact postApply context', async () => {
+  it('runs reinstall preApply before cleanup without a second ownership preflight', async () => {
     const fixture = createFixture();
-    const optional = {
-      kind: 'shared-config' as const,
+    fixture.target.ownedComponents = [{
+      kind: 'shared-config',
       identity: {
-        owner: 'agent-workflows' as const,
-        plugin: 'demo', artifactKey: 'optional', platform: 'codex' as const, scope: 'user' as const,
+        owner: 'agent-workflows', plugin: 'demo', artifactKey: 'owned',
+        platform: 'codex', scope: 'user',
       },
-      label: 'optional',
-      locator: { kind: 'corrupted' as const, message: 'test-only locator' },
+      label: 'owned config',
+      locator: { kind: 'corrupted', message: 'test fixture' },
+    }];
+    fixture.target.desiredOwnedComponents = fixture.target.ownedComponents;
+    let filePresent = true;
+    fixture.driver.ownership.inspectShared = async () => filePresent ? 'present' : 'absent';
+    fixture.driver.ownership.removeShared = async () => {
+      fixture.calls.push('cleanup');
+      filePresent = false;
     };
-    fixture.target.ownedComponents = [optional];
-    fixture.target.desiredOwnedComponents = [];
-    fixture.target.optionalOwnedComponents = [optional];
-    fixture.driver.ownership.inspectShared = async () => 'present';
-    let components: unknown;
-    fixture.driver.runPostApply = async (invocation) => {
-      components = invocation.components;
+    fixture.driver.preflightMaterialize = async () => { fixture.calls.push('preflight'); };
+    fixture.driver.runPreApply = async () => { fixture.calls.push('preApply'); };
+    fixture.driver.writeArtifacts = async () => {
+      fixture.calls.push('artifacts');
+      filePresent = true;
     };
+
     const result = await executeRebuildOperation({
-      command: 'install', target: fixture.target, driver: fixture.driver,
+      command: 'reinstall', target: fixture.target, driver: fixture.driver,
     });
+
     expect(result.status).toBe('succeeded');
-    expect(components).toEqual([{ kind: 'shared-config', key: 'optional', outcome: 'unchanged' }]);
+    expect(fixture.calls).toEqual(['preflight', 'preApply', 'cleanup', 'artifacts']);
+    expect(result.actions.filter((entry) => entry.name === 'preflight.inspect')).toHaveLength(1);
+  });
+
+  it('does not run preApply for cleanup or uninstall', async () => {
+    for (const command of ['cleanup', 'uninstall'] as const) {
+      const fixture = createFixture();
+      fixture.driver.runPreApply = async () => {
+        throw new Error(`${command} must not run preApply`);
+      };
+      const result = await executeRebuildOperation({
+        command, target: fixture.target, driver: fixture.driver,
+      });
+      expect(result.status).toBe('succeeded');
+      expect(result.actions.map((entry) => entry.name)).not.toContain('preApply');
+    };
   });
 
   it('emits ordered action events and ignores diagnostic sink failures', async () => {
@@ -173,13 +198,13 @@ describe('rebuild postApply boundary', () => {
     expect(result.status).toBe('succeeded');
     expect(events).toEqual([
       'preflight.inspect:start', 'preflight.inspect:success',
+      'preApply:start', 'preApply:success',
       'artifacts.write:start', 'artifacts.write:success',
       'postcheck.inspect:start', 'postcheck.inspect:success',
-      'postApply:start', 'postApply:success',
     ]);
   });
 
-  it('commits only after postcheck and runs postApply after the commit', async () => {
+  it('runs preApply before writes and commits only after postcheck', async () => {
     const fixture = createFixture();
     fixture.driver.commitMaterialize = async () => { fixture.calls.push('commit'); };
     const result = await executeRebuildOperation({
@@ -187,9 +212,9 @@ describe('rebuild postApply boundary', () => {
     });
     expect(result.status).toBe('succeeded');
     expect(result.actions.map((entry) => entry.name)).toEqual([
-      'preflight.inspect', 'artifacts.write', 'postcheck.inspect', 'marketplace.commit', 'postApply',
+      'preflight.inspect', 'preApply', 'artifacts.write', 'postcheck.inspect', 'marketplace.commit',
     ]);
-    expect(fixture.calls).toEqual(['preflight', 'artifacts', 'commit', 'postApply:demo']);
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'artifacts', 'commit']);
   });
 
   it('rolls back the marketplace generation when native materialization fails', async () => {
@@ -209,13 +234,13 @@ describe('rebuild postApply boundary', () => {
       error: { phase: 'native.write', message: 'manager failed' },
     });
     expect(result.actions).toContainEqual({ name: 'marketplace.rollback', status: 'succeeded' });
-    expect(fixture.calls).toEqual(['preflight', 'native', 'rollback']);
+    expect(fixture.calls).toEqual(['preflight', 'preApply:demo', 'native', 'rollback']);
   });
 
   it('continues later targets after an earlier target fails', async () => {
     const fixture = createFixture();
     const blocked = { ...fixture.target, identity: { ...fixture.target.identity, pluginName: 'blocked' },
-      plugin: createPlugin('blocked'), postApplySource: createPlugin('blocked') };
+      plugin: createPlugin('blocked'), preApplySource: createPlugin('blocked') };
     fixture.driver.preflightMaterialize = async (target) => {
       fixture.calls.push(`preflight:${target.identity.pluginName}`);
       if (target.identity.pluginName === 'blocked') throw new Error('blocked');
@@ -224,7 +249,7 @@ describe('rebuild postApply boundary', () => {
       command: 'install', targets: [blocked, fixture.target], driver: fixture.driver,
     });
     expect(results.map((entry) => entry.status)).toEqual(['failed', 'succeeded']);
-    expect(fixture.calls).toContain('postApply:demo');
-    expect(fixture.calls).not.toContain('postApply:blocked');
+    expect(fixture.calls).toContain('preApply:demo');
+    expect(fixture.calls).not.toContain('preApply:blocked');
   });
 });

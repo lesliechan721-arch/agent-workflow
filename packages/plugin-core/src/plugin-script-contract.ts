@@ -1,9 +1,9 @@
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 
-export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
+export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
-export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
+export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 
 function normalizePluginTestEntryPath(value: string): string {
   const withoutDotSlash = value.startsWith('./') ? value.slice(2) : value;

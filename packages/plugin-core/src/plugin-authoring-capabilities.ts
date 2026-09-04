@@ -15,7 +15,7 @@ export const PLUGIN_AUTHORING_CAPABILITY_SURFACES = [
   'slash-commands',
   'mcp-apps',
   'config',
-  'post-apply',
+  'pre-apply',
   'artifacts',
 ] as const
 
@@ -148,12 +148,12 @@ const registry = {
         { field: 'config.presentation.groups', type: 'group[]', required: false },
       ],
     },
-    'post-apply': {
-      surface: 'post-apply',
+    'pre-apply': {
+      surface: 'pre-apply',
       entries: [
-        { field: 'scripts.postApply', type: '{path,timeoutMs?}', required: false },
-        { field: 'scripts.postApply.path', type: './ Node path', required: true },
-        { field: 'scripts.postApply.timeoutMs', type: 'integer', required: false, acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}` },
+        { field: 'scripts.preApply', type: '{path,timeoutMs?}', required: false },
+        { field: 'scripts.preApply.path', type: './ Node path', required: true },
+        { field: 'scripts.preApply.timeoutMs', type: 'integer', required: false, acceptedValues: `${PLUGIN_SCRIPT_TIMEOUT_MIN_MS}..${PLUGIN_SCRIPT_TIMEOUT_MAX_MS}` },
         { field: 'scripts.helpers.config', type: './ Node path', required: false },
         { field: 'scripts.node.packageRoot', type: './ package directory path', required: false },
         { field: 'scripts.node.build', type: '{runner,path,args?}', required: false },

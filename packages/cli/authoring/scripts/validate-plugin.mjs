@@ -147,7 +147,7 @@ const SLASH_COMMAND_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_SLASH_COMMANDS_DIR = 'slash-commands';
 const SCRIPT_NODE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const SCRIPT_TIMEOUT_MIN_MS = 1000;
-const SCRIPT_TIMEOUT_MAX_MS = 300000;
+const SCRIPT_TIMEOUT_MAX_MS = 1800000;
 const ARTIFACT_TARGETS = new Set(getPluginAuthoringAcceptedValues(
   'artifacts',
   'artifacts.targets[].target',
@@ -3049,7 +3049,7 @@ function validateScriptsLightweight(pluginDir, manifest) {
 
   const scripts = expectRecord(manifest.scripts, 'scripts');
   if (!scripts) return null;
-  validateAllowedKeys(scripts, 'scripts', ['postApply', 'helpers', 'node', 'artifacts', 'tests']);
+  validateAllowedKeys(scripts, 'scripts', ['preApply', 'helpers', 'node', 'artifacts', 'tests']);
 
   const runtimeNodeEntries = [];
   let artifactRenderEntry = null;
@@ -3068,20 +3068,20 @@ function validateScriptsLightweight(pluginDir, manifest) {
     }
   }
 
-  if (scripts.postApply !== undefined) {
-    const postApply = expectRecord(scripts.postApply, 'scripts.postApply');
-    if (postApply) {
-      validateAllowedKeys(postApply, 'scripts.postApply', ['path', 'timeoutMs']);
-      const postApplyPath = normalizePluginScriptPath(pluginDir, postApply.path, 'scripts.postApply.path');
-      validateDeclaredScriptFile(pluginDir, postApplyPath, 'scripts.postApply.path');
-      if (postApplyPath && !isNodeRunnablePath(postApplyPath)) {
-        error('scripts.postApply.path must use a Node runnable extension (.js, .mjs, or .cjs)');
+  if (scripts.preApply !== undefined) {
+    const preApply = expectRecord(scripts.preApply, 'scripts.preApply');
+    if (preApply) {
+      validateAllowedKeys(preApply, 'scripts.preApply', ['path', 'timeoutMs']);
+      const preApplyPath = normalizePluginScriptPath(pluginDir, preApply.path, 'scripts.preApply.path');
+      validateDeclaredScriptFile(pluginDir, preApplyPath, 'scripts.preApply.path');
+      if (preApplyPath && !isNodeRunnablePath(preApplyPath)) {
+        error('scripts.preApply.path must use a Node runnable extension (.js, .mjs, or .cjs)');
       }
-      if (postApply.timeoutMs !== undefined && (!Number.isInteger(postApply.timeoutMs)
-        || postApply.timeoutMs < SCRIPT_TIMEOUT_MIN_MS || postApply.timeoutMs > SCRIPT_TIMEOUT_MAX_MS)) {
-        error(`scripts.postApply.timeoutMs must be an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS}`);
+      if (preApply.timeoutMs !== undefined && (!Number.isInteger(preApply.timeoutMs)
+        || preApply.timeoutMs < SCRIPT_TIMEOUT_MIN_MS || preApply.timeoutMs > SCRIPT_TIMEOUT_MAX_MS)) {
+        error(`scripts.preApply.timeoutMs must be an integer between ${SCRIPT_TIMEOUT_MIN_MS} and ${SCRIPT_TIMEOUT_MAX_MS}`);
       }
-      if (postApplyPath) runtimeNodeEntries.push({ path: postApplyPath, fieldName: 'scripts.postApply.path' });
+      if (preApplyPath) runtimeNodeEntries.push({ path: preApplyPath, fieldName: 'scripts.preApply.path' });
     }
   }
 

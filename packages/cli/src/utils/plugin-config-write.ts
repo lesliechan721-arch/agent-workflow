@@ -307,6 +307,10 @@ async function reinstallVisibleTargets(options: {
           cwd: options.cwd,
           platform: target.platform,
           scope: target.scope,
+          yes: true,
+          ...(options.rebuildRuntime?.scriptTimeoutMs === undefined
+            ? {}
+            : { scriptTimeoutMs: options.rebuildRuntime.scriptTimeoutMs }),
         },
         {
           ...options.rebuildRuntime,
@@ -603,7 +607,7 @@ async function applyPluginConfigWriteUnlocked(
   if (
     options.apply !== false
     && options.scope === 'user'
-    && options.sharedNativeApplyConfirmed === false
+    && options.sharedNativeApplyConfirmed !== true
     && sharedNativeAffected
   ) {
     applyTargets ??= (await discoverVisibleTargets({
@@ -622,6 +626,18 @@ async function applyPluginConfigWriteUnlocked(
       error.code = 'sharedNativeConfigApplyConfirmationRequired';
       throw error;
     }
+  }
+  if (
+    options.apply !== false
+    && options.sharedNativeApplyConfirmed !== true
+    && changedKeys.length > 0
+    && schemaPlugin.manifest.scripts?.preApply
+  ) {
+    const error = new Error(
+      'preApplyAuthorizationRequired: Applying this config runs plugin preApply. Re-run with --yes.',
+    ) as Error & { code: string };
+    error.code = 'preApplyAuthorizationRequired';
+    throw error;
   }
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({

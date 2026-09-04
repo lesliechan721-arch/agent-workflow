@@ -108,7 +108,7 @@ import {
   resolveRepoRoot,
   getCodexHome,
 } from '../utils/paths.js';
-import { runPostApplyScript } from '../utils/plugin-scripts.js';
+import { runPreApplyScript } from '../utils/plugin-scripts.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
@@ -157,7 +157,7 @@ import {
 } from '../utils/codex-roles.js';
 import type {
   DesiredTarget,
-  RebuildPostApplyInvocation,
+  RebuildPreApplyInvocation,
   RebuildTargetIdentity,
   RebuildTargetDriver,
 } from './rebuild-operations.js';
@@ -4802,32 +4802,15 @@ function createNativeDriver(options: {
       }
       return target.artifacts;
     },
-    runPostApply: async (invocation: RebuildPostApplyInvocation) => {
-      try {
-        await runPostApplyScript({
+    runPreApply: async (invocation: RebuildPreApplyInvocation) => {
+      await runPreApplyScript({
         plugin: invocation.plugin,
         platform: invocation.target.identity.platform,
         scope: invocation.target.identity.scope,
         cwd: invocation.target.identity.cwd,
         context: options.context as never,
-        artifacts: [...invocation.artifacts],
-        components: invocation.components,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
-      } catch (error) {
-        await options.context.reporter.notice({
-          level: 'warning',
-          message: error instanceof Error ? error.message : String(error),
-          source: {
-            plugin: invocation.plugin.manifest.name,
-            platform: invocation.target.identity.platform,
-            scope: invocation.target.identity.scope,
-            action: 'postApply',
-          },
-          target: 'stderr',
-        });
-        throw error;
-      }
     },
   };
 }
@@ -5180,13 +5163,23 @@ export function createRebuildIntegration(options: {
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
-      const operationActions = writes.flatMap((write) => [
-        ...(write.action ? [write.action] : []),
-        ...(write.additionalActions ?? []),
-      ]);
-      finalizeOwnedArtifactActions(operationActions);
+      const operationActions: OperationAction[] = [];
+      const preApply = input.plugin.manifest.scripts?.preApply;
+      if (preApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
+        const script = path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, ''));
+        const scriptDigest = `sha256:${crypto.createHash('sha256')
+          .update(await fs.readFile(script)).digest('hex')}`;
+        operationActions.push({
+          kind: 'runPreApply',
+          pluginId: input.pluginId ?? pluginActionId(input.plugin),
+          platform: input.platform,
+          scope: input.scope,
+          script: preApply.path,
+          scriptDigest,
+        });
+      }
       if (nativeDesired) {
-        operationActions.unshift({
+        operationActions.push({
           kind: 'ensureNativeRegistration',
           pluginId: input.pluginId ?? pluginActionId(input.plugin),
           platform: input.platform,
@@ -5196,20 +5189,11 @@ export function createRebuildIntegration(options: {
           marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
         });
       }
-      const postApply = input.plugin.manifest.scripts?.postApply;
-      if (postApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
-        const script = path.resolve(input.plugin.rootDir, postApply.path.replace(/^\.\//u, ''));
-        const scriptDigest = `sha256:${crypto.createHash('sha256')
-          .update(await fs.readFile(script)).digest('hex')}`;
-        operationActions.push({
-          kind: 'runPostApply',
-          pluginId: input.pluginId ?? pluginActionId(input.plugin),
-          platform: input.platform,
-          scope: input.scope,
-          script: postApply.path,
-          scriptDigest,
-        });
-      }
+      operationActions.push(...writes.flatMap((write) => [
+        ...(write.action ? [write.action] : []),
+        ...(write.additionalActions ?? []),
+      ]));
+      finalizeOwnedArtifactActions(operationActions);
       const target: DesiredTarget = {
         plugin: input.plugin,
         identity: {
@@ -5236,7 +5220,7 @@ export function createRebuildIntegration(options: {
         artifacts: writes.map((write) => write.artifact),
         operationActions,
         catalog: input.catalog,
-        postApplySource: input.plugin,
+        preApplySource: input.plugin,
       };
       targets.push(target);
       return target;

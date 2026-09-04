@@ -67,8 +67,8 @@ export interface RawConfigProjectLayerOptions {
 
 
 export const SCRIPT_TIMEOUT_MIN_MS = 1000;
-export const SCRIPT_TIMEOUT_MAX_MS = 300000;
-export const SCRIPT_TIMEOUT_DEFAULT_MS = 30000;
+export const SCRIPT_TIMEOUT_MAX_MS = 1800000;
+export const SCRIPT_TIMEOUT_DEFAULT_MS = 300000;
 export const CONFIG_WRITE_DEFAULT_SCOPE: Scope = 'user';
 export type ConfigReadResolution = Scope | 'effective';
 export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
@@ -279,8 +279,15 @@ export function normalizeUninstallCommandOptions(
   raw: RawUninstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): UninstallCommandOptions {
+  const supported: RawCommandOptions = {
+    cwd: raw.cwd,
+    scope: raw.scope,
+    platform: raw.platform,
+    allowManagedCodexInstall: raw.allowManagedCodexInstall,
+    yes: raw.yes,
+  };
   return {
-    ...normalizeCommandOptions(raw, {
+    ...normalizeCommandOptions(supported, {
       defaultScope: 'user',
       requirePlatform: true,
       missingPlatformMessage: 'uninstall 命令需要显式指定 `--platform codex|claude|both`。',
@@ -296,8 +303,15 @@ export function normalizeCleanupCommandOptions(
   if (raw.scope === undefined) {
     throw new Error('cleanup 命令需要显式指定 `--scope project|user`。');
   }
+  const supported: RawCommandOptions = {
+    cwd: raw.cwd,
+    scope: raw.scope,
+    platform: raw.platform,
+    allowManagedCodexInstall: raw.allowManagedCodexInstall,
+    yes: raw.yes,
+  };
   const normalized = {
-    ...normalizeCommandOptions(raw, {
+    ...normalizeCommandOptions(supported, {
       defaultScope: 'user',
       requirePlatform: true,
       missingPlatformMessage: 'cleanup 命令需要显式指定 `--platform codex|claude|both`。',

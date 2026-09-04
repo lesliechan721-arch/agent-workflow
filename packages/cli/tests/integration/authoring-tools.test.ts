@@ -2925,7 +2925,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('scaffolds config helper, postApply, config schema, and plugin script tests on demand', async () => {
+  it('scaffolds config helper, preApply, config schema, and plugin script tests on demand', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-scripts-'));
     tempDirs.push(tempRoot);
 
@@ -2941,10 +2941,10 @@ describe('authoring tools', () => {
         initScriptPath,
         'script-ready',
         '--description',
-        'Plugin with AW config helper and postApply script.',
+        'Plugin with AW config helper and preApply script.',
         '--no-skills',
         '--with-config-api',
-        '--with-post-apply',
+        '--with-pre-apply',
         '--workspace-root',
         tempRepo,
       ],
@@ -2959,7 +2959,7 @@ describe('authoring tools', () => {
     const manifest = await fs.readJson(path.join(pluginDir, '.agents-plugin', 'plugin.json'));
     expect(manifest).toMatchObject({
       scripts: {
-        postApply: { path: './scripts/postApply.mjs' },
+        preApply: { path: './scripts/preApply.mjs' },
         helpers: {
           config: './scripts/aw-config.mjs',
         },
@@ -2978,7 +2978,7 @@ describe('authoring tools', () => {
       },
     });
     await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'aw-config.mjs'))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'postApply.mjs'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(pluginDir, 'scripts', 'preApply.mjs'))).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(pluginDir, 'scripts', 'generated-script.test.mjs')),
     ).resolves.toBe(true);
@@ -3135,10 +3135,46 @@ describe('authoring tools', () => {
     await fs.writeJson(manifestPath, {
       ...manifest,
       scripts: {
+        postApply: { path: './scripts/lifecycle.mjs' },
+      },
+    }, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('scripts has unknown field "postApply"'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      scripts: {
+        preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 1_800_001 },
+      },
+    }, { spaces: 2 });
+
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'scripts.preApply.timeoutMs must be an integer between 1000 and 1800000',
+      ),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      scripts: {
         helpers: {
           config: './scripts/aw-config.txt',
         },
-        postApply: { path: './scripts/lifecycle.mjs' },
+        preApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3169,7 +3205,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        postApply: { path: './scripts/lifecycle.py' },
+        preApply: { path: './scripts/lifecycle.py' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3190,7 +3226,7 @@ describe('authoring tools', () => {
         maxBuffer: 10 * 1024 * 1024,
       }),
     ).rejects.toMatchObject({
-      stdout: expect.stringContaining('scripts.postApply.path must use a Node runnable extension'),
+      stdout: expect.stringContaining('scripts.preApply.path must use a Node runnable extension'),
     });
 
     await fs.writeJson(manifestPath, {
@@ -3199,7 +3235,7 @@ describe('authoring tools', () => {
         helpers: {
           config: './scripts/aw-config.mjs',
         },
-        postApply: { path: './scripts/lifecycle.mjs' },
+        preApply: { path: './scripts/lifecycle.mjs' },
         node: {
           packageRoot: './scripts/pkg',
         },
@@ -3401,7 +3437,7 @@ describe('authoring tools', () => {
       'import-scan-test',
       createBaseManifest('import-scan-test', {
         scripts: {
-          postApply: { path: './scripts/entry.mjs' },
+          preApply: { path: './scripts/entry.mjs' },
         },
       }),
       {

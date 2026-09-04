@@ -60,6 +60,7 @@ import {
   resolveConfigWriteScope,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
+  resolveScriptTimeoutMs,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -242,6 +243,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   preset?: string;
   yes?: boolean;
   apply?: boolean;
+  scriptTimeout?: string;
 }
 
 type ReceiptWriteCommand = RebuildReceiptJson['command'];
@@ -647,7 +649,9 @@ export function buildEquivalentWriteCommandTokens(
     ...(command === 'install'
       ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
-    ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
+    ...((command === 'install' || command === 'reinstall')
+      ? optionTokens('--script-timeout', rawOptions.scriptTimeout)
+      : []),
     ...(selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
 }
@@ -1368,7 +1372,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | post-apply | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | pre-apply | artifacts')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1909,7 +1913,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
-    .option('--with-post-apply', 'add a Node postApply script sample', false);
+    .option('--with-pre-apply', 'add an idempotent Node preApply environment check', false);
 
   plugin
     .command('add-skill')
@@ -2897,7 +2901,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('-p, --platform <platform>', 'codex, claude, or both')
     .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
     .option('--refresh', 'refresh only Catalog sources required by selected intent roots', false)
-    .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'authorize preApply and shared native replacement or forced repair', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print sync receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -2910,6 +2915,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform: string;
         all?: boolean;
         refresh?: boolean;
+        scriptTimeout?: string;
         yes?: boolean;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
@@ -2920,6 +2926,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           scope: rawOptions.scope,
           platform: rawOptions.platform,
+          scriptTimeout: rawOptions.scriptTimeout,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
         }));
       const syncPlatform = normalized.platform;
@@ -2938,6 +2945,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           interactive: context.interactive && context.isTty && !context.isCi,
           prompt: context.prompt,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+          scriptTimeoutMs: normalized.scriptTimeoutMs,
         },
         context,
       ));
@@ -2961,9 +2969,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       (value: string, previous: string[]) => [...previous, value],
       [],
     )
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement', false)
+    .option('-y, --yes', 'authorize preApply and shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3003,7 +3011,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3014,7 +3021,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
-        scriptTimeout?: string;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
@@ -3078,9 +3084,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
+    .option('-y, --yes', 'authorize preApply and shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3261,7 +3267,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--value-json <json>', 'set the field to an exact JSON value')
     .option('--preset <id>', 'set the field to the current manifest preset value')
     .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('-y, --yes', 'confirm shared Codex native config apply', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3277,6 +3284,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
         if ((rawOptions.valueJson === undefined) === (rawOptions.preset === undefined)) {
           throw new Error('Use exactly one of --value-json <json> or --preset <id>.');
         }
@@ -3315,6 +3323,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             awHomeMutationToken,
             catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
           },
           awHomeMutationToken,
           request: {
@@ -3363,7 +3372,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('-y, --yes', 'confirm shared Codex native config apply', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3374,6 +3384,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
         const execute = async (selectedPlugin: string, selectedKey: string) =>
           withResolvedConfigMutationPlugin(
             context,
@@ -3405,6 +3416,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             awHomeMutationToken,
             catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
           },
           awHomeMutationToken,
           request: {
@@ -3489,6 +3501,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3504,6 +3517,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           selectedScope: Scope,
           confirmed: boolean,
         ) => {
+          const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
           if (!confirmed) {
             throw new Error(
               `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope} --yes\` to delete this store.`,
@@ -3539,6 +3553,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               plugin,
               pluginError,
               apply: rawOptions.apply === true,
+              rebuildRuntime: scriptTimeoutMs === undefined ? undefined : { scriptTimeoutMs },
             });
             return buildConfigMutationReceipt('config:reset', {
               ok: resetReceipt.overallState === 'succeeded',

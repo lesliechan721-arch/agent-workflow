@@ -1322,11 +1322,11 @@ function normalizeScriptEntry(
   };
 }
 
-function normalizePostApplyScript(
+function normalizePreApplyScript(
   pluginRoot: string,
   value: unknown,
   fieldName: string,
-): NonNullable<PluginScriptsConfig['postApply']> {
+): NonNullable<PluginScriptsConfig['preApply']> {
   const input = assertObject(value, fieldName);
   assertAllowedKeys(input, fieldName, ['path', 'timeoutMs']);
   const scriptPath = normalizePluginScriptPath(pluginRoot, input.path, `${fieldName}.path`);
@@ -1538,12 +1538,12 @@ function normalizePluginScripts(
   fieldName: string,
 ): PluginScriptsConfig {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['postApply', 'helpers', 'node', 'artifacts', 'tests']);
+  assertAllowedKeys(input, fieldName, ['preApply', 'helpers', 'node', 'artifacts', 'tests']);
 
   const output: PluginScriptsConfig = {};
 
-  if (input.postApply !== undefined) {
-    output.postApply = normalizePostApplyScript(pluginRoot, input.postApply, `${fieldName}.postApply`);
+  if (input.preApply !== undefined) {
+    output.preApply = normalizePreApplyScript(pluginRoot, input.preApply, `${fieldName}.preApply`);
   }
 
   if (input.helpers !== undefined) {

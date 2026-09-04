@@ -114,6 +114,26 @@ describe('CLI entry v5', () => {
     expect(uninstall.stdout()).not.toContain('--dependency-scope');
   });
 
+  it('publishes preApply timeout only on commands that can run preApply', async () => {
+    for (const command of [
+      ['install'],
+      ['sync'],
+      ['reinstall'],
+      ['config', 'set'],
+      ['config', 'unset'],
+      ['config', 'reset'],
+    ]) {
+      const output = capture();
+      expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
+      expect(output.stdout()).toContain('--script-timeout');
+    }
+    for (const command of [['cleanup'], ['uninstall']]) {
+      const output = capture();
+      expect(await runCli([...command, '--help'], { io: output.io })).toBe(0);
+      expect(output.stdout()).not.toContain('--script-timeout');
+    }
+  });
+
   it('asks once at the first interactive managed Codex acquisition', async () => {
     const confirm = vi.fn().mockResolvedValue({ cancelled: false, value: true });
     const authorizer = createManagedCodexAuthorizer(
@@ -204,6 +224,13 @@ describe('CLI entry v5', () => {
     ]) expect(output.stdout()).toContain(nextCommand);
     expect(output.stdout()).not.toContain('pnpm release');
     expect(output.stdout()).not.toContain('--plugin-root');
+  });
+
+  it('publishes only the preApply scaffold flag', async () => {
+    const output = capture();
+    expect(await runCli(['plugin', 'init', '--help'], { io: output.io })).toBe(0);
+    expect(output.stdout()).toContain('--with-pre-apply');
+    expect(output.stdout()).not.toContain('--with-post-apply');
   });
 
   it('rejects the removed public plugin-root option', async () => {

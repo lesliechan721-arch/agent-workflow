@@ -50,7 +50,7 @@ export interface DesiredTarget {
   artifacts: readonly GeneratedArtifact[];
   operationActions?: readonly OperationAction[];
   catalog?: CatalogResolution;
-  postApplySource: PluginMeta;
+  preApplySource: PluginMeta;
   forceExclusiveCleanup?: boolean;
 }
 
@@ -91,15 +91,9 @@ export interface RebuildFailedResult extends RebuildResultBase {
 
 export type RebuildResult = RebuildSucceededResult | RebuildFailedResult;
 
-export interface RebuildPostApplyInvocation {
+export interface RebuildPreApplyInvocation {
   target: DesiredTarget;
   plugin: PluginMeta;
-  artifacts: readonly GeneratedArtifact[];
-  components: Array<{
-    kind: string;
-    key: string;
-    outcome: 'created' | 'updated' | 'removed' | 'unchanged';
-  }>;
 }
 
 export interface RebuildTargetDriver {
@@ -114,7 +108,7 @@ export interface RebuildTargetDriver {
   probeNative?: NativeOwnershipProbe;
   probeNativeHealth?: NativeOwnershipProbe;
   removeNative?: NativeOwnershipRemove;
-  runPostApply(invocation: RebuildPostApplyInvocation): Promise<void>;
+  runPreApply(invocation: RebuildPreApplyInvocation): Promise<void>;
 }
 
 function artifactIdentity(artifact: GeneratedArtifact): string {
@@ -159,6 +153,17 @@ interface RebuildActionEvents {
   now: () => number;
 }
 
+export interface PreparedRebuildOperation {
+  command: RebuildCommand;
+  target: DesiredTarget;
+  inspection: OwnershipInspection;
+  actions: RebuildAction[];
+}
+
+export type PrepareRebuildOperationResult =
+  | { status: 'ready'; preparation: PreparedRebuildOperation }
+  | { status: 'failed'; result: RebuildResult };
+
 function createAccumulator(): ResultAccumulator {
   return {
     actions: [],
@@ -180,7 +185,7 @@ const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
   'stale.cleanup': '清理过期组件失败。',
   'native.write': '写入平台插件失败。',
   'artifacts.write': '写入插件文件失败。',
-  postApply: '运行 postApply 失败。',
+  preApply: '运行 preApply 失败。',
   'postcheck.inspect': '检查写入结果失败。',
   'marketplace.commit': '提交 marketplace generation 失败。',
   'marketplace.rollback': '回滚 marketplace generation 失败。',
@@ -329,11 +334,11 @@ function validateDesiredTarget(target: DesiredTarget): void {
   }
   if (
     target.plugin.manifest.name !== pluginName
-    || target.postApplySource.manifest.name !== pluginName
+    || target.preApplySource.manifest.name !== pluginName
     || target.plugin.manifest.version !== pluginVersion
-    || target.postApplySource.manifest.version !== pluginVersion
+    || target.preApplySource.manifest.version !== pluginVersion
   ) {
-    throw new Error('Desired target plugin name/version does not match its postApply source and identity.');
+    throw new Error('Desired target plugin name/version does not match its preApply source and identity.');
   }
   if (platform !== 'codex' && platform !== 'claude') {
     throw new Error(`Desired target platform is invalid: ${String(platform)}`);
@@ -559,26 +564,31 @@ async function materializeTarget(options: {
   driver: RebuildTargetDriver;
   accumulator: ResultAccumulator;
   events: RebuildActionEvents;
+  inspection?: OwnershipInspection;
+  preApplyCompleted?: boolean;
+  skipStaleCleanup?: boolean;
 }): Promise<RebuildResult> {
   const { command, target, driver, accumulator, events } = options;
-  let inspection: OwnershipInspection;
-  try {
-    inspection = await action(
-      accumulator,
-      'preflight.inspect',
-      async () => {
-        await driver.preflightMaterialize?.(target);
-        return inspectOwnedComponents({
-          components: target.ownedComponents,
-          executor: driver.ownership,
-          nativeProbe: driver.probeNative,
-        });
-      },
-      events,
-      collisionMessage,
-    );
-  } catch (error) {
-    return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error));
+  let inspection = options.inspection;
+  if (!inspection) {
+    try {
+      inspection = await action(
+        accumulator,
+        'preflight.inspect',
+        async () => {
+          await driver.preflightMaterialize?.(target);
+          return inspectOwnedComponents({
+            components: target.ownedComponents,
+            executor: driver.ownership,
+            nativeProbe: driver.probeNative,
+          });
+        },
+        events,
+        collisionMessage,
+      );
+    } catch (error) {
+      return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error));
+    }
   }
   const collision = collisionMessage(inspection);
   if (collision) {
@@ -586,12 +596,24 @@ async function materializeTarget(options: {
     return failed(command, target, accumulator, 'preflight.inspect', collision);
   }
 
+  if (!options.preApplyCompleted && target.preApplySource.manifest.scripts?.preApply) {
+    try {
+      await action(accumulator, 'preApply', () => driver.runPreApply({
+        target,
+        plugin: target.preApplySource,
+      }), events);
+    } catch (error) {
+      return failed(command, target, accumulator, 'preApply', errorMessage(error));
+    }
+  }
+
   const desiredComponents = new Set(target.desiredOwnedComponents ?? target.ownedComponents);
   const optionalComponents = new Set(target.optionalOwnedComponents ?? []);
   const staleComponents = target.ownedComponents.filter((component) =>
     !desiredComponents.has(component) && !optionalComponents.has(component));
   const staleInspection = inspection.components.filter((entry) => staleComponents.includes(entry.component));
-  if (staleInspection.some((component) => component.state === 'present')) {
+  if (!options.skipStaleCleanup
+    && staleInspection.some((component) => component.state === 'present')) {
     accumulator.cleanupAttempted = true;
     let stale: CleanupResult;
     try {
@@ -648,29 +670,6 @@ async function materializeTarget(options: {
     if (driver.commitMaterialize) {
       failurePhase = 'marketplace.commit';
       await action(accumulator, failurePhase, () => driver.commitMaterialize!(target), events);
-    }
-    try {
-      const postApplyComponents = inspection.components.map((entry) => ({
-        kind: entry.component.kind,
-        key: entry.component.identity.artifactKey,
-        outcome: (optionalComponents.has(entry.component)
-          ? 'unchanged'
-          : !desiredComponents.has(entry.component)
-          ? (entry.state === 'present' ? 'removed' : 'unchanged')
-          : entry.state === 'absent'
-            ? 'created'
-            : entry.state === 'present'
-              ? 'unchanged'
-              : 'updated') as 'created' | 'updated' | 'removed' | 'unchanged',
-      }));
-      await action(accumulator, 'postApply', () => driver.runPostApply({
-        target,
-        plugin: target.postApplySource,
-        artifacts: target.artifacts,
-        components: postApplyComponents,
-      }), events);
-    } catch (error) {
-      void error;
     }
     return succeeded(command, target, accumulator);
   } catch (error) {
@@ -814,6 +813,7 @@ export async function executeRebuildOperation(options: {
   command: RebuildCommand;
   target: DesiredTarget;
   driver: RebuildTargetDriver;
+  preparation?: PreparedRebuildOperation;
   onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
   now?: () => number;
 }): Promise<RebuildResult> {
@@ -824,6 +824,40 @@ export async function executeRebuildOperation(options: {
     emit: options.onActionEvent,
     now: options.now ?? Date.now,
   };
+  if (options.preparation) {
+    if (options.preparation.command !== options.command
+      || options.preparation.target !== options.target) {
+      return failed(
+        options.command,
+        options.target,
+        accumulator,
+        'preflight',
+        'Prepared rebuild operation does not match the requested target.',
+      );
+    }
+    accumulator.actions.push(...options.preparation.actions);
+    try {
+      await options.driver.preflightMutation?.(options.target);
+    } catch (error) {
+      return failed(
+        options.command,
+        options.target,
+        accumulator,
+        'preflight',
+        errorMessage(error),
+      );
+    }
+    try {
+      return await executeRebuildOperationCore(
+        options,
+        accumulator,
+        events,
+        options.preparation,
+      );
+    } catch (error) {
+      return failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
+    }
+  }
   try {
     validateDesiredTarget(options.target);
   } catch (error) {
@@ -865,6 +899,7 @@ async function executeRebuildOperationCore(
   },
   accumulator: ResultAccumulator,
   events: RebuildActionEvents,
+  preparation?: PreparedRebuildOperation,
 ): Promise<RebuildResult> {
 
   if (options.command === 'install') {
@@ -874,6 +909,10 @@ async function executeRebuildOperationCore(
       driver: options.driver,
       accumulator,
       events,
+      ...(preparation ? {
+        inspection: preparation.inspection,
+        preApplyCompleted: true,
+      } : {}),
     });
   }
   if (options.command === 'cleanup') {
@@ -894,35 +933,48 @@ async function executeRebuildOperationCore(
     });
   }
 
-  let inspection: OwnershipInspection;
-  try {
-    inspection = await action(
-      accumulator,
-      'preflight.inspect',
-      async () => {
-        await options.driver.preflightMaterialize?.(options.target);
-        return inspectOwnedComponents({
-          components: options.target.ownedComponents,
-          executor: options.driver.ownership,
-          nativeProbe: options.driver.probeNative,
-        });
-      },
-      events,
-      collisionMessage,
-    );
-  } catch (error) {
-    return failed(
-      'reinstall',
-      options.target,
-      accumulator,
-      'preflight.inspect',
-      errorMessage(error),
-    );
-  }
-  const collision = collisionMessage(inspection);
-  if (collision) {
-    recordInspectionResiduals(accumulator, inspection);
-    return failed('reinstall', options.target, accumulator, 'preflight.inspect', collision);
+  let inspection = preparation?.inspection;
+  if (!inspection) {
+    try {
+      inspection = await action(
+        accumulator,
+        'preflight.inspect',
+        async () => {
+          await options.driver.preflightMaterialize?.(options.target);
+          return inspectOwnedComponents({
+            components: options.target.ownedComponents,
+            executor: options.driver.ownership,
+            nativeProbe: options.driver.probeNative,
+          });
+        },
+        events,
+        collisionMessage,
+      );
+    } catch (error) {
+      return failed(
+        'reinstall',
+        options.target,
+        accumulator,
+        'preflight.inspect',
+        errorMessage(error),
+      );
+    }
+    const collision = collisionMessage(inspection);
+    if (collision) {
+      recordInspectionResiduals(accumulator, inspection);
+      return failed('reinstall', options.target, accumulator, 'preflight.inspect', collision);
+    }
+
+    if (options.target.preApplySource.manifest.scripts?.preApply) {
+      try {
+        await action(accumulator, 'preApply', () => options.driver.runPreApply({
+          target: options.target,
+          plugin: options.target.preApplySource,
+        }), events);
+      } catch (error) {
+        return failed('reinstall', options.target, accumulator, 'preApply', errorMessage(error));
+      }
+    }
   }
 
   const cleanupResult = await executeCleanup({
@@ -939,7 +991,117 @@ async function executeRebuildOperationCore(
     driver: options.driver,
     accumulator,
     events,
+    inspection,
+    preApplyCompleted: true,
+    skipStaleCleanup: true,
   });
+}
+
+export async function prepareRebuildOperation(options: {
+  command: 'install' | 'sync' | 'reinstall';
+  target: DesiredTarget;
+  driver: RebuildTargetDriver;
+  deferNativeInspection?: boolean;
+  skipPreApply?: boolean;
+  onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
+  now?: () => number;
+}): Promise<PrepareRebuildOperationResult> {
+  const accumulator = createAccumulator();
+  const events: RebuildActionEvents = {
+    command: options.command,
+    target: options.target.identity,
+    emit: options.onActionEvent,
+    now: options.now ?? Date.now,
+  };
+  try {
+    validateDesiredTarget(options.target);
+  } catch (error) {
+    return {
+      status: 'failed',
+      result: failed(
+        options.command,
+        options.target,
+        accumulator,
+        'preflight',
+        errorMessage(error),
+      ),
+    };
+  }
+
+  let inspection: OwnershipInspection;
+  try {
+    inspection = await action(
+      accumulator,
+      'preflight.inspect',
+      async () => {
+        await options.driver.preflightMaterialize?.(options.target);
+        return inspectOwnedComponents({
+          components: options.deferNativeInspection
+            ? options.target.ownedComponents.filter((component) => component.kind !== 'native-plugin')
+            : options.target.ownedComponents,
+          executor: options.driver.ownership,
+          nativeProbe: options.driver.probeNative,
+        });
+      },
+      events,
+      collisionMessage,
+    );
+  } catch (error) {
+    return {
+      status: 'failed',
+      result: failed(
+        options.command,
+        options.target,
+        accumulator,
+        'preflight.inspect',
+        errorMessage(error),
+      ),
+    };
+  }
+  const collision = collisionMessage(inspection);
+  if (collision) {
+    recordInspectionResiduals(accumulator, inspection);
+    return {
+      status: 'failed',
+      result: failed(
+        options.command,
+        options.target,
+        accumulator,
+        'preflight.inspect',
+        collision,
+      ),
+    };
+  }
+
+  if (!options.skipPreApply && options.target.preApplySource.manifest.scripts?.preApply) {
+    try {
+      await action(accumulator, 'preApply', () => options.driver.runPreApply({
+        target: options.target,
+        plugin: options.target.preApplySource,
+      }), events);
+    } catch (error) {
+      return {
+        status: 'failed',
+        result: failed(
+          options.command,
+          options.target,
+          accumulator,
+          'preApply',
+          errorMessage(error),
+        ),
+      };
+    }
+  }
+
+  return {
+    status: 'ready',
+    preparation: {
+      command: options.command,
+      target: options.target,
+      inspection,
+      actions: accumulator.actions,
+    },
+  };
 }
 
 export async function executeRebuildTargets(options: {

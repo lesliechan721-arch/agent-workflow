@@ -532,10 +532,10 @@ async function validateAwRuntimeLayout(
 
   const runtimeFiles = new Set<string>();
   const nodeEntries = new Set<string>();
-  const postApply = manifest.scripts?.postApply;
-  if (postApply) {
-    await assertBundlePathExists(pluginRoot, postApply.path, 'scripts.postApply.path', './');
-    const filePath = stripDotSlash(postApply.path);
+  const preApply = manifest.scripts?.preApply;
+  if (preApply) {
+    await assertBundlePathExists(pluginRoot, preApply.path, 'scripts.preApply.path', './');
+    const filePath = stripDotSlash(preApply.path);
     runtimeFiles.add(filePath);
     nodeEntries.add(filePath);
   }

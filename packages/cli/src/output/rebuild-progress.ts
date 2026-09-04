@@ -6,7 +6,7 @@ const ACTION_LABELS: Record<RebuildActionName, string> = {
   'stale.cleanup': '清理过期组件',
   'native.write': '写入平台插件',
   'artifacts.write': '写入插件文件',
-  postApply: '运行 postApply',
+  preApply: '运行 preApply',
   'postcheck.inspect': '检查写入结果',
   'marketplace.commit': '提交 marketplace generation',
   'marketplace.rollback': '回滚 marketplace generation',

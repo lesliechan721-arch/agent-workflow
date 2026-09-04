@@ -765,12 +765,12 @@ async function addDeclaredLspServerFiles(
   return value;
 }
 
-function addPostApplyRuntimeEntry(
+function addPreApplyRuntimeEntry(
   plugin: PluginMeta,
   rootFiles: Set<string>,
   nodeEntries: Set<string>,
 ): void {
-  const entry = plugin.manifest.scripts?.postApply;
+  const entry = plugin.manifest.scripts?.preApply;
   if (!entry) return;
   const filePath = stripDotSlash(entry.path);
   rootFiles.add(filePath);
@@ -883,7 +883,7 @@ async function collectRuntimeClosureFiles(
 async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   const rootFiles = new Set<string>();
   const nodeEntries = new Set<string>();
-  addPostApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
+  addPreApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
 

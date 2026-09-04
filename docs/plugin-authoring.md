@@ -107,7 +107,7 @@ AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-re
 
 renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
-插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
+插件可以声明 executable build/test/preApply code、hooks、MCP servers、Apps、config 和 artifacts。preApply 只用于安装前环境校验或安装外部系统工具，必须幂等；它不能替代 manifest dependencies 或 build-time Node bundle。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
 
 ## 版本与恢复
 
