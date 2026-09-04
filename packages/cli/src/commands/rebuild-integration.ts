@@ -227,6 +227,33 @@ export interface RebuildExecutionContext {
   expectedCatalogConfigDigest?: string;
   codexUserActivationDesired?: ReadonlySet<string>;
   codexObservationSession?: CodexNativeObservationSession;
+  codexObservationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
+}
+
+function codexObservationScope(
+  context: RebuildExecutionContext,
+  marketplaceName: string,
+  fallbackScope: Scope,
+): 'user' | 'both' {
+  return context.codexObservationScopeByMarketplace?.get(marketplaceName)
+    ?? (fallbackScope === 'user' ? 'user' : 'both');
+}
+
+function codexMarketplaceFromPluginId(pluginId: string): string {
+  return pluginId.slice(pluginId.lastIndexOf('@') + 1);
+}
+
+function requireCodexObservationCoverage(
+  registration: CodexPluginRegistrationLiveInspection,
+  scope: 'user' | 'both',
+  operation: string,
+): void {
+  if (!registration.observations.user
+    || (scope === 'both' && !registration.observations.project)) {
+    throw new Error(
+      `codexNativeObservationUnavailable: ${operation} requires ${scope === 'user' ? 'neutral' : 'exact and neutral'} Codex plugin list evidence.`,
+    );
+  }
 }
 
 function requireCodexManager(manager: CodexManager | undefined): CodexManager {
@@ -257,6 +284,7 @@ async function executeCodexReconcileActivationsInSession(options: {
   observationSession: CodexNativeObservationSession;
   preflightCompleted?: boolean;
   mutationMarketplaces?: Set<string>;
+  observationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
 }): Promise<void> {
   const byScope: Record<Scope, {
     upserts: Record<string, boolean>;
@@ -305,23 +333,25 @@ async function executeCodexReconcileActivationsInSession(options: {
   if (!options.preflightCompleted && observedActivationPluginIds.length > 0) {
     const manager = requireCodexManager(options.manager);
     for (const pluginId of observedActivationPluginIds) {
+      const marketplaceName = codexMarketplaceFromPluginId(pluginId);
+      const observationScope = options.observationScopeByMarketplace?.get(marketplaceName)
+        ?? (options.plans.some((plan) => plan.requirement.requiresProjectPluginContract)
+          ? 'both'
+          : 'user');
       const registration = await inspectCodexPluginRegistrationLive({
         pluginId,
         cwd: options.cwd,
         env: options.env,
         nativeCliRunner: options.runner,
         manager,
+        scope: observationScope,
         observationSession: options.observationSession,
       });
       const observedState = requireObservedCodexNativeState(
         registration.observation,
         'activation precheck',
       );
-      if (!registration.observations.user || !registration.observations.project) {
-        throw new Error(
-          'codexNativeObservationUnavailable: activation precheck requires exact and neutral Codex plugin list evidence.',
-        );
-      }
+      requireCodexObservationCoverage(registration, observationScope, 'activation precheck');
       if (observedState !== 'installed') {
         throw new Error(
           'codexNativeObservationFailed: activation precheck did not observe the installed Codex plugin.',
@@ -444,6 +474,7 @@ export async function executeCodexReconcileActivations(options: {
   observationSession?: CodexNativeObservationSession;
   preflightCompleted?: boolean;
   mutationMarketplaces?: Set<string>;
+  observationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
 }): Promise<void> {
   const ownedSession = options.observationSession ? undefined
     : await createCodexNativeObservationSession({
@@ -469,6 +500,7 @@ export async function postcheckCodexReconcileActivations(options: {
   manager?: CodexManager;
   runner: NativeCliRunner;
   observationSession?: CodexNativeObservationSession;
+  observationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
 }): Promise<void> {
   const checks = options.plans.flatMap((plan) =>
     plan.postcheck.support === 'observed' ? plan.postcheck.plugins : []);
@@ -486,23 +518,25 @@ export async function postcheckCodexReconcileActivations(options: {
     const failureDetails: string[] = [];
     for (const check of checks) {
       try {
+        const marketplaceName = codexMarketplaceFromPluginId(check.codexPluginId);
+        const observationScope = options.observationScopeByMarketplace?.get(marketplaceName)
+          ?? (options.plans.some((plan) => plan.requirement.requiresProjectPluginContract)
+            ? 'both'
+            : 'user');
         const registration = await inspectCodexPluginRegistrationLive({
           pluginId: check.codexPluginId,
           cwd: options.cwd,
           env: options.env,
           nativeCliRunner: options.runner,
           manager: options.manager,
+          scope: observationScope,
           observationSession: session,
         });
         const state = requireObservedCodexNativeState(
           registration.observation,
           'activation postcheck',
         );
-        if (!registration.observations.user || !registration.observations.project) {
-          throw new Error(
-            'codexNativeObservationUnavailable: activation postcheck requires exact and neutral Codex plugin list evidence.',
-          );
-        }
+        requireCodexObservationCoverage(registration, observationScope, 'activation postcheck');
         if (state !== 'installed') {
           throw new Error(
             `codexNativeObservationFailed: ${check.codexPluginId} was not observed after Codex activation mutation.`,
@@ -2595,6 +2629,7 @@ export async function inspectCodexSharedNativeLive(options: {
   marketplaceRoot?: string;
   nativeCliRunner?: NativeCliRunner;
   manager?: CodexManager;
+  observationScope?: 'user' | 'both';
   observationSession?: CodexNativeObservationSession;
   pluginRegistration?: CodexPluginRegistrationLiveInspection;
   nativeRenderPlugin?: PluginMeta;
@@ -2623,6 +2658,7 @@ export async function inspectCodexSharedNativeLive(options: {
     env: options.env,
     nativeCliRunner: options.nativeCliRunner,
     manager: options.manager,
+    scope: options.observationScope,
     observationSession: options.observationSession,
   });
   let expectedPayloadDigest = dynamicProjectionExpected ? undefined : options.expectedPayloadDigest;
@@ -3543,6 +3579,12 @@ function createNativeDriver(options: {
     path.normalize(path.resolve(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env))),
     target.identity.platform,
   ].join('\0');
+  const observationScopeFor = (target: DesiredTarget): 'user' | 'both' =>
+    codexObservationScope(
+      options.context,
+      target.identity.marketplaceName ?? MARKETPLACE_NAME,
+      target.identity.scope,
+    );
   const groupTargets = (target: DesiredTarget): DesiredTarget[] => {
     if (!options.operationScopedNativePhases) return [target];
     const key = nativeGroupKey(target);
@@ -3618,6 +3660,11 @@ function createNativeDriver(options: {
         const overlayTargets = members.filter((candidate) =>
           candidate.nativeOverlayDesired ?? candidate.requiresNative);
         if (target.identity.platform === 'codex') {
+          const observationScope = codexObservationScope(
+            options.context,
+            target.identity.marketplaceName ?? MARKETPLACE_NAME,
+            members.some((candidate) => candidate.identity.scope === 'project') ? 'project' : 'user',
+          );
           const nativePluginIds = [...new Set(members.flatMap((candidate) =>
             candidate.ownedComponents.flatMap((component) =>
               component.kind === 'native-plugin' ? [component.pluginId] : [])))].sort();
@@ -3630,6 +3677,7 @@ function createNativeDriver(options: {
               env: options.context.env,
               nativeCliRunner: runner,
               manager: currentCodexManager(),
+              scope: observationScope,
               observationSession: options.context.codexObservationSession,
             });
             codexNativeStates.set(
@@ -3774,10 +3822,11 @@ function createNativeDriver(options: {
         });
     const session = options.context.codexObservationSession ?? ownedSession!;
     try {
-      const snapshot = await session.snapshot(component.locator.marketplaceName, 'both');
-      if (!snapshot.exact || !snapshot.neutral) return 'absent';
+      const observationScope = observationScopeFor(target);
+      const snapshot = await session.snapshot(component.locator.marketplaceName, observationScope);
+      if (!snapshot.neutral || (observationScope === 'both' && !snapshot.exact)) return 'absent';
       const officialPluginIds = new Set([
-        ...snapshot.exact.keys(),
+        ...(snapshot.exact?.keys() ?? []),
         ...snapshot.neutral.keys(),
       ]);
       return [...officialPluginIds].some((pluginId) => pluginId !== currentPluginId)
@@ -4021,17 +4070,18 @@ function createNativeDriver(options: {
                 env: options.context.env,
                 nativeCliRunner: runner,
                 manager: currentCodexManager(),
+                scope: observationScopeFor(target),
                 observationSession: options.context.codexObservationSession,
               });
               const state = requireObservedCodexNativeState(
                 registration.observation,
                 'native install postcheck',
               );
-              if (!registration.observations.user || !registration.observations.project) {
-                throw new Error(
-                  'codexNativeObservationUnavailable: native install postcheck requires exact and neutral Codex plugin list evidence.',
-                );
-              }
+              requireCodexObservationCoverage(
+                registration,
+                observationScopeFor(target),
+                'native install postcheck',
+              );
               if (state !== 'installed') {
                 throw new Error(
                   `codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`,
@@ -4080,7 +4130,15 @@ function createNativeDriver(options: {
       codexMutationMarketplaces.clear();
       for (const marketplaceName of marketplaces) session.invalidate(marketplaceName);
       await Promise.all(marketplaces.map((marketplaceName) =>
-        session.snapshot(marketplaceName, 'both')));
+        session.snapshot(
+          marketplaceName,
+          options.context.codexObservationScopeByMarketplace?.get(marketplaceName)
+            ?? (options.targets.some((target) => target.identity.platform === 'codex'
+              && (target.identity.marketplaceName ?? MARKETPLACE_NAME) === marketplaceName
+              && target.identity.scope === 'project')
+              ? 'both'
+              : 'user'),
+        )));
     },
     preflightMutation: async (target) => {
       if (!target.codexNativeObservationExpectation) return;
@@ -4091,6 +4149,7 @@ function createNativeDriver(options: {
         env: options.context.env,
         nativeCliRunner: runner,
         manager: currentCodexManager(),
+        scope: observationScopeFor(target),
         observationSession: options.context.codexObservationSession,
       });
       const observed = requireObservedCodexNativeState(
@@ -4159,6 +4218,7 @@ function createNativeDriver(options: {
           env: options.context.env,
           nativeCliRunner: runner,
           manager: currentCodexManager(),
+          scope: observationScopeFor(target),
           observationSession: options.context.codexObservationSession,
         });
         return observedCodexNativeState(registration.observation, 'native probe');
@@ -4188,6 +4248,7 @@ function createNativeDriver(options: {
           env: options.context.env,
           nativeCliRunner: runner,
           manager: currentCodexManager(),
+          scope: observationScopeFor(target),
           observationSession: options.context.codexObservationSession,
         });
         const nativeState = observedCodexNativeState(
@@ -4247,6 +4308,7 @@ function createNativeDriver(options: {
             env: options.context.env,
             nativeCliRunner: runner,
             manager: currentCodexManager(),
+            scope: observationScopeFor(target),
             observationSession: options.context.codexObservationSession,
           });
           const expected = pendingCodexNativeStates.get(stateKey) ?? 'absent';
@@ -4717,6 +4779,11 @@ export function createRebuildIntegration(options: {
             env: options.context.env,
             nativeCliRunner: options.context.nativeCliRunner,
             manager: options.context.codexManager,
+            scope: codexObservationScope(
+              options.context,
+              input.marketplaceName ?? MARKETPLACE_NAME,
+              input.scope,
+            ),
             observationSession: options.context.codexObservationSession,
           })
         : undefined;

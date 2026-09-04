@@ -1369,6 +1369,92 @@ describe('five namespaced write commands', () => {
     }
   }, 30_000);
 
+  it('uses only one neutral Codex list per generation for public user-only writes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-observation-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const listCalls = (calls: readonly [NativeCliInvocation, ...unknown[]][]) => calls.filter(
+      ([invocation]) => {
+        const pluginIndex = invocation.args.indexOf('plugin');
+        const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+        return args.join(' ') === 'plugin list --marketplace aw --json';
+      },
+    );
+    const assertUserOnlyGenerations = (
+      calls: readonly [NativeCliInvocation, ...unknown[]][],
+      maximumLists: number,
+    ) => {
+      const lists = listCalls(calls);
+      expect(lists.length, JSON.stringify(calls.map(([invocation]) => ({
+        args: invocation.args,
+        cwd: invocation.cwd,
+      })))).toBeLessThanOrEqual(maximumLists);
+      expect(lists.every(([invocation]) =>
+        path.resolve(invocation.cwd ?? '.') !== path.resolve(isolation.layout.fixtureCwd))).toBe(true);
+      let generationLists = 0;
+      for (const [invocation] of calls) {
+        const pluginIndex = invocation.args.indexOf('plugin');
+        const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+        const generationBoundary = invocation.args.includes('--version')
+          || args[1] === 'add' || args[1] === 'remove'
+          || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
+        if (generationBoundary) {
+          expect(generationLists).toBeLessThanOrEqual(1);
+          generationLists = 0;
+        } else if (args.join(' ') === 'plugin list --marketplace aw --json') {
+          generationLists += 1;
+        }
+      }
+      expect(generationLists).toBeLessThanOrEqual(1);
+    };
+
+    const success = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime);
+    expect(success.overallState, JSON.stringify(success)).toBe('succeeded');
+    assertUserOnlyGenerations(runtime.nativeCliRunner.mock.calls, 2);
+
+    runtime.nativeCliRunner.mockClear();
+    const noOp = await syncCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime);
+    expect(noOp.overallState, JSON.stringify(noOp)).toBe('succeeded');
+    assertUserOnlyGenerations(runtime.nativeCliRunner.mock.calls, 2);
+
+    const uncertainRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const result = await runtime.nativeCliRunner(invocation);
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'add' && args[2] === 'demo@aw'
+        ? { ...result, exitCode: 1, stderr: 'synthetic uncertain add' }
+        : result;
+    });
+    const uncertain = await reinstallWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, { ...runtime, nativeCliRunner: uncertainRunner });
+    expect(uncertain.overallState, JSON.stringify({
+      uncertain,
+      calls: uncertainRunner.mock.calls.map(([invocation]) => invocation.args),
+    })).not.toBe('succeeded');
+    assertUserOnlyGenerations(uncertainRunner.mock.calls, 2);
+  }, 30_000);
+
   it('keeps an earlier native success and the shared marketplace after a later group target fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-partial-source');
@@ -2637,7 +2723,7 @@ describe('five namespaced write commands', () => {
     ['absent', 'partial', 'codexNativeInstallIncomplete'],
     ['duplicate', 'partial', 'codexNativeObservationFailed'],
     ['installed-disabled', 'succeeded', undefined],
-    ['exact-installed-neutral-absent', 'succeeded', undefined],
+    ['exact-installed-neutral-absent', 'partial', 'codexNativeInstallIncomplete'],
   ] as const)('handles Codex install when the official postcheck is %s', async (
     postcheck,
     expectedState,
@@ -2669,10 +2755,10 @@ describe('five namespaced write commands', () => {
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            installed: invocation.cwd !== isolation.layout.fixtureCwd ? []
+            installed: postcheck === 'exact-installed-neutral-absent'
+              ? invocation.cwd === isolation.layout.fixtureCwd ? [entry] : []
               : postcheck === 'duplicate' ? [entry, entry]
-                : postcheck === 'exact-installed-neutral-absent' ? [entry]
-                  : postcheck === 'installed-disabled' ? [{ ...entry, enabled: false }] : [],
+                : postcheck === 'installed-disabled' ? [{ ...entry, enabled: false }] : [],
             available: [],
           }),
           stderr: '',
@@ -10353,7 +10439,7 @@ describe('five namespaced write commands', () => {
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
     expect(codexManagerResolver).not.toHaveBeenCalled();
-    expect(nativeCliRunner).toHaveBeenCalledTimes(4);
+    expect(nativeCliRunner).toHaveBeenCalledTimes(2);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);
@@ -10364,7 +10450,7 @@ describe('five namespaced write commands', () => {
       platform: 'codex', scope: 'user',
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(noOp.overallState, JSON.stringify(noOp.rebuildResults)).toBe('succeeded');
-    expect(nativeCliRunner).toHaveBeenCalledTimes(2);
+    expect(nativeCliRunner).toHaveBeenCalledTimes(1);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);
@@ -11043,6 +11129,14 @@ describe('five namespaced write commands', () => {
     ]);
     expect(repairedTamper, JSON.stringify(repairedTamper, null, 2))
       .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    expect(repairedTamper.payload.targetResults).toEqual([
+      expect.objectContaining({
+        sharedNative: { codexPluginId: canonicalPluginId!, action: 'reuse' },
+      }),
+    ]);
+    const serializedTamperReceipt = JSON.stringify(repairedTamper.payload);
+    expect(serializedTamperReceipt).not.toContain('"action":"replace"');
+    expect(serializedTamperReceipt).not.toContain('"action":"remove"');
     const repairCalls = runtime.nativeCliRunner.mock.calls
       .slice(callsBeforeRepair)
       .map(([invocation]) => invocation.args.join(' '));

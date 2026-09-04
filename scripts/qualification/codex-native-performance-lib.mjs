@@ -13,6 +13,7 @@ export const INSTALL_MEDIAN_BUDGET_MS = 15_000
 const marketplaceName = 'aw-native-performance'
 const pluginName = 'aw-native-performance'
 const pluginId = `${pluginName}@${marketplaceName}`
+const pluginVersion = '1.0.0'
 
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right)
@@ -66,7 +67,7 @@ async function createMarketplace(root) {
   }, null, 2)}\n`, 'utf8')
   await writeFile(path.join(pluginRoot, '.codex-plugin', 'plugin.json'), `${JSON.stringify({
     name: pluginName,
-    version: '1.0.0',
+    version: pluginVersion,
     description: 'Local Codex performance qualification fixture.',
   }, null, 2)}\n`, 'utf8')
 }
@@ -130,7 +131,39 @@ function parseScopedList(stdout) {
     error.code = 'invalidScopedListOutput'
     throw error
   }
-  return value
+  const installed = value.installed.map((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      const error = new Error(`Codex scoped plugin list installed[${index}] must be an object.`)
+      error.code = 'invalidScopedListOutput'
+      throw error
+    }
+    if (typeof entry.pluginId !== 'string'
+      || entry.pluginId !== entry.pluginId.trim()
+      || !/^[^@\s]+@[^@\s]+$/u.test(entry.pluginId)
+      || entry.installed !== true
+      || typeof entry.enabled !== 'boolean'
+      || (entry.version !== undefined && typeof entry.version !== 'string')
+      || (entry.source !== undefined
+        && (entry.source === null
+          || typeof entry.source !== 'object'
+          || Array.isArray(entry.source)))
+      || (entry.source?.path !== undefined && typeof entry.source.path !== 'string')) {
+      const error = new Error(`Codex scoped plugin list installed[${index}] is invalid.`)
+      error.code = 'invalidScopedListOutput'
+      throw error
+    }
+    return entry
+  })
+  return { installed }
+}
+
+function requireQualifiedInstall(entries) {
+  const matches = entries.filter((entry) => entry.pluginId === pluginId)
+  if (matches.length !== 1 || matches[0].version !== pluginVersion) {
+    const error = new Error('Codex plugin add did not produce the exact installed plugin version.')
+    error.code = 'nativePluginPostcheckFailed'
+    throw error
+  }
 }
 
 export async function runCodexNativePerformanceQualification(input = {}) {
@@ -181,10 +214,17 @@ export async function runCodexNativePerformanceQualification(input = {}) {
         options,
       )
       parseScopedList(listResult.stdout)
-      scopedListEvidenceCount += 1
       const startedAt = performance.now()
       await execute(command, ['plugin', 'add', pluginId, '--json'], options)
-      durations.push(performance.now() - startedAt)
+      const duration = performance.now() - startedAt
+      const postListResult = await execute(
+        command,
+        ['plugin', 'list', '--marketplace', marketplaceName, '--json'],
+        options,
+      )
+      requireQualifiedInstall(parseScopedList(postListResult.stdout).installed)
+      scopedListEvidenceCount += 1
+      durations.push(duration)
     } catch (error) {
       report.errorCode = typeof error?.code === 'string' ? error.code : 'qualificationCommandFailed'
       return report

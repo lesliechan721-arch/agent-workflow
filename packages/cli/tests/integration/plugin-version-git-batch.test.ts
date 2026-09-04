@@ -30,7 +30,7 @@ async function createFakeGit(mode: string): Promise<NodeJS.ProcessEnv> {
     "const ids = Buffer.concat(chunks).toString('ascii').trim().split('\\n').filter(Boolean);",
     "const mode = process.env.AW_FAKE_GIT_BATCH_MODE;",
     "const write = (value) => process.stdout.write(value);",
-    "for (const [index, id] of ids.entries()) {",
+    "if (mode !== 'silent') for (const [index, id] of ids.entries()) {",
     "  if (mode === 'missing') { write(`${id} missing\\n`); continue; }",
     "  if (mode === 'nonblob') { write(`${id} tree 0\\n\\n`); continue; }",
     "  if (mode === 'malformed') { write('malformed header\\n'); continue; }",
@@ -46,6 +46,11 @@ async function createFakeGit(mode: string): Promise<NodeJS.ProcessEnv> {
     "if (mode === 'nonzero') { process.stderr.write('synthetic cat-file failure\\n'); process.exit(7); }",
     "if (mode === 'stderr') process.stderr.write('synthetic stderr\\n');",
     "if (mode === 'signal') process.kill(process.pid, 'SIGTERM');",
+    "if (mode === 'silent' || mode === 'complete-no-exit') {",
+    "  process.on('SIGTERM', () => {});",
+    "  setTimeout(() => process.exit(98), 10000);",
+    "  setInterval(() => {}, 1000);",
+    "}",
   ].join('\n'), 'utf8');
   await fs.chmod(path.join(binRoot, 'git'), 0o755);
   return {
@@ -90,6 +95,21 @@ describe('Git cat-file batch authoring source reader', () => {
     })).rejects.toThrow(message);
     expect(Date.now() - startedAt).toBeLessThan(5_000);
   });
+
+  it.each(['silent', 'complete-no-exit'])(
+    'bounds a %s cat-file child from spawn through exit',
+    async (mode) => {
+      const startedAt = Date.now();
+      await expect(readGitBlobsBatch(repoRoot(), [firstObjectId], {
+        env: await createFakeGit(mode),
+        operationTimeoutMs: 50,
+      })).rejects.toMatchObject({
+        code: 'gitFailed',
+        message: 'Git cat-file batch timed out.',
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    },
+  );
 
   const builtCliTest = fs.existsSync(path.join(repoRoot(), 'packages', 'cli', 'dist')) ? it : it.skip;
   const stubbornValidateTest = process.platform === 'win32' ? it.skip : builtCliTest;

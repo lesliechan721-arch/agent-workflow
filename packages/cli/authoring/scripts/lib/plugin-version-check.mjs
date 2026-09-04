@@ -20,6 +20,7 @@ const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const MAX_GIT_BLOB_BYTES = 50 * 1024 * 1024;
 const MAX_GIT_BATCH_HEADER_BYTES = 1024;
+const GIT_BATCH_OPERATION_TIMEOUT_MS = 30_000;
 const GIT_BATCH_TERM_GRACE_MS = 250;
 const GIT_BATCH_CLOSE_TIMEOUT_MS = 2_000;
 const CLI_PACKAGE_ROOT = path.resolve(
@@ -260,6 +261,8 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let cleanupStarted = false;
+  let operationTimedOut = false;
+  let operationTimeoutTimer;
   let forceKillTimer;
   let closeTimeoutTimer;
   let settleExit;
@@ -268,6 +271,7 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
     const finish = (settle, value) => {
       if (!settleExit) return;
       settleExit = null;
+      clearTimeout(operationTimeoutTimer);
       clearTimeout(forceKillTimer);
       clearTimeout(closeTimeoutTimer);
       child.removeListener('error', onError);
@@ -299,6 +303,10 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
       ));
     }, GIT_BATCH_CLOSE_TIMEOUT_MS);
   }
+  operationTimeoutTimer = setTimeout(() => {
+    operationTimedOut = true;
+    requestCleanup();
+  }, options.operationTimeoutMs ?? GIT_BATCH_OPERATION_TIMEOUT_MS);
   const stderrChunks = [];
   let stderrBytes = 0;
   onStderrData = (value) => {
@@ -358,6 +366,9 @@ export async function readGitBlobsBatch(repoRoot, objectIds, options = {}) {
     writeTask,
     exitTask,
   ]);
+  if (operationTimedOut) {
+    throw codedError('gitFailed', 'Git cat-file batch timed out.');
+  }
   if (
     exitResult.status === 'rejected'
     && exitResult.reason instanceof PluginVersionCheckError

@@ -660,6 +660,7 @@ describe('status v7 current behavior', () => {
     expect(result.payload.targets[0]!.reasons).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'staleCacheObserved' }),
     ]));
+    expect(JSON.stringify(result.payload)).not.toContain('staleCacheObserved');
     expect(result.payload.targets[0]!.reasons).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'codexSharedNativeUpdateRequired' }),
       expect.objectContaining({ code: 'codexSharedNativeForeign' }),
@@ -699,6 +700,7 @@ describe('status v7 current behavior', () => {
     expect(statusTargetSharedNative(result.payload.targets[0]!)).toEqual({
       pluginId: 'demo@aw', state: 'unobserved',
     });
+    expect(JSON.stringify(result.payload)).not.toContain('staleCacheObserved');
   });
 
   it('uses pluginIntentStateInvalid for an unreadable desired-state file', async () => {

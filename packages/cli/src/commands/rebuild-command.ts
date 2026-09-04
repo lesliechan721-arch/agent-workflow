@@ -2513,6 +2513,37 @@ async function runRebuildCommandInSession(options: {
         }
         return marketplaceName;
       };
+      const codexObservationScopeByMarketplace = new Map<string, 'user' | 'both'>();
+      const projectIntentPluginIds = new Set<string>();
+      for (const root of intentBeforeByScope.project.roots.filter((candidate) =>
+        candidate.platforms.includes('codex'))) {
+        const rootEntry = availableEntries.find((candidate) => candidate.pluginId === root.pluginId);
+        if (!rootEntry) continue;
+        for (const candidate of entryClosure([rootEntry])) {
+          projectIntentPluginIds.add(candidate.pluginId);
+        }
+      }
+      const projectCodexConfig = await readCodexConfigFile(
+        resolveCodexPaths(options.commandOptions.cwd, 'project', runtimeEnv).configTomlPath,
+      );
+      for (const { entry, platform } of executionSelections) {
+        if (platform !== 'codex') continue;
+        const marketplaceName = marketplaceNameFor(
+          entry,
+          platform,
+          options.commandOptions.scope,
+        );
+        const codexPluginId = `${entry.plugin.manifest.name}@${marketplaceName}`;
+        const requiredScope = options.commandOptions.scope === 'project'
+          || projectIntentPluginIds.has(entry.pluginId)
+          || Object.hasOwn(projectCodexConfig.snapshot.plugins, codexPluginId)
+          ? 'both'
+          : 'user';
+        if (requiredScope === 'both'
+          || !codexObservationScopeByMarketplace.has(marketplaceName)) {
+          codexObservationScopeByMarketplace.set(marketplaceName, requiredScope);
+        }
+      }
       const executionContext: RebuildExecutionContext = {
         env: runtimeEnv,
         nativeCliRunner: options.runtime?.nativeCliRunner ?? getDefaultNativeCliRunner(),
@@ -2520,6 +2551,7 @@ async function runRebuildCommandInSession(options: {
         debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
+        codexObservationScopeByMarketplace,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -2706,6 +2738,9 @@ async function runRebuildCommandInSession(options: {
                 cwd: options.commandOptions.cwd,
                 env: runtimeEnv,
                 nativeCliRunner: executionContext.nativeCliRunner,
+                scope: codexObservationScopeByMarketplace.get(
+                  marketplaceNameFor(entry, platform, resolvedScope),
+                ) ?? 'both',
                 observationSession: executionContext.codexObservationSession,
                 ...(codexManager ? { manager: codexManager } : {}),
               })
@@ -3111,6 +3146,23 @@ async function runRebuildCommandInSession(options: {
         ]);
         const catalogClosure: CodexReconcilerCatalogTarget[] = [];
         const liveEvidence: CodexReconcilerLiveEvidence[] = [];
+        const desiredScopesByPluginId = new Map<string, Scope[]>();
+        const intentScopesByPluginId = new Map<string, Scope[]>();
+        for (const planned of reconciledCodexTargets) {
+          const entry = available.find((candidate) => candidate.pluginId === planned.pluginId)!;
+          const marketplaceName = marketplaceNameFor(entry, 'codex', planned.resolvedScope);
+          const codexPluginId = `${entry.plugin.manifest.name}@${marketplaceName}`;
+          const desiredScopes = desiredScopesForEntry(entry);
+          const intentScopes = intentScopesForEntry(entry);
+          desiredScopesByPluginId.set(entry.pluginId, desiredScopes);
+          intentScopesByPluginId.set(entry.pluginId, intentScopes);
+          if (planned.resolvedScope === 'project'
+            || desiredScopes.includes('project')
+            || intentScopes.includes('project')
+            || Object.hasOwn(projectConfig.snapshot.plugins, codexPluginId)) {
+            codexObservationScopeByMarketplace.set(marketplaceName, 'both');
+          }
+        }
         for (const planned of reconciledCodexTargets) {
           const entry = available.find((candidate) => candidate.pluginId === planned.pluginId)!;
           const surface = analyzeCodexSurface(entry.plugin.manifest);
@@ -3123,7 +3175,11 @@ async function runRebuildCommandInSession(options: {
           const staticContentDigest = hasNativeRenderTargets
             ? undefined
             : await calculateCodexSharedNativePayloadDigest(entry.plugin.rootDir);
-          const desiredScopes = desiredScopesForEntry(entry);
+          const desiredScopes = desiredScopesByPluginId.get(entry.pluginId)!;
+          const intentScopes = intentScopesByPluginId.get(entry.pluginId)!;
+          const observationScope = codexObservationScopeByMarketplace.get(marketplaceName)
+            ?? 'user';
+          const plannedRegistration = plannedCodexRegistrations.get(codexPluginId);
           const sharedInspection = surface.nativeKinds.length > 0
             ? await inspectCodexSharedNativeLive({
                 pluginName: entry.plugin.manifest.name,
@@ -3139,10 +3195,12 @@ async function runRebuildCommandInSession(options: {
                   entry.source.sourceId,
                 ),
                 nativeCliRunner: executionContext.nativeCliRunner,
+                observationScope,
                 observationSession: executionContext.codexObservationSession,
                 ...(codexManager ? { manager: codexManager } : {}),
-                ...(plannedCodexRegistrations.get(codexPluginId)
-                  ? { pluginRegistration: plannedCodexRegistrations.get(codexPluginId)! }
+                ...(plannedRegistration
+                  && (observationScope === 'user' || plannedRegistration.observations.project)
+                  ? { pluginRegistration: plannedRegistration }
                   : {}),
                 ...(hasNativeRenderTargets ? { nativeRenderPlugin: entry.plugin } : {}),
               })
@@ -3159,7 +3217,7 @@ async function runRebuildCommandInSession(options: {
             relation: planned.relation,
             resolvedScope: planned.resolvedScope,
             desiredScopes,
-            intentScopes: intentScopesForEntry(entry),
+            intentScopes,
             surface,
           });
           const sharedNative: CodexReconcilerLiveEvidence['sharedNative'] = sharedInspection?.sharedNative
@@ -4405,6 +4463,7 @@ async function runRebuildCommandInSession(options: {
               observationSession: executionContext.codexObservationSession,
               preflightCompleted: true,
               mutationMarketplaces: activationMutationMarketplaces,
+              observationScopeByMarketplace: codexObservationScopeByMarketplace,
             });
           }
         } catch (error) {
@@ -4445,6 +4504,7 @@ async function runRebuildCommandInSession(options: {
               env: runtimeEnv,
               manager: executionContext.codexManager,
               runner: executionContext.nativeCliRunner,
+              observationScopeByMarketplace: codexObservationScopeByMarketplace,
               observationSession: executionContext.codexObservationSession,
             });
           } catch (error) {

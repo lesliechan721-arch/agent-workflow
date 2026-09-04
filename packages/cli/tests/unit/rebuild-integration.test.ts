@@ -421,7 +421,7 @@ describe('rebuild adapter integration', () => {
     },
     {
       observation: 'exact-installed-neutral-absent', officialEnabled: true, configEnabled: false,
-      generic: 'present', health: 'partial',
+      generic: 'absent', health: 'absent',
     },
   ] as const)(
     'uses official $observation only for generic presence and public config for health',
@@ -1712,7 +1712,7 @@ describe('rebuild adapter integration', () => {
       await expect(integration.driver.writeNative(target)).rejects.toThrow('projection observed');
       await expect(observationSession.inspectPlugin({ pluginId: 'ask-me@aw-team' }))
         .resolves.toMatchObject({ observation: { state: 'observed', value: 'installed' } });
-      expect(listCalls).toBe(4);
+      expect(listCalls).toBe(3);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
     } finally {
       await observationSession.dispose();
@@ -1781,7 +1781,7 @@ describe('rebuild adapter integration', () => {
       drifted = true;
 
       await expect(integration.driver.writeNative(target)).rejects.toThrow(errorCode);
-      expect(calls).toHaveLength(6);
+      expect(calls).toHaveLength(3);
       expect(calls.every((invocation) =>
         invocation.args.slice(-5).join(' ') === 'plugin list --marketplace aw-team --json')).toBe(true);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
@@ -1851,7 +1851,7 @@ describe('rebuild adapter integration', () => {
       } finally {
         lstat.mockRestore();
       }
-      expect(nativeCliRunner).toHaveBeenCalledTimes(4);
+      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('retained\n');
     },
   );
@@ -2112,7 +2112,7 @@ describe('rebuild adapter integration', () => {
       expect(failure?.message).toContain(errorCode);
       expect(failure?.message).not.toContain(isolation.layout.awHomeDir);
       expect(failure?.message).not.toContain(marketplaceRoot);
-      expect(nativeCliRunner).toHaveBeenCalledTimes(4);
+      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('old-generation\n');
       expect(await snapshotRegularTree(marketplaceRoot)).toEqual(oldRootSnapshot);
       await expect(readSkillOwnerMarker({
@@ -3686,12 +3686,12 @@ describe('rebuild adapter integration', () => {
       const entry = {
         pluginId, installed: true, enabled: true, version: plugin.manifest.version,
       };
-      const exactEntries = removed && postcheck === 'duplicate' ? [entry, entry] : [entry];
+      const installedEntries = removed && postcheck === 'duplicate' ? [entry, entry] : [entry];
       return {
         exitCode: 0,
         stdout: invocation.args.includes('--json')
           ? JSON.stringify({
-              installed: invocation.cwd === isolation.layout.fixtureCwd ? exactEntries : [],
+              installed: installedEntries,
               available: [],
             })
           : '',
