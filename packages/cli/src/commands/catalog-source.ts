@@ -254,12 +254,15 @@ export async function preflightCatalogSourceMutation(options: {
         mode: request.action === 'remove' ? 'remove' : 'identityChange',
       })
     : {
-        impactSchemaVersion: 1 as const,
+        impactSchemaVersion: 2 as const,
         sourceId,
         inventoryComplete: true,
         references: [] as CatalogSourceImpactReference[],
         affectedReferences: [] as CatalogSourceImpactReference[],
-        changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+        changes: {
+          added: [], removed: [], changed: [], newlyIncompatible: [],
+          dependencyChanged: [], platformSupportChanged: [],
+        },
         errors: [] as CatalogSourceImpactError[],
       };
   return {

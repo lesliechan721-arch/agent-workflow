@@ -91,7 +91,7 @@ aw catalog store prune --json
 aw catalog store prune --yes --json
 ```
 
-`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`，JSON receipt 包含脱敏的 source impact。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。候选删除插件、使插件新出现能力不兼容、改变依赖，或传递影响这些插件的现有引用时，sync 需要 `--yes`；清单或旧 manifest 不可读时影响为 unknown，也需要确认。`catalog source add/update` 只改 source config；remove 有引用或清单不完整时需要 `--yes`。普通 Git 激活只接受更高 Catalog version；相同 version 不同 digest 和较低 version 都拒绝。明确修改 source config 后的 sync 可确认这些关系。Path source 允许内容变化。
+`sync --check` fetch 并验证，但不写 store 或 Active；它可写 `lastSync`，JSON receipt 包含脱敏的 source impact。source status schema 2 的 `compatibility` 为 `null`、`supported` 或带 required/missing capability 的 `unsupported`，且不公开 available capability 全集。普通 sync 在完整验证后原子写 store，再原子切换 Active；失败时 Active 不变。候选删除插件、使插件新出现能力不兼容、改变依赖，或传递影响这些插件的现有引用时，sync 需要 `--yes`；清单或旧 manifest 不可读时影响为 unknown，也需要确认。`catalog source add/update` 只改 source config；remove 有引用或清单不完整时需要 `--yes`。普通 Git 激活只接受更高 Catalog version；相同 version 不同 digest 和较低 version 都拒绝。明确修改 source config 后的 sync 可确认这些关系。Path source 允许内容变化。
 
 Store prune 是显式恢复工具，不是自动 GC。默认命令和 `--dry-run` 都只预览；只有 `--yes` 删除。它保留所有 Active，保留 30 天内的非 Active 正式 entry，并保留 24 小时内的 staging、replacement 和 quarantine。老 quarantine 只有在可以确定对应 canonical key，且该正式 entry 完整健康时才删除。损坏 state、未知目录、符号链接、unsafe node、验证失败和 foreign 内容全部 fail closed。实际删除与 Active activation 共享现有 AW_HOME mutation lock，并在锁内重读。部分删除失败会保留 residue，并可再次运行 prune；被删除的非 Active 弱 snapshot 可通过 source sync 重建。
 
@@ -105,7 +105,7 @@ aw catalog dev status --workspace-root "$workspace" --json
 aw catalog dev deactivate --workspace-root "$workspace" --yes --json
 ```
 
-`activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。停用检测到 installation、lifecycle 或 config 引用，或 inventory 不完整时需要 `--yes`；schema 3 receipt 返回脱敏 `impact`。
+`activate` build、complete validate、注册 managed Path source 并 sync。`dev status` 只读取 snapshot、source/path 和 Active digest；schema 4 receipt 的 `active.compatibility` 为 `null`、`supported` 或带 required/missing capability 的 `unsupported`。`deactivate` 不删除 `.aw/catalog`，只安全移除精确的 managed Path source。停用检测到 installation、lifecycle 或 config 引用，或 inventory 不完整时需要 `--yes`；schema 3 receipt 返回脱敏 `impact`。
 
 Git source 保持非交互，保留 timeout、protocol/ref/temp validation、credential URL 拒绝和诊断脱敏。`AW_CATALOG_REMOTE_TIMEOUT_MS` 接受 `0` 或 `100..300000`。完整 resolve 默认 180000 ms；ref probe 最多 30000 ms；`0` 表示无 deadline。每次 probe 或完整 resolve 内的命令共享各自 deadline，probe 后的完整 resolve 使用新的 deadline。消费端只清理危险的 repository、worktree、index 和 object 环境变量；它保留 credential helper、SSH agent、自定义 SSH、proxy 和 `insteadOf`。
 

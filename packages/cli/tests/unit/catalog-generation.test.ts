@@ -22,9 +22,15 @@ import {
   createCatalogStoreKey,
   resolveCatalogStoreLocation,
 } from '../../src/utils/catalog-generation-store.js';
+import { resolveActiveCatalogGeneration } from '../../src/utils/catalog-generation-resolver.js';
 import { resolveCatalogOperationContext } from '../../src/utils/catalog-operation-context.js';
+import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
-import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import {
+  calculateCatalogSourceConfigFingerprint,
+  calculateCatalogSourceIdentity,
+} from '../../src/utils/catalog-source-identity.js';
+import { validateCatalogSnapshotTransport } from '../../src/utils/catalog-snapshot.js';
 import {
   calculateCatalogSourceImpactDigest,
   inspectCatalogSourceImpact,
@@ -68,16 +74,21 @@ describe('Catalog Active store and state', () => {
       active: fixturePath('policy-active'),
       conflict: fixturePath('policy-conflict'),
       rollback: fixturePath('policy-rollback'),
+      identity: fixturePath('policy-identity'),
     };
     await Promise.all([
       createCatalogSnapshotFixture(roots.active, 'demo', [], 'active\n'),
       createCatalogSnapshotFixture(roots.conflict, 'demo', [], 'conflict\n'),
       createCatalogSnapshotFixture(roots.rollback, 'demo', [], 'rollback\n'),
+      createCatalogSnapshotFixture(roots.identity, 'demo', [], 'identity\n'),
     ]);
     for (const [name, root] of Object.entries(roots)) {
       const markerPath = path.join(root, '.aw-generated.json');
       const marker = await fs.readJson(markerPath) as Record<string, unknown>;
-      await fs.writeJson(markerPath, { ...marker, workspaceIdentity: 'policy-workspace' });
+      await fs.writeJson(markerPath, {
+        ...marker,
+        workspaceIdentity: name === 'identity' ? 'other-policy-workspace' : 'policy-workspace',
+      });
       const manifestPath = path.join(root, 'catalog-manifest.json');
       const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
       await fs.writeJson(manifestPath, {
@@ -112,25 +123,37 @@ describe('Catalog Active store and state', () => {
         requestedRef: configured.refPolicy.type === 'explicit'
           ? configured.refPolicy.ref : 'refs/heads/catalog/latest',
         resolvedCommit: (selectedRoot === roots.active ? 'a'
-          : selectedRoot === roots.conflict ? 'b' : 'c').repeat(40),
+          : selectedRoot === roots.conflict ? 'b'
+            : selectedRoot === roots.rollback ? 'c' : 'd').repeat(40),
         transport: 'git' as const,
       };
     };
+    const inspectSourceImpact = vi.fn(inspectCatalogSourceImpact);
     const runtime = {
       providers: { git, path: catalogPathProviderInternal.resolve },
+      inspectSourceImpact,
     };
     const initial = await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     });
 
+    expect(inspectSourceImpact).toHaveBeenCalledTimes(2);
+    inspectSourceImpact.mockClear();
     selectedRoot = roots.conflict;
     await expect(syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     })).rejects.toMatchObject({ code: 'catalogVersionConflict' });
+    expect(inspectSourceImpact).not.toHaveBeenCalled();
     selectedRoot = roots.rollback;
     await expect(syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     })).rejects.toMatchObject({ code: 'catalogRollbackDetected' });
+    expect(inspectSourceImpact).not.toHaveBeenCalled();
+    selectedRoot = roots.identity;
+    await expect(syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
+    })).rejects.toMatchObject({ code: 'catalogLogicalIdentityChanged' });
+    expect(inspectSourceImpact).not.toHaveBeenCalled();
     expect((await readCatalogGenerationState(isolation.env)).sources.team!.active)
       .toEqual(initial.active);
 
@@ -147,6 +170,75 @@ describe('Catalog Active store and state', () => {
     await expect(syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime,
     })).resolves.toMatchObject({ outcome: 'activated', activeChanged: true });
+  });
+
+  it('rechecks Git version policy under the lock before collecting impact', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const roots = {
+      active: fixturePath('locked-policy-active'),
+      candidate: fixturePath('locked-policy-candidate'),
+      concurrent: fixturePath('locked-policy-concurrent'),
+    };
+    await Promise.all(Object.values(roots).map((root) => createCatalogSnapshotFixture(root)));
+    for (const [name, root] of Object.entries(roots)) {
+      const markerPath = path.join(root, '.aw-generated.json');
+      const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+      await fs.writeJson(markerPath, { ...marker, workspaceIdentity: 'locked-policy-workspace' });
+      const manifestPath = path.join(root, 'catalog-manifest.json');
+      const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+      await fs.writeJson(manifestPath, {
+        ...manifest,
+        catalogVersion: name === 'active' ? '1.0.0' : name === 'candidate' ? '2.0.0' : '3.0.0',
+      });
+    }
+    const source: GitCatalogSource = {
+      id: 'team', type: 'git', primary: true, url: fixturePath('locked-policy.git'),
+      refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+    };
+    const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: config.digest,
+      env: isolation.env,
+    });
+    let selected: keyof typeof roots = 'active';
+    const git = async (configured: GitCatalogSource) => {
+      const resolution = await catalogPathProviderInternal.resolve({
+        id: configured.id, type: 'path', primary: configured.primary, path: roots[selected],
+      }, { cliVersion: '1.0.0', env: isolation.env });
+      return {
+        ...resolution,
+        sourceIdentity: await calculateCatalogSourceIdentity(configured),
+        requestedRef: 'refs/heads/main',
+        resolvedCommit: ({ active: 'a', candidate: 'b', concurrent: 'c' } as const)[selected].repeat(40),
+        transport: 'git' as const,
+      };
+    };
+    const providers = { git, path: catalogPathProviderInternal.resolve };
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime: { providers },
+    });
+    selected = 'candidate';
+    const inspectSourceImpact = vi.fn(inspectCatalogSourceImpact);
+
+    await expect(activateCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: {
+        providers,
+        inspectSourceImpact,
+        afterCandidateResolved: async () => {
+          expect(inspectSourceImpact).toHaveBeenCalledTimes(1);
+          selected = 'concurrent';
+          await syncCatalogSourceGeneration({
+            sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime: { providers },
+          });
+          inspectSourceImpact.mockClear();
+        },
+      },
+    })).rejects.toMatchObject({ code: 'catalogRollbackDetected' });
+    expect(inspectSourceImpact).not.toHaveBeenCalled();
   });
 
   it('repairs the exact Git commit before CLI sync continues and requires replacement when that commit is unavailable', async () => {
@@ -297,10 +389,16 @@ describe('Catalog Active store and state', () => {
     }).state).toBe('localChangesAvailable');
   });
 
-  it('checks an unchanged healthy Git Active by remote ref without full fetch', async () => {
+  it('checks an unchanged unsupported Git Active by remote ref without full fetch', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('git-freshness-active');
     await createCatalogSnapshotFixture(sourceRoot);
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v3'] } },
+    });
     const current = await readCatalogSourcesConfigSnapshot(isolation.env);
     const source: GitCatalogSource = {
       id: 'team', type: 'git', primary: true, url: fixturePath('remote.git'),
@@ -312,16 +410,19 @@ describe('Catalog Active store and state', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const pathResolution = await catalogPathProviderInternal.resolve({
-      id: source.id, type: 'path', primary: true, path: sourceRoot,
-    }, { cliVersion: '1.0.0', env: isolation.env });
+    const validation = await validateCatalogSnapshotTransport(sourceRoot);
     const resolvedCommit = 'a'.repeat(40);
     const gitResolution = {
-      ...pathResolution,
+      sourceId: source.id,
       sourceIdentity,
       requestedRef: 'refs/heads/catalog/latest',
       resolvedCommit,
+      rootDir: sourceRoot,
+      manifest: validation.manifest,
+      manifestDigest: validation.manifestDigest,
+      snapshotDigest: validation.snapshotDigest,
       transport: 'git' as const,
+      async cleanup() {},
     };
     await syncCatalogSourceGeneration({
       sourceId: source.id,
@@ -360,10 +461,16 @@ describe('Catalog Active store and state', () => {
     expect(await readCatalogGenerationState(isolation.env)).toEqual(stateBeforeCheck);
   });
 
-  it('does not run Git for a healthy fixed-commit Active automatic check', async () => {
+  it('does not run Git for an unsupported fixed-commit Active automatic check', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('git-fixed-active');
     await createCatalogSnapshotFixture(sourceRoot);
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      requires: { aw: { capabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v3'] } },
+    });
     const fixedCommit = 'c'.repeat(40);
     const source: GitCatalogSource = {
       id: 'team', type: 'git', primary: true, url: fixturePath('fixed-remote.git'),
@@ -376,20 +483,23 @@ describe('Catalog Active store and state', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
-    const pathResolution = await catalogPathProviderInternal.resolve({
-      id: source.id, type: 'path', primary: true, path: sourceRoot,
-    }, { cliVersion: '1.0.0', env: isolation.env });
+    const validation = await validateCatalogSnapshotTransport(sourceRoot);
     await syncCatalogSourceGeneration({
       sourceId: source.id,
       cliVersion: '1.0.0',
       env: isolation.env,
       runtime: { providers: {
         git: async () => ({
-          ...pathResolution,
+          sourceId: source.id,
           sourceIdentity,
           requestedRef: fixedCommit,
           resolvedCommit: fixedCommit,
+          rootDir: sourceRoot,
+          manifest: validation.manifest,
+          manifestDigest: validation.manifestDigest,
+          snapshotDigest: validation.snapshotDigest,
           transport: 'git' as const,
+          async cleanup() {},
         }),
         path: catalogPathProviderInternal.resolve,
       } },
@@ -447,7 +557,9 @@ describe('Catalog Active store and state', () => {
       storeKey: location.storeKey,
       activeReady: true,
       configMatchesActive: true,
+      compatibility: { state: 'supported' },
     });
+    expect(status.catalogGenerationStatusSchemaVersion).toBe(2);
     expect(location.storeKey.split('/')).not.toContain('.');
     expect(location.storeKey.split('/')).not.toContain('..');
     await expect(fs.pathExists(location.metadataPath)).resolves.toBe(true);
@@ -476,7 +588,74 @@ describe('Catalog Active store and state', () => {
     });
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
     await expect(readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env }))
-      .resolves.toMatchObject({ sources: [{ activeReady: false, configMatchesActive: false }] });
+      .resolves.toMatchObject({
+        catalogGenerationStatusSchemaVersion: 2,
+        sources: [{
+          activeReady: false,
+          configMatchesActive: false,
+          compatibility: null,
+        }],
+      });
+  });
+
+  it('reports an unsupported healthy Active without classifying it as damaged', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('unsupported-active-status');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const manifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+    const requiredCapabilities = ['aw.catalog-snapshot.v7', 'aw.future-feature.v3'];
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      requires: { aw: { capabilities: requiredCapabilities } },
+    });
+    await configurePathSource(sourceRoot);
+    const providers: CatalogGenerationProviderSet = {
+      git: async () => { throw new Error('unused'); },
+      path: async (source) => {
+        const validation = await validateCatalogSnapshotTransport(source.path);
+        return {
+          sourceId: source.id,
+          sourceIdentity: await calculateCatalogSourceIdentity(source),
+          requestedRef: 'path',
+          resolvedCommit: `path:${validation.snapshotDigest}`,
+          rootDir: source.path,
+          manifest: validation.manifest,
+          manifestDigest: validation.manifestDigest,
+          snapshotDigest: validation.snapshotDigest,
+          transport: 'path',
+          async cleanup() {},
+        };
+      },
+    };
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime: { providers },
+    });
+
+    const status = await readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env });
+    expect(status).toMatchObject({
+      catalogGenerationStatusSchemaVersion: 2,
+      sources: [{
+        activeReady: false,
+        configMatchesActive: true,
+        compatibility: {
+          state: 'unsupported',
+          requiredCapabilities,
+          missingCapabilities: ['aw.future-feature.v3'],
+        },
+      }],
+    });
+    expect(status.sources[0]!.errorCode).toBeUndefined();
+    expect(JSON.stringify(status)).not.toContain('availableCapabilities');
+
+    const error = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(CatalogProviderCompatibilityError);
+    expect(error).toMatchObject({
+      code: 'awCapabilityUnsupported',
+      requiredCapabilities,
+      missingCapabilities: ['aw.future-feature.v3'],
+    });
   });
 
   it('probes candidate evidence without writing state or store and cleans provider staging', async () => {
@@ -858,6 +1037,99 @@ describe('Catalog Active store and state', () => {
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-published-versions'))).resolves.toBe(false);
   });
 
+  it('refreshes Git Active provenance for identical content and reuses it for the next ref probe', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('git-provenance-reuse');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const firstSource: GitCatalogSource = {
+      id: 'team', type: 'git', primary: true, url: fixturePath('first-provenance.git'),
+      refPolicy: { type: 'explicit', ref: 'refs/heads/one' },
+    };
+    const initialConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [firstSource] },
+      expectedDigest: initialConfig.digest,
+      env: isolation.env,
+    });
+    let resolvedCommit = 'a'.repeat(40);
+    const git = async (source: GitCatalogSource) => {
+      const resolution = await catalogPathProviderInternal.resolve({
+        id: source.id, type: 'path', primary: source.primary, path: sourceRoot,
+      }, { cliVersion: '1.0.0', env: isolation.env });
+      return {
+        ...resolution,
+        sourceIdentity: await calculateCatalogSourceIdentity(source),
+        requestedRef: source.refPolicy.type === 'explicit'
+          ? source.refPolicy.ref : 'refs/heads/catalog/latest',
+        resolvedCommit,
+        transport: 'git' as const,
+      };
+    };
+    const providers = { git, path: catalogPathProviderInternal.resolve };
+    const first = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime: { providers },
+    });
+    const secondSource: GitCatalogSource = {
+      ...firstSource,
+      url: fixturePath('second-provenance.git'),
+      refPolicy: { type: 'explicit', ref: 'refs/heads/two' },
+    };
+    const beforeSourceChange = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [secondSource] },
+      expectedDigest: beforeSourceChange.digest,
+      env: isolation.env,
+    });
+    resolvedCommit = 'b'.repeat(40);
+
+    const second = await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, runtime: { providers },
+    });
+    const expectedSourceIdentity = await calculateCatalogSourceIdentity(secondSource);
+    const expectedFingerprint = calculateCatalogSourceConfigFingerprint(secondSource);
+    expect(second).toMatchObject({
+      outcome: 'unchanged',
+      activeChanged: false,
+      active: {
+        sourceConfigFingerprint: expectedFingerprint,
+        sourceIdentity: expectedSourceIdentity,
+        requestedRef: 'refs/heads/two',
+        resolvedCommit,
+        activatedAt: first.active!.activatedAt,
+      },
+      lastSync: { resolvedCommit },
+    });
+    expect(second.active!.snapshotDigest).toBe(first.active!.snapshotDigest);
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(second.active);
+    const store = resolveCatalogStoreLocation({
+      logicalIdentity: second.active!.logicalIdentity,
+      snapshotDigest: second.active!.snapshotDigest,
+      env: isolation.env,
+    });
+    await expect(fs.readdir(store.logicalIdentityDirectory))
+      .resolves.toEqual([second.active!.snapshotDigest.slice('sha256:'.length)]);
+
+    const fullResolve = vi.fn(async () => { throw new Error('full fetch must not run'); });
+    const probeGitRef = vi.fn(async () => ({
+      sourceId: secondSource.id,
+      sourceIdentity: expectedSourceIdentity,
+      requestedRef: 'refs/heads/two',
+      resolvedCommit,
+      fixed: false,
+    }));
+    await expect(probeCatalogSourceFreshness({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      runtime: {
+        probeGitRef,
+        providers: { git: fullResolve, path: catalogPathProviderInternal.resolve },
+      },
+    })).resolves.toMatchObject({ state: 'current', activeResolvedCommit: resolvedCommit });
+    expect(probeGitRef).toHaveBeenCalledTimes(1);
+    expect(fullResolve).not.toHaveBeenCalled();
+  });
+
   it('repairs only the damaged current Active store entry', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('exact-repair');
@@ -875,11 +1147,14 @@ describe('Catalog Active store and state', () => {
     await fs.outputFile(sibling, 'keep');
     await fs.writeFile(location.metadataPath, 'damaged');
 
+    const inspectSourceImpact = vi.fn(inspectCatalogSourceImpact);
     const repaired = await repairCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+      runtime: { inspectSourceImpact },
     });
 
     expect(repaired.active?.snapshotDigest).toBe(synced.active?.snapshotDigest);
+    expect(inspectSourceImpact).not.toHaveBeenCalled();
     await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
     await expect(readCatalogGenerationStatus({ sourceId: 'team', env: isolation.env }))
       .resolves.toMatchObject({ sources: [{ activeReady: true }] });

@@ -9,7 +9,10 @@ import {
 
 import { runCatalogBuildCommand } from '../authoring/workspace-commands.js';
 import type { CatalogSource, PathCatalogSource } from '../types.js';
-import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
+import {
+  readCatalogGenerationStatus,
+  type CatalogGenerationStatusEntry,
+} from '../utils/catalog-generation-service.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import {
   CATALOG_SOURCE_ID_PATTERN,
@@ -46,7 +49,7 @@ export interface CatalogDevActivateReceipt {
 }
 
 export interface CatalogDevStatusReceipt {
-  receiptSchemaVersion: 3;
+  receiptSchemaVersion: 4;
   command: 'catalog:dev:status';
   ok: boolean;
   ready: boolean;
@@ -67,6 +70,7 @@ export interface CatalogDevStatusReceipt {
     ready: boolean;
     digestMatchesSnapshot: boolean;
     snapshotDigest: string | null;
+    compatibility: CatalogGenerationStatusEntry['compatibility'];
   };
   issues: Issue[];
 }
@@ -158,11 +162,14 @@ export function createCatalogDevFailureReceipt(options: {
   }
   if (options.command === 'status') {
     return {
-      receiptSchemaVersion: 3, command: 'catalog:dev:status', ok: false, ready: false,
+      receiptSchemaVersion: 4, command: 'catalog:dev:status', ok: false, ready: false,
       workspaceIdentity: null,
       snapshot: { state: 'absent', valid: false, digest: null },
       source: { exists: false, id: null, pathMatches: null, primary: null },
-      active: { exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null },
+      active: {
+        exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null,
+        compatibility: null,
+      },
       issues: [{ code: options.code, message: options.message, blocking: true }],
     };
   }
@@ -373,11 +380,14 @@ export async function getCatalogDevSourceStatus(options: {
   env: NodeJS.ProcessEnv;
 }): Promise<CatalogDevStatusReceipt> {
   const empty: CatalogDevStatusReceipt = {
-    receiptSchemaVersion: 3, command: 'catalog:dev:status', ok: false, ready: false,
+    receiptSchemaVersion: 4, command: 'catalog:dev:status', ok: false, ready: false,
     workspaceIdentity: null,
     snapshot: { state: 'absent', valid: false, digest: null },
     source: { exists: false, id: null, pathMatches: null, primary: null },
-    active: { exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null },
+    active: {
+      exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null,
+      compatibility: null,
+    },
     issues: [],
   };
   let workspace: Awaited<ReturnType<typeof resolveWorkspace>>;
@@ -444,9 +454,16 @@ export async function getCatalogDevSourceStatus(options: {
       ready: entry?.activeReady === true,
       digestMatchesSnapshot,
       snapshotDigest,
+      compatibility: entry?.compatibility ?? null,
     };
     if (!entry?.active) {
       empty.issues.push({ code: 'activeAbsent', message: 'Development source has no Active snapshot.', blocking: true });
+    } else if (entry.compatibility?.state === 'unsupported') {
+      empty.issues.push({
+        code: 'awCapabilityUnsupported',
+        message: 'Development source Active snapshot is incompatible with this AW.',
+        blocking: true,
+      });
     } else if (!entry.activeReady) {
       empty.issues.push({ code: entry.errorCode ?? 'activeNotReady', message: 'Development source Active snapshot is not ready.', blocking: true });
     }

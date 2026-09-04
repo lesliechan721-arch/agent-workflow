@@ -31,8 +31,11 @@ import {
   createCatalogStoreKey,
   resolveCatalogStoreLocation,
 } from '../../src/utils/catalog-generation-store.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
-import { git } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  git,
+  rewriteActiveCatalogCapabilities,
+} from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 afterEach(() => {
@@ -200,6 +203,41 @@ async function pushGitCatalogVersion(
 }
 
 describe('TUI v4 real catalog source boundary', () => {
+  it('maps a healthy incompatible Active without offering repair actions', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller } = await configuredController();
+    await rewriteActiveCatalogCapabilities({
+      sourceId: 'local',
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+      env: isolation.env,
+    });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 110, rows: 32 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'incompatible Active load');
+    expect(controller.getCatalogGeneration('local')).toMatchObject({
+      state: 'incompatible',
+      compatibility: {
+        state: 'unsupported',
+        requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+        missingCapabilities: ['aw.future-feature.v99'],
+      },
+    });
+
+    controller.push({ name: 'sourceDetail', sourceId: 'local' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Active Catalog 与当前 AW 不兼容');
+    expect(instance.lastFrame()).toContain('缺少 1 项能力');
+    expect(instance.lastFrame()).toContain('查看不兼容详情');
+    expect(instance.lastFrame()).not.toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
+
+    controller.push({ name: 'sourceTechnical', sourceId: 'local' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('required: aw.catalog-snapshot.v7、aw.future-feature.v99');
+    expect(instance.lastFrame()).toContain('missing: aw.future-feature.v99');
+    expect(instance.lastFrame()).not.toContain('availableCapabilities');
+    controller.dispose();
+  });
+
   it('reuses a complete background candidate for Review and resolves again for Execute', async () => {
     const pathResolve = vi.fn(catalogPathProviderInternal.resolve);
     const { controller, firstRoot } = await configuredController(undefined, {
@@ -1032,6 +1070,27 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(instance.lastFrame()).not.toContain('Catalog 已更新到');
     expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'ready' });
     await expect(fs.readFile(sibling, 'utf8')).resolves.toBe('keep');
+    controller.dispose();
+  });
+
+  it('does not require source impact confirmation for an update exact repair', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const { controller } = await configuredController();
+    const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
+    const entryDir = path.join(
+      isolation.env.AW_HOME!,
+      'catalog-store',
+      createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
+    );
+    await fs.writeFile(path.join(entryDir, 'snapshot', 'catalog-manifest.json'), 'damaged');
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'catalogGeneration', action: 'update', sourceId: 'local',
+    });
+
+    expect(review.requiresConfirmation).toBe(false);
+    expect(review.sharedImpact).toEqual({ pluginIds: [] });
     controller.dispose();
   });
 

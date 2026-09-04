@@ -14,7 +14,10 @@ import {
   upsertPluginIntentRoot,
   writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
-import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  createCatalogSnapshotFixture,
+  rewriteActiveCatalogCapabilities,
+} from '../helpers/catalog-source-fixture.js';
 import { runCliEntry } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -83,6 +86,48 @@ describe('Catalog source sync CLI', () => {
         lastSync: { mode: 'sync' },
       }],
     });
+  });
+
+  it('reports a healthy incompatible Active without exposing available capabilities', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-source-incompatible-cli');
+    const env = await configurePathSource(root);
+    const synced = await runCliEntry(['catalog', 'source', 'sync', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(synced.exitCode, synced.stderr).toBe(0);
+    await rewriteActiveCatalogCapabilities({
+      sourceId: 'local',
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+      env,
+    });
+
+    const jsonStatus = await runCliEntry(['catalog', 'source', 'status', 'local', '--json'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(jsonStatus.exitCode, jsonStatus.stderr).toBe(0);
+    const receipt = jsonStatus.parseJsonStdout();
+    expect(receipt).toMatchObject({
+      catalogGenerationStatusSchemaVersion: 2,
+      sources: [{
+        sourceId: 'local',
+        activeReady: false,
+        compatibility: {
+          state: 'unsupported',
+          requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+          missingCapabilities: ['aw.future-feature.v99'],
+        },
+      }],
+    });
+    expect(receipt.sources[0].compatibility).not.toHaveProperty('availableCapabilities');
+
+    const humanStatus = await runCliEntry(['catalog', 'source', 'status', 'local'], {
+      cwd: isolation.layout.fixtureCwd, env, interactive: false,
+    });
+    expect(humanStatus.exitCode, humanStatus.stderr).toBe(0);
+    expect(humanStatus.stdout).toContain('incompatible');
+    expect(humanStatus.stdout).toContain('required: aw.catalog-snapshot.v7, aw.future-feature.v99');
+    expect(humanStatus.stdout).toContain('missing: aw.future-feature.v99');
   });
 
   it('repairs an exact damaged Path Active, then requires replacement and impact confirmation for changed content', async () => {

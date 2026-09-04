@@ -19,6 +19,7 @@ import {
   writePluginIntentState,
 } from '../../src/utils/plugin-intent-state.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { rewriteActiveCatalogCapabilities } from '../helpers/catalog-source-fixture.js';
 
 const roots: string[] = [];
 
@@ -70,7 +71,7 @@ afterEach(async () => {
 describe('Catalog Workspace development source', () => {
   it.each([
     ['activate', 2],
-    ['status', 3],
+    ['status', 4],
     ['deactivate', 3],
   ] as const)('reports the current receipt schema in %s help', async (command, schemaVersion) => {
     const output = capture();
@@ -100,12 +101,17 @@ describe('Catalog Workspace development source', () => {
     const status = await jsonCommand(['catalog', 'dev', 'status', '--json'], workspaceRoot, env);
     expect(status.exitCode, status.stderr).toBe(0);
     expect(status.receipt).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       ok: true,
       ready: true,
       snapshot: { state: 'current', valid: true, digest: activated.receipt.snapshot.digest },
       source: { exists: true, pathMatches: true },
-      active: { ready: true, digestMatchesSnapshot: true, snapshotDigest: activated.receipt.snapshot.digest },
+      active: {
+        ready: true,
+        digestMatchesSnapshot: true,
+        snapshotDigest: activated.receipt.snapshot.digest,
+        compatibility: { state: 'supported' },
+      },
     });
     expect(status.receipt.cache).toBeUndefined();
     expect(JSON.stringify(status.receipt)).not.toContain(workspaceRoot);
@@ -121,6 +127,37 @@ describe('Catalog Workspace development source', () => {
     });
     await expect(fs.pathExists(snapshotPath)).resolves.toBe(true);
     await expect(fs.pathExists(storeRoot)).resolves.toBe(true);
+  });
+
+  it('reports a healthy incompatible Active separately from damaged state', async () => {
+    const { workspaceRoot, env } = await fixture();
+    const activated = await jsonCommand(['catalog', 'dev', 'activate', '--json'], workspaceRoot, env);
+    expect(activated.exitCode, activated.stderr).toBe(0);
+    await rewriteActiveCatalogCapabilities({
+      sourceId: activated.receipt.source.id,
+      requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+      env,
+      workspaceSnapshotRoot: path.join(workspaceRoot, '.aw', 'catalog'),
+    });
+
+    const status = await jsonCommand(['catalog', 'dev', 'status', '--json'], workspaceRoot, env);
+    expect(status.exitCode, status.stderr).toBe(0);
+    expect(status.receipt).toMatchObject({
+      receiptSchemaVersion: 4,
+      ok: true,
+      ready: false,
+      active: {
+        exists: true,
+        ready: false,
+        compatibility: {
+          state: 'unsupported',
+          requiredCapabilities: ['aw.catalog-snapshot.v7', 'aw.future-feature.v99'],
+          missingCapabilities: ['aw.future-feature.v99'],
+        },
+      },
+      issues: [{ code: 'awCapabilityUnsupported', blocking: true }],
+    });
+    expect(status.receipt.active.compatibility).not.toHaveProperty('availableCapabilities');
   });
 
   it('returns null impact when the source is absent or source config prevents preflight', async () => {
