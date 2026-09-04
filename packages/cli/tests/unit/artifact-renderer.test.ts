@@ -253,9 +253,10 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(124), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       `writeFileSync(${JSON.stringify(started)}, String(process.pid));`,
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const controller = new AbortController();
@@ -290,8 +291,9 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(124), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const controller = new AbortController();

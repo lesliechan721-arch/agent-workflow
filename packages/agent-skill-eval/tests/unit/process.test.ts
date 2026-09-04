@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   assertProcessTreeInspectionAvailable,
@@ -13,6 +14,9 @@ import {
 } from '../../dist/index.js'
 
 const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 function baseRequest(root: string) {
   return {
@@ -696,8 +700,8 @@ describe('shared provider process behavior', () => {
       const request = configure({
         ...baseRequest(root),
         args: reason === 'max-buffer'
-          ? ['-e', 'process.stdout.write("overflow"); setInterval(() => {}, 1000)']
-          : ['-e', 'setInterval(() => {}, 1000)'],
+          ? [syntheticProcessPath, '--stdout', 'overflow']
+          : [syntheticProcessPath],
       }, controller.signal)
       const running = runProviderProcess(request, managedHooks({
         onSpawn: ({ pid }) => {
@@ -724,7 +728,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
         timeoutMs: 25,
       }, managedHooks({
         onSpawn: ({ pid }) => { providerPid = pid },
@@ -743,7 +747,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, managedHooks({
         onSpawn: ({ pid }) => {
           providerPid = pid
@@ -875,7 +879,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, {
         onSpawn: ({ pid }) => { providerPid = pid },
       }, {
@@ -977,7 +981,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, {
         onSpawn: ({ pid }) => { providerPid = pid },
       }, {
@@ -1097,7 +1101,7 @@ describe('explicit unmanaged-confirmed provider mode', () => {
       const script = [
         "const { spawn } = require('node:child_process')",
         "const fs = require('node:fs')",
-        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+        `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
         'child.unref()',
         `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid))`,
         `process.stdout.write(String(process.env.${PROVIDER_PROCESS_MARKER_ENV}))`,
@@ -1135,7 +1139,7 @@ describe('explicit unmanaged-confirmed provider mode', () => {
     try {
       const result = await runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
         timeoutMs: 50,
       }, {}, { containment: 'unmanaged-confirmed' })
       expect(result).toMatchObject({

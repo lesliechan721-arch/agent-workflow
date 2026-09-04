@@ -15,6 +15,7 @@ import {
 const roots = [];
 const observedPids = [];
 const itOnPosix = process.platform === 'win32' ? it.skip : it;
+const syntheticWatchdogSource = 'setTimeout(() => process.exit(124), 30_000);';
 
 function isProcessAlive(pid) {
   try {
@@ -74,6 +75,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -82,10 +84,12 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
 
     const startedAt = performance.now();
+    const metrics = {};
     let grandchildKilled = false;
     let failure;
     try {
@@ -98,6 +102,7 @@ describe('performance gate process tree cleanup', () => {
         descendantMonitorIntervalMs: 25,
         terminationGraceMs: 100,
         cleanupSettleMs: 150,
+        metrics,
       }, {
         snapshotPosixProcessTree: async (rootPid) => processTreeSnapshot(
           rootPid,
@@ -129,6 +134,13 @@ describe('performance gate process tree cleanup', () => {
     expect(elapsedMs).toBeLessThan(1_500);
     expect(isProcessAlive(pids.child)).toBe(false);
     expect(isProcessAlive(pids.grandchild)).toBe(false);
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      peakLiveDescendants: 1,
+      cleanupFailureCount: 0,
+      leakedProcessCount: 0,
+    });
+    expect(metrics.processTableScanCount).toBeGreaterThanOrEqual(3);
   });
 
   itOnPosix('aborts an active tree through an external signal', async () => {
@@ -137,6 +149,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -145,6 +158,7 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const controller = new AbortController();
@@ -194,6 +208,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -243,6 +258,7 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const fakeDescendantPid = 900_001;
@@ -281,7 +297,7 @@ describe('performance gate process tree cleanup', () => {
   });
 
   itOnPosix('rejects new descendants from a reused POSIX root', async () => {
-    const childSource = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const newChildPid = 900_002;
     const descendantSignals = [];
     let snapshotCalls = 0;
@@ -339,7 +355,7 @@ describe('performance gate process tree cleanup', () => {
     const running = runProcessTree({
       label: 'reused POSIX group fixture',
       command: process.execPath,
-      args: ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+      args: ['-e', `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`],
       env: process.env,
       signal: controller.signal,
       forceSignal: forceController.signal,
@@ -369,6 +385,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -377,6 +394,7 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
@@ -430,10 +448,12 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
     const groupSignals = [];
+    const metrics = {};
     const snapshotPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
       if (snapshotCalls < 3) {
@@ -452,6 +472,7 @@ describe('performance gate process tree cleanup', () => {
       descendantMonitorIntervalMs: 1_000,
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
+      metrics,
     }, {
       snapshotPosixProcessTree,
       killPosixProcessGroup: (pid, signal) => {
@@ -468,6 +489,11 @@ describe('performance gate process tree cleanup', () => {
     expect(snapshotCalls).toBe(3);
     expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL']);
     expect(isProcessAlive(pid)).toBe(false);
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      cleanupFailureCount: 1,
+      leakedProcessCount: null,
+    });
   });
 
   itOnPosix('parses recursive identities in leaf-to-root order', () => {
@@ -498,6 +524,7 @@ describe('performance gate process tree cleanup', () => {
         "const fs = require('node:fs');",
         `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
         "process.on('SIGTERM', () => {});",
+        syntheticWatchdogSource,
         'setInterval(() => {}, 1000);',
       ].join('\n');
       const startedAt = performance.now();
@@ -538,6 +565,7 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const invocations = [];
@@ -583,7 +611,7 @@ describe('performance gate process tree cleanup', () => {
   it('fails Windows external abort when the original identity remains after taskkill success', async () => {
     const controller = new AbortController();
     const reason = new Error('synthetic Windows abort');
-    const childSource = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const taskkillInvocations = [];
     const run = runProcessTree({
       label: 'Windows abort verification fixture',
@@ -627,7 +655,7 @@ describe('performance gate process tree cleanup', () => {
     const run = runProcessTree({
       label: 'Windows abort completed fixture',
       command: process.execPath,
-      args: ['-e', 'setInterval(() => {}, 1000);'],
+      args: ['-e', `${syntheticWatchdogSource} setInterval(() => {}, 1000);`],
       env: process.env,
       signal: controller.signal,
       timeoutMs: null,
@@ -757,7 +785,7 @@ describe('performance gate process tree cleanup', () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-windows-normal-exit-'));
     roots.push(root);
     const pidFile = path.join(root, 'pids.json');
-    const grandchildSource = 'setInterval(() => {}, 1000);';
+    const grandchildSource = `${syntheticWatchdogSource} setInterval(() => {}, 1000);`;
     const childSource = [
       "const fs = require('node:fs');",
       "const { spawn } = require('node:child_process');",
@@ -826,6 +854,7 @@ describe('performance gate process tree cleanup', () => {
         "const fs = require('node:fs');",
         `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
         "process.on('SIGTERM', () => {});",
+        syntheticWatchdogSource,
         'setInterval(() => {}, 1000);',
       ].join('\n');
       const startedAt = performance.now();

@@ -334,6 +334,7 @@ function signalPosixIdentities(options) {
 }
 
 export function runProcessTree(options, dependencies = {}) {
+  const metrics = options.metrics;
   const platform = dependencies.platform ?? process.platform;
   const snapshotProcessTree = platform === 'win32'
     ? dependencies.snapshotWindowsProcessTree ?? snapshotWindowsProcessTree
@@ -368,6 +369,13 @@ export function runProcessTree(options, dependencies = {}) {
       detached: platform !== 'win32',
       windowsHide: true,
     });
+    if (metrics) {
+      metrics.managedSpawnCount = (metrics.managedSpawnCount ?? 0) + 1;
+      metrics.processTableScanCount ??= 0;
+      metrics.peakLiveDescendants ??= 0;
+      metrics.cleanupFailureCount ??= 0;
+      metrics.leakedProcessCount ??= 0;
+    }
     const activeControllers = new Set();
     const observedDescendants = new Map();
     const delayTimers = new Set();
@@ -381,6 +389,9 @@ export function runProcessTree(options, dependencies = {}) {
     let childClosed = false;
     let monitorTimer;
     let monitorInFlight = Promise.resolve();
+    let cleanupStarted = false;
+    let cleanupSucceeded = false;
+    let lastKnownLiveDescendants = 0;
     let resolveChildClose;
     let resolveForceCleanup;
     const childClose = new Promise((resolveClose) => {
@@ -419,6 +430,10 @@ export function runProcessTree(options, dependencies = {}) {
       child.stdout.destroy();
       child.stderr.destroy();
       child.unref();
+      if (metrics && cleanupStarted && !cleanupSucceeded && error) {
+        metrics.cleanupFailureCount += 1;
+        metrics.leakedProcessCount = null;
+      }
       if (error) {
         reject(error);
       } else {
@@ -426,6 +441,9 @@ export function runProcessTree(options, dependencies = {}) {
       }
     };
     const captureSnapshot = async () => {
+      if (metrics) {
+        metrics.processTableScanCount += 1;
+      }
       const result = await runBoundedOperation(
         snapshotTimeoutMs,
         (signal) => snapshotProcessTree(child.pid, signal),
@@ -436,6 +454,9 @@ export function runProcessTree(options, dependencies = {}) {
         : null;
     };
     const captureVerificationSnapshot = async () => {
+      if (metrics) {
+        metrics.processTableScanCount += 1;
+      }
       const result = await runBoundedOperation(
         snapshotTimeoutMs,
         (signal) => verifyPosixProcessTree(child.pid, signal),
@@ -459,6 +480,13 @@ export function runProcessTree(options, dependencies = {}) {
           continue;
         }
         observedDescendants.set(identityKey(identity), identity);
+      }
+      lastKnownLiveDescendants = snapshot.descendants.length;
+      if (metrics) {
+        metrics.peakLiveDescendants = Math.max(
+          metrics.peakLiveDescendants,
+          lastKnownLiveDescendants,
+        );
       }
     };
     const rememberCurrentRootSnapshot = (snapshot) => {
@@ -578,10 +606,15 @@ export function runProcessTree(options, dependencies = {}) {
       }
     };
     const cleanupAfterClose = async (code, signal) => {
+      cleanupStarted = true;
       if (platform === 'win32') {
         await cleanupWindowsAfterClose();
       } else {
         await cleanupPosixAfterClose();
+      }
+      cleanupSucceeded = true;
+      if (metrics) {
+        metrics.leakedProcessCount = 0;
       }
       if (code !== 0 && !options.allowNonZeroExitCode) {
         throw new Error(
@@ -591,6 +624,7 @@ export function runProcessTree(options, dependencies = {}) {
       return { stdout, stderr, exitCode: code, signal };
     };
     const cleanupRunningTree = async () => {
+      cleanupStarted = true;
       if (platform === 'win32') {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
@@ -719,6 +753,10 @@ export function runProcessTree(options, dependencies = {}) {
           }
         }
       }
+      if (metrics) {
+        metrics.leakedProcessCount = 0;
+      }
+      cleanupSucceeded = true;
     };
 
     const cleanupAfterTimeout = async () => {

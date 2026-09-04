@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const wrapperPath = path.join(repositoryRoot, 'scripts/test/run-vitest.mjs');
+const syntheticProcessPath = path.join(repositoryRoot, 'scripts/test/synthetic-process.mjs');
 const roots = [];
 const observedPids = [];
 const observedProcessGroups = [];
@@ -78,8 +79,10 @@ async function createRealVitestFixture() {
   }));
   await fs.writeFile(path.join(root, 'tests/hang.test.mjs'), [
     "import fs from 'node:fs';",
+    `import { startSyntheticProcessWatchdog } from ${JSON.stringify(syntheticProcessPath)};`,
     "import { test } from 'vitest';",
     "test('hangs in a real worker', async () => {",
+    "  startSyntheticProcessWatchdog();",
     "  fs.writeFileSync(process.env.WORKER_PID_FILE, JSON.stringify({ worker: process.pid }));",
     "  await new Promise(() => {});",
     "});",
@@ -124,6 +127,13 @@ function spawnWrapper(cwd, args, env) {
   return { child, closed };
 }
 
+function waitForChildClose(child) {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
 afterEach(async () => {
   for (const pid of observedProcessGroups.splice(0)) {
     try {
@@ -145,6 +155,97 @@ afterEach(async () => {
 });
 
 describe('Vitest process-tree wrapper', () => {
+  it('sets a unique run ID and writes opt-in machine-readable metrics', async () => {
+    const fixture = await createFixture([
+      "import fs from 'node:fs';",
+      "fs.writeFileSync(process.env.RUN_ID_FILE, process.env.AW_TEST_RUN_ID);",
+    ].join('\n'));
+    const metricsDir = path.join(fixture, 'metrics');
+    const runIdFile = path.join(fixture, 'run-id');
+    const secondRunIdFile = path.join(fixture, 'second-run-id');
+    const result = await spawnWrapper(fixture, ['run'], {
+      AW_TEST_METRICS_DIR: metricsDir,
+      AW_TEST_RUN_ID: '',
+      RUN_ID_FILE: runIdFile,
+    }).closed;
+    const runId = await fs.readFile(runIdFile, 'utf8');
+    const metrics = JSON.parse(await fs.readFile(
+      path.join(metricsDir, `${encodeURIComponent(runId)}.json`),
+      'utf8',
+    ));
+    const secondResult = await spawnWrapper(fixture, ['run'], {
+      AW_TEST_METRICS_DIR: metricsDir,
+      AW_TEST_RUN_ID: '',
+      RUN_ID_FILE: secondRunIdFile,
+    }).closed;
+    const secondRunId = await fs.readFile(secondRunIdFile, 'utf8');
+
+    expect(result.code).toBe(0);
+    expect(secondResult.code).toBe(0);
+    expect(runId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(secondRunId).not.toBe(runId);
+    expect(metrics).toMatchObject({
+      runId,
+      managedSpawnCount: 1,
+      cleanupFailureCount: 0,
+      leakedProcessCount: 0,
+      maxRssScope: 'vitest-wrapper',
+    });
+    for (const name of [
+      'wallMs',
+      'maxRssMb',
+      'processTableScanCount',
+      'peakLiveDescendants',
+    ]) {
+      expect(metrics[name]).toBeTypeOf('number');
+      expect(metrics[name]).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('preserves an upstream run ID for nested wrapper audit correlation', async () => {
+    const fixture = await createFixture(
+      "process.stdout.write(process.env.AW_TEST_RUN_ID);",
+    );
+    const result = await spawnWrapper(fixture, ['run'], {
+      AW_TEST_RUN_ID: 'parent/run-id',
+    }).closed;
+
+    expect(result).toMatchObject({ code: 0, stdout: 'parent/run-id' });
+  });
+
+  it('does not write metrics when measurement mode is disabled', async () => {
+    const fixture = await createFixture('process.exit(0);');
+    const metricsDir = path.join(fixture, 'metrics');
+    const result = await spawnWrapper(fixture, ['run'], {
+      AW_TEST_METRICS_DIR: '',
+    }).closed;
+
+    expect(result.code).toBe(0);
+    await expect(fs.stat(metricsDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('allows normal synthetic process cleanup before its TTL', async () => {
+    const child = spawn(process.execPath, [syntheticProcessPath, '--ttl-ms', '1_000'], {
+      stdio: 'ignore',
+    });
+    observedPids.push(child.pid);
+    const closed = waitForChildClose(child);
+    child.kill('SIGTERM');
+
+    await expect(closed).resolves.toMatchObject({ code: null, signal: 'SIGTERM' });
+  });
+
+  it('exits an uncollected synthetic process with 124 at a short TTL', async () => {
+    const startedAt = performance.now();
+    const child = spawn(process.execPath, [syntheticProcessPath, '--ttl-ms', '40'], {
+      stdio: 'ignore',
+    });
+    observedPids.push(child.pid);
+
+    await expect(waitForChildClose(child)).resolves.toEqual({ code: 124, signal: null });
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+  });
+
   it.each([
     ['SIGINT', 130],
     ['SIGTERM', 143],
@@ -154,19 +255,21 @@ describe('Vitest process-tree wrapper', () => {
       "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid }));",
       "process.on('SIGTERM', () => {});",
       "process.on('SIGINT', () => {});",
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const pidFile = path.join(fixture, 'pid.json');
     const run = spawnWrapper(fixture, ['run'], { PID_FILE: pidFile });
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.root);
+    await new Promise((resolve) => setTimeout(resolve, 300));
     run.child.kill(signal);
 
     await expect(run.closed).resolves.toMatchObject({ code: expectedCode, signal: null });
   });
 
   itWithPosixInspection('forwards arguments, output, and exit code while cleaning inherited-output descendants', async () => {
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     });
@@ -175,7 +278,7 @@ describe('Vitest process-tree wrapper', () => {
     const fixture = await createFixture([
       "import { spawn } from 'node:child_process';",
       "import fs from 'node:fs';",
-      "const descendant = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+      `const descendant = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}, '--ignore-sigterm'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });`,
       "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid, args: process.argv.slice(2) }));",
       "process.stdout.write('fixture stdout\\n');",
       "process.stderr.write('fixture stderr\\n');",
@@ -203,10 +306,11 @@ describe('Vitest process-tree wrapper', () => {
     const fixture = await createFixture([
       "import { spawn } from 'node:child_process';",
       "import fs from 'node:fs';",
-      "const descendant = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); process.on('SIGINT', () => {}); setInterval(() => {}, 1000)\"], { detached: true, stdio: 'ignore' });",
+      `const descendant = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}, '--ignore-sigterm', '--ignore-sigint'], { detached: true, stdio: 'ignore' });`,
       "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid }));",
       "process.on('SIGTERM', () => {});",
       "process.on('SIGINT', () => {});",
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const pidFile = path.join(fixture, 'pids.json');
@@ -264,16 +368,21 @@ describe('Vitest process-tree wrapper', () => {
     const fixture = await createFixture([
       "import { spawn } from 'node:child_process';",
       "import fs from 'node:fs';",
-      "const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+      `const descendant = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' });`,
       "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid }));",
       "process.on('SIGINT', () => {});",
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const binDir = path.join(fixture, 'bin');
     const failFile = path.join(fixture, 'fail-ps');
     const pidFile = path.join(fixture, 'pids.json');
+    const metricsDir = path.join(fixture, 'metrics');
+    const runId = 'cleanup-failure';
     await createPsShim(fixture, failFile);
     const run = spawnWrapper(fixture, ['run'], {
+      AW_TEST_METRICS_DIR: metricsDir,
+      AW_TEST_RUN_ID: runId,
       PID_FILE: pidFile,
       PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     });
@@ -286,15 +395,21 @@ describe('Vitest process-tree wrapper', () => {
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('cleanup could not verify descendant termination');
+    await expect(readJsonEventually(path.join(metricsDir, `${runId}.json`))).resolves.toMatchObject({
+      runId,
+      cleanupFailureCount: 1,
+      leakedProcessCount: null,
+    });
   });
 
   itOnPosix('fails cleanup without leaking a worker when snapshots never establish ownership', async () => {
     const fixture = await createFixture([
       "import { spawn } from 'node:child_process';",
       "import fs from 'node:fs';",
-      "const worker = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      `const worker = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' });`,
       "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, worker: worker.pid }));",
       "process.on('SIGINT', () => {});",
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const failFile = path.join(fixture, 'fail-ps');

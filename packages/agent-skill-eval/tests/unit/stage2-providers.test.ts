@@ -3,6 +3,7 @@ import { access, link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, w
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_EVAL_PROVIDER_IDS,
@@ -25,6 +26,9 @@ import {
 import { conversationModelOutputOf } from '../../dist/providers.js'
 
 const roots: string[] = []
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 let sentinelMarker = ''
 let sentinelAlive = false
@@ -1145,7 +1149,7 @@ describe('custom process provider', () => {
     let marker = ''
     let inspectionRounds = 0
     let sentinelAlive = false
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1153,7 +1157,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid))`,
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
@@ -1249,7 +1253,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const childPidPath = path.join(paths.outputDir, 'markerless-child.pid')
     let childPid = 0
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1259,7 +1263,7 @@ describe('custom process provider', () => {
       "const fs = require('node:fs')",
       'const childEnv = { ...process.env }',
       'delete childEnv.AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: childEnv, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { env: childEnv, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
@@ -1287,7 +1291,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
@@ -1310,7 +1314,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const childPidPath = path.join(paths.outputDir, 'ordinary-child.pid')
     let childPid = 0
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1318,7 +1322,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
@@ -1365,7 +1369,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       'process.exitCode = 7',
@@ -1557,7 +1561,7 @@ describe('custom process provider', () => {
   it.each([
     ['success', 'success', 2_000],
     ['failure', 'failure', 2_000],
-    ['timeout', 'timeout', 120],
+    ['timeout', 'timeout', 2_000],
   ])('removes credential plaintext and temporary state after %s', async (_label, mode, timeoutMs) => {
     const paths = await runRoot()
     const secret = `custom-provider-${mode}-secret`
@@ -1583,7 +1587,7 @@ describe('custom process provider', () => {
         ? "  process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))"
         : mode === 'failure'
           ? '  process.exitCode = 7'
-          : '  setInterval(() => {}, 1000)',
+          : '  setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000)',
       '})',
     ].join(';')
     let result: Awaited<ReturnType<typeof executeCustomProcessProvider>> | undefined
@@ -1787,7 +1791,7 @@ describe('custom process provider', () => {
   it('terminates a timed-out provider process', async () => {
     const paths = await runRoot()
     await expect(executeCustomProcessProvider({
-      command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      command: [process.execPath, syntheticProcessPath],
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), timeoutMs: 25 },
       sourceEnv: { PATH: process.env.PATH },
@@ -1799,7 +1803,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const controller = new AbortController()
     const running = executeCustomProcessProvider({
-      command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      command: [process.execPath, syntheticProcessPath],
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), signal: controller.signal },
       sourceEnv: { PATH: process.env.PATH },
@@ -1819,7 +1823,7 @@ describe('custom process provider', () => {
     const controller = new AbortController()
     const script = mode === 'success'
       ? `process.stderr.write(process.env.HTTP_PROXY); process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))`
-      : 'process.stderr.write(process.env.HTTP_PROXY); setInterval(() => {}, 1000)'
+      : 'process.stderr.write(process.env.HTTP_PROXY); setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000)'
     const running = executeCustomProcessProvider({
       command: [process.execPath, '-e', script],
       evalRoot: paths.root,
@@ -1877,16 +1881,17 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      'setTimeout(() => process.exit(124), 30_000)',
       'setInterval(() => {}, 1000)',
     ].join(';')
     try {
       await expect(executeCustomProcessProvider({
         command: [process.execPath, '-e', script],
         evalRoot: paths.root,
-        input: { ...input(paths, { id: 'case-1' }), timeoutMs: 120 },
+        input: { ...input(paths, { id: 'case-1' }), timeoutMs: 2_000 },
         sourceEnv: { PATH: process.env.PATH },
       })).rejects.toThrow('contract violation')
       childPid = Number(await readFile(childPidPath, 'utf8'))

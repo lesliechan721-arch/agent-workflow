@@ -163,6 +163,7 @@ describe('Codex provider app-server process boundary', () => {
         "    newline = buffer.indexOf('\\n')",
         "  }",
         "})",
+        "setTimeout(() => process.exit(124), 30_000)",
         "setInterval(() => {}, 1000)",
       ].join('\n'))
       await fs.chmod(codexBin, 0o755)

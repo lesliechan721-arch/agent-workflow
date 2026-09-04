@@ -2,6 +2,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import fs from 'fs-extra'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -23,6 +24,9 @@ import { adaptConversationProviderCase } from '../../dist/eval-run.js'
 
 const execFileAsync = promisify(execFile)
 const roots: string[] = []
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 let hostProcessInspectionAvailable = false
 try {
@@ -1479,8 +1483,9 @@ describe('EvalSpec v1 execution', () => {
           "process.stdin.setEncoding('utf8')",
           "process.stdin.on('data', (chunk) => { input += chunk })",
           "process.stdin.on('end', () => {",
-          "  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+          `  const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' })`,
           `  writeFileSync(${JSON.stringify(processPath)}, JSON.stringify({ parent: process.pid, child: child.pid }))`,
+          "  setTimeout(() => process.exit(124), 30_000)",
           "  setInterval(() => {}, 1000)",
           "})",
           '',

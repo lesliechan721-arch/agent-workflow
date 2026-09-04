@@ -4,6 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   assertProviderProcessSupported,
@@ -16,6 +17,10 @@ import {
   getSchemaDigest,
   runProviderProcess as runProviderProcessWithoutContainment,
 } from '../../dist/index.js'
+
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 const containedProcessHooks = {
   externalContainment: {
@@ -187,7 +192,7 @@ describe('public Eval execution contracts', () => {
 
     const timedOut = await runProviderProcess({
       ...request,
-      args: ['-e', 'setInterval(() => {}, 1000)'],
+      args: [syntheticProcessPath],
       timeoutMs: 50,
     })
     expect(timedOut).toMatchObject({ exitCode: null, timedOut: true, cancelled: false })
