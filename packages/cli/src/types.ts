@@ -330,6 +330,8 @@ export interface ConfigFieldEntry {
   kind: ConfigFieldKind;
   reserved: boolean;
   writable: boolean;
+  canSet: boolean;
+  canUnset: boolean;
   valueState: ConfigValueState;
   effectiveValue: unknown | null;
   sourceLayer: 'default' | 'user' | 'project' | null;

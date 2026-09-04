@@ -6,9 +6,9 @@
 
 object 必须选择 fixed 或 KV 模式。fixed object 必须声明 scalar `properties`，且 `additionalProperties` 省略或为 `false`；KV object 不得声明 `properties`，且必须声明一个 scalar `additionalProperties` schema。禁止混合两种模式。它可声明 required fixed child、属性数量和 key validation，但 child 不能有 default，KV child 也不能有 required，且 child 不能嵌套 object。配置值不支持 array、null 或嵌套 object。Config 不提供 path、file 或 directory format；helper 不解析 realpath，也不建立 project artifact path boundary。
 
-配置 helper 由公开 scaffolding 或目标插件源码拥有，不能复制本 Skill 的内部 helper。helper 优先读取 `AW_PLUGIN_CONTEXT` 的已验证 `config.values`、`sources`、`schema` 和 store paths。无 context fallback 必须验证 bundle 与 source identity；失败时关闭，不回退到裸插件名、其它 source 或无 schema store。
+配置 helper 由公开 scaffolding 或目标插件源码拥有，不能复制本 Skill 的内部 helper。renderer context 中，helper 只读取 context 已提供的 effective `config.values`、`sources` 和 `schema`；这些字段会裁剪到本次 `refreshKeys` 并集。此时显式 user 或 project scope 读取必须失败，context 不提供 store paths。其它 `AW_PLUGIN_CONTEXT` 保留其已有 scoped store 行为。无 context fallback 必须验证 bundle 与 source identity；失败时关闭，不回退到裸插件名、其它 source 或无 schema store。
 
-AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。无 context fallback 的 helper 在 effective scope 读取 user 和 project；显式 user 或 project scope 只读取该 scope 的 store。旧 store 和 `plugin-config.local` 不读取或迁移。无效 store 必须先通过明确确认的整层 reset 恢复，不能静默回退。
+AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 3；object 值按顶层字段完整覆盖，不深合并。无 context fallback 的 helper 在 effective scope 读取 user 和 project；但 `codex-native` target 声明的 `refreshKeys` 忽略 project 旧覆盖，只使用 user 或 default。显式 `--scope project` 仍读取原始 project store，供诊断或删除旧值。旧 store 和 `plugin-config.local` 不读取或迁移。无效 store 必须先通过明确确认的整层 reset 恢复，不能静默回退。
 
 字段覆盖不符合当前 schema 时，runtime 不使用低层 fallback；该 fallback 只说明 unset 后会恢复什么。用户可修改或 unset 该字段，也可 reset 整层。`configWrite: succeeded` 表示配置已提交，不表示平台 apply 成功；`applySkippedReason: invalidConfig` 要求先修复配置。apply 失败不回滚设置。reset receipt 的 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory` 是实际处理结果，目录隔离只公开 basename。
 

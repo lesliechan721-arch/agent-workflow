@@ -919,7 +919,7 @@ describe('manifest utils', () => {
       targets: [{
         id: 'native-codex-skill',
         platform: 'codex',
-        scopes: ['user'],
+        scopes: ['user', 'project'],
         target: 'codex.skill',
         delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
         states: ['present'],

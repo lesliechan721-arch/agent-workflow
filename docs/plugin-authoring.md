@@ -46,6 +46,8 @@ AW 只提供 `default < user < project` 两个持久写入层。Store 使用 sch
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。
 
+Codex native target 的 `refreshKeys` 是 user-only。遗留 project override 会保留但不参与 effective value；无 `AW_PLUGIN_CONTEXT` 的 config helper effective 读取也遵守此规则。helper 显式 `--scope project` 仍显示原始旧值，以便诊断或删除。Status 报告非阻断 `configLayerUnsupported` warning，TUI 只允许删除该旧值。
+
 ## 单插件作者闭环
 
 开始前确认 `<workspace-root>` 已有合法 `.aw-workspace.json` 和 `plugins/marketplace-source.json`。没有合法 Workspace 时停止，并使用 [Catalog 作者指南](catalog-authoring.md)初始化，不要由 Plugin Author 隐式创建。
@@ -101,13 +103,13 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。native target 使用 user 配置 profile；与 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。
+每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。native target 使用 user 配置 profile；`refreshKeys` 不能引用 sensitive 顶层字段或含 sensitive fixed/KV child 的 object 字段。与 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须使用完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用声明 scopes，slash command 不参与该规则。
 
-AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
+AW 为 Codex native dynamic projection 生成 `.agents-plugin/aw-codex-native-render.json`，插件源码和 renderer 不得声明该保留文件。schema 1 receipt 只记录规范化 identity 和 digest，不记录原始 config；所有 `codex-native` target 的 ID 与 Skill key 在整个 shared projection 内分别全局唯一，即使 scopes 不重叠也不能复用。`configDigest` 聚合 validated artifact 的 per-target config digest，`renderInputDigest` 绑定 source、plugin version、renderer digest 和规范化 target config/artifact digest。动态 payload digest 排除该 receipt 和 AW owner marker，规范化 `.codex-plugin/plugin.json` 的 version，但绑定 renderer 产生的真实 skills projection；静态 shared native digest 继续规范化 Codex-managed skills。AW 会用完整 user effective config 的 sensitive leaf token 检查最终 Skill tree 和序列化 receipt；命中时停止，不改变 live marketplace、Codex registration 或 activation。receipt 是可删除、可重建的现场证据，不是作者维护的 ledger。
 
-renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
+renderer context 的 `requestedArtifactIds` 是本次唯一允许返回的 target ID 集合。它非空、无重复，并按 manifest 声明顺序规范化。因此，任两个在同一 platform/distribution surface 和 scope 内可被同次请求的 target 不能使用相同 ID；不同 surface 或不重叠 scope 可复用 ID，但 `codex-native` shared projection 使用上段更严格的全局唯一规则。`config.schema/values/sources/issues` 和 `changedConfigKeys` 只含本次 target `refreshKeys` 的并集。context 不提供 config store 路径；renderer 的三个 `AW_*_HOME` 和 context home 路径都指向本次请求的临时目录。配置 helper 在 `config.mode` 为 `artifact-render` 的 context 下只支持 effective 读取，显式 user/project 读取会失败。renderer 必须对每个请求 ID 精确返回一个 artifact；缺失、重复或未请求输出都会失败。
 
-插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership，但不承诺独立的 permission UI 或 sandbox。安装或执行前必须评审 source 和 trust boundary。
+插件可以声明 executable build/test/postApply code、hooks、MCP servers、Apps、config 和 artifacts。AW 验证声明并保护 ownership；请求级临时 home 是输入隔离，不是 OS sandbox。安装或执行前必须把 executable source 作为受信任代码评审。
 
 ## 版本与恢复
 

@@ -1727,6 +1727,37 @@ function normalizeArtifactRefreshKeys(
   return normalized;
 }
 
+function configFieldContainsSensitiveValue(
+  field: PluginConfigSchema['fields'][string],
+): boolean {
+  if (field.sensitive === true) return true;
+  if (field.type !== 'object') return false;
+  return (
+    (field.properties
+      ? Object.values(field.properties).some((child) => child.sensitive === true)
+      : false)
+    || (field.additionalProperties !== false && field.additionalProperties?.sensitive === true)
+  );
+}
+
+function assertCodexNativeRefreshKeysAreNotSensitive(options: {
+  delivery: PluginArtifactTargetDefinition['delivery'];
+  refreshKeys: readonly string[];
+  schema: PluginConfigSchema | undefined;
+  fieldName: string;
+}): void {
+  if (options.delivery?.mode !== 'codex-native') return;
+  for (const [index, key] of options.refreshKeys.entries()) {
+    const field = options.schema?.fields[key];
+    if (field && configFieldContainsSensitiveValue(field)) {
+      throw new Error(
+        `codexNativeRenderSensitiveRefreshKey: Invalid ${options.fieldName}[${index}]: ` +
+          `codex-native renderers cannot read sensitive config field "${key}".`,
+      );
+    }
+  }
+}
+
 function normalizeCodexSkillDelivery(
   value: unknown,
   fieldName: string,
@@ -1933,6 +1964,18 @@ function normalizeArtifactTargetEntry(
     throw new Error(`Invalid ${fieldName}.runtimeImports: runtimeImports are only supported for agent-skills.skill targets.`);
   }
 
+  const refreshKeys = normalizeArtifactRefreshKeys(
+    input.refreshKeys,
+    `${fieldName}.refreshKeys`,
+    schema,
+  );
+  assertCodexNativeRefreshKeysAreNotSensitive({
+    delivery,
+    refreshKeys,
+    schema,
+    fieldName: `${fieldName}.refreshKeys`,
+  });
+
   return {
     id,
     platform,
@@ -1942,7 +1985,7 @@ function normalizeArtifactTargetEntry(
     kind,
     projectManagedKind,
     states: normalizeArtifactStates(input.states, `${fieldName}.states`),
-    refreshKeys: normalizeArtifactRefreshKeys(input.refreshKeys, `${fieldName}.refreshKeys`, schema),
+    refreshKeys,
     delivery,
     requiresCodexProjectConfig:
       input.requiresCodexProjectConfig === undefined
@@ -2028,6 +2071,47 @@ function normalizeArtifacts(
       })();
 
   return { targets };
+}
+
+function canonicalScopeSet(scopes: readonly ('user' | 'project')[]): string {
+  return [...scopes].sort().join(',');
+}
+
+function assertCodexSharedNativeScopeConsistency(manifest: NormalizedPluginManifest): void {
+  if (!supportsPlatform(manifest, 'codex')) return;
+  const nativeComponents: Array<{ key: string; scopes: Array<'user' | 'project'> }> = [];
+  if (manifest.skills) {
+    nativeComponents.push({ key: 'skills', scopes: ['project', 'user'] });
+  }
+  if (manifest.mcpServers) {
+    nativeComponents.push({ key: 'mcpServers', scopes: ['project', 'user'] });
+  }
+  if (resolvePlatformHookDefinitions(manifest, 'codex').length > 0) {
+    nativeComponents.push({ key: 'hooks', scopes: ['project', 'user'] });
+  }
+  if (manifest.apps) {
+    nativeComponents.push({ key: 'apps', scopes: ['project', 'user'] });
+  }
+  for (const [index, target] of (manifest.artifacts?.targets ?? []).entries()) {
+    if (target.delivery?.mode === 'codex-native') {
+      nativeComponents.push({
+        key: `artifacts.targets[${index}]`,
+        scopes: [...target.scopes],
+      });
+    }
+  }
+  const expected = nativeComponents[0];
+  if (!expected) return;
+  const expectedScopes = canonicalScopeSet(expected.scopes);
+  const mismatch = nativeComponents.find((component) =>
+    canonicalScopeSet(component.scopes) !== expectedScopes);
+  if (mismatch) {
+    throw new Error(
+      `codexSharedNativeScopeMismatch: Codex native component scope sets must match exactly; ` +
+        `${expected.key} has {${expectedScopes}} but ${mismatch.key} has ` +
+        `{${canonicalScopeSet(mismatch.scopes)}}.`,
+    );
+  }
 }
 
 function normalizePlatformAgentOverrides<T>(
@@ -2714,6 +2798,7 @@ export function validatePluginManifest(
     throw new Error('Invalid artifacts.targets: agent-skills targets require distributions.agentSkills declaration.');
   }
   assertManifestPlatformSupport(manifest.name, manifest);
+  assertCodexSharedNativeScopeConsistency(manifest);
 
   return manifest;
 }

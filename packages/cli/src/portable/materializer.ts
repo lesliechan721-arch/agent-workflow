@@ -34,6 +34,7 @@ import type { CatalogOperationContext } from '../utils/catalog-operation-context
 import { collectSensitivePluginConfigValues } from '../utils/plugin-scripts.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
+import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
 import {
   AwCapabilityUnsupportedError,
@@ -194,10 +195,10 @@ function assertNoSensitiveValues(
     if (/\{\{[^{}]+\}\}/u.test(text)) {
       throw new Error(`Portable Skill "${candidate.tree.skillKey}" contains an unresolved template in "${relativePath}".`);
     }
-    const leaked = sensitiveValues.find((value) => value.length > 0 && text.includes(value));
-    if (leaked) {
-      throw new Error(`Portable Skill "${candidate.tree.skillKey}" exposes sensitive config in "${relativePath}".`);
-    }
+  }
+  const leakedPath = findSensitiveTokenPath(candidate.tree.files, sensitiveValues);
+  if (leakedPath) {
+    throw new Error(`Portable Skill "${candidate.tree.skillKey}" exposes sensitive config in "${leakedPath}".`);
   }
 }
 

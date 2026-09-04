@@ -680,7 +680,22 @@ function validateManifest(rawManifest) {
   if (!isRecord(rawManifest.config) || !isRecord(rawManifest.config.fields)) {
     fail(`Plugin "${pluginName}" does not declare an AW config schema.`);
   }
-  return { pluginName, schema: normalizeSchema(rawManifest.config.fields) };
+  const schema = normalizeSchema(rawManifest.config.fields);
+  const codexNativeRefreshKeys = new Set(
+    isRecord(rawManifest.artifacts) && Array.isArray(rawManifest.artifacts.targets)
+      ? rawManifest.artifacts.targets.flatMap((target) =>
+        isRecord(target)
+        && target.platform === 'codex'
+        && target.target === 'codex.skill'
+        && isRecord(target.delivery)
+        && target.delivery.mode === 'codex-native'
+        && Array.isArray(target.refreshKeys)
+          ? target.refreshKeys.filter((key) =>
+            typeof key === 'string' && Object.hasOwn(schema, key))
+          : [])
+      : [],
+  );
+  return { pluginName, schema, codexNativeRefreshKeys };
 }
 
 function locateBundleManifest() {
@@ -804,7 +819,7 @@ function addRequiredIssues(state, schema) {
   }
 }
 
-function resolveFromStores({ identity, schema, scope, stores }) {
+function resolveFromStores({ identity, schema, scope, stores, codexNativeRefreshKeys = new Set() }) {
   const state = createState(schema);
   if (scope === 'effective') {
     for (const [key, field] of Object.entries(schema)) {
@@ -812,7 +827,11 @@ function resolveFromStores({ identity, schema, scope, stores }) {
     }
     for (const [storeKey, source] of [['user', 'user'], ['project', 'project']]) {
       collectUnknownKeys(state, schema, stores[storeKey], source);
-      applyLayer(state, schema, stores[storeKey].values, source);
+      const entries = storeKey === 'project'
+        ? Object.fromEntries(Object.entries(stores[storeKey].values).filter(([key]) =>
+          !codexNativeRefreshKeys.has(key)))
+        : stores[storeKey].values;
+      applyLayer(state, schema, entries, source);
     }
     addRequiredIssues(state, schema);
   } else {
@@ -865,7 +884,8 @@ function resolveFromContext(scope) {
         && ['default', 'user', 'project', 'missing'].includes(source)
       ) state.sources[key] = source;
     }
-    const contextStorePaths = isRecord(context.paths?.configStores)
+    const contextStorePaths = context.config.mode !== 'artifact-render'
+      && isRecord(context.paths?.configStores)
       ? context.paths.configStores
       : {};
     return {
@@ -893,6 +913,11 @@ function resolveFromContext(scope) {
       },
     };
   }
+  if (context.config.mode === 'artifact-render') {
+    fail(
+      'AW_PLUGIN_CONTEXT only supports effective config reads; explicit user and project store reads are unavailable.',
+    );
+  }
   if (!identity) fail('AW_PLUGIN_CONTEXT must provide a source identity for scoped config reads.');
   const storePath = context.paths?.configStores?.[scope];
   if (typeof storePath !== 'string' || storePath.trim() === '') {
@@ -912,7 +937,9 @@ function resolveFromContext(scope) {
 
 function resolveFallback(scope) {
   const { bundleRoot, manifestPath } = locateBundleManifest();
-  const { pluginName, schema } = validateManifest(readJsonFile(manifestPath, 'bundle manifest'));
+  const { pluginName, schema, codexNativeRefreshKeys } = validateManifest(
+    readJsonFile(manifestPath, 'bundle manifest'),
+  );
   const pluginsRoot = path.dirname(bundleRoot);
   const marketplaceRoot = path.dirname(pluginsRoot);
   if (path.basename(pluginsRoot) !== 'plugins' || path.basename(bundleRoot) !== pluginName) {
@@ -945,7 +972,7 @@ function resolveFallback(scope) {
       ? missingStore('')
       : readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
   };
-  return resolveFromStores({ identity, schema, scope, stores });
+  return resolveFromStores({ identity, schema, scope, stores, codexNativeRefreshKeys });
 }
 
 function printUsage() {

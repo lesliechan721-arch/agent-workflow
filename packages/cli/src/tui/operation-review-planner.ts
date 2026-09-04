@@ -629,8 +629,12 @@ export function buildOperationReviewProjection(options: {
 }): OperationReviewProjection {
   const { intent, evidence } = options;
   const labels = operationLabels(intent, evidence);
-  const requiresConfirmation = (evidence.codexReconcilePlans ?? []).some((plan) =>
-    plan.review.requiresConfirmation)
+  const sharedNativeConfigApply = intent.kind === 'configSave'
+    && intent.apply
+    && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
+    && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
+  const requiresConfirmation = sharedNativeConfigApply
+    || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
     || Boolean(evidence.catalogGeneration?.impact
@@ -668,8 +672,11 @@ export function buildOperationReviewProjection(options: {
           reference.pluginId ? [reference.pluginId] : []),
         ...(evidence.catalogGeneration?.impact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),
+        ...(sharedNativeConfigApply && 'pluginId' in intent ? [intent.pluginId] : []),
       ])],
       ...(warning ? { warning }
+        : sharedNativeConfigApply
+          ? { warning: '更新共享 Codex native 动态 Skill 会影响所有启用项目。' }
         : requiresConfirmation && (evidence.sourceWrite || evidence.catalogGeneration?.impact)
           ? { warning: '确认来源影响后才会继续。未知影响不会按零处理。' }
           : {}),

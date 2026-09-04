@@ -3376,7 +3376,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
-        const execute = async (selectedPlugin: string, selectedKey: string) =>
+        const execute = async (
+          selectedPlugin: string,
+          selectedKey: string,
+          confirmed: boolean,
+        ) =>
           withResolvedConfigMutationPlugin(
             context,
             selectedPlugin,
@@ -3413,7 +3417,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             removeKeys: [selectedKey],
           },
           apply: rawOptions.apply === true,
-          sharedNativeApplyConfirmed: rawOptions.yes === true,
+          sharedNativeApplyConfirmed: confirmed,
         });
         return buildConfigMutationReceipt('config:unset', {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3437,7 +3441,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             },
           );
         if (pluginName && key) {
-          return { cancelled: false as const, value: await execute(pluginName, key) };
+          return {
+            cancelled: false as const,
+            value: await execute(pluginName, key, rawOptions.yes === true),
+          };
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
         const loadedCurrentCandidates = await loadWizardCandidates(context, {});
@@ -3463,7 +3470,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             scope: selection.scope ?? 'user',
           })),
           resultState: overallResultState,
-          execute: (selection) => execute(selection.plugins[0]!, selection.key!),
+          execute: (selection) => execute(selection.plugins[0]!, selection.key!, true),
         });
         return result.cancelled
           ? { cancelled: true as const }
@@ -3541,6 +3548,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               plugin,
               pluginError,
               apply: rawOptions.apply === true,
+              sharedNativeApplyConfirmed: confirmed,
             });
             return buildConfigMutationReceipt('config:reset', {
               ok: resetReceipt.overallState === 'succeeded',

@@ -394,6 +394,10 @@ export interface StatusV7Payload {
     cwd: string;
   };
   targets: StatusV7Target[];
+  configIssues?: Array<NonNullable<StatusV7PluginSummary['configIssues']>[number] & {
+    pluginId: string;
+    pluginName: string;
+  }>;
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -454,7 +458,7 @@ export interface StatusV7PluginSummary {
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
     scope: Scope;
-    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath';
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
     key: string;
     title: string;
     source: 'default' | 'user' | 'project' | 'missing';
@@ -941,6 +945,9 @@ function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
       }
     }
   }
+  for (const issue of payload.configIssues ?? []) {
+    lines.push(`Warning: ${issue.pluginId} config ${issue.key} has an unsupported project override; user/default is effective. Unset the project value.`);
+  }
   for (const error of payload.errors) lines.push(`Error: ${error.message}`);
   return lines.join('\n');
 }
@@ -1404,6 +1411,16 @@ export async function statusCommandV7(options: {
                         key: issue.key,
                         title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
                         source,
+                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                    }
+                    for (const override of resolved.unsupportedLayerOverrides) {
+                      const configIssue = {
+                        scope,
+                        type: override.type,
+                        key: override.key,
+                        title: plugin.manifest.config.fields[override.key]?.title ?? override.key,
+                        source: override.source,
                       } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
                       issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
@@ -2664,6 +2681,13 @@ export async function statusCommandV7(options: {
       ),
     };
   });
+  const publicConfigIssues = available.flatMap((entry) => (entry.configIssues ?? [])
+    .filter((issue) => issue.type === 'configLayerUnsupported')
+    .map((issue) => ({
+      pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+      pluginName: entry.name,
+      ...issue,
+    })));
   const payload: StatusV7Payload = {
     schemaVersion: 7,
     catalog: {
@@ -2686,6 +2710,7 @@ export async function statusCommandV7(options: {
       cwd: path.resolve(options.cwd),
     },
     targets: projectedTargets,
+    ...(publicConfigIssues.length > 0 ? { configIssues: publicConfigIssues } : {}),
     errors,
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)
