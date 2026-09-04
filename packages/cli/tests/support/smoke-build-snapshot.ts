@@ -1,7 +1,11 @@
 import fs from 'fs-extra';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createBuildSnapshot } from '../../../../scripts/build/build-cache.mjs';
+import {
+  buildDevWithCache,
+} from '../../../../scripts/build/dev-build-cache.mjs';
 
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { runWithCurrentRepositoryCwdAsReadOnly } from '../setup/test-isolation.js';
@@ -10,6 +14,8 @@ export interface SmokeBuildSnapshot {
   root: string;
   generationId: string;
   outputDigest: string;
+  mode: 'release' | 'development';
+  persistent?: boolean;
   cliPackageRoot: string;
   cliDistRoot: string;
   catalogOutputRoot: string;
@@ -26,7 +32,23 @@ export async function importSmokeSnapshotModule<T>(modulePath: string): Promise<
 export async function createSmokeBuildSnapshot(
   repoRoot: string,
 ): Promise<SmokeBuildSnapshot> {
-  return createBuildSnapshot(repoRoot) as Promise<SmokeBuildSnapshot>;
+  if (process.env.AW_DIST_BUILD_MODE === 'development') {
+    const result = await buildDevWithCache(repoRoot);
+    return {
+      root: repoRoot,
+      generationId: 'development',
+      outputDigest: result.targets.map((target) => target.outputDigest).join(':'),
+      mode: 'development',
+      persistent: true,
+      cliPackageRoot: path.join(repoRoot, 'packages', 'cli'),
+      cliDistRoot: path.join(repoRoot, 'packages', 'cli', 'dist'),
+      catalogOutputRoot: path.join(repoRoot, 'packages', 'cli', 'plugins-dist'),
+      cleanup: async () => {},
+    };
+  }
+  const snapshot = await createBuildSnapshot(repoRoot) as SmokeBuildSnapshot;
+  snapshot.mode = 'release';
+  return snapshot;
 }
 
 export async function activateSmokeBuildSnapshot(
@@ -43,6 +65,9 @@ export async function cleanupSmokeBuildSnapshot(
     return;
   }
   await snapshot.cleanup();
+  if (snapshot.persistent) {
+    return;
+  }
   if (await fs.pathExists(snapshot.root)) {
     throw new Error(`Smoke build snapshot cleanup left a residual path: ${snapshot.root}`);
   }

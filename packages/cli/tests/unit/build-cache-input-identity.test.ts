@@ -120,6 +120,28 @@ describe('build cache input and environment identity', () => {
     expect(await computeBuildInputDigest(repoRoot)).not.toBe(nestedDigest);
   });
 
+  it('excludes only the Stage 5 development build implementation from strong inputs', async () => {
+    const repoRoot = await createRepo();
+    const buildScriptsRoot = path.join(repoRoot, 'scripts', 'build');
+    await fs.mkdir(buildScriptsRoot, { recursive: true });
+    await fs.writeFile(path.join(buildScriptsRoot, 'run-build.mjs'), 'release build\n');
+    const initialDigest = await computeBuildInputDigest(repoRoot);
+    const devOnlyPaths = [
+      path.join(buildScriptsRoot, 'dev-build-cache.mjs'),
+      path.join(buildScriptsRoot, 'run-dev-build.mjs'),
+    ];
+
+    await Promise.all(devOnlyPaths.map((filePath) => fs.writeFile(filePath, 'development build\n')));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+    await Promise.all(devOnlyPaths.map((filePath) => fs.writeFile(filePath, 'changed development build\n')));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+    await Promise.all(devOnlyPaths.map((filePath) => fs.rm(filePath)));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+
+    await fs.writeFile(path.join(buildScriptsRoot, 'run-build.mjs'), 'changed release build\n');
+    await expect(computeBuildInputDigest(repoRoot)).resolves.not.toBe(initialDigest);
+  });
+
   it('invalidates the build cache when a canonical Eval schema changes', async () => {
     const repoRoot = await createRepo();
     const schemaPath = path.join(

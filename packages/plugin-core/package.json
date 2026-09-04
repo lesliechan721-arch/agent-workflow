@@ -27,6 +27,7 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && pnpm run generate:check && tsc -p tsconfig.json",
+    "build:dev": "pnpm run generate:check && tsc -p tsconfig.dev.json",
     "generate": "node scripts/generate-manifest-types.mjs",
     "generate:check": "node scripts/generate-manifest-types.mjs --check",
     "test": "node ../../scripts/test/run-vitest.mjs run",

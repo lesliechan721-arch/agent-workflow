@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "../../.release/cache/dev-build/agent-skill-eval.tsbuildinfo"
+  }
+}

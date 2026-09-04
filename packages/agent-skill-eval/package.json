@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs",
+    "build:dev": "tsc -p tsconfig.dev.json && node scripts/embed-schemas.mjs",
     "test": "pnpm run test:unit",
     "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=4 && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism",
     "test:dist": "node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts",

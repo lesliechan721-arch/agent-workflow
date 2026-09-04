@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "node scripts/generate-aw-config-helper.mjs --check && node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
+    "build:dev:typescript": "node scripts/generate-aw-config-helper.mjs --check && tsc -p tsconfig.dev.json",
     "generate:config-helper": "node scripts/generate-aw-config-helper.mjs",
     "generate:config-helper:check": "node scripts/generate-aw-config-helper.mjs --check",
     "test": "pnpm run test:unit && pnpm run test:integration",

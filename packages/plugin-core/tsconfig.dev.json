@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "../../.release/cache/dev-build/plugin-core.tsbuildinfo"
+  }
+}
