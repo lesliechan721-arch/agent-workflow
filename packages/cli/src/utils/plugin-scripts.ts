@@ -84,6 +84,53 @@ export function collectSensitivePluginConfigValues(manifest: NormalizedPluginMan
     });
   });
 }
+
+export function assertNoSensitiveConfigValues(
+  value: unknown,
+  sensitiveValues: readonly string[],
+  message: string,
+): void {
+  const strings: string[] = [];
+  const visit = (entry: unknown): void => {
+    if (typeof entry === 'string') {
+      strings.push(entry);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach(visit);
+      return;
+    }
+    if (entry !== null && typeof entry === 'object') {
+      Object.entries(entry).forEach(([key, child]) => {
+        strings.push(key);
+        visit(child);
+      });
+    }
+  };
+  visit(value);
+  for (const sensitiveValue of new Set(sensitiveValues)) {
+    if (sensitiveValue === '') continue;
+    const encoded = JSON.stringify(sensitiveValue).slice(1, -1);
+    if (strings.some((entry) => entry.includes(sensitiveValue)
+      || (encoded !== sensitiveValue && entry.includes(encoded)))) throw new Error(message);
+  }
+}
+
+export function assertNoSensitiveConfigInFiles(
+  files: Readonly<Record<string, Buffer>>,
+  sensitiveValues: readonly string[],
+  message: string,
+): void {
+  assertNoSensitiveConfigValues(
+    Object.entries(files).map(([relativePath, content]) => ({
+      relativePath,
+      content: content.toString('utf8'),
+    })),
+    sensitiveValues,
+    message,
+  );
+}
+
 interface SensitiveTokenMatch { start: number; end: number }
 
 function findSensitiveTokenMatches(value: string, sensitiveValue: string, startLimit: number): SensitiveTokenMatch[] {

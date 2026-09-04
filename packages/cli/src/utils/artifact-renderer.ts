@@ -26,6 +26,7 @@ import {
   resolvePluginConfigStorePath,
 } from './plugin-config.js';
 import {
+  assertNoSensitiveConfigValues,
   buildNodeScriptInvocation,
   buildPluginScriptSpawnEnv,
   calculateFileDigest,
@@ -626,7 +627,7 @@ export async function runArtifactRenderer(options: {
       stdoutSummary,
       stderrSummary,
     });
-    validateArtifactPlan({
+    const validated = validateArtifactPlan({
       manifest: options.plugin.manifest,
       plan,
       platform: options.platform,
@@ -636,6 +637,11 @@ export async function runArtifactRenderer(options: {
       rendererDigest: target.rendererDigest,
       manifestDigest: target.manifestDigest,
     });
+    assertNoSensitiveConfigValues(
+      validated.artifacts,
+      writtenContext.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.',
+    );
 
     return {
       plan,

@@ -138,6 +138,7 @@ describe('generated aw-config helper', () => {
           name: 'fixture-plugin',
           sourceId: 'fixture-source',
           sourceIdentity: `sha256:${'a'.repeat(64)}`,
+          logicalIdentity: 'fixture-catalog',
         },
         config: {
           schema: {

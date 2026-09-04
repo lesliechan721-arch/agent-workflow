@@ -9,6 +9,7 @@ import {
   operationEvidenceFingerprint,
   userIssueKey,
   type OperationEvidence,
+  type OperationIntent,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -796,6 +797,24 @@ describe('TUI v4 router and ViewModel', () => {
     const serialized = JSON.stringify(page);
     expect(serialized).not.toContain('/Users/private');
     expect(serialized).not.toContain('sk-private');
+    const privateFields = page.groups.flatMap((group) => group.fields)
+      .filter((field) => field.sensitive);
+    expect(privateFields.every((field) => !Object.hasOwn(field, 'value')
+      && !Object.hasOwn(field, 'effectiveValue')
+      && !Object.hasOwn(field, 'draftValue')
+      && !Object.hasOwn(field, 'defaultValue')
+      && !Object.hasOwn(field, 'choices'))).toBe(true);
+
+    const projectPage = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: { fields: { token: { type: 'string', sensitive: true } } },
+      read: {
+        pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+        fields: [fields[2]!],
+      },
+    });
+    expect(projectPage.groups[0]!.fields[0]).toMatchObject({ sensitive: true, writable: false });
+    expect(JSON.stringify(projectPage)).not.toContain('sk-private');
 
     const fallback = buildConfigPage({
       pluginId: 'official/demo',
@@ -922,8 +941,8 @@ describe('TUI v4 router and ViewModel', () => {
     expect(fields.secret).toMatchObject({
       sensitive: true,
       allowCustom: false,
-      choices: [{ id: 'on', title: '敏感开启', value: true }],
     });
+    expect(fields.secret).not.toHaveProperty('choices');
     expect(fields.secret).not.toHaveProperty('matchedPresetId');
     expect(fields.secret).not.toHaveProperty('value');
   });
@@ -4240,7 +4259,9 @@ describe('TUI v4 Review safety', () => {
     });
     expect(controller.snapshot.reviewPreparation).toMatchObject({
       state: 'running',
-      currentLabel: 'demo',
+      operationKind: 'pluginWrite',
+      subject: 'demo',
+      currentStage: 'validate',
       stages: [
         { id: 'validate', state: 'running' },
         { id: 'evidence', state: 'pending' },
@@ -4361,6 +4382,51 @@ describe('TUI v4 Review safety', () => {
     expect(captureEvidence).not.toHaveBeenCalled();
   });
 
+  it('keeps private config and source inputs out of every public preparation stage', async () => {
+    const secret = 'preparation-private-token';
+    const privatePath = '/Users/private/catalog-source';
+    const intents: OperationIntent[] = [{
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      apply: false,
+      updates: { token: secret },
+      sensitiveKeys: ['token'],
+    }, {
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'private-source',
+      source: {
+        id: 'private-source',
+        type: 'path',
+        path: privatePath,
+        primary: false,
+        autoCheck: false,
+      },
+    }];
+
+    for (const intent of intents) {
+      const serializedSnapshots: string[] = [];
+      const controller = new TuiController(dependencies({
+        prepareReviewEvidence: async (_intent, _signal, onStage) => {
+          for (const stage of ['validate', 'config', 'evidence'] as const) await onStage(stage);
+          return baseEvidence;
+        },
+      }));
+      await controller.load();
+      controller.subscribe((snapshot) => {
+        if (snapshot.reviewPreparation) serializedSnapshots.push(JSON.stringify(snapshot));
+      });
+
+      controller.startReviewPreparation(intent);
+      await nextTurn(2);
+
+      expect(serializedSnapshots.length).toBeGreaterThan(1);
+      expect(serializedSnapshots.every((serialized) => !serialized.includes(secret)
+        && !serialized.includes(privatePath))).toBe(true);
+    }
+  });
+
   it('replaces a preparation when the same intent has a different return route', async () => {
     const firstCapture = deferred<OperationEvidence>();
     const secondCapture = deferred<OperationEvidence>();
@@ -4413,7 +4479,8 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
     expect(controller.snapshot.reviewPreparation).toMatchObject({
       state: 'failed',
-      currentLabel: 'official',
+      operationKind: 'sourceMutation',
+      subject: 'official',
       code: 'reviewPreparationFailed',
       message: '无法准备确认信息。请返回检查选择，或重试。',
     });

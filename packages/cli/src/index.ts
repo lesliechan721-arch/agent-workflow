@@ -240,6 +240,7 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   scope?: string;
   json?: boolean;
   valueJson?: string;
+  valueStdin?: boolean;
   preset?: string;
   yes?: boolean;
   apply?: boolean;
@@ -612,7 +613,7 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
   const argumentsByCommand = {
     list: '<plugin>',
     get: '<plugin> [key]',
-    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --preset <id>)',
+    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --value-stdin | --preset <id>)',
     unset: '<plugin> <key>',
     reset: '<plugin> --scope <project|user> --yes',
   } as const;
@@ -621,6 +622,14 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
     `Usage: aw config ${command} ${argumentsByCommand[command]}`,
     `Example: aw config ${command} example-plugin${command === 'set' ? ' mode --scope user --value-json \'"safe"\'' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
   ].join('\n');
+}
+
+async function readUtf8Stdin(stdin: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stdin as AsyncIterable<string | Buffer | Uint8Array>) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function equivalentWriteCommand(
@@ -3289,6 +3298,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[field]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--value-json <json>', 'set the field to an exact JSON value')
+    .option('--value-stdin', 'read the exact string value from stdin until EOF', false)
     .option('--preset <id>', 'set the field to the current manifest preset value')
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
@@ -3309,8 +3319,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
-        if ((rawOptions.valueJson === undefined) === (rawOptions.preset === undefined)) {
-          throw new Error('Use exactly one of --value-json <json> or --preset <id>.');
+        const explicitValueCount = [
+          rawOptions.valueJson !== undefined,
+          rawOptions.valueStdin === true,
+          rawOptions.preset !== undefined,
+        ].filter(Boolean).length;
+        if (explicitValueCount > 1
+          || (explicitValueCount === 0
+            && !(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true))) {
+          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
         }
         return withResolvedConfigMutationPlugin(
             context,
@@ -3323,8 +3340,49 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (!field) {
           throw new Error(`Unknown config key "${key}".`);
         }
+        const sensitive = field.sensitive === true;
+        if (sensitive && scope !== 'user') {
+          const error = new Error(
+            'sensitiveProjectConfigUnsupported: Sensitive config can only be set in user scope.',
+          ) as Error & { code: string };
+          error.code = 'sensitiveProjectConfigUnsupported';
+          throw error;
+        }
+        if (sensitive && (rawOptions.valueJson !== undefined || rawOptions.preset !== undefined)) {
+          const error = new Error(
+            'sensitiveConfigInputUnsupported: Sensitive config cannot use --value-json or --preset.',
+          ) as Error & { code: string };
+          error.code = 'sensitiveConfigInputUnsupported';
+          throw error;
+        }
+        if (!sensitive && explicitValueCount !== 1) {
+          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
+        }
         let inputValue: unknown;
-        if (rawOptions.valueJson !== undefined) {
+        if (rawOptions.valueStdin === true) {
+          inputValue = await readUtf8Stdin(context.stdin);
+        } else if (sensitive) {
+          if (!(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true)
+            || !context.prompt.password) {
+            const error = new Error(
+              'sensitiveConfigStdinRequired: Use --value-stdin for sensitive config outside an interactive terminal.',
+            ) as Error & { code: string };
+            error.code = 'sensitiveConfigStdinRequired';
+            throw error;
+          }
+          const response = await context.prompt.password({
+            message: `输入 ${field.title ?? key}`,
+            mask: true,
+          });
+          if (response.cancelled || response.action !== 'select' || response.value === undefined) {
+            const error = new Error(
+              'sensitiveConfigInputCancelled: Sensitive config input was cancelled.',
+            ) as Error & { code: string };
+            error.code = 'sensitiveConfigInputCancelled';
+            throw error;
+          }
+          inputValue = response.value;
+        } else if (rawOptions.valueJson !== undefined) {
           try {
             inputValue = JSON.parse(rawOptions.valueJson) as unknown;
           } catch {

@@ -108,7 +108,11 @@ import {
   resolveRepoRoot,
   getCodexHome,
 } from '../utils/paths.js';
-import { runPreApplyScript } from '../utils/plugin-scripts.js';
+import {
+  assertNoSensitiveConfigInFiles,
+  collectSensitivePluginConfigValues,
+  runPreApplyScript,
+} from '../utils/plugin-scripts.js';
 import {
   atomicRemoveConfigFile,
   atomicReplaceConfigFile,
@@ -1267,13 +1271,16 @@ async function resolveDynamicArtifacts(options: {
 }): Promise<{
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
+  sensitiveValues: string[];
 }> {
   const requestedArtifactIds = resolveAwDeliveredArtifactIds({
     manifest: options.plugin.manifest,
     platform: options.platform,
     scope: options.scope,
   });
-  if (requestedArtifactIds.length === 0) return { artifacts: [], sourceDirs: () => [] };
+  if (requestedArtifactIds.length === 0) {
+    return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
+  }
   const render = await runArtifactRenderer({
     event: options.event,
     plugin: options.plugin,
@@ -1309,6 +1316,7 @@ async function resolveDynamicArtifacts(options: {
     artifacts,
     sourceDirs: (artifact) => render.context.artifactSources.find((entry) =>
       entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [],
+    sensitiveValues: collectSensitivePluginConfigValues(options.plugin.manifest, config.values),
   };
 }
 
@@ -1525,6 +1533,11 @@ async function buildClaudeWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    assertNoSensitiveConfigInFiles(
+      tree.files,
+      dynamic.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+    );
     writes.push(dynamicSkillWrite({
       ...options,
       platform: 'claude',
@@ -1622,6 +1635,11 @@ async function buildCodexWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    assertNoSensitiveConfigInFiles(
+      tree.files,
+      dynamic.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+    );
     writes.push(dynamicSkillWrite({
       ...options,
       platform: 'codex',
@@ -3749,6 +3767,7 @@ async function materializeCodexNativeRender(options: {
   const renderedArtifacts: Array<{
     artifact: ValidatedArtifactPlanArtifact;
     sourceDirs: string[];
+    sensitiveValues: string[];
   }> = [];
   let rendererDigest: string | undefined;
   for (const scope of ['user', 'project'] as const) {
@@ -3782,6 +3801,10 @@ async function materializeCodexNativeRender(options: {
         artifact,
         sourceDirs: rendered.context.artifactSources.find((entry) =>
           entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [],
+        sensitiveValues: collectSensitivePluginConfigValues(
+          options.plugin.manifest,
+          rendered.context.config.values,
+        ),
       });
     }
   }
@@ -3798,7 +3821,7 @@ async function materializeCodexNativeRender(options: {
   );
   const receiptTargets = [];
   const presentSkillKeys: string[] = [];
-  for (const { artifact, sourceDirs } of renderedArtifacts) {
+  for (const { artifact, sourceDirs, sensitiveValues } of renderedArtifacts) {
     if (artifact.target !== 'codex.skill') {
       throw new Error(`Codex native renderer returned non-Skill artifact "${artifact.id}".`);
     }
@@ -3810,6 +3833,11 @@ async function materializeCodexNativeRender(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    assertNoSensitiveConfigInFiles(
+      tree.files,
+      sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+    );
     const skillRoot = path.join(skillsRoot, skillKey);
     if (artifact.state === 'present') {
       await writeDynamicSkillTree(skillRoot, tree);

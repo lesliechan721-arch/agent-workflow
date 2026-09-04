@@ -906,7 +906,7 @@ function dependencySummaryText(summary: NonNullable<PluginListItemViewModel['dep
 function isCatalogSourcesBootstrapFlow(snapshot: TuiControllerSnapshot): boolean {
   const route = snapshot.router.current.route;
   if (route.name === 'reviewPreparing') {
-    return snapshot.reviewPreparation?.intent.kind === 'catalogSourcesRecovery';
+    return snapshot.reviewPreparation?.operationKind === 'catalogSourcesRecovery';
   }
   if (route.name === 'review' || route.name === 'progress') {
     return snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
@@ -4282,18 +4282,18 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'reviewPreparing' && snapshot.reviewPreparation) {
     const preparation = snapshot.reviewPreparation;
-    const labels = preparation.intent.kind === 'portableInstall'
+    const labels = preparation.operationKind === 'portableInstall'
       ? ['通用 Skills / 安装', '正在准备通用 Skills 安装确认']
-      : preparation.intent.kind === 'configSave' || preparation.intent.kind === 'configReset'
+      : preparation.operationKind === 'configSave' || preparation.operationKind === 'configReset'
         ? ['设置', '正在准备设置确认']
-        : preparation.intent.kind === 'sourceMutation' || preparation.intent.kind === 'catalogGeneration'
+        : preparation.operationKind === 'sourceMutation' || preparation.operationKind === 'catalogGeneration'
           ? ['插件来源', '正在准备来源变更确认']
           : ['插件操作', '正在准备插件操作确认'];
     breadcrumb = `${labels[0]} / 准备确认`;
     context = '只读';
     title = preparation.state === 'failed' ? '无法准备确认信息' : labels[1]!;
-    const refreshPreparation = preparation.intent.kind === 'pluginWrite'
-      && preparation.intent.action === 'refreshAndSync';
+    const refreshPreparation = preparation.operationKind === 'pluginWrite'
+      && preparation.stages.some((stage) => stage.id === 'refresh');
     description = preparation.state === 'failed'
       ? preparation.message ?? '无法准备确认信息。请返回检查选择，或重试。'
       : refreshPreparation
@@ -4322,7 +4322,7 @@ export function ConsoleAppV4(props: {
           compact={policy.mode === 'compact'}
         />)}
       </SectionCard>
-      {preparation.currentLabel ? <StaticRow title="当前" meta={preparation.currentLabel} status="muted" /> : null}
+      {preparation.subject ? <StaticRow title="当前" meta={preparation.subject} status="muted" /> : null}
       {preparation.code && preparation.message
         ? <Callout status="error" title={preparation.code} description={preparation.message} /> : null}
       {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}

@@ -577,6 +577,15 @@ async function applyPluginConfigWriteUnlocked(
   }
 
   if (options.scope === 'project') {
+    const rejectedSensitiveKeys = Object.keys(requestedUpdates)
+      .filter((key) => schema[key]?.sensitive === true);
+    if (rejectedSensitiveKeys.length > 0) {
+      const error = new Error(
+        'sensitiveProjectConfigUnsupported: Sensitive config can only be set in user scope.',
+      ) as Error & { code: string };
+      error.code = 'sensitiveProjectConfigUnsupported';
+      throw error;
+    }
     const userOnlyKeys = codexNativeRefreshKeys(schemaPlugin.manifest);
     const rejectedKeys = Object.keys(requestedUpdates).filter((key) => userOnlyKeys.has(key));
     if (rejectedKeys.length > 0) {

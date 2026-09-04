@@ -297,10 +297,11 @@ export interface ReviewPreparationStage {
 
 export interface ReviewPreparationSnapshot {
   id: string;
-  intent: OperationIntent;
+  operationKind: OperationIntent['kind'];
+  subject: string;
   state: 'running' | 'failed';
   stages: ReviewPreparationStage[];
-  currentLabel: string;
+  currentStage?: ReviewPreparationStageId;
   code?: 'reviewPreparationFailed';
   message?: string;
 }
@@ -600,28 +601,6 @@ function cloneFrozen<T>(value: T): T {
   return deepFreeze(structuredClone(value));
 }
 
-function publicReviewPreparation(
-  snapshot: ReviewPreparationSnapshot,
-): ReviewPreparationSnapshot {
-  if (snapshot.intent.kind !== 'catalogGeneration' || !snapshot.intent.sourceMutation) return snapshot;
-  const mutation = snapshot.intent.sourceMutation;
-  const sourceMutation = mutation.action === 'add'
-    ? {
-        ...mutation,
-        source: mutation.source.type === 'path'
-          ? { ...mutation.source, path: '<private>' }
-          : { ...mutation.source, url: '<private>' },
-      }
-    : {
-        ...mutation,
-        update: 'url' in mutation.update
-          ? { ...mutation.update, ...(mutation.update.url ? { url: '<private>' } : {}) }
-          : { ...mutation.update, ...('path' in mutation.update && mutation.update.path
-            ? { path: '<private>' } : {}) },
-      };
-  return { ...snapshot, intent: { ...snapshot.intent, sourceMutation } };
-}
-
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
   if (evidence.resetTarget) {
@@ -719,6 +698,7 @@ export class TuiController {
   readonly #listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
   readonly #health = new Map<string, SourceHealthViewModel>();
   readonly #tickets = new Map<string, ReviewTicket>();
+  readonly #reviewPreparationIntents = new Map<string, OperationIntent>();
   readonly #inflightOperations = new Map<string, {
     operationId: string;
     promise: Promise<OperationExecuteResult>;
@@ -819,7 +799,7 @@ export class TuiController {
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
       ...(this.#reviewPreparation
-        ? { reviewPreparation: publicReviewPreparation(this.#reviewPreparation.snapshot) }
+        ? { reviewPreparation: this.#reviewPreparation.snapshot }
         : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
@@ -1313,7 +1293,8 @@ export class TuiController {
       || route.name === 'portableBlocker';
     const portableOperationRoute = (route.name === 'reviewPreparing' || route.name === 'review'
       || route.name === 'progress' || route.name === 'result')
-      && (this.#reviewPreparation?.snapshot.intent.kind === 'portableInstall'
+      && (this.#reviewPreparation !== undefined
+        && this.#reviewPreparationIntents.get(this.#reviewPreparation.snapshot.id)?.kind === 'portableInstall'
         || this.#activeReview?.operationKind === 'portableInstall'
         || this.#result?.operationKind === 'portableInstall');
     if (!portableRoute && !portableOperationRoute) {
@@ -1853,7 +1834,9 @@ export class TuiController {
       ? this.#result.returnRoute
       : current);
     const normalizedReturnRoute = this.#normalizeRoute(resolvedReturnRoute);
-    const key = JSON.stringify(stableValue({ intent, returnRoute: normalizedReturnRoute }));
+    const key = crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({ intent, returnRoute: normalizedReturnRoute })))
+      .digest('hex');
     if (this.#reviewPreparation?.snapshot.state === 'running'
       && this.#reviewPreparation.key === key) {
       return cloneFrozen(this.#reviewPreparation.snapshot);
@@ -1864,14 +1847,16 @@ export class TuiController {
     const token = ++this.#reviewPreparationToken;
     const snapshot: ReviewPreparationSnapshot = {
       id,
-      intent: structuredClone(intent),
+      operationKind: intent.kind,
+      subject: this.#reviewPreparationLabel(intent),
       state: 'running',
       stages: this.dependencies.prepareReviewEvidence ? [] : [
         { id: 'validate', label: '验证当前状态', state: 'running' },
         { id: 'evidence', label: '准备确认信息', state: 'pending' },
       ],
-      currentLabel: this.#reviewPreparationLabel(intent),
+      ...(this.dependencies.prepareReviewEvidence ? {} : { currentStage: 'validate' as const }),
     };
+    this.#reviewPreparationIntents.set(id, structuredClone(intent));
     this.#reviewPreparation = {
       snapshot,
       key,
@@ -1889,7 +1874,9 @@ export class TuiController {
   retryReviewPreparation(): ReviewPreparationSnapshot | undefined {
     const preparation = this.#reviewPreparation;
     if (!preparation || preparation.snapshot.state !== 'failed') return undefined;
-    return this.startReviewPreparation(preparation.snapshot.intent, preparation.returnRoute);
+    const intent = this.#reviewPreparationIntents.get(preparation.snapshot.id);
+    if (!intent) return undefined;
+    return this.startReviewPreparation(structuredClone(intent), preparation.returnRoute);
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
@@ -1924,12 +1911,15 @@ export class TuiController {
   async #runReviewPreparation(token: number): Promise<void> {
     const preparation = this.#reviewPreparation;
     if (!preparation || preparation.token !== token) return;
-    const intent = structuredClone(preparation.snapshot.intent);
+    const storedIntent = this.#reviewPreparationIntents.get(preparation.snapshot.id);
+    if (!storedIntent) return;
+    const intent = structuredClone(storedIntent);
     const signal = AbortSignal.any([this.#abort.signal, preparation.abort.signal]);
     try {
       this.#validateReviewIntent(intent);
       const evidence = await this.#prepareReviewEvidence(intent, signal, (stage) => {
         if (!this.#reviewPreparationIsCurrent(token)) return;
+        preparation.snapshot.currentStage = stage;
         const existing = preparation.snapshot.stages.find((entry) => entry.id === stage);
         preparation.snapshot.stages = preparation.snapshot.stages.map((entry) =>
           entry.state === 'running' ? { ...entry, state: 'completed' } : entry);
@@ -1950,6 +1940,7 @@ export class TuiController {
         stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
       this.#publish();
       const returnRoute = structuredClone(preparation.returnRoute);
+      this.#reviewPreparationIntents.delete(preparation.snapshot.id);
       this.#reviewPreparation = undefined;
       this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
     } catch (error) {
@@ -2015,6 +2006,7 @@ export class TuiController {
     if (!this.#reviewPreparation) return;
     this.#reviewPreparationToken += 1;
     this.#reviewPreparation.abort.abort();
+    this.#reviewPreparationIntents.delete(this.#reviewPreparation.snapshot.id);
     this.#reviewPreparation = undefined;
   }
 

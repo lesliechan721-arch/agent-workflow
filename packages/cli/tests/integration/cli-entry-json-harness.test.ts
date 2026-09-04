@@ -560,10 +560,12 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
       overallState: 'failed',
       errors: [{
         code: 'configMutationFailed',
-        message: 'Use exactly one of --value-json <json> or --preset <id>.',
+        message: 'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.',
       }],
     });
-    expect(result.stderr).toBe('Use exactly one of --value-json <json> or --preset <id>.\n');
+    expect(result.stderr).toBe(
+      'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.\n',
+    );
   });
 
   it.each([

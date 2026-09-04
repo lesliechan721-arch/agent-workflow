@@ -1810,6 +1810,7 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
 function configEditorDefinition(field: PluginConfigSchemaField): PluginConfigSchemaField {
   const definition = structuredClone(field);
   delete definition.default;
+  if (definition.sensitive === true) delete definition.choices;
   return definition;
 }
 
@@ -1937,7 +1938,8 @@ export function buildConfigGroups(options: {
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
-      writable: entry?.writable ?? effectivePage,
+      writable: (entry?.writable ?? effectivePage)
+        && !(options.read.scope === 'project' && privateValue),
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
       configured,
@@ -1999,7 +2001,7 @@ export function buildConfigGroups(options: {
             : selectedRawValue ?? options.effectiveRawValues?.[key])! }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
-      ...(choices ? { choices: choices.presets } : {}),
+      ...(!privateValue && choices ? { choices: choices.presets } : {}),
       allowCustom: choices?.allowCustom ?? true,
       ...(!privateValue && !configObjectHasSensitiveChild(schema)
         && (selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null

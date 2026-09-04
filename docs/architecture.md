@@ -33,6 +33,7 @@
 ### Module Invariants
 
 - renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；renderer 只返回与该集合精确相等的 `ArtifactPlan`，不直接写平台文件。AW direct writer 不请求 `codex-native` target。
+- renderer 输出在 JSON 解析和 `ArtifactPlan` 结构验证后、任何 staging 或平台写入前，统一拒绝包含 effective sensitive config 明文或其 JSON 序列化形态的普通及 Portable dynamic artifact。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
 - Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只能在 user scope 写入，project scope 的 set 必须拒绝，且不能与静态 Codex Skill 同名。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
@@ -40,7 +41,7 @@
 - 插件依赖只来自 manifest `dependencies`，只在同一 source 内解析。依赖图拒绝缺失节点、环和超出既定上限的图；执行顺序是稳定的依赖优先拓扑序。
 - live ownership 和实际平台组件是插件存在、清理和 status 的唯一真值。不得新增安装合同存储、第二套安装状态或持久依赖图。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
-- Config v2 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
+- Config v2 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
 - `aw-plugin-development` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
 - `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
@@ -136,6 +137,8 @@ Git provider 保持非交互，并保留 timeout、protocol/ref/temp validation�
 首版不增加 authoritative installed-state DB、GC/read lease、新锁层级、全局事务或补偿状态机。Active snapshot 已是不可变内容寻址目录，操作直接引用它；当前可观察的重复 inventory 可以用操作内 snapshot 消除。这些事实不足以证明新增持久状态和协调协议的成本合理。
 
 TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。普通 `ReviewPreparing` 只执行当前 intent 的验证和证据采集，不执行写入。用户显式选择“刷新并同步”是唯一例外：它在建立插件 Review 前刷新相关来源，并可切换可重建的 Active 弱状态；Esc 只取消后续 Review 和插件写入，不回滚已完成的 Active 刷新。一次成功的 TUI load 固定可用来源的 Active snapshot 子集，并保留其它来源的失败证据；子集 digest 只包含成功来源。同一 session 的浏览、设置、status、依赖 preview 和 Review 都读取该固定子集。load 只读取 source config、catalog state 和 Active store；它不 fetch 或同步，并在本地读取完成后立即进入 ready。页面只显示实际已开始的 status、Catalog、inventory、dependency plan、config、Portable 或 evidence 边界，并在 debug 日志记录阶段耗时。可用 Esc 协作式取消。取消会使迟到的只读结果失效。底层不支持 signal 的读取可以结束，但不能再创建 Review。准备成功时，Review 原位替换准备页，因此 Back 返回原页面并保留其选择或草稿。
+
+`ReviewPreparing` 的公共 snapshot 只包含 operation id、kind、subject、当前安全 stage、状态及安全错误字段。原始 `OperationIntent`、config updates、preset、source path 或 URL 只保存在 controller 私有、按 operation id 索引的内存中，并在成功或取消时清理。Config ViewModel 和 controller 公共 snapshot 对 sensitive 顶层字段只投影状态，不包含 value、effective value、draft、default 或 choices 原文。
 
 插件安装主链固定为：选择根插件 scope，使用 Enter 选择至少一个目标平台并显式确认，只在计划含可配置依赖时编辑 dependency placement，然后进入 `ReviewPreparing` 和 Review。根插件 scope 不在依赖页重复编辑。依赖草稿按 `(pluginId, platform)` 保存 project 或 user 选择，并显示默认 project、健康 user 复用和 fixed-point 提升原因；user 选择必须说明它会影响其它项目或用户环境。返回 Review 前的页面时保留适用草稿；根 scope 或平台集合变化后确定性重算，并删除不再适用的 key。键盘合同继续使用当前焦点、Enter、Esc 和显式确认，不用 Space 切换选择。
 

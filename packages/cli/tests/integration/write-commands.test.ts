@@ -41,6 +41,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'fs-extra';
 import { fileURLToPath } from 'node:url';
+import { PassThrough } from 'node:stream';
 import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
@@ -58,7 +59,7 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import { createCapturedCliIo } from '../helpers/cli-entry.js';
+import { createCapturedCliIo, createTtyRuntimeStreams } from '../helpers/cli-entry.js';
 import {
   setNativeCliRunnerOverrideForTests,
   type NativeCliInvocation,
@@ -411,6 +412,95 @@ async function writeDynamicSkillRenderer(options: {
 }
 
 describe('five namespaced write commands', () => {
+  it('keeps sensitive config input out of argv and preserves stdin bytes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'sensitive-config-input-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = { fields: { token: { type: 'string', sensitive: true } } };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+    const readStore = () => readPluginConfigStore({
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const runJson = async (args: string[], stdin?: PassThrough) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        ...(stdin ? { stdin } : {}),
+      });
+      return { exitCode, stdout: captured.readStdout(), stderr: captured.readStderr() };
+    };
+
+    for (const args of [
+      ['--value-json', 'argv-secret'],
+      ['--preset', 'argv-secret'],
+    ]) {
+      const rejected = await runJson([
+        'config', 'set', 'team/demo', 'token', '--scope', 'user', ...args,
+      ]);
+      expect(rejected.exitCode).toBe(1);
+      expect(rejected.stdout).not.toContain('argv-secret');
+      expect(rejected.stderr).not.toContain('argv-secret');
+      expect(JSON.parse(rejected.stdout)).toMatchObject({
+        errors: [{ code: 'sensitiveConfigInputUnsupported' }],
+      });
+    }
+
+    const missing = await runJson([
+      'config', 'set', 'team/demo', 'token', '--scope', 'user',
+    ]);
+    expect(missing.exitCode).toBe(1);
+    expect(JSON.parse(missing.stdout)).toMatchObject({
+      errors: [{
+        code: 'configMutationFailed',
+        message: 'Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.',
+      }],
+    });
+
+    const stdin = new PassThrough();
+    stdin.end('stdin-secret\nwith-newline\n');
+    const written = await runJson([
+      'config', 'set', 'team/demo', 'token', '--scope', 'user', '--value-stdin',
+    ], stdin);
+    expect(written.exitCode).toBe(0);
+    await expect(readStore()).resolves.toMatchObject({
+      values: { token: 'stdin-secret\nwith-newline\n' },
+    });
+
+    const password = vi.fn(async () => ({
+      action: 'select' as const,
+      cancelled: false,
+      value: 'hidden-prompt-secret',
+    }));
+    const captured = createCapturedCliIo();
+    const exitCode = await runCli([
+      'config', 'set', 'team/demo', 'token', '--scope', 'user',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: captured.io,
+      interactive: true,
+      prompt: { password },
+      ...createTtyRuntimeStreams(),
+    });
+    expect(exitCode).toBe(0);
+    expect(password).toHaveBeenCalledOnce();
+    expect(captured.readStdout()).not.toContain('hidden-prompt-secret');
+    expect(captured.readStderr()).not.toContain('hidden-prompt-secret');
+    await expect(readStore()).resolves.toMatchObject({ values: { token: 'hidden-prompt-secret' } });
+  });
   it.each(['sourceConfig', 'state', 'store'] as const)(
     'keeps cleanup recovery ownership-safe when Catalog %s is damaged',
     async (damagedControl) => {

@@ -816,6 +816,29 @@ describe('config write full reinstall apply', () => {
     })).exists).toBe(false);
   });
 
+  it('rejects a sensitive project update in the writer before creating the project store', async () => {
+    const fixture = await createFixture();
+    const secret = 'project-secret-must-not-be-written';
+
+    const error = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: secret } },
+      apply: false,
+    }).catch((failure: unknown) => failure as Error & { code?: string });
+
+    expect(error.code).toBe('sensitiveProjectConfigUnsupported');
+    expect(error.message).not.toContain(secret);
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
   it('reinstalls both user and current-project targets on both platforms after a user write', async () => {
     const fixture = await createFixture();
     for (const platform of ['codex', 'claude'] as const) {
