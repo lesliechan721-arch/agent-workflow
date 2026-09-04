@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { RE2 } from './re2-wasm/build/src/re2.js';
+
 /* @aw-config-core */
 
 const CONFIG_DIR = 'plugin-config';

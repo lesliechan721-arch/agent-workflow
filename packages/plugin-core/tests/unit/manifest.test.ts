@@ -72,6 +72,42 @@ describe('plugin manifest v3 structure', () => {
         },
       },
     }],
+    ['sensitive string default', {
+      fields: { value: { type: 'string', sensitive: true, default: 'secret' } },
+    }],
+    ['sensitive string choices', {
+      fields: {
+        value: {
+          type: 'string',
+          sensitive: true,
+          choices: { allowCustom: true, presets: [] },
+        },
+      },
+    }],
+    ['sensitive number', { fields: { value: { type: 'number', sensitive: true } } }],
+    ['sensitive boolean', { fields: { value: { type: 'boolean', sensitive: true } } }],
+    ['sensitive object', {
+      fields: { value: { type: 'object', sensitive: true, properties: {} } },
+    }],
+    ['sensitive fixed child', {
+      fields: {
+        value: { type: 'object', properties: { child: { type: 'string', sensitive: true } } },
+      },
+    }],
+    ['sensitive dynamic child', {
+      fields: {
+        value: { type: 'object', additionalProperties: { type: 'string', sensitive: true } },
+      },
+    }],
+    ['pattern without maxLength', {
+      fields: { value: { type: 'string', validation: { pattern: 'value' } } },
+    }],
+    ['pattern longer than 512 code points', {
+      fields: { value: { type: 'string', validation: { pattern: 'a'.repeat(513), maxLength: 4096 } } },
+    }],
+    ['maxLength above 4096', {
+      fields: { value: { type: 'string', validation: { maxLength: 4097 } } },
+    }],
     ['nested object', {
       fields: {
         value: {

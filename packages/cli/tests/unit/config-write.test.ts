@@ -135,7 +135,7 @@ async function createFixture(
         locations: {
           type: 'object',
           properties: {
-            certificate: { type: 'string', sensitive: true },
+            certificate: { type: 'string' },
             workspace: { type: 'string' },
           },
           additionalProperties: false,
@@ -743,7 +743,7 @@ describe('config write full reinstall apply', () => {
       locations: { certificate: './same-file' },
       genericPath: './not-yet-created',
     });
-    expect(JSON.stringify(receipt)).not.toContain('./same-file');
+    expect(JSON.stringify(receipt)).toContain('./same-file');
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {

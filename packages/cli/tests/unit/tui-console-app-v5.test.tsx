@@ -3405,7 +3405,7 @@ describe('ConsoleAppV4', () => {
     closedInstance.unmount();
     const invalidPage = configPage();
     const note = invalidPage.groups[0]!.fields.find((field) => field.key === 'note')!;
-    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$' } };
+    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$', maxLength: 20 } };
     const invalid = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...invalidPage, pluginId, layer })),
     });

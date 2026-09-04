@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { RE2 } from './re2-wasm/build/src/re2.js';
+
 /* Generated validator contract from packages/plugin-core/src/plugin-config.ts. */
 const CONFIG_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u;
 const IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/u;
@@ -21,6 +23,8 @@ const STRING_FORMATS = new Set([
     'email',
 ]);
 const MAX_OBJECT_PROPERTIES = 32;
+const MAX_PATTERN_CODE_POINTS = 512;
+const MAX_STRING_CODE_POINTS = 4096;
 const DANGEROUS_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 function createPropertyMap() {
     return Object.create(null);
@@ -83,6 +87,9 @@ function normalizeStringValidation(value, path) {
     const maxLength = input.maxLength === undefined
         ? undefined
         : nonNegativeInteger(input.maxLength, `${path}.maxLength`);
+    if (maxLength !== undefined && maxLength > MAX_STRING_CODE_POINTS) {
+        throw new Error(`Invalid ${path}.maxLength: expected at most ${MAX_STRING_CODE_POINTS}.`);
+    }
     if (minLength !== undefined && maxLength !== undefined && minLength > maxLength) {
         throw new Error(`Invalid ${path}: minLength must be less than or equal to maxLength.`);
     }
@@ -91,11 +98,17 @@ function normalizeStringValidation(value, path) {
     }
     const pattern = input.pattern;
     if (pattern !== undefined) {
+        if ([...pattern].length > MAX_PATTERN_CODE_POINTS) {
+            throw new Error(`Invalid ${path}.pattern: expected at most ${MAX_PATTERN_CODE_POINTS} Unicode code points.`);
+        }
+        if (maxLength === undefined) {
+            throw new Error(`Invalid ${path}: maxLength is required when pattern is declared.`);
+        }
         try {
-            new RegExp(pattern, 'u');
+            new RE2(pattern, 'u');
         }
         catch {
-            throw new Error(`Invalid ${path}.pattern: expected a valid regular expression.`);
+            throw new Error(`Invalid ${path}.pattern: expected a valid RE2 regular expression.`);
         }
     }
     const format = input.format === undefined
@@ -165,7 +178,7 @@ function validateString(value, validation, field, property) {
     if (validation?.maxLength !== undefined && [...value].length > validation.maxLength) {
         issues.push(createIssue('maxLength', field, `Expected at most ${validation.maxLength} characters.`, property));
     }
-    if (validation?.pattern !== undefined && !new RegExp(validation.pattern, 'u').test(value)) {
+    if (validation?.pattern !== undefined && !new RE2(validation.pattern, 'u').test(value)) {
         issues.push(createIssue('pattern', field, `Expected a value that matches ${validation.pattern}.`, property));
     }
     if (validation?.format !== undefined && !stringFormatMatches(value, validation.format)) {
@@ -328,16 +341,9 @@ export function validatePluginConfigPreset(definition, preset, field = 'value') 
         : validateScalarField(definition, preset.value, field, undefined, false);
 }
 export function redactPluginConfigValue(definition, value) {
-    if (definition.sensitive === true)
+    if (definition.type === 'string' && definition.sensitive === true)
         return '[redacted]';
-    if (definition.type !== 'object' || typeof value !== 'object')
-        return value;
-    const redacted = createPropertyMap();
-    for (const [property, childValue] of Object.entries(value)) {
-        const child = ownProperty(definition.properties, property) ?? (definition.additionalProperties === false ? undefined : definition.additionalProperties);
-        redacted[property] = child?.sensitive === true ? '[redacted]' : childValue;
-    }
-    return redacted;
+    return value;
 }
 export function formatPluginConfigIssue(issue) {
     const path = issue.path.property === undefined
@@ -382,28 +388,49 @@ function normalizeScalarField(value, path, options) {
     if (type !== 'string' && type !== 'number' && type !== 'boolean') {
         throw new Error(`Invalid ${path}.type: expected string, number, or boolean.`);
     }
-    const allowed = ['type', 'title', 'description', 'sensitive'];
+    const allowed = ['type', 'title', 'description'];
     if (options.allowDefault)
         allowed.push('default');
     if (options.allowRequired)
         allowed.push('required');
+    if (options.allowSensitive && type === 'string')
+        allowed.push('sensitive');
     allowed.push('choices');
     if (type !== 'boolean')
         allowed.push('validation');
     assertAllowedKeys(input, path, allowed);
+    const sensitive = options.allowSensitive && type === 'string'
+        ? optionalBoolean(input.sensitive, `${path}.sensitive`)
+        : undefined;
+    if (sensitive === true && input.default !== undefined) {
+        throw new Error(`Invalid ${path}.default: sensitive fields cannot declare a default.`);
+    }
+    if (sensitive === true && input.choices !== undefined) {
+        throw new Error(`Invalid ${path}.choices: sensitive fields cannot declare choices.`);
+    }
     const common = {
         title: optionalText(input.title, `${path}.title`),
         description: optionalText(input.description, `${path}.description`),
         required: options.allowRequired ? optionalBoolean(input.required, `${path}.required`) : undefined,
-        sensitive: optionalBoolean(input.sensitive, `${path}.sensitive`),
     };
     const defaultValue = options.allowDefault && input.default !== undefined
         ? input.default
         : undefined;
     if (type === 'string') {
+        if (sensitive === true) {
+            return {
+                type,
+                ...common,
+                sensitive: true,
+                validation: input.validation === undefined
+                    ? undefined
+                    : normalizeStringValidation(input.validation, `${path}.validation`),
+            };
+        }
         return {
             type,
             ...common,
+            sensitive,
             default: defaultValue,
             choices: input.choices === undefined
                 ? undefined
@@ -473,7 +500,6 @@ function normalizeObjectField(value, path) {
         'description',
         'default',
         'required',
-        'sensitive',
         'choices',
         'properties',
         'additionalProperties',
@@ -499,6 +525,7 @@ function normalizeObjectField(value, path) {
             properties[property] = normalizeScalarField(child, `${path}.properties.${property}`, {
                 allowDefault: false,
                 allowRequired: true,
+                allowSensitive: false,
             });
             assertChoices(properties[property], `${path}.properties.${property}`);
         }
@@ -508,7 +535,7 @@ function normalizeObjectField(value, path) {
         additionalProperties = false;
     }
     else {
-        additionalProperties = normalizeScalarField(input.additionalProperties, `${path}.additionalProperties`, { allowDefault: false, allowRequired: false });
+        additionalProperties = normalizeScalarField(input.additionalProperties, `${path}.additionalProperties`, { allowDefault: false, allowRequired: false, allowSensitive: false });
         assertChoices(additionalProperties, `${path}.additionalProperties`);
     }
     let validation;
@@ -544,7 +571,6 @@ function normalizeObjectField(value, path) {
         description: optionalText(input.description, `${path}.description`),
         default: input.default,
         required: optionalBoolean(input.required, `${path}.required`),
-        sensitive: optionalBoolean(input.sensitive, `${path}.sensitive`),
         choices: input.choices === undefined
             ? undefined
             : normalizeChoices(input.choices, `${path}.choices`),
@@ -569,6 +595,7 @@ export function normalizePluginConfigDefinition(value, path = 'config') {
             : normalizeScalarField(rawField, `${path}.fields.${field}`, {
                 allowDefault: true,
                 allowRequired: true,
+                allowSensitive: true,
             });
         assertChoices(definition, `${path}.fields.${field}`);
         if (definition.default !== undefined) {

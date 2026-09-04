@@ -139,13 +139,24 @@ export interface PluginConfigFieldBase<Value extends PluginConfigValue> {
   description?: string;
   default?: Value;
   required?: boolean;
-  sensitive?: boolean;
+  sensitive?: never;
 }
-export interface PluginConfigStringField extends PluginConfigFieldBase<string> {
+interface PluginConfigPlainStringField extends Omit<PluginConfigFieldBase<string>, 'sensitive'> {
   type: 'string';
+  sensitive?: false;
   choices?: PluginConfigChoices<string>;
   validation?: PluginConfigStringValidation;
 }
+interface PluginConfigSensitiveStringField extends Omit<PluginConfigFieldBase<string>, 'default' | 'sensitive'> {
+  type: 'string';
+  sensitive: true;
+  default?: never;
+  choices?: never;
+  validation?: PluginConfigStringValidation;
+}
+export type PluginConfigStringField =
+  | PluginConfigPlainStringField
+  | PluginConfigSensitiveStringField;
 export interface PluginConfigNumberField extends PluginConfigFieldBase<number> {
   type: 'number';
   choices?: PluginConfigChoices<number>;
@@ -161,11 +172,18 @@ export type PluginConfigScalarField =
   | PluginConfigBooleanField;
 type DistributiveOmit<Value, Key extends PropertyKey> =
   Value extends unknown ? Omit<Value, Key> : never;
-export type PluginConfigObjectPropertyField = DistributiveOmit<PluginConfigScalarField, 'default'>;
+type PluginConfigNonSensitiveScalarField =
+  | PluginConfigPlainStringField
+  | PluginConfigNumberField
+  | PluginConfigBooleanField;
+export type PluginConfigObjectPropertyField = DistributiveOmit<
+  PluginConfigNonSensitiveScalarField,
+  'default' | 'sensitive'
+> & { sensitive?: never };
 export type PluginConfigAdditionalPropertiesField = DistributiveOmit<
-  PluginConfigScalarField,
-  'default' | 'required'
->;
+  PluginConfigNonSensitiveScalarField,
+  'default' | 'required' | 'sensitive'
+> & { sensitive?: never };
 interface PluginConfigObjectFieldBase extends PluginConfigFieldBase<PluginConfigObject> {
   type: 'object';
   choices?: PluginConfigChoices<PluginConfigObject>;

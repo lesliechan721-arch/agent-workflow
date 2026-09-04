@@ -2624,6 +2624,18 @@ describe('authoring tools', () => {
       ),
       path.join(bundleRoot, 'scripts', 'aw-config.mjs'),
     );
+    await fs.copy(
+      path.join(
+        repoRoot(),
+        'packages',
+        'cli',
+        'dist',
+        'authoring',
+        'assets',
+        're2-wasm',
+      ),
+      path.join(bundleRoot, 'scripts', 're2-wasm'),
+    );
     await fs.writeJson(path.join(bundleRoot, '.agents-plugin', 'plugin.json'), withManifestSchema({
       name: 'config-demo',
       version: '0.1.0',
@@ -3284,6 +3296,7 @@ describe('authoring tools', () => {
           ...fields,
           token: {
             ...fields.token,
+            sensitive: false,
             choices: {
               allowCustom: true,
               presets: [{ id: 'private', title: 'Private', value: 'private' }],
@@ -6004,7 +6017,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
     });
   });
 
@@ -6053,7 +6066,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
     });
 
     const legacyDir = path.join(tempRoot, 'plugins', 'legacy-native');
@@ -6066,7 +6079,7 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     })).rejects.toMatchObject({
-      stdout: expect.stringContaining('Plugin manifest contract v11 is unavailable'),
+      stdout: expect.stringContaining('Plugin manifest contract v12 is unavailable'),
     });
   });
 

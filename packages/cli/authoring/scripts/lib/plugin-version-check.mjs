@@ -13,7 +13,7 @@ import {
 } from './plugin-root.mjs';
 
 const execFileAsync = promisify(execFile);
-const EXPECTED_MANIFEST_CONTRACT_VERSION = 11;
+const EXPECTED_MANIFEST_CONTRACT_VERSION = 12;
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const CLI_PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

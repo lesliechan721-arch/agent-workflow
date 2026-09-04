@@ -20,7 +20,7 @@ const config = normalizePluginConfigDefinition({
       properties: {
         'display-name': { type: 'string' },
         region: { type: 'string' },
-        token: { type: 'string', sensitive: true },
+        token: { type: 'string' },
       },
       additionalProperties: false,
     },
@@ -112,10 +112,7 @@ describe('plugin config Store v3', () => {
       env: user.env,
     });
     expect(inherited.values.connection).toEqual({ region: 'user', token: 'user-secret' });
-    expect(inherited.redactedValues.connection).toEqual({
-      region: 'user',
-      token: '[redacted]',
-    });
+    expect(inherited.redactedValues.connection).toEqual({ region: 'user', token: 'user-secret' });
 
     await fs.outputFile(resolvePluginConfigStorePath(project), '{invalid');
     await expect(resolveEffectivePluginConfig({

@@ -315,6 +315,22 @@ describe('plugin script test runner', () => {
       ),
       pluginScriptPath(repoRoot, 'aw-config.mjs'),
     );
+    await fs.copy(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+        '..',
+        '..',
+        'packages',
+        'cli',
+        'dist',
+        'authoring',
+        'assets',
+        're2-wasm',
+      ),
+      pluginScriptPath(repoRoot, 're2-wasm'),
+    );
     await writeNodeTestFile(repoRoot, 'config-scopes.test.mjs', [
       'import assert from "node:assert/strict";',
       'import { execFile } from "node:child_process";',
@@ -782,24 +798,18 @@ describe('plugin script test runner', () => {
         token: {
           type: 'string',
           sensitive: true,
-          default: 'super-secret-plugin-token',
         },
         pin: {
-          type: 'number',
+          type: 'string',
           sensitive: true,
-          default: 8675309,
         },
         enabled: {
-          type: 'boolean',
+          type: 'string',
           sensitive: true,
-          default: true,
         },
-        credentials: {
-          type: 'object',
-          properties: {
-            accessKey: { type: 'string', sensitive: true },
-          },
-          default: { accessKey: 'nested-plugin-test-secret' },
+        accessKey: {
+          type: 'string',
+          sensitive: true,
         },
       },
     };
@@ -820,7 +830,7 @@ describe('plugin script test runner', () => {
         '  const token = context.config.values.token;',
         '  const pin = context.config.values.pin;',
         '  const enabled = context.config.values.enabled;',
-        '  const accessKey = context.config.values.credentials.accessKey;',
+        '  const accessKey = context.config.values.accessKey;',
         '  console.log(`token=${token} pin=${pin} enabled=${enabled} access=${accessKey}`);',
         '  console.error(`token=${token} pin=${pin} enabled=${enabled} access=${accessKey}`);',
         '  assert.equal(token, "different-token");',
@@ -835,15 +845,27 @@ describe('plugin script test runner', () => {
       stdout: output.stdout,
       stderr: output.stderr,
       env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+      testConfigValues: {
+        token: 'super-secret-plugin-token',
+        pin: '8675309-plugin-secret',
+        enabled: 'enabled-plugin-secret',
+        accessKey: 'nested-plugin-test-secret',
+      },
     });
 
     expect(exitCode).toBe(1);
     const combinedOutput = `${output.readStdout()}\n${output.readStderr()}`;
-    expect(combinedOutput).not.toContain('super-secret-plugin-token');
-    expect(combinedOutput).not.toContain('8675309');
-    expect(combinedOutput).not.toContain('enabled=true');
-    expect(combinedOutput).not.toContain('nested-plugin-test-secret');
-    expect(combinedOutput).toContain('token=[REDACTED] pin=[REDACTED] enabled=[REDACTED] access=[REDACTED]');
+    for (const secret of [
+      'super-secret-plugin-token',
+      '8675309-plugin-secret',
+      'enabled-plugin-secret',
+      'nested-plugin-test-secret',
+    ]) {
+      expect(combinedOutput).not.toContain(secret);
+    }
+    expect(combinedOutput).toContain(
+      'token=[REDACTED] pin=[REDACTED] enabled=[REDACTED] access=[REDACTED]',
+    );
   });
 
   it('uses the catalog runtime resolver when plugin:test bundles a projected Skill reference', async () => {

@@ -34,13 +34,13 @@ describe('generated aw-config helper', () => {
       fields: {
         mode: {
           type: 'string',
-          validation: { minLength: 2 },
+          validation: { minLength: 2, maxLength: 20, pattern: '\\p{Latin}+' },
         },
         endpoint: { type: 'string', validation: { format: 'url' } },
         credentials: {
           type: 'object',
           properties: {
-            token: { type: 'string', required: true, sensitive: true },
+            token: { type: 'string', required: true },
             retries: { type: 'number', validation: { integer: true, minimum: 0 } },
           },
           additionalProperties: false,
@@ -128,7 +128,7 @@ describe('generated aw-config helper', () => {
     }
   });
 
-  it('redacts nested sensitive strings from get and JSON output', async () => {
+  it('redacts a top-level sensitive string from get and JSON output', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-helper-redaction-'));
     try {
       const contextPath = path.join(root, 'context.json');
@@ -141,17 +141,10 @@ describe('generated aw-config helper', () => {
         },
         config: {
           schema: {
-            credentials: {
-              type: 'object',
-              properties: {
-                token: { type: 'string', required: true, sensitive: true },
-                endpoint: { type: 'string' },
-              },
-              additionalProperties: false,
-            },
+            token: { type: 'string', required: true, sensitive: true },
           },
-          values: { credentials: { token: 'nested-secret', endpoint: 'https://example.test' } },
-          sources: { credentials: 'user', ignored: 'projectLocal' },
+          values: { token: 'top-level-secret' },
+          sources: { token: 'user', ignored: 'projectLocal' },
           issues: [],
           ignoredUnknownKeys: [],
         },
@@ -164,22 +157,16 @@ describe('generated aw-config helper', () => {
       };
       const [json, get] = await Promise.all([
         execFileAsync(process.execPath, [helperPath, 'json'], { cwd: root, env }),
-        execFileAsync(process.execPath, [helperPath, 'get', 'credentials'], { cwd: root, env }),
+        execFileAsync(process.execPath, [helperPath, 'get', 'token'], { cwd: root, env }),
       ]);
 
-      expect(json.stdout).not.toContain('nested-secret');
-      expect(get.stdout).not.toContain('nested-secret');
-      expect(JSON.parse(json.stdout).values.credentials).toEqual({
-        token: '[redacted]',
-        endpoint: 'https://example.test',
-      });
+      expect(json.stdout).not.toContain('top-level-secret');
+      expect(get.stdout).not.toContain('top-level-secret');
+      expect(JSON.parse(json.stdout).values.token).toBe('[redacted]');
       expect(JSON.parse(json.stdout).paths.configStores).toEqual({});
       expect(new Set(Object.values(JSON.parse(json.stdout).sources)))
         .toEqual(new Set(['user']));
-      expect(JSON.parse(get.stdout)).toEqual({
-        token: '[redacted]',
-        endpoint: 'https://example.test',
-      });
+      expect(get.stdout).toBe('[redacted]\n');
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

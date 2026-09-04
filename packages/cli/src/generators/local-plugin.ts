@@ -887,8 +887,19 @@ async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
 
-  for (const filePath of await collectRuntimeClosureFiles(plugin, [...nodeEntries])) {
+  const closureFiles = await collectRuntimeClosureFiles(plugin, [...nodeEntries]);
+  for (const filePath of closureFiles) {
     rootFiles.add(filePath);
+  }
+
+  const configHelper = plugin.manifest.scripts?.helpers?.config;
+  if (configHelper) {
+    const helperDir = path.posix.dirname(stripDotSlash(configHelper));
+    const re2RuntimeRoot = path.posix.join(helperDir, 're2-wasm');
+    if (closureFiles.includes(path.posix.join(re2RuntimeRoot, 'build/src/re2.js'))) {
+      rootFiles.add(path.posix.join(re2RuntimeRoot, 'build/wasm/re2.wasm'));
+      rootFiles.add(path.posix.join(re2RuntimeRoot, 'LICENSE'));
+    }
   }
 
   return [...rootFiles].sort();

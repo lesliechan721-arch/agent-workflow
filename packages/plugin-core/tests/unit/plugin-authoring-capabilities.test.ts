@@ -44,7 +44,8 @@ describe('plugin authoring capability structure registry', () => {
         const resolved = definition === 'configObjectField'
           ? schema.$defs.configFixedObjectField
           : schema.$defs[definition]
-        return resolved.properties.type.const
+        return (resolved.properties ?? schema.$defs[resolved.oneOf[0].$ref.split('/').at(-1)!].properties)
+          .type.const
       }))
     expect(getPluginAuthoringAcceptedValues('config', 'config.fields.<key>.validation.format'))
       .toEqual(schema.$defs.configStringValidation.properties.format.enum)
@@ -111,5 +112,27 @@ describe('plugin authoring capability structure registry', () => {
         type: 'unique AW capability ID[]',
         required: true,
       }))
+  })
+
+  it('publishes optional sensitive and object-key validation constraints', () => {
+    expect(getPluginAuthoringCapabilitySurface('config').entries)
+      .toEqual(expect.arrayContaining([
+        {
+          field: 'config.fields.<key>.sensitive',
+          type: 'literal true; top-level string fields only; incompatible with default or choices',
+          required: false,
+          acceptedValues: [true],
+        },
+        {
+          field: 'config.fields.<key>.validation.key.maxLength',
+          type: 'integer 0..4096',
+          required: 'with key.pattern',
+        },
+        {
+          field: 'config.fields.<key>.validation.key.pattern',
+          type: 'RE2 Unicode pattern up to 512 code points',
+          required: false,
+        },
+      ]))
   })
 })

@@ -781,7 +781,7 @@ describe('TUI controller runtime scope conflict validation', () => {
           mode: { type: 'string', title: 'Mode', default: 'safe' },
           token: {
             type: 'string', title: 'Token', sensitive: true,
-            validation: { pattern: '^valid$' },
+            validation: { pattern: '^valid$', maxLength: 20 },
           },
         },
       };
