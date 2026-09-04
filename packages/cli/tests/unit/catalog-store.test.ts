@@ -205,6 +205,57 @@ describe('Catalog immutable store maintenance', () => {
     await expect(fs.pathExists(path.join(location.logicalIdentityDirectory, 'foreign-file'))).resolves.toBe(true);
   });
 
+  it('fails closed on invalid source config and deletes no old entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-invalid-config');
+    const env = await configureSource(root);
+    const active = (await sync(root, env)).active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+    await fs.writeFile(path.join(env.AW_HOME!, 'catalog-sources.json'), '{ invalid\n');
+
+    await expect(catalogStoreStatus({ env, now: NOW }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigInvalid' });
+    await expect(catalogStorePrune({ dryRun: false, env, now: NOW }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigInvalid' });
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+  });
+
+  it('keeps a shared key active when a configured source and an orphan source both reference it', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-shared-active');
+    const env = await configureSource(root);
+    const active = (await sync(root, env)).active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    const state = await readCatalogGenerationState(env);
+    await fs.writeJson(path.join(env.AW_HOME!, 'catalog-state.json'), {
+      ...state,
+      sources: {
+        ...state.sources,
+        orphan: { active },
+      },
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+
+    const status = await catalogStoreStatus({ env, now: NOW });
+    expect(status.entries).toContainEqual(expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'active',
+      reason: 'active',
+    }));
+    const pruned = await catalogStorePrune({ dryRun: false, env, now: NOW });
+    expect(pruned.deleted).toEqual([]);
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+  });
+
   it('continues after one deletion failure and returns a partial receipt', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-partial');

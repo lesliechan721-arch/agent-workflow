@@ -7,6 +7,7 @@ import { CATALOG_STORE_DIRECTORY } from '../constants.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCatalogStoreKey, readCatalogStoreEntry } from '../utils/catalog-generation-store.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import { readCatalogSourcesConfig } from '../utils/catalog-sources.js';
 import { resolveAwHome } from '../utils/state-paths.js';
 
 const FORMAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -327,9 +328,13 @@ async function inspectDeleteClaim(options: {
 }
 
 async function activeStoreKeys(env: NodeJS.ProcessEnv): Promise<Set<string>> {
-  const state = await readCatalogGenerationState(env);
-  return new Set(Object.values(state.sources)
-    .flatMap((source) => source.active
+  const [config, state] = await Promise.all([
+    readCatalogSourcesConfig(env),
+    readCatalogGenerationState(env),
+  ]);
+  const configuredSourceIds = new Set(config.sources.map((source) => source.id));
+  return new Set(Object.entries(state.sources)
+    .flatMap(([sourceId, source]) => configuredSourceIds.has(sourceId) && source.active
       ? [createCatalogStoreKey(source.active.logicalIdentity, source.active.snapshotDigest)]
       : []));
 }

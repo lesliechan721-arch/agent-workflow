@@ -14,6 +14,8 @@ import {
   catalogSourceStatusCommand,
   syncCatalogSourceCommand,
 } from '../../src/commands/catalog-generation.js';
+import { catalogStorePrune, catalogStoreStatus } from '../../src/commands/catalog-store.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
@@ -470,6 +472,51 @@ describe('catalog source mutation v6', () => {
       expect.stringContaining('orphan state cleanup failed'),
       { code: 'AW_CATALOG_SOURCE_STATE_CLEANUP_FAILED' },
     );
+  });
+
+  it('allows an old orphan store entry to be pruned after remove state cleanup fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('remove-orphan-prune');
+    await createCatalogSnapshotFixture(root);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await syncCatalogSourceCommand({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const active = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env: isolation.env,
+    });
+    setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
+      if (path.basename(filePath) === 'catalog-state.json') throw new Error('injected state cleanup failure');
+    });
+    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await removeCatalogSourceCommand({
+      sourceId: 'team', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(active);
+
+    const now = new Date();
+    const young = await catalogStoreStatus({ env: isolation.env, now });
+    expect(young.entries).toContainEqual(expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'retained',
+      reason: 'inactiveWithin30Days',
+    }));
+    const afterRetention = new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000);
+    const pruned = await catalogStorePrune({
+      dryRun: false,
+      env: isolation.env,
+      now: afterRetention,
+    });
+    expect(pruned.deleted).toContainEqual(expect.objectContaining({ storeKey: location.storeKey }));
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(false);
+    expect((await readCatalogGenerationState(isolation.env)).sources.team!.active).toEqual(active);
   });
 
   it('rejects an expected config digest conflict before writing', async () => {
