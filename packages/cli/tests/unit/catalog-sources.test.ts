@@ -290,10 +290,15 @@ describe('catalog sources config v2', () => {
     const officialPrimary = setPrimaryCatalogSource(updated, 'official');
     expect(officialPrimary.sources.find((source) => source.id === 'official')?.primary).toBe(true);
     expect(() => removeCatalogSource(officialPrimary, 'official')).toThrow('primary');
+    expect(() => removeCatalogSource(officialPrimary, 'official', 'missing')).toThrow('does not exist');
+    expect(() => removeCatalogSource(officialPrimary, 'official', 'official')).toThrow('another');
+    expect(removeCatalogSource(officialPrimary, 'official', 'local').sources).toEqual([
+      expect.objectContaining({ id: 'local', primary: true }),
+    ]);
     expect(removeCatalogSource(officialPrimary, 'local').sources.map((source) => source.id))
       .toEqual(['official']);
-    expect(() => removeCatalogSource(createDefaultCatalogSourcesConfig(), 'official'))
-      .toThrow();
+    expect(() => removeCatalogSource(createDefaultCatalogSourcesConfig(), 'official', 'missing'))
+      .toThrow('last catalog source');
   });
 
   it('preserves and switches autoCheck for Git and path sources', async () => {

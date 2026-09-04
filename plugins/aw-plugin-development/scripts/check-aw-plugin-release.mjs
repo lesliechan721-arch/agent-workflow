@@ -542,6 +542,7 @@ async function main() {
       throw new Error('Profile is not supported by the plugin: ' + profile);
     }
   }
+  await assertEvidenceFiles(options);
   const pluginValidation = await validatePluginSource(options.pluginRoot, options.workspaceRoot);
   if (pluginValidation.ok !== true) {
     const result = {
@@ -589,7 +590,6 @@ async function main() {
     ...leaf,
     sourceRoot: pluginCollectionRoot(options.pluginRoot, `./skills/${leaf.skillKey}`),
   }));
-  await assertEvidenceFiles(options);
   const hasLeafInventory = sourceRoots.length > 0 || dynamicLeaves.length > 0
     || [...finalRootInventories.values()].some((roots) => roots.length > 0);
   const evidenceCount = options.reviews.length

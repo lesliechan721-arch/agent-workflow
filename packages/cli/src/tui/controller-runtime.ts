@@ -252,15 +252,17 @@ export function configAffectedStatusTargets(
 
 function configSharedNativeRenderTargets(
   plugin: PluginMeta,
-  changedKeys: readonly string[],
+  changedKeys?: readonly string[],
 ): Array<{ id: string; skillKey: string; refreshKeys: string[] }> {
-  const changed = new Set(changedKeys);
+  const changed = changedKeys ? new Set(changedKeys) : undefined;
   return (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
     target.platform === 'codex'
       && target.target === 'codex.skill'
       && target.delivery.mode === 'codex-native'
       && target.skillKey
-      && target.refreshKeys.some((key) => changed.has(key))
+      && (changed
+        ? target.refreshKeys.some((key) => changed.has(key))
+        : target.refreshKeys.length > 0)
       ? [{ id: target.id, skillKey: target.skillKey, refreshKeys: [...target.refreshKeys] }]
       : []);
 }
@@ -934,12 +936,15 @@ export function createTuiControllerDependencies(
         explicitSourceChange = preview.proposedConfigDigest !== preview.configDigest
           && (preview.identityChanged || sourceFingerprintChanged);
         if (preview.identityChanged) sourceIdentityChangeImpact = {
-          impactSchemaVersion: 1,
+          impactSchemaVersion: 2,
           sourceId: preview.sourceId,
           inventoryComplete: preview.references.inventoryComplete,
           references: preview.references.references,
           affectedReferences: preview.references.references,
-          changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+          changes: {
+            added: [], removed: [], changed: [], newlyIncompatible: [],
+            dependencyChanged: [], platformSupportChanged: [],
+          },
           errors: preview.references.errors,
         };
         if (!explicitSourceChange) {
@@ -1082,7 +1087,7 @@ export function createTuiControllerDependencies(
           '候选 Catalog 版本低于当前 Active。普通更新已阻止。',
         );
       }
-      const impact = intent.action === 'repair' ? undefined
+      const impact = exactRepair ? undefined
         : sourceIdentityChangeImpact ?? await inspectCatalogSourceImpact({
           sourceId: intent.sourceId,
           cwd: context.cwd,
@@ -1150,12 +1155,15 @@ export function createTuiControllerDependencies(
           referenceCount: preview.references.references.length,
           inventoryComplete: preview.references.inventoryComplete,
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: preview.sourceId,
             inventoryComplete: preview.references.inventoryComplete,
             references: preview.references.references,
             affectedReferences: preview.references.references,
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: preview.references.errors,
           },
         },
@@ -1268,10 +1276,12 @@ export function createTuiControllerDependencies(
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
             sharedNativeRenderTargets: intent.kind === 'configSave'
-              ? configSharedNativeRenderTargets(plugin, [
-                  ...Object.keys(intent.updates ?? {}),
-                  ...(intent.removeKeys ?? []),
-                ])
+              ? configSharedNativeRenderTargets(plugin, intent.retryApply
+                  ? undefined
+                  : [
+                      ...Object.keys(intent.updates ?? {}),
+                      ...(intent.removeKeys ?? []),
+                    ])
               : [],
           };
         },
@@ -1428,10 +1438,12 @@ export function createTuiControllerDependencies(
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
               sharedNativeRenderTargets: intent.kind === 'configSave'
-                ? configSharedNativeRenderTargets(plugin, [
-                    ...Object.keys(intent.updates ?? {}),
-                    ...(intent.removeKeys ?? []),
-                  ])
+                ? configSharedNativeRenderTargets(plugin, intent.retryApply
+                    ? undefined
+                    : [
+                        ...Object.keys(intent.updates ?? {}),
+                        ...(intent.removeKeys ?? []),
+                      ])
                 : [],
             };
           },
@@ -2234,6 +2246,7 @@ export function createTuiControllerDependencies(
                 rebuildRuntime: { ...context, awHomeMutationToken },
                 awHomeMutationToken,
                 apply: false,
+                sharedNativeApplyConfirmed: false,
               });
             }
             if (!currentSource) {
@@ -2274,6 +2287,7 @@ export function createTuiControllerDependencies(
                         },
                         awHomeMutationToken,
                         applyTargets,
+                        sharedNativeApplyConfirmed: true,
                       })
                     : await applyPluginConfigWrite({
                       plugin,

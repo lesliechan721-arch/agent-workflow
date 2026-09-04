@@ -233,6 +233,14 @@ function configPageMatches(
     && page.layer.scope === route.layer.scope);
 }
 
+function configFieldCanSet(field: ConfigFieldViewModel): boolean {
+  return field.canSet ?? field.writable;
+}
+
+function configFieldCanUnset(field: ConfigFieldViewModel): boolean {
+  return field.canUnset ?? (field.writable && field.configured);
+}
+
 function platformLabel(platform: PlatformName): string {
   return platform === 'codex' ? 'Codex' : 'Claude Code';
 }
@@ -518,6 +526,29 @@ function sourceDiagnostic(
   freshness?: CatalogSourceFreshnessViewModel,
 ): DiagnosticSummaryViewModel | undefined {
   const unavailable = state === 'unavailable' || state === 'error';
+  if (generation?.compatibility?.state === 'unsupported') {
+    const { requiredCapabilities, missingCapabilities } = generation.compatibility;
+    return {
+      severity: 'error',
+      title: 'Active Catalog 不兼容',
+      userMessage: `当前 AW 缺少 ${missingCapabilities.length} 项 Active Catalog 能力。`,
+      impact: [
+        { state: 'blocked', message: '这个 Active Catalog 不能用于浏览、安装或同步。' },
+        { state: 'preserved', message: 'Active 指针和 Catalog store 内容保持不变。' },
+      ],
+      nextStep: '升级 AW 到支持所需能力的版本，或修改来源后重新启用。',
+      technical: {
+        code: 'awCapabilityUnsupported',
+        stage: 'resolve-source',
+        sourceId,
+        context: [{
+          key: 'compatibility',
+          value: `required: ${requiredCapabilities.join('、')}; missing: ${missingCapabilities.join('、')}`,
+        }],
+        checks: ['检查所需和缺少的 Catalog capability。', '升级 AW 后重新加载来源。'],
+      },
+    };
+  }
   if (!unavailable && freshness?.state === 'checkFailed') {
     return {
       severity: 'warning',
@@ -1083,6 +1114,7 @@ export function resolveConsoleV4ScreenId(
       sourceMissing: 'I05',
       sourceIdentityChanged: 'I06',
       requiredConfigMissing: 'I07',
+      configLayerUnsupported: 'I07',
       scopeConflict: 'I08',
       dependencyMissing: 'D14',
       dependencyNotReady: 'D15',
@@ -2128,9 +2160,9 @@ export function ConsoleAppV4(props: {
     const field = currentConfigPage.groups.flatMap((group) => group.fields)
       .find((candidate) => candidate.key === pendingLayerFieldKey);
     setPendingLayerFieldKey(undefined);
-    if (!field?.writable) return;
+    if (!field || (!configFieldCanSet(field) && !configFieldCanUnset(field))) return;
     const layer = { scope: route.layer.scope as Scope };
-    props.controller.push(field.configured ? {
+    props.controller.push(field.configured || !configFieldCanSet(field) ? {
       name: 'configFieldAction',
       pluginId: route.pluginId,
       layer,
@@ -3301,6 +3333,9 @@ export function ConsoleAppV4(props: {
       if (projectSharedNativeFields.length > 0) {
         description += ' 等待设置由个人默认控制共享 native；当前项目不可改。更改影响所有项目。';
       }
+      if (projectSharedNativeFields.some(configFieldCanUnset)) {
+        description += ' 发现不再支持的 project override；实际使用 user/default；请删除旧值。';
+      }
       const mutableLayer = {
         scope: route.layer.scope as Scope,
       };
@@ -3318,7 +3353,7 @@ export function ConsoleAppV4(props: {
                 })
               : () => applyConfigPreset(currentConfigPage, preset.id),
           }))
-        : (activeGroup?.fields ?? []).filter((field) => readonly || field.writable).map((field) => ({
+        : (activeGroup?.fields ?? []).filter((field) => readonly || configFieldCanSet(field) || configFieldCanUnset(field)).map((field) => ({
             label: field.title,
             description: field.invalidOverrideIssue
               ? field.invalidOverrideOwnedByLayer
@@ -3326,7 +3361,9 @@ export function ConsoleAppV4(props: {
                 : field.invalidOverrideIssue
               : readonly
               ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
-              : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
+              : !configFieldCanSet(field) && configFieldCanUnset(field)
+                ? '不再支持的 project override · 实际使用 user/default · 可删除旧值'
+                : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
             meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
             configKey: field.key,
             run: readonly
@@ -3336,7 +3373,7 @@ export function ConsoleAppV4(props: {
                   fieldKey: field.key,
                   groupId: activeGroup!.id,
                 })
-              : () => go(field.configured ? {
+              : () => go(field.configured || !configFieldCanSet(field) ? {
                   name: 'configFieldAction',
                   pluginId: plugin.pluginId,
                   layer: mutableLayer,
@@ -3393,9 +3430,11 @@ export function ConsoleAppV4(props: {
         ? activeGroup?.fields[effectiveConfigFocus]
         : undefined;
       if (!readonly) {
-        const canUnsetFocused = focusedConfigField?.configured === true
-          && (!focusedConfigField.invalidOverrideIssue
-            || focusedConfigField.invalidOverrideOwnedByLayer === true);
+        const canUnsetFocused = focusedConfigField
+          ? configFieldCanUnset(focusedConfigField)
+            && (!focusedConfigField.invalidOverrideIssue
+              || focusedConfigField.invalidOverrideOwnedByLayer === true)
+          : false;
         help = canUnsetFocused
           ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回'
           : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · Esc 返回';
@@ -3452,7 +3491,7 @@ export function ConsoleAppV4(props: {
       ? '删除个人默认中的值'
       : '删除当前项目中的值';
     actions = [
-      {
+      ...(configFieldCanSet(activeField) ? [{
         label: '修改值…',
         run: () => go({
           name: 'configFieldEditor',
@@ -3462,14 +3501,17 @@ export function ConsoleAppV4(props: {
           editor: fieldEditor(activeField),
           ...fieldEditorMode(activeField),
         }),
-      },
-      ...(!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer ? [draftRemoves.includes(activeField.key)
+      }] : []),
+      ...(configFieldCanUnset(activeField) && (!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer) ? [draftRemoves.includes(activeField.key)
         ? { label: '撤销删除', run: () => { cancelDraftRemoval(activeField.key); back(); } }
         : { label: deleteLabel, status: 'error' as const, run: () => { removeDraft(activeField.key); back(); } }] : []),
     ];
     content = <Box flexDirection="column"><SectionCard>
       {activeField.invalidOverrideIssue
         ? <StaticRow title="当前覆盖无效" meta={activeField.invalidOverrideIssue} status="warning" />
+        : null}
+      {!configFieldCanSet(activeField) && configFieldCanUnset(activeField)
+        ? <StaticRow title="不再支持的 project override" meta="实际使用 user/default；删除旧值后保持继承" status="warning" />
         : null}
       <StaticRow title={`${layer}中的值`} meta={currentFieldDisplay(activeField)} />
       <StaticRow title="当前实际生效" meta={`${effectiveFieldDisplay(activeField)} · 来自${activeField.effectiveSourceLabel}`} />
@@ -3826,8 +3868,12 @@ export function ConsoleAppV4(props: {
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
-    description = freshness?.state === 'incompatible'
-      ? activeVersion
+    description = generationState === 'incompatible'
+      ? `Active Catalog 与当前 AW 不兼容；缺少 ${generation?.compatibility?.state === 'unsupported' ? generation.compatibility.missingCapabilities.length : 0} 项能力。`
+      : freshness?.state === 'incompatible'
+      ? generationState === 'repairRequired'
+        ? `当前候选需要升级 AW 或修改来源后才能使用；损坏的 Active 仍可按旧版本精确修复。`
+        : activeVersion
         ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；Active Catalog ${activeVersion} 仍可浏览和使用。`
         : `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；这个来源没有可用 Active Catalog。`
       : freshness?.state === 'checkFailed' && activeVersion
@@ -3845,8 +3891,13 @@ export function ConsoleAppV4(props: {
           : logicalIdentityChanged ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
-    const generationAction: ActionItem[] = logicalIdentityChanged
-      || freshness?.state === 'incompatible' && generationState !== 'ready' ? []
+    const generationAction: ActionItem[] = logicalIdentityChanged ? []
+      : generationState === 'incompatible' ? [{
+          label: '查看不兼容详情',
+          description: '显示所需和缺少的 Catalog capability',
+          status: 'error',
+          run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }),
+        }]
       : generationState === 'repairRequired' ? [{
           label: '重新下载旧版本并精确修复',
           description: '使用 Active 的精确 commit；成功后保持当前 Active 并停止',
@@ -3856,7 +3907,7 @@ export function ConsoleAppV4(props: {
             action: 'repair',
             sourceId: route.sourceId,
           }),
-        }, {
+        }, ...(freshness?.state === 'incompatible' ? [] : [{
           label: '使用当前候选替换损坏的 Active…',
           description: '旧版本无法取得时使用；进入独立影响 Review',
           disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
@@ -3865,7 +3916,8 @@ export function ConsoleAppV4(props: {
             action: 'replaceDamaged',
             sourceId: route.sourceId,
           }),
-        }]
+        }])]
+      : freshness?.state === 'incompatible' && generationState !== 'ready' ? []
       : generationState !== 'ready' ? [{
           label: generationState === 'stateInvalid' ? '恢复状态并启用'
               : generationState === 'configMismatch' ? '验证并切换' : '获取并启用',
@@ -3905,7 +3957,8 @@ export function ConsoleAppV4(props: {
     actions = [
       ...generationAction,
       { label: '编辑来源…', description: '修改前先 Review；默认保存并启用', run: () => go({ name: 'sourceEdit' as const, sourceId: route.sourceId }) },
-      ...(freshness?.state === 'incompatible' && generationState !== 'ready' ? [] : [{
+      ...(generationState === 'incompatible'
+        || (freshness?.state === 'incompatible' && generationState !== 'ready') ? [] : [{
         label: generationState === 'ready' ? '设为主来源…' : '启用并设为主来源…',
         description: generationState === 'ready' ? '只改变默认 marketplace' : '先启用确认的候选，再设为主来源',
         disabled: detail?.primary ? '当前已经是主来源'
@@ -3943,7 +3996,7 @@ export function ConsoleAppV4(props: {
     ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
     const freshnessLabel = catalogSourceFreshnessLabel(freshness);
-    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} compact />{candidateVersion ? <StaticRow title={`候选 Catalog ${candidateVersion}`} meta={freshnessLabel} status={freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable' ? 'warning' : undefined} compact /> : <StaticRow title={freshnessLabel} status={freshness?.state === 'checkFailed' ? 'warning' : undefined} compact />}</SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /><StaticRow title="自动检查更新" meta={detail?.autoCheck === false ? '关闭' : '开启'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
+    content = <Box flexDirection="column"><SectionCard title="Active Catalog" status={generationState === 'incompatible' ? 'error' : activeVersion ? 'success' : 'warning'} compact={policy.mode === 'compact'}><StaticRow title={activeVersion ? `Catalog ${activeVersion}` : '未启用'} meta={activeVersion ? generation?.active?.digestShort : generationState} status={generationState === 'incompatible' ? 'error' : undefined} compact />{candidateVersion ? <StaticRow title={`候选 Catalog ${candidateVersion}`} meta={freshnessLabel} status={freshness?.state === 'updateAvailable' || freshness?.state === 'localChangesAvailable' ? 'warning' : undefined} compact /> : <StaticRow title={freshnessLabel} status={freshness?.state === 'checkFailed' ? 'warning' : undefined} compact />}</SectionCard><SectionCard title="来源配置" compact={policy.mode === 'compact'}><StaticRow title="位置" meta={detail?.locationSummary ?? '不可用'} compact /><StaticRow title="引用" meta={generation?.active?.requestedRef ?? detail?.explicitRef ?? detail?.requestedRef ?? '本地目录'} compact /><StaticRow title="自动检查更新" meta={detail?.autoCheck === false ? '关闭' : '开启'} compact /></SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={sourceActionViewport.offset} limit={sourceActionViewport.limit} /></Box>;
   } else if (route.name === 'sourceTechnical') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
@@ -5444,7 +5497,7 @@ export function ConsoleAppV4(props: {
       const key = actions[focus]?.configKey;
       const field = currentConfigPage?.groups.flatMap((group) => group.fields)
         .find((candidate) => candidate.key === key);
-      if (field?.configured && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
+      if (field && configFieldCanUnset(field) && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
         removeDraft(field.key);
       }
     } else if (route.name === 'configFields' && visibleConfigTabs.length > 1

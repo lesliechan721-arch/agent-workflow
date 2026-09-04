@@ -3960,6 +3960,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(review.changes.filter((change) => change.group === 'configImpact').map((change) => change.title))
       .toEqual(labels.map((label) => `重新应用 ${label}`));
+    expect(review.requiresConfirmation).toBe(false);
   });
 
   it.each([
@@ -3998,6 +3999,12 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       title: 'project Agent role 继续按当前项目配置', kind: 'keep',
     }));
+    expect(review).toMatchObject({
+      requiresConfirmation: apply,
+      sharedImpact: apply
+        ? { pluginIds: ['official/enhance'], warning: expect.stringContaining('所有启用项目') }
+        : { pluginIds: [] },
+    });
   });
 
   it.each([false, true])(
@@ -4030,6 +4037,7 @@ describe('TUI v4 Review safety', () => {
         .toEqual([{ kind: 'keep', group: 'configImpact', title: '当前没有可见安装；只保存设置' }]);
       expect(JSON.stringify(review.changes)).not.toContain('共享 Codex native render 待同步');
       expect(JSON.stringify(review.changes)).not.toContain('重新生成');
+      expect(review.requiresConfirmation).toBe(false);
     },
   );
 

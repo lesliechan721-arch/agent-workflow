@@ -11,6 +11,7 @@ import {
   readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   resetPluginConfigStore,
+  resolveConfigRead,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
   writePluginConfigStore,
@@ -162,6 +163,87 @@ describe('plugin config Store v4', () => {
       state: 'ready',
       values: { labels: { shareability: 'unknown' } },
     });
+  });
+
+  it.each([
+    { projectValue: 'project', userValue: 'user', expectedValue: 'user', expectedSource: 'user', label: 'valid' },
+    { projectValue: 42, userValue: undefined, expectedValue: 'default', expectedSource: 'default', label: 'invalid' },
+  ])('ignores a $label project override for a Codex native refresh key', async ({
+    projectValue, userValue, expectedValue, expectedSource,
+  }) => {
+    const nativeConfig = normalizePluginConfigDefinition({
+      fields: { mode: { type: 'string', default: 'default' } },
+    });
+    const nativeManifest = {
+      name: manifest.name,
+      version: manifest.version,
+      config: nativeConfig,
+      artifacts: {
+        targets: [{
+          id: 'native-skill',
+          platform: 'codex',
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-skill',
+        }],
+      },
+    } as unknown as NormalizedPluginManifest;
+    const user = storeOptions('user');
+    const project = storeOptions('project');
+    if (userValue !== undefined) {
+      await writePluginConfigStore({ ...user, values: { mode: userValue } });
+    }
+    await writePluginConfigStore({ ...project, values: { mode: projectValue } });
+
+    const effective = await resolveEffectivePluginConfig({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      logicalIdentity,
+      manifest: nativeManifest,
+      targetScope: 'project',
+      cwd: user.cwd,
+      env: user.env,
+    });
+
+    expect(effective.values.mode).toBe(expectedValue);
+    expect(effective.sources.mode).toBe(expectedSource);
+    expect(effective.issues).toEqual([]);
+    expect(effective.unsupportedLayerOverrides).toEqual([{
+      type: 'configLayerUnsupported',
+      key: 'mode',
+      scope: 'project',
+      source: 'project',
+    }]);
+    await expect(resolveConfigRead({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      pluginName: nativeManifest.name,
+      plugin: {
+        rootDir: user.cwd,
+        manifestPath: path.join(user.cwd, '.agents-plugin', 'plugin.json'),
+        manifest: nativeManifest,
+        sourceId: user.sourceId,
+        sourceIdentity,
+        catalogLogicalIdentity: logicalIdentity,
+      },
+      scope: 'project',
+      cwd: user.cwd,
+      env: user.env,
+    })).resolves.toMatchObject({
+      fields: [{
+        key: 'mode',
+        writable: false,
+        canSet: false,
+        canUnset: true,
+        effectiveValue: expectedValue,
+        sourceLayer: expectedSource,
+        storedSourceLayer: 'project',
+      }],
+    });
+    expect((await readPluginConfigStore(project)).values.mode).toBe(projectValue);
   });
 
   it('atomically overrides an object at its top-level key and unsets to inheritance', async () => {

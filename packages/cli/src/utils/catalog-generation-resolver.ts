@@ -12,6 +12,7 @@ import type {
   SourceIdentity,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
+import { projectCatalogCapabilityCompatibility } from './catalog-capability-projection.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
 import {
   readCatalogGenerationControlSnapshot,
@@ -27,7 +28,7 @@ import {
   type CatalogStoreEntry,
 } from './catalog-generation-store.js';
 import { calculateCatalogSourceConfigFingerprint } from './catalog-source-identity.js';
-import { checkAwCapabilitySupport, validatePluginManifest } from './manifest.js';
+import { validatePluginManifest } from './manifest.js';
 import { validateCatalogManifestV7 } from './catalog-manifest-v7.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 import {
@@ -49,6 +50,36 @@ export interface ResolvedActiveCatalogPluginShallow {
   plugin: PluginMeta;
 }
 
+export async function readValidatedCatalogGenerationStoreEntry(options: {
+  logicalIdentity: string;
+  snapshotDigest: string;
+  env: NodeJS.ProcessEnv;
+  validatedStoreEntries?: Map<string, CatalogStoreEntry>;
+  validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
+}): Promise<CatalogStoreEntry> {
+  const storeKey = createCatalogStoreKey(options.logicalIdentity, options.snapshotDigest);
+  const cached = options.validatedStoreEntries?.get(storeKey);
+  if (cached) return cached;
+  let pending = options.validatingStoreEntries?.get(storeKey);
+  if (!pending) {
+    pending = readCatalogStoreEntry({
+      logicalIdentity: options.logicalIdentity,
+      snapshotDigest: options.snapshotDigest,
+      env: options.env,
+    });
+    options.validatingStoreEntries?.set(storeKey, pending);
+  }
+  try {
+    const entry = await pending;
+    options.validatedStoreEntries?.set(storeKey, entry);
+    return entry;
+  } finally {
+    if (options.validatingStoreEntries?.get(storeKey) === pending) {
+      options.validatingStoreEntries.delete(storeKey);
+    }
+  }
+}
+
 async function assertRegularDirectory(value: string, label: string): Promise<void> {
   const stats = await fs.lstat(value);
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
@@ -68,6 +99,7 @@ async function resolveFromState(options: {
   sourceIdentity: SourceIdentity;
   active?: CatalogGenerationActiveV1;
   env: NodeJS.ProcessEnv;
+  requireCompatibility: boolean;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
 }): Promise<ResolvedActiveCatalogGeneration> {
@@ -88,26 +120,13 @@ async function resolveFromState(options: {
     message: `Active Catalog snapshot for source "${options.source.id}" does not match the current source configuration. Run aw catalog source sync ${options.source.id}.`,
   });
   const storeKey = createCatalogStoreKey(options.active.logicalIdentity, options.active.snapshotDigest);
-  let entry = options.validatedStoreEntries?.get(storeKey);
-  if (!entry) {
-    let pending = options.validatingStoreEntries?.get(storeKey);
-    if (!pending) {
-      pending = readCatalogStoreEntry({
-        logicalIdentity: options.active.logicalIdentity,
-        snapshotDigest: options.active.snapshotDigest,
-        env: options.env,
-      });
-      options.validatingStoreEntries?.set(storeKey, pending);
-    }
-    try {
-      entry = await pending;
-      options.validatedStoreEntries?.set(storeKey, entry);
-    } finally {
-      if (options.validatingStoreEntries?.get(storeKey) === pending) {
-        options.validatingStoreEntries.delete(storeKey);
-      }
-    }
-  }
+  const entry = await readValidatedCatalogGenerationStoreEntry({
+    logicalIdentity: options.active.logicalIdentity,
+    snapshotDigest: options.active.snapshotDigest,
+    env: options.env,
+    validatedStoreEntries: options.validatedStoreEntries,
+    validatingStoreEntries: options.validatingStoreEntries,
+  });
   if (entry.metadata.manifestDigest !== options.active.manifestDigest) {
     throw new CatalogGenerationError({
       code: 'catalogGenerationIdentityMismatch',
@@ -115,15 +134,14 @@ async function resolveFromState(options: {
       message: `Active Catalog snapshot for source "${options.source.id}" does not match store metadata. Run aw catalog source sync ${options.source.id}.`,
     });
   }
-  const support = checkAwCapabilitySupport(
+  const compatibility = projectCatalogCapabilityCompatibility(
     entry.metadata.requiredAwCapabilities,
-    IMPLEMENTED_AW_CAPABILITIES,
   );
-  if (!support.supported) {
+  if (options.requireCompatibility && compatibility.state === 'unsupported') {
     throw new CatalogProviderCompatibilityError({
       sourceId: options.source.id,
-      requiredCapabilities: entry.metadata.requiredAwCapabilities,
-      missingCapabilities: support.missing,
+      requiredCapabilities: compatibility.requiredCapabilities,
+      missingCapabilities: compatibility.missingCapabilities,
       availableCapabilities: IMPLEMENTED_AW_CAPABILITIES,
     });
   }
@@ -143,12 +161,17 @@ async function resolveFromState(options: {
   };
 }
 
-export async function resolveActiveCatalogGeneration(options: {
+interface ResolveActiveCatalogGenerationOptions {
   sourceId: string;
   env?: NodeJS.ProcessEnv;
   validatedStoreEntries?: Map<string, CatalogStoreEntry>;
   validatingStoreEntries?: Map<string, Promise<CatalogStoreEntry>>;
-}): Promise<ResolvedActiveCatalogGeneration> {
+}
+
+async function resolveActiveCatalogGenerationWithPolicy(
+  options: ResolveActiveCatalogGenerationOptions,
+  requireCompatibility: boolean,
+): Promise<ResolvedActiveCatalogGeneration> {
   const env = options.env ?? process.env;
   const control = await readCatalogGenerationControlSnapshot({ env });
   const source = control.configSnapshot.config.sources.find((entry) => entry.id === options.sourceId);
@@ -162,9 +185,23 @@ export async function resolveActiveCatalogGeneration(options: {
     sourceIdentity: control.sourceIdentities[source.id]!,
     active: control.generationState.sources[source.id]?.active,
     env,
+    requireCompatibility,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
   });
+}
+
+export async function resolveActiveCatalogGeneration(
+  options: ResolveActiveCatalogGenerationOptions,
+): Promise<ResolvedActiveCatalogGeneration> {
+  return resolveActiveCatalogGenerationWithPolicy(options, true);
+}
+
+/** @internal Complete Active evidence for freshness checks before consumer compatibility gating. */
+export async function resolveValidatedActiveCatalogGeneration(
+  options: ResolveActiveCatalogGenerationOptions,
+): Promise<ResolvedActiveCatalogGeneration> {
+  return resolveActiveCatalogGenerationWithPolicy(options, false);
 }
 
 export async function resolveActiveCatalogPluginShallow(options: {
@@ -308,6 +345,7 @@ export async function resolveCatalogGenerationSet(options: {
     sourceIdentity: control.sourceIdentities[source.id]!,
     active: control.generationState.sources[source.id]?.active,
     env,
+    requireCompatibility: true,
     validatedStoreEntries: options.validatedStoreEntries,
     validatingStoreEntries: options.validatingStoreEntries,
   })));

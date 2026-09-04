@@ -47,6 +47,7 @@ export interface DesiredTarget {
   requiresNative: boolean;
   writeNativeRequired?: boolean;
   codexNativeObservationExpectation?: 'observed' | 'installed';
+  codexNativeSensitivePreflightRequired?: boolean;
   artifacts: readonly GeneratedArtifact[];
   operationActions?: readonly OperationAction[];
   catalog?: CatalogResolution;

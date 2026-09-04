@@ -262,6 +262,8 @@ export interface ConfigFieldViewModel {
   required: boolean;
   sensitive: boolean;
   writable: boolean;
+  canSet: boolean;
+  canUnset: boolean;
   dirty: boolean;
   inherited: boolean;
   configured: boolean;
@@ -330,6 +332,7 @@ export type UserIssueCategory =
   | 'sourceMissing'
   | 'sourceIdentityChanged'
   | 'requiredConfigMissing'
+  | 'configLayerUnsupported'
   | 'scopeConflict'
   | 'dependencyMissing'
   | 'dependencyNotReady'
@@ -432,7 +435,7 @@ export interface UserIssueViewModel {
   requiredFields?: Array<{
     key: string;
     title: string;
-    type: 'missing-required' | 'invalid-config';
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
     source: 'default' | 'user' | 'project' | 'missing';
     scope: Scope;
   }>;
@@ -1205,7 +1208,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
         explanation: root.category === 'artifactCollision'
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
@@ -1327,9 +1330,33 @@ function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[
       });
     }
     if (!summary.configIssues?.length) return issues;
-    const types = new Set(summary.configIssues.map((issue) => issue.type));
-    const invalid = types.has('invalid-config');
-    const sources = new Set(summary.configIssues.map((issue) => issue.source));
+    const unsupported = summary.configIssues.filter((issue) => issue.type === 'configLayerUnsupported');
+    if (unsupported.length > 0) {
+      issues.push({
+        issueId: `config:${summary.pluginId}:unsupported-project-layer`,
+        category: 'configLayerUnsupported' as const,
+        title: `${summary.displayName ?? summary.pluginName} · 项目设置包含旧值`,
+        explanation: '这些 project override 已不再受支持，实际使用个人默认或 manifest 默认值。',
+        impact: ['旧值不会参与生成。可以进入项目设置删除旧值。'],
+        entity: { kind: 'plugin' as const, id: summary.pluginId },
+        pluginId: summary.pluginId,
+        sourceId,
+        configLayer: { scope: 'project' as const },
+        actions: [
+          { id: 'openConfig' as const, label: '删除旧值', description: '进入项目设置并恢复继承' },
+          { id: 'viewTechnical' as const, label: '查看字段详情' },
+        ],
+        technicalDetails: unsupported.map((entry) => ({
+          code: entry.type,
+          message: `${entry.title} · project · 实际使用 user/default`,
+        })),
+      });
+    }
+    const blockingIssues = summary.configIssues.filter((issue) => issue.type !== 'configLayerUnsupported');
+    if (blockingIssues.length === 0) return issues;
+    const types = new Set(blockingIssues.map((issue) => issue.type));
+    const invalid = types.has('invalid-config') || types.has('sharedCompositeContainsLocalPath');
+    const sources = new Set(blockingIssues.map((issue) => issue.source));
     const onlySource = sources.size === 1 ? [...sources][0] : undefined;
     const configLayer = onlySource === 'user'
       ? { scope: 'user' as const }
@@ -1347,7 +1374,7 @@ function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[
       entity: { kind: 'plugin' as const, id: summary.pluginId },
       pluginId: summary.pluginId,
       sourceId,
-      requiredFields: summary.configIssues.map(({ key, title, type, source, scope }) => ({
+      requiredFields: blockingIssues.map(({ key, title, type, source, scope }) => ({
         key, title, type, source, scope,
       })),
       ...(configLayer ? { configLayer } : {}),
@@ -1355,7 +1382,7 @@ function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[
         { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入建议的设置层' : '选择个人或项目设置层' },
         { id: 'viewTechnical' as const, label: '查看字段详情' },
       ],
-      technicalDetails: summary.configIssues.map((entry) => ({
+      technicalDetails: blockingIssues.map((entry) => ({
         code: entry.type,
         message: `${entry.title} · ${entry.scope} · ${entry.source}`,
       })),
@@ -1406,6 +1433,7 @@ function issueDiagnostic(
 ): DiagnosticSummaryViewModel {
   const source = issue.sourceId ? sourceDetails.get(issue.sourceId) : undefined;
   const sourceUnavailable = issue.category === 'sourceUnavailable' && issue.entity.kind === 'source';
+  const configLayerUnsupported = issue.category === 'configLayerUnsupported';
   const configUnavailable = issue.category === 'diagnostic' && issue.issueId.startsWith('config:');
   const configInvalid = issue.category === 'requiredConfigMissing';
   const dependency = issue.category.startsWith('dependency');
@@ -1438,6 +1466,7 @@ function issueDiagnostic(
   const code = safeDiagnosticCode(rawCode, sourceUnavailable
     ? 'catalogSourceUnavailable' : 'diagnosticUnavailable');
   const stage = sourceUnavailable ? 'resolve-source'
+    : configLayerUnsupported ? 'read-config'
     : configUnavailable ? 'read-config'
       : configInvalid ? 'validate-config'
       : dependency ? 'resolve-dependencies'
@@ -1462,6 +1491,8 @@ function issueDiagnostic(
         '按技术详情使用受支持命令或人工处理。',
         '再次运行状态检查。',
       ]
+    : configLayerUnsupported
+      ? ['打开项目设置。', '删除不再支持的 project override。', '重新检查插件设置。']
     : sourceUnavailable
     ? ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。']
     : dependency
@@ -1472,7 +1503,7 @@ function issueDiagnostic(
           ? ['完成或修正列出的设置字段。', '重新检查插件设置。']
         : ['检查目标平台配置和访问权限。', '完成恢复动作后重新运行状态检查。'];
   return {
-    severity: 'error',
+    severity: configLayerUnsupported ? 'warning' : 'error',
     title: issue.title,
     userMessage: issue.explanation,
     impact,
@@ -1507,7 +1538,7 @@ function issueGroup(issue: UserIssueDraft): UserIssueGroup {
     || issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
   if (issue.category.startsWith('dependency')) return 'dependency';
   if (issue.category === 'scopeConflict') return 'scope';
-  if (issue.category === 'requiredConfigMissing') return 'config';
+  if (issue.category === 'requiredConfigMissing' || issue.category === 'configLayerUnsupported') return 'config';
   if (issue.category === 'incompleteInstallation') return 'installation';
   return 'diagnostic';
 }
@@ -1518,6 +1549,7 @@ function primaryAttentionCode(issue: UserIssueDraft): string {
       ? 'invalidConfig'
       : 'requiredConfigMissing';
   }
+  if (issue.category === 'configLayerUnsupported') return 'configLayerUnsupported';
   if (issue.category === 'incompleteInstallation') return 'incompleteInstallation';
   if (issue.category === 'sourceIdentityChanged') return 'sourceUnavailable';
   return issue.rootCode ?? issue.category;
@@ -1738,7 +1770,7 @@ export function buildTuiViewModel(options: {
     return {
       ...plugin,
       primaryAttention: {
-        severity: 'error',
+        severity: primary.category === 'configLayerUnsupported' ? 'warning' : 'error',
         code: primaryAttentionCode(primary),
         message: primary.explanation,
       },
@@ -1959,6 +1991,8 @@ export function buildConfigGroups(options: {
       sensitive: schema.sensitive === true,
       writable: (entry?.writable ?? effectivePage)
         && !(options.read.scope === 'project' && privateValue),
+      canSet: entry?.canSet ?? effectivePage,
+      canUnset: entry?.canUnset ?? false,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
       configured,

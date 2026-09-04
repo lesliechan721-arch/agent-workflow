@@ -527,6 +527,30 @@ async function resolveConfigApplyTargets(options: {
   });
 }
 
+async function configApplyHasIssues(options: {
+  plugin: PluginMeta;
+  targets: ReceiptTargetIdentity[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+  for (const scope of new Set(options.targets.map((target) => target.scope))) {
+    const effective = await resolveEffectivePluginConfig({
+      ...(options.plugin.sourceId ? {
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+        logicalIdentity: options.plugin.catalogLogicalIdentity,
+      } : {}),
+      pluginName: options.plugin.manifest.name,
+      manifest: options.plugin.manifest,
+      targetScope: scope,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    if (effective.issues.length > 0) return true;
+  }
+  return false;
+}
+
 async function applyConfigToVisibleTargets(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -589,6 +613,7 @@ export async function replayConfigRuntimeWrites(options: {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
   awHomeMutationToken?: AwHomeMutationToken;
+  sharedNativeApplyConfirmed?: boolean;
 }): Promise<ConfigRuntimeReplayReceipt> {
   return withAwHomeMutationLock({
     env: options.env,
@@ -596,7 +621,41 @@ export async function replayConfigRuntimeWrites(options: {
     action: async (awHomeMutationToken) => {
       const env = options.env ?? process.env;
       const rebuildRuntime = { ...options.rebuildRuntime, awHomeMutationToken };
-      const apply = await applyConfigToVisibleTargets({
+      let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
+      try {
+        discovered = await resolveConfigApplyTargets({
+          plugin: options.plugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          rebuildRuntime,
+        });
+      } catch {
+        return {
+          configWrite: 'succeeded',
+          overallState: 'partial',
+          apply: publicConfigApplyResult(unavailableApply('targetDiscoveryFailed', 'targetDiscovery')),
+          otherProjectsMayRequireSync: false,
+        };
+      }
+      const applyHasIssues = await configApplyHasIssues({
+        plugin: options.plugin,
+        targets: discovered.targets,
+        cwd: options.cwd,
+        env,
+      });
+      if (
+        !applyHasIssues
+        && options.scope === 'user'
+        && options.sharedNativeApplyConfirmed !== true
+        && pluginHasSharedNativeRefreshKeys(options.plugin)
+        && discovered.targets.some((target) => target.platform === 'codex')
+      ) {
+        throwSharedNativeApplyConfirmationRequired();
+      }
+      const apply = await reinstallVisibleTargets({
         plugin: options.plugin,
         scope: options.scope,
         cwd: options.cwd,
@@ -605,6 +664,7 @@ export async function replayConfigRuntimeWrites(options: {
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime,
+        discovered,
       });
       return {
         configWrite: 'succeeded',
@@ -644,6 +704,22 @@ function changedKeysAffectSharedNativeTarget(options: {
     && target.target === 'codex.skill'
     && target.delivery?.mode === 'codex-native'
     && target.refreshKeys.some((key) => changedKeys.has(key)));
+}
+
+function pluginHasSharedNativeRefreshKeys(plugin: PluginMeta): boolean {
+  return (plugin.manifest.artifacts?.targets ?? []).some((target) =>
+    target.platform === 'codex'
+    && target.target === 'codex.skill'
+    && target.delivery?.mode === 'codex-native'
+    && target.refreshKeys.length > 0);
+}
+
+function throwSharedNativeApplyConfirmationRequired(): never {
+  const error = new Error(
+    'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
+  ) as Error & { code: string };
+  error.code = 'sharedNativeConfigApplyConfirmationRequired';
+  throw error;
 }
 
 async function applyPluginConfigWriteUnlocked(
@@ -754,11 +830,7 @@ async function applyPluginConfigWriteUnlocked(
       rebuildRuntime: options.rebuildRuntime,
     })).targets;
     if (applyTargets.some((target) => target.platform === 'codex')) {
-      const error = new Error(
-        'sharedNativeConfigApplyConfirmationRequired: Applying this user config changes a shared Codex native artifact. Re-run with --yes.',
-      ) as Error & { code: string };
-      error.code = 'sharedNativeConfigApplyConfirmationRequired';
-      throw error;
+      throwSharedNativeApplyConfirmationRequired();
     }
   }
   if (
@@ -964,6 +1036,7 @@ type ResetPluginConfigWriteOptions = {
   awHomeMutationToken?: AwHomeMutationToken;
   reviewPreflight?: () => Promise<void> | void;
   apply?: boolean;
+  sharedNativeApplyConfirmed?: boolean;
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -1005,6 +1078,7 @@ async function resetPluginConfigWithHelperUnlocked(
     }
   }
   let removedKeys: string[] = [];
+  let removedKeysKnown = false;
   try {
     const store = await readPluginConfigStore({
       ...configIdentity,
@@ -1014,10 +1088,39 @@ async function resetPluginConfigWithHelperUnlocked(
       env: options.env,
     });
     removedKeys = collectRemovedConfigKeys(store.values);
+    removedKeysKnown = store.state !== 'invalid';
   } catch {
     // Reset is the final recovery boundary and does not require a readable store.
   }
   const warnings: string[] = [];
+
+  const sharedNativeAffected = options.plugin
+    && (removedKeysKnown
+      ? changedKeysAffectSharedNativeTarget({
+          plugin: options.plugin,
+          changedKeys: removedKeys,
+        })
+      : pluginHasSharedNativeRefreshKeys(options.plugin));
+  if (
+    options.plugin
+    && options.apply !== false
+    && options.scope === 'user'
+    && options.sharedNativeApplyConfirmed !== true
+    && sharedNativeAffected
+  ) {
+    const discovered = await resolveConfigApplyTargets({
+      plugin: options.plugin,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      applyTargets: options.applyTargets,
+      nativeCliRunner: options.nativeCliRunner,
+      rebuildRuntime: options.rebuildRuntime,
+    });
+    if (discovered.targets.some((target) => target.platform === 'codex')) {
+      throwSharedNativeApplyConfirmationRequired();
+    }
+  }
 
   let reset: Awaited<ReturnType<typeof resetPluginConfigStore>>;
   try {

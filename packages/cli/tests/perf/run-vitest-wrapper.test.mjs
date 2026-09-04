@@ -11,6 +11,8 @@ const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url))
 const wrapperPath = path.join(repositoryRoot, 'scripts/test/run-vitest.mjs');
 const roots = [];
 const observedPids = [];
+const observedProcessGroups = [];
+const itOnPosix = process.platform === 'win32' ? it.skip : it;
 const hostProcessInspectionAvailable = process.platform !== 'win32' &&
   spawnSync('ps', ['-Ao', 'pid=,ppid=,lstart='], { stdio: 'ignore' }).status === 0;
 const itWithPosixInspection = hostProcessInspectionAvailable ? it : it.skip;
@@ -123,6 +125,13 @@ function spawnWrapper(cwd, args, env) {
 }
 
 afterEach(async () => {
+  for (const pid of observedProcessGroups.splice(0)) {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      // The process group already exited.
+    }
+  }
   for (const pid of observedPids.splice(0)) {
     if (isProcessAlive(pid)) {
       try {
@@ -229,12 +238,14 @@ describe('Vitest process-tree wrapper', () => {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    observedProcessGroups.push(run.pid);
+    observedPids.push(run.pid);
     const closed = new Promise((resolve, reject) => {
       run.once('error', reject);
       run.once('close', (code, signal) => resolve({ code, signal }));
     });
     const { worker: workerPid } = await readJsonEventually(workerPidFile);
-    observedPids.push(run.pid, workerPid);
+    observedPids.push(workerPid);
 
     process.kill(-run.pid, 'SIGINT');
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -277,12 +288,12 @@ describe('Vitest process-tree wrapper', () => {
     expect(result.stderr).toContain('cleanup could not verify descendant termination');
   });
 
-  itWithPosixInspection('fails cleanup when process snapshots never establish ownership', async () => {
+  itOnPosix('fails cleanup without leaking a worker when snapshots never establish ownership', async () => {
     const fixture = await createFixture([
       "import { spawn } from 'node:child_process';",
       "import fs from 'node:fs';",
-      "const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
-      "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, descendant: descendant.pid }));",
+      "const worker = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+      "fs.writeFileSync(process.env.PID_FILE, JSON.stringify({ root: process.pid, worker: worker.pid }));",
       "process.on('SIGINT', () => {});",
       'setInterval(() => {}, 1000);',
     ].join('\n'));
@@ -295,11 +306,13 @@ describe('Vitest process-tree wrapper', () => {
       PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     });
     const pids = await readJsonEventually(pidFile);
-    observedPids.push(pids.root, pids.descendant);
+    observedPids.push(pids.root, pids.worker);
     run.child.kill('SIGINT');
     const result = await run.closed;
+    await waitForExit(pids.worker);
 
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('cleanup could not verify process-tree ownership');
+    expect(isProcessAlive(pids.worker)).toBe(false);
   });
 });

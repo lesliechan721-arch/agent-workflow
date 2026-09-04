@@ -180,9 +180,17 @@ export interface ResolvedEffectivePluginConfig {
   sources: Record<string, PluginConfigSource>;
   fieldStates: Record<string, PluginConfigFieldState>;
   issues: PluginConfigIssue[];
+  unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
   schema: PluginConfigSchema['fields'];
   stores: Partial<Record<Scope, PluginConfigStore>>;
+}
+
+export interface UnsupportedPluginConfigLayerOverride {
+  type: 'configLayerUnsupported';
+  key: string;
+  scope: 'project';
+  source: 'project';
 }
 
 export interface PluginConfigResolvedValue {
@@ -206,6 +214,7 @@ export interface ResolvedProjectArtifactRenderConfig {
   values: Record<string, PluginConfigValue>;
   sources: Record<string, PluginConfigSource>;
   issues: PluginConfigIssue[];
+  unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
   schema: PluginConfigSchema['fields'];
   stores: {
@@ -235,6 +244,7 @@ export interface ResolvedProjectScopedPluginConfigView {
   sources: Record<string, PluginConfigSource>;
   entries: Record<string, ProjectScopedPluginConfigEntryView>;
   issues: PluginConfigIssue[];
+  unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[];
   ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[];
 }
 
@@ -1599,8 +1609,10 @@ export async function resolveEffectivePluginConfig(options: {
   const sources: Record<string, PluginConfigSource> = {};
   const fieldStates: Record<string, PluginConfigFieldState> = {};
   const ignoredUnknownKeys: IgnoredUnknownPluginConfigKey[] = [];
+  const unsupportedLayerOverrides: UnsupportedPluginConfigLayerOverride[] = [];
   const dangerousKeyIssues: PluginConfigIssue[] = [];
   const schemaKeys = new Set(Object.keys(schema));
+  const userOnlyKeys = codexNativeRefreshKeys(options.manifest);
 
   for (const key of schemaKeys) {
     sources[key] = 'missing';
@@ -1651,13 +1663,25 @@ export async function resolveEffectivePluginConfig(options: {
         }
       }
     }
+    const supportedEntries = scope === 'project'
+      ? Object.fromEntries(Object.entries(plainEntries).filter(([key]) => {
+          if (!schemaKeys.has(key) || !userOnlyKeys.has(key)) return true;
+          unsupportedLayerOverrides.push({
+            type: 'configLayerUnsupported',
+            key,
+            scope: 'project',
+            source: 'project',
+          });
+          return false;
+        }))
+      : plainEntries;
     await applyConfigLayer({
       values,
       redactedValues,
       sources,
       fieldStates,
       schema,
-      entries: plainEntries,
+      entries: supportedEntries,
       source,
     });
   }
@@ -1685,6 +1709,7 @@ export async function resolveEffectivePluginConfig(options: {
     sources,
     fieldStates,
     issues,
+    unsupportedLayerOverrides,
     ignoredUnknownKeys,
     schema,
     stores: {
@@ -1757,6 +1782,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
       values: {},
       sources: {},
       issues: [],
+      unsupportedLayerOverrides: [],
       ignoredUnknownKeys: [],
       schema: {},
       stores: { user: userStore, project: projectStore },
@@ -1772,6 +1798,7 @@ export async function resolveProjectArtifactRenderConfig(options: {
     values: effective.values,
     sources: effective.sources,
     issues: effective.issues,
+    unsupportedLayerOverrides: effective.unsupportedLayerOverrides,
     ignoredUnknownKeys: effective.ignoredUnknownKeys,
     schema: effective.schema,
     stores: {
@@ -1880,6 +1907,7 @@ export async function resolveProjectScopedPluginConfigView(options: {
     sources: effective.sources,
     entries,
     issues: effective.issues,
+    unsupportedLayerOverrides: effective.unsupportedLayerOverrides,
     ignoredUnknownKeys: effective.ignoredUnknownKeys,
   };
 }
@@ -2069,6 +2097,10 @@ async function buildManifestFieldEntries(options: {
       kind: 'manifest',
       reserved: false,
       writable: options.scope !== 'project' || !userOnlyKeys.has(key),
+      canSet: options.scope !== 'project' || !userOnlyKeys.has(key),
+      canUnset: options.scope === 'user'
+        ? Object.hasOwn(userPlainEntries, key)
+        : options.scope === 'project' && Object.hasOwn(projectPlainEntries, key),
       valueState: 'default',
       effectiveValue: null,
       sourceLayer: null,
@@ -2195,6 +2227,8 @@ async function buildLegacyStoreFieldEntries(options: {
         kind: 'manifest',
         reserved: false,
         writable: false,
+        canSet: false,
+        canUnset: false,
         valueState: 'configured',
         effectiveValue: '[redacted]',
         sourceLayer: location.sourceLayer,

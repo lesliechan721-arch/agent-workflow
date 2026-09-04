@@ -6,9 +6,9 @@
 
 `sensitive: true` 只允许顶层 string 字段，且该字段不得声明 default 或 choices。number、boolean、object、fixed object child 和 KV `additionalProperties` child 都不得声明 sensitive。object 必须选择 fixed 或 KV 模式。fixed object 必须声明 scalar `properties`，且 `additionalProperties` 省略或为 `false`；KV object 不得声明 `properties`，且必须声明一个 scalar `additionalProperties` schema。禁止混合两种模式。它可声明 required fixed child、属性数量和 key validation，但 child 不能有 default，KV child 也不能有 required，且 child 不能嵌套 object。配置值不支持 array、null 或嵌套 object。Config 不提供 path、file 或 directory format；helper 不解析 realpath，也不建立 project artifact path boundary。
 
-配置 helper 由公开 scaffolding 或目标插件源码拥有，不能复制本 Skill 的内部 helper。helper 优先读取 `AW_PLUGIN_CONTEXT` 的已验证 `config.values`、`sources`、`schema` 和 store paths。无 context fallback 必须验证 bundle 与 source identity；失败时关闭，不回退到裸插件名、其它 source 或无 schema store。
+配置 helper 由公开 scaffolding 或目标插件源码拥有，不能复制本 Skill 的内部 helper。renderer context 中，helper 只读取 context 已提供的 effective `config.values`、`sources` 和 `schema`；这些字段会裁剪到本次 `refreshKeys` 并集。此时显式 user 或 project scope 读取必须失败，context 不提供 store paths。其它 `AW_PLUGIN_CONTEXT` 保留其已有 scoped store 行为。无 context fallback 必须验证 bundle 与 source identity；失败时关闭，不回退到裸插件名、其它 source 或无 schema store。
 
-AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 4；user store binding 绑定 source identity，project store binding 绑定 Catalog logical identity。project binding 不绑定 source identity、Git URL 或本地 source path，也不能从 transport 推导 logical identity。object 值按顶层字段完整覆盖，不深合并。无 context fallback 的 helper 在 effective scope 读取 user 和 project；显式 user 或 project scope 只读取该 scope 的 store。
+AW 只提供 `default < user < project`。namespaced store 使用 schemaVersion 4；user store binding 绑定 source identity，project store binding 绑定 Catalog logical identity。project binding 不绑定 source identity、Git URL 或本地 source path，也不能从 transport 推导 logical identity。object 值按顶层字段完整覆盖，不深合并。无 context fallback 的 helper 在 effective scope 读取 user 和 project；但 `codex-native` target 声明的 `refreshKeys` 忽略 project 旧覆盖，只使用 user 或 default。显式 `--scope project` 仍读取原始 project store，供诊断或删除旧值。
 
 schemaVersion 3、旧 store 和 `plugin-config.local` 是 hard cut：不读取、不迁移，也不自动重写。无效 store 必须先通过明确确认的整层 reset 恢复，不能静默回退。`config reset` 是独立的 schema-independent 恢复入口；即使 Catalog、schema 或 store envelope 无效，仍可按完整 plugin ID 和 scope 重置目标层。
 

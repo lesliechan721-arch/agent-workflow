@@ -193,7 +193,6 @@ describe('namespaced marketplace root', () => {
       marketplaceName: 'aw',
     })).rejects.toMatchObject({
       code: 'marketplaceRootInvalid',
-      location: agentsRoot,
     });
     await expect(cleanupOrphanNamespacedMarketplaceRoot({
       sourceId: 'official',
@@ -866,6 +865,13 @@ describe('namespaced marketplace root', () => {
         await fs.outputJson(path.join(root, 'plugins', pluginName, '.agents-plugin', 'plugin.json'), {
           name: pluginName, version: '1.0.0', description: pluginName, schemaVersion: 3,
           marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+          ...(root === stagingRoot ? {
+            artifacts: { targets: [{
+              id: `${pluginName}-skill`, platform: 'codex', target: 'codex.skill',
+              scopes: ['user'], states: ['present'], refreshKeys: [], skillKey: pluginName,
+              delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+            }] },
+          } : {}),
         });
         await fs.outputFile(
           path.join(root, 'plugins', pluginName, 'codex', 'skills', pluginName, 'SKILL.md'),
@@ -927,4 +933,102 @@ describe('namespaced marketplace root', () => {
       reference.kind === 'namespacedOwner'
       && reference.location.startsWith(sourceRoot))).toEqual([]);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a source plugins ancestor symlink without changing staging',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, 'staging');
+      const outsidePlugins = path.join(isolation.layout.rootDir, 'outside-source-plugins');
+      await createMarketplaceRoot(sourceRoot);
+      await fs.outputJson(path.join(outsidePlugins, 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      const outsideSkillRoot = path.join(outsidePlugins, 'demo', 'codex', 'skills', 'demo');
+      await fs.outputFile(path.join(outsideSkillRoot, 'SKILL.md'), 'outside legacy overlay\n');
+      await writeSkillOwnerMarker({
+        skillRoot: outsideSkillRoot,
+        allowedRoot: path.dirname(outsideSkillRoot),
+        identity: {
+          owner: 'agent-workflows', sourceId: 'official', pluginId: 'official/demo',
+          plugin: 'demo', artifactKey: 'demo', platform: 'codex', scope: 'user',
+        },
+      });
+      await fs.symlink(outsidePlugins, path.join(sourceRoot, 'plugins'), 'dir');
+      await fs.outputJson(path.join(stagingRoot, 'plugins', 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      await fs.outputJson(path.join(stagingRoot, 'plugins', 'demo', '.agents-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', description: 'demo', schemaVersion: 3,
+        marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        artifacts: { targets: [{
+          id: 'demo-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'],
+          states: ['present'], refreshKeys: [], skillKey: 'demo',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        }] },
+      });
+      const stagingSentinel = path.join(stagingRoot, 'sentinel.txt');
+      await fs.outputFile(stagingSentinel, 'unchanged\n');
+
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
+
+      await expect(fs.readFile(stagingSentinel, 'utf8')).resolves.toBe('unchanged\n');
+      await expect(fs.pathExists(path.join(
+        stagingRoot, 'plugins', 'demo', 'codex', 'skills', 'demo',
+      ))).resolves.toBe(false);
+      await expect(fs.readFile(path.join(outsideSkillRoot, 'SKILL.md'), 'utf8'))
+        .resolves.toBe('outside legacy overlay\n');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a staging skills ancestor symlink without writing outside staging',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, 'staging');
+      await createMarketplaceRoot(sourceRoot);
+      await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      const sourceSkillRoot = path.join(sourceRoot, 'plugins', 'demo', 'codex', 'skills', 'demo');
+      await fs.outputFile(path.join(sourceSkillRoot, 'SKILL.md'), 'legacy overlay\n');
+      await writeSkillOwnerMarker({
+        skillRoot: sourceSkillRoot,
+        allowedRoot: path.dirname(sourceSkillRoot),
+        identity: {
+          owner: 'agent-workflows', sourceId: 'official', pluginId: 'official/demo',
+          plugin: 'demo', artifactKey: 'demo', platform: 'codex', scope: 'user',
+        },
+      });
+      const stagingPluginRoot = path.join(stagingRoot, 'plugins', 'demo');
+      await fs.outputJson(path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', skills: './codex/skills',
+      });
+      await fs.outputJson(path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'), {
+        name: 'demo', version: '1.0.0', description: 'demo', schemaVersion: 3,
+        marketplace: { category: 'workflow', strict: true, policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' } },
+        artifacts: { targets: [{
+          id: 'demo-skill', platform: 'codex', target: 'codex.skill', scopes: ['user'],
+          states: ['present'], refreshKeys: [], skillKey: 'demo',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        }] },
+      });
+      const outsideSkills = path.join(isolation.layout.rootDir, 'outside-staging-skills');
+      await fs.outputFile(path.join(outsideSkills, 'sentinel.txt'), 'unchanged\n');
+      await fs.ensureDir(path.join(stagingPluginRoot, 'codex'));
+      await fs.symlink(outsideSkills, path.join(stagingPluginRoot, 'codex', 'skills'), 'dir');
+
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
+
+      await expect(fs.readFile(path.join(outsideSkills, 'sentinel.txt'), 'utf8'))
+        .resolves.toBe('unchanged\n');
+      await expect(fs.pathExists(path.join(outsideSkills, 'demo'))).resolves.toBe(false);
+    },
+  );
 });

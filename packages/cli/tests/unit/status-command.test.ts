@@ -12,6 +12,7 @@ import {
   statusTargetSharedNative,
 } from '../../src/commands/status-v6.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -27,6 +28,7 @@ import {
 } from '../../src/utils/plugin-intent-state.js';
 import { resolveAwHome, resolveCodexPaths } from '../../src/utils/paths.js';
 import { getCodexHome } from '../../src/utils/state-paths.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import {
   createCatalogSnapshotFixture,
   createDependencyCatalogSnapshotFixture,
@@ -36,7 +38,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function configurePathSource(
   sourceRoot: string,
   sourceId = 'local',
-): Promise<{ env: NodeJS.ProcessEnv; sourceIdentity: string }> {
+): Promise<{ env: NodeJS.ProcessEnv; sourceIdentity: string; logicalIdentity: string }> {
   const isolation = getCurrentSourceTestIsolation();
   const source = { id: sourceId, type: 'path', primary: true, path: sourceRoot } as const;
   const current = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -50,9 +52,12 @@ async function configurePathSource(
     cliVersion: '1.0.0',
     env: isolation.env,
   });
+  const active = (await readCatalogGenerationState(isolation.env)).sources[sourceId]?.active;
+  if (!active) throw new Error(`Missing Active Catalog generation for ${sourceId}.`);
   return {
     env: { ...isolation.env, PATH: '' },
     sourceIdentity: await calculateCatalogSourceIdentity(source),
+    logicalIdentity: active.logicalIdentity,
   };
 }
 
@@ -151,6 +156,118 @@ async function writeSystemCodexPackage(options: {
 }
 
 describe('status v7 current behavior', () => {
+  it('publishes a non-blocking warning for an ignored native project config override', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-config-warning-source');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'render.mjs'),
+      'console.log(JSON.stringify({ version: 2, artifacts: [] }));\n',
+    );
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.config = { fields: { mode: { type: 'string', title: '模式', default: 'default' } } };
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: [{
+          id: 'native-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: ['mode'],
+          skillKey: 'native-skill',
+        }],
+      };
+    });
+    const { env, sourceIdentity, logicalIdentity } = await configurePathSource(sourceRoot);
+    await writePluginConfigStore({
+      sourceId: 'local', sourceIdentity, pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env, values: { mode: 'user' },
+    });
+    await writePluginConfigStore({
+      sourceId: 'local', sourceIdentity, logicalIdentity, pluginName: 'demo', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env, values: { mode: 42 },
+    });
+
+    const result = await statusCommandV7({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env, json: true,
+    });
+    const output = JSON.parse(result.output);
+
+    expect(result.hasErrors).toBe(false);
+    expect(result.payload.targets.every((target) => target.state !== 'blocked')).toBe(true);
+    expect(output.configIssues).toEqual([{
+      pluginId: 'local/demo',
+      pluginName: 'demo',
+      scope: 'project',
+      type: 'configLayerUnsupported',
+      key: 'mode',
+      title: '模式',
+      source: 'project',
+    }]);
+  });
+
+  it.each([
+    { label: 'an empty product list on Codex', products: [] as string[], platform: 'codex' as const },
+    { label: 'an empty product list on Claude', products: [] as string[], platform: 'claude' as const },
+    { label: 'a lowercase Codex token', products: ['codex'], platform: 'codex' as const },
+    { label: 'a lowercase Claude token', products: ['claude'], platform: 'claude' as const },
+  ])(
+    'keeps desired dependency placement and capability blockers visible for $label',
+    async ({ products, platform }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `product-support-${platform}-${products.join('-') || 'empty'}`,
+      );
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [
+        {
+          name: 'leaf',
+          requiredCapabilities: ['aw.future-status-capability.v1'],
+          configureManifest: (manifest) => {
+            manifest.marketplace.policy.products = products;
+          },
+        },
+        {
+          name: 'root',
+          dependencies: ['leaf'],
+          configureManifest: (manifest) => {
+            manifest.marketplace.policy.products = products;
+          },
+        },
+      ]);
+      const { env } = await configurePathSource(sourceRoot);
+      await writePluginIntentState({
+        scope: 'project', cwd: isolation.layout.fixtureCwd, env,
+      }, {
+        ...createEmptyPluginIntentState(),
+        roots: [{ pluginId: 'local/root', platforms: [platform] }],
+      });
+
+      const result = await statusCommandV7({
+        plugins: ['local/leaf'], cwd: isolation.layout.fixtureCwd, env,
+        platform, scope: 'project', json: true,
+      });
+
+      expect(result.payload.targets).toEqual([expect.objectContaining({
+        pluginId: 'local/leaf',
+        platform,
+        state: 'blocked',
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ code: 'awCapabilityUnsupported' }),
+        ]),
+      })]);
+      expect(statusTargetIntent(result.payload.targets[0]!)).toEqual({
+        enabled: true, scopes: ['project'], relation: 'dependency',
+      });
+      expect(result.pluginSummaries.find((plugin) => plugin.pluginId === 'local/leaf')?.supportedTargets)
+        .toMatchObject({ [platform]: ['user', 'project'] });
+    },
+  );
+
   it('preserves render drift as a recoverable shared-native status reason', () => {
     const target = {
       components: [{

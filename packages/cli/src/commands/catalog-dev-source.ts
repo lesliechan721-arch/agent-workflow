@@ -9,19 +9,25 @@ import {
 
 import { runCatalogBuildCommand } from '../authoring/workspace-commands.js';
 import type { CatalogSource, PathCatalogSource } from '../types.js';
-import { readCatalogGenerationStatus } from '../utils/catalog-generation-service.js';
+import {
+  readCatalogGenerationStatus,
+  type CatalogGenerationStatusEntry,
+} from '../utils/catalog-generation-service.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import {
   CATALOG_SOURCE_ID_PATTERN,
+  CatalogSourcesConfigConflictError,
   isDefaultOfficialCatalogSource,
   readCatalogSourcesConfigSnapshot,
 } from '../utils/catalog-sources.js';
 import {
   addCatalogSourceCommand,
+  preflightCatalogSourceMutation,
   removeCatalogSourceCommand,
   setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
   type CatalogSourceCommandRuntime,
+  type CatalogSourcePreflightInventory,
 } from './catalog-source.js';
 import { syncCatalogSourceCommand } from './catalog-generation.js';
 import { getCatalogStatus } from './catalog-status.js';
@@ -43,7 +49,7 @@ export interface CatalogDevActivateReceipt {
 }
 
 export interface CatalogDevStatusReceipt {
-  receiptSchemaVersion: 3;
+  receiptSchemaVersion: 4;
   command: 'catalog:dev:status';
   ok: boolean;
   ready: boolean;
@@ -64,18 +70,20 @@ export interface CatalogDevStatusReceipt {
     ready: boolean;
     digestMatchesSnapshot: boolean;
     snapshotDigest: string | null;
+    compatibility: CatalogGenerationStatusEntry['compatibility'];
   };
   issues: Issue[];
 }
 
 export interface CatalogDevDeactivateReceipt {
-  receiptSchemaVersion: 2;
+  receiptSchemaVersion: 3;
   command: 'catalog:dev:deactivate';
   ok: boolean;
   state: 'completed' | 'partial' | 'failed';
   workspaceIdentity: string | null;
   source: { id: string | null; action: 'removed' | 'absent' | 'retained'; previousPrimary: boolean };
   replacementPrimarySourceId: string | null;
+  impact: CatalogSourcePreflightInventory | null;
   recovery: string[];
   errors: Array<{ code: string; message: string }>;
 }
@@ -154,31 +162,52 @@ export function createCatalogDevFailureReceipt(options: {
   }
   if (options.command === 'status') {
     return {
-      receiptSchemaVersion: 3, command: 'catalog:dev:status', ok: false, ready: false,
+      receiptSchemaVersion: 4, command: 'catalog:dev:status', ok: false, ready: false,
       workspaceIdentity: null,
       snapshot: { state: 'absent', valid: false, digest: null },
       source: { exists: false, id: null, pathMatches: null, primary: null },
-      active: { exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null },
+      active: {
+        exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null,
+        compatibility: null,
+      },
       issues: [{ code: options.code, message: options.message, blocking: true }],
     };
   }
   return {
-    receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
+    receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
     workspaceIdentity: null,
     source: { id: null, action: 'absent', previousPrimary: false },
     replacementPrimarySourceId: null,
+    impact: null,
     recovery: ['Fix the reported problem, then rerun catalog dev deactivate.'],
     errors: [{ code: options.code, message: options.message }],
   };
 }
 
 function codedFailure(error: unknown, fallbackCode: string): { code: string; message: string } {
-  const typedCode = typeof error === 'object' && error !== null && 'code' in error
-    && error.code === 'catalogImpactConfirmationRequired' ? error.code : undefined;
+  const candidateCode = typeof error === 'object' && error !== null && 'code' in error
+    && typeof error.code === 'string' ? error.code : undefined;
+  const typedCode = candidateCode === 'catalogImpactConfirmationRequired'
+    || candidateCode === 'catalogSourceImpactConfirmationRequired'
+    || candidateCode === 'operationReviewStale'
+    ? candidateCode
+    : undefined;
   return {
     code: error instanceof CatalogDevSourceError ? error.code : typedCode ?? fallbackCode,
     message: error instanceof CatalogDevSourceError ? error.message : 'The Catalog development operation failed.',
   };
+}
+
+function failureImpact(
+  error: unknown,
+  fallback: CatalogSourcePreflightInventory,
+): CatalogSourcePreflightInventory {
+  if (typeof error !== 'object' || error === null || !('impact' in error)) return fallback;
+  const impact = error.impact;
+  return typeof impact === 'object' && impact !== null && 'inventorySchemaVersion' in impact
+    && impact.inventorySchemaVersion === 1
+    ? impact as CatalogSourcePreflightInventory
+    : fallback;
 }
 
 async function resolveWorkspace(cwd: string, workspaceRoot?: string) {
@@ -351,11 +380,14 @@ export async function getCatalogDevSourceStatus(options: {
   env: NodeJS.ProcessEnv;
 }): Promise<CatalogDevStatusReceipt> {
   const empty: CatalogDevStatusReceipt = {
-    receiptSchemaVersion: 3, command: 'catalog:dev:status', ok: false, ready: false,
+    receiptSchemaVersion: 4, command: 'catalog:dev:status', ok: false, ready: false,
     workspaceIdentity: null,
     snapshot: { state: 'absent', valid: false, digest: null },
     source: { exists: false, id: null, pathMatches: null, primary: null },
-    active: { exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null },
+    active: {
+      exists: false, ready: false, digestMatchesSnapshot: false, snapshotDigest: null,
+      compatibility: null,
+    },
     issues: [],
   };
   let workspace: Awaited<ReturnType<typeof resolveWorkspace>>;
@@ -422,9 +454,16 @@ export async function getCatalogDevSourceStatus(options: {
       ready: entry?.activeReady === true,
       digestMatchesSnapshot,
       snapshotDigest,
+      compatibility: entry?.compatibility ?? null,
     };
     if (!entry?.active) {
       empty.issues.push({ code: 'activeAbsent', message: 'Development source has no Active snapshot.', blocking: true });
+    } else if (entry.compatibility?.state === 'unsupported') {
+      empty.issues.push({
+        code: 'awCapabilityUnsupported',
+        message: 'Development source Active snapshot is incompatible with this AW.',
+        blocking: true,
+      });
     } else if (!entry.activeReady) {
       empty.issues.push({ code: entry.errorCode ?? 'activeNotReady', message: 'Development source Active snapshot is not ready.', blocking: true });
     }
@@ -467,16 +506,6 @@ export async function deactivateCatalogDevSource(options: {
     if (configuredSource?.type !== 'path' || configuredSource.managedBy?.kind !== 'catalog-workspace') {
       throw new CatalogDevSourceError('managedSourceNotFound', 'The source is not a Workspace-managed path source.');
     }
-    if (options.yes !== true) {
-      return {
-        receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
-        workspaceIdentity: configuredSource.managedBy.workspaceIdentity,
-        source: { id: configuredSource.id, action: 'retained', previousPrimary: configuredSource.primary },
-        replacementPrimarySourceId: null,
-        recovery: ['Rerun with --source-id and --yes.'],
-        errors: [{ code: 'confirmationRequired', message: 'Recovery by source ID requires --yes.' }],
-      };
-    }
     source = configuredSource;
     workspaceIdentity = configuredSource.managedBy.workspaceIdentity;
     workspaceRoot = options.cwd;
@@ -492,9 +521,9 @@ export async function deactivateCatalogDevSource(options: {
   }
   if (!source) {
     return {
-      receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
+      receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
       workspaceIdentity, source: { id: null, action: 'absent', previousPrimary: false },
-      replacementPrimarySourceId: null, recovery: [], errors: [],
+      replacementPrimarySourceId: null, impact: null, recovery: [], errors: [],
     };
   }
   let replacementPrimarySourceId: string | null = null;
@@ -506,9 +535,10 @@ export async function deactivateCatalogDevSource(options: {
       : others.find((entry) => entry.id === options.replacementPrimary);
     if (!requested) {
       return {
-        receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
+        receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
         workspaceIdentity, source: { id: source.id, action: 'retained', previousPrimary: true },
         replacementPrimarySourceId: null,
+        impact: null,
         recovery: ['Select an existing replacement primary source.'],
         errors: [{ code: 'replacementPrimaryUnavailable', message: 'A replacement primary source is required.' }],
       };
@@ -517,34 +547,73 @@ export async function deactivateCatalogDevSource(options: {
   } else if (options.replacementPrimary !== undefined) {
     throw new CatalogDevSourceError('replacementPrimaryInvalid', '--replacement-primary requires a primary target source.');
   }
+  const preview = await preflightCatalogSourceMutation({
+    request: {
+      action: 'remove',
+      sourceId: source.id,
+      ...(replacementPrimarySourceId === null ? {} : { replacementPrimarySourceId }),
+    },
+    cwd: workspaceRoot,
+    env: options.env,
+    managedByWorkspaceIdentity: workspaceIdentity,
+  });
+  const impact = preview.references;
+  if (options.sourceId !== undefined && options.yes !== true) {
+    return {
+      receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
+      workspaceIdentity,
+      source: { id: source.id, action: 'retained', previousPrimary: source.primary },
+      replacementPrimarySourceId,
+      impact,
+      recovery: ['Rerun with --source-id and --yes.'],
+      errors: [{ code: 'confirmationRequired', message: 'Recovery by source ID requires --yes.' }],
+    };
+  }
+  if ((!impact.inventoryComplete || impact.references.length > 0) && options.yes !== true) {
+    return {
+      receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: false, state: 'failed',
+      workspaceIdentity,
+      source: { id: source.id, action: 'retained', previousPrimary: source.primary },
+      replacementPrimarySourceId,
+      impact,
+      recovery: ['Review the source impact, then rerun catalog dev deactivate with --yes.'],
+      errors: [{
+        code: 'catalogSourceImpactConfirmationRequired',
+        message: 'Affected or unknown Catalog source references require --yes.',
+      }],
+    };
+  }
   try {
-    if (replacementPrimarySourceId) {
-      await setPrimaryCatalogSourceCommand({
-        sourceId: replacementPrimarySourceId, cwd: workspaceRoot, env: options.env,
-        runtime: options.runtime?.sourceRuntime,
-      });
-    }
     await removeCatalogSourceCommand({
       sourceId: source.id, cwd: workspaceRoot, env: options.env,
       runtime: options.runtime?.sourceRuntime,
       managedByWorkspaceIdentity: workspaceIdentity,
+      expectedConfigDigest: preview.configDigest,
+      expectedImpactDigest: preview.impactDigest,
+      requireImpactConfirmation: true,
+      confirmImpact: options.yes === true,
+      ...(replacementPrimarySourceId === null ? {} : { replacementPrimarySourceId }),
     });
     return {
-      receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
+      receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: true, state: 'completed',
       workspaceIdentity, source: { id: source.id, action: 'removed', previousPrimary: source.primary },
-      replacementPrimarySourceId, recovery: [], errors: [],
+      replacementPrimarySourceId, impact, recovery: [], errors: [],
     };
   } catch (error) {
     const after = await readCatalogSourcesConfigSnapshot(options.env).catch(() => null);
     const stillExists = after?.config.sources.some((entry) => entry.id === source!.id) ?? true;
-    const configChanged = after !== null && after.digest !== config.digest;
+    const configChanged = after !== null && after.digest !== preview.configDigest;
+    const stale = error instanceof CatalogSourcesConfigConflictError || configChanged;
     return {
-      receiptSchemaVersion: 2, command: 'catalog:dev:deactivate', ok: false,
-      state: configChanged || !stillExists ? 'partial' : 'failed', workspaceIdentity,
+      receiptSchemaVersion: 3, command: 'catalog:dev:deactivate', ok: false,
+      state: stale ? 'failed' : !stillExists ? 'partial' : 'failed', workspaceIdentity,
       source: { id: source.id, action: stillExists ? 'retained' : 'removed', previousPrimary: source.primary },
       replacementPrimarySourceId,
+      impact: failureImpact(error, impact),
       recovery: ['Fix the source configuration, then rerun catalog dev deactivate.'],
-      errors: [codedFailure(error, 'sourceConfigFailed')],
+      errors: [stale
+        ? { code: 'operationReviewStale', message: 'Catalog source evidence changed. Review it again.' }
+        : codedFailure(error, 'sourceConfigFailed')],
     };
   }
 }

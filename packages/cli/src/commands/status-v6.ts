@@ -36,7 +36,7 @@ import {
   tryParseStrictSemVer,
 } from '../utils/manifest.js';
 import { resolveCliPackageRoot, resolveCodexPaths } from '../utils/paths.js';
-import { supportsPlatform } from '../utils/platform-support.js';
+import { resolveSupportedPlatforms, supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
 import {
   inspectCodexPluginRegistrationLive,
@@ -394,6 +394,10 @@ export interface StatusV7Payload {
     cwd: string;
   };
   targets: StatusV7Target[];
+  configIssues?: Array<NonNullable<StatusV7PluginSummary['configIssues']>[number] & {
+    pluginId: string;
+    pluginName: string;
+  }>;
   errors: Array<{ code: string; message: string }>;
 }
 
@@ -437,6 +441,12 @@ interface StatusPluginCapability {
   };
 }
 
+function resolveCatalogEntrySupportedPlatforms(
+  policy: PluginMeta['manifest']['marketplace']['policy'],
+): ReturnType<typeof resolveSupportedPlatforms> {
+  return resolveSupportedPlatforms({ marketplace: { policy } } as PluginMeta['manifest']);
+}
+
 export interface StatusV7PluginSummary {
   pluginName: string;
   pluginId: string;
@@ -448,7 +458,7 @@ export interface StatusV7PluginSummary {
   configSchema?: Record<string, PluginConfigSchemaField>;
   configIssues?: Array<{
     scope: Scope;
-    type: 'missing-required' | 'invalid-config';
+    type: 'missing-required' | 'invalid-config' | 'sharedCompositeContainsLocalPath' | 'configLayerUnsupported';
     key: string;
     title: string;
     source: 'default' | 'user' | 'project' | 'missing';
@@ -935,6 +945,9 @@ function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
       }
     }
   }
+  for (const issue of payload.configIssues ?? []) {
+    lines.push(`Warning: ${issue.pluginId} config ${issue.key} has an unsupported project override; user/default is effective. Unset the project value.`);
+  }
   for (const error of payload.errors) lines.push(`Error: ${error.message}`);
   return lines.join('\n');
 }
@@ -1269,16 +1282,20 @@ export async function statusCommandV7(options: {
         }
         try {
           const placementEntries = item.resolution!.manifest.entries.map((entry) => {
-            const products = entry.policy.products;
-            const supports = (platform: PlatformName): boolean => products === undefined
-              || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+            const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
             return {
               name: entry.name,
               dependencies: entry.dependencies,
               source: { id: item.resolution!.sourceId },
               targets: {
-                codex: { user: supports('codex'), project: supports('codex') },
-                claude: { user: supports('claude'), project: supports('claude') },
+                codex: {
+                  user: supportedPlatforms.has('codex'),
+                  project: supportedPlatforms.has('codex'),
+                },
+                claude: {
+                  user: supportedPlatforms.has('claude'),
+                  project: supportedPlatforms.has('claude'),
+                },
               },
             };
           });
@@ -1317,13 +1334,11 @@ export async function statusCommandV7(options: {
                 IMPLEMENTED_AW_CAPABILITIES,
               );
               if (!capabilitySupport.supported) {
-                const products = entry.policy.products;
-                const supports = (platform: PlatformName): boolean => products === undefined
-                  || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+                const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
                 const states: StatusPluginCapability['states'] = {};
                 const message = `awCapabilityUnsupported: ${item.resolution!.sourceId}/${entry.name} requires unsupported AW capabilities: ${capabilitySupport.missing.join(', ')}.`;
                 for (const platform of ['codex', 'claude'] as const) {
-                  if (!supports(platform)) continue;
+                  if (!supportedPlatforms.has(platform)) continue;
                   states[platform] = {};
                   for (const scope of ['user', 'project'] as const) {
                     states[platform]![scope] = {
@@ -1340,8 +1355,14 @@ export async function statusCommandV7(options: {
                   shortDescription: entry.interface?.shortDescription ?? entry.description,
                   description: entry.description,
                   targets: {
-                    claude: { user: supports('claude'), project: supports('claude') },
-                    codex: { user: supports('codex'), project: supports('codex') },
+                    claude: {
+                      user: supportedPlatforms.has('claude'),
+                      project: supportedPlatforms.has('claude'),
+                    },
+                    codex: {
+                      user: supportedPlatforms.has('codex'),
+                      project: supportedPlatforms.has('codex'),
+                    },
                   },
                   states,
                   dependencies: entry.dependencies,
@@ -1393,6 +1414,16 @@ export async function statusCommandV7(options: {
                         key: issue.key,
                         title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
                         source,
+                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
+                    }
+                    for (const override of resolved.unsupportedLayerOverrides) {
+                      const configIssue = {
+                        scope,
+                        type: override.type,
+                        key: override.key,
+                        title: plugin.manifest.config.fields[override.key]?.title ?? override.key,
+                        source: override.source,
                       } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
                       issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
@@ -2654,6 +2685,13 @@ export async function statusCommandV7(options: {
       ),
     };
   });
+  const publicConfigIssues = available.flatMap((entry) => (entry.configIssues ?? [])
+    .filter((issue) => issue.type === 'configLayerUnsupported')
+    .map((issue) => ({
+      pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+      pluginName: entry.name,
+      ...issue,
+    })));
   const payload: StatusV7Payload = {
     schemaVersion: 7,
     catalog: {
@@ -2676,6 +2714,7 @@ export async function statusCommandV7(options: {
       cwd: path.resolve(options.cwd),
     },
     targets: projectedTargets,
+    ...(publicConfigIssues.length > 0 ? { configIssues: publicConfigIssues } : {}),
     errors,
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)
