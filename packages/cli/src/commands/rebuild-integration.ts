@@ -1159,6 +1159,7 @@ async function scanOwnedSkills(options: {
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
+  recursive?: boolean;
 }): Promise<OwnedComponent[]> {
   if (!await fs.pathExists(options.root)) return [];
   const output: OwnedComponent[] = [];
@@ -1186,7 +1187,7 @@ async function scanOwnedSkills(options: {
         }));
         continue;
       }
-      pending.push(skillRoot);
+      if (options.recursive !== false) pending.push(skillRoot);
     }
   }
   return output;
@@ -4593,7 +4594,9 @@ export function createRebuildIntegration(options: {
       })))).flat();
       const skillRoots = input.platform === 'codex'
         ? input.scope === 'project'
-          ? []
+          ? materializing
+            ? [path.join(input.cwd, '.agents', 'skills')]
+            : []
           : [
               path.join(getCodexHome(options.context.env), 'skills'),
               ...(preserveCodexSharedNativePayload || input.readOnlyShallowInspectionPlan === true
@@ -4612,6 +4615,7 @@ export function createRebuildIntegration(options: {
         pluginName: input.plugin.manifest.name,
         platform: input.platform,
         scope: input.scope,
+        recursive: !(input.platform === 'codex' && input.scope === 'project'),
       })));
       const scannedSkills = (await scanSkills()).flat();
       const legacyCodexNativeSkills = input.platform === 'codex'

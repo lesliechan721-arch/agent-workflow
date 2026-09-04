@@ -232,6 +232,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - active marketplace 和 quarantine 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - marketplace mirror 中的 Skill owner marker 只证明 overlay/payload 完整性。它属于可重建的弱 materialization，不进入 live installation inventory，也不阻止 source removal。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
+- Codex project reconcile 只扫描当前 repo 的 `.agents/skills` 直接子目录，并把严格匹配当前 source ID、plugin ID、platform 和 scope 的 schema 3 owner marker 作为 stale Skill 清理授权。当前 renderer 返回 disabled 或当前 Manifest 不再声明的 owned Skill 进入既有 quarantine 清理；source transport identity 变化不阻止相同逻辑 owner 的清理。markerless、malformed、身份不匹配、符号链接、特殊节点和嵌套目录继续保留。
 - Codex namespaced marketplace root 必须是精确的 `<AW_HOME>/marketplaces/<sourceId>`。写入和只读 inspection 使用同一检查：`lstat` 拒绝 AW_HOME、marketplaces 祖先或目标 symlink/错误节点类型，并用 `realpath` 确认 containment；不安全现场投影为既有 `marketplacePathUnsafe` blocker。
 
 ### Codex shared native 与 project activation

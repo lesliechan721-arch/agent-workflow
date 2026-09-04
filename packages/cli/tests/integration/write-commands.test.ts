@@ -7041,6 +7041,212 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(skillsRoot, 'second-demo'))).resolves.toBe(true);
   });
 
+  it('removes a project Codex Skill when current config disables its dynamic target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'project-disabled-skill-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'demo');
+    const configure = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.config = { fields: { enabled: { type: 'boolean', default: true } } };
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
+        target: 'codex.skill', delivery: { mode: 'aw-extension' },
+        states: ['present', 'disabled'], refreshKeys: ['enabled'], skillKey: 'config-skill',
+      }] };
+    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo', configureManifest: configure }]);
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
+      'import { readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const enabled = context.config.values.enabled;',
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "dynamic-skill", kind: "skill", platform: "codex", target: "codex.skill",',
+      '  state: enabled ? "present" : "disabled", skillKey: "config-skill", refreshKeys: ["enabled"],',
+      '  ...(enabled ? { content: { files: {',
+      '    "SKILL.md": "---\\nname: config-skill\\ndescription: Config Skill.\\n---\\n",',
+      '    "README.md": "Config Skill.\\n",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
+      '  } } } : { disabledReason: "disabled by config" })',
+      '}] }));',
+    ].join('\n'));
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo', configureManifest: configure }]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const skillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'config-skill');
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(true);
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: await calculateCatalogSourceIdentity(source),
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { enabled: false },
+    });
+
+    const result = await syncWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+  }, 30_000);
+
+  it('removes a project Codex Skill deleted by a new source identity manifest', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v1-source');
+    const secondRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v2-source');
+    const configureV1 = (manifest: PluginMeta['manifest']) => {
+      manifest.version = '1.0.0';
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'dynamic-skill', platform: 'codex', scopes: ['project'],
+        target: 'codex.skill', delivery: { mode: 'aw-extension' },
+        states: ['present'], refreshKeys: [], skillKey: 'removed-in-v2',
+      }] };
+    };
+    await createDependencyCatalogSnapshotFixture(firstRoot, [{ name: 'demo', configureManifest: configureV1 }]);
+    await writeDynamicSkillRenderer({
+      pluginRoot: path.join(firstRoot, 'plugins', 'demo'), skillKey: 'removed-in-v2',
+    });
+    await createDependencyCatalogSnapshotFixture(firstRoot, [{ name: 'demo', configureManifest: configureV1 }]);
+    await createDependencyCatalogSnapshotFixture(secondRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => {
+        manifest.version = '2.0.0';
+        manifest.marketplace.policy.products = ['CODEX'];
+      },
+    }]);
+    const firstSource = { id: 'team', type: 'path' as const, primary: true, path: firstRoot };
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [firstSource] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const skillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'removed-in-v2');
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(true);
+    const changed = await updateCatalogSourceCommand({
+      sourceId: 'team',
+      update: { path: secondRoot },
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(changed).toMatchObject({ ok: true, changed: true });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+
+    const result = await syncWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+  }, 30_000);
+
+  it('only removes direct project Codex Skills with an exact current owner identity', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'project-stale-safety-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'demo' }]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const writeMarker = async (name: string, identity: Parameters<typeof writeSkillOwnerMarker>[0]['identity']) => {
+      const skillRoot = path.join(skillsRoot, name);
+      await fs.ensureDir(skillRoot);
+      await writeSkillOwnerMarker({ skillRoot, allowedRoot: skillsRoot, identity });
+      return skillRoot;
+    };
+    const identity = (artifactKey: string) => ({
+      owner: 'agent-workflows' as const,
+      sourceId: 'team', pluginId: 'team/demo', plugin: 'demo', artifactKey,
+      platform: 'codex' as const, scope: 'project' as const,
+    });
+    const removable = await writeMarker('stale-owned', identity('stale-owned'));
+    const retained = [
+      await writeMarker('foreign-source', {
+        ...identity('foreign-source'), sourceId: 'foreign', pluginId: 'foreign/demo',
+      }),
+      await writeMarker('user-scope', { ...identity('user-scope'), scope: 'user' }),
+      await writeMarker('claude-skill', { ...identity('claude-skill'), platform: 'claude' }),
+    ];
+    const malformed = path.join(skillsRoot, 'malformed');
+    await fs.outputFile(path.join(malformed, SKILL_OWNER_MARKER), '{invalid\n');
+    retained.push(malformed);
+    const markerTarget = path.join(isolation.layout.rootDir, 'external-owner-marker.json');
+    await fs.outputJson(markerTarget, identity('marker-symlink'));
+    const markerSymlink = path.join(skillsRoot, 'marker-symlink');
+    await fs.ensureDir(markerSymlink);
+    await fs.symlink(markerTarget, path.join(markerSymlink, SKILL_OWNER_MARKER));
+    retained.push(markerSymlink);
+    const externalSkill = path.join(isolation.layout.rootDir, 'external-skill-directory');
+    await fs.outputFile(path.join(externalSkill, 'SKILL.md'), 'foreign\n');
+    const skillSymlink = path.join(skillsRoot, 'skill-symlink');
+    await fs.symlink(externalSkill, skillSymlink, process.platform === 'win32' ? 'junction' : 'dir');
+    retained.push(skillSymlink);
+    const nested = path.join(skillsRoot, 'container', 'nested-owned');
+    await fs.ensureDir(nested);
+    await writeSkillOwnerMarker({
+      skillRoot: nested,
+      allowedRoot: path.join(skillsRoot, 'container'),
+      identity: identity('nested-owned'),
+    });
+    retained.push(nested);
+
+    const result = await syncWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(removable)).resolves.toBe(false);
+    for (const skillRoot of retained) {
+      await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+    }
+    await expect(fs.pathExists(markerTarget)).resolves.toBe(true);
+    await expect(fs.pathExists(externalSkill)).resolves.toBe(true);
+  }, 30_000);
+
   it('rejects a multi-selector force cleanup before mutation when one target has no exact path', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'force-multi-selector-source');
