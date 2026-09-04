@@ -340,6 +340,137 @@ describe('rebuild adapter integration', () => {
     expect(calls.every((call) => call.args.join(' ') === 'plugin list --json')).toBe(true);
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'rejects a candidate manifest below an external ancestor symlink before shallow reading',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const pluginName = 'unsafe-candidate-manifest';
+      const payloadRoot = path.join(
+        isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
+      );
+      const externalRoot = path.join(isolation.layout.fixtureCwd, 'external-codex-manifest');
+      await fs.outputJson(path.join(externalRoot, 'plugin.json'), {
+        name: pluginName, version: '1.0.0',
+      });
+      await fs.ensureDir(payloadRoot);
+      await fs.symlink(externalRoot, path.join(payloadRoot, '.codex-plugin'), 'dir');
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
+      await fs.ensureDir(marketplaceRoot);
+      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n'));
+
+      const inspected = await inspectCodexSharedNativeLive({
+        pluginName, sourceId: 'official', desiredVersion: '1.0.0', inspectionMode: 'shallow',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env, marketplaceRoot,
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [{
+            pluginId: `${pluginName}@aw`, installed: true, enabled: true, version: '1.0.0',
+          }], available: [] }),
+          stderr: '',
+        }),
+      });
+
+      expect(inspected.sharedNative).toMatchObject({
+        state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
+      });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32').each([
+    '.agents-plugin',
+    'codex/skills',
+    'codex/skills/demo',
+  ])('rejects an external payload ancestor symlink at %s before payload evidence reads', async (relativePath) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = `unsafe-${relativePath.replaceAll('/', '-')}`;
+    const payloadRoot = path.join(
+      isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
+    );
+    const externalRoot = path.join(isolation.layout.fixtureCwd, `external-${pluginName}`);
+    await fs.outputJson(path.join(payloadRoot, 'plugin.json'), {
+      name: pluginName, version: '1.0.0',
+    });
+    await fs.ensureDir(externalRoot);
+    const linkPath = path.join(payloadRoot, ...relativePath.split('/'));
+    await fs.ensureDir(path.dirname(linkPath));
+    await fs.symlink(externalRoot, linkPath, 'dir');
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
+    await fs.ensureDir(marketplaceRoot);
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(marketplaceRoot)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+
+    const inspected = await inspectCodexSharedNativeLive({
+      pluginName, sourceId: 'official', desiredVersion: '1.0.0',
+      expectedPayloadDigest: `sha256:${'1'.repeat(64)}`,
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, marketplaceRoot,
+      nativeCliRunner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ installed: [{
+          pluginId: `${pluginName}@aw`, installed: true, enabled: true, version: '1.0.0',
+        }], available: [] }),
+        stderr: '',
+      }),
+    });
+
+    expect(inspected.sharedNative).toMatchObject({
+      state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects installed candidate identity below an external ancestor symlink before reading it',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const pluginName = 'unsafe-installed-candidate';
+      const payloadRoot = path.join(
+        isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw', pluginName, '1.0.0',
+      );
+      await fs.outputJson(path.join(payloadRoot, 'plugin.json'), {
+        name: pluginName, version: '1.0.0',
+      });
+      const externalRoot = path.join(isolation.layout.fixtureCwd, 'external-installed-candidate');
+      await fs.outputJson(path.join(externalRoot, 'manifest.json'), { version: '1.0.0' });
+      const installedPluginRoot = path.join(
+        isolation.layout.codexHomeDir, 'plugins', `${pluginName}@aw`,
+      );
+      await fs.ensureDir(path.dirname(installedPluginRoot));
+      await fs.symlink(externalRoot, installedPluginRoot, 'dir');
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
+      await fs.ensureDir(marketplaceRoot);
+      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n'));
+
+      const inspected = await inspectCodexSharedNativeLive({
+        pluginName, sourceId: 'official', desiredVersion: '1.0.0', inspectionMode: 'shallow',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env, marketplaceRoot,
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ installed: [{
+            pluginId: `${pluginName}@aw`, installed: true, enabled: true, version: '1.0.0',
+          }], available: [] }),
+          stderr: '',
+        }),
+      });
+
+      expect(inspected.sharedNative).toMatchObject({
+        state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
+      });
+    },
+  );
+
   it('blocks shared native inspection when exact and neutral Codex lists are unreadable', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.ensureDir(isolation.layout.awHomeDir);

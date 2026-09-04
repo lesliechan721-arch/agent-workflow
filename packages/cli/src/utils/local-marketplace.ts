@@ -365,13 +365,7 @@ export async function replayNamespacedCodexSkillOverlays(options: {
     if (overlays.length === 0) continue;
 
     const stagingPluginRoot = path.join(options.stagingRoot, 'plugins', pluginName);
-    if (!await pathExists(stagingPluginRoot)) {
-      await assertTreeHasNoSymlinks(sourcePluginRoot);
-      await fs.copy(sourcePluginRoot, stagingPluginRoot, {
-        overwrite: false, errorOnExist: true, dereference: false,
-      });
-      continue;
-    }
+    if (!await pathExists(stagingPluginRoot)) continue;
     const stagingManifest = await readOptionalJsonObject(
       path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'),
     );
@@ -380,6 +374,8 @@ export async function replayNamespacedCodexSkillOverlays(options: {
       if (!isRecord(target)) return [];
       return target.platform === 'codex'
         && target.target === 'codex.skill'
+        && isRecord(target.delivery)
+        && target.delivery.mode === 'codex-native'
         && Array.isArray(target.scopes)
         && target.scopes.includes('user')
         && typeof target.skillKey === 'string'
@@ -396,18 +392,12 @@ export async function replayNamespacedCodexSkillOverlays(options: {
     if (!stagingSkillsRelative) continue;
     const stagingSkillsRoot = path.join(stagingPluginRoot, ...stagingSkillsRelative.split('/'));
     for (const overlay of overlays) {
+      if (!dynamicKeys.has(overlay.key)) continue;
       const destination = path.join(stagingSkillsRoot, overlay.key);
-      if (dynamicKeys.has(overlay.key) || !await pathExists(destination)) {
-        await assertTreeHasNoSymlinks(overlay.root);
-        await fs.copy(overlay.root, destination, {
-          overwrite: true, errorOnExist: false, dereference: false,
-        });
-      } else {
-        await fs.copyFile(
-          path.join(overlay.root, SKILL_OWNER_MARKER),
-          path.join(destination, SKILL_OWNER_MARKER),
-        );
-      }
+      await assertTreeHasNoSymlinks(overlay.root);
+      await fs.copy(overlay.root, destination, {
+        overwrite: true, errorOnExist: false, dereference: false,
+      });
     }
   }
 }

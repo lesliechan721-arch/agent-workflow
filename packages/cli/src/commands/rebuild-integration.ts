@@ -2395,19 +2395,44 @@ function isPathWithin(root: string, candidate: string): boolean {
 async function codexPayloadPathSafe(payloadRoot: string): Promise<boolean> {
   const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
+  const rootRealPath = await fs.realpath(payloadRoot).catch(() => null);
+  if (!rootRealPath) return false;
   const pending = [payloadRoot];
   while (pending.length > 0) {
     const current = pending.pop()!;
     for (const entry of await fs.readdir(current, { withFileTypes: true })) {
       const entryPath = path.join(current, entry.name);
       if (entry.isSymbolicLink()) {
-        const target = path.resolve(path.dirname(entryPath), await fs.readlink(entryPath));
-        if (!isPathWithin(payloadRoot, target)) return false;
+        const target = await fs.realpath(entryPath).catch(() => null);
+        if (!target || !isPathWithin(rootRealPath, target)) return false;
       } else if (entry.isDirectory()) {
         pending.push(entryPath);
       } else if (!entry.isFile()) {
         return false;
       }
+    }
+  }
+  return true;
+}
+
+async function codexPayloadReadPathSafe(
+  payloadRoot: string,
+  candidatePath: string,
+): Promise<boolean> {
+  if (!isPathWithin(payloadRoot, candidatePath)) return false;
+  const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
+  if (!rootStats) return true;
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) return false;
+  const rootRealPath = await fs.realpath(payloadRoot).catch(() => null);
+  if (!rootRealPath) return false;
+  let current = payloadRoot;
+  for (const segment of path.relative(payloadRoot, candidatePath).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stats = await lstatCodexResidueIfPresent(current);
+    if (!stats) return true;
+    if (stats.isSymbolicLink()) {
+      const realPath = await fs.realpath(current).catch(() => null);
+      if (!realPath || !isPathWithin(rootRealPath, realPath)) return false;
     }
   }
   return true;
@@ -2479,6 +2504,10 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     throw new Error('Codex native render canonical marketplace generation is missing.');
   }
   const payloadRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
+  if (!await codexPayloadReadPathSafe(options.marketplaceRoot, payloadRoot)
+    || !await codexPayloadPathSafe(payloadRoot)) {
+    throw new Error('Codex native render canonical marketplace payload path is unsafe.');
+  }
   const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
   if (receiptEvidence.state !== 'present') {
     throw new Error('Codex native render canonical marketplace receipt is missing or unreadable.');
@@ -2729,8 +2758,10 @@ export async function inspectCodexSharedNativeLive(options: {
     pluginId,
     'manifest.json',
   );
-  const cacheRootStats = await lstatCodexResidueIfPresent(cacheRoot);
-  let unsafeCachePath = Boolean(cacheRootStats
+  const codexHome = getCodexHome(options.env);
+  const cachePathSafe = await codexPayloadReadPathSafe(codexHome, cacheRoot);
+  const cacheRootStats = cachePathSafe ? await lstatCodexResidueIfPresent(cacheRoot) : null;
+  let unsafeCachePath = !cachePathSafe || Boolean(cacheRootStats
     && (!cacheRootStats.isDirectory() || cacheRootStats.isSymbolicLink()));
   const candidates: Array<{
     version?: string;
@@ -2745,6 +2776,17 @@ export async function inspectCodexSharedNativeLive(options: {
     for (const entry of await fs.readdir(cacheRoot, { withFileTypes: true })) {
       const payloadPath = path.join(cacheRoot, entry.name);
       if (!entry.isDirectory() || entry.isSymbolicLink()) {
+        unsafeCachePath = true;
+        continue;
+      }
+      const requiresPayloadTreeSafety = inspectionMode === 'payload' || dynamicProjectionExpected;
+      const pathSafe = requiresPayloadTreeSafety
+        ? await codexPayloadPathSafe(payloadPath)
+        : await codexPayloadReadPathSafe(
+            payloadPath,
+            path.join(payloadPath, '.codex-plugin', 'plugin.json'),
+          );
+      if (!pathSafe) {
         unsafeCachePath = true;
         continue;
       }
@@ -2791,10 +2833,9 @@ export async function inspectCodexSharedNativeLive(options: {
         });
         continue;
       }
-      const projectionReceipt = await readCodexNativeRenderReceiptEvidence(payloadPath);
-      const pathSafe = inspectionMode === 'shallow'
-        ? true
-        : await codexPayloadPathSafe(payloadPath);
+      const projectionReceipt = requiresPayloadTreeSafety
+        ? await readCodexNativeRenderReceiptEvidence(payloadPath)
+        : { state: 'absent' as const };
       let payloadDigest: string | undefined;
       if (pathSafe && inspectionMode === 'payload') {
         try {
@@ -2829,8 +2870,16 @@ export async function inspectCodexSharedNativeLive(options: {
     }
   }
   let installedVersion: string | undefined;
-  const installedStats = await lstatCodexResidueIfPresent(installedManifestPath);
-  if (installedStats?.isFile() && !installedStats.isSymbolicLink()) {
+  const installedPathSafe = await codexPayloadReadPathSafe(
+    codexHome,
+    installedManifestPath,
+  );
+  const installedStats = installedPathSafe
+    ? await lstatCodexResidueIfPresent(installedManifestPath)
+    : null;
+  if (!installedPathSafe) {
+    unsafeCachePath = true;
+  } else if (installedStats?.isFile() && !installedStats.isSymbolicLink()) {
     try {
       const installed = await fs.readJson(installedManifestPath) as Record<string, unknown>;
       if (typeof installed.version === 'string') installedVersion = installed.version;
