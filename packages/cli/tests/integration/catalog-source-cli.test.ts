@@ -229,4 +229,44 @@ describe('catalog source auto-check CLI', () => {
       primarySourceId: 'affected',
     });
   });
+
+  it('applies add --primary confirmation and exposes its primary impact', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'add-primary-affected');
+    await fs.ensureDir(sourceRoot);
+    await fs.outputJson(path.join(
+      isolation.env.AW_HOME!, 'plugin-config', 'legacy-demo', 'config.json',
+    ), { enabled: true });
+
+    const blocked = await runJson([
+      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--primary', '--json',
+    ]);
+    expect(blocked.exitCode).toBe(1);
+    expect(blocked.json).toMatchObject({
+      receiptSchemaVersion: 6,
+      command: 'catalog:source:add',
+      ok: false,
+      changed: false,
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
+      errors: [{ code: 'catalogSourceImpactConfirmationRequired' }],
+    });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+
+    const confirmed = await runJson([
+      'catalog', 'source', 'add', 'team', '--path', sourceRoot, '--primary', '--yes', '--json',
+    ]);
+    expect(confirmed.exitCode, confirmed.stderr).toBe(0);
+    expect(confirmed.json).toMatchObject({
+      receiptSchemaVersion: 6,
+      command: 'catalog:source:add',
+      ok: true,
+      changed: true,
+      primarySourceId: 'team',
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
+      errors: [],
+    });
+  });
 });

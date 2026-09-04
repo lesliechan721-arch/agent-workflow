@@ -12,6 +12,7 @@ import { initCommand } from './commands/init.js';
 import { resolveCatalogWorkspaceRoot } from './commands/catalog-workspace-resolution.js';
 import {
   addCatalogSourceCommand,
+  preflightCatalogSourceMutation,
   explicitRefPolicy,
   listCatalogSources,
   removeCatalogSourceCommand,
@@ -2606,6 +2607,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--subdir <path>', 'use a catalog snapshot below the Git repository root')
     .option('--no-auto-check', 'disable automatic update checks for this source')
     .option('--primary', 'make this source primary', false)
+    .option('-y, --yes', 'confirm affected or unknown primary source references', false)
     .option('-j, --json', 'print mutation receipt as JSON', false)
     .action(async (id: string, rawOptions: {
       git?: string;
@@ -2615,6 +2617,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       subdir?: string;
       autoCheck?: boolean;
       primary?: boolean;
+      yes?: boolean;
       json?: boolean;
     }) => {
       try {
@@ -2627,7 +2630,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (rawOptions.path !== undefined && (
           rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
         )) {
-          throw new Error('Path catalog source add only accepts `--path`, `--primary`, and `--no-auto-check`.');
+          throw new Error('Path catalog source add only accepts `--path`, `--primary`, `--no-auto-check`, and `--yes`.');
         }
         const source = rawOptions.git !== undefined
           ? {
@@ -2646,11 +2649,23 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               path: rawOptions.path!,
               ...(rawOptions.autoCheck === false ? { autoCheck: false } : {}),
             };
+        const preview = source.primary
+          ? await preflightCatalogSourceMutation({
+              request: { action: 'add', source }, cwd, env,
+            })
+          : undefined;
         const receipt = await addCatalogSourceCommand({
           source,
           cliVersion: resolveCliVersion(),
           cwd,
           env,
+          ...(preview ? {
+            expectedConfigDigest: preview.configDigest,
+            expectedProposedConfigDigest: preview.proposedConfigDigest,
+            expectedImpactDigest: preview.impactDigest,
+          } : {}),
+          requireImpactConfirmation: true,
+          confirmImpact: rawOptions.yes === true,
         });
         if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
         else writeLine(io.stdout, `Catalog source ${id} added.`);
@@ -2728,12 +2743,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
                 : {}),
             }
             : { autoCheck: rawOptions.autoCheck! };
+        const preview = await preflightCatalogSourceMutation({
+          request: { action: 'update', sourceId: id, update }, cwd, env,
+        });
         const receipt = await updateCatalogSourceCommand({
           sourceId: id,
           update,
           cliVersion: resolveCliVersion(),
           cwd,
           env,
+          expectedConfigDigest: preview.configDigest,
+          expectedProposedConfigDigest: preview.proposedConfigDigest,
+          expectedImpactDigest: preview.impactDigest,
           requireIdentityChangeConfirmation: true,
           confirmIdentityChange: rawOptions.yes === true,
         });

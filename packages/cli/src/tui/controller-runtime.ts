@@ -1941,12 +1941,20 @@ export function createTuiControllerDependencies(
             expectedConfigDigest: expected.configDigest,
           };
           if (intent.sourceMutation.action === 'add') {
-            await addCatalogSourceCommand({ ...common, source: intent.sourceMutation.source });
+            await addCatalogSourceCommand({
+              ...common,
+              source: intent.sourceMutation.source,
+              expectedProposedConfigDigest: expected.proposedConfigDigest,
+              expectedImpactDigest: expected.impactDigest,
+              requireImpactConfirmation: true,
+              confirmImpact: true,
+            });
           } else {
             await updateCatalogSourceCommand({
               ...common,
               sourceId: intent.sourceId,
               update: intent.sourceMutation.update,
+              expectedProposedConfigDigest: expected.proposedConfigDigest,
               expectedImpactDigest: expected.impactDigest,
               requireIdentityChangeConfirmation: true,
               confirmIdentityChange: true,
@@ -2124,11 +2132,18 @@ export function createTuiControllerDependencies(
           cwd: context.cwd,
           env: context.env,
           expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
+          expectedProposedConfigDigest: expectedEvidence.sourceWrite?.proposedConfigDigest,
           expectedImpactDigest: expectedEvidence.sourceWrite?.impactDigest,
           runtime,
         };
         if (intent.action === 'add' && intent.source) {
-          return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
+          return addCatalogSourceCommand({
+            ...common,
+            source: intent.source,
+            cliVersion: packageInfo.version,
+            requireImpactConfirmation: true,
+            confirmImpact: true,
+          });
         }
         if (intent.action === 'update' && intent.update) {
           return updateCatalogSourceCommand({

@@ -359,8 +359,21 @@ export async function addCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
+  expectedProposedConfigDigest?: string;
+  expectedImpactDigest?: string;
   managedByWorkspaceIdentity?: string;
+  requireImpactConfirmation?: boolean;
+  confirmImpact?: boolean;
 }): Promise<CatalogSourceMutationReceipt> {
+  const preview = options.source.primary
+    ? await preflightCatalogSourceMutation({
+        request: { action: 'add', source: options.source },
+        cwd: options.cwd,
+        env: options.env,
+        managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
+      })
+    : undefined;
+  if (preview) await options.runtime?.afterImpactInspected?.();
   return withCatalogSourceMutationLock({
     env: options.env,
     runtime: options.runtime,
@@ -370,21 +383,64 @@ export async function addCatalogSourceCommand(options: {
         source: options.source,
         managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
       });
+      if (preview && snapshot.digest !== preview.configDigest) {
+        throw new CatalogSourceReviewStaleError(preview.references);
+      }
       if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
-      if (!snapshot.config.sources.some((source) => source.id === options.source.id)) {
+      const sourceIsNew = !snapshot.config.sources.some((source) => source.id === options.source.id);
+      const hasProposedConfigEvidence = options.expectedProposedConfigDigest !== undefined;
+      if (!preview && !hasProposedConfigEvidence && sourceIsNew) {
         await removeCatalogSourceGenerationState({ sourceId: options.source.id, env });
       }
       const config = await addCatalogSource(snapshot.config, options.source, options.cwd);
+      if (preview || hasProposedConfigEvidence) {
+        const expectedProposedConfigDigest = options.expectedProposedConfigDigest
+          ?? preview!.proposedConfigDigest;
+        if (calculateCatalogSourcesConfigDigest(config) !== expectedProposedConfigDigest) {
+          throw new CatalogSourceReviewStaleError(preview?.references ?? {
+            inventorySchemaVersion: 2,
+            primaryChange: null,
+            inventoryComplete: true,
+            references: [],
+            errors: [],
+          });
+        }
+      }
+      const primaryChange = catalogPrimaryChange(snapshot.config, config);
+      let references = preview?.references;
+      if (primaryChange) {
+        const impact = await inspectCatalogSourceImpact({
+          sourceId: options.source.id,
+          cwd: options.cwd,
+          env,
+          primaryChange,
+          mode: 'none',
+        });
+        references = preflightInventory(impact);
+        const expectedImpactDigest = options.expectedImpactDigest ?? preview!.impactDigest;
+        if (calculateCatalogSourceImpactDigest(impact) !== expectedImpactDigest) {
+          throw new CatalogSourceReviewStaleError(references);
+        }
+        if (options.requireImpactConfirmation === true
+          && catalogSourceImpactRequiresConfirmation(impact)
+          && options.confirmImpact !== true) {
+          throw new CatalogSourceImpactConfirmationRequiredError(references);
+        }
+      }
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
+      }
+      if ((preview || hasProposedConfigEvidence) && sourceIsNew) {
+        await removeCatalogSourceGenerationState({ sourceId: options.source.id, env });
       }
       const receipt = await commitConfig({
         command: 'catalog:source:add',
         sourceId: options.source.id,
         config,
         expectedDigest: snapshot.digest,
+        references,
         env,
         runtime,
       });
@@ -401,6 +457,7 @@ export async function updateCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
   expectedConfigDigest?: string;
+  expectedProposedConfigDigest?: string;
   managedByWorkspaceIdentity?: string;
   requireIdentityChangeConfirmation?: boolean;
   confirmIdentityChange?: boolean;
@@ -429,6 +486,11 @@ export async function updateCatalogSourceCommand(options: {
         throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
       }
       const config = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+      const expectedProposedConfigDigest = options.expectedProposedConfigDigest
+        ?? preview.proposedConfigDigest;
+      if (calculateCatalogSourcesConfigDigest(config) !== expectedProposedConfigDigest) {
+        throw new CatalogSourceReviewStaleError(preview.references);
+      }
       const before = snapshot.config.sources.find((source) => source.id === options.sourceId)!;
       const after = config.sources.find((source) => source.id === options.sourceId)!;
       const changedIdentity = await identityChanged(before, after);

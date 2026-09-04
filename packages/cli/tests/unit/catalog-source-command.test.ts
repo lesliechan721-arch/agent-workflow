@@ -250,6 +250,250 @@ describe('catalog source mutation v6', () => {
     await expect(fs.pathExists(path.join(isolation.env.AW_HOME!, 'catalog-store'))).resolves.toBe(false);
   });
 
+  it('requires confirmation for add-primary impact and returns the confirmed primary change', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('add-primary-impact');
+    await createCatalogSnapshotFixture(root);
+    await fs.outputJson(path.join(
+      isolation.env.AW_HOME!, 'plugin-config', 'legacy-demo', 'config.json',
+    ), { enabled: true });
+
+    await expect(addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: true },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true,
+    })).rejects.toMatchObject({
+      code: 'catalogSourceImpactConfirmationRequired',
+      impact: {
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
+      },
+    });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+
+    await expect(addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: true },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+    })).resolves.toMatchObject({
+      receiptSchemaVersion: 6,
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      primarySourceId: 'team',
+      references: [expect.objectContaining({ category: 'config', pluginId: 'official/legacy-demo' })],
+      errors: [],
+    });
+  });
+
+  it('adds a primary source without confirmation when primary impact is empty', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('add-primary-empty-impact');
+    await createCatalogSnapshotFixture(root);
+
+    await expect(addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: root, primary: true },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true,
+    })).resolves.toMatchObject({
+      changed: true,
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      primarySourceId: 'team',
+      references: [],
+      errors: [],
+    });
+  });
+
+  it('rejects add-primary when reviewed config or impact drifts before the lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('add-primary-reviewed');
+    const racing = fixturePath('add-primary-racing');
+    await Promise.all([
+      createCatalogSnapshotFixture(first),
+      createCatalogSnapshotFixture(racing),
+    ]);
+    const source = { id: 'team', type: 'path' as const, path: first, primary: true };
+    const configPreview = await preflightCatalogSourceMutation({
+      request: { action: 'add', source }, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await expect(addCatalogSourceCommand({
+      source, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      expectedConfigDigest: configPreview.configDigest,
+      expectedImpactDigest: configPreview.impactDigest,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+      runtime: {
+        afterImpactInspected: async () => {
+          await addCatalogSourceCommand({
+            source: { id: 'racing', type: 'path', path: racing, primary: false },
+            cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+          });
+        },
+      },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+
+    const impactPreview = await preflightCatalogSourceMutation({
+      request: { action: 'add', source }, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await expect(addCatalogSourceCommand({
+      source, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      expectedConfigDigest: impactPreview.configDigest,
+      expectedImpactDigest: impactPreview.impactDigest,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+      runtime: {
+        afterImpactInspected: async () => {
+          await fs.outputJson(path.join(
+            isolation.env.AW_HOME!, 'plugin-config', 'legacy-demo', 'config.json',
+          ), { enabled: true });
+        },
+      },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources)
+      .not.toContainEqual(expect.objectContaining({ id: 'team' }));
+  });
+
+  it('rejects add-primary when a reviewed Path symlink changes its real target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('add-primary-symlink-first');
+    const second = fixturePath('add-primary-symlink-second');
+    const sourceLink = fixturePath('add-primary-symlink');
+    await Promise.all([
+      createCatalogSnapshotFixture(first),
+      createCatalogSnapshotFixture(second),
+    ]);
+    await fs.symlink(first, sourceLink, 'dir');
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const state = {
+      schemaVersion: 1,
+      sources: {
+        team: {
+          lastSync: {
+            syncedAt: '2026-01-01T00:00:00.000Z',
+            mode: 'sync',
+            state: 'failed',
+            errorCode: 'retained-test-state',
+          },
+        },
+      },
+    };
+    await fs.outputJson(statePath, state, { spaces: 2 });
+    const beforeConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+
+    await expect(addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: sourceLink, primary: true },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+      runtime: {
+        afterImpactInspected: async () => {
+          await fs.unlink(sourceLink);
+          await fs.symlink(second, sourceLink, 'dir');
+        },
+      },
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toEqual(beforeConfig);
+    expect(await fs.readJson(statePath)).toEqual(state);
+  });
+
+  it('rejects reviewed non-primary add when a Path symlink changes its real target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const first = fixturePath('add-reviewed-symlink-first');
+    const second = fixturePath('add-reviewed-symlink-second');
+    const sourceLink = fixturePath('add-reviewed-symlink');
+    await Promise.all([
+      createCatalogSnapshotFixture(first),
+      createCatalogSnapshotFixture(second),
+    ]);
+    await fs.symlink(first, sourceLink, 'dir');
+    const source = { id: 'team', type: 'path' as const, path: sourceLink, primary: false };
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'add', source }, cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const state = {
+      schemaVersion: 1,
+      sources: {
+        team: {
+          lastSync: {
+            syncedAt: '2026-01-01T00:00:00.000Z',
+            mode: 'sync',
+            state: 'failed',
+            errorCode: 'retained-test-state',
+          },
+        },
+      },
+    };
+    await fs.outputJson(statePath, state, { spaces: 2 });
+    const beforeConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await fs.unlink(sourceLink);
+    await fs.symlink(second, sourceLink, 'dir');
+
+    await expect(addCatalogSourceCommand({
+      source, cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      expectedConfigDigest: preview.configDigest,
+      expectedProposedConfigDigest: preview.proposedConfigDigest,
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toEqual(beforeConfig);
+    expect(await fs.readJson(statePath)).toEqual(state);
+  });
+
+  it('rejects reviewed Path update when its symlink changes real target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const current = fixturePath('update-reviewed-current');
+    const first = fixturePath('update-reviewed-symlink-first');
+    const second = fixturePath('update-reviewed-symlink-second');
+    const sourceLink = fixturePath('update-reviewed-symlink');
+    await Promise.all([
+      createCatalogSnapshotFixture(current),
+      createCatalogSnapshotFixture(first),
+      createCatalogSnapshotFixture(second),
+    ]);
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', path: current, primary: false },
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await fs.symlink(first, sourceLink, 'dir');
+    const update = { type: 'path' as const, path: sourceLink };
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'update', sourceId: 'team', update },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    const statePath = path.join(isolation.env.AW_HOME!, 'catalog-state.json');
+    const state = {
+      schemaVersion: 1,
+      sources: {
+        team: {
+          lastSync: {
+            syncedAt: '2026-01-01T00:00:00.000Z',
+            mode: 'sync',
+            state: 'failed',
+            errorCode: 'retained-test-state',
+          },
+        },
+      },
+    };
+    await fs.outputJson(statePath, state, { spaces: 2 });
+    const beforeConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await fs.unlink(sourceLink);
+    await fs.symlink(second, sourceLink, 'dir');
+
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update,
+      cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      expectedConfigDigest: preview.configDigest,
+      expectedProposedConfigDigest: preview.proposedConfigDigest,
+      expectedImpactDigest: preview.impactDigest,
+      requireIdentityChangeConfirmation: true,
+      confirmIdentityChange: true,
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toEqual(beforeConfig);
+    expect(await fs.readJson(statePath)).toEqual(state);
+  });
+
   it('stops add before config commit when orphan state cleanup fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = fixturePath('orphan-add-cleanup');
