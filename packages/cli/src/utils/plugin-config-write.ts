@@ -603,7 +603,7 @@ async function applyPluginConfigWriteUnlocked(
   if (
     options.apply !== false
     && options.scope === 'user'
-    && options.sharedNativeApplyConfirmed === false
+    && options.sharedNativeApplyConfirmed !== true
     && sharedNativeAffected
   ) {
     applyTargets ??= (await discoverVisibleTargets({

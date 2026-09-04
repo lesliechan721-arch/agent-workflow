@@ -233,6 +233,14 @@ function configPageMatches(
     && page.layer.scope === route.layer.scope);
 }
 
+function configFieldCanSet(field: ConfigFieldViewModel): boolean {
+  return field.canSet ?? field.writable;
+}
+
+function configFieldCanUnset(field: ConfigFieldViewModel): boolean {
+  return field.canUnset ?? (field.writable && field.configured);
+}
+
 function platformLabel(platform: PlatformName): string {
   return platform === 'codex' ? 'Codex' : 'Claude Code';
 }
@@ -1083,6 +1091,7 @@ export function resolveConsoleV4ScreenId(
       sourceMissing: 'I05',
       sourceIdentityChanged: 'I06',
       requiredConfigMissing: 'I07',
+      configLayerUnsupported: 'I07',
       scopeConflict: 'I08',
       dependencyMissing: 'D14',
       dependencyNotReady: 'D15',
@@ -2128,9 +2137,9 @@ export function ConsoleAppV4(props: {
     const field = currentConfigPage.groups.flatMap((group) => group.fields)
       .find((candidate) => candidate.key === pendingLayerFieldKey);
     setPendingLayerFieldKey(undefined);
-    if (!field?.writable) return;
+    if (!field || (!configFieldCanSet(field) && !configFieldCanUnset(field))) return;
     const layer = { scope: route.layer.scope as Scope };
-    props.controller.push(field.configured ? {
+    props.controller.push(field.configured || !configFieldCanSet(field) ? {
       name: 'configFieldAction',
       pluginId: route.pluginId,
       layer,
@@ -3301,6 +3310,9 @@ export function ConsoleAppV4(props: {
       if (projectSharedNativeFields.length > 0) {
         description += ' 等待设置由个人默认控制共享 native；当前项目不可改。更改影响所有项目。';
       }
+      if (projectSharedNativeFields.some(configFieldCanUnset)) {
+        description += ' 发现不再支持的 project override；实际使用 user/default；请删除旧值。';
+      }
       const mutableLayer = {
         scope: route.layer.scope as Scope,
       };
@@ -3318,7 +3330,7 @@ export function ConsoleAppV4(props: {
                 })
               : () => applyConfigPreset(currentConfigPage, preset.id),
           }))
-        : (activeGroup?.fields ?? []).filter((field) => readonly || field.writable).map((field) => ({
+        : (activeGroup?.fields ?? []).filter((field) => readonly || configFieldCanSet(field) || configFieldCanUnset(field)).map((field) => ({
             label: field.title,
             description: field.invalidOverrideIssue
               ? field.invalidOverrideOwnedByLayer
@@ -3326,7 +3338,9 @@ export function ConsoleAppV4(props: {
                 : field.invalidOverrideIssue
               : readonly
               ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
-              : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
+              : !configFieldCanSet(field) && configFieldCanUnset(field)
+                ? '不再支持的 project override · 实际使用 user/default · 可删除旧值'
+                : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
             meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
             configKey: field.key,
             run: readonly
@@ -3336,7 +3350,7 @@ export function ConsoleAppV4(props: {
                   fieldKey: field.key,
                   groupId: activeGroup!.id,
                 })
-              : () => go(field.configured ? {
+              : () => go(field.configured || !configFieldCanSet(field) ? {
                   name: 'configFieldAction',
                   pluginId: plugin.pluginId,
                   layer: mutableLayer,
@@ -3393,9 +3407,11 @@ export function ConsoleAppV4(props: {
         ? activeGroup?.fields[effectiveConfigFocus]
         : undefined;
       if (!readonly) {
-        const canUnsetFocused = focusedConfigField?.configured === true
-          && (!focusedConfigField.invalidOverrideIssue
-            || focusedConfigField.invalidOverrideOwnedByLayer === true);
+        const canUnsetFocused = focusedConfigField
+          ? configFieldCanUnset(focusedConfigField)
+            && (!focusedConfigField.invalidOverrideIssue
+              || focusedConfigField.invalidOverrideOwnedByLayer === true)
+          : false;
         help = canUnsetFocused
           ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回'
           : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · Esc 返回';
@@ -3452,7 +3468,7 @@ export function ConsoleAppV4(props: {
       ? '删除个人默认中的值'
       : '删除当前项目中的值';
     actions = [
-      {
+      ...(configFieldCanSet(activeField) ? [{
         label: '修改值…',
         run: () => go({
           name: 'configFieldEditor',
@@ -3462,14 +3478,17 @@ export function ConsoleAppV4(props: {
           editor: fieldEditor(activeField),
           ...fieldEditorMode(activeField),
         }),
-      },
-      ...(!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer ? [draftRemoves.includes(activeField.key)
+      }] : []),
+      ...(configFieldCanUnset(activeField) && (!activeField.invalidOverrideIssue || activeField.invalidOverrideOwnedByLayer) ? [draftRemoves.includes(activeField.key)
         ? { label: '撤销删除', run: () => { cancelDraftRemoval(activeField.key); back(); } }
         : { label: deleteLabel, status: 'error' as const, run: () => { removeDraft(activeField.key); back(); } }] : []),
     ];
     content = <Box flexDirection="column"><SectionCard>
       {activeField.invalidOverrideIssue
         ? <StaticRow title="当前覆盖无效" meta={activeField.invalidOverrideIssue} status="warning" />
+        : null}
+      {!configFieldCanSet(activeField) && configFieldCanUnset(activeField)
+        ? <StaticRow title="不再支持的 project override" meta="实际使用 user/default；删除旧值后保持继承" status="warning" />
         : null}
       <StaticRow title={`${layer}中的值`} meta={currentFieldDisplay(activeField)} />
       <StaticRow title="当前实际生效" meta={`${effectiveFieldDisplay(activeField)} · 来自${activeField.effectiveSourceLabel}`} />
@@ -5444,7 +5463,7 @@ export function ConsoleAppV4(props: {
       const key = actions[focus]?.configKey;
       const field = currentConfigPage?.groups.flatMap((group) => group.fields)
         .find((candidate) => candidate.key === key);
-      if (field?.configured && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
+      if (field && configFieldCanUnset(field) && (!field.invalidOverrideIssue || field.invalidOverrideOwnedByLayer)) {
         removeDraft(field.key);
       }
     } else if (route.name === 'configFields' && visibleConfigTabs.length > 1

@@ -46,6 +46,8 @@ AW 只提供 `default < user < project` 两个持久写入层。Store 使用 sch
 
 同一 Catalog source 内的运行时依赖只在 manifest `dependencies` 中声明，值为裸插件名。不要写 `source/plugin`，也不要用 build import 替代运行时依赖。依赖集合、缺失节点和环由 Catalog 作者聚合验证；本指南只定义单插件声明。
 
+Codex native target 的 `refreshKeys` 是 user-only。遗留 project override 会保留但不参与 effective value。Status 报告非阻断 `configLayerUnsupported` warning，TUI 只允许删除该旧值。
+
 ## 单插件作者闭环
 
 开始前确认 `<workspace-root>` 已有合法 `.aw-workspace.json` 和 `plugins/marketplace-source.json`。没有合法 Workspace 时停止，并使用 [Catalog 作者指南](catalog-authoring.md)初始化，不要由 Plugin Author 隐式创建。

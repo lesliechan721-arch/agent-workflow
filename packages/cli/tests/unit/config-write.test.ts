@@ -811,6 +811,90 @@ describe('config write full reinstall apply', () => {
     })).exists).toBe(false);
   });
 
+  it('fails closed before config or platform mutation when shared native confirmation is omitted', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    const reinstall = createReinstallMock();
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }],
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+
+    expect(reinstall).not.toHaveBeenCalled();
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
+  it('allows project unset to remove a legacy native refresh-key override', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user', cwd: fixture.cwd, env: fixture.env,
+      values: { mode: 'fast' },
+    });
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project', cwd: fixture.cwd, env: fixture.env,
+      values: { mode: 'safe' },
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      apply: false,
+      request: { removeKeys: ['mode'] },
+    })).resolves.toMatchObject({ removedKeys: ['mode'], configWrite: 'succeeded' });
+
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project', cwd: fixture.cwd, env: fixture.env,
+    })).exists).toBe(false);
+    expect((await resolveEffectivePluginConfig({
+      pluginName: fixture.plugin.manifest.name,
+      manifest: fixture.plugin.manifest,
+      targetScope: 'project', cwd: fixture.cwd, env: fixture.env,
+    })).values.mode).toBe('fast');
+  });
+
   it('reinstalls both user and current-project targets on both platforms after a user write', async () => {
     const fixture = await createFixture();
     for (const platform of ['codex', 'claude'] as const) {

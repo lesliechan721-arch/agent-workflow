@@ -591,6 +591,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ]);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
+      sharedNativeApplyConfirmed: true,
       applyTargets: [
         expect.objectContaining({ platform: 'claude', scope: 'project' }),
         expect.objectContaining({ platform: 'codex', scope: 'user' }),
@@ -606,6 +607,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(impactTitles(projectReview)).toEqual(['重新应用 Claude Code · 当前项目']);
     await expect(projectOnly.executeOperation(projectReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
+      sharedNativeApplyConfirmed: true,
       applyTargets: [expect.objectContaining({ platform: 'claude', scope: 'project' })],
     }));
     projectOnly.dispose();
