@@ -3665,7 +3665,6 @@ async function runRebuildCommandInSession(options: {
               candidate.name === entry.plugin.manifest.name)?.contentDigest,
           });
       }
-        executionContext.codexObservationSession?.invalidate();
         let lockedPlan = await measureCommandPerformanceStage(
           options.runtime,
           'dependency.plan',
@@ -3752,7 +3751,6 @@ async function runRebuildCommandInSession(options: {
           );
         }
         const lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
-        executionContext.codexObservationSession?.invalidate();
         const lockedOperationPlan = createRebuildOperationPlan({
           command: options.command,
           scope: options.commandOptions.scope,
@@ -4674,6 +4672,9 @@ export async function runRebuildCommand(options: {
   runtime?: RebuildCommandRuntime;
   all?: boolean;
 }): Promise<RebuildCommandResult> {
+  if (options.runtime?.codexObservationSession) {
+    return runRebuildCommandInSession(options);
+  }
   const env = options.runtime?.env ?? process.env;
   const session = await createCodexNativeObservationSession({
     exactCwd: options.commandOptions.cwd,

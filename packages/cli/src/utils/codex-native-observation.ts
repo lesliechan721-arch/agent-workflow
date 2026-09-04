@@ -184,7 +184,6 @@ export async function createCodexNativeObservationSession(options: {
     },
     setManager(nextManager) {
       if (manager.kind === nextManager.kind
-        && manager.version === nextManager.version
         && manager.command === nextManager.command
         && manager.runtimeRoot === nextManager.runtimeRoot
         && manager.argsPrefix.length === nextManager.argsPrefix.length

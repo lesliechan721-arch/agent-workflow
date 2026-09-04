@@ -33,6 +33,7 @@ import {
 } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { userIssueKey } from '../../src/tui/controller.js';
+import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { runCli } from '../../src/index.js';
 import {
   getCurrentSourceTestIsolation,
@@ -1285,26 +1286,37 @@ describe('five namespaced write commands', () => {
       await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
     }
     const runtime = createCodexNativeTestRuntime(isolation);
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite',
+      action: 'install',
+      pluginId: 'team/root',
+      platform: 'codex',
+      scope: 'project',
+    } as const;
+    const evidence = await dependencies.captureEvidence(intent);
+    const lockedCallsStart = runtime.nativeCliRunner.mock.calls.length;
+    const previewLists = runtime.nativeCliRunner.mock.calls.slice(0, lockedCallsStart).filter(([invocation]) =>
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin list --marketplace aw --json');
+    expect(previewLists).toHaveLength(2);
     const copy = vi.spyOn(fs, 'copy');
     const move = vi.spyOn(fs, 'move');
     const rename = vi.spyOn(fs, 'rename');
     let result: Awaited<ReturnType<typeof installWriteCommand>>;
-    let stagingGenerationCount = 0;
+    let catalogCopyGenerationCount = 0;
     let generationSwapCount = 0;
     let committedBackupCount = 0;
-    let callsAtTargetBuild = 0;
-    setRebuildCommandTestHooksForTests({
-      afterTargetBuilt: async () => {
-        callsAtTargetBuild = runtime.nativeCliRunner.mock.calls.length;
-      },
-    });
     try {
-      result = await installWriteCommand(['team/root'], {
-        cwd: isolation.layout.fixtureCwd,
-        platform: 'codex',
-        scope: 'project',
-      }, runtime);
-      stagingGenerationCount = new Set(copy.mock.calls.flatMap(([, destination]) =>
+      result = await dependencies.executeIntent(intent, evidence) as Awaited<
+        ReturnType<typeof installWriteCommand>
+      >;
+      catalogCopyGenerationCount = new Set(copy.mock.calls.flatMap(([, destination]) =>
         path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
           ? [path.dirname(String(destination))]
           : [])).size;
@@ -1314,17 +1326,16 @@ describe('five namespaced write commands', () => {
       committedBackupCount = rename.mock.calls.filter(([sourcePath]) =>
         path.basename(String(sourcePath)).startsWith('team.backup-')).length;
     } finally {
-      setRebuildCommandTestHooksForTests(undefined);
       copy.mockRestore();
       move.mockRestore();
       rename.mockRestore();
     }
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
-    expect(stagingGenerationCount).toBe(1);
+    expect(catalogCopyGenerationCount).toBe(1);
     expect(generationSwapCount).toBe(1);
     expect(committedBackupCount).toBe(1);
-    const lockedCalls = runtime.nativeCliRunner.mock.calls.slice(callsAtTargetBuild);
+    const lockedCalls = runtime.nativeCliRunner.mock.calls.slice(lockedCallsStart);
     const jsonLists = lockedCalls.filter(([invocation]) => {
       const pluginIndex = invocation.args.indexOf('plugin');
       const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
@@ -1335,8 +1346,13 @@ describe('five namespaced write commands', () => {
       const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
       return args[1] === 'list' && !args.includes('--json');
     });
-    expect(jsonLists).toHaveLength(4);
+    expect(jsonLists.length, JSON.stringify(lockedCalls.map(([invocation]) => ({
+      args: invocation.args,
+      cwd: invocation.cwd,
+    }))))
+      .toBeLessThanOrEqual(4);
     expect(nonJsonLists).toHaveLength(0);
+    expect(previewLists.length + jsonLists.length).toBeLessThanOrEqual(6);
     expect(runtime.installed).toEqual(new Set([
       ...dependencyNames.map((name) => `${name}@aw`),
       'root@aw',
@@ -2439,24 +2455,31 @@ describe('five namespaced write commands', () => {
         }
         return runtime.nativeCliRunner(invocation);
       });
+      const observationSession = await createCodexNativeObservationSession({
+        exactCwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        runner: nativeCliRunner,
+      });
       setRebuildCommandTestHooksForTests({
         afterTargetBuilt: async ({ identity }) => {
           if (identity.pluginId !== 'team/demo') return;
           callsAtTargetBuild = nativeCliRunner.mock.calls.length;
           rejectObservation = true;
+          observationSession.invalidate('aw');
         },
       });
       let result: Awaited<ReturnType<typeof syncCommand>>;
       try {
         result = sharedAction === 'reuse'
           ? await installWriteCommand(['team/demo'], {
-              cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-            }, { ...runtime, nativeCliRunner })
+            cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+            }, { ...runtime, nativeCliRunner, codexObservationSession: observationSession })
           : await uninstallWriteCommand(['team/demo'], {
               cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
-            }, { ...runtime, nativeCliRunner });
+            }, { ...runtime, nativeCliRunner, codexObservationSession: observationSession });
       } finally {
         setRebuildCommandTestHooksForTests(undefined);
+        await observationSession.dispose();
       }
 
       expect(result.codexReconcilePlans?.[0]?.sharedNativeActions).toContainEqual(
@@ -10330,7 +10353,7 @@ describe('five namespaced write commands', () => {
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
     expect(codexManagerResolver).not.toHaveBeenCalled();
-    expect(nativeCliRunner).toHaveBeenCalledTimes(6);
+    expect(nativeCliRunner).toHaveBeenCalledTimes(4);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);

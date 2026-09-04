@@ -105,6 +105,32 @@ describe('Codex native observation session', () => {
     }
   });
 
+  it('keeps snapshots when manager discovery only adds version metadata', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        return listResult(['demo@aw']);
+      },
+    });
+    try {
+      await session.inspectPlugin({ pluginId: 'demo@aw' });
+      session.setManager({
+        kind: 'system',
+        version: '0.153.0',
+        command: 'codex',
+        argsPrefix: [],
+      });
+      await session.inspectPlugin({ pluginId: 'demo@aw' });
+      expect(calls).toHaveLength(2);
+    } finally {
+      await session.dispose();
+    }
+  });
+
   it('clears system snapshots when a managed manager is selected', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const calls: NativeCliInvocation[] = [];

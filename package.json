@@ -26,6 +26,8 @@
     "test:smoke:ask-me-browser": "pnpm --filter @lesliechan721/aw test:smoke:ask-me-browser",
     "qualification:codex-project-native": "node scripts/qualification/codex-project-native.mjs",
     "test:qualification:codex-project-native:harness": "node --test scripts/qualification/codex-project-native.test.mjs",
+    "qualification:codex-native-performance": "node scripts/qualification/codex-native-performance.mjs",
+    "test:qualification:codex-native-performance:harness": "node --test scripts/qualification/codex-native-performance.test.mjs",
     "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
     "plugin:status": "node packages/cli/dist/index.js plugin status --all",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",

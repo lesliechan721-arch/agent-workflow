@@ -251,7 +251,13 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - `status` 始终只读。它只能读取 Intent、live ownership 和 native evidence，并标明 observed 或 assumed；不得安装 manager、调用 native add/remove、修改 trust/config、创建 claim/refcount，或把 qualification report 当现场事实。
 - 旧 Codex direct MCP/Hook residue 不由新 CLI 扫描、重建或删除。保留旧环境时，先用旧 CLI cleanup。
 
-独立入口 `pnpm qualification:codex-project-native` 只用于 rollout qualification。它使用临时 Codex home、临时项目和临时本地 marketplace，且不进入普通 test、build 或 release 默认链。机器报告只说明该次 CLI/OS 的 qualification 结果，不授权或记录任何用户安装。
+独立入口 `pnpm qualification:codex-project-native` 只用于 `0.151.0` rollout qualification。`pnpm qualification:codex-native-performance` 按 `CODEX_QUALIFICATION_VERSION` 和 `CODEX_QUALIFICATION_CLI` 显式验证 `0.145.0`、`0.151.0` 或 `0.153.0`。三个版本都必须接受 `plugin list --marketplace <name> --json`；`0.153.0` 的本地 marketplace scoped list 还必须在阻断 proxy 的隔离环境中成功，不得依赖远程 Catalog。代表性本地 native plugin 安装运行五次，其中位数必须低于 15 秒；如有同机旧实现基线，也可用改善至少 70% 代替该绝对条件。精确 binary 缺失时报告 `missing`，不得自动下载或把 fixture 结果作为真实性能证据。
+
+两个 qualification 都使用临时 Codex home、临时用户 home、临时 AW home、临时项目和临时本地 marketplace，且不进入普通 test、build 或 release 默认链。它们不读取或修改真实用户 config/cache，不访问远程 Catalog。机器报告只说明该次 CLI/OS 和精确版本的 qualification 结果，不授权或记录任何用户安装。
+
+Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不做 process-table observation 或 scan。每个 marketplace observation generation 中，project 或 all-scope 最多运行一次 exact list 和一次 neutral list；user-only 最多运行一次 neutral list。Review preview 与 mutation lock 内的 generation 不共享 snapshot。锁内 no-op 最多两次 list；发生真实 mutation 时 pre/post 合计最多四次；完整 TUI project mutation 连同 preview 最多六次。所有 list 都必须是 marketplace-scoped JSON list，不允许额外 non-JSON list。同 source 的 root plugin 和五个依赖只执行一轮 Catalog copy、staging generation、atomic swap 和 commit。以上上限与 plugin 数量无关。
+
+这些合同不接入 Codex app-server plugin/reconcile，也不保证运行中的 Codex App 自动刷新。App 的重新加载行为必须单独 qualification，不能由 CLI list 或文件变化推断。
 
 ## Agent Skill Eval 执行与 Runner 边界
 
