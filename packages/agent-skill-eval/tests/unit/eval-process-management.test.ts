@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 import {
   codexPermissionProfileStatus,
@@ -6,6 +9,20 @@ import {
 } from '../../src/index.js'
 
 describe('Eval process management preflight', () => {
+  it('uses the minimal pure test isolation and rejects network access', async () => {
+    const sentinelHome = process.env.HOME
+    const npmUserConfigPath = process.env.npm_config_userconfig
+
+    expect(sentinelHome).toContain('aw-pure-test-home-')
+    expect(npmUserConfigPath).toBe(path.join(sentinelHome!, '.npmrc'))
+    await expect(fs.stat(sentinelHome!)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.stat(npmUserConfigPath!)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(process.cwd().startsWith(sentinelHome!)).toBe(false)
+    await expect(fetch('https://example.invalid/pure-test')).rejects.toThrow(
+      'Network access is disabled in tests',
+    )
+  })
+
   it('normalizes the permission profile and blocks restricted sessions before other probes', async () => {
     const readKeychains = vi.fn(async () => '')
     const inspectProcessTree = vi.fn(async () => undefined)

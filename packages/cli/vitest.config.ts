@@ -22,7 +22,6 @@ const distContractTests = [
 ];
 const common = {
   environment: 'node' as const,
-  setupFiles: ['tests/setup/test-isolation.ts'],
   testTimeout: 15_000,
   hookTimeout: 15_000,
   coverage: {
@@ -57,6 +56,7 @@ export default defineConfig({
           ...common,
           name: 'pure',
           include: pureTests,
+          setupFiles: ['tests/setup/test-isolation-pure.ts'],
           sequence: { groupOrder: 0 },
         },
       },
@@ -67,6 +67,7 @@ export default defineConfig({
           name: 'filesystem-isolated',
           include: ['tests/unit/**/*.test.{ts,tsx}'],
           exclude: [...pureTests, ...processTests],
+          setupFiles: ['tests/setup/test-isolation.ts'],
           sequence: { groupOrder: 0 },
         },
       },
@@ -77,6 +78,7 @@ export default defineConfig({
           name: 'integration',
           include: ['tests/integration/**/*.test.{ts,tsx}'],
           exclude: [...processTests, ...distContractTests],
+          setupFiles: ['tests/setup/test-isolation.ts'],
           sequence: { groupOrder: 1 },
         },
       },
@@ -88,6 +90,7 @@ export default defineConfig({
           include: processTests,
           pool: 'forks',
           poolOptions: { forks: { singleFork: true } },
+          setupFiles: ['tests/setup/test-isolation.ts'],
           sequence: { groupOrder: 2 },
         },
       },

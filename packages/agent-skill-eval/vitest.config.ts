@@ -29,6 +29,7 @@ export default defineConfig({
           ...common,
           name: 'pure',
           include: pureTests,
+          setupFiles: ['tests/setup/test-isolation-pure.ts'],
           sequence: { groupOrder: 0 },
         },
       },

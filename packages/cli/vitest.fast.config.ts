@@ -28,7 +28,7 @@ export default defineConfig({
       'tests/unit/platform-support.test.ts',
       'tests/unit/template-engine.test.ts',
     ],
-    setupFiles: ['tests/setup/test-isolation.ts'],
+    setupFiles: ['tests/setup/test-isolation-pure.ts'],
     maxWorkers: 4,
     coverage: {
       reporter: ['text', 'html'],
