@@ -2648,7 +2648,7 @@ describe('five namespaced write commands', () => {
     });
     const root = status.payload.targets.find((target) => target.pluginId === 'team/root');
     expect(root, JSON.stringify(status.payload.targets)).toMatchObject({
-      state: 'ready',
+      state: 'needsSync',
       components: expect.arrayContaining([expect.objectContaining({
         kind: 'dependency', key: 'team/leaf', state: 'incomplete',
         metadata: expect.objectContaining({ scope: 'project', project: 'current' }),
@@ -5658,6 +5658,82 @@ describe('five namespaced write commands', () => {
     expect(batch.overallState, JSON.stringify(batch.rebuildResults)).toBe('succeeded');
     expect(batch.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['root', 'leaf']);
   });
+
+  it.each(['uninstall', 'cleanup-all'] as const)(
+    'rejects %s before mutation when the Active dependency graph disagrees with a bundle',
+    async (command) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `untrusted-removal-graph-${command}-source`,
+      );
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [
+        { name: 'leaf' },
+        { name: 'root', dependencies: ['leaf'] },
+      ]);
+      const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+      const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 2, sources: [source] },
+        expectedDigest: snapshot.digest,
+        env: isolation.env,
+      });
+      const runtime = {
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      };
+      await expect(installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+      await expect(installWriteCommand(['team/leaf'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+      const catalogManifestPath = path.join(sourceRoot, 'catalog-manifest.json');
+      const catalogManifest = await fs.readJson(catalogManifestPath);
+      const rootEntry = catalogManifest.entries.find((entry: { name: string }) => entry.name === 'root');
+      rootEntry.dependencies = [];
+      await fs.writeJson(catalogManifestPath, catalogManifest, { spaces: 2 });
+      await syncCatalogSourceGeneration({
+        sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+      });
+      const active = await resolveActiveCatalogGeneration({ sourceId: 'team', env: isolation.env });
+      await expect(validateCatalogSnapshotTransport(active.snapshotPath)).resolves.toMatchObject({
+        snapshotDigest: active.snapshotDigest,
+      });
+
+      const intentPath = path.join(
+        isolation.layout.fixtureCwd,
+        '.agent-workflows',
+        'plugin-intents.json',
+      );
+      const intentBefore = await fs.readFile(intentPath, 'utf8');
+      const platformRoot = path.join(isolation.layout.fixtureCwd, '.codex');
+      const platformBefore = await snapshotRegularTree(platformRoot);
+
+      if (command === 'uninstall') {
+        await expect(uninstallWriteCommand(['team/leaf'], {
+          cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+        }, runtime)).resolves.toMatchObject({ overallState: 'failed' });
+      } else {
+        await expect(withAwHomeMutationLock({
+          env: isolation.env,
+          action: (token) => runRebuildCommand({
+            command: 'cleanup',
+            pluginNames: [],
+            all: true,
+            commandOptions: {
+              cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+            },
+            runtime: { ...runtime, awHomeMutationToken: token },
+          }),
+        })).rejects.toThrow(/does not match its plugin bundle/u);
+      }
+
+      await expect(fs.readFile(intentPath, 'utf8')).resolves.toBe(intentBefore);
+      await expect(snapshotRegularTree(platformRoot)).resolves.toEqual(platformBefore);
+    },
+  );
 
   it('does not use another project consumer to block an ordinary uninstall', async () => {
     const isolation = getCurrentSourceTestIsolation();

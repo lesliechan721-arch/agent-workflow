@@ -906,12 +906,15 @@ export function createTuiControllerDependencies(
         explicitSourceChange = preview.proposedConfigDigest !== preview.configDigest
           && (preview.identityChanged || sourceFingerprintChanged);
         if (preview.identityChanged) sourceIdentityChangeImpact = {
-          impactSchemaVersion: 1,
+          impactSchemaVersion: 2,
           sourceId: preview.sourceId,
           inventoryComplete: preview.references.inventoryComplete,
           references: preview.references.references,
           affectedReferences: preview.references.references,
-          changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+          changes: {
+            added: [], removed: [], changed: [], newlyIncompatible: [],
+            dependencyChanged: [], platformSupportChanged: [],
+          },
           errors: preview.references.errors,
         };
         if (!explicitSourceChange) {
@@ -1054,7 +1057,7 @@ export function createTuiControllerDependencies(
           '候选 Catalog 版本低于当前 Active。普通更新已阻止。',
         );
       }
-      const impact = intent.action === 'repair' ? undefined
+      const impact = exactRepair ? undefined
         : sourceIdentityChangeImpact ?? await inspectCatalogSourceImpact({
           sourceId: intent.sourceId,
           cwd: context.cwd,
@@ -1122,12 +1125,15 @@ export function createTuiControllerDependencies(
           referenceCount: preview.references.references.length,
           inventoryComplete: preview.references.inventoryComplete,
           impact: {
-            impactSchemaVersion: 1,
+            impactSchemaVersion: 2,
             sourceId: preview.sourceId,
             inventoryComplete: preview.references.inventoryComplete,
             references: preview.references.references,
             affectedReferences: preview.references.references,
-            changes: { added: [], removed: [], changed: [], newlyIncompatible: [], dependencyChanged: [] },
+            changes: {
+              added: [], removed: [], changed: [], newlyIncompatible: [],
+              dependencyChanged: [], platformSupportChanged: [],
+            },
             errors: preview.references.errors,
           },
         },

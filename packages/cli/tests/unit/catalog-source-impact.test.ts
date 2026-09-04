@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CatalogManifestV7 } from '../../src/types.js';
 import {
+  catalogSourceImpactRequiresConfirmation,
   inspectCatalogSourceImpact,
 } from '../../src/utils/catalog-source-impact.js';
 import {
@@ -18,6 +19,7 @@ function manifest(entries: Array<{
   contentDigest: string;
   dependencies?: string[];
   capabilities?: string[];
+  products?: string[];
 }>): CatalogManifestV7 {
   return {
     schemaVersion: 7,
@@ -35,7 +37,11 @@ function manifest(entries: Array<{
       description: entry.name,
       category: 'workflow',
       strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'ON_INSTALL',
+        ...(entry.products ? { products: entry.products } : {}),
+      },
       dependencies: entry.dependencies ?? [],
       requires: { aw: { capabilities: entry.capabilities ?? [] } },
       source: `plugins/${entry.name}`,
@@ -47,6 +53,157 @@ function manifest(entries: Array<{
 }
 
 describe('Catalog source impact inspection', () => {
+  it('projects removed platform support and consumers only to matching platform references', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const inventory: CatalogSourceReferenceInventory = {
+      inventorySchemaVersion: 1,
+      references: [
+        {
+          kind: 'namespacedLifecycle',
+          location: 'dependency-claude',
+          sourceId: 'team',
+          pluginName: 'dependency',
+          platform: 'claude',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedLifecycle',
+          location: 'dependency-codex',
+          sourceId: 'team',
+          pluginName: 'dependency',
+          platform: 'codex',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedLifecycle',
+          location: 'consumer-claude',
+          sourceId: 'team',
+          pluginName: 'consumer',
+          platform: 'claude',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedLifecycle',
+          location: 'consumer-codex',
+          sourceId: 'team',
+          pluginName: 'consumer',
+          platform: 'codex',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedLifecycle',
+          location: 'candidate-consumer-claude',
+          sourceId: 'team',
+          pluginName: 'candidate-consumer',
+          platform: 'claude',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedLifecycle',
+          location: 'candidate-consumer-codex',
+          sourceId: 'team',
+          pluginName: 'candidate-consumer',
+          platform: 'codex',
+          scope: 'user',
+        },
+        {
+          kind: 'namespacedConfig',
+          location: 'platform-unknown',
+          sourceId: 'team',
+          pluginName: 'dependency',
+          scope: 'user',
+        },
+      ],
+      errors: [],
+    };
+
+    const impact = await inspectCatalogSourceImpact({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      mode: 'generation',
+      currentManifest: manifest([
+        {
+          name: 'dependency',
+          contentDigest: `sha256:${'a'.repeat(64)}`,
+          products: ['CODEX', 'CLAUDE'],
+        },
+        {
+          name: 'consumer',
+          contentDigest: `sha256:${'b'.repeat(64)}`,
+          dependencies: ['dependency'],
+          products: ['CODEX', 'CLAUDE'],
+        },
+      ]),
+      candidateManifest: manifest([
+        {
+          name: 'dependency',
+          contentDigest: `sha256:${'c'.repeat(64)}`,
+          products: ['CODEX'],
+        },
+        {
+          name: 'consumer',
+          contentDigest: `sha256:${'b'.repeat(64)}`,
+          dependencies: ['dependency'],
+          products: ['CODEX', 'CLAUDE'],
+        },
+        {
+          name: 'candidate-consumer',
+          contentDigest: `sha256:${'d'.repeat(64)}`,
+          dependencies: ['dependency'],
+          products: ['CODEX', 'CLAUDE'],
+        },
+      ]),
+      inventory,
+    });
+
+    expect(impact.impactSchemaVersion).toBe(2);
+    expect(impact.changes.platformSupportChanged).toEqual([{
+      pluginId: 'team/dependency',
+      removedPlatforms: ['claude'],
+      addedPlatforms: [],
+    }]);
+    expect(impact.affectedReferences).toEqual([
+      expect.objectContaining({ pluginId: 'team/candidate-consumer', platform: 'claude' }),
+      expect.objectContaining({ pluginId: 'team/consumer', platform: 'claude' }),
+      expect.objectContaining({ pluginId: 'team/dependency', platform: 'claude' }),
+    ]);
+  });
+
+  it('reports added platform support without requiring confirmation and sorts changes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const impact = await inspectCatalogSourceImpact({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      mode: 'generation',
+      currentManifest: manifest([
+        { name: 'zeta', contentDigest: 'z-current', products: ['CODEX'] },
+        { name: 'alpha', contentDigest: 'a-current', products: ['CLAUDE'] },
+      ]),
+      candidateManifest: manifest([
+        { name: 'zeta', contentDigest: 'z-candidate', products: ['CODEX', 'CLAUDE'] },
+        { name: 'alpha', contentDigest: 'a-candidate', products: ['CODEX', 'CLAUDE'] },
+      ]),
+      inventory: { inventorySchemaVersion: 1, references: [], errors: [] },
+    });
+
+    expect(impact.changes.platformSupportChanged).toEqual([
+      {
+        pluginId: 'team/alpha',
+        removedPlatforms: [],
+        addedPlatforms: ['codex'],
+      },
+      {
+        pluginId: 'team/zeta',
+        removedPlatforms: [],
+        addedPlatforms: ['claude'],
+      },
+    ]);
+    expect(impact.affectedReferences).toEqual([]);
+    expect(catalogSourceImpactRequiresConfirmation(impact)).toBe(false);
+  });
+
   it('projects dependency effects without exposing internal paths', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const projectKey = await fs.realpath(isolation.layout.fixtureCwd);

@@ -36,7 +36,7 @@ import {
   tryParseStrictSemVer,
 } from '../utils/manifest.js';
 import { resolveCliPackageRoot, resolveCodexPaths } from '../utils/paths.js';
-import { supportsPlatform } from '../utils/platform-support.js';
+import { resolveSupportedPlatforms, supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
 import {
   inspectCodexPluginRegistrationLive,
@@ -439,6 +439,12 @@ interface StatusPluginCapability {
     sharedNative?: StatusSharedNativeProjection;
     activation: StatusActivationProjection;
   };
+}
+
+function resolveCatalogEntrySupportedPlatforms(
+  policy: PluginMeta['manifest']['marketplace']['policy'],
+): ReturnType<typeof resolveSupportedPlatforms> {
+  return resolveSupportedPlatforms({ marketplace: { policy } } as PluginMeta['manifest']);
 }
 
 export interface StatusV7PluginSummary {
@@ -1276,16 +1282,20 @@ export async function statusCommandV7(options: {
         }
         try {
           const placementEntries = item.resolution!.manifest.entries.map((entry) => {
-            const products = entry.policy.products;
-            const supports = (platform: PlatformName): boolean => products === undefined
-              || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+            const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
             return {
               name: entry.name,
               dependencies: entry.dependencies,
               source: { id: item.resolution!.sourceId },
               targets: {
-                codex: { user: supports('codex'), project: supports('codex') },
-                claude: { user: supports('claude'), project: supports('claude') },
+                codex: {
+                  user: supportedPlatforms.has('codex'),
+                  project: supportedPlatforms.has('codex'),
+                },
+                claude: {
+                  user: supportedPlatforms.has('claude'),
+                  project: supportedPlatforms.has('claude'),
+                },
               },
             };
           });
@@ -1324,13 +1334,11 @@ export async function statusCommandV7(options: {
                 IMPLEMENTED_AW_CAPABILITIES,
               );
               if (!capabilitySupport.supported) {
-                const products = entry.policy.products;
-                const supports = (platform: PlatformName): boolean => products === undefined
-                  || products.includes(platform === 'codex' ? 'CODEX' : 'CLAUDE');
+                const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
                 const states: StatusPluginCapability['states'] = {};
                 const message = `awCapabilityUnsupported: ${item.resolution!.sourceId}/${entry.name} requires unsupported AW capabilities: ${capabilitySupport.missing.join(', ')}.`;
                 for (const platform of ['codex', 'claude'] as const) {
-                  if (!supports(platform)) continue;
+                  if (!supportedPlatforms.has(platform)) continue;
                   states[platform] = {};
                   for (const scope of ['user', 'project'] as const) {
                     states[platform]![scope] = {
@@ -1347,8 +1355,14 @@ export async function statusCommandV7(options: {
                   shortDescription: entry.interface?.shortDescription ?? entry.description,
                   description: entry.description,
                   targets: {
-                    claude: { user: supports('claude'), project: supports('claude') },
-                    codex: { user: supports('codex'), project: supports('codex') },
+                    claude: {
+                      user: supportedPlatforms.has('claude'),
+                      project: supportedPlatforms.has('claude'),
+                    },
+                    codex: {
+                      user: supportedPlatforms.has('codex'),
+                      project: supportedPlatforms.has('codex'),
+                    },
                   },
                   states,
                   dependencies: entry.dependencies,

@@ -72,6 +72,21 @@ function childHasExited(child) {
   return child.exitCode !== null || child.signalCode !== null;
 }
 
+function killUnverifiedPosixTree(child, signal, rootIdentity, killProcessGroup) {
+  if (childHasExited(child)) {
+    return;
+  }
+  if (rootIdentity) {
+    killDirectChild(child, signal);
+    return;
+  }
+  try {
+    killProcessGroup(child.pid, signal);
+  } catch {
+    killDirectChild(child, signal);
+  }
+}
+
 function identityKey(identity) {
   return `${identity.pid}:${identity.startIdentity}`;
 }
@@ -612,7 +627,7 @@ export function runProcessTree(options, dependencies = {}) {
         const termSnapshot = await captureSnapshot();
         if (termSnapshot) {
           rememberCurrentRootSnapshot(termSnapshot);
-          signalPosixIdentities({
+          const termResult = signalPosixIdentities({
             child,
             observedDescendants,
             rootIdentity,
@@ -622,12 +637,11 @@ export function runProcessTree(options, dependencies = {}) {
             killProcess,
             killProcessGroup,
           });
-          if (!sameIdentity(rootIdentity, termSnapshot.identitiesByPid.get(child.pid)) &&
-              !childHasExited(child)) {
-            killDirectChild(child, 'SIGTERM');
+          if (!termResult.rootMatches) {
+            killUnverifiedPosixTree(child, 'SIGTERM', rootIdentity, killProcessGroup);
           }
         } else {
-          killDirectChild(child, 'SIGTERM');
+          killUnverifiedPosixTree(child, 'SIGTERM', rootIdentity, killProcessGroup);
         }
         await Promise.race([delay(terminationGraceMs), forceCleanup]);
         const killSnapshot = await captureSnapshot();
@@ -643,13 +657,11 @@ export function runProcessTree(options, dependencies = {}) {
             killProcess,
             killProcessGroup,
           });
-          if (!killResult.rootMatches && !childHasExited(child)) {
-            killDirectChild(child, 'SIGKILL');
+          if (!killResult.rootMatches) {
+            killUnverifiedPosixTree(child, 'SIGKILL', rootIdentity, killProcessGroup);
           }
         } else {
-          if (!childHasExited(child)) {
-            killDirectChild(child, 'SIGKILL');
-          }
+          killUnverifiedPosixTree(child, 'SIGKILL', rootIdentity, killProcessGroup);
         }
       }
       await delay(cleanupSettleMs);

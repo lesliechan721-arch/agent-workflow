@@ -9,7 +9,9 @@ import type {
   CatalogManifestV7,
   CatalogSourceResolution,
 } from '../types.js';
+import { withAwHomeMutationLock } from './aw-home-mutation-lock.js';
 import { CatalogGenerationError } from './catalog-generation-error.js';
+import { readCatalogGenerationState } from './catalog-generation-state.js';
 import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import { normalizeAwCapabilities, parseStrictSemVer } from './manifest.js';
 import {
@@ -236,6 +238,7 @@ export async function publishCatalogStoreEntry(options: {
   resolution: CatalogSourceResolution;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  afterInactiveRepairPrepared?: () => Promise<void>;
 }): Promise<CatalogStoreEntry> {
   options.signal?.throwIfAborted();
   const logicalIdentity = await readCatalogSnapshotLogicalIdentity(options.resolution.rootDir);
@@ -246,7 +249,17 @@ export async function publishCatalogStoreEntry(options: {
   });
   await ensureRegularDirectoryPath(location.storeRootDir, 'Catalog store');
   await ensureRegularDirectoryPath(location.logicalIdentityDirectory, 'Catalog logical identity store');
-  if (await fs.pathExists(location.entryDir)) return validateEntry({ location });
+  if (await fs.pathExists(location.entryDir)) {
+    try {
+      return await validateEntry({ location });
+    } catch {
+      return publishInactiveCatalogStoreEntryReplacement({
+        ...options,
+        logicalIdentity,
+        location,
+      });
+    }
+  }
 
   const stagingDir = resolveStrictStoreDescendant(
     location.storeRootDir,
@@ -294,7 +307,15 @@ export async function publishCatalogStoreEntry(options: {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error;
-      return validateEntry({ location });
+      try {
+        return await validateEntry({ location });
+      } catch {
+        return publishInactiveCatalogStoreEntryReplacement({
+          ...options,
+          logicalIdentity,
+          location,
+        });
+      }
     }
     return { entryDir: location.entryDir, snapshotRoot: location.snapshotRoot, metadata, manifest: validation.manifest, reused: false };
   } catch (error) {
@@ -307,6 +328,49 @@ export async function publishCatalogStoreEntry(options: {
     });
   } finally {
     await fs.remove(stagingDir).catch(() => undefined);
+  }
+}
+
+async function publishInactiveCatalogStoreEntryReplacement(options: {
+  resolution: CatalogSourceResolution;
+  logicalIdentity: string;
+  location: CatalogStoreLocation;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+  afterInactiveRepairPrepared?: () => Promise<void>;
+}): Promise<CatalogStoreEntry> {
+  const prepared = await prepareCatalogStoreEntryRepair({
+    resolution: options.resolution,
+    logicalIdentity: options.logicalIdentity,
+    snapshotDigest: options.resolution.snapshotDigest,
+    env: options.env,
+    signal: options.signal,
+  });
+  try {
+    await options.afterInactiveRepairPrepared?.();
+    return await withAwHomeMutationLock({
+      env: options.env,
+      signal: options.signal,
+      action: async () => {
+        let damagedEntryError: unknown;
+        try {
+          return await validateEntry({ location: options.location });
+        } catch (error) {
+          damagedEntryError = error;
+        }
+        const state = await readCatalogGenerationState(options.env);
+        const activeReferencesTarget = Object.values(state.sources).some((source) =>
+          source.active !== undefined
+          && createCatalogStoreKey(
+            source.active.logicalIdentity,
+            source.active.snapshotDigest,
+          ) === options.location.storeKey);
+        if (activeReferencesTarget) throw damagedEntryError;
+        return prepared.commit();
+      },
+    });
+  } finally {
+    await prepared.cleanup();
   }
 }
 
@@ -443,7 +507,7 @@ export async function prepareCatalogStoreEntryRepair(options: {
           throw new CatalogGenerationError({
             code: 'catalogGenerationPublishFailed',
             sourceId: options.resolution.sourceId,
-            message: `Cannot repair the active Catalog store entry for source "${options.resolution.sourceId}".`,
+            message: `Cannot repair the Catalog store entry for source "${options.resolution.sourceId}".`,
             cause: error,
           });
         }
@@ -456,7 +520,7 @@ export async function prepareCatalogStoreEntryRepair(options: {
     throw new CatalogGenerationError({
       code: 'catalogGenerationPublishFailed',
       sourceId: options.resolution.sourceId,
-      message: `Cannot prepare the active Catalog store repair for source "${options.resolution.sourceId}".`,
+      message: `Cannot prepare the Catalog store repair for source "${options.resolution.sourceId}".`,
       cause: error,
     });
   }
