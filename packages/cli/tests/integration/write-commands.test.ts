@@ -2653,6 +2653,11 @@ describe('five namespaced write commands', () => {
         kind: 'dependency', key: 'team/leaf', state: 'incomplete',
         metadata: expect.objectContaining({ scope: 'project', project: 'current' }),
       })]),
+      recoveryActions: [{
+        command: 'cleanup',
+        scope: 'user',
+        description: '运行 aw cleanup team/leaf --platform codex --scope user，再运行 aw sync --all --platform codex --scope project。',
+      }],
     });
 
     const receipt = (await import('../../src/output/command-receipt.js'))
