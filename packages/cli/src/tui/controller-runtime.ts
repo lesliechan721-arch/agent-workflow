@@ -27,6 +27,11 @@ import {
 } from '../commands/write-commands.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
+  createCodexNativeObservationSession,
+  type CodexNativeObservationSession,
+} from '../utils/codex-native-observation.js';
+import type { CodexManager } from '../utils/native-cli.js';
+import {
   readCatalogSourcesConfigSnapshot,
   recoverInvalidCatalogSourcesConfig,
 } from '../utils/catalog-sources.js';
@@ -629,6 +634,7 @@ export function createTuiControllerDependencies(
     };
   };
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
+  const codexManagerByEvidence = new WeakMap<OperationEvidence, CodexManager>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
   let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV7>> | undefined;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
@@ -796,6 +802,7 @@ export function createTuiControllerDependencies(
     operationInventory = createOperationInventoryReader(),
     freshCatalog = false,
     reusableCandidate?: CatalogSessionReusableCandidate,
+    codexObservationSession?: CodexNativeObservationSession,
   ): Promise<OperationEvidence> => {
     if (intent.kind === 'configReset') {
       const parsed = parsePluginId(intent.pluginId);
@@ -1416,6 +1423,7 @@ export function createTuiControllerDependencies(
           },
         });
     let codexManager: OperationEvidence['codexManager'];
+    let resolvedCodexManager: CodexManager | undefined;
     const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
       summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
     if (intent.kind === 'pluginWrite') {
@@ -1444,6 +1452,7 @@ export function createTuiControllerDependencies(
           expectedGenerationSetDigest: catalogOperation.generationSetDigest,
         } : {}),
         previewOperationPlan: true,
+        ...(codexObservationSession ? { codexObservationSession } : {}),
         ...(preparation ? {
           onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
             stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
@@ -1480,6 +1489,9 @@ export function createTuiControllerDependencies(
         );
       }
       if (managerPreview) {
+        if (managerPreview.state === 'system' || managerPreview.state === 'cached') {
+          resolvedCodexManager = managerPreview.manager;
+        }
         codexManager = {
           state: managerPreview.state,
           packageName: MANAGED_CODEX_PACKAGE_NAME,
@@ -1543,6 +1555,7 @@ export function createTuiControllerDependencies(
       };
     }
     if (catalogOperation) catalogOperationByEvidence.set(evidence, catalogOperation);
+    if (resolvedCodexManager) codexManagerByEvidence.set(evidence, resolvedCodexManager);
     return evidence;
   };
 
@@ -2103,6 +2116,14 @@ export function createTuiControllerDependencies(
         }
         throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
       }
+      const codexObservationSession = intent.kind === 'pluginWrite'
+        ? await createCodexNativeObservationSession({
+            exactCwd: context.cwd,
+            env: context.env,
+            runner: context.nativeCliRunner,
+            manager: codexManagerByEvidence.get(expectedEvidence),
+          })
+        : undefined;
       return withAwHomeMutationLock({
         env: context.env,
         action: async (awHomeMutationToken) => {
@@ -2114,6 +2135,8 @@ export function createTuiControllerDependencies(
             undefined,
             operationInventory,
             true,
+            undefined,
+            codexObservationSession,
           );
           if (intent.kind !== 'pluginWrite'
             && !operationEvidenceMatches(expectedEvidence, currentEvidence)) {
@@ -2153,6 +2176,7 @@ export function createTuiControllerDependencies(
             }
             const result = await command([intent.pluginId], options, {
               ...context,
+              ...(codexObservationSession ? { codexObservationSession } : {}),
               awHomeMutationToken,
               inventoryCatalogSourceReferences: operationInventory,
               ...(expectedEvidence.operationPlan
@@ -2260,6 +2284,8 @@ export function createTuiControllerDependencies(
           }
           throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
         },
+      }).finally(async () => {
+        await codexObservationSession?.dispose();
       });
     },
   };

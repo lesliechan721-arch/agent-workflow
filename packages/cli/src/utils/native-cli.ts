@@ -13,6 +13,9 @@ const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
 const MIN_NATIVE_CLI_TIMEOUT_MS = 1_000;
 const MAX_NATIVE_CLI_TIMEOUT_MS = 600_000;
 const NATIVE_CLI_CLEANUP_TIMEOUT_MS = 4_500;
+const NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS = 100;
+const NATIVE_CLI_PROCESS_GROUP_POLL_MS = 25;
+const NATIVE_CLI_PROCESS_GROUP_VERIFY_MS = 4_000;
 const NATIVE_CLI_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 
 export interface NativeCliInvocation {
@@ -232,12 +235,15 @@ interface ExecFileNativeCliRunnerDependencies {
     options: {
       cwd?: string;
       env?: NodeJS.ProcessEnv;
+      detached: boolean;
       windowsHide: boolean;
     },
     callback: (error: unknown, stdout: string, stderr: string) => void,
   ) => NativeCliChildProcess;
   observeProcessTree?: typeof observeProcessTree;
   terminateProcessTree?: typeof terminateProcessTree;
+  platform?: NodeJS.Platform;
+  killProcess?: typeof process.kill;
 }
 
 const defaultNativeCliExecFile: NonNullable<
@@ -247,11 +253,72 @@ const defaultNativeCliExecFile: NonNullable<
     callback(error, stdout, stderr);
   });
 
+function delayNativeCliCleanup(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
+}
+
+function isProcessGroupMissing(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'ESRCH',
+  );
+}
+
+async function terminateNativeCliProcessGroup(
+  pid: number,
+  killProcess: typeof process.kill,
+): Promise<void> {
+  const groupPid = -pid;
+  const signalGroup = (signal: 'SIGTERM' | 'SIGKILL'): void => {
+    try {
+      killProcess(groupPid, signal);
+    } catch (error) {
+      if (isProcessGroupMissing(error)) {
+        return;
+      }
+      throw new Error(
+        `Native CLI cleanup unconfirmed: could not signal process group ${signal}.`,
+        { cause: error },
+      );
+    }
+  };
+  const groupExists = (): boolean => {
+    try {
+      killProcess(groupPid, 0);
+      return true;
+    } catch (error) {
+      if (isProcessGroupMissing(error)) {
+        return false;
+      }
+      throw new Error(
+        'Native CLI cleanup unconfirmed: could not verify process group exit.',
+        { cause: error },
+      );
+    }
+  };
+
+  signalGroup('SIGTERM');
+  await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_TERM_GRACE_MS);
+  signalGroup('SIGKILL');
+  for (let elapsedMs = 0; groupExists(); elapsedMs += NATIVE_CLI_PROCESS_GROUP_POLL_MS) {
+    if (elapsedMs >= NATIVE_CLI_PROCESS_GROUP_VERIFY_MS) {
+      throw new Error('Native CLI cleanup unconfirmed: process group is still running.');
+    }
+    await delayNativeCliCleanup(NATIVE_CLI_PROCESS_GROUP_POLL_MS);
+  }
+}
+
 function settleNativeCliTerminationCleanup(
   child: NativeCliChildProcess,
   terminateProcessTreeImpl: typeof terminateProcessTree,
   observation: ProcessTreeObservation | undefined,
   requireConfirmedCleanup: boolean,
+  processGroup: boolean,
+  killProcess: typeof process.kill,
 ): Promise<Error | undefined> {
   let directKillAttempted = false;
   const killDirectChild = (): void => {
@@ -302,12 +369,14 @@ function settleNativeCliTerminationCleanup(
 
     let cleanup: Promise<void>;
     try {
-      cleanup = terminateProcessTreeImpl(
-        childPid,
-        () => killDirectChild(),
-        {},
-        { observation, requireConfirmedCleanup },
-      );
+      cleanup = processGroup
+        ? terminateNativeCliProcessGroup(childPid, killProcess)
+        : terminateProcessTreeImpl(
+          childPid,
+          () => killDirectChild(),
+          {},
+          { observation, requireConfirmedCleanup },
+        );
     } catch (error) {
       finish(error instanceof Error
         ? error
@@ -346,6 +415,8 @@ export function createExecFileNativeCliRunner(
   const observeProcessTreeImpl = dependencies.observeProcessTree ??
     (dependencies.terminateProcessTree ? undefined : observeProcessTree);
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
+  const platform = dependencies.platform ?? process.platform;
+  const killProcess = dependencies.killProcess ?? process.kill;
 
   return async (invocation) => {
     if (invocation.signal?.aborted) {
@@ -434,17 +505,45 @@ export function createExecFileNativeCliRunner(
           clearTimeout(timeout);
           timeout = undefined;
         }
+        if (cleanupStrategy === 'on-demand-tree' && child.pid !== undefined) {
+          try {
+            processTreeObservation = (observeProcessTreeImpl ?? observeProcessTree)(
+              child.pid,
+              processMarker,
+            );
+          } catch (error) {
+            child.stdout?.destroy?.();
+            child.stderr?.destroy?.();
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              // The direct child can exit before fallback termination runs.
+            }
+            finishTermination(error instanceof Error
+              ? error
+              : new Error('Native CLI cleanup unconfirmed: process observation threw.'));
+            return;
+          }
+        }
         Promise.resolve()
           .then(() => settleNativeCliTerminationCleanup(
             child,
             terminateProcessTreeImpl,
             processTreeObservation,
-            (child.exitCode != null || child.signalCode != null) && callbackOutput === undefined,
+            cleanupStrategy === 'observed-tree'
+              ? (child.exitCode != null || child.signalCode != null) && callbackOutput === undefined
+              : true,
+            cleanupStrategy === 'process-group',
+            killProcess,
           ))
           .then(finishTermination);
       }
 
       const processMarker = randomUUID();
+      const trustedAgentCli = isAgentNativeCliInvocation(invocation);
+      const cleanupStrategy = trustedAgentCli
+        ? platform === 'win32' ? 'on-demand-tree' : 'process-group'
+        : 'observed-tree';
       child = execFileImpl(
         invocation.command,
         invocation.args,
@@ -454,6 +553,7 @@ export function createExecFileNativeCliRunner(
             ...(invocation.env ?? process.env),
             [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
           },
+          detached: cleanupStrategy === 'process-group',
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -492,7 +592,7 @@ export function createExecFileNativeCliRunner(
           }));
         },
       );
-      if (child.pid !== undefined) {
+      if (cleanupStrategy === 'observed-tree' && child.pid !== undefined) {
         processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
       }
 
@@ -622,33 +722,42 @@ export function buildCodexPluginAddInvocation(
   return buildCodexInvocation(manager, ['plugin', 'add', pluginId], cwd, env);
 }
 
-export function buildCodexPluginListInvocation(
-  manager: CodexManager,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'list'], cwd, env);
-}
-
 export function buildCodexPluginListJsonInvocation(
   manager: CodexManager,
+  marketplaceName: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'list', '--json'], cwd, env);
+  return buildCodexInvocation(
+    manager,
+    ['plugin', 'list', '--marketplace', marketplaceName, '--json'],
+    cwd,
+    env,
+  );
 }
 
 export function buildCodexProjectPluginListInvocations(
   manager: CodexManager,
   options: {
+    marketplaceName: string;
     exactCwd: string;
     neutralCwd: string;
     env: NodeJS.ProcessEnv;
   },
 ): CodexProjectPluginListInvocations {
   return {
-    exact: buildCodexPluginListJsonInvocation(manager, options.exactCwd, options.env),
-    neutral: buildCodexPluginListJsonInvocation(manager, options.neutralCwd, options.env),
+    exact: buildCodexPluginListJsonInvocation(
+      manager,
+      options.marketplaceName,
+      options.exactCwd,
+      options.env,
+    ),
+    neutral: buildCodexPluginListJsonInvocation(
+      manager,
+      options.marketplaceName,
+      options.neutralCwd,
+      options.env,
+    ),
   };
 }
 
@@ -762,14 +871,6 @@ export function buildCodexMarketplaceAddInvocation(
   env: NodeJS.ProcessEnv,
 ): NativeCliInvocation {
   return buildCodexInvocation(manager, ['plugin', 'marketplace', 'add', awHome], cwd, env);
-}
-
-export function buildCodexMarketplaceListInvocation(
-  manager: CodexManager,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): NativeCliInvocation {
-  return buildCodexInvocation(manager, ['plugin', 'marketplace', 'list'], cwd, env);
 }
 
 export function buildCodexMarketplaceRemoveInvocation(

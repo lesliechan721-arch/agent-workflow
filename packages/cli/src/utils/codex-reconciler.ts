@@ -41,8 +41,6 @@ export type CodexLiveExtensionState = 'absent' | 'present' | 'drifted' | 'foreig
 export interface CodexReconcilerLiveEvidence {
   codexPluginId: string;
   sharedNative: CodexSharedNativeInspection;
-  sharedNativePayloadDigest?: string;
-  sharedNativePayloadPath?: string;
   activations: {
     user?: boolean;
     project?: boolean;

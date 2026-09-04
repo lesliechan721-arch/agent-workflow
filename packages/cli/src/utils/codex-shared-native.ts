@@ -2,11 +2,6 @@ import path from 'node:path';
 
 import type { CodexMarketplaceSnapshot } from './codex-config.js';
 import { tryParseStrictSemVer } from './manifest.js';
-import {
-  codexNativeRenderProjectionsEqual,
-  type CodexNativeRenderProjection,
-  type CodexNativeRenderReceipt,
-} from './codex-native-render-receipt.js';
 import type { CodexNativePluginObservation } from './codex-native-observation.js';
 
 export type CodexSharedNativeDiagnostic =
@@ -43,7 +38,7 @@ export type CodexSharedNativeInspection =
     }
   | {
       state: 'usable';
-      version: string;
+      version?: string;
     }
   | {
       state: 'replaceable';
@@ -58,18 +53,6 @@ export type CodexSharedNativeInspection =
       diagnostic: CodexSharedNativeDiagnostic;
     };
 
-export type CodexSharedNativeManifestEvidence =
-  | { state: 'absent' }
-  | { state: 'unreadable' }
-  | {
-      state: 'present';
-      identity: string;
-      version: string;
-      payloadDigest?: string;
-      payloadPath: string;
-      pathSafe: boolean;
-    };
-
 export interface CodexSharedNativeEvidence {
   pluginName: string;
   pluginId: string;
@@ -80,14 +63,7 @@ export interface CodexSharedNativeEvidence {
   marketplaceRegistration?: CodexMarketplaceSnapshot;
   marketplacePathSafe: boolean;
   observation: CodexNativePluginObservation;
-  manifest: CodexSharedNativeManifestEvidence;
-  expectedProjectionRequired?: boolean;
-  expectedProjectionIdentity?: Pick<CodexNativeRenderProjection, 'logicalPluginId' | 'strategy'>;
-  expectedProjection?: CodexNativeRenderProjection;
-  projectionReceipt?:
-    | { state: 'absent' }
-    | { state: 'unreadable' }
-    | { state: 'present'; receipt: CodexNativeRenderReceipt };
+  sourceProjection?: 'current' | 'drifted';
 }
 
 function samePath(left: string, right: string): boolean {
@@ -102,10 +78,6 @@ export function isCanonicalCodexMarketplaceRegistration(
     && registration.sourcePointsToManifest === false
     && typeof registration.source === 'string'
     && samePath(registration.source, canonicalMarketplaceRoot);
-}
-
-function damaged(diagnostic: CodexSharedNativeDiagnostic): CodexSharedNativeInspection {
-  return { state: 'replaceable', reason: 'damaged', diagnostic };
 }
 
 function blocked(
@@ -132,9 +104,7 @@ export function inspectCodexSharedNative(
 
   if (!evidence.marketplacePathSafe) return blocked('foreign', 'marketplacePathUnsafe');
   if (evidence.observation.state === 'unobserved') {
-    return evidence.manifest.state === 'absent'
-      ? { state: 'unobserved' }
-      : { state: 'unobserved', staleCacheObserved: true };
+    return { state: 'unobserved' };
   }
   if (evidence.observation.state === 'failed') {
     return blocked(
@@ -143,9 +113,7 @@ export function inspectCodexSharedNative(
     );
   }
   if (evidence.observation.value === 'absent') {
-    return evidence.manifest.state === 'absent'
-      ? { state: 'missing' }
-      : { state: 'missing', staleCacheObserved: true };
+    return { state: 'missing' };
   }
   const listEntry = evidence.observation.entry;
   if (evidence.marketplaceRegistration && !isCanonicalCodexMarketplaceRegistration(
@@ -154,42 +122,10 @@ export function inspectCodexSharedNative(
   )) {
     return blocked('foreign', 'marketplaceRegistrationForeign');
   }
-  if (evidence.manifest.state === 'unreadable') return blocked('unreadable', 'manifestUnreadable');
-  if (evidence.manifest.state === 'absent') {
-    return damaged('manifestMissing');
-  }
   if (!evidence.marketplaceRegistration) {
     return blocked('foreign', 'marketplaceRegistrationForeign');
   }
-  if (!evidence.manifest.pathSafe) return blocked('foreign', 'payloadPathUnsafe');
-  if (
-    evidence.manifest.identity !== evidence.pluginId
-    && evidence.manifest.identity !== evidence.pluginName
-  ) {
-    return blocked('foreign', 'manifestIdentityMismatch');
-  }
-  const projectionExpected = evidence.expectedProjectionRequired
-    || evidence.expectedProjection !== undefined;
-  let projectionReceipt: CodexNativeRenderReceipt | undefined;
-  if (projectionExpected) {
-    if (evidence.projectionReceipt === undefined || evidence.projectionReceipt.state === 'absent') {
-      return damaged('projectionReceiptMissing');
-    }
-    if (evidence.projectionReceipt.state === 'unreadable') {
-      return blocked('unreadable', 'projectionReceiptUnreadable');
-    }
-    projectionReceipt = evidence.projectionReceipt.receipt;
-    const expectedIdentity = evidence.expectedProjectionIdentity ?? evidence.expectedProjection;
-    if (expectedIdentity
-      && (projectionReceipt.logicalPluginId !== expectedIdentity.logicalPluginId
-        || projectionReceipt.strategy !== expectedIdentity.strategy)) {
-      return blocked('foreign', 'projectionReceiptIdentityMismatch');
-    }
-  }
-  if (!tryParseStrictSemVer(evidence.manifest.version)) {
-    return damaged('manifestVersionInvalid');
-  }
-  if (listEntry.version !== undefined && listEntry.version !== evidence.manifest.version) {
+  if (listEntry.version !== undefined && listEntry.version !== evidence.desiredVersion) {
     return {
       state: 'replaceable',
       reason: 'outdated',
@@ -197,52 +133,18 @@ export function inspectCodexSharedNative(
       desiredVersion: evidence.desiredVersion,
     };
   }
-  if (evidence.manifest.version !== evidence.desiredVersion) {
+  if (evidence.sourceProjection === 'drifted') {
     return {
       state: 'replaceable',
-      reason: 'outdated',
-      version: evidence.manifest.version,
+      reason: 'renderDrift',
+      ...(listEntry.version ? { version: listEntry.version } : {}),
       desiredVersion: evidence.desiredVersion,
+      diagnostic: 'projectionRenderDrift',
     };
-  }
-  if (projectionExpected) {
-    const receipt = projectionReceipt!;
-    if (evidence.expectedProjection === undefined) {
-      return damaged('projectionExpectedPayloadDigestMissing');
-    }
-    if (evidence.expectedPayloadDigest === undefined) {
-      return damaged('projectionExpectedPayloadDigestMissing');
-    }
-    if (receipt.logicalPluginId !== evidence.expectedProjection.logicalPluginId
-      || receipt.strategy !== evidence.expectedProjection.strategy) {
-      return blocked('foreign', 'projectionReceiptIdentityMismatch');
-    }
-    if (evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest
-      || evidence.manifest.payloadDigest !== receipt.payloadDigest
-      || receipt.payloadDigest !== evidence.expectedPayloadDigest) {
-      return damaged('projectionPayloadDigestMismatch');
-    }
-    if (!codexNativeRenderProjectionsEqual(receipt, evidence.expectedProjection)) {
-      return {
-        state: 'replaceable',
-        reason: 'renderDrift',
-        version: evidence.manifest.version,
-        desiredVersion: evidence.desiredVersion,
-        diagnostic: 'projectionRenderDrift',
-      };
-    }
-    return {
-      state: 'usable',
-      version: evidence.manifest.version,
-    };
-  }
-  if (evidence.expectedPayloadDigest !== undefined
-    && evidence.manifest.payloadDigest !== evidence.expectedPayloadDigest) {
-    return damaged('payloadDigestMismatch');
   }
   return {
     state: 'usable',
-    version: evidence.manifest.version,
+    ...(listEntry.version ? { version: listEntry.version } : {}),
   };
 }
 
