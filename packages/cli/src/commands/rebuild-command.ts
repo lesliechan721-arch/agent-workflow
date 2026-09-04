@@ -59,9 +59,11 @@ import {
   inspectCodexPluginRegistrationLive,
   inspectCodexSharedNativeLive,
   inspectNativeMarketplaceRegistrations,
+  postcheckCodexReconcileActivations,
   type CodexPluginRegistrationLiveInspection,
   type PreparedRebuildTarget,
   type RebuildExecutionContext,
+  type RebuildIntegration,
 } from './rebuild-integration.js';
 import { getNamespacedMarketplaceName } from '../utils/local-marketplace.js';
 import type { AwHomeMutationToken } from '../utils/aw-home-mutation-lock.js';
@@ -93,6 +95,7 @@ import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import {
+  cleanupOwnedComponents,
   inspectOwnedComponents,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
@@ -662,6 +665,7 @@ async function runSingleSourceRebuildCommand(options: {
   all?: boolean;
   execution?: {
     prepared?: PreparedRebuildTarget;
+    integration?: RebuildIntegration;
     preparationError?: unknown;
     reviewCompleted?: boolean;
     targetHookCompleted?: boolean;
@@ -734,7 +738,7 @@ async function runSingleSourceRebuildCommand(options: {
   }
   const platforms = selected.filter((platform) =>
     (requestedByPlatform.get(platform)?.length ?? 0) > 0);
-  const integration = createRebuildIntegration({
+  const integration = options.execution?.integration ?? createRebuildIntegration({
     context: runtime,
     scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
     ...(options.execution?.prepared
@@ -979,6 +983,7 @@ function mergeRebuildCommandResults(results: RebuildCommandResult[]): RebuildCom
 function reconcileOverallState(
   targetResults: readonly ReceiptTargetResult[],
   plan: ReconcileOperationPlan,
+  rebuildResults: readonly RebuildResult[] = [],
 ): RebuildReceiptOverallState {
   const failed = targetResults.some((result) =>
     result.state === 'failed' || result.action === 'skipped');
@@ -991,7 +996,17 @@ function reconcileOverallState(
     && result.action !== 'skipped'
     && result.target.pluginId !== undefined
     && requested.has(`${result.target.pluginId}\0${result.target.platform}`));
-  return completedRequested ? 'partial' : 'failed';
+  const completedMutation = targetResults.some((result) =>
+    result.state === 'completed'
+    && result.action !== 'keep'
+    && result.action !== 'skipped');
+  const observedMutation = rebuildResults.some((result) => result.actions.some((action) =>
+    action.status === 'succeeded'
+    && (action.name === 'stale.cleanup'
+      || action.name === 'native.write'
+      || action.name === 'artifacts.write'
+      || action.name === 'cleanup.owned')));
+  return completedRequested || completedMutation || observedMutation ? 'partial' : 'failed';
 }
 
 function createRebuildOperationPlan(options: {
@@ -3362,6 +3377,7 @@ async function runRebuildCommandInSession(options: {
         const integration = createRebuildIntegration({
           context: executionContext,
           scriptTimeoutMs: options.commandOptions.scriptTimeoutMs,
+          operationScopedNativePhases: true,
         });
         const preparedTargets = new Map<string, PreparedRebuildTarget>();
         const preparedTargetErrors = new Map<string, unknown>();
@@ -3542,6 +3558,7 @@ async function runRebuildCommandInSession(options: {
           });
         }));
         return {
+          integration,
           preparedTargets,
           preparedTargetErrors,
           targetActions: [...preparedTargets.values()].flatMap((prepared) =>
@@ -4099,6 +4116,28 @@ async function runRebuildCommandInSession(options: {
             continue;
           }
           const warnings: string[] = [];
+          const preparedTarget = preparedTargets.get(`${entry.pluginId}\0${platform}`)?.target;
+          if (preparedTarget) {
+            const nativeSkillKeys = new Set((entry.plugin.manifest.artifacts?.targets ?? [])
+              .filter((target) => target.platform === 'codex'
+                && target.target === 'codex.skill'
+                && target.delivery?.mode === 'codex-native')
+              .map((target) => target.skillKey));
+            const marketplaceRoot = preparedTarget.identity.marketplaceRoot;
+            const legacyNativeSkills = preparedTarget.ownedComponents.filter((component) =>
+              component.kind === 'skill-directory'
+              && nativeSkillKeys.has(component.identity.artifactKey)
+              && (!marketplaceRoot || path.relative(marketplaceRoot, component.path).startsWith('..')));
+            if (legacyNativeSkills.length > 0) {
+              const cleanup = await cleanupOwnedComponents({
+                components: legacyNativeSkills,
+                executor: lockedPreparation.integration.driver.ownership,
+              });
+              for (const failure of cleanup.failures) {
+                warnings.push(failure.message);
+              }
+            }
+          }
           const result: RebuildResult = {
             status: 'succeeded', command: options.command, target: identity,
             actions: [{ name: 'postApply', status: 'succeeded' }],
@@ -4254,6 +4293,7 @@ async function runRebuildCommandInSession(options: {
             reviewCompleted: true,
             targetHookCompleted: true,
             prepared: preparedTargets.get(`${entry.pluginId}\0${platform}`),
+            integration: lockedPreparation.integration,
             preparationError: preparedTargetErrors.get(`${entry.pluginId}\0${platform}`),
             ...(platform === 'codex' && lockedCodexPlans.length > 0
               ? { deferredPostApplyTasks }
@@ -4268,6 +4308,79 @@ async function runRebuildCommandInSession(options: {
         dependencyStates.set(`${entry.pluginId}\0${platform}`,
           executionResult.overallState === 'succeeded' ? 'completed' : 'failed');
       }
+      const failCompletedCodexTarget = (options_: {
+        identity: RebuildTargetIdentity;
+        message: string;
+        phase?: RebuildFailure['phase'];
+        action?: ReceiptTargetResult['action'];
+        recoveryActions?: string[];
+      }): boolean => {
+        const resultIndex = results.findIndex((candidate) =>
+          candidate.targetResults.some((target) =>
+            target.target.pluginId === options_.identity.pluginId
+            && target.target.platform === 'codex'
+            && target.target.scope === options_.identity.scope));
+        if (resultIndex === -1) return false;
+        const existing = results[resultIndex]!;
+        const phase = options_.phase ?? 'postcheck.inspect';
+        const rebuildResults = existing.rebuildResults.map((rebuild): RebuildResult => {
+          if (rebuild.target.pluginId !== options_.identity.pluginId
+            || rebuild.target.platform !== 'codex'
+            || rebuild.target.scope !== options_.identity.scope) return rebuild;
+          if (!rebuild.failures.some((failure) =>
+            failure.phase === phase && failure.message === options_.message)) {
+            rebuild.failures.unshift({ phase, message: options_.message });
+          }
+          return {
+            ...rebuild,
+            status: 'failed',
+            error: { phase, message: options_.message },
+          };
+        });
+        results[resultIndex] = {
+          ...existing,
+          plugins: existing.plugins.filter((pluginName) =>
+            pluginName !== options_.identity.pluginName),
+          rebuildResults,
+          targetResults: existing.targetResults.map((target) =>
+            target.target.pluginId === options_.identity.pluginId
+            && target.target.platform === 'codex'
+            && target.target.scope === options_.identity.scope
+              ? {
+                  ...target,
+                  target: options_.identity,
+                  action: options_.action ?? target.action,
+                  state: 'failed' as const,
+                  errorCode: options_.message.split(':', 1)[0] ?? 'codexActivationPostcheckFailed',
+                  message: options_.message,
+                  ...(options_.recoveryActions
+                    ? { recoveryActions: options_.recoveryActions }
+                    : {}),
+                }
+              : target),
+          overallState: 'failed',
+        };
+        dependencyStates.set(`${options_.identity.pluginId}\0codex`, 'failed');
+        return true;
+      };
+      const activationMutationPluginIds = new Set(lockedCodexPlans.flatMap((plan) => [
+        ...plan.activationActions.user,
+        ...plan.activationActions.project,
+      ].flatMap((action) => action.action === 'none' ? [] : [action.pluginId])));
+      for (const { entry, platform } of executionSelections) {
+        if (platform !== 'codex'
+          || !activationMutationPluginIds.has(entry.pluginId)
+          || (dependencyStates.get(`${entry.pluginId}\0${platform}`) !== 'completed'
+            && dependencyStates.get(`${entry.pluginId}\0${platform}`) !== 'kept')) continue;
+        const prepared = preparedTargets.get(`${entry.pluginId}\0${platform}`)?.target;
+        if (!prepared) continue;
+        try {
+          await lockedPreparation.integration.prepareNativeMarketplaceGroup(prepared);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failCompletedCodexTarget({ identity: prepared.identity, message, phase: 'native.write' });
+        }
+      }
       const successfulCodexPluginIds = new Set(executionSelections.flatMap(({ entry, platform }) =>
         platform === 'codex'
         && (dependencyStates.get(`${entry.pluginId}\0${platform}`) === 'completed'
@@ -4278,8 +4391,11 @@ async function runRebuildCommandInSession(options: {
         lockedCodexPlans,
         successfulCodexPluginIds,
       );
-      if (activationPlans.length > 0 || deferredPostApplyTasks.length > 0) {
-        let failedActivationPluginIds = new Set<string>();
+      if (activationPlans.length > 0
+        || deferredPostApplyTasks.length > 0
+        || lockedPreparation.integration.driver.completePostchecks) {
+        let activationError: unknown;
+        const activationMutationMarketplaces = new Set<string>();
         try {
           if (activationPlans.length > 0) {
             await executeCodexReconcileActivations({
@@ -4289,22 +4405,67 @@ async function runRebuildCommandInSession(options: {
               manager: executionContext.codexManager,
               runner: executionContext.nativeCliRunner,
               observationSession: executionContext.codexObservationSession,
+              preflightCompleted: true,
+              mutationMarketplaces: activationMutationMarketplaces,
             });
           }
         } catch (error) {
-          failedActivationPluginIds = failedCodexActivationPluginIds({
-            error,
+          activationError = error;
+        }
+        try {
+          await lockedPreparation.integration.captureCodexPostMutationSnapshots(
+            [...activationMutationMarketplaces],
+          );
+        } catch (error) {
+          activationError ??= error;
+        }
+        const failedCodexPluginIds = new Set(executionSelections.flatMap(({ entry, platform }) =>
+          platform === 'codex'
+          && (dependencyStates.get(`${entry.pluginId}\0${platform}`) === 'failed'
+            || dependencyStates.get(`${entry.pluginId}\0${platform}`) === 'skipped')
+            ? [entry.pluginId]
+            : []));
+        for (const failure of await lockedPreparation.integration.driver.completePostchecks?.() ?? []) {
+          const message = failure.error instanceof Error
+            ? failure.error.message
+            : String(failure.error);
+          if (failCompletedCodexTarget({ identity: failure.target.identity, message })) {
+            failedCodexPluginIds.add(failure.target.identity.pluginId ?? failure.target.identity.pluginName);
+          }
+        }
+        if (!activationError && activationPlans.length > 0) {
+          const postcheckPluginIds = new Set([...successfulCodexPluginIds]
+            .filter((pluginId) => !failedCodexPluginIds.has(pluginId)));
+          const postcheckPlans = selectCodexActivationPlans(
+            activationPlans,
+            postcheckPluginIds,
+          );
+          try {
+            await postcheckCodexReconcileActivations({
+              plans: postcheckPlans,
+              cwd: options.commandOptions.cwd,
+              env: runtimeEnv,
+              manager: executionContext.codexManager,
+              runner: executionContext.nativeCliRunner,
+              observationSession: executionContext.codexObservationSession,
+            });
+          } catch (error) {
+            activationError = error;
+          }
+        }
+        if (activationError) {
+          const failedActivationPluginIds = failedCodexActivationPluginIds({
+            error: activationError,
             plans: activationPlans,
             successfulPluginIds: successfulCodexPluginIds,
           });
-          for (const pluginId of failedActivationPluginIds) {
-            dependencyStates.set(`${pluginId}\0codex`, 'failed');
-          }
-          const message = error instanceof Error ? error.message : String(error);
+          const message = activationError instanceof Error
+            ? activationError.message
+            : String(activationError);
           const failedSelections = executionSelections.filter((candidate) =>
             candidate.platform === 'codex'
             && failedActivationPluginIds.has(candidate.entry.pluginId));
-          if (failedSelections.length === 0) throw error;
+          if (failedSelections.length === 0) throw activationError;
           for (const selection of failedSelections) {
             const planned = lockedPlan.targets.find((target) =>
               target.pluginId === selection.entry.pluginId && target.platform === 'codex')!;
@@ -4318,41 +4479,51 @@ async function runRebuildCommandInSession(options: {
               scope: planned.resolvedScope,
               cwd: options.commandOptions.cwd,
             };
-            const resultIndex = results.findIndex((candidate) =>
-              candidate.targetResults.some((target) =>
-                target.target.pluginId === identity.pluginId
-                && target.target.platform === 'codex'
-                && target.target.scope === identity.scope));
-            if (resultIndex === -1) throw error;
-            const existing = results[resultIndex]!;
-            const failed = failedResult(options.command, identity, message, 'postcheck.inspect');
-            results[resultIndex] = {
-              ...existing,
-              plugins: existing.plugins.filter((pluginName) => pluginName !== identity.pluginName),
-              rebuildResults: existing.rebuildResults.map((rebuild) =>
-                rebuild.target.pluginId === identity.pluginId
-                && rebuild.target.platform === 'codex'
-                && rebuild.target.scope === identity.scope
-                  ? failed
-                  : rebuild),
-              targetResults: existing.targetResults.map((target) =>
-                target.target.pluginId === identity.pluginId
-                && target.target.platform === 'codex'
-                && target.target.scope === identity.scope
-                  ? {
-                      target: identity,
-                      action: target.action,
-                      state: 'failed' as const,
-                      errorCode: message.split(':', 1)[0] ?? 'codexActivationPostcheckFailed',
-                      message,
-                    }
-                  : target),
-              overallState: 'failed',
+            if (!failCompletedCodexTarget({ identity, message })) throw activationError;
+            failedCodexPluginIds.add(selection.entry.pluginId);
+          }
+        }
+        let propagated = true;
+        while (propagated) {
+          propagated = false;
+          for (const selection of executionSelections.filter((candidate) =>
+            candidate.platform === 'codex')) {
+            if (failedCodexPluginIds.has(selection.entry.pluginId)) continue;
+            const failedDependency = (selection.entry.plugin.manifest.dependencies ?? [])
+              .map((pluginName) => formatPluginId({
+                sourceId: selection.entry.source.sourceId,
+                pluginName,
+              }))
+              .find((pluginId) => failedCodexPluginIds.has(pluginId));
+            if (!failedDependency) continue;
+            const planned = lockedPlan.targets.find((target) =>
+              target.pluginId === selection.entry.pluginId && target.platform === 'codex')!;
+            const identity: RebuildTargetIdentity = {
+              sourceId: selection.entry.source.sourceId,
+              sourceIdentity: selection.entry.source.sourceIdentity,
+              pluginId: selection.entry.pluginId,
+              pluginName: selection.entry.plugin.manifest.name,
+              pluginVersion: selection.entry.plugin.manifest.version,
+              platform: 'codex',
+              scope: planned.resolvedScope,
+              cwd: options.commandOptions.cwd,
             };
+            const message = `dependencyInstallFailed: ${selection.entry.pluginId} requires failed dependency ${failedDependency}.`;
+            if (failCompletedCodexTarget({
+              identity,
+              message,
+              recoveryActions: [
+                `run aw sync --all --platform codex --scope ${planned.resolvedScope}`,
+              ],
+            })) {
+              failedCodexPluginIds.add(selection.entry.pluginId);
+              dependencyStates.set(`${selection.entry.pluginId}\0codex`, 'failed');
+              propagated = true;
+            }
           }
         }
         for (const task of deferredPostApplyTasks) {
-          if (failedActivationPluginIds.has(task.pluginId)) continue;
+          if (failedCodexPluginIds.has(task.pluginId)) continue;
           try {
             await task.run();
           } catch (error) {
@@ -4438,7 +4609,11 @@ async function runRebuildCommandInSession(options: {
         merged.warnings.push(MALFORMED_CONFIG_PRESERVED_WARNING);
       }
       merged.dependencyPlan = lockedPlan;
-      merged.overallState = reconcileOverallState(merged.targetResults, lockedPlan);
+      merged.overallState = reconcileOverallState(
+        merged.targetResults,
+        lockedPlan,
+        merged.rebuildResults,
+      );
       if (lockedCodexPlans.length > 0) merged.codexReconcilePlans = lockedCodexPlans;
       merged.operationPlan = lockedOperationPlan;
       return leaseSafeRebuildResult(merged);

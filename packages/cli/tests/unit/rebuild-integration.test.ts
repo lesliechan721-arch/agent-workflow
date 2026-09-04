@@ -1713,7 +1713,7 @@ describe('rebuild adapter integration', () => {
       await expect(observationSession.inspectPlugin({ pluginId: 'ask-me@aw-team' }))
         .resolves.toMatchObject({ observation: { state: 'observed', value: 'installed' } });
       expect(listCalls).toBe(4);
-      await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+      await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
     } finally {
       await observationSession.dispose();
     }
@@ -1856,9 +1856,7 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it.each(['EPERM', 'EBUSY'] as const)(
-    'preserves the canonical marketplace when rollback backup inspection gets %s',
-    async (errorCode) => {
+  it('keeps the committed marketplace generation when the native mutation fails', async () => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
@@ -1913,26 +1911,11 @@ describe('rebuild adapter integration', () => {
         catalog: { rootDir: catalogRoot, source: 'local' },
       });
       await expect(integration.driver.writeNative(target)).rejects.toThrow('native install failed');
-      const backupName = (await fs.readdir(path.dirname(marketplaceRoot)))
-        .find((entry) => entry.startsWith('team.backup-'))!;
-      const backupRoot = path.join(path.dirname(marketplaceRoot), backupName);
-      const realLstat = fs.lstat.bind(fs);
-      const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
-        if (path.resolve(String(location)) === path.resolve(backupRoot)) {
-          throw Object.assign(new Error(`${errorCode} backup read failed`), { code: errorCode });
-        }
-        return realLstat(location);
-      }) as typeof fs.lstat);
-      await expect(integration.driver.rollbackMaterialize?.(target))
-        .rejects.toMatchObject({ code: errorCode });
-      lstat.mockRestore();
-
       await expect(fs.lstat(marketplaceRoot)).resolves.toMatchObject({});
-      await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
-      await expect(fs.readFile(path.join(marketplaceRoot, 'old-generation.txt'), 'utf8'))
-        .resolves.toBe('old\n');
-    },
-  );
+      await expect(fs.pathExists(path.join(marketplaceRoot, 'old-generation.txt'))).resolves.toBe(false);
+      expect((await fs.readdir(path.dirname(marketplaceRoot))).filter((entry) =>
+        entry.startsWith('team.backup-'))).toEqual([]);
+  });
 
   it.each(['EPERM', 'EBUSY'] as const)(
     'restores the old marketplace after staging move failure without a pathExists %s probe',
@@ -4793,7 +4776,6 @@ describe('rebuild adapter integration', () => {
     else await expect(write).rejects.toMatchObject({ code: readError.code });
     readJson?.mockRestore();
     await expect(fs.readFile(destinationManifestPath)).resolves.toEqual(originalBytes);
-    await integration.driver.rollbackMaterialize?.(target);
   });
 
   it.each([

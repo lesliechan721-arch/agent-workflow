@@ -46,6 +46,7 @@ export interface DesiredTarget {
   optionalOwnedComponents?: readonly OwnedComponent[];
   requiresNative: boolean;
   writeNativeRequired?: boolean;
+  nativeOverlayDesired?: boolean;
   codexNativeObservationExpectation?: 'observed' | 'installed';
   artifacts: readonly GeneratedArtifact[];
   operationActions?: readonly OperationAction[];
@@ -106,8 +107,12 @@ export interface RebuildTargetDriver {
   ownership: OwnedComponentExecutor;
   preflightMutation?(target: DesiredTarget): Promise<void>;
   preflightMaterialize?(target: DesiredTarget): Promise<void>;
-  commitMaterialize?(target: DesiredTarget): Promise<void>;
-  rollbackMaterialize?(target: DesiredTarget): Promise<void>;
+  selectRecoveryCleanupComponents?(
+    target: DesiredTarget,
+    components: readonly OwnedComponent[],
+  ): readonly OwnedComponent[];
+  deferPostcheck?(target: DesiredTarget, postcheck: () => Promise<void>): boolean;
+  completePostchecks?(): Promise<readonly DeferredRebuildPostcheckFailure[]>;
   finalizeCleanup?(target: DesiredTarget): Promise<void>;
   writeNative(target: DesiredTarget): Promise<void>;
   writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
@@ -115,6 +120,11 @@ export interface RebuildTargetDriver {
   probeNativeHealth?: NativeOwnershipProbe;
   removeNative?: NativeOwnershipRemove;
   runPostApply(invocation: RebuildPostApplyInvocation): Promise<void>;
+}
+
+export interface DeferredRebuildPostcheckFailure {
+  target: DesiredTarget;
+  error: unknown;
 }
 
 function artifactIdentity(artifact: GeneratedArtifact): string {
@@ -182,8 +192,6 @@ const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
   'artifacts.write': '写入插件文件失败。',
   postApply: '运行 postApply 失败。',
   'postcheck.inspect': '检查写入结果失败。',
-  'marketplace.commit': '提交 marketplace generation 失败。',
-  'marketplace.rollback': '回滚 marketplace generation 失败。',
   'recovery.cleanup': '清理失败写入失败。',
   'cleanup.owned': '清理 AW 组件失败。',
 };
@@ -632,8 +640,7 @@ async function materializeTarget(options: {
       },
       events,
     );
-    failurePhase = 'postcheck.inspect';
-    await action(accumulator, failurePhase, async () => {
+    const postcheck = () => action(accumulator, 'postcheck.inspect', async () => {
       const optional = new Set(target.optionalOwnedComponents ?? []);
       const postcheck = await inspectOwnedComponents({
         components: (target.desiredOwnedComponents ?? target.ownedComponents)
@@ -645,9 +652,9 @@ async function materializeTarget(options: {
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
       if (postcheckFailure) throw new Error(postcheckFailure);
     }, events);
-    if (driver.commitMaterialize) {
-      failurePhase = 'marketplace.commit';
-      await action(accumulator, failurePhase, () => driver.commitMaterialize!(target), events);
+    failurePhase = 'postcheck.inspect';
+    if (driver.deferPostcheck?.(target, postcheck) !== true) {
+      await postcheck();
     }
     try {
       const postApplyComponents = inspection.components.map((entry) => ({
@@ -675,51 +682,23 @@ async function materializeTarget(options: {
     return succeeded(command, target, accumulator);
   } catch (error) {
     const primary = errorMessage(error);
-    if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit === true) {
+    if ((error as { nativeMarketplaceGroupFailure?: unknown }).nativeMarketplaceGroupFailure === true) {
       return failed(command, target, accumulator, failurePhase, primary);
     }
     if (target.identity.platform === 'codex') {
+      const recoveryComponents = target.ownedComponents.filter((component) =>
+        component.kind === 'skill-directory' || component.kind === 'owned-text-file');
       await cleanupTarget(
         target,
         driver,
         accumulator,
         'recovery.cleanup',
         events,
-        target.ownedComponents.filter((component) =>
-          component.kind === 'skill-directory' || component.kind === 'owned-text-file'),
+        driver.selectRecoveryCleanupComponents?.(target, recoveryComponents)
+          ?? recoveryComponents,
       );
-      if (driver.rollbackMaterialize) {
-        try {
-          await action(
-            accumulator,
-            'marketplace.rollback',
-            () => driver.rollbackMaterialize!(target),
-            events,
-          );
-        } catch (rollbackError) {
-          accumulator.failures.push({
-            phase: 'marketplace.rollback',
-            message: errorMessage(rollbackError),
-          });
-        }
-      }
     } else {
       await cleanupTarget(target, driver, accumulator, 'recovery.cleanup', events);
-      if (driver.rollbackMaterialize) {
-        try {
-          await action(
-            accumulator,
-            'marketplace.rollback',
-            () => driver.rollbackMaterialize!(target),
-            events,
-          );
-        } catch (rollbackError) {
-          accumulator.failures.push({
-            phase: 'marketplace.rollback',
-            message: errorMessage(rollbackError),
-          });
-        }
-      }
     }
     return failed(command, target, accumulator, failurePhase, primary);
   }
@@ -958,6 +937,19 @@ export async function executeRebuildTargets(options: {
       ...(options.onActionEvent ? { onActionEvent: options.onActionEvent } : {}),
       ...(options.now ? { now: options.now } : {}),
     }));
+  }
+  const postcheckFailures = await options.driver.completePostchecks?.() ?? [];
+  for (const failure of postcheckFailures) {
+    const index = results.findIndex((result) => result.target === failure.target.identity);
+    if (index === -1 || results[index]!.status === 'failed') continue;
+    const result = results[index]!;
+    const message = errorMessage(failure.error);
+    result.failures.unshift({ phase: 'postcheck.inspect', message });
+    results[index] = {
+      ...result,
+      status: 'failed',
+      error: { phase: 'postcheck.inspect', message },
+    };
   }
   return results;
 }

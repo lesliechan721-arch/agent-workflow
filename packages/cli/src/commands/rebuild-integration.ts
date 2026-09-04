@@ -145,6 +145,7 @@ import {
 } from '../utils/codex-roles.js';
 import type {
   DesiredTarget,
+  DeferredRebuildPostcheckFailure,
   RebuildPostApplyInvocation,
   RebuildTargetIdentity,
   RebuildTargetDriver,
@@ -174,6 +175,8 @@ interface PlannedWrite {
 
 export interface RebuildIntegration {
   driver: RebuildTargetDriver;
+  prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
+  captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
   buildTarget(options: {
     sourceId?: string;
     sourceIdentity?: string;
@@ -252,6 +255,8 @@ async function executeCodexReconcileActivationsInSession(options: {
   manager?: CodexManager;
   runner: NativeCliRunner;
   observationSession: CodexNativeObservationSession;
+  preflightCompleted?: boolean;
+  mutationMarketplaces?: Set<string>;
 }): Promise<void> {
   const byScope: Record<Scope, {
     upserts: Record<string, boolean>;
@@ -286,12 +291,18 @@ async function executeCodexReconcileActivationsInSession(options: {
       }
     }
   }
+  const recordActivationMutations = (pluginIds: Iterable<string>): void => {
+    if (!options.mutationMarketplaces) return;
+    for (const pluginId of pluginIds) {
+      options.mutationMarketplaces.add(pluginId.slice(pluginId.lastIndexOf('@') + 1));
+    }
+  };
 
   const observedActivationPluginIds = [...new Set(options.plans.flatMap((plan) =>
     plan.postcheck.support === 'observed'
       ? plan.postcheck.plugins.map((plugin) => plugin.codexPluginId)
       : []))];
-  if (observedActivationPluginIds.length > 0) {
+  if (!options.preflightCompleted && observedActivationPluginIds.length > 0) {
     const manager = requireCodexManager(options.manager);
     for (const pluginId of observedActivationPluginIds) {
       const registration = await inspectCodexPluginRegistrationLive({
@@ -323,7 +334,11 @@ async function executeCodexReconcileActivationsInSession(options: {
       .filter(([, desired]) => desired));
     if (Object.keys(enables).length === 0) continue;
     const configPath = resolveCodexPaths(options.cwd, scope, options.env).configTomlPath;
-    await applyCodexConfigTransactionFile(configPath, { upsertPluginActivations: enables });
+    const update = await applyCodexConfigTransactionFile(
+      configPath,
+      { upsertPluginActivations: enables },
+    );
+    if (update.wrote) recordActivationMutations(Object.keys(enables));
     const enabledConfig = await readCodexConfigFile(configPath);
     const missingEnables = Object.keys(enables).filter((pluginId) =>
       enabledConfig.snapshot.plugins[pluginId]?.enabled !== true);
@@ -339,7 +354,7 @@ async function executeCodexReconcileActivationsInSession(options: {
     const disables = Object.fromEntries(Object.entries(transaction.upserts)
       .filter(([, desired]) => !desired));
     if (Object.keys(disables).length === 0 && transaction.removals.size === 0) continue;
-    await applyCodexConfigTransactionFile(
+    const update = await applyCodexConfigTransactionFile(
       resolveCodexPaths(options.cwd, scope, options.env).configTomlPath,
       {
         ...(transaction.removals.size > 0
@@ -350,6 +365,12 @@ async function executeCodexReconcileActivationsInSession(options: {
           : {}),
       },
     );
+    if (update.wrote) {
+      recordActivationMutations([
+        ...Object.keys(disables),
+        ...transaction.removals,
+      ]);
+    }
   }
 
   const [userConfig, projectConfig] = await Promise.all([
@@ -421,6 +442,8 @@ export async function executeCodexReconcileActivations(options: {
   manager?: CodexManager;
   runner: NativeCliRunner;
   observationSession?: CodexNativeObservationSession;
+  preflightCompleted?: boolean;
+  mutationMarketplaces?: Set<string>;
 }): Promise<void> {
   const ownedSession = options.observationSession ? undefined
     : await createCodexNativeObservationSession({
@@ -434,6 +457,65 @@ export async function executeCodexReconcileActivations(options: {
       ...options,
       observationSession: options.observationSession ?? ownedSession!,
     });
+  } finally {
+    await ownedSession?.dispose();
+  }
+}
+
+export async function postcheckCodexReconcileActivations(options: {
+  plans: readonly CodexReconcilePlan[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  manager?: CodexManager;
+  runner: NativeCliRunner;
+  observationSession?: CodexNativeObservationSession;
+}): Promise<void> {
+  const checks = options.plans.flatMap((plan) =>
+    plan.postcheck.support === 'observed' ? plan.postcheck.plugins : []);
+  if (checks.length === 0) return;
+  const ownedSession = options.observationSession ? undefined
+    : await createCodexNativeObservationSession({
+        exactCwd: options.cwd,
+        env: options.env,
+        runner: options.runner,
+        manager: options.manager,
+      });
+  const session = options.observationSession ?? ownedSession!;
+  try {
+    const failedPluginIds: string[] = [];
+    const failureDetails: string[] = [];
+    for (const check of checks) {
+      try {
+        const registration = await inspectCodexPluginRegistrationLive({
+          pluginId: check.codexPluginId,
+          cwd: options.cwd,
+          env: options.env,
+          nativeCliRunner: options.runner,
+          manager: options.manager,
+          observationSession: session,
+        });
+        const state = requireObservedCodexNativeState(
+          registration.observation,
+          'activation postcheck',
+        );
+        if (!registration.observations.user || !registration.observations.project) {
+          throw new Error(
+            'codexNativeObservationUnavailable: activation postcheck requires exact and neutral Codex plugin list evidence.',
+          );
+        }
+        if (state !== 'installed') {
+          throw new Error(
+            `codexNativeObservationFailed: ${check.codexPluginId} was not observed after Codex activation mutation.`,
+          );
+        }
+      } catch (error) {
+        failedPluginIds.push(check.codexPluginId);
+        failureDetails.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (failedPluginIds.length > 0) {
+      throw new CodexActivationPostcheckError(failedPluginIds, failureDetails.join(' '));
+    }
   } finally {
     await ownedSession?.dispose();
   }
@@ -3435,11 +3517,73 @@ function createNativeDriver(options: {
   targets: DesiredTarget[];
   context: RebuildExecutionContext;
   scriptTimeoutMs?: number;
-}): RebuildTargetDriver {
+  operationScopedNativePhases?: boolean;
+}): RebuildTargetDriver & {
+  prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
+  captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
+} {
   const runner = options.context.nativeCliRunner;
   const currentCodexManager = (): CodexManager | undefined => options.context.codexManager;
-  const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
+  const nativeGroupPreparations = new Map<string, Promise<void>>();
+  const nativeTargetPreparations = new WeakMap<DesiredTarget, Promise<void>>();
+  const codexNativeStates = new Map<string, 'present' | 'absent'>();
+  const pendingCodexNativeStates = new Map<string, 'present' | 'absent'>();
+  const codexMutationMarketplaces = new Set<string>();
   const completedNativeSkillWrites = new WeakSet<OperationAction>();
+  const committedNativeGroups = new Set<string>();
+  let deferredPostchecks: Array<{
+    target: DesiredTarget;
+    postcheck: () => Promise<void>;
+  }> = [];
+  const nativeGroupKey = (target: DesiredTarget): string => [
+    target.identity.sourceId ?? '',
+    target.identity.sourceIdentity ?? '',
+    target.identity.marketplaceName ?? MARKETPLACE_NAME,
+    path.normalize(path.resolve(target.identity.marketplaceRoot ?? resolveAwHome(options.context.env))),
+    target.identity.platform,
+  ].join('\0');
+  const groupTargets = (target: DesiredTarget): DesiredTarget[] => {
+    if (!options.operationScopedNativePhases) return [target];
+    const key = nativeGroupKey(target);
+    return options.targets.filter((candidate) => nativeGroupKey(candidate) === key);
+  };
+  const nativeSkillOverlay = async (target: DesiredTarget): Promise<{
+    marketplaceRoot: string;
+    writes: Array<Extract<OperationAction, { kind: 'writeOwnedArtifact' }>>;
+  }> => {
+    const canonicalMarketplaceRoot = await canonicalizePathThroughExistingAncestor(
+      target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
+    );
+    const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
+      canonicalMarketplaceRoot,
+      'plugins',
+      target.identity.pluginName,
+    ));
+    const desiredSkillPaths = new Set((target.desiredOwnedComponents ?? [])
+      .filter((component) => component.kind === 'skill-directory')
+      .map((component) => path.resolve(component.path)));
+    const enabledSkillPaths = new Set(target.artifacts
+      .filter((artifact) => artifact.kind === 'skill' && artifact.state !== 'disabled')
+      .map((artifact) => path.resolve(artifact.path)));
+    return {
+      marketplaceRoot: canonicalMarketplaceRoot,
+      writes: (target.operationActions ?? []).filter((action): action is Extract<
+        OperationAction,
+        { kind: 'writeOwnedArtifact' }
+      > => action.kind === 'writeOwnedArtifact'
+        && action.artifactKind === 'skill-directory'
+        && desiredSkillPaths.has(path.resolve(action.path))
+        && enabledSkillPaths.has(path.resolve(action.path))
+        && target.identity.scope === 'user'
+        && !path.relative(nativePluginRoot, action.path).startsWith('..')),
+    };
+  };
+  const asNativeGroupFailure = (error: unknown): Error & {
+    nativeMarketplaceGroupFailure: true;
+  } => {
+    const result = error instanceof Error ? error : new Error(String(error));
+    return Object.assign(result, { nativeMarketplaceGroupFailure: true as const });
+  };
   const findTarget = (component: OwnedComponent): DesiredTarget => {
     const target = options.targets.find((entry) =>
       entry.identity.pluginName === component.identity.plugin
@@ -3448,6 +3592,145 @@ function createNativeDriver(options: {
       && entry.identity.scope === component.identity.scope);
     if (!target) throw new Error('Ownership executor cannot resolve its desired target.');
     return target;
+  };
+  const codexStateKey = (target: DesiredTarget, pluginId: string): string =>
+    `${nativeGroupKey(target)}\0${pluginId}`;
+  const runObservedCodexMutation = async <T>(options_: {
+    marketplaceName: string;
+    mutation: () => Promise<T>;
+  }): Promise<T> => runCodexMutationWithInvalidation({
+    ...options_,
+    ...(options.operationScopedNativePhases
+      ? {}
+      : { observationSession: options.context.codexObservationSession }),
+  });
+  const prepareNativeGroup = async (target: DesiredTarget): Promise<void> => {
+    const key = nativeGroupKey(target);
+    let preparation = options.operationScopedNativePhases
+      ? nativeGroupPreparations.get(key)
+      : nativeTargetPreparations.get(target);
+    if (!preparation) {
+      preparation = (async () => {
+        const members = groupTargets(target);
+        const materializing = members.filter((candidate) =>
+          candidate.writeNativeRequired ?? candidate.requiresNative);
+        const overlayTargets = members.filter((candidate) =>
+          candidate.nativeOverlayDesired ?? candidate.requiresNative);
+        if (target.identity.platform === 'codex') {
+          const nativePluginIds = [...new Set(members.flatMap((candidate) =>
+            candidate.ownedComponents.flatMap((component) =>
+              component.kind === 'native-plugin' ? [component.pluginId] : [])))].sort();
+          for (const pluginId of nativePluginIds) {
+            const member = members.find((candidate) => candidate.ownedComponents.some((component) =>
+              component.kind === 'native-plugin' && component.pluginId === pluginId))!;
+            const registration = await inspectCodexPluginRegistrationLive({
+              pluginId,
+              cwd: member.identity.cwd,
+              env: options.context.env,
+              nativeCliRunner: runner,
+              manager: currentCodexManager(),
+              observationSession: options.context.codexObservationSession,
+            });
+            codexNativeStates.set(
+              codexStateKey(member, pluginId),
+              requireObservedCodexNativeState(
+                registration.observation,
+                'native group precheck',
+              ) === 'installed' ? 'present' : 'absent',
+            );
+          }
+        }
+        if (materializing.length === 0) return;
+        const first = materializing[0]!;
+        if (!first.catalog) throw new Error('Missing rebuild target catalog data.');
+        const catalogRoot = path.resolve(first.catalog.rootDir);
+        if (overlayTargets.some((candidate) =>
+          !candidate.catalog || path.resolve(candidate.catalog.rootDir) !== catalogRoot)) {
+          throw new Error('nativeMarketplaceGroupInvalid: grouped targets do not share one Catalog root.');
+        }
+        const materializationTargets = [...overlayTargets].sort((left, right) => [
+          left.identity.pluginId ?? left.identity.pluginName,
+          left.identity.scope,
+          left.identity.cwd,
+        ].join('\0').localeCompare([
+          right.identity.pluginId ?? right.identity.pluginName,
+          right.identity.scope,
+          right.identity.cwd,
+        ].join('\0'), 'en'));
+        const nativeSkillOverlays = new Map(await Promise.all(
+          materializationTargets.map(async (candidate) => [
+            candidate,
+            await nativeSkillOverlay(candidate),
+          ] as const),
+        ));
+        const transaction = await mirrorCatalog(
+          first.catalog,
+          options.context.env,
+          first.identity,
+          first.identity.platform === 'codex' ? async (stagingRoot) => {
+            for (const candidate of materializationTargets) {
+              const overlay = nativeSkillOverlays.get(candidate)!;
+              const requiredSkillWrites = overlay.writes;
+              for (const action of requiredSkillWrites) {
+                await applyPlannedOperationAction({
+                  ...action,
+                  path: path.join(stagingRoot, path.relative(overlay.marketplaceRoot, action.path)),
+                  allowedRoot: path.join(
+                    stagingRoot,
+                    path.relative(overlay.marketplaceRoot, action.allowedRoot!),
+                  ),
+                });
+              }
+              const hasStaticSkills = candidate.plugin.manifest.skills !== undefined
+                || requiredSkillWrites.length > 0;
+              const nativeRender = await materializeCodexNativeRender({
+                plugin: candidate.plugin,
+                stagingRoot,
+                env: options.context.env,
+                scriptTimeoutMs: options.scriptTimeoutMs,
+                hasStaticSkills,
+              });
+              if (!nativeRender) {
+                await ensureCodexActiveSkillsManifest({
+                  plugin: candidate.plugin,
+                  marketplaceRoot: stagingRoot,
+                  hasRequiredSkills: hasStaticSkills,
+                });
+              }
+            }
+          } : undefined,
+        );
+        try {
+          await transaction.commit();
+        } catch (error) {
+          if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit !== true) {
+            try {
+              await transaction.rollback();
+            } catch (rollbackError) {
+              throw new AggregateError(
+                [error, rollbackError],
+                'nativeMarketplaceGroupCommitFailed: marketplace commit and rollback failed.',
+              );
+            }
+          }
+          throw error;
+        }
+        for (const candidate of materializationTargets) {
+          for (const action of nativeSkillOverlays.get(candidate)?.writes ?? []) {
+            completedNativeSkillWrites.add(action);
+          }
+        }
+        committedNativeGroups.add(key);
+      })().catch((error) => {
+        throw asNativeGroupFailure(error);
+      });
+      if (options.operationScopedNativePhases) {
+        nativeGroupPreparations.set(key, preparation);
+      } else {
+        nativeTargetPreparations.set(target, preparation);
+      }
+    }
+    await preparation;
   };
   const inspectCodexMarketplace = async (
     component: Extract<OwnedComponent, { kind: 'shared-config' | 'managed-block' }>,
@@ -3644,14 +3927,16 @@ function createNativeDriver(options: {
           return;
         case 'codex-marketplace': {
           if (locator.desired) return;
-          await runCodexMutationWithInvalidation({
+          const target = findTarget(component);
+          await prepareNativeGroup(target);
+          codexMutationMarketplaces.add(locator.marketplaceName);
+          await runObservedCodexMutation({
             marketplaceName: locator.marketplaceName,
-            observationSession: options.context.codexObservationSession,
             mutation: () => runNativeCliChecked(
               buildCodexMarketplaceRemoveInvocation(
                 currentCodexManager() ?? SYSTEM_CODEX_MANAGER,
                 locator.marketplaceName,
-                findTarget(component).identity.cwd,
+                target.identity.cwd,
                 options.context.env,
               ),
               runner,
@@ -3706,6 +3991,96 @@ function createNativeDriver(options: {
   };
   return {
     ownership,
+    prepareNativeMarketplaceGroup: prepareNativeGroup,
+    selectRecoveryCleanupComponents: (target, components) => {
+      if (!committedNativeGroups.has(nativeGroupKey(target))) return components;
+      const marketplaceRoot = path.resolve(
+        target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
+      );
+      return components.filter((component) => {
+        if (!('path' in component)) return true;
+        const relative = path.relative(marketplaceRoot, path.resolve(component.path));
+        return relative === '..'
+          || relative.startsWith(`..${path.sep}`)
+          || path.isAbsolute(relative);
+      });
+    },
+    ...(options.operationScopedNativePhases ? {
+      deferPostcheck: (target: DesiredTarget, postcheck: () => Promise<void>): boolean => {
+        if (target.identity.platform !== 'codex') return false;
+        deferredPostchecks.push({
+          target,
+          postcheck: async () => {
+            if (target.requiresNative) {
+              const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
+              const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
+              const registration = await inspectCodexPluginRegistrationLive({
+                pluginId,
+                cwd: target.identity.cwd,
+                env: options.context.env,
+                nativeCliRunner: runner,
+                manager: currentCodexManager(),
+                observationSession: options.context.codexObservationSession,
+              });
+              const state = requireObservedCodexNativeState(
+                registration.observation,
+                'native install postcheck',
+              );
+              if (!registration.observations.user || !registration.observations.project) {
+                throw new Error(
+                  'codexNativeObservationUnavailable: native install postcheck requires exact and neutral Codex plugin list evidence.',
+                );
+              }
+              if (state !== 'installed') {
+                throw new Error(
+                  `codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`,
+                );
+              }
+              const installedEntry = registration.observation.state === 'observed'
+                && registration.observation.value === 'installed'
+                ? registration.observation.entry
+                : undefined;
+              if (installedEntry?.version !== undefined
+                && installedEntry.version !== target.identity.pluginVersion) {
+                throw new Error(
+                  `codexNativeInstallIncomplete: ${pluginId} version is ${installedEntry.version}; expected ${target.identity.pluginVersion}.`,
+                );
+              }
+            }
+            await postcheck();
+          },
+        });
+        return true;
+      },
+      completePostchecks: async (): Promise<readonly DeferredRebuildPostcheckFailure[]> => {
+        const pending = deferredPostchecks;
+        deferredPostchecks = [];
+        const failures: DeferredRebuildPostcheckFailure[] = [];
+        for (const entry of pending) {
+          try {
+            await entry.postcheck();
+          } catch (error) {
+            failures.push({ target: entry.target, error });
+          }
+        }
+        return failures;
+      },
+    } : {}),
+    captureCodexPostMutationSnapshots: async (marketplaceNames = []) => {
+      for (const marketplaceName of marketplaceNames) {
+        codexMutationMarketplaces.add(marketplaceName);
+      }
+      if (codexMutationMarketplaces.size === 0) return;
+      const session = options.context.codexObservationSession;
+      if (!session) {
+        throw new Error('codexNativeObservationUnavailable: grouped postcheck requires an observation session.');
+      }
+      const marketplaces = [...codexMutationMarketplaces].sort();
+      codexMutationMarketplaces.clear();
+      for (const marketplaceName of marketplaces) session.invalidate(marketplaceName);
+      await Promise.all(marketplaces.map((marketplaceName) =>
+        session.snapshot(marketplaceName, 'both')));
+    },
     preflightMutation: async (target) => {
       if (!target.codexNativeObservationExpectation) return;
       const pluginId = `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`;
@@ -3759,18 +4134,6 @@ function createNativeDriver(options: {
         );
       }
     },
-    commitMaterialize: async (target) => {
-      const transaction = mirrorTransactions.get(target);
-      if (!transaction) return;
-      await transaction.commit();
-      mirrorTransactions.delete(target);
-    },
-    rollbackMaterialize: async (target) => {
-      const transaction = mirrorTransactions.get(target);
-      if (!transaction) return;
-      await transaction.rollback();
-      mirrorTransactions.delete(target);
-    },
     finalizeCleanup: async () => undefined,
     probeNative: async (component) => {
       const target = findTarget(component);
@@ -3787,6 +4150,8 @@ function createNativeDriver(options: {
         return state.pluginState;
       }
       if (target.identity.platform === 'codex') {
+        const pending = pendingCodexNativeStates.get(codexStateKey(target, component.pluginId));
+        if (pending) return pending;
         const registration = await inspectCodexPluginRegistrationLive({
           pluginId: component.pluginId,
           cwd: target.identity.cwd,
@@ -3824,7 +4189,10 @@ function createNativeDriver(options: {
           manager: currentCodexManager(),
           observationSession: options.context.codexObservationSession,
         });
-        const nativeState = observedCodexNativeState(registration.observation, 'native health postcheck');
+        const nativeState = observedCodexNativeState(
+          registration.observation,
+          'native health postcheck',
+        );
         if (nativeState !== 'present') return nativeState;
         const userConfig = await readCodexConfigFile(
           resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
@@ -3843,23 +4211,20 @@ function createNativeDriver(options: {
     removeNative: async (component) => {
       const target = findTarget(component);
       if (!target) throw new Error('Native ownership removal cannot resolve its desired target.');
+      await prepareNativeGroup(target);
       if (target.identity.platform === 'codex') {
         const marketplaceName = component.pluginId.slice(component.pluginId.lastIndexOf('@') + 1);
-        const registration = await inspectCodexPluginRegistrationLive({
-          pluginId: component.pluginId,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          nativeCliRunner: runner,
-          manager: currentCodexManager(),
-          observationSession: options.context.codexObservationSession,
-        });
-        const before = observedCodexNativeState(registration.observation, 'native remove precheck');
+        const stateKey = codexStateKey(target, component.pluginId);
+        const before = pendingCodexNativeStates.get(stateKey) ?? codexNativeStates.get(stateKey);
+        if (!before) {
+          throw new Error('codexNativeObservationUnavailable: native group precheck is missing.');
+        }
         const removalRequired = before === 'present';
         if (!removalRequired) return;
         try {
-          await runCodexMutationWithInvalidation({
+          codexMutationMarketplaces.add(marketplaceName);
+          await runObservedCodexMutation({
             marketplaceName,
-            observationSession: options.context.codexObservationSession,
             mutation: () => runNativeCliChecked(
               buildCodexPluginRemoveInvocation(
                 requireCodexManager(currentCodexManager()),
@@ -3873,16 +4238,31 @@ function createNativeDriver(options: {
         } catch {
           throw new Error(`codexNativeRemoveFailed: ${CODEX_REMOVE_RECOVERY}`);
         }
-        const after = await inspectCodexPluginRegistrationLive({
-          pluginId: component.pluginId,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          nativeCliRunner: runner,
-          manager: currentCodexManager(),
-          observationSession: options.context.codexObservationSession,
-        });
-        if (observedCodexNativeState(after.observation, 'native remove postcheck') !== 'absent') {
-          throw new Error(`codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`);
+        pendingCodexNativeStates.set(stateKey, 'absent');
+        const postcheck = async () => {
+          const after = await inspectCodexPluginRegistrationLive({
+            pluginId: component.pluginId,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            nativeCliRunner: runner,
+            manager: currentCodexManager(),
+            observationSession: options.context.codexObservationSession,
+          });
+          const expected = pendingCodexNativeStates.get(stateKey) ?? 'absent';
+          const observed = requireObservedCodexNativeState(
+            after.observation,
+            'native mutation postcheck',
+          );
+          if ((observed === 'installed' ? 'present' : 'absent') !== expected) {
+            throw new Error(expected === 'absent'
+              ? `codexNativeRemoveIncomplete: ${CODEX_REMOVE_RECOVERY}`
+              : `codexNativeInstallIncomplete: ${component.pluginId} is absent from Codex plugin list.`);
+          }
+        };
+        if (options.operationScopedNativePhases) {
+          deferredPostchecks.push({ target, postcheck });
+        } else {
+          await postcheck();
         }
       } else {
         await runNativeCliChecked({
@@ -3912,156 +4292,50 @@ function createNativeDriver(options: {
     },
     writeNative: async (target) => {
       if (!target.catalog) throw new Error('Missing rebuild target catalog data.');
-      const catalog = target.catalog;
       const marketplaceName = target.identity.marketplaceName ?? MARKETPLACE_NAME;
       const expectedMarketplaceRoot = target.identity.marketplaceRoot ?? resolveAwHome(options.context.env);
-      const writeGeneration = async (): Promise<void> => {
-        if (mirrorTransactions.has(target)) {
-          throw new Error('Marketplace mirror transaction is already active for this target.');
+      if (target.identity.platform === 'codex') {
+        const config = await readCodexConfigFile(
+          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
+        );
+        const marketplace = config.snapshot.marketplaces[marketplaceName];
+        if (marketplace && (
+          marketplace.sourceType !== 'local'
+          || marketplace.sourcePointsToManifest
+          || path.normalize(marketplace.source ?? '') !== path.normalize(expectedMarketplaceRoot)
+        )) {
+          throw new Error(
+            `externalOwnershipPresent: Codex marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`,
+          );
         }
-        {
-          if (target.identity.platform === 'codex') {
-            const config = await readCodexConfigFile(
-              resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-            );
-            const marketplace = config.snapshot.marketplaces[marketplaceName];
-            if (marketplace && (
-              marketplace.sourceType !== 'local'
-              || marketplace.sourcePointsToManifest
-              || path.normalize(marketplace.source ?? '') !== path.normalize(expectedMarketplaceRoot)
-            )) {
-              throw new Error(
-                `externalOwnershipPresent: Codex marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`,
-              );
-            }
-          } else {
-            const state = await readClaudeNativeState({
-              pluginName: target.identity.pluginName,
-              scope: target.identity.scope,
-              cwd: target.identity.cwd,
-              env: options.context.env,
-              marketplaceName,
-              marketplaceRoot: expectedMarketplaceRoot,
-            });
-            if (state.marketplaceState === 'foreign') {
-              throw new Error(`Claude marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`);
-            }
-          }
-          const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
-          let codexRemovalRequired = false;
-          if (target.identity.platform === 'codex') {
-            const registration = await inspectCodexPluginRegistrationLive({
-              pluginId,
-              cwd: target.identity.cwd,
-              env: options.context.env,
-              nativeCliRunner: runner,
-              manager: currentCodexManager(),
-              observationSession: options.context.codexObservationSession,
-            });
-            codexRemovalRequired = requireObservedCodexNativeState(
-              registration.observation,
-              'native write precheck',
-            ) === 'installed';
-          }
-          const canonicalMarketplaceRoot = await canonicalizePathThroughExistingAncestor(
-            expectedMarketplaceRoot,
-          );
-          const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
-            canonicalMarketplaceRoot,
-            'plugins',
-            target.identity.pluginName,
-          ));
-          const desiredSkillPaths = new Set((target.desiredOwnedComponents ?? [])
-            .filter((component) => component.kind === 'skill-directory')
-            .map((component) => path.resolve(component.path)));
-          const enabledSkillPaths = new Set(target.artifacts
-            .filter((artifact) => artifact.kind === 'skill' && artifact.state !== 'disabled')
-            .map((artifact) => path.resolve(artifact.path)));
-          const requiredSkillWrites = (target.operationActions ?? []).filter((action): action is Extract<
-            OperationAction,
-            { kind: 'writeOwnedArtifact' }
-          > => action.kind === 'writeOwnedArtifact'
-            && action.artifactKind === 'skill-directory'
-            && desiredSkillPaths.has(path.resolve(action.path))
-            && enabledSkillPaths.has(path.resolve(action.path))
-            && target.identity.scope === 'user'
-            && !path.relative(nativePluginRoot, action.path).startsWith('..'));
-          const mirrored = await mirrorCatalog(
-            catalog,
-            options.context.env,
-            target.identity,
-            target.identity.platform === 'codex' ? async (stagingRoot) => {
-              for (const action of requiredSkillWrites) {
-                await applyPlannedOperationAction({
-                  ...action,
-                  path: path.join(stagingRoot, path.relative(canonicalMarketplaceRoot, action.path)),
-                  allowedRoot: path.join(
-                    stagingRoot,
-                    path.relative(canonicalMarketplaceRoot, action.allowedRoot!),
-                  ),
-                });
-              }
-              const hasStaticSkills = target.plugin.manifest.skills !== undefined
-                || requiredSkillWrites.length > 0;
-              const nativeRender = await materializeCodexNativeRender({
-                plugin: target.plugin,
-                stagingRoot,
-                env: options.context.env,
-                scriptTimeoutMs: options.scriptTimeoutMs,
-                hasStaticSkills,
-              });
-              if (!nativeRender) {
-                await ensureCodexActiveSkillsManifest({
-                  plugin: target.plugin,
-                  marketplaceRoot: stagingRoot,
-                  hasRequiredSkills: hasStaticSkills,
-                });
-              }
-            } : undefined,
-          );
-          mirrorTransactions.set(target, mirrored);
-          for (const action of requiredSkillWrites) completedNativeSkillWrites.add(action);
-          const marketplaceRoot = mirrored.rootDir;
-          if (target.identity.platform === 'codex') {
-          if (codexRemovalRequired) {
-            await runCodexMutationWithInvalidation({
-              marketplaceName,
-              observationSession: options.context.codexObservationSession,
-              mutation: () => runNativeCliChecked(
-                buildCodexPluginRemoveInvocation(
-                  requireCodexManager(currentCodexManager()),
-                  pluginId,
-                  target.identity.cwd,
-                  options.context.env,
-                ),
-                runner,
-              ),
-            });
-          }
-          const config = await readCodexConfigFile(
-            resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-          );
-          const marketplace = config.snapshot.marketplaces[marketplaceName];
-          if (path.normalize(marketplace?.source ?? '') !== path.normalize(marketplaceRoot)) {
-            await runCodexMutationWithInvalidation({
-              marketplaceName,
-              observationSession: options.context.codexObservationSession,
-              mutation: () => runNativeCliChecked(
-                buildCodexMarketplaceAddInvocation(
-                  requireCodexManager(currentCodexManager()),
-                  marketplaceRoot,
-                  target.identity.cwd,
-                  options.context.env,
-                ),
-                runner,
-              ),
-            });
-          }
-          await runCodexMutationWithInvalidation({
+      } else {
+        const state = await readClaudeNativeState({
+          pluginName: target.identity.pluginName,
+          scope: target.identity.scope,
+          cwd: target.identity.cwd,
+          env: options.context.env,
+          marketplaceName,
+          marketplaceRoot: expectedMarketplaceRoot,
+        });
+        if (state.marketplaceState === 'foreign') {
+          throw new Error(`Claude marketplace ${marketplaceName} 已由 foreign source 占用，拒绝覆盖。`);
+        }
+      }
+      await prepareNativeGroup(target);
+      const pluginId = `${target.identity.pluginName}@${marketplaceName}`;
+      if (target.identity.platform === 'codex') {
+        const stateKey = codexStateKey(target, pluginId);
+        const codexRemovalRequired = pendingCodexNativeStates.get(stateKey)
+          ?? codexNativeStates.get(stateKey);
+        if (!codexRemovalRequired) {
+          throw new Error('codexNativeObservationUnavailable: native group precheck is missing.');
+        }
+        if (codexRemovalRequired === 'present') {
+          codexMutationMarketplaces.add(marketplaceName);
+          await runObservedCodexMutation({
             marketplaceName,
-            observationSession: options.context.codexObservationSession,
             mutation: () => runNativeCliChecked(
-              buildCodexPluginAddInvocation(
+              buildCodexPluginRemoveInvocation(
                 requireCodexManager(currentCodexManager()),
                 pluginId,
                 target.identity.cwd,
@@ -4070,79 +4344,90 @@ function createNativeDriver(options: {
               runner,
             ),
           });
-          const installed = await inspectCodexPluginRegistrationLive({
-            pluginId,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            nativeCliRunner: runner,
-            manager: currentCodexManager(),
-            observationSession: options.context.codexObservationSession,
-          });
-          if (observedCodexNativeState(installed.observation, 'native install postcheck') !== 'present') {
-            throw new Error(`codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`);
-          }
-          if (installed.observation.state !== 'observed'
-            || installed.observation.value !== 'installed') {
-            throw new Error(`codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`);
-          }
-          if (installed.observation.entry.version !== undefined
-            && installed.observation.entry.version !== target.identity.pluginVersion) {
-            throw new Error(
-              `codexNativeInstallIncomplete: ${pluginId} version is ${installed.observation.entry.version}; expected ${target.identity.pluginVersion}.`,
-            );
-          }
-          const installedConfig = await readCodexConfigFile(
-            resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-          );
-          const installedMarketplace = installedConfig.snapshot.marketplaces[marketplaceName];
-          if (installedMarketplace?.sourceType !== 'local'
-            || installedMarketplace.sourcePointsToManifest
-            || path.normalize(installedMarketplace.source ?? '') !== path.normalize(marketplaceRoot)
-            || installedConfig.snapshot.plugins[pluginId]?.enabled !== true) {
-            throw new Error(`codexNativeInstallIncomplete: ${pluginId} public config is not canonical and enabled.`);
-          }
-          } else {
-          await runNativeCliChecked({
-            command: 'claude',
-            args: ['plugin', 'marketplace', 'add', marketplaceRoot, '--scope', target.identity.scope],
-            cwd: target.identity.cwd,
-            env: options.context.env,
-          }, runner);
-          await runNativeCliChecked({
-            command: 'claude',
-            args: ['plugin', 'install', pluginId, '--scope', target.identity.scope],
-            cwd: target.identity.cwd,
-            env: options.context.env,
-          }, runner);
-          await runNativeCliChecked({
-            command: 'claude',
-            args: ['plugin', 'list'],
-            cwd: target.identity.cwd,
-            env: options.context.env,
-          }, runner);
-          const after = await readClaudeNativeState({
-            pluginName: target.identity.pluginName,
-            scope: target.identity.scope,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            marketplaceName,
-            marketplaceRoot,
-          });
-          if (
-            after.marketplaceDeclaredState !== 'canonical'
-            || after.marketplaceMaterializedState !== 'canonical'
-            || after.pluginState !== 'present'
-            || !after.pluginEnabled
-            || !after.pluginVersions.includes(target.identity.pluginVersion)
-          ) {
-            throw new Error(
-              `Claude native install postcheck 失败：declaredMarketplace=${after.marketplaceDeclaredState}，materializedMarketplace=${after.marketplaceMaterializedState}，plugin=${after.pluginState}，enabled=${after.pluginEnabled}，versions=${after.pluginVersions.join(',')}。`,
-            );
-          }
-          }
+          pendingCodexNativeStates.set(stateKey, 'absent');
         }
-      };
-      await writeGeneration();
+        const config = await readCodexConfigFile(
+          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
+        );
+        const marketplace = config.snapshot.marketplaces[marketplaceName];
+        if (path.normalize(marketplace?.source ?? '') !== path.normalize(expectedMarketplaceRoot)) {
+          codexMutationMarketplaces.add(marketplaceName);
+          await runObservedCodexMutation({
+            marketplaceName,
+            mutation: () => runNativeCliChecked(
+              buildCodexMarketplaceAddInvocation(
+                requireCodexManager(currentCodexManager()),
+                expectedMarketplaceRoot,
+                target.identity.cwd,
+                options.context.env,
+              ),
+              runner,
+            ),
+          });
+        }
+        codexMutationMarketplaces.add(marketplaceName);
+        await runObservedCodexMutation({
+          marketplaceName,
+          mutation: () => runNativeCliChecked(
+            buildCodexPluginAddInvocation(
+              requireCodexManager(currentCodexManager()),
+              pluginId,
+              target.identity.cwd,
+              options.context.env,
+            ),
+            runner,
+          ),
+        });
+        pendingCodexNativeStates.set(stateKey, 'present');
+        const installedConfig = await readCodexConfigFile(
+          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
+        );
+        const installedMarketplace = installedConfig.snapshot.marketplaces[marketplaceName];
+        if (installedMarketplace?.sourceType !== 'local'
+          || installedMarketplace.sourcePointsToManifest
+          || path.normalize(installedMarketplace.source ?? '') !== path.normalize(expectedMarketplaceRoot)
+          || installedConfig.snapshot.plugins[pluginId]?.enabled !== true) {
+          throw new Error(`codexNativeInstallIncomplete: ${pluginId} public config is not canonical and enabled.`);
+        }
+      } else {
+        await runNativeCliChecked({
+          command: 'claude',
+          args: ['plugin', 'marketplace', 'add', expectedMarketplaceRoot, '--scope', target.identity.scope],
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        }, runner);
+        await runNativeCliChecked({
+          command: 'claude',
+          args: ['plugin', 'install', pluginId, '--scope', target.identity.scope],
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        }, runner);
+        await runNativeCliChecked({
+          command: 'claude',
+          args: ['plugin', 'list'],
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        }, runner);
+        const after = await readClaudeNativeState({
+          pluginName: target.identity.pluginName,
+          scope: target.identity.scope,
+          cwd: target.identity.cwd,
+          env: options.context.env,
+          marketplaceName,
+          marketplaceRoot: expectedMarketplaceRoot,
+        });
+        if (
+          after.marketplaceDeclaredState !== 'canonical'
+          || after.marketplaceMaterializedState !== 'canonical'
+          || after.pluginState !== 'present'
+          || !after.pluginEnabled
+          || !after.pluginVersions.includes(target.identity.pluginVersion)
+        ) {
+          throw new Error(
+            `Claude native install postcheck 失败：declaredMarketplace=${after.marketplaceDeclaredState}，materializedMarketplace=${after.marketplaceMaterializedState}，plugin=${after.pluginState}，enabled=${after.pluginEnabled}，versions=${after.pluginVersions.join(',')}。`,
+          );
+        }
+      }
     },
     writeArtifacts: async (target) => {
       for (const operationAction of target.operationActions ?? []) {
@@ -4189,11 +4474,14 @@ export function createRebuildIntegration(options: {
   context: RebuildExecutionContext;
   scriptTimeoutMs?: number;
   preparedTargets?: readonly DesiredTarget[];
+  operationScopedNativePhases?: boolean;
 }): RebuildIntegration {
   const targets = [...(options.preparedTargets ?? [])];
   const driver = createNativeDriver({ targets, ...options });
   return {
     driver,
+    prepareNativeMarketplaceGroup: driver.prepareNativeMarketplaceGroup,
+    captureCodexPostMutationSnapshots: driver.captureCodexPostMutationSnapshots,
     buildTarget: async (input) => {
       input = {
         ...input,
@@ -4586,6 +4874,7 @@ export function createRebuildIntegration(options: {
           optionalComponentKeys.has(componentIdentityKey(component))),
         requiresNative: nativeDesired,
         writeNativeRequired: materializeNativeRequired,
+        nativeOverlayDesired: nativeDesired,
         artifacts: writes.map((write) => write.artifact),
         operationActions,
         catalog: input.catalog,

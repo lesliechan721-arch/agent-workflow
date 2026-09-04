@@ -1164,6 +1164,469 @@ describe('five namespaced write commands', () => {
     ]));
   });
 
+  it('materializes one native marketplace generation and one Codex post snapshot for a dependency group', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-source');
+    const dependencyNames = ['leaf-a', 'leaf-b', 'leaf-c', 'leaf-d', 'leaf-e'];
+    const pluginNames = [...dependencyNames, 'root'];
+    const configureDynamicNative = (manifest: PluginMeta['manifest']) => {
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'dynamic-skill',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'dynamic-skill',
+      }] };
+    };
+    const definitions = [
+      ...dependencyNames.map((name) => ({ name })),
+      { name: 'root', dependencies: dependencyNames },
+    ].map((definition) => ({ ...definition, configureManifest: configureDynamicNative }));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    for (const pluginName of pluginNames) {
+      await writeDynamicSkillRenderer({
+        pluginRoot: path.join(sourceRoot, 'plugins', pluginName),
+        skillKey: 'dynamic-skill',
+      });
+    }
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await fs.copy(sourceRoot, marketplaceRoot);
+    await fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw',
+    });
+    for (const manifestPath of [
+      path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    ]) {
+      const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+      await fs.writeJson(manifestPath, { ...manifest, name: 'aw' });
+    }
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const copy = vi.spyOn(fs, 'copy');
+    const move = vi.spyOn(fs, 'move');
+    const rename = vi.spyOn(fs, 'rename');
+    let result: Awaited<ReturnType<typeof installWriteCommand>>;
+    let stagingGenerationCount = 0;
+    let generationSwapCount = 0;
+    let committedBackupCount = 0;
+    let callsAtTargetBuild = 0;
+    setRebuildCommandTestHooksForTests({
+      afterTargetBuilt: async () => {
+        callsAtTargetBuild = runtime.nativeCliRunner.mock.calls.length;
+      },
+    });
+    try {
+      result = await installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+      }, runtime);
+      stagingGenerationCount = new Set(copy.mock.calls.flatMap(([, destination]) =>
+        path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
+          ? [path.dirname(String(destination))]
+          : [])).size;
+      generationSwapCount = move.mock.calls.filter(([sourcePath, destination]) =>
+        path.basename(String(sourcePath)).startsWith('.team-staging-')
+        && path.resolve(String(destination)) === path.resolve(marketplaceRoot)).length;
+      committedBackupCount = rename.mock.calls.filter(([sourcePath]) =>
+        path.basename(String(sourcePath)).startsWith('team.backup-')).length;
+    } finally {
+      setRebuildCommandTestHooksForTests(undefined);
+      copy.mockRestore();
+      move.mockRestore();
+      rename.mockRestore();
+    }
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(stagingGenerationCount).toBe(1);
+    expect(generationSwapCount).toBe(1);
+    expect(committedBackupCount).toBe(1);
+    const lockedCalls = runtime.nativeCliRunner.mock.calls.slice(callsAtTargetBuild);
+    const jsonLists = lockedCalls.filter(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'list' && args.includes('--json');
+    });
+    const nonJsonLists = lockedCalls.filter(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'list' && !args.includes('--json');
+    });
+    expect(jsonLists).toHaveLength(4);
+    expect(nonJsonLists).toHaveLength(0);
+    expect(runtime.installed).toEqual(new Set([
+      ...dependencyNames.map((name) => `${name}@aw`),
+      'root@aw',
+    ]));
+    for (const pluginName of pluginNames) {
+      await expect(fs.readFile(path.join(
+        marketplaceRoot,
+        'plugins',
+        pluginName,
+        'skills',
+        'dynamic-skill',
+        'SKILL.md',
+      ), 'utf8')).resolves.toContain('name: dynamic-skill');
+    }
+  }, 30_000);
+
+  it('keeps an earlier native success and the shared marketplace after a later group target fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-partial-source');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'leaf-a' },
+      { name: 'leaf-b' },
+      { name: 'root', dependencies: ['leaf-a', 'leaf-b'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    let failLeafB = true;
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      if (failLeafB && args[1] === 'add' && args[2] === 'leaf-b@aw') {
+        return { exitCode: 1, stdout: '', stderr: 'leaf-b failed' };
+      }
+      return runtime.nativeCliRunner(invocation);
+    });
+
+    const partial = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { ...runtime, nativeCliRunner });
+
+    expect(partial.overallState).toBe('partial');
+    expect(partial.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf-a' }),
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf-b' }),
+        state: 'failed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/root' }),
+        state: 'failed',
+        action: 'skipped',
+      }),
+    ]));
+    expect(runtime.installed).toContain('leaf-a@aw');
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await expect(fs.readJson(path.join(marketplaceRoot, 'config.json'))).resolves.toMatchObject({
+      sourceId: 'team',
+      marketplaceName: 'aw',
+    });
+    await expect(fs.readFile(path.join(
+      marketplaceRoot,
+      'plugins',
+      'leaf-b',
+      'skills',
+      'leaf-b-skill',
+      'SKILL.md',
+    ), 'utf8')).resolves.toContain('name: leaf-b-skill');
+
+    failLeafB = false;
+    await expect(syncCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { ...runtime, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
+    expect(runtime.installed).toEqual(new Set(['leaf-a@aw', 'leaf-b@aw', 'root@aw']));
+  }, 30_000);
+
+  it('does not start native mutations when grouped marketplace staging fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-stage-failure-source');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const realCopy = fs.copy.bind(fs);
+    const copy = vi.spyOn(fs, 'copy').mockImplementation(async (source, destination, options) => {
+      if (path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
+        && path.basename(String(destination)) === 'plugins') {
+        throw new Error('group staging failed');
+      }
+      return realCopy(source, destination, options);
+    });
+    let result: Awaited<ReturnType<typeof installWriteCommand>>;
+    try {
+      result = await installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+      }, runtime);
+    } finally {
+      copy.mockRestore();
+    }
+
+    expect(result.overallState).toBe('failed');
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf' }),
+        state: 'failed',
+        message: expect.stringContaining('group staging failed'),
+      }),
+    ]));
+    const nativeMutations = runtime.nativeCliRunner.mock.calls.filter(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'add'
+        || args[1] === 'remove'
+        || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
+    });
+    expect(nativeMutations).toEqual([]);
+    expect(runtime.installed).toEqual(new Set());
+  }, 30_000);
+
+  it('blocks a reused project activation when its marketplace group fails staging', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-group-reuse-failure-source');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'a' },
+      { name: 'b' },
+      { name: 'root', dependencies: ['a', 'b'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    await expect(installWriteCommand(['team/a'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const callsBeforeProjectInstall = runtime.nativeCliRunner.mock.calls.length;
+    const realCopy = fs.copy.bind(fs);
+    const copy = vi.spyOn(fs, 'copy').mockImplementation(async (source, destination, options) => {
+      if (path.basename(path.dirname(String(destination))).startsWith('.team-staging-')
+        && path.basename(String(destination)) === 'plugins') {
+        throw new Error('reuse group staging failed');
+      }
+      return realCopy(source, destination, options);
+    });
+    let result: Awaited<ReturnType<typeof installWriteCommand>>;
+    try {
+      result = await installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+        dependencyScopeOverrides: [{
+          pluginId: 'team/a', platform: 'codex', scope: 'project',
+        }],
+      }, runtime);
+    } finally {
+      copy.mockRestore();
+    }
+
+    expect(result.codexReconcilePlans?.[0]?.sharedNativeActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/a', action: 'reuse' }),
+    ]));
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a' }),
+        state: 'failed',
+        message: expect.stringContaining('reuse group staging failed'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b' }),
+        state: 'failed',
+      }),
+    ]));
+    const projectConfig = await readCodexConfigFile(
+      path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
+    );
+    expect(projectConfig.snapshot.plugins['a@aw']).toBeUndefined();
+    const projectMutations = runtime.nativeCliRunner.mock.calls
+      .slice(callsBeforeProjectInstall)
+      .filter(([invocation]) => {
+        const pluginIndex = invocation.args.indexOf('plugin');
+        const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+        return args[1] === 'add'
+          || args[1] === 'remove'
+          || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
+      });
+    expect(projectMutations).toEqual([]);
+  }, 30_000);
+
+  it('attributes a shared activation post snapshot failure only to the missing plugin', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-post-attribution-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'a' }, { name: 'b' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    await expect(installWriteCommand(['team/a', 'team/b'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const response = await runtime.nativeCliRunner(invocation);
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      if (args[1] !== 'list' || !args.includes('--json')) return response;
+      const projectConfig = await readCodexConfigFile(
+        path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
+      );
+      if (projectConfig.snapshot.plugins['b@aw']?.enabled !== true) return response;
+      const payload = JSON.parse(response.stdout) as { installed: Array<{ pluginId: string }> };
+      return {
+        ...response,
+        stdout: JSON.stringify({
+          ...payload,
+          installed: payload.installed.filter((entry) => entry.pluginId !== 'b@aw'),
+        }),
+      };
+    });
+
+    const result = await installWriteCommand(['team/a', 'team/b'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { ...runtime, nativeCliRunner });
+
+    expect(result.overallState).toBe('partial');
+    expect(result.codexReconcilePlans?.[0]?.sharedNativeActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/a', action: 'reuse' }),
+      expect.objectContaining({ pluginId: 'team/b', action: 'reuse' }),
+    ]));
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a' }),
+        state: 'completed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b' }),
+        state: 'failed',
+        errorCode: 'codexActivationPostcheckFailed',
+      }),
+    ]));
+  }, 30_000);
+
+  it('keeps the executed consumer action when its dependency fails the grouped postcheck', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'late-dependency-postcheck-source');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => {
+      const response = await runtime.nativeCliRunner(invocation);
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      if (args[1] !== 'list' || !args.includes('--json') || !runtime.installed.has('root@aw')) {
+        return response;
+      }
+      const payload = JSON.parse(response.stdout) as { installed: Array<{ pluginId: string }> };
+      return {
+        ...response,
+        stdout: JSON.stringify({
+          ...payload,
+          installed: payload.installed.filter((entry) => entry.pluginId !== 'leaf@aw'),
+        }),
+      };
+    });
+
+    const result = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { ...runtime, nativeCliRunner });
+
+    expect(result.overallState).toBe('partial');
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf' }),
+        state: 'failed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/root' }),
+        action: 'install',
+        state: 'failed',
+        errorCode: 'dependencyInstallFailed',
+        recoveryActions: expect.arrayContaining([
+          'run aw sync --all --platform codex --scope project',
+        ]),
+      }),
+    ]));
+    const receipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('install', result);
+    expect(receipt.overallState).toBe('partial');
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/root' }),
+        action: 'install',
+        state: 'failed',
+        errorCode: 'dependencyInstallFailed',
+        recoveryActions: expect.arrayContaining([
+          'run aw sync --all --platform codex --scope project',
+        ]),
+      }),
+    ]));
+  }, 30_000);
+
   it('persists direct dependency placement overrides and upserts root scope', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'intent-upsert-source');
@@ -1885,7 +2348,7 @@ describe('five namespaced write commands', () => {
     30_000,
   );
 
-  it('keeps confirmed Intent but no actual change when an activation-only observation fails late', async () => {
+  it('reports a late activation observation failure after the mutation and preserves shared native', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-only-late-gate-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
@@ -1942,7 +2405,7 @@ describe('five namespaced write commands', () => {
     }
 
     expect(result.targetResults).toContainEqual(expect.objectContaining({
-      state: 'failed', errorCode: 'codexNativeObservationUnavailable',
+      state: 'failed', errorCode: 'codexActivationPostcheckFailed',
     }));
     await expect(readPluginIntentState({
       scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
@@ -1950,8 +2413,9 @@ describe('five namespaced write commands', () => {
       roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
     });
     await expect(fs.readFile(userConfigPath, 'utf8')).resolves.toBe(userConfigBefore);
-    await expect(fs.readFile(projectConfigPath, 'utf8').catch(() => undefined))
-      .resolves.toBe(projectConfigBefore);
+    expect(projectConfigBefore).toBeUndefined();
+    await expect(fs.readFile(projectConfigPath, 'utf8'))
+      .resolves.toContain('enabled = true');
     await expect(snapshotRegularTree(marketplaceRoot)).resolves.toEqual(marketplaceBefore);
     await expect(snapshotRegularTree(nativePayloadRoot)).resolves.toEqual(payloadBefore);
     expect(runtime.installed).toEqual(new Set([installedPluginId]));
@@ -1960,7 +2424,7 @@ describe('five namespaced write commands', () => {
     expect(receipt).toMatchObject({
       overallState: 'failed',
       targetResults: [expect.objectContaining({
-        state: 'failed', errorCode: 'codexNativeObservationUnavailable',
+        state: 'failed', errorCode: 'codexActivationPostcheckFailed',
         recoveryActions: expect.arrayContaining(['run sync']),
       })],
     });
@@ -2006,8 +2470,8 @@ describe('five namespaced write commands', () => {
   }, 30_000);
 
   it.each([
-    ['absent', 'failed', 'codexNativeInstallIncomplete'],
-    ['duplicate', 'failed', 'codexNativeObservationFailed'],
+    ['absent', 'partial', 'codexNativeInstallIncomplete'],
+    ['duplicate', 'partial', 'codexNativeObservationFailed'],
     ['installed-disabled', 'succeeded', undefined],
     ['exact-installed-neutral-absent', 'succeeded', undefined],
   ] as const)('handles Codex install when the official postcheck is %s', async (
@@ -9367,6 +9831,17 @@ describe('five namespaced write commands', () => {
     }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
     expect(alreadyClean.overallState, JSON.stringify(alreadyClean.rebuildResults)).toBe('succeeded');
     expect(codexManagerResolver).not.toHaveBeenCalled();
+    expect(nativeCliRunner).toHaveBeenCalledTimes(6);
+    expect(nativeCliRunner.mock.calls.every(([invocation]) =>
+      invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
+        === 'plugin list --marketplace aw --json')).toBe(true);
+
+    nativeCliRunner.mockClear();
+    const noOp = await uninstallWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex', scope: 'user',
+    }, { env: isolation.env, nativeCliRunner, codexManagerResolver });
+    expect(noOp.overallState, JSON.stringify(noOp.rebuildResults)).toBe('succeeded');
     expect(nativeCliRunner).toHaveBeenCalledTimes(2);
     expect(nativeCliRunner.mock.calls.every(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')

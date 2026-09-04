@@ -36,8 +36,6 @@ export type RebuildActionName =
   | 'artifacts.write'
   | 'postApply'
   | 'postcheck.inspect'
-  | 'marketplace.commit'
-  | 'marketplace.rollback'
   | 'recovery.cleanup'
   | 'cleanup.owned'
 export type RebuildActionEventData =
