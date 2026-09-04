@@ -422,7 +422,7 @@ describe('performance gate process tree cleanup', () => {
     expect(isProcessAlive(pids.grandchild)).toBe(false);
   });
 
-  itOnPosix('falls back to direct KILL when the third snapshot still lacks root identity', async () => {
+  itOnPosix('falls back to the owned process group when snapshots lack root identity', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-missing-root-identity-'));
     roots.push(root);
     const pidFile = path.join(root, 'pid');
@@ -433,6 +433,7 @@ describe('performance gate process tree cleanup', () => {
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
+    const groupSignals = [];
     const snapshotPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
       if (snapshotCalls < 3) {
@@ -451,7 +452,13 @@ describe('performance gate process tree cleanup', () => {
       descendantMonitorIntervalMs: 1_000,
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
-    }, { snapshotPosixProcessTree })).rejects.toThrow(
+    }, {
+      snapshotPosixProcessTree,
+      killPosixProcessGroup: (pid, signal) => {
+        groupSignals.push(signal);
+        process.kill(-pid, signal);
+      },
+    })).rejects.toThrow(
       'cleanup could not verify process-tree ownership',
     );
 
@@ -459,6 +466,7 @@ describe('performance gate process tree cleanup', () => {
     observedPids.push(pid);
     await waitForProcessesToExit([pid], 500);
     expect(snapshotCalls).toBe(3);
+    expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL']);
     expect(isProcessAlive(pid)).toBe(false);
   });
 
