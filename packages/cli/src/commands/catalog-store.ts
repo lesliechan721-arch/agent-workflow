@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { CATALOG_STORE_DIRECTORY } from '../constants.js';
 import { withAwHomeMutationLock } from '../utils/aw-home-mutation-lock.js';
 import { createCatalogStoreKey, readCatalogStoreEntry } from '../utils/catalog-generation-store.js';
+import { catalogGenerationErrorCode } from '../utils/catalog-generation-error.js';
 import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
 import { readCatalogSourcesConfig } from '../utils/catalog-sources.js';
 import { resolveAwHome } from '../utils/state-paths.js';
@@ -25,30 +26,39 @@ export type CatalogStoreEntryCategory =
   | 'foreign';
 
 export type CatalogStoreEntryStatus = 'active' | 'reclaimable' | 'retained' | 'error';
+export type CatalogStoreGenerationReference = 'active' | 'orphan' | 'none';
+
+export interface CatalogStoreInspectionError {
+  storeKey: string;
+  code: 'catalogStoreInspectionFailed';
+  message: string;
+}
 
 export interface CatalogStoreInspectionEntry {
   storeKey: string;
   category: CatalogStoreEntryCategory;
   status: CatalogStoreEntryStatus;
+  generationReference: CatalogStoreGenerationReference;
   ageMs: number | null;
   reclaimableBytes: number | null;
   reason: string;
 }
 
 export interface CatalogStoreStatusResult {
-  catalogStoreSchemaVersion: 1;
+  catalogStoreSchemaVersion: 2;
   command: 'catalog:store:status';
-  ok: true;
+  ok: boolean;
   entries: CatalogStoreInspectionEntry[];
   totals: {
     entries: number;
     reclaimableEntries: number;
     reclaimableBytes: number | null;
   };
+  errors: CatalogStoreInspectionError[];
 }
 
 export interface CatalogStoreStatusFailureResult {
-  catalogStoreSchemaVersion: 1;
+  catalogStoreSchemaVersion: 2;
   command: 'catalog:store:status';
   ok: false;
   entries: [];
@@ -56,7 +66,7 @@ export interface CatalogStoreStatusFailureResult {
 }
 
 export interface CatalogStorePruneResult {
-  catalogStoreSchemaVersion: 1;
+  catalogStoreSchemaVersion: 2;
   command: 'catalog:store:prune';
   ok: boolean;
   overallState: 'succeeded' | 'partial';
@@ -64,13 +74,17 @@ export interface CatalogStorePruneResult {
   entries: CatalogStoreInspectionEntry[];
   deleted: Array<{ storeKey: string; bytes: number }>;
   retained: Array<{ storeKey: string; reason: string }>;
-  errors: Array<{ storeKey: string; code: 'catalogStoreDeleteFailed'; message: string }>;
+  errors: Array<CatalogStoreInspectionError | {
+    storeKey: string;
+    code: 'catalogStoreDeleteFailed';
+    message: string;
+  }>;
   reclaimableBytes: number | null;
   deletedBytes: number;
 }
 
 export interface CatalogStorePruneFailureResult {
-  catalogStoreSchemaVersion: 1;
+  catalogStoreSchemaVersion: 2;
   command: 'catalog:store:prune';
   ok: false;
   overallState: 'failed';
@@ -109,6 +123,21 @@ interface CatalogStorePruneRuntime {
   ): Promise<void> | void;
   updateDeleteClaimTime?(target: string, now: Date): Promise<void> | void;
   afterDeleteClaim?(options: { storeKey: string; claimPath: string }): Promise<void> | void;
+}
+
+const CATALOG_STORE_APPLICATION_ERROR_CODES = new Set([
+  'invalidArguments',
+  'catalogStoreInspectionFailed',
+  'catalogStoreDeleteFailed',
+]);
+
+export function catalogStoreErrorCode(error: unknown): string {
+  const generationCode = catalogGenerationErrorCode(error);
+  if (generationCode !== 'catalogGenerationFailed') return generationCode;
+  const explicitCode = (error as { code?: unknown })?.code;
+  return typeof explicitCode === 'string' && CATALOG_STORE_APPLICATION_ERROR_CODES.has(explicitCode)
+    ? explicitCode
+    : 'catalogStoreInspectionFailed';
 }
 
 function opaqueForeignKey(parent: string, name: string): string {
@@ -177,11 +206,13 @@ function retainedEntry(options: {
   absolutePath: string;
   evidence: TreeEvidence;
   reason: string;
+  generationReference?: CatalogStoreGenerationReference;
 }): InternalInspectionEntry {
   return {
     storeKey: options.storeKey,
     category: options.category,
     status: options.evidence.safe ? 'retained' : 'error',
+    generationReference: options.generationReference ?? 'none',
     ageMs: options.evidence.ageMs,
     reclaimableBytes: null,
     reason: options.evidence.reason ?? options.reason,
@@ -195,18 +226,22 @@ async function inspectFormalEntry(options: {
   digestSegment: string;
   entryDir: string;
   activeKeys: ReadonlySet<string>;
+  orphanKeys: ReadonlySet<string>;
   evidence: TreeEvidence;
   env: NodeJS.ProcessEnv;
 }): Promise<InternalInspectionEntry> {
   const storeKey = `${options.identitySegment}/${options.digestSegment}`;
+  const generationReference = options.activeKeys.has(storeKey)
+    ? 'active'
+    : options.orphanKeys.has(storeKey) ? 'orphan' : 'none';
   if (!options.evidence.safe) return retainedEntry({
     storeKey, category: 'entry', absolutePath: options.entryDir,
-    evidence: options.evidence, reason: 'unsafeEntry',
+    evidence: options.evidence, reason: 'unsafeEntry', generationReference,
   });
   const identity = await readEntryIdentity(options.entryDir);
   if (!identity) return retainedEntry({
     storeKey, category: 'entry', absolutePath: options.entryDir,
-    evidence: options.evidence, reason: 'validationFailed',
+    evidence: options.evidence, reason: 'validationFailed', generationReference,
   });
   try {
     if (createCatalogStoreKey(identity.logicalIdentity, identity.snapshotDigest) !== storeKey) {
@@ -216,13 +251,14 @@ async function inspectFormalEntry(options: {
   } catch {
     return retainedEntry({
       storeKey, category: 'entry', absolutePath: options.entryDir,
-      evidence: options.evidence, reason: 'validationFailed',
+      evidence: options.evidence, reason: 'validationFailed', generationReference,
     });
   }
   if (options.activeKeys.has(storeKey)) return {
     storeKey,
     category: 'entry',
     status: 'active',
+    generationReference,
     ageMs: options.evidence.ageMs,
     reclaimableBytes: null,
     reason: 'active',
@@ -234,6 +270,7 @@ async function inspectFormalEntry(options: {
     storeKey,
     category: 'entry',
     status: reclaimable ? 'reclaimable' : 'retained',
+    generationReference,
     ageMs: options.evidence.ageMs,
     reclaimableBytes: reclaimable ? options.evidence.bytes : null,
     reason: reclaimable ? 'inactiveOlderThan30Days' : 'inactiveWithin30Days',
@@ -289,6 +326,7 @@ async function inspectTempEntry(options: {
     storeKey,
     category,
     status: 'reclaimable',
+    generationReference: 'none',
     ageMs: options.evidence.ageMs,
     reclaimableBytes: options.evidence.bytes,
     reason: 'temporaryOlderThan24Hours',
@@ -319,6 +357,7 @@ async function inspectDeleteClaim(options: {
     storeKey,
     category: 'deleteClaim',
     status: reclaimable ? 'reclaimable' : 'retained',
+    generationReference: 'none',
     ageMs: options.evidence.ageMs,
     reclaimableBytes: reclaimable ? options.evidence.bytes : null,
     reason: reclaimable ? 'deleteClaimOlderThan24Hours' : 'deleteClaimWithin24Hours',
@@ -327,23 +366,78 @@ async function inspectDeleteClaim(options: {
   };
 }
 
-async function activeStoreKeys(env: NodeJS.ProcessEnv): Promise<Set<string>> {
+interface GenerationReferenceKeys {
+  activeKeys: Set<string>;
+  orphanKeys: Set<string>;
+}
+
+async function generationReferenceKeys(env: NodeJS.ProcessEnv): Promise<GenerationReferenceKeys> {
   const [config, state] = await Promise.all([
     readCatalogSourcesConfig(env),
     readCatalogGenerationState(env),
   ]);
   const configuredSourceIds = new Set(config.sources.map((source) => source.id));
-  return new Set(Object.entries(state.sources)
-    .flatMap(([sourceId, source]) => configuredSourceIds.has(sourceId) && source.active
-      ? [createCatalogStoreKey(source.active.logicalIdentity, source.active.snapshotDigest)]
-      : []));
+  const activeKeys = new Set<string>();
+  const orphanKeys = new Set<string>();
+  for (const [sourceId, source] of Object.entries(state.sources)) {
+    if (!source.active) continue;
+    const storeKey = createCatalogStoreKey(source.active.logicalIdentity, source.active.snapshotDigest);
+    if (configuredSourceIds.has(sourceId)) activeKeys.add(storeKey);
+    else orphanKeys.add(storeKey);
+  }
+  for (const storeKey of activeKeys) orphanKeys.delete(storeKey);
+  return { activeKeys, orphanKeys };
+}
+
+async function reinspectCandidate(options: {
+  initial: InternalInspectionEntry;
+  references: GenerationReferenceKeys;
+  env: NodeJS.ProcessEnv;
+  nowMs: number;
+}): Promise<InternalInspectionEntry> {
+  const identityDir = path.dirname(options.initial.absolutePath);
+  const storeRoot = path.dirname(identityDir);
+  const identitySegment = path.basename(identityDir);
+  const name = path.basename(options.initial.absolutePath);
+  const [storeRootStat, identityStat] = await Promise.all([
+    fs.lstat(storeRoot).catch(() => null),
+    fs.lstat(identityDir).catch(() => null),
+  ]);
+  if (!storeRootStat?.isDirectory() || storeRootStat.isSymbolicLink()
+    || !identityStat?.isDirectory() || identityStat.isSymbolicLink()
+    || !HEX_SEGMENT.test(identitySegment)) {
+    return failedReinspectionEntry(options.initial);
+  }
+  const evidence = await inspectTree(options.initial.absolutePath, options.nowMs);
+  if (options.initial.category === 'entry') return inspectFormalEntry({
+    identitySegment,
+    digestSegment: name,
+    entryDir: options.initial.absolutePath,
+    activeKeys: options.references.activeKeys,
+    orphanKeys: options.references.orphanKeys,
+    evidence,
+    env: options.env,
+  });
+  if (options.initial.category === 'deleteClaim') return inspectDeleteClaim({
+    identitySegment,
+    name,
+    entryDir: options.initial.absolutePath,
+    evidence,
+  });
+  return inspectTempEntry({
+    identitySegment,
+    name,
+    entryDir: options.initial.absolutePath,
+    evidence,
+    env: options.env,
+  });
 }
 
 async function inspectCatalogStore(options: {
   env: NodeJS.ProcessEnv;
   nowMs: number;
 }): Promise<InternalInspectionEntry[]> {
-  const activeKeys = await activeStoreKeys(options.env);
+  const { activeKeys, orphanKeys } = await generationReferenceKeys(options.env);
   const storeRoot = path.join(resolveAwHome(options.env), CATALOG_STORE_DIRECTORY);
   const rootStat = await fs.lstat(storeRoot).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return null;
@@ -360,14 +454,7 @@ async function inspectCatalogStore(options: {
     })];
   }
   const entries: InternalInspectionEntry[] = [];
-  const identityNames = await fs.readdir(storeRoot).then((names) => names.sort()).catch(() => null);
-  if (!identityNames) return [retainedEntry({
-    storeKey: '.', category: 'foreign', absolutePath: storeRoot,
-    evidence: {
-      ageMs: null, bytes: null, safe: false, reason: 'unreadableStoreRoot', rootIdentity: null,
-    },
-    reason: 'unreadableStoreRoot',
-  })];
+  const identityNames = await fs.readdir(storeRoot).then((names) => names.sort());
   for (const identityName of identityNames) {
     const identityDir = path.join(storeRoot, identityName);
     const identityStat = await fs.lstat(identityDir).catch(() => null);
@@ -408,6 +495,7 @@ async function inspectCatalogStore(options: {
           digestSegment: childName,
           entryDir,
           activeKeys,
+          orphanKeys,
           evidence,
           env: options.env,
         }));
@@ -452,6 +540,18 @@ function reclaimableTotal(entries: readonly CatalogStoreInspectionEntry[]): numb
   return reclaimable.reduce((sum, entry) => sum + entry.reclaimableBytes!, 0);
 }
 
+function inspectionErrors(
+  entries: readonly CatalogStoreInspectionEntry[],
+): CatalogStoreInspectionError[] {
+  return entries
+    .filter((entry) => entry.status === 'error')
+    .map((entry) => ({
+      storeKey: entry.storeKey,
+      code: 'catalogStoreInspectionFailed',
+      message: `Could not fully inspect Catalog store item ${entry.storeKey}: ${entry.reason}.`,
+    }));
+}
+
 function sameNodeIdentity(left: NodeIdentity | null, right: NodeIdentity | null): boolean {
   return left !== null
     && right !== null
@@ -468,6 +568,7 @@ function sameDeletionEvidence(
   return current.status === 'reclaimable'
     && current.storeKey === initial.storeKey
     && current.category === initial.category
+    && current.generationReference === initial.generationReference
     && current.absolutePath === initial.absolutePath
     && current.ageMs === initial.ageMs
     && current.reclaimableBytes === initial.reclaimableBytes
@@ -487,6 +588,16 @@ function staleInspectionEntry(
     reclaimableBytes: null,
     reason: 'staleBeforeDelete',
     rootIdentity: current?.rootIdentity ?? null,
+  };
+}
+
+function failedReinspectionEntry(initial: InternalInspectionEntry): InternalInspectionEntry {
+  return {
+    ...initial,
+    status: 'error',
+    ageMs: null,
+    reclaimableBytes: null,
+    reason: 'reinspectionFailed',
   };
 }
 
@@ -546,16 +657,18 @@ export async function catalogStoreStatus(options: {
     env: options.env ?? process.env,
     nowMs: (options.now ?? new Date()).getTime(),
   }));
+  const errors = inspectionErrors(entries);
   return {
-    catalogStoreSchemaVersion: 1,
+    catalogStoreSchemaVersion: 2,
     command: 'catalog:store:status',
-    ok: true,
+    ok: errors.length === 0,
     entries,
     totals: {
       entries: entries.length,
       reclaimableEntries: entries.filter((entry) => entry.status === 'reclaimable').length,
       reclaimableBytes: reclaimableTotal(entries),
     },
+    errors,
   };
 }
 
@@ -568,7 +681,7 @@ async function executePrune(options: {
 }): Promise<CatalogStorePruneResult> {
   const inspected = await inspectCatalogStore({ env: options.env, nowMs: options.nowMs });
   const deleted: CatalogStorePruneResult['deleted'] = [];
-  const errors: CatalogStorePruneResult['errors'] = [];
+  const deleteErrors: CatalogStorePruneResult['errors'] = [];
   const retainedAfterError = new Set<string>();
   const retainedReasons = new Map<string, string>();
   if (!options.dryRun) {
@@ -577,15 +690,25 @@ async function executePrune(options: {
       .filter(({ entry }) => entry.status === 'reclaimable');
     await options.runtime?.afterInitialInspection?.(publicEntries(inspected));
     for (const { entry: initial, index } of candidates) {
-      const current = (await inspectCatalogStore({ env: options.env, nowMs: options.nowMs }))
-        .find((candidate) => candidate.absolutePath === initial.absolutePath
-          && candidate.storeKey === initial.storeKey
-          && candidate.category === initial.category);
+      let current: InternalInspectionEntry | undefined;
+      try {
+        const references = await generationReferenceKeys(options.env);
+        current = await reinspectCandidate({
+          initial,
+          references,
+          env: options.env,
+          nowMs: options.nowMs,
+        });
+      } catch {
+        inspected[index] = failedReinspectionEntry(initial);
+        retainedReasons.set(initial.storeKey, 'reinspectionFailed');
+        continue;
+      }
       if (!current || !sameDeletionEvidence(initial, current)) {
         inspected[index] = staleInspectionEntry(initial, current);
         retainedReasons.set(initial.storeKey, current?.status === 'active'
           ? 'active'
-          : 'staleBeforeDelete');
+          : current?.status === 'error' ? current.reason : 'staleBeforeDelete');
         continue;
       }
       inspected[index] = current;
@@ -652,7 +775,7 @@ async function executePrune(options: {
         }
         inspected[index] = failedClaim;
         retainedAfterError.add(failedClaim.storeKey);
-        errors.push({
+        deleteErrors.push({
           storeKey: failedClaim.storeKey,
           code: 'catalogStoreDeleteFailed',
           message: `Could not safely complete deletion of Catalog store item ${failedClaim.storeKey}. Retry prune.`,
@@ -661,6 +784,7 @@ async function executePrune(options: {
     }
   }
   const entries = publicEntries(inspected);
+  const errors = [...inspectionErrors(entries), ...deleteErrors];
   const deletedKeys = new Set(deleted.map((entry) => entry.storeKey));
   const retained = entries
     .filter((entry) => !deletedKeys.has(entry.storeKey)
@@ -673,7 +797,7 @@ async function executePrune(options: {
       reason: retainedReasons.get(entry.storeKey) ?? entry.reason,
     }));
   return {
-    catalogStoreSchemaVersion: 1,
+    catalogStoreSchemaVersion: 2,
     command: 'catalog:store:prune',
     ok: errors.length === 0,
     overallState: errors.length === 0 ? 'succeeded' : 'partial',
