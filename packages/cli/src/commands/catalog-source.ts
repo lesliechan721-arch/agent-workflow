@@ -65,7 +65,8 @@ export interface CatalogSourceMutationProgress {
 export type CatalogSourceMutationRequest =
   | { action: 'add'; source: CatalogSource }
   | { action: 'update'; sourceId: string; update: CatalogSourceUpdate }
-  | { action: 'setPrimary' | 'remove'; sourceId: string };
+  | { action: 'setPrimary'; sourceId: string }
+  | { action: 'remove'; sourceId: string; replacementPrimarySourceId?: string };
 
 export interface CatalogSourceMutationPreflight {
   sourceId: string;
@@ -240,7 +241,7 @@ export async function preflightCatalogSourceMutation(options: {
       ? await updateCatalogSource(snapshot.config, sourceId, request.update, options.cwd)
       : request.action === 'setPrimary'
         ? setPrimaryCatalogSource(snapshot.config, sourceId)
-        : removeCatalogSource(snapshot.config, sourceId);
+        : removeCatalogSource(snapshot.config, sourceId, request.replacementPrimarySourceId);
   const after = proposedConfig.sources.find((source) => source.id === sourceId);
   const changedIdentity = Boolean(before && after && await identityChanged(before, after));
   const sourceIdentity = after ? await calculateCatalogSourceIdentity(after) : undefined;
@@ -487,9 +488,16 @@ export async function removeCatalogSourceCommand(options: {
   requireImpactConfirmation?: boolean;
   confirmImpact?: boolean;
   expectedImpactDigest?: string;
+  replacementPrimarySourceId?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const preview = await preflightCatalogSourceMutation({
-    request: { action: 'remove', sourceId: options.sourceId },
+    request: {
+      action: 'remove',
+      sourceId: options.sourceId,
+      ...(options.replacementPrimarySourceId === undefined
+        ? {}
+        : { replacementPrimarySourceId: options.replacementPrimarySourceId }),
+    },
     cwd: options.cwd,
     env: options.env,
     managedByWorkspaceIdentity: options.managedByWorkspaceIdentity,
@@ -528,7 +536,11 @@ export async function removeCatalogSourceCommand(options: {
         && options.confirmImpact !== true) {
         throw new CatalogSourceImpactConfirmationRequiredError(references);
       }
-      const config = removeCatalogSource(snapshot.config, options.sourceId);
+      const config = removeCatalogSource(
+        snapshot.config,
+        options.sourceId,
+        options.replacementPrimarySourceId,
+      );
       if (calculateCatalogSourcesConfigDigest(config) === snapshot.digest) {
         return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
       }

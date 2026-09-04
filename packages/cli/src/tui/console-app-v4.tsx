@@ -3827,7 +3827,9 @@ export function ConsoleAppV4(props: {
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
     description = freshness?.state === 'incompatible'
-      ? activeVersion
+      ? generationState === 'repairRequired'
+        ? `当前候选需要升级 AW 或修改来源后才能使用；损坏的 Active 仍可按旧版本精确修复。`
+        : activeVersion
         ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；Active Catalog ${activeVersion} 仍可浏览和使用。`
         : `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项候选 Catalog 能力；这个来源没有可用 Active Catalog。`
       : freshness?.state === 'checkFailed' && activeVersion
@@ -3845,8 +3847,7 @@ export function ConsoleAppV4(props: {
           : logicalIdentityChanged ? 'Catalog logical identity 已变化。请编辑来源，或移除后重新添加。'
             : '来源没有可用 Active。可在这里获取并启用。';
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
-    const generationAction: ActionItem[] = logicalIdentityChanged
-      || freshness?.state === 'incompatible' && generationState !== 'ready' ? []
+    const generationAction: ActionItem[] = logicalIdentityChanged ? []
       : generationState === 'repairRequired' ? [{
           label: '重新下载旧版本并精确修复',
           description: '使用 Active 的精确 commit；成功后保持当前 Active 并停止',
@@ -3856,7 +3857,7 @@ export function ConsoleAppV4(props: {
             action: 'repair',
             sourceId: route.sourceId,
           }),
-        }, {
+        }, ...(freshness?.state === 'incompatible' ? [] : [{
           label: '使用当前候选替换损坏的 Active…',
           description: '旧版本无法取得时使用；进入独立影响 Review',
           disabled: activationBlocked ? `请先处理当前草稿或操作：${activationBlocked}` : undefined,
@@ -3865,7 +3866,8 @@ export function ConsoleAppV4(props: {
             action: 'replaceDamaged',
             sourceId: route.sourceId,
           }),
-        }]
+        }])]
+      : freshness?.state === 'incompatible' && generationState !== 'ready' ? []
       : generationState !== 'ready' ? [{
           label: generationState === 'stateInvalid' ? '恢复状态并启用'
               : generationState === 'configMismatch' ? '验证并切换' : '获取并启用',

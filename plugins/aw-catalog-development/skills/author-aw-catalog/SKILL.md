@@ -50,7 +50,7 @@ aw self check --from <skill-root> --json
    aw catalog dev activate [--workspace-root <root>] --json
    ```
 
-   `activate` 自行完成 Catalog build、complete validate、managed Path source 注册、sync 和 readiness 检查；不要在它前后再组成显式 `build → validate → activate → status` 链。只有用户单独要求查看或停用时才运行 `aw catalog dev status` 或 `aw catalog dev deactivate`。不得调用低层 `catalog source add/update`。
+   `activate` 自行完成 Catalog build、complete validate、managed Path source 注册、sync 和 readiness 检查；不要在它前后再组成显式 `build → validate → activate → status` 链。只有用户单独要求查看或停用时才运行 `aw catalog dev status` 或 `aw catalog dev deactivate [--workspace-root <root>] --yes --json`。deactivate 的 schema 3 receipt 返回脱敏 `impact`，其中有 installation、lifecycle、config 引用或 inventory 不完整时需要 `--yes`。不得调用低层 `catalog source add/update`。
 7. 返回实际 Workspace identity、metadata/inventory/依赖变化、插件委托摘要、闭包验证、Catalog build/validate 或 dev activation receipt，以及未完成项。绝不运行 Catalog publication 命令。
 
 ## 完成条件

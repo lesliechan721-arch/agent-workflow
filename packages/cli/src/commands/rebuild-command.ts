@@ -131,7 +131,10 @@ import {
   type OperationAction,
   type OperationPlanEvidence,
 } from './operation-plan.js';
-import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
+import {
+  validateCatalogSnapshotComplete,
+  validateCatalogSnapshotPluginEntriesComplete,
+} from '../utils/catalog-snapshot.js';
 import { runPostApplyScript } from '../utils/plugin-scripts.js';
 import {
   AwCapabilityUnsupportedError,
@@ -1847,7 +1850,7 @@ export async function runRebuildCommand(options: {
     }
     return mergeRebuildCommandResults([]);
   }
-  if (options.command === 'cleanup') {
+  if (options.command === 'cleanup' && !options.all) {
     if (cleanupForce) {
       const requestedPlatforms = selectedPlatforms(options.commandOptions.platform);
       const cleanupSourceSnapshot = await readCatalogSourcesConfigSnapshot(runtimeEnv).catch(() => undefined);
@@ -2137,13 +2140,6 @@ export async function runRebuildCommand(options: {
           pluginId: formatPluginId({ sourceId: source.sourceId, pluginName: entry.name }),
         }));
       });
-      const intentCatalogEntries: IntentCatalogDependencyEntry[] = availableEntries.map((candidate) => ({
-        pluginId: candidate.pluginId,
-        dependencyPluginIds: candidate.entry.dependencies.map((dependency) => formatPluginId({
-          sourceId: candidate.source.sourceId,
-          pluginName: dependency,
-        })),
-      }));
       const selectedEntries = selectors.map((selector, index) => {
         const matches = availableEntries.filter((candidate) =>
           candidate.entry.name === selector.pluginName
@@ -2156,6 +2152,24 @@ export async function runRebuildCommand(options: {
         }
         return matches[0]!;
       });
+      if (options.command === 'uninstall' || (options.command === 'cleanup' && options.all)) {
+        await measureCommandPerformanceStage(options.runtime, 'catalog.validation', async () => {
+          const selectedSources = new Map(selectedEntries.map((candidate) => [
+            candidate.source.sourceId,
+            candidate.source,
+          ]));
+          for (const source of selectedSources.values()) {
+            await validateCatalogSnapshotComplete(source.rootDir);
+          }
+        });
+      }
+      const intentCatalogEntries: IntentCatalogDependencyEntry[] = availableEntries.map((candidate) => ({
+        pluginId: candidate.pluginId,
+        dependencyPluginIds: candidate.entry.dependencies.map((dependency) => formatPluginId({
+          sourceId: candidate.source.sourceId,
+          pluginName: dependency,
+        })),
+      }));
       const dependencyEnabled = options.command === 'install'
         || options.command === 'sync'
         || options.command === 'reinstall';

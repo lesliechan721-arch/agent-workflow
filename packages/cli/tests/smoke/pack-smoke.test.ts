@@ -801,12 +801,25 @@ describe('pack smoke', () => {
       projectPath: await fs.realpath(standaloneWorkspace),
     }));
     const developmentSourceRemoval = await execFileAsync(awBin, [
-      'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--json',
+      'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     expect(JSON.parse(developmentSourceRemoval.stdout)).toMatchObject({
+      receiptSchemaVersion: 3,
       command: 'catalog:dev:deactivate', ok: true,
       source: { id: developmentSourceId, action: 'removed', previousPrimary: true },
       replacementPrimarySourceId: 'official',
+      impact: {
+        inventorySchemaVersion: 1,
+        inventoryComplete: true,
+        references: expect.arrayContaining([expect.objectContaining({
+          category: 'installation',
+          sourceId: developmentSourceId,
+          pluginId: `${developmentSourceId}/packed-build`,
+          scope: 'project',
+          projectRecord: 'current',
+        })]),
+        errors: [],
+      },
     });
     await expect(fs.pathExists(path.join(standaloneWorkspace, '.aw', 'catalog'))).resolves.toBe(true);
     const packedCatalogRemote = path.join(tempRoot, 'packed-catalog.git');

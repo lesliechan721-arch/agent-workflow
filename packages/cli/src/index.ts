@@ -2353,8 +2353,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--workspace-root <path>', 'explicit Catalog Workspace root')
     .option('--source-id <id>', 'recover one managed source by exact ID')
     .option('--replacement-primary <id>', 'replacement when the target source is primary')
-    .option('-y, --yes', 'confirm recovery by source ID', false)
-    .requiredOption('--json', 'emit one schema 2 JSON receipt')
+    .option('-y, --yes', 'confirm source impact or recovery by source ID', false)
+    .requiredOption('--json', 'emit one schema 3 JSON receipt')
     .action(async (rawOptions: {
       workspaceRoot?: string;
       sourceId?: string;
