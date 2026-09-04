@@ -69,21 +69,13 @@ afterEach(async () => {
 });
 
 describe('preApply script', () => {
-  it('redacts short sensitive scalar tokens only at token boundaries', () => {
+  it('redacts every exact substring of a short sensitive scalar', () => {
     expect(summarizePluginScriptOutput(
-      'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
-      ['a', '1', 'true', 'long-secret-value'],
+      'prefixabcSuffix ordinary short text',
+      ['abc', ''],
     )).toBe(
-      '[REDACTED] [REDACTED] [REDACTED] [REDACTED] cat 10 1.5 -1 untrue command:start',
+      'prefix[REDACTED]Suffix ordinary short text',
     );
-    expect(summarizePluginScriptOutput(
-      `${'x'.repeat(OUTPUT_LIMIT - 2)} az`,
-      ['a'],
-    )).toMatch(/ a$/u);
-    expect(summarizePluginScriptOutput(
-      `${'x'.repeat(OUTPUT_LIMIT - 2)} a `,
-      ['a'],
-    )).toMatch(/ \[REDACTED\]$/u);
   });
 
   it('keeps generic credential redaction in plugin script summaries', () => {
@@ -328,6 +320,49 @@ describe('preApply script', () => {
     })).rejects.toThrow(
       'preApply failed with exit code 7. stdout: stdout [REDACTED]; stderr: stderr [REDACTED]',
     );
+  });
+
+  it('removes private roots and a short embedded secret from public failures', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'abc' });
+    const cwd = path.join(plugin.rootDir, 'prefixabcSuffix-project');
+    const awHome = path.join(plugin.rootDir, 'prefixabcSuffix-aw-home');
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'project',
+      cwd,
+      context: createCommandExecutionContext({ env: { AW_HOME: awHome } }),
+      runner: { async run(invocation) {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: '',
+          stderr: [
+            'prefixabcSuffix ordinary',
+            invocation.cwd,
+            cwd,
+            invocation.env.AW_HOME,
+            invocation.env.AW_CODEX_HOME,
+            invocation.env.AW_CLAUDE_HOME,
+            invocation.env.HOME,
+            invocation.env.TMPDIR,
+          ].join(' | '),
+          timedOut: false,
+        };
+      } },
+    }).catch((failure: unknown) => failure as Error);
+    const serialized = JSON.stringify(error.message);
+
+    expect(serialized).toContain('prefix[REDACTED]Suffix ordinary');
+    expect(serialized).toContain('[plugin-root]');
+    expect(serialized).toContain('[project-root]');
+    expect(serialized).toContain('[aw-home]');
+    expect(serialized).toContain('[codex-home]');
+    expect(serialized).toContain('[claude-home]');
+    expect(serialized).toContain('[temporary-home]');
+    for (const privateValue of ['abc', plugin.rootDir, cwd, awHome]) {
+      expect(serialized).not.toContain(privateValue);
+    }
   });
 
   it('reports a stable spawn failure without exposing runner diagnostics', async () => {

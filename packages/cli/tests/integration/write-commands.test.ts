@@ -502,6 +502,57 @@ describe('five namespaced write commands', () => {
     expect(captured.readStderr()).not.toContain('hidden-prompt-secret');
     await expect(readStore()).resolves.toMatchObject({ values: { token: 'hidden-prompt-secret' } });
   });
+
+  it('prints an executable stdin-only repair command for invalid sensitive config', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'sensitive-config-repair-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.config = {
+        fields: {
+          token: {
+            type: 'string', required: true, sensitive: true,
+            validation: { minLength: 5 },
+          },
+        },
+      };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: await calculateCatalogSourceIdentity(source),
+      logicalIdentity: await readCatalogLogicalIdentity(sourceRoot),
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { token: 'abc' },
+    });
+    const output = createCapturedCliIo();
+
+    const exitCode = await runCli([
+      'config', 'list', 'team/demo', '--scope', 'user',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: output.io,
+      interactive: false,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(output.readStdout()).toContain(
+      'aw config set team/demo token --scope user --value-stdin',
+    );
+    expect(output.readStdout()).not.toContain('abc');
+    expect(output.readStdout()).not.toContain('--value-json');
+    expect(output.readStdout()).not.toContain('--preset');
+  });
+
   it.each(['sourceConfig', 'state', 'store'] as const)(
     'keeps cleanup recovery ownership-safe when Catalog %s is damaged',
     async (damagedControl) => {
@@ -3328,14 +3379,25 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+      manifest.config = { fields: { token: { type: 'string', required: true, sensitive: true } } };
     });
     await fs.outputFile(
       path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
-      'throw new Error("ordinary preApply failed");\n',
+      [
+        'let input = "";',
+        'for await (const chunk of process.stdin) input += chunk;',
+        'const context = JSON.parse(input);',
+        'throw new Error([',
+        '  `prefix${context.config.values.token}Suffix ordinary preApply failed`,',
+        '  context.plugin.rootDir, context.target.projectRoot,',
+        '  process.env.AW_HOME, process.env.HOME, process.env.TMPDIR,',
+        '].filter(Boolean).join(" | "));',
+      ].join('\n'),
     );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+      manifest.config = { fields: { token: { type: 'string', required: true, sensitive: true } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -3345,6 +3407,18 @@ describe('five namespaced write commands', () => {
       },
       expectedDigest: snapshot.digest,
       env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity({
+      id: 'team', type: 'path', primary: true, path: sourceRoot,
+    });
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { token: 'abc' },
     });
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
@@ -3456,6 +3530,15 @@ describe('five namespaced write commands', () => {
       }),
     ]);
     expect(receipt.warnings).toEqual([]);
+    const serializedReceipt = JSON.stringify(receipt);
+    expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
+    for (const privateValue of [
+      'abc',
+      isolation.layout.fixtureCwd,
+      isolation.env.AW_HOME!,
+    ]) {
+      expect(serializedReceipt).not.toContain(privateValue);
+    }
     expect(marketplaceRoots.size).toBe(0);
     await expect(snapshotRegularTree(isolation.env.AW_CLAUDE_HOME!))
       .resolves.toEqual(platformBefore);
@@ -3463,6 +3546,84 @@ describe('five namespaced write commands', () => {
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
         error.code === 'ENOENT' ? null : Promise.reject(error)))))
       .resolves.toEqual(intentsBefore);
+  }, 30_000);
+
+  it('redacts private preApply data from a config apply receipt', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-pre-apply-redaction-source');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'), [
+      'let input = "";',
+      'for await (const chunk of process.stdin) input += chunk;',
+      'const context = JSON.parse(input);',
+      'if (context.config.values.mode === "fail") {',
+      '  throw new Error([',
+      '    `prefix${context.config.values.token}Suffix config preApply failed`,',
+      '    context.plugin.rootDir, context.target.projectRoot,',
+      '    process.env.AW_HOME, process.env.HOME, process.env.TMPDIR,',
+      '  ].filter(Boolean).join(" | "));',
+      '}',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
+      };
+      manifest.config = { fields: {
+        mode: { type: 'string', default: 'safe' },
+        token: { type: 'string', sensitive: true },
+      } };
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [source] },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+    await writePluginConfigStore({
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'user', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, values: { token: 'abc' },
+    });
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '',
+    }));
+    const runPublic = async (args: string[]) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+        nativeCliRunner,
+      });
+      return { exitCode, payload: JSON.parse(output.readStdout()) as Record<string, unknown> };
+    };
+
+    expect(await runPublic([
+      'install', 'team/demo', '--platform', 'codex', '--scope', 'project', '--yes',
+    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const failed = await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--scope', 'project',
+      '--value-json', '"fail"', '--apply', '--yes',
+    ]);
+
+    expect(failed).toMatchObject({
+      exitCode: 1,
+      payload: { configWrite: 'succeeded', overallState: 'partial' },
+    });
+    const serializedReceipt = JSON.stringify(failed.payload);
+    expect(serializedReceipt).toContain('prefix[REDACTED]Suffix config preApply failed');
+    for (const privateValue of [
+      'abc',
+      isolation.layout.fixtureCwd,
+      isolation.env.AW_HOME!,
+    ]) {
+      expect(serializedReceipt).not.toContain(privateValue);
+    }
   }, 30_000);
 
   it('reports observed registration through the read-only system Codex list', async () => {

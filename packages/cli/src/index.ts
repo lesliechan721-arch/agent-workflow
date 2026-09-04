@@ -82,6 +82,7 @@ import {
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
   findConfigFieldEntry,
+  formatPluginConfigSetRecoveryCommand,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
   readPluginConfigStore,
@@ -1337,11 +1338,20 @@ function writeConfigReadHuman(
     }
     if (field.kind === 'manifest' && field.valueState === 'invalid') {
       const sourceScope = field.sourceLayer === 'project'
-        ? ' -s project'
-        : ' -s user';
-      writeLine(write, `  aw config set ${pluginName} ${field.key}${sourceScope} --value-json '<json>'`);
-      writeLine(write, `  aw config unset ${pluginName} ${field.key}${sourceScope}`);
-      writeLine(write, `  aw config reset ${pluginName}${sourceScope}`);
+        ? 'project'
+        : 'user';
+      const definition = resolved.fieldDefinitions?.[field.key];
+      if (definition) {
+        writeLine(write, `  ${formatPluginConfigSetRecoveryCommand(
+          pluginName,
+          field.key,
+          definition,
+          sourceScope,
+        )}`);
+      }
+      const scopeOption = ` -s ${sourceScope}`;
+      writeLine(write, `  aw config unset ${pluginName} ${field.key}${scopeOption}`);
+      writeLine(write, `  aw config reset ${pluginName}${scopeOption}`);
     }
   }
 }

@@ -1940,29 +1940,29 @@ describe('config write full reinstall apply', () => {
       scope: 'user',
       cwd: fixture.cwd,
       env: fixture.env,
-      request: { updates: { token: 'a' } },
+      request: { updates: { token: 'q' } },
       rebuildRuntime: {
         debugLogger: { log: (value) => { debugEvents.push(value); } },
       },
       reinstallCommandImpl: async (_plugins, _options, runtime) => {
         await runtime.debugLogger?.log({
-          type: 'a',
-          commandName: 'a',
-          key: 'a',
-          message: 'a',
+          type: 'q',
+          commandName: 'q',
+          key: 'q',
+          message: 'q',
         } as never);
-        throw new Error('target rejected a but ordinary data stays intact');
+        throw new Error('target rejected q but ordinary data stays intact');
       },
     });
 
     expect(debugEvents).toEqual([{
-      type: 'a',
-      commandName: 'a',
-      key: 'a',
+      type: 'q',
+      commandName: 'q',
+      key: 'q',
       message: '[REDACTED]',
     }]);
     expect(JSON.stringify(receipt)).toContain('ordinary data stays intact');
-    expect(JSON.stringify(receipt)).not.toContain('rejected a but');
+    expect(JSON.stringify(receipt)).not.toContain('rejected q but');
   });
 
   it.each([

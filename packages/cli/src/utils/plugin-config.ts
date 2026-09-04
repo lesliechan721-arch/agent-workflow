@@ -315,6 +315,7 @@ export interface ResolvedConfigRead {
   pluginName: string;
   scope: Scope | 'effective';
   schema?: ConfigSchemaEvidence;
+  fieldDefinitions?: PluginConfigSchema['fields'];
   fields: ConfigFieldEntry[];
 }
 
@@ -2281,6 +2282,9 @@ export async function resolveConfigRead(options: {
     pluginName,
     scope: options.scope,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
+    ...(schemaAccess.plugin?.manifest.config?.fields
+      ? { fieldDefinitions: schemaAccess.plugin.manifest.config.fields }
+      : {}),
     fields: manifestFields,
   };
 }
@@ -2459,17 +2463,31 @@ export function toCliConfigPromptOptions(model: PluginConfigFormModel): CliConfi
   };
 }
 
+export function formatPluginConfigSetRecoveryCommand(
+  pluginName: string,
+  key: string,
+  field: PluginConfigSchemaField,
+  scope: Scope,
+): string {
+  return field.sensitive === true
+    ? `aw config set ${pluginName} ${key} --scope user --value-stdin`
+    : `aw config set ${pluginName} ${key} --scope ${scope} --value-json '<json>'`;
+}
+
 function formatRequiredConfigSetCommands(
   pluginName: string,
   issues: PluginConfigIssue[],
   defaultScope: Scope,
+  schema: PluginConfigSchema['fields'],
 ): string {
   const commands = new Set<string>();
   for (const issue of issues) {
     const scope = issue.source === 'user' || issue.source === 'project'
       ? issue.source
       : defaultScope;
-    commands.add(`aw config set ${pluginName} ${issue.key} --scope ${scope} --value-json '<json>'`);
+    const field = schema[issue.key];
+    if (!field) continue;
+    commands.add(formatPluginConfigSetRecoveryCommand(pluginName, issue.key, field, scope));
   }
 
   return [...commands].map((command) => `\`${command}\``).join(' 或 ');
@@ -2524,6 +2542,7 @@ export async function preflightRequiredPluginConfigs(options: {
       pluginName,
       blockingIssues,
       options.defaultScope,
+      target.manifest.config.fields,
     );
     throw new Error(
       `${pluginName} requires valid AW config before install/upgrade: ${details}. ` +
