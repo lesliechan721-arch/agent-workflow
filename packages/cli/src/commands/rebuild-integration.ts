@@ -53,6 +53,7 @@ import {
 } from '../utils/hooks-contract.js';
 import {
   buildCodexMarketplaceAddInvocation,
+  buildCodexMarketplaceRemoveInvocation,
   buildCodexPluginAddInvocation,
   buildCodexPluginRemoveInvocation,
   CodexProjectConfigNotEffectiveError,
@@ -129,12 +130,8 @@ import {
 import {
   inspectCodexSharedNative,
   type CodexSharedNativeInspection,
-  type CodexSharedNativeManifestEvidence,
 } from '../utils/codex-shared-native.js';
-import {
-  calculateCodexNativeRenderPayloadDigest,
-  calculateCodexSharedNativePayloadDigest,
-} from '../utils/catalog-digests.js';
+import { calculateCodexNativeRenderPayloadDigest } from '../utils/catalog-digests.js';
 import {
   createCodexNativeObservationSession,
   type CodexNativeObservationSession,
@@ -396,19 +393,15 @@ async function executeCodexReconcileActivationsInSession(options: {
       ? plan.postcheck.plugins
       : []);
   if (observedActivationChecks.length === 0) return;
-  options.observationSession.invalidate();
   const ineffectivePlugins: string[] = [];
   const ineffectiveDetails: string[] = [];
   for (const plugin of observedActivationChecks) {
-    const registration = await options.observationSession.inspectPlugin({
-      pluginId: plugin.codexPluginId,
-    });
-    const exactActive = registration.activations.project === true;
-    const neutralActive = registration.activations.user === true;
-    if (!registration.observations.project
-      || !registration.observations.user
-      || exactActive !== (plugin.expectedUserEnabled || plugin.expectedProjectEnabled)
-      || neutralActive !== plugin.expectedUserEnabled) {
+    const userActive = userConfig.snapshot.plugins[plugin.codexPluginId]?.enabled === true;
+    const projectActive = projectConfig.snapshot.plugins[plugin.codexPluginId]?.enabled === true;
+    if ((userActive || projectActive) !== (
+      plugin.expectedUserEnabled || plugin.expectedProjectEnabled
+    )
+      || userActive !== plugin.expectedUserEnabled) {
       ineffectivePlugins.push(plugin.codexPluginId);
       ineffectiveDetails.push(new CodexProjectConfigNotEffectiveError(plugin.codexPluginId).message);
     }
@@ -2259,184 +2252,21 @@ async function buildHistoricalComponents(options: {
   return components;
 }
 
-function isAbsentCodexResiduePath(error: unknown): boolean {
+function isAbsentPath(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'ENOENT';
 }
 
-async function lstatCodexResidueIfPresent(filePath: string) {
+async function lstatIfPresent(filePath: string) {
   return fs.lstat(filePath).catch((error) => {
-    if (isAbsentCodexResiduePath(error)) return null;
+    if (isAbsentPath(error)) return null;
     throw error;
   });
 }
 
-async function readdirCodexResidueIfPresent(directory: string) {
-  const stats = await lstatCodexResidueIfPresent(directory);
-  if (!stats) return [];
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error(`Codex residue root is not a canonical directory: ${directory}`);
-  }
-  return fs.readdir(directory, { withFileTypes: true });
-}
-
-export async function inspectCodexNativeResidue(options: {
-  pluginName: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceName?: string;
-  marketplaceRoot?: string;
-}): Promise<{
-  state: 'present' | 'absent' | 'foreign';
-  labels: string[];
-  versions: string[];
-  installedVersions: string[];
-  cacheVersions: string[];
-  enabled: boolean;
-}> {
-  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
-  const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
-  const pluginId = `${options.pluginName}@${marketplaceName}`;
-  const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
-  const config = await readCodexConfigFile(configPath);
-  const marketplace = config.snapshot.marketplaces[marketplaceName];
-  const canonicalMarketplace = marketplace?.sourceType === 'local'
-    && !marketplace.sourcePointsToManifest
-    && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
-  const cacheRoot = path.join(
-    getCodexHome(options.env),
-    'plugins',
-    'cache',
-    marketplaceName,
-    options.pluginName,
-  );
-  const installedRoot = path.join(
-    getCodexHome(options.env),
-    'plugins',
-    pluginId,
-  );
-  const installedManifest = path.join(
-    installedRoot,
-    'manifest.json',
-  );
-  const labels: string[] = [];
-  const foreignLabels: string[] = [];
-  const versions = new Set<string>();
-  const installedVersions = new Set<string>();
-  const cacheVersions = new Set<string>();
-  const configEntry = config.snapshot.plugins[pluginId];
-  if (configEntry) {
-    (canonicalMarketplace ? labels : foreignLabels).push(`${configPath}#plugins.${pluginId}`);
-  }
-  const inspectManifest = async (
-    manifestPath: string,
-    kind: 'installed' | 'cache',
-    directoryVersion?: string,
-  ): Promise<void> => {
-    const stats = await lstatCodexResidueIfPresent(manifestPath);
-    if (!stats) return;
-    if (!stats.isFile() || stats.isSymbolicLink()) {
-      foreignLabels.push(manifestPath);
-      return;
-    }
-    const manifest = await fs.readJson(manifestPath) as Record<string, unknown> | null;
-    const identity = manifest?.id ?? manifest?.name;
-    const version = typeof manifest?.version === 'string' ? manifest.version : null;
-    if (
-      !canonicalMarketplace
-      || (identity !== options.pluginName && identity !== pluginId)
-      || !version
-      || (directoryVersion !== undefined && version !== directoryVersion)
-    ) {
-      foreignLabels.push(manifestPath);
-      return;
-    }
-    labels.push(manifestPath);
-    versions.add(version);
-    (kind === 'installed' ? installedVersions : cacheVersions).add(version);
-  };
-  for (const entry of await readdirCodexResidueIfPresent(cacheRoot)) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()) {
-      foreignLabels.push(path.join(cacheRoot, entry.name));
-      continue;
-    }
-    const versionRoot = path.join(cacheRoot, entry.name);
-    const candidates = [
-      path.join(versionRoot, 'plugin.json'),
-      path.join(versionRoot, '.codex-plugin', 'plugin.json'),
-    ];
-    const existing = [];
-    for (const candidate of candidates) {
-      if (await lstatCodexResidueIfPresent(candidate)) existing.push(candidate);
-    }
-    if (existing.length === 0) foreignLabels.push(versionRoot);
-    for (const candidate of existing) await inspectManifest(candidate, 'cache', entry.name);
-  }
-  const installedStats = await lstatCodexResidueIfPresent(installedRoot);
-  if (installedStats && (!installedStats.isDirectory() || installedStats.isSymbolicLink())) {
-    foreignLabels.push(installedRoot);
-  } else if (installedStats) {
-    await inspectManifest(installedManifest, 'installed');
-  }
-  return foreignLabels.length > 0
-    ? {
-        state: 'foreign', labels: [...labels, ...foreignLabels], versions: [...versions],
-        installedVersions: [...installedVersions], cacheVersions: [...cacheVersions],
-        enabled: configEntry?.enabled === true,
-      }
-    : labels.length > 0
-      ? {
-          state: 'present', labels, versions: [...versions],
-          installedVersions: [...installedVersions], cacheVersions: [...cacheVersions],
-          enabled: configEntry?.enabled === true,
-        }
-      : {
-          state: 'absent', labels: [], versions: [],
-          installedVersions: [], cacheVersions: [], enabled: false,
-        };
-}
-
-function isPathWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-}
-
-async function codexPayloadPathSafe(payloadRoot: string): Promise<boolean> {
-  const rootStats = await lstatCodexResidueIfPresent(payloadRoot);
-  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
-  const pending = [payloadRoot];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isSymbolicLink()) {
-        const target = path.resolve(path.dirname(entryPath), await fs.readlink(entryPath));
-        if (!isPathWithin(payloadRoot, target)) return false;
-      } else if (entry.isDirectory()) {
-        pending.push(entryPath);
-      } else if (!entry.isFile()) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 export interface CodexSharedNativeLiveInspection {
   sharedNative: CodexSharedNativeInspection;
-  actualPayloadDigest?: string;
   expectedPayloadDigest?: string;
-  expectedProjection?: CodexNativeRenderProjection;
-  payloadPath?: string;
-  staleCacheObserved?: true;
-  activationObservations: {
-    user: boolean;
-    project: boolean;
-  };
-  activations: {
-    user?: boolean;
-    project?: boolean;
-  };
 }
 
 function codexNativeRenderTargets(plugin: PluginMeta) {
@@ -2452,7 +2282,7 @@ async function readCodexNativeRenderReceiptEvidence(payloadRoot: string): Promis
   | { state: 'present'; receipt: CodexNativeRenderReceipt }
 > {
   const receiptPath = path.join(payloadRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
-  const stats = await lstatCodexResidueIfPresent(receiptPath);
+  const stats = await lstatIfPresent(receiptPath);
   if (!stats) return { state: 'absent' };
   if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unreadable' };
   try {
@@ -2473,6 +2303,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
 }): Promise<{
   payloadDigest: string;
   projection?: CodexNativeRenderProjection;
+  sourceProjection: 'current' | 'drifted';
 }> {
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
@@ -2503,7 +2334,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     throw new Error('Codex native render canonical marketplace payload does not match its receipt.');
   }
   const sourceManifestPath = path.join(payloadRoot, '.agents-plugin', 'plugin.json');
-  const sourceManifestStats = await lstatCodexResidueIfPresent(sourceManifestPath);
+  const sourceManifestStats = await lstatIfPresent(sourceManifestPath);
   const sourceManifest = sourceManifestStats?.isFile() && !sourceManifestStats.isSymbolicLink()
     ? await fs.readJson(sourceManifestPath).catch(() => null) as Record<string, unknown> | null
     : null;
@@ -2512,7 +2343,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     throw new Error('Codex native render canonical marketplace plugin identity is invalid.');
   }
   const codexManifestPath = path.join(payloadRoot, '.codex-plugin', 'plugin.json');
-  const codexManifestStats = await lstatCodexResidueIfPresent(codexManifestPath);
+  const codexManifestStats = await lstatIfPresent(codexManifestPath);
   const codexManifest = codexManifestStats?.isFile() && !codexManifestStats.isSymbolicLink()
     ? await fs.readJson(codexManifestPath).catch(() => null) as Record<string, unknown> | null
     : null;
@@ -2534,7 +2365,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   });
   for (const receiptTarget of receipt.targets) {
     const skillRoot = path.join(payloadRoot, ...skillsRelativeRoot.split('/'), receiptTarget.skillKey);
-    if (await lstatCodexResidueIfPresent(path.join(skillRoot, '.agent-workflows-owner.json'))) {
+    if (await lstatIfPresent(path.join(skillRoot, '.agent-workflows-owner.json'))) {
       throw new Error('Codex native render canonical marketplace Skill has an AW owner marker.');
     }
     const tree = await readDynamicSkillTree(skillRoot, 'codex.skill');
@@ -2550,7 +2381,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (targets.length === 0
     || targets.length !== receipt.targets.length
     || targets.some((target) => receiptTargets.get(target.id)?.skillKey !== target.skillKey)) {
-    return { payloadDigest };
+    return { payloadDigest, sourceProjection: 'drifted' };
   }
   const renderer = await resolveArtifactRendererTarget(options.plugin);
   if (renderer.noOp || !renderer.rendererDigest) {
@@ -2592,6 +2423,9 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   return {
     projection,
     payloadDigest,
+    sourceProjection: codexNativeRenderProjectionsEqual(receipt, projection)
+      ? 'current'
+      : 'drifted',
   };
 }
 
@@ -2600,10 +2434,6 @@ export interface CodexPluginRegistrationLiveInspection {
   observations: {
     user: boolean;
     project: boolean;
-  };
-  activations: {
-    user?: boolean;
-    project?: boolean;
   };
 }
 
@@ -2642,7 +2472,6 @@ export async function inspectCodexPluginRegistrationLive(options: {
     return {
       observation: { state: 'unobserved' },
       observations: { user: false, project: false },
-      activations: {},
     };
   }
   const ownedSession = options.observationSession ? undefined
@@ -2654,18 +2483,22 @@ export async function inspectCodexPluginRegistrationLive(options: {
       });
   const session = options.observationSession ?? ownedSession!;
   try {
-    return await session.inspectPlugin({
+    const inspected = await session.inspectPlugin({
       pluginId: options.pluginId,
       scope: options.scope ?? 'both',
     });
+    return {
+      observation: inspected.observation,
+      observations: inspected.observations,
+    };
   } finally {
     await ownedSession?.dispose();
   }
 }
 
 /**
- * Read-only filesystem projection for the payload-aware shared-native classifier.
- * It does not invoke Codex or create native/config state.
+ * Read-only shared-native inspection. Official Codex list evidence owns installation
+ * state. Filesystem validation is limited to the AW-owned marketplace source.
  */
 export async function inspectCodexSharedNativeLive(options: {
   pluginName: string;
@@ -2701,131 +2534,6 @@ export async function inspectCodexSharedNativeLive(options: {
   const config = await readCodexConfigFile(
     resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
   );
-  const cacheRoot = path.join(
-    getCodexHome(options.env),
-    'plugins',
-    'cache',
-    marketplaceName,
-    options.pluginName,
-  );
-  const installedManifestPath = path.join(
-    getCodexHome(options.env),
-    'plugins',
-    pluginId,
-    'manifest.json',
-  );
-  const cacheRootStats = await lstatCodexResidueIfPresent(cacheRoot);
-  let unsafeCachePath = Boolean(cacheRootStats
-    && (!cacheRootStats.isDirectory() || cacheRootStats.isSymbolicLink()));
-  const candidates: Array<{
-    version?: string;
-    manifest: CodexSharedNativeManifestEvidence;
-    payloadPath: string;
-    projectionReceipt:
-      | { state: 'absent' }
-      | { state: 'unreadable' }
-      | { state: 'present'; receipt: CodexNativeRenderReceipt };
-  }> = [];
-  if (cacheRootStats?.isDirectory() && !cacheRootStats.isSymbolicLink()) {
-    for (const entry of await fs.readdir(cacheRoot, { withFileTypes: true })) {
-      const payloadPath = path.join(cacheRoot, entry.name);
-      if (!entry.isDirectory() || entry.isSymbolicLink()) {
-        unsafeCachePath = true;
-        continue;
-      }
-      const manifestPaths = [
-        path.join(payloadPath, 'plugin.json'),
-        path.join(payloadPath, '.codex-plugin', 'plugin.json'),
-      ];
-      const existingManifestPaths: string[] = [];
-      for (const manifestPath of manifestPaths) {
-        const stats = await lstatCodexResidueIfPresent(manifestPath);
-        if (stats) existingManifestPaths.push(manifestPath);
-      }
-      if (existingManifestPaths.length !== 1) {
-        candidates.push({
-          version: entry.name,
-          manifest: existingManifestPaths.length === 0 ? { state: 'absent' } : { state: 'unreadable' },
-          payloadPath,
-          projectionReceipt: { state: 'absent' },
-        });
-        continue;
-      }
-      const manifestPath = existingManifestPaths[0]!;
-      const manifestStats = await lstatCodexResidueIfPresent(manifestPath);
-      if (!manifestStats?.isFile() || manifestStats.isSymbolicLink()) {
-        candidates.push({
-          version: entry.name,
-          manifest: { state: 'unreadable' },
-          payloadPath,
-          projectionReceipt: { state: 'absent' },
-        });
-        continue;
-      }
-      let manifest: Record<string, unknown>;
-      try {
-        const value = await fs.readJson(manifestPath) as unknown;
-        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid manifest');
-        manifest = value as Record<string, unknown>;
-      } catch {
-        candidates.push({
-          version: entry.name,
-          manifest: { state: 'unreadable' },
-          payloadPath,
-          projectionReceipt: { state: 'absent' },
-        });
-        continue;
-      }
-      const projectionReceipt = await readCodexNativeRenderReceiptEvidence(payloadPath);
-      const pathSafe = inspectionMode === 'shallow'
-        ? true
-        : await codexPayloadPathSafe(payloadPath);
-      let payloadDigest: string | undefined;
-      if (pathSafe && inspectionMode === 'payload') {
-        try {
-          payloadDigest = dynamicProjectionExpected || projectionReceipt.state !== 'absent'
-            ? await calculateCodexNativeRenderPayloadDigest(payloadPath)
-            : await calculateCodexSharedNativePayloadDigest(payloadPath);
-        } catch {
-          candidates.push({
-            version: entry.name,
-            manifest: { state: 'unreadable' },
-            payloadPath,
-            projectionReceipt,
-          });
-          continue;
-        }
-      }
-      candidates.push({
-        version: typeof manifest.version === 'string' ? manifest.version : entry.name,
-        payloadPath,
-        projectionReceipt,
-        manifest: {
-          state: 'present',
-          identity: typeof manifest.id === 'string'
-            ? manifest.id
-            : typeof manifest.name === 'string' ? manifest.name : '',
-          version: typeof manifest.version === 'string' ? manifest.version : '',
-          payloadDigest,
-          payloadPath,
-          pathSafe,
-        },
-      });
-    }
-  }
-  let installedVersion: string | undefined;
-  const installedStats = await lstatCodexResidueIfPresent(installedManifestPath);
-  if (installedStats?.isFile() && !installedStats.isSymbolicLink()) {
-    try {
-      const installed = await fs.readJson(installedManifestPath) as Record<string, unknown>;
-      if (typeof installed.version === 'string') installedVersion = installed.version;
-    } catch {
-      installedVersion = undefined;
-    }
-  }
-  const selected = candidates.find((candidate) => candidate.version === installedVersion)
-    ?? candidates.find((candidate) => candidate.version === options.desiredVersion)
-    ?? (candidates.length === 1 ? candidates[0] : undefined);
   const pluginList = options.pluginRegistration ?? await inspectCodexPluginRegistrationLive({
     pluginId,
     cwd: options.cwd,
@@ -2834,30 +2542,11 @@ export async function inspectCodexSharedNativeLive(options: {
     manager: options.manager,
     observationSession: options.observationSession,
   });
-  const manifest: CodexSharedNativeManifestEvidence = unsafeCachePath
-    ? {
-        state: 'present',
-        identity: pluginId,
-        version: options.desiredVersion,
-        ...(options.expectedPayloadDigest ? { payloadDigest: options.expectedPayloadDigest } : {}),
-        payloadPath: cacheRoot,
-        pathSafe: false,
-      }
-    : selected?.manifest ?? { state: 'absent' };
-  const projectionReceipt = selected?.projectionReceipt;
-  let expectedProjection: CodexNativeRenderProjection | undefined;
   let expectedPayloadDigest = dynamicProjectionExpected ? undefined : options.expectedPayloadDigest;
-  const expectedLogicalPluginId = options.nativeRenderPlugin?.pluginId
-    ?? (options.nativeRenderPlugin?.sourceId
-      ? `${options.nativeRenderPlugin.sourceId}/${options.nativeRenderPlugin.manifest.name}`
-      : undefined);
-  const expectedProjectionIdentity = dynamicProjectionExpected && expectedLogicalPluginId
-    ? {
-        logicalPluginId: expectedLogicalPluginId,
-        strategy: 'shared-user' as const,
-      }
-    : undefined;
-  if (dynamicProjectionExpected && options.nativeRenderPlugin) {
+  let sourceProjection: 'current' | 'drifted' | undefined;
+  const installed = pluginList.observation.state === 'observed'
+    && pluginList.observation.value === 'installed';
+  if (installed && dynamicProjectionExpected && options.nativeRenderPlugin) {
     try {
       const expected = await resolveCodexNativeRenderExpectedEvidence({
         plugin: options.nativeRenderPlugin,
@@ -2865,10 +2554,10 @@ export async function inspectCodexSharedNativeLive(options: {
         marketplaceName,
         env: options.env,
       });
-      expectedProjection = expected.projection;
       expectedPayloadDigest = expected.payloadDigest;
+      sourceProjection = expected.sourceProjection;
     } catch {
-      // Canonical marketplace evidence is weak state. Missing evidence is replaceable damage.
+      sourceProjection = 'drifted';
     }
   }
   const sharedNative = inspectCodexSharedNative({
@@ -2885,206 +2574,12 @@ export async function inspectCodexSharedNativeLive(options: {
       marketplaceRoot,
     }),
     observation: pluginList.observation,
-    manifest,
-    ...(dynamicProjectionExpected ? { expectedProjectionRequired: true } : {}),
-    ...(expectedProjectionIdentity ? { expectedProjectionIdentity } : {}),
-    ...(expectedProjection ? { expectedProjection } : {}),
-    ...(projectionReceipt ? { projectionReceipt } : {}),
+    ...(sourceProjection ? { sourceProjection } : {}),
   });
   return {
     sharedNative,
     ...(expectedPayloadDigest ? { expectedPayloadDigest } : {}),
-    ...(expectedProjection ? { expectedProjection } : {}),
-    activationObservations: pluginList.observations,
-    activations: pluginList.activations,
-    ...((sharedNative.state === 'missing' || sharedNative.state === 'unobserved')
-      && sharedNative.staleCacheObserved
-      ? { staleCacheObserved: true as const }
-      : {}),
-    ...(manifest.state === 'present' ? {
-      ...(manifest.payloadDigest ? { actualPayloadDigest: manifest.payloadDigest } : {}),
-      payloadPath: manifest.payloadPath,
-    } : {}),
   };
-}
-
-export async function codexNativeRemovalRequired(options: {
-  pluginName: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceName?: string;
-  marketplaceRoot?: string;
-}): Promise<boolean> {
-  const residue = await inspectCodexNativeResidue(options);
-  if (residue.state === 'present') return true;
-  if (residue.state === 'foreign') return false;
-  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
-  const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
-  const config = await readCodexConfigFile(
-    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
-  );
-  const marketplace = config.snapshot.marketplaces[marketplaceName];
-  const canonical = marketplace?.sourceType === 'local'
-    && !marketplace.sourcePointsToManifest
-    && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
-  if (!canonical) return false;
-  return (await discoverCodexNativeResidueNames(options)).length === 0;
-}
-
-export async function discoverCodexNativeResidueNames(options: {
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceName?: string;
-  marketplaceRoot?: string;
-}): Promise<string[]> {
-  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
-  const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
-  const names = new Set<string>();
-  const config = await readCodexConfigFile(
-    resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath,
-  );
-  const marketplace = config.snapshot.marketplaces[marketplaceName];
-  const canonicalMarketplace = marketplace?.sourceType === 'local'
-    && !marketplace.sourcePointsToManifest
-    && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
-  const probeFailure = (location: string, cause: unknown, pluginName?: string): never => {
-    if (cause instanceof CodexNativeResidueProbeError) throw cause;
-    throw new CodexNativeResidueProbeError(location, cause, pluginName);
-  };
-  for (const pluginId of canonicalMarketplace ? Object.keys(config.snapshot.plugins) : []) {
-    const suffix = `@${marketplaceName}`;
-    const match = pluginId.endsWith(suffix)
-      ? /^([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(pluginId.slice(0, -suffix.length))
-      : null;
-    if (match) names.add(match[1]!);
-  }
-  const cacheRoot = path.join(getCodexHome(options.env), 'plugins', 'cache', marketplaceName);
-  const cacheEntries = await readdirCodexResidueIfPresent(cacheRoot).catch((error) =>
-    probeFailure(cacheRoot, error));
-  for (const entry of cacheEntries) {
-    if (entry.isFile()) continue;
-    const entryPath = path.join(cacheRoot, entry.name);
-    const pluginName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(entry.name)
-      ? entry.name
-      : probeFailure(
-          entryPath,
-          new Error('Codex cache residue has an invalid plugin identity.'),
-        );
-    if (!entry.isDirectory() || entry.isSymbolicLink()) {
-      probeFailure(
-        entryPath,
-        new Error('Codex cache residue is not a canonical plugin directory.'),
-        pluginName,
-      );
-    }
-    let versionEntries;
-    try {
-      versionEntries = await fs.readdir(entryPath, { withFileTypes: true });
-    } catch (error) {
-      throw new CodexNativeResidueProbeError(entryPath, error, pluginName);
-    }
-    if (versionEntries.length === 0) {
-      if (names.has(pluginName)) {
-        probeFailure(
-          entryPath,
-          new Error('Codex cache residue manifest is missing.'),
-          pluginName,
-        );
-      }
-      continue;
-    }
-    let residue: Awaited<ReturnType<typeof inspectCodexNativeResidue>>;
-    try {
-      residue = await inspectCodexNativeResidue({ ...options, pluginName: entry.name });
-    } catch (error) {
-      throw new CodexNativeResidueProbeError(entryPath, error, pluginName);
-    }
-    if (residue.state !== 'present') {
-      probeFailure(
-        entryPath,
-        new Error('Codex cache residue has foreign or incomplete manifest evidence.'),
-        pluginName,
-      );
-    }
-    names.add(pluginName);
-  }
-  const pluginsRoot = path.join(getCodexHome(options.env), 'plugins');
-  const pluginEntries = await readdirCodexResidueIfPresent(pluginsRoot).catch((error) =>
-    probeFailure(pluginsRoot, error));
-  for (const entry of pluginEntries) {
-    const suffix = `@${marketplaceName}`;
-    const match = entry.name.endsWith(suffix)
-      ? /^([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(entry.name.slice(0, -suffix.length))
-      : null;
-    if (!match) continue;
-    const installedRoot = path.join(pluginsRoot, entry.name);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) {
-      probeFailure(
-        installedRoot,
-        new Error('Codex installed residue is not a canonical plugin directory.'),
-        match[1],
-      );
-    }
-    const installedStats = await lstatCodexResidueIfPresent(installedRoot);
-    if (!installedStats || !installedStats.isDirectory() || installedStats.isSymbolicLink()) {
-      probeFailure(
-        installedRoot,
-        new Error('Codex installed residue is not a canonical plugin directory.'),
-        match[1],
-      );
-    }
-    const manifestPath = path.join(pluginsRoot, entry.name, 'manifest.json');
-    const stats = await lstatCodexResidueIfPresent(manifestPath);
-    if (!stats?.isFile() || stats.isSymbolicLink()) {
-      probeFailure(
-        manifestPath,
-        new Error('Codex installed residue manifest is missing or nonregular.'),
-        match[1],
-      );
-    }
-    let rawManifest: unknown;
-    try {
-      rawManifest = await fs.readJson(manifestPath);
-    } catch (error) {
-      throw new CodexNativeResidueProbeError(manifestPath, error, match[1]);
-    }
-    if (!rawManifest || typeof rawManifest !== 'object' || Array.isArray(rawManifest)) {
-      probeFailure(
-        manifestPath,
-        new Error('Codex installed residue manifest must be an object.'),
-        match[1],
-      );
-    }
-    const manifest = rawManifest as Record<string, unknown>;
-    const identity = manifest.id ?? manifest.name;
-    if (!canonicalMarketplace
-      || (identity !== match[1] && identity !== entry.name)
-      || typeof manifest.version !== 'string'
-      || manifest.version.trim() === '') {
-      probeFailure(
-        manifestPath,
-        new Error('Codex installed residue manifest has foreign identity or version.'),
-        match[1],
-      );
-    }
-    names.add(match[1]!);
-  }
-  return [...names];
-}
-
-export class CodexNativeResidueProbeError extends Error {
-  readonly code = 'codexNativeResidueProbeFailed';
-  readonly location: string;
-  readonly pluginName?: string;
-
-  constructor(location: string, cause: unknown, pluginName?: string) {
-    super(`codexNativeResidueProbeFailed: cannot classify Codex native residue at ${location}.`, {
-      cause,
-    });
-    this.name = 'CodexNativeResidueProbeError';
-    this.location = location;
-    this.pluginName = pluginName;
-  }
 }
 
 async function ensureCodexActiveSkillsManifest(options: {
@@ -3146,158 +2641,6 @@ function createCodexMarketplaceComponent(options: {
       desired: options.desired,
     },
   };
-}
-
-async function assertCodexNativeInstallState(options: {
-  pluginName: string;
-  pluginVersion: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  marketplaceRoot: string;
-  marketplaceName?: string;
-  skillsRelativeRoot: string | null;
-  requiredSkillKeys: readonly string[];
-  nativeRender?: StagedCodexNativeRender;
-}): Promise<void> {
-  const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
-  const pluginId = `${options.pluginName}@${marketplaceName}`;
-  const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
-  const config = await readCodexConfigFile(configPath);
-  const marketplace = config.snapshot.marketplaces[marketplaceName];
-  if (
-    marketplace?.sourceType !== 'local'
-    || marketplace.sourcePointsToManifest
-    || path.normalize(marketplace.source ?? '') !== path.normalize(options.marketplaceRoot)
-  ) {
-    throw new Error(`Codex marketplace aw 未指向当前 AW_HOME：${options.marketplaceRoot}`);
-  }
-  if (config.snapshot.plugins[pluginId]?.enabled !== true) {
-    throw new Error(`Codex enabled config 缺少 ${pluginId}。`);
-  }
-  const cacheRoot = path.join(
-    getCodexHome(options.env),
-    'plugins',
-    'cache',
-    marketplaceName,
-    options.pluginName,
-    options.pluginVersion,
-  );
-  const candidates = [
-    path.join(cacheRoot, 'plugin.json'),
-    path.join(cacheRoot, '.codex-plugin', 'plugin.json'),
-  ];
-  const expectedRoot = path.join(
-    options.marketplaceRoot,
-    'plugins',
-    options.pluginName,
-  );
-  const assertExpectedPayload = async (): Promise<void> => {
-    const collectFiles = async (root: string): Promise<string[]> => {
-      const output: string[] = [];
-      const pending = [''];
-      while (pending.length > 0) {
-        const relativeRoot = pending.pop()!;
-        for (const entry of await fs.readdir(path.join(root, relativeRoot), { withFileTypes: true })) {
-          const relativePath = path.join(relativeRoot, entry.name);
-          if (entry.isSymbolicLink()) {
-            throw new Error(`Codex native payload 不能包含符号链接：${path.join(root, relativePath)}`);
-          }
-          if (entry.isDirectory()) pending.push(relativePath);
-          else if (entry.isFile()) output.push(relativePath);
-          else throw new Error(`Codex native payload 包含不支持的节点：${path.join(root, relativePath)}`);
-        }
-      }
-      return output;
-    };
-    const manifestPaths = new Set(['plugin.json', path.join('.codex-plugin', 'plugin.json')]);
-    const allowedMetadata = new Set(['metadata.json', '.metadata.json']);
-    const [expectedFiles, actualFiles] = await Promise.all([
-      collectFiles(expectedRoot),
-      collectFiles(cacheRoot),
-    ]);
-    const expectedSet = new Set(expectedFiles);
-    for (const relativePath of expectedFiles) {
-      if (manifestPaths.has(relativePath)) continue;
-      const expectedPath = path.join(expectedRoot, relativePath);
-      const actualPath = path.join(cacheRoot, relativePath);
-      const actualStats = await fs.lstat(actualPath).catch(() => null);
-      if (!actualStats?.isFile() || actualStats.isSymbolicLink()) {
-        throw new Error(`Codex native cache 缺少 expected payload：${actualPath}`);
-      }
-      const [expectedContent, actualContent] = await Promise.all([
-        fs.readFile(expectedPath),
-        fs.readFile(actualPath),
-      ]);
-      if (!expectedContent.equals(actualContent)) {
-        throw new Error(`Codex native cache expected payload digest 不匹配：${actualPath}`);
-      }
-    }
-    for (const relativePath of actualFiles) {
-      if (
-        expectedSet.has(relativePath)
-        || manifestPaths.has(relativePath)
-        || allowedMetadata.has(relativePath)
-      ) continue;
-      throw new Error(`Codex native cache 包含 unexpected loadable payload：${path.join(cacheRoot, relativePath)}`);
-    }
-  };
-  let matchedManifest = false;
-  for (const candidate of candidates) {
-    if (!await fs.pathExists(candidate)) continue;
-    const manifest = await fs.readJson(candidate).catch(() => null) as Record<string, unknown> | null;
-    if (!manifest) {
-      throw new Error(`Codex native cache manifest 无法解析：${candidate}`);
-    }
-    const identity = manifest.id ?? manifest.name;
-    const matches = (
-      (identity === options.pluginName || identity === pluginId)
-      && manifest.version === options.pluginVersion
-      && (
-        options.skillsRelativeRoot === null
-          ? typeof manifest.skills !== 'string'
-          : typeof manifest.skills === 'string'
-            && path.posix.normalize(manifest.skills.replace(/^\.\//u, '')) === options.skillsRelativeRoot
-      )
-    );
-    if (!matches) {
-      throw new Error(`Codex native cache manifest 不匹配：${candidate}`);
-    }
-    matchedManifest = true;
-  }
-  if (!matchedManifest) {
-    throw new Error(
-      `Codex native cache 缺少匹配 ${pluginId}@${options.pluginVersion} 的 manifest：${cacheRoot}`,
-    );
-  }
-  for (const skillKey of options.requiredSkillKeys) {
-    const skillPath = path.join(
-      cacheRoot,
-      ...options.skillsRelativeRoot!.split('/'),
-      skillKey,
-      'SKILL.md',
-    );
-    if (!await fs.pathExists(skillPath)) {
-      throw new Error(`Codex native cache 缺少 required Skill：${skillPath}`);
-    }
-  }
-  await assertExpectedPayload();
-  if (options.nativeRender) {
-    const actualPayloadDigest = await calculateCodexNativeRenderPayloadDigest(cacheRoot);
-    if (actualPayloadDigest !== options.nativeRender.payloadDigest) {
-      throw new Error(`Codex native cache render payload digest 不匹配：${cacheRoot}`);
-    }
-    const receiptEvidence = await readCodexNativeRenderReceiptEvidence(cacheRoot);
-    if (receiptEvidence.state !== 'present'
-      || receiptEvidence.receipt.payloadDigest !== options.nativeRender.payloadDigest
-      || !codexNativeRenderProjectionsEqual(
-        receiptEvidence.receipt,
-        options.nativeRender.projection,
-      )
-      || receiptEvidence.receipt.targets.map((target) => target.skillKey).sort().join('\0')
-        !== options.nativeRender.targetSkillKeys.join('\0')) {
-      throw new Error(`Codex native cache render receipt 不匹配：${cacheRoot}`);
-    }
-  }
 }
 
 type ClaudeNativeScope = Scope | 'local';
@@ -4112,8 +3455,8 @@ function createNativeDriver(options: {
     if (component.locator.kind !== 'codex-marketplace') throw new Error('Invalid Codex marketplace locator.');
     const target = findTarget(component);
     const configPath = resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath;
-    const marketplace = (await readCodexConfigFile(configPath))
-      .snapshot.marketplaces[component.locator.marketplaceName];
+    const config = await readCodexConfigFile(configPath);
+    const marketplace = config.snapshot.marketplaces[component.locator.marketplaceName];
     const canonical = !marketplace
       ? 'absent' as const
       : marketplace.sourceType === 'local'
@@ -4121,27 +3464,44 @@ function createNativeDriver(options: {
         && path.normalize(marketplace.source ?? '') === path.normalize(component.locator.marketplaceRoot)
         ? 'present' as const
         : 'foreign' as const;
-    const plugin = await inspectCodexNativeResidue({
-      pluginName: component.identity.plugin,
-      cwd: target.identity.cwd,
-      env: options.context.env,
-      marketplaceName: component.locator.marketplaceName,
-      marketplaceRoot: component.locator.marketplaceRoot,
-    });
-    if (plugin.state === 'foreign') return 'foreign';
     if (component.locator.desired) {
-      return canonical === 'present' && plugin.state === 'present' && plugin.enabled
-        ? 'present'
-        : 'absent';
+      if (canonical !== 'present') return canonical;
+      const pluginId = `${component.identity.plugin}@${component.locator.marketplaceName}`;
+      return config.snapshot.plugins[pluginId]?.enabled === true ? 'present' : 'absent';
     }
     if (canonical !== 'present') return canonical;
-    const remaining = await discoverCodexNativeResidueNames({
-      cwd: target.identity.cwd,
-      env: options.context.env,
-      marketplaceName: component.locator.marketplaceName,
-      marketplaceRoot: component.locator.marketplaceRoot,
-    });
-    return remaining.some((name) => name !== component.identity.plugin) ? 'absent' : 'present';
+    const suffix = `@${component.locator.marketplaceName}`;
+    const currentPluginId = `${component.identity.plugin}${suffix}`;
+    const projectConfig = await readCodexConfigFile(
+      resolveCodexPaths(target.identity.cwd, 'project', options.context.env).configTomlPath,
+    );
+    const configuredPluginIds = [
+      ...Object.keys(config.snapshot.plugins),
+      ...Object.keys(projectConfig.snapshot.plugins),
+    ].filter((pluginId) => pluginId.endsWith(suffix));
+    if (configuredPluginIds.some((pluginId) => pluginId !== currentPluginId)) return 'absent';
+
+    const ownedSession = options.context.codexObservationSession ? undefined
+      : await createCodexNativeObservationSession({
+          exactCwd: target.identity.cwd,
+          env: options.context.env,
+          runner,
+          manager: currentCodexManager() ?? SYSTEM_CODEX_MANAGER,
+        });
+    const session = options.context.codexObservationSession ?? ownedSession!;
+    try {
+      const snapshot = await session.snapshot(component.locator.marketplaceName, 'both');
+      if (!snapshot.exact || !snapshot.neutral) return 'absent';
+      const officialPluginIds = new Set([
+        ...snapshot.exact.keys(),
+        ...snapshot.neutral.keys(),
+      ]);
+      return [...officialPluginIds].some((pluginId) => pluginId !== currentPluginId)
+        ? 'absent'
+        : 'present';
+    } finally {
+      await ownedSession?.dispose();
+    }
   };
   const inspectClaudeMarketplace = async (
     component: Extract<OwnedComponent, { kind: 'shared-config' | 'managed-block' }>,
@@ -4283,6 +3643,20 @@ function createNativeDriver(options: {
             }) ? { removeAgentRegistrations: [locator.roleKey] } : null);
           return;
         case 'codex-marketplace': {
+          if (locator.desired) return;
+          await runCodexMutationWithInvalidation({
+            marketplaceName: locator.marketplaceName,
+            observationSession: options.context.codexObservationSession,
+            mutation: () => runNativeCliChecked(
+              buildCodexMarketplaceRemoveInvocation(
+                currentCodexManager() ?? SYSTEM_CODEX_MANAGER,
+                locator.marketplaceName,
+                findTarget(component).identity.cwd,
+                options.context.env,
+              ),
+              runner,
+            ),
+          });
           return;
         }
         case 'claude-marketplace': {
@@ -4452,25 +3826,17 @@ function createNativeDriver(options: {
         });
         const nativeState = observedCodexNativeState(registration.observation, 'native health postcheck');
         if (nativeState !== 'present') return nativeState;
-        if (!registration.observations[target.identity.scope]
-          || registration.activations[target.identity.scope] !== true) return 'partial';
-        const codexManager = currentCodexManager();
-        if (target.identity.scope !== 'project' || !codexManager) return 'present';
         const userConfig = await readCodexConfigFile(
           resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
         );
+        const userEnabled = userConfig.snapshot.plugins[pluginId]?.enabled === true;
+        if (target.identity.scope === 'user') return userEnabled ? 'present' : 'partial';
         const projectConfig = await readCodexConfigFile(
           resolveCodexPaths(target.identity.cwd, 'project', options.context.env).configTomlPath,
         );
-        if (registration.activations.project !== (
-          userConfig.snapshot.plugins[pluginId]?.enabled === true
-          || projectConfig.snapshot.plugins[pluginId]?.enabled === true
-        ) || registration.activations.user !== (
-          userConfig.snapshot.plugins[pluginId]?.enabled === true
-        )) {
-          throw new CodexProjectConfigNotEffectiveError(pluginId);
-        }
-        return 'present';
+        return userEnabled || projectConfig.snapshot.plugins[pluginId]?.enabled === true
+          ? 'present'
+          : 'partial';
       }
       return 'absent';
     },
@@ -4620,8 +3986,6 @@ function createNativeDriver(options: {
             && enabledSkillPaths.has(path.resolve(action.path))
             && target.identity.scope === 'user'
             && !path.relative(nativePluginRoot, action.path).startsWith('..'));
-          const staged = { nativeRender: null as StagedCodexNativeRender | null };
-          let skillsRelativeRoot: string | null = null;
           const mirrored = await mirrorCatalog(
             catalog,
             options.context.env,
@@ -4639,21 +4003,20 @@ function createNativeDriver(options: {
               }
               const hasStaticSkills = target.plugin.manifest.skills !== undefined
                 || requiredSkillWrites.length > 0;
-              staged.nativeRender = await materializeCodexNativeRender({
+              const nativeRender = await materializeCodexNativeRender({
                 plugin: target.plugin,
                 stagingRoot,
                 env: options.context.env,
                 scriptTimeoutMs: options.scriptTimeoutMs,
                 hasStaticSkills,
               });
-              skillsRelativeRoot = staged.nativeRender
-                && (hasStaticSkills || staged.nativeRender.presentSkillKeys.length > 0)
-                ? await resolveCodexSkillsRelativeRoot(target.plugin)
-                : staged.nativeRender ? null : await ensureCodexActiveSkillsManifest({
-                    plugin: target.plugin,
-                    marketplaceRoot: stagingRoot,
-                    hasRequiredSkills: hasStaticSkills,
-              });
+              if (!nativeRender) {
+                await ensureCodexActiveSkillsManifest({
+                  plugin: target.plugin,
+                  marketplaceRoot: stagingRoot,
+                  hasRequiredSkills: hasStaticSkills,
+                });
+              }
             } : undefined,
           );
           mirrorTransactions.set(target, mirrored);
@@ -4718,21 +4081,26 @@ function createNativeDriver(options: {
           if (observedCodexNativeState(installed.observation, 'native install postcheck') !== 'present') {
             throw new Error(`codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`);
           }
-          await assertCodexNativeInstallState({
-            pluginName: target.identity.pluginName,
-            pluginVersion: target.identity.pluginVersion,
-            cwd: target.identity.cwd,
-            env: options.context.env,
-            marketplaceRoot,
-            marketplaceName,
-            skillsRelativeRoot,
-            requiredSkillKeys: [
-              ...requiredSkillWrites.flatMap((action) =>
-                action.owner?.artifactKey ? [action.owner.artifactKey] : []),
-              ...(staged.nativeRender?.presentSkillKeys ?? []),
-            ],
-            ...(staged.nativeRender ? { nativeRender: staged.nativeRender } : {}),
-          });
+          if (installed.observation.state !== 'observed'
+            || installed.observation.value !== 'installed') {
+            throw new Error(`codexNativeInstallIncomplete: ${pluginId} is absent from Codex plugin list.`);
+          }
+          if (installed.observation.entry.version !== undefined
+            && installed.observation.entry.version !== target.identity.pluginVersion) {
+            throw new Error(
+              `codexNativeInstallIncomplete: ${pluginId} version is ${installed.observation.entry.version}; expected ${target.identity.pluginVersion}.`,
+            );
+          }
+          const installedConfig = await readCodexConfigFile(
+            resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
+          );
+          const installedMarketplace = installedConfig.snapshot.marketplaces[marketplaceName];
+          if (installedMarketplace?.sourceType !== 'local'
+            || installedMarketplace.sourcePointsToManifest
+            || path.normalize(installedMarketplace.source ?? '') !== path.normalize(marketplaceRoot)
+            || installedConfig.snapshot.plugins[pluginId]?.enabled !== true) {
+            throw new Error(`codexNativeInstallIncomplete: ${pluginId} public config is not canonical and enabled.`);
+          }
           } else {
           await runNativeCliChecked({
             command: 'claude',
@@ -5003,24 +4371,17 @@ export function createRebuildIntegration(options: {
         command: input.command,
       });
       if (preserveCodexSharedNativePayload) {
-        const nativePluginRoots = await Promise.all([
-          path.join(
-            input.marketplaceRoot ?? resolveAwHome(options.context.env),
-            'plugins',
-            input.plugin.manifest.name,
-          ),
-          path.join(
-            getCodexHome(options.context.env),
-            'plugins',
-            'cache',
-            input.marketplaceName ?? MARKETPLACE_NAME,
-            input.plugin.manifest.name,
-          ),
-        ].map((root) => canonicalizePathThroughExistingAncestor(root)));
+        const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
+          input.marketplaceRoot ?? resolveAwHome(options.context.env),
+          'plugins',
+          input.plugin.manifest.name,
+        ));
+        const privateCacheRoot = path.resolve(getCodexHome(options.context.env), 'plugins', 'cache');
         historicalComponents = historicalComponents.filter((component) => {
           if (!('path' in component)) return true;
-          return nativePluginRoots.every((nativePluginRoot) => {
-            const relative = path.relative(nativePluginRoot, path.resolve(component.path));
+          const componentPath = path.resolve(component.path);
+          return [nativePluginRoot, privateCacheRoot].every((protectedRoot) => {
+            const relative = path.relative(protectedRoot, componentPath);
             return relative === '..'
               || relative.startsWith(`..${path.sep}`)
               || path.isAbsolute(relative);
@@ -5055,25 +4416,32 @@ export function createRebuildIntegration(options: {
       const nativeDesired = nativeRequired
         && input.command !== 'cleanup'
         && input.command !== 'uninstall';
-      const codexNative = input.platform === 'codex' && nativeRequired
-        ? await inspectCodexNativeResidue({
-            pluginName: input.plugin.manifest.name,
+      const codexRegistration = input.platform === 'codex'
+        && nativeDesired
+        && input.readOnlyInspectionPlan !== true
+        ? await inspectCodexPluginRegistrationLive({
+            pluginId: `${input.plugin.manifest.name}@${input.marketplaceName ?? MARKETPLACE_NAME}`,
             cwd: input.cwd,
             env: options.context.env,
-            marketplaceName: input.marketplaceName,
-            marketplaceRoot: input.marketplaceRoot,
+            nativeCliRunner: options.context.nativeCliRunner,
+            manager: options.context.codexManager,
+            observationSession: options.context.codexObservationSession,
           })
         : undefined;
-      const codexNativeExact = codexNative?.state === 'present'
-        && codexNative.versions.length > 0
-        && codexNative.versions.every((version) => version === input.plugin.manifest.version);
+      const codexNativeExact = codexRegistration?.observation.state === 'observed'
+        && codexRegistration.observation.value === 'installed'
+        && (codexRegistration.observation.entry.version === undefined
+          || codexRegistration.observation.entry.version === input.plugin.manifest.version);
       const materializeNativeRequired = nativeDesired && (
         input.platform === 'claude'
         || input.command === 'reinstall'
         || !codexNativeExact
       );
       const nativeCleanupCandidate = input.platform === 'claude'
-        && input.includeNativeCleanupCandidate !== false;
+        ? input.includeNativeCleanupCandidate !== false
+        : input.platform === 'codex'
+          && nativeRequired
+          && (input.command === 'cleanup' || input.command === 'uninstall');
       const nativePlugin = (nativeDesired || nativeCleanupCandidate)
         ? [{
             kind: 'native-plugin' as const,
@@ -5086,7 +4454,7 @@ export function createRebuildIntegration(options: {
         && input.command !== 'uninstall';
       const marketplace = input.platform === 'codex'
         && input.scope === 'user'
-        && nativeDesired
+        && nativeRequired
         && input.readOnlyShallowInspectionPlan !== true
         ? [createCodexMarketplaceComponent({
             pluginName: input.plugin.manifest.name,
@@ -5283,23 +4651,22 @@ export async function inspectRebuildTarget(options: {
   });
   if (!target.requiresNative) return { target, inspection };
   if (target.identity.platform === 'codex') {
-    const residue = await inspectCodexNativeResidue({
-      pluginName: target.identity.pluginName,
+    const nativeInspection = inspection.components.find((component) =>
+      component.component.kind === 'native-plugin');
+    if (nativeInspection?.state !== 'present') return { target, inspection };
+    const registration = await inspectCodexPluginRegistrationLive({
+      pluginId: `${target.identity.pluginName}@${target.identity.marketplaceName ?? MARKETPLACE_NAME}`,
       cwd: target.identity.cwd,
       env: options.context.env,
-      marketplaceName: target.identity.marketplaceName,
-      marketplaceRoot: target.identity.marketplaceRoot,
+      nativeCliRunner: options.context.nativeCliRunner,
+      manager: options.context.codexManager,
+      scope: target.identity.scope,
+      observationSession: options.context.codexObservationSession,
     });
-    if (residue.state !== 'present' || !residue.enabled) return { target, inspection };
-    const installed = [...new Set(residue.installedVersions)];
-    if (installed.length > 0) {
-      return installed.length === 1
-        ? { target, inspection, installedVersion: installed[0] }
-        : { target, inspection };
-    }
-    const cached = [...new Set(residue.cacheVersions)];
-    return cached.length === 1
-      ? { target, inspection, installedVersion: cached[0] }
+    return registration.observation.state === 'observed'
+      && registration.observation.value === 'installed'
+      && registration.observation.entry.version !== undefined
+      ? { target, inspection, installedVersion: registration.observation.entry.version }
       : { target, inspection };
   }
   const native = await readClaudeNativeState({
@@ -5446,12 +4813,45 @@ export async function discoverRebuildTargetNames(options: {
         if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) names.add(name);
       }
     } else {
-      for (const name of await discoverCodexNativeResidueNames({
-        cwd: options.cwd,
+      const marketplaceName = options.marketplaceName ?? MARKETPLACE_NAME;
+      const marketplaceRoot = options.marketplaceRoot ?? resolveAwHome(options.env);
+      const marketplace = config.snapshot.marketplaces[marketplaceName];
+      const canonicalMarketplace = marketplace?.sourceType === 'local'
+        && !marketplace.sourcePointsToManifest
+        && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
+      const suffix = `@${marketplaceName}`;
+      const configuredPluginIds = Object.keys(config.snapshot.plugins)
+        .filter((pluginId) => pluginId.endsWith(suffix));
+      if (configuredPluginIds.length > 0 && !canonicalMarketplace) {
+        throw new Error(
+          `externalOwnershipPresent: Codex marketplace ${marketplaceName} has a foreign public config source.`,
+        );
+      }
+      for (const pluginId of canonicalMarketplace ? configuredPluginIds : []) {
+        const name = pluginId.slice(0, -suffix.length);
+        if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) names.add(name);
+      }
+      const session = await createCodexNativeObservationSession({
+        exactCwd: options.cwd,
         env: options.env,
-        marketplaceName: options.marketplaceName,
-        marketplaceRoot: options.marketplaceRoot,
-      })) names.add(name);
+        runner: options.nativeCliRunner,
+      });
+      try {
+        const snapshot = await session.snapshot(marketplaceName, 'user');
+        if (!snapshot.neutral) {
+          if (options.nativeFailureMode !== 'ignore') {
+            throw new Error('codexNativeObservationFailed: cannot discover official Codex plugins.');
+          }
+        } else {
+          for (const pluginId of snapshot.neutral.keys()) {
+            if (!pluginId.endsWith(suffix)) continue;
+            const name = pluginId.slice(0, -suffix.length);
+            if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) names.add(name);
+          }
+        }
+      } finally {
+        await session.dispose();
+      }
     }
   } else {
     const settings = await readClaudeSettings(

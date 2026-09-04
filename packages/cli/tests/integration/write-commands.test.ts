@@ -103,6 +103,7 @@ import {
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
+  removeCodexMarketplace,
 } from '../../src/utils/codex-config.js';
 import { renderTrackedHookGroupIdentity } from '../../src/utils/hooks-contract.js';
 import {
@@ -193,6 +194,11 @@ function createCodexNativeTestRuntime(
           '',
         ].filter(Boolean).join('\n'));
       }
+    } else if (pluginArgs[1] === 'marketplace' && pluginArgs[2] === 'remove') {
+      const marketplaceName = pluginArgs[3]!;
+      marketplaceRoots.delete(marketplaceName);
+      const current = await fs.readFile(userConfigPath, 'utf8').catch(() => '');
+      await fs.outputFile(userConfigPath, removeCodexMarketplace(current, marketplaceName));
     } else if (pluginArgs[1] === 'add') {
       const pluginId = pluginArgs[2]!;
       const separator = pluginId.lastIndexOf('@');
@@ -1853,7 +1859,7 @@ describe('five namespaced write commands', () => {
         expect.objectContaining({ action: sharedAction }),
       );
       expect(result.targetResults).toContainEqual(expect.objectContaining({
-        state: 'failed', errorCode,
+        state: 'failed', errorCode: sharedAction === 'none' ? 'writeFailed' : errorCode,
       }));
       expect(await fs.readFile(targetConfigPath, 'utf8').catch(() => undefined))
         .toBe(targetConfigBefore);
@@ -2002,8 +2008,8 @@ describe('five namespaced write commands', () => {
   it.each([
     ['absent', 'failed', 'codexNativeInstallIncomplete'],
     ['duplicate', 'failed', 'codexNativeObservationFailed'],
-    ['installed-disabled', 'failed', 'codexActivationPostcheckFailed'],
-    ['exact-installed-neutral-absent', 'failed', 'codexActivationPostcheckFailed'],
+    ['installed-disabled', 'succeeded', undefined],
+    ['exact-installed-neutral-absent', 'succeeded', undefined],
   ] as const)('handles Codex install when the official postcheck is %s', async (
     postcheck,
     expectedState,
@@ -2061,10 +2067,6 @@ describe('five namespaced write commands', () => {
           message: expect.stringContaining(error),
         }),
       ]);
-    }
-    if (postcheck === 'installed-disabled') {
-      expect(result.rebuildResults.flatMap((entry) => entry.actions))
-        .not.toContainEqual(expect.objectContaining({ name: 'postApply' }));
     }
     expect(addObserved).toBe(true);
   }, 30_000);
@@ -2131,7 +2133,7 @@ describe('five namespaced write commands', () => {
     },
   );
 
-  it('reports payload drift and repairs it through confirmed sync', async () => {
+  it('ignores private Codex payload drift during status and sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-payload-drift-source');
     await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }]);
@@ -2175,13 +2177,18 @@ describe('five namespaced write commands', () => {
       reviewPreflight: async () => fs.outputFile(payloadReadme, 'tampered payload\n'),
     });
     expect(stale.targetResults).toEqual([
-      expect.objectContaining({ errorCode: 'operationPlanStale' }),
+      expect.objectContaining({ state: 'completed' }),
     ]);
     const staleInspectionCalls = runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeStaleCheck);
     expect(staleInspectionCalls).not.toEqual([]);
-    expect(staleInspectionCalls.every(([invocation]) =>
+    expect(staleInspectionCalls.some(([invocation]) =>
       invocation.args.slice(invocation.args.indexOf('plugin')).join(' ')
         === 'plugin list --marketplace aw --json')).toBe(true);
+    expect(staleInspectionCalls.some(([invocation]) => {
+      const args = invocation.args.slice(invocation.args.indexOf('plugin'));
+      return args[1] === 'add' || args[1] === 'remove'
+        || (args[1] === 'marketplace' && (args[2] === 'add' || args[2] === 'remove'));
+    })).toBe(false);
     await expect(fs.readFile(payloadReadme, 'utf8')).resolves.toBe('tampered payload\n');
 
     const callsBeforeStatus = runtime.nativeCliRunner.mock.calls.length;
@@ -2193,11 +2200,11 @@ describe('five namespaced write commands', () => {
     expect(status.payload.targets).toEqual([expect.objectContaining({
       state: 'needsSync',
       reasons: expect.arrayContaining([
-        expect.objectContaining({ code: 'staleCacheObserved', severity: 'warning' }),
+        expect.objectContaining({ code: 'codexSharedNativeUnobserved', severity: 'warning' }),
       ]),
     })]);
-    expect(statusTargetSharedNative(status.payload.targets[0]!)).toMatchObject({
-      state: 'unobserved', staleCacheObserved: true,
+    expect(statusTargetSharedNative(status.payload.targets[0]!)).toEqual({
+      pluginId: 'demo@aw', state: 'unobserved',
     });
     expect(runtime.nativeCliRunner).toHaveBeenCalledTimes(callsBeforeStatus);
 
@@ -2212,17 +2219,16 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner: runtime.nativeCliRunner,
       codexManagerResolver: runtime.codexManagerResolver,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(blockedOutput.readStdout())).toMatchObject({
       receiptSchemaVersion: 6,
-      overallState: 'failed',
+      overallState: 'succeeded',
       targetResults: [expect.objectContaining({
-        errorCode: 'sharedNativeImpactAuthorizationRequired',
+        state: 'completed',
         relation: 'requested',
         target: expect.objectContaining({ scope: 'user' }),
-        recoveryActions: expect.any(Array),
       })],
-      recoveryActions: expect.any(Array),
+      recoveryActions: [],
     });
     expect(runtime.nativeCliRunner.mock.calls.slice(nativeCallsBeforeBlocked)
       .some(([invocation]) => invocation.args.includes('remove'))).toBe(false);
@@ -2253,10 +2259,9 @@ describe('five namespaced write commands', () => {
     const repairNativeActions = runtime.nativeCliRunner.mock.calls
       .slice(nativeCallsBeforeRepair)
       .map(([invocation]) => invocation.args.slice(invocation.args.indexOf('plugin')).join(' '));
-    expect(repairNativeActions.indexOf('plugin remove demo@aw')).toBeGreaterThanOrEqual(0);
-    expect(repairNativeActions.indexOf('plugin add demo@aw'))
-      .toBeGreaterThan(repairNativeActions.indexOf('plugin remove demo@aw'));
-    await expect(fs.readFile(payloadReadme, 'utf8')).resolves.not.toBe('tampered payload\n');
+    expect(repairNativeActions).not.toContain('plugin remove demo@aw');
+    expect(repairNativeActions).not.toContain('plugin add demo@aw');
+    await expect(fs.readFile(payloadReadme, 'utf8')).resolves.toBe('tampered payload\n');
 
     await fs.remove(payloadReadme);
     await expect(statusCommandV7({
@@ -2275,8 +2280,8 @@ describe('five namespaced write commands', () => {
     }, { ...runtime, previewOperationPlan: true });
     expect(deletedRepairPlan.codexReconcilePlans).toEqual([
       expect.objectContaining({
-        sharedNativeActions: [expect.objectContaining({ action: 'repair' })],
-        review: expect.objectContaining({ requiresConfirmation: true }),
+        sharedNativeActions: [expect.objectContaining({ action: 'reuse' })],
+        review: expect.objectContaining({ requiresConfirmation: false }),
       }),
     ]);
     await expect(fs.pathExists(payloadReadme)).resolves.toBe(false);
@@ -2296,8 +2301,8 @@ describe('five namespaced write commands', () => {
     expect(foreignStatus.payload.targets).toEqual([
       expect.objectContaining({ state: 'needsSync' }),
     ]);
-    expect(statusTargetSharedNative(foreignStatus.payload.targets[0]!)).toMatchObject({
-      state: 'unobserved', staleCacheObserved: true,
+    expect(statusTargetSharedNative(foreignStatus.payload.targets[0]!)).toEqual({
+      pluginId: 'demo@aw', state: 'unobserved',
     });
     const foreignOutput = createCapturedCliIo();
     expect(await runCli([
@@ -2309,11 +2314,10 @@ describe('five namespaced write commands', () => {
       interactive: false,
       nativeCliRunner: runtime.nativeCliRunner,
       codexManagerResolver: runtime.codexManagerResolver,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(foreignOutput.readStdout())).toMatchObject({
       targetResults: [expect.objectContaining({
-        errorCode: 'codexSharedNativeForeign',
-        recoveryActions: [expect.stringContaining('cleanup preserves foreign content')],
+        state: 'completed',
       })],
     });
     await expect(fs.readFile(externalPayload, 'utf8')).resolves.toBe('foreign\n');
@@ -2777,8 +2781,11 @@ describe('five namespaced write commands', () => {
       enabled: true, scopes: ['project', 'user'], relation: 'root',
     });
     expect(statusTargetSharedNative(status.payload.targets[0]!)).toMatchObject({
-      pluginId: 'demo@aw', state: 'unobserved', staleCacheObserved: true,
+      pluginId: 'demo@aw', state: 'unobserved',
     });
+    expect(statusTargetSharedNative(status.payload.targets[0]!)).not.toHaveProperty(
+      'staleCacheObserved',
+    );
     expect(statusTargetActivation(status.payload.targets[0]!)).toMatchObject({
       user: true, project: true,
     });
@@ -2832,7 +2839,7 @@ describe('five namespaced write commands', () => {
     expect(installedRuntime.installed.has('demo@aw')).toBe(true);
   }, 30_000);
 
-  it('does not run postApply when public sync fails Codex activation verification', async () => {
+  it('repairs public activation and runs postApply when official enabled stays false', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-post-apply-failure-source');
     const definitions = [{
@@ -2865,13 +2872,13 @@ describe('five namespaced write commands', () => {
       path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
       { removePluginActivations: ['demo@aw-team'] },
     );
-    const failingPostcheck = vi.fn(async (invocation: NativeCliInvocation) => {
+    const contradictoryOfficialList = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.args[0] === 'plugin' && invocation.args[1] === 'list'
         && invocation.args.includes('--json')) {
         return {
           exitCode: 0,
           stdout: JSON.stringify({
-            installed: [{ pluginId: 'demo@aw-team', installed: true, enabled: false, version: '1.0.0' }],
+            installed: [{ pluginId: 'demo@aw', installed: true, enabled: false, version: '1.0.0' }],
             available: [],
           }),
           stderr: '',
@@ -2879,43 +2886,34 @@ describe('five namespaced write commands', () => {
       }
       return installedRuntime.nativeCliRunner(invocation);
     });
-    const postApplyEvents: string[] = [];
-    const reporter: NonNullable<RebuildCommandRuntime['reporter']> = {
-      event: (event) => {
-        if (event.type === 'rebuild:action'
-          && event.data?.name === 'postApply') postApplyEvents.push(event.data.phase);
-      },
-      notice: () => {},
-    };
     const synced = await syncCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', interactive: false,
-    }, { ...installedRuntime, nativeCliRunner: failingPostcheck, reporter });
-    expect(synced.overallState).toBe('failed');
+    }, { ...installedRuntime, nativeCliRunner: contradictoryOfficialList });
+    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('succeeded');
     expect(synced.targetResults).toEqual([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-        state: 'failed',
+        state: 'completed',
       }),
     ]);
     const receipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('sync', synced);
     expect(receipt).toMatchObject({
-      ok: false,
-      overallState: 'failed',
+      ok: true,
+      overallState: 'succeeded',
       targetResults: [{
         target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-        state: 'failed',
+        state: 'completed',
         actions: expect.any(Array),
       }],
     });
     expect(receipt.targetResults[0]?.actions.map((action) => action.name))
-      .not.toContain('postApply');
-    await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
-    expect(postApplyEvents).toEqual([]);
+      .toContain('postApply');
+    await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('2');
   }, 30_000);
 
-  it('isolates a Codex activation postcheck failure to its owning plugin', async () => {
+  it('ignores per-plugin official enabled mismatches after public activation repair', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-isolation-source');
     const definitions = ['alpha', 'beta'].map((name) => ({
@@ -2963,7 +2961,7 @@ describe('five namespaced write commands', () => {
       path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'),
       { removePluginActivations: ['alpha@aw'] },
     );
-    const failingAlphaPostcheck = vi.fn(async (invocation: NativeCliInvocation) => {
+    const contradictoryOfficialList = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.args[0] === 'plugin' && invocation.args[1] === 'list'
         && invocation.args.includes('--json')) {
         const exactProject = invocation.cwd === isolation.layout.fixtureCwd;
@@ -2991,13 +2989,13 @@ describe('five namespaced write commands', () => {
     const synced = await syncCommand(selectors, {
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', interactive: false,
-    }, { ...installedRuntime, nativeCliRunner: failingAlphaPostcheck });
+    }, { ...installedRuntime, nativeCliRunner: contradictoryOfficialList });
 
-    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('partial');
+    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('succeeded');
     expect(synced.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/alpha' }),
-        state: 'failed',
+        state: 'completed',
       }),
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/beta' }),
@@ -3005,10 +3003,10 @@ describe('five namespaced write commands', () => {
       }),
     ]));
     expect(synced.rebuildResults.find((entry) => entry.target.pluginId === 'team/alpha')
-      ?.actions.map((action) => action.name)).not.toContain('postApply');
+      ?.actions).toContainEqual({ name: 'postApply', status: 'succeeded' });
     expect(synced.rebuildResults.find((entry) => entry.target.pluginId === 'team/beta')
       ?.actions).toContainEqual({ name: 'postApply', status: 'succeeded' });
-    await expect(fs.readFile(alphaCounter, 'utf8')).resolves.toBe('1');
+    await expect(fs.readFile(alphaCounter, 'utf8')).resolves.toBe('2');
     await expect(fs.readFile(betaCounter, 'utf8')).resolves.toBe('2');
   }, 30_000);
 
@@ -10021,12 +10019,12 @@ describe('five namespaced write commands', () => {
     });
     const mismatchedCanonicalStatus = await readNativeStatus();
     expect(statusTargetSharedNative(mismatchedCanonicalStatus.status.payload.targets[0]!))
-      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
+      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
     await fs.outputJson(canonicalMarketplaceConfigPath, canonicalMarketplaceConfig);
     await fs.remove(canonicalReceiptPath);
     const missingCanonicalStatus = await readNativeStatus();
     expect(statusTargetSharedNative(missingCanonicalStatus.status.payload.targets[0]!))
-      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
+      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
     await fs.outputFile(canonicalReceiptPath, canonicalReceipt);
 
     await fs.outputFile(path.join(cacheSkillRoot, 'SKILL.md'), 'tampered\n');
@@ -10040,9 +10038,8 @@ describe('five namespaced write commands', () => {
     );
     const damagedStatus = await readNativeStatus();
     expect(statusTargetSharedNative(damagedStatus.status.payload.targets[0]!))
-      .toMatchObject({ state: 'replaceable', reason: 'damaged' });
-    expect(damagedStatus.status.payload.targets[0]!.reasons)
-      .toContainEqual(expect.objectContaining({ code: 'codexSharedNativeCorrupt' }));
+      .toMatchObject({ state: 'usable', version: '1.0.0' });
+    expect(damagedStatus.status.payload.targets[0]).toMatchObject({ state: 'ready' });
     const callsBeforeRepair = runtime.nativeCliRunner.mock.calls.length;
     const repairedTamper = await runPublic([
       'sync', 'team/native-config', '--platform', 'codex', '--scope', 'project', '--yes',
@@ -10052,20 +10049,17 @@ describe('five namespaced write commands', () => {
     const repairCalls = runtime.nativeCliRunner.mock.calls
       .slice(callsBeforeRepair)
       .map(([invocation]) => invocation.args.join(' '));
-    expect(repairCalls.some((args) => args.includes('plugin remove native-config@aw'))).toBe(true);
-    expect(repairCalls.some((args) => args.includes('plugin add native-config@aw'))).toBe(true);
+    expect(repairCalls.some((args) => args.includes('plugin remove native-config@aw'))).toBe(false);
+    expect(repairCalls.some((args) => args.includes('plugin add native-config@aw'))).toBe(false);
     await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
-      .resolves.toContain('mode=refreshed');
-    const repairedReceipt = await fs.readJson(
-      path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
-    ) as CodexNativeRenderReceipt;
+      .resolves.toBe('tampered\n');
     await fs.outputFile(path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH), '{invalid');
     const unreadableStatus = await readNativeStatus();
     expect(statusTargetSharedNative(unreadableStatus.status.payload.targets[0]!))
-      .toMatchObject({ state: 'blocked', reason: 'unreadable' });
+      .toMatchObject({ state: 'usable', version: '1.0.0' });
     await fs.outputJson(
       path.join(cachePluginRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
-      repairedReceipt,
+      refreshedReceipt,
       { spaces: 2 },
     );
 

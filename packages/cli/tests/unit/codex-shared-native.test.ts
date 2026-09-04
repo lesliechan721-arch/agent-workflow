@@ -3,34 +3,11 @@ import { describe, expect, it } from 'vitest';
 import type { CodexSharedNativeEvidence } from '../../src/utils/codex-shared-native.js';
 import { inspectCodexSharedNative } from '../../src/utils/codex-shared-native.js';
 import {
-  createCodexNativeRenderProjection,
-  createCodexNativeRenderReceipt,
-  type CodexNativeRenderTargetReceipt,
-} from '../../src/utils/codex-native-render-receipt.js';
-import {
   combineCodexNativePluginObservations,
   type CodexNativePluginObservation,
 } from '../../src/utils/codex-native-observation.js';
 
 const digest = `sha256:${'a'.repeat(64)}`;
-const otherDigest = (character: string): string => `sha256:${character.repeat(64)}`;
-
-const projectionTargets: CodexNativeRenderTargetReceipt[] = [{
-  id: 'demo-target',
-  skillKey: 'demo-skill',
-  configDigest: otherDigest('b'),
-  artifactDigest: otherDigest('c'),
-}];
-
-function projectionInput() {
-  return {
-    logicalPluginId: 'official/demo',
-    sourceIdentity: otherDigest('d'),
-    pluginVersion: '2.0.0',
-    rendererDigest: otherDigest('e'),
-    targets: projectionTargets,
-  };
-}
 
 function evidence(
   overrides: Partial<CodexSharedNativeEvidence> = {},
@@ -53,14 +30,6 @@ function evidence(
       state: 'observed',
       value: 'installed',
       entry: { pluginId: 'demo@aw-team', version: '2.0.0', enabled: true },
-    },
-    manifest: {
-      state: 'present',
-      identity: 'demo',
-      version: '2.0.0',
-      payloadDigest: digest,
-      payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
-      pathSafe: true,
     },
     ...overrides,
   };
@@ -109,134 +78,14 @@ describe('codex-shared-native', () => {
     },
   );
 
-  it('uses only the four shared-native states and keeps detail beside the state', () => {
-    const cases = [
-      [
-        evidence({
-          marketplaceRegistration: undefined,
-          observation: { state: 'observed', value: 'absent' },
-          manifest: { state: 'absent' },
-        }),
-        { state: 'missing' },
-      ],
-      [
-        evidence(),
-        { state: 'usable', version: '2.0.0' },
-      ],
-      [
-        evidence({
-          observation: {
-            state: 'observed', value: 'installed',
-            entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
-          },
-          manifest: {
-            state: 'present',
-            identity: 'demo',
-            version: '1.0.0',
-            payloadDigest: `sha256:${'b'.repeat(64)}`,
-            payloadPath: '/codex/plugins/cache/aw-team/demo/1.0.0',
-            pathSafe: true,
-          },
-        }),
-        {
-          state: 'replaceable',
-          reason: 'outdated',
-          version: '1.0.0',
-          desiredVersion: '2.0.0',
-        },
-      ],
-      [
-        evidence({
-          manifest: {
-            state: 'present',
-            identity: 'demo',
-            version: '2.0.0',
-            payloadDigest: `sha256:${'b'.repeat(64)}`,
-            payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
-            pathSafe: true,
-          },
-        }),
-        { state: 'replaceable', reason: 'damaged', diagnostic: 'payloadDigestMismatch' },
-      ],
-      [
-        evidence({
-          marketplaceRegistration: {
-            name: 'aw-team',
-            source: '/foreign/marketplace',
-            sourceType: 'local',
-            sourcePointsToManifest: false,
-          },
-        }),
-        {
-          state: 'blocked',
-          reason: 'foreign',
-          diagnostic: 'marketplaceRegistrationForeign',
-        },
-      ],
-    ] as const;
-
-    for (const [input, expected] of cases) {
-      const result = inspectCodexSharedNative(input);
-      expect(result).toEqual(expected);
-      expect(result).not.toHaveProperty('scope');
-    }
-  });
-
-  it('classifies an exact canonical existing plugin as reusable shared native', () => {
-    expect(inspectCodexSharedNative(evidence())).toEqual({
-      state: 'usable',
-      version: '2.0.0',
-    });
-  });
-
-  it('fails closed for unsafe registered payload paths without colliding namespaced peers', () => {
+  it('uses the official snapshot as the only installed and version evidence', () => {
+    expect(inspectCodexSharedNative(evidence())).toEqual({ state: 'usable', version: '2.0.0' });
     expect(inspectCodexSharedNative(evidence({
-      manifest: {
-        state: 'present',
-        identity: 'demo',
-        version: '2.0.0',
-        payloadDigest: digest,
-        payloadPath: '/foreign/demo',
-        pathSafe: false,
+      observation: {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', enabled: true },
       },
-    }))).toMatchObject({ state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe' });
-
-    expect(inspectCodexSharedNative(evidence({
-      observation: { state: 'observed', value: 'absent' },
-    }))).toMatchObject({ state: 'missing', staleCacheObserved: true });
-  });
-
-  it('requires exact plugin-list, manifest identity, version, and digest evidence', () => {
-    expect(inspectCodexSharedNative(evidence({
-      observation: { state: 'failed', reason: 'unavailable' },
-    })))
-      .toMatchObject({ state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable' });
-    expect(inspectCodexSharedNative(evidence({ manifest: { state: 'absent' } })))
-      .toMatchObject({ state: 'replaceable', reason: 'damaged', diagnostic: 'manifestMissing' });
-    expect(inspectCodexSharedNative(evidence({
-      manifest: {
-        state: 'present',
-        identity: 'foreign-demo',
-        version: '2.0.0',
-        payloadDigest: digest,
-        payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
-        pathSafe: true,
-      },
-    }))).toMatchObject({ state: 'blocked', reason: 'foreign', diagnostic: 'manifestIdentityMismatch' });
-  });
-
-  it('treats cache as secondary evidence behind the official plugin list', () => {
-    expect(inspectCodexSharedNative(evidence({
-      marketplaceRegistration: undefined,
-      observation: { state: 'observed', value: 'absent' },
-      manifest: { state: 'absent' },
-    }))).toEqual({ state: 'missing' });
-    expect(inspectCodexSharedNative(evidence({
-      observation: { state: 'observed', value: 'absent' },
-    }))).toEqual({
-      state: 'missing',
-      staleCacheObserved: true,
-    });
+    }))).toEqual({ state: 'usable' });
     expect(inspectCodexSharedNative(evidence({
       observation: {
         state: 'observed', value: 'installed',
@@ -250,182 +99,61 @@ describe('codex-shared-native', () => {
     });
   });
 
-  it('uses a matching projection receipt without changing static native behavior', () => {
-    const expectedProjection = createCodexNativeRenderProjection(projectionInput());
-    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
+  it('reports official absence as missing', () => {
     expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      projectionReceipt: { state: 'present', receipt },
-    }))).toEqual({ state: 'usable', version: '2.0.0' });
-    expect(inspectCodexSharedNative(evidence())).toEqual({ state: 'usable', version: '2.0.0' });
+      observation: { state: 'observed', value: 'absent' },
+    }))).toEqual({ state: 'missing' });
   });
 
-  it.each([
-    ['source', { ...projectionInput(), sourceIdentity: otherDigest('f') }],
-    ['renderer', { ...projectionInput(), rendererDigest: otherDigest('f') }],
-    ['config', {
-      ...projectionInput(),
-      targets: [{ ...projectionTargets[0]!, configDigest: otherDigest('f') }],
-    }],
-    ['target', {
-      ...projectionInput(),
-      targets: [{ ...projectionTargets[0]!, id: 'changed-target' }],
-    }],
-  ] as const)('classifies %s projection changes as render drift', (_label, changedInput) => {
-    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection: createCodexNativeRenderProjection(changedInput),
-      projectionReceipt: { state: 'present', receipt },
-    }))).toMatchObject({
-      state: 'replaceable', reason: 'renderDrift', diagnostic: 'projectionRenderDrift',
-    });
-  });
-
-  it('reports payload damage before render drift when independent bytes also changed', () => {
-    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
-    expect(inspectCodexSharedNative(evidence({
-      expectedPayloadDigest: otherDigest('f'),
-      expectedProjection: createCodexNativeRenderProjection({
-        ...projectionInput(),
-        sourceIdentity: otherDigest('f'),
-      }),
-      projectionReceipt: { state: 'present', receipt },
-    }))).toMatchObject({
-      state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
-    });
-  });
-
-  it('classifies direct render-input drift as replaceable render drift', () => {
-    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
-    const expectedProjection = {
-      ...createCodexNativeRenderProjection(projectionInput()),
-      renderInputDigest: otherDigest('f'),
-    };
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      projectionReceipt: { state: 'present', receipt },
-    }))).toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
-  });
-
-  it('fails closed for missing, unreadable, tampered, and foreign projection evidence', () => {
-    const expectedProjection = createCodexNativeRenderProjection(projectionInput());
-    const receipt = createCodexNativeRenderReceipt({ ...projectionInput(), payloadDigest: digest });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      projectionReceipt: { state: 'absent' },
-    }))).toMatchObject({
-      state: 'replaceable', reason: 'damaged', diagnostic: 'projectionReceiptMissing',
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      projectionReceipt: { state: 'unreadable' },
-    }))).toMatchObject({
-      state: 'blocked', reason: 'unreadable', diagnostic: 'projectionReceiptUnreadable',
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      expectedPayloadDigest: undefined,
-      projectionReceipt: { state: 'present', receipt },
-    }))).toMatchObject({
+  it('uses AW-owned source projection evidence for sync drift', () => {
+    expect(inspectCodexSharedNative(evidence({ sourceProjection: 'drifted' }))).toEqual({
       state: 'replaceable',
-      reason: 'damaged',
-      diagnostic: 'projectionExpectedPayloadDigestMissing',
+      reason: 'renderDrift',
+      version: '2.0.0',
+      desiredVersion: '2.0.0',
+      diagnostic: 'projectionRenderDrift',
+    });
+  });
+
+  it('fails closed for foreign public marketplace config and unavailable official evidence', () => {
+    expect(inspectCodexSharedNative(evidence({
+      marketplaceRegistration: {
+        name: 'aw-team',
+        source: '/foreign/marketplace',
+        sourceType: 'local',
+        sourcePointsToManifest: false,
+      },
+    }))).toEqual({
+      state: 'blocked',
+      reason: 'foreign',
+      diagnostic: 'marketplaceRegistrationForeign',
     });
     expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      manifest: {
-        state: 'present',
-        identity: 'demo',
-        version: '2.0.0',
-        payloadDigest: otherDigest('f'),
-        payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
-        pathSafe: true,
-      },
-      projectionReceipt: { state: 'present', receipt },
-    }))).toMatchObject({
-      state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
-    });
-    const rewrittenReceipt = createCodexNativeRenderReceipt({
-      ...projectionInput(), payloadDigest: otherDigest('f'),
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      manifest: {
-        state: 'present',
-        identity: 'demo',
-        version: '2.0.0',
-        payloadDigest: otherDigest('f'),
-        payloadPath: '/codex/plugins/cache/aw-team/demo/2.0.0',
-        pathSafe: true,
-      },
-      projectionReceipt: { state: 'present', receipt: rewrittenReceipt },
-    }))).toMatchObject({
-      state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
-    });
-    const foreignReceipt = createCodexNativeRenderReceipt({
-      ...projectionInput(), logicalPluginId: 'official/foreign', payloadDigest: digest,
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjection,
-      projectionReceipt: { state: 'present', receipt: foreignReceipt },
-    }))).toMatchObject({
-      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjectionRequired: true,
-      expectedProjection: undefined,
-      expectedPayloadDigest: undefined,
-      expectedProjectionIdentity: {
-        logicalPluginId: 'official/demo',
-        strategy: 'shared-user',
-      },
-      projectionReceipt: { state: 'present', receipt: foreignReceipt },
-    }))).toMatchObject({
-      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
-    });
-    expect(inspectCodexSharedNative(evidence({
-      expectedProjectionRequired: true,
-      expectedProjection: undefined,
-      expectedPayloadDigest: undefined,
-      expectedProjectionIdentity: {
-        logicalPluginId: 'official/demo',
-        strategy: 'shared-user',
-      },
-      observation: {
-        state: 'observed',
-        value: 'installed',
-        entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
-      },
-      manifest: {
-        state: 'present',
-        identity: 'demo',
-        version: '1.0.0',
-        payloadDigest: digest,
-        payloadPath: '/codex/plugins/cache/aw-team/demo/1.0.0',
-        pathSafe: true,
-      },
-      projectionReceipt: { state: 'present', receipt: foreignReceipt },
-    }))).toMatchObject({
-      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+      observation: { state: 'failed', reason: 'unavailable' },
+    }))).toEqual({
+      state: 'blocked',
+      reason: 'unreadable',
+      diagnostic: 'pluginListUnavailable',
     });
   });
 
   it('keeps unobserved distinct from official absence', () => {
     expect(inspectCodexSharedNative(evidence({
       observation: { state: 'unobserved' },
-    }))).toEqual({ state: 'unobserved', staleCacheObserved: true });
+    }))).toEqual({ state: 'unobserved' });
   });
 
   it.each([
     { state: 'observed', value: 'absent' } as const,
     { state: 'unobserved' } as const,
-  ])('blocks an unsafe marketplace before projecting $state registration evidence', (observation) => {
+  ])('blocks an unsafe AW marketplace root before projecting $state evidence', (observation) => {
     expect(inspectCodexSharedNative(evidence({
       marketplacePathSafe: false,
       observation,
-      manifest: { state: 'absent' },
     }))).toEqual({
-      state: 'blocked', reason: 'foreign', diagnostic: 'marketplacePathUnsafe',
+      state: 'blocked',
+      reason: 'foreign',
+      diagnostic: 'marketplacePathUnsafe',
     });
   });
 });

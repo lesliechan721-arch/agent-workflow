@@ -297,6 +297,10 @@ describe('rebuild adapter integration', () => {
       name: pluginName, version: '1.0.0',
     });
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'official');
+    const sourceRoot = path.join(marketplaceRoot, 'plugins', pluginName);
+    await fs.outputJson(path.join(sourceRoot, 'plugin.json'), {
+      name: pluginName, version: '1.0.0',
+    });
     await fs.ensureDir(isolation.layout.awHomeDir);
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
       '[marketplaces.aw]',
@@ -309,7 +313,7 @@ describe('rebuild adapter integration', () => {
       pluginName,
       sourceId: 'official',
       desiredVersion: '1.0.0',
-      expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(cacheRoot),
+      expectedPayloadDigest: await calculateCodexSharedNativePayloadDigest(sourceRoot),
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       marketplaceRoot,
@@ -332,7 +336,6 @@ describe('rebuild adapter integration', () => {
 
     expect(inspected).toMatchObject({
       sharedNative: { state: 'usable', version: '1.0.0' },
-      activations: { project: true },
     });
     expect(calls.map((call) => call.cwd)).toEqual(expect.arrayContaining([
       isolation.layout.fixtureCwd,
@@ -366,7 +369,6 @@ describe('rebuild adapter integration', () => {
       sharedNative: {
         state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable',
       },
-      activationObservations: { user: false, project: false },
     });
     expect(calls).toHaveLength(2);
     expect(calls.every((call) =>
@@ -402,20 +404,28 @@ describe('rebuild adapter integration', () => {
       sharedNative: {
         state: 'blocked', reason: 'unreadable', diagnostic: 'pluginListUnavailable',
       },
-      activationObservations: { user: true, project: false },
     });
   });
 
   it.each([
-    { observation: 'absent', generic: 'absent', health: 'absent' },
-    { observation: 'unobserved', generic: 'partial', health: 'partial' },
-    { observation: 'failed', generic: 'error', health: 'error' },
-    { observation: 'installed-user-enabled', generic: 'present', health: 'present' },
-    { observation: 'installed-user-disabled', generic: 'present', health: 'partial' },
-    { observation: 'exact-installed-neutral-absent', generic: 'present', health: 'partial' },
+    { observation: 'absent', officialEnabled: false, configEnabled: false, generic: 'absent', health: 'absent' },
+    { observation: 'unobserved', officialEnabled: false, configEnabled: false, generic: 'partial', health: 'partial' },
+    { observation: 'failed', officialEnabled: false, configEnabled: false, generic: 'error', health: 'error' },
+    {
+      observation: 'installed-user-enabled', officialEnabled: true, configEnabled: false,
+      generic: 'present', health: 'partial',
+    },
+    {
+      observation: 'installed-user-disabled', officialEnabled: false, configEnabled: true,
+      generic: 'present', health: 'present',
+    },
+    {
+      observation: 'exact-installed-neutral-absent', officialEnabled: true, configEnabled: false,
+      generic: 'present', health: 'partial',
+    },
   ] as const)(
-    'maps $observation official evidence consistently for generic and health probes',
-    async ({ observation, generic, health }) => {
+    'uses official $observation only for generic presence and public config for health',
+    async ({ observation, officialEnabled, configEnabled, generic, health }) => {
       const isolation = getCurrentSourceTestIsolation();
       const catalogRoot = await createSyntheticCatalog({
         root: isolation.layout.rootDir,
@@ -428,6 +438,14 @@ describe('rebuild adapter integration', () => {
         mode: 'bundle',
       });
       const pluginId = 'apps-only@aw';
+      await applyCodexConfigTransactionFile(
+        resolveCodexPaths(
+          isolation.layout.fixtureCwd,
+          'user',
+          isolation.env,
+        ).configTomlPath,
+        { upsertPluginActivations: { [pluginId]: configEnabled } },
+      );
       const integration = createRebuildIntegration({
         context: createCommandExecutionContext({
           env: isolation.env,
@@ -446,7 +464,7 @@ describe('rebuild adapter integration', () => {
               ? [{
                   pluginId,
                   installed: true,
-                  enabled: observation !== 'installed-user-disabled',
+                  enabled: officialEnabled,
                   version: plugin.manifest.version,
                 }]
               : [];
@@ -1064,7 +1082,7 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it('prefers the Codex installed manifest and rejects ambiguous cache-only revision evidence', async () => {
+  it('uses the official Codex version and ignores private revision evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'revision-evidence');
     plugin.manifest.version = '2.0.0';
@@ -1114,9 +1132,13 @@ describe('rebuild adapter integration', () => {
 
     const ambiguous = await inspect();
     expect(ambiguous.inspection.state).toBe('present');
-    expect(ambiguous.installedVersion).toBeUndefined();
+    expect(ambiguous.installedVersion).toBe('2.0.0');
     expect(projectTargetRevision(plugin.manifest.version, ambiguous.installedVersion))
-      .toEqual({ state: 'unknown', availableVersion: '2.0.0' });
+      .toEqual({
+        state: 'current',
+        installedVersion: '2.0.0',
+        availableVersion: '2.0.0',
+      });
 
     await fs.outputJson(path.join(
       isolation.layout.codexHomeDir,
@@ -1209,9 +1231,12 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each([
-    { label: 'disabled', configEntry: 'enabled = false' },
-    { label: 'missing', configEntry: null },
-  ])('does not promote Codex native residue with a $label config entry to installed', async ({ configEntry }) => {
+    { label: 'disabled', configEntry: 'enabled = false', discovered: true },
+    { label: 'missing', configEntry: null, discovered: false },
+  ])('does not promote Codex native residue with a $label config entry to installed', async ({
+    configEntry,
+    discovered,
+  }) => {
     const isolation = getCurrentSourceTestIsolation();
     const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'disabled-native');
     plugin.manifest.version = '1.0.0';
@@ -1252,13 +1277,14 @@ describe('rebuild adapter integration', () => {
       context,
     });
     expect(inspected.inspection.state).toBe('absent');
-    await expect(discoverRebuildTargetNames({
+    const discoveredNames = await discoverRebuildTargetNames({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       platform: 'codex',
       scope: 'user',
       nativeCliRunner: context.nativeCliRunner,
-    })).resolves.toContain('disabled-native');
+    });
+    expect(discoveredNames.includes('disabled-native')).toBe(discovered);
   });
   it('plans Claude artifacts before writes and uses native marketplace/install/list ownership', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1755,7 +1781,7 @@ describe('rebuild adapter integration', () => {
       drifted = true;
 
       await expect(integration.driver.writeNative(target)).rejects.toThrow(errorCode);
-      expect(calls).toHaveLength(4);
+      expect(calls).toHaveLength(6);
       expect(calls.every((invocation) =>
         invocation.args.slice(-5).join(' ') === 'plugin list --marketplace aw-team --json')).toBe(true);
       await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
@@ -1825,7 +1851,7 @@ describe('rebuild adapter integration', () => {
       } finally {
         lstat.mockRestore();
       }
-      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
+      expect(nativeCliRunner).toHaveBeenCalledTimes(4);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('retained\n');
     },
   );
@@ -2103,7 +2129,7 @@ describe('rebuild adapter integration', () => {
       expect(failure?.message).toContain(errorCode);
       expect(failure?.message).not.toContain(isolation.layout.awHomeDir);
       expect(failure?.message).not.toContain(marketplaceRoot);
-      expect(nativeCliRunner).toHaveBeenCalledTimes(2);
+      expect(nativeCliRunner).toHaveBeenCalledTimes(4);
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('old-generation\n');
       expect(await snapshotRegularTree(marketplaceRoot)).toEqual(oldRootSnapshot);
       await expect(readSkillOwnerMarker({
@@ -2619,9 +2645,9 @@ describe('rebuild adapter integration', () => {
   });
 
   it.each([
-    ['effective', true],
-    ['not effective', false],
-  ] as const)('postchecks exact and neutral Codex project activation when trust is %s', async (_label, exactEnabled) => {
+    ['true', true],
+    ['false', false],
+  ] as const)('postchecks Codex project activation from public config when official enabled is %s', async (_label, exactEnabled) => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginName = 'project-native-postcheck';
     const pluginRoot = path.join(isolation.layout.rootDir, pluginName);
@@ -2642,6 +2668,11 @@ describe('rebuild adapter integration', () => {
       'enabled = true',
       '',
     ].join('\n'));
+    await fs.copy(plugin.rootDir, path.join(
+      isolation.layout.awHomeDir,
+      'plugins',
+      pluginName,
+    ));
     await fs.outputJson(path.join(
       isolation.layout.codexHomeDir,
       'plugins',
@@ -2688,13 +2719,8 @@ describe('rebuild adapter integration', () => {
     const result = await executeRebuildOperation({
       command: 'install', target, driver: integration.driver,
     });
-    expect(result.status, JSON.stringify(result.failures)).toBe(exactEnabled ? 'succeeded' : 'failed');
-    if (!exactEnabled) {
-      expect(result.failures).toEqual(expect.arrayContaining([
-        expect.objectContaining({ message: expect.stringContaining('codexActivationPostcheckFailed') }),
-      ]));
-    }
-    expect(calls).toHaveLength(4);
+    expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
+    expect(calls).toHaveLength(6);
     expect(calls.every((call) =>
       call.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   });
@@ -2704,7 +2730,7 @@ describe('rebuild adapter integration', () => {
     { extraPayload: false, rootManifest: true },
     { extraPayload: true, rootManifest: false },
   ])(
-    'validates exact Codex native cache payload ($extraPayload, root manifest: $rootManifest)',
+    'ignores Codex private cache layout ($extraPayload, root manifest: $rootManifest)',
     async ({ extraPayload, rootManifest }) => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
@@ -2794,18 +2820,20 @@ describe('rebuild adapter integration', () => {
       target,
       driver: integration.driver,
     });
-    if (extraPayload) {
-      expect(result.status).toBe('failed');
-      expect(result.failures.some((failure) =>
-        failure.message.includes('unexpected loadable payload'))).toBe(true);
-      return;
-    }
     expect(result.status).toBe('succeeded');
     expect(calls).toContain(`codex plugin marketplace add ${isolation.layout.awHomeDir}`);
     expect(calls).toContain(`codex plugin add ${plugin.manifest.name}@aw`);
     expect(await fs.pathExists(rootManifest
       ? path.join(path.dirname(path.dirname(cacheManifestPath)), 'plugin.json')
       : cacheManifestPath)).toBe(true);
+    if (extraPayload) {
+      await expect(fs.pathExists(path.join(
+        path.dirname(path.dirname(cacheManifestPath)),
+        'skills',
+        'rogue',
+        'SKILL.md',
+      ))).resolves.toBe(true);
+    }
   });
 
   it.each(['codex-enhance'])(
@@ -3502,7 +3530,7 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it('fails a Codex native install without cache and performs one cleanup pass', async () => {
+  it('succeeds for an official Codex install without private cache', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
@@ -3572,15 +3600,15 @@ describe('rebuild adapter integration', () => {
       target,
       driver: integration.driver,
     });
-    expect(result.status).toBe('failed');
-    expect(result.cleanupAttempted).toBe(true);
+    expect(result.status).toBe('succeeded');
+    expect(result.cleanupAttempted).toBe(false);
     expect(calls.filter((call) => call === `codex plugin remove ${plugin.manifest.name}@aw`)).toHaveLength(0);
     expect(calls.filter((call) => call === 'codex plugin marketplace remove aw')).toHaveLength(0);
     expect(installed).toBe(true);
     expect(marketplace).toBe(true);
   });
 
-  it('reports Codex native residue when list is empty and preserves the marketplace', async () => {
+  it('cleans an officially absent Codex plugin without deleting private cache', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginName = 'residue-plugin';
     const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
@@ -3612,7 +3640,16 @@ describe('rebuild adapter integration', () => {
         env: isolation.env,
         nativeCliRunner: async (invocation) => {
           calls.push([invocation.command, ...invocation.args].join(' '));
-          return { exitCode: 0, stdout: '', stderr: '' };
+          if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
+            await fs.outputFile(configPath, '');
+          }
+          return {
+            exitCode: 0,
+            stdout: invocation.args.includes('--json')
+              ? JSON.stringify({ installed: [], available: [] })
+              : '',
+            stderr: '',
+          };
         },
       }),
     });
@@ -3631,6 +3668,8 @@ describe('rebuild adapter integration', () => {
         },
       },
     } as PluginMeta;
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.apps = './apps';
     const target = await integration.buildTarget({
       plugin,
       platform: 'codex',
@@ -3645,7 +3684,7 @@ describe('rebuild adapter integration', () => {
     expect(result.status).toBe('succeeded');
     expect(result.residual).toEqual([]);
     expect(calls).not.toContain(`codex plugin remove ${pluginName}@aw`);
-    expect(calls).not.toContain('codex plugin marketplace remove aw');
+    expect(calls).toContain('codex plugin marketplace remove aw');
     expect(await fs.pathExists(cacheRoot)).toBe(true);
   });
 
@@ -3760,7 +3799,14 @@ describe('rebuild adapter integration', () => {
       }
       return {
         exitCode: 0,
-        stdout: '',
+        stdout: invocation.args.includes('--json')
+          ? JSON.stringify({
+              installed: otherInstalled ? [{
+                pluginId: 'other-plugin@aw', installed: true, enabled: true, version: '1.0.0',
+              }] : [],
+              available: [],
+            })
+          : '',
         stderr: '',
       };
     };
@@ -3779,6 +3825,8 @@ describe('rebuild adapter integration', () => {
         },
       },
     } as PluginMeta;
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.apps = './apps';
     const integration = createRebuildIntegration({
       context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
     });
@@ -3802,7 +3850,7 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver,
     });
     expect(second.status, JSON.stringify(second.failures)).toBe('succeeded');
-    expect(calls).not.toContain('codex plugin marketplace remove aw');
+    expect(calls).toContain('codex plugin marketplace remove aw');
   });
 
   it('reinstalls Codex plugin A while same-scope plugin B keeps the marketplace', async () => {
@@ -4469,7 +4517,7 @@ describe('rebuild adapter integration', () => {
     expect(codexConfig).toContain('[agents.codex-subagent-simple]');
   });
 
-  it('discovers a safe Codex manifest-only native residue', async () => {
+  it('does not discover a Codex plugin from a private installed manifest', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
       '[marketplaces.aw]',
@@ -4488,13 +4536,17 @@ describe('rebuild adapter integration', () => {
       env: isolation.env,
       platform: 'codex',
       scope: 'user',
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      nativeCliRunner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ installed: [], available: [] }),
+        stderr: '',
+      }),
       nativeFailureMode: 'error',
-    })).resolves.toContain('manifest-only');
+    })).resolves.not.toContain('manifest-only');
   });
 
   it.each(['EACCES', 'EBUSY', 'EIO'])(
-    'fails Codex residue discovery closed on cache readdir %s',
+    'does not read Codex private cache during discovery when readdir returns %s',
     async (code) => {
       const isolation = getCurrentSourceTestIsolation();
       await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
@@ -4518,17 +4570,22 @@ describe('rebuild adapter integration', () => {
         env: isolation.env,
         platform: 'codex',
         scope: 'user',
-        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeCliRunner: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [{
+              pluginId: 'official-only@aw', installed: true, enabled: true, version: '1.0.0',
+            }],
+            available: [],
+          }),
+          stderr: '',
+        }),
         nativeFailureMode: 'error',
-      })).rejects.toMatchObject({
-        code: 'codexNativeResidueProbeFailed',
-        location: cacheRoot,
-        cause: { code },
-      });
+      })).resolves.toContain('official-only');
     },
   );
 
-  it('fails Codex residue discovery closed on an invalid installed manifest', async () => {
+  it('ignores an invalid Codex private installed manifest during discovery', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
       '[marketplaces.aw]',
@@ -4548,9 +4605,13 @@ describe('rebuild adapter integration', () => {
       env: isolation.env,
       platform: 'codex',
       scope: 'user',
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      nativeCliRunner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ installed: [], available: [] }),
+        stderr: '',
+      }),
       nativeFailureMode: 'error',
-    })).rejects.toThrow();
+    })).resolves.not.toContain('broken');
     await expect(fs.pathExists(path.join(
       isolation.layout.codexHomeDir,
       'plugins',

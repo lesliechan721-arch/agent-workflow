@@ -18,7 +18,6 @@ import {
   cleanupOrphanNamespacedMarketplaceRoot,
   commitMarketplaceGenerationBackup,
 } from '../../src/utils/orphan-marketplace-cleanup.js';
-import { discoverCodexNativeResidueNames } from '../../src/commands/rebuild-integration.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
 
 const sourceIdentity = `sha256:${'a'.repeat(64)}`;
@@ -618,15 +617,6 @@ describe('namespaced marketplace root', () => {
         await fs.symlink(outside, cacheRoot);
       }
 
-      await expect(discoverCodexNativeResidueNames({
-        cwd: isolation.layout.fixtureCwd,
-        env: isolation.env,
-        marketplaceName: 'aw',
-        marketplaceRoot: root,
-      })).rejects.toMatchObject({
-        code: 'codexNativeResidueProbeFailed',
-        location: cacheRoot,
-      });
       await expect(cleanupOrphanNamespacedMarketplaceRoot({
         sourceId: 'official',
         sourceIdentity,
@@ -686,12 +676,6 @@ describe('namespaced marketplace root', () => {
     );
     await createResidue(manifestPath);
 
-    await expect(discoverCodexNativeResidueNames({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      marketplaceName: 'aw',
-      marketplaceRoot: root,
-    })).rejects.toMatchObject({ code: 'codexNativeResidueProbeFailed' });
     await expect(cleanupOrphanNamespacedMarketplaceRoot({
       sourceId: 'official',
       sourceIdentity,
@@ -772,24 +756,6 @@ describe('namespaced marketplace root', () => {
       fs.ensureDir(path.join(cacheRoot, 'unrelated')),
     ]);
 
-    await expect(discoverCodexNativeResidueNames({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      marketplaceName: 'aw',
-      marketplaceRoot: root,
-    })).rejects.toMatchObject({
-      code: 'codexNativeResidueProbeFailed',
-      pluginName: 'retained',
-      location: path.join(cacheRoot, 'retained'),
-    });
-    await fs.remove(path.join(cacheRoot, 'retained'));
-    await expect(discoverCodexNativeResidueNames({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      marketplaceName: 'aw',
-      marketplaceRoot: root,
-    })).resolves.toEqual(['retained']);
-    await fs.ensureDir(path.join(cacheRoot, 'retained'));
     await expect(cleanupOrphanNamespacedMarketplaceRoot({
       sourceId: 'official',
       sourceIdentity,

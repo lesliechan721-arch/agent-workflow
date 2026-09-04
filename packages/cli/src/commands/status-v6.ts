@@ -1080,7 +1080,6 @@ async function statusCommandV7InSession(options: {
       return {
         observation: { state: 'unobserved' as const },
         observations: { user: false, project: false },
-        activations: {},
       };
     }
     let inspection = codexRegistrationCache.get(pluginId);
@@ -1138,7 +1137,17 @@ async function statusCommandV7InSession(options: {
               return probe.desired || hasLocalResidue ? 'partial' as const : 'absent' as const;
             }
             if (registration.observation.value === 'absent') return 'absent' as const;
-            return registration.activations[probe.scope] === true
+            if (!userCodexConfig || (probe.scope === 'project' && !projectCodexConfig)) {
+              return 'partial' as const;
+            }
+            const configEnabled = userCodexConfig.snapshot.plugins[
+              `${probe.pluginName}@${probe.marketplaceName}`
+            ]?.enabled === true
+              || (probe.scope === 'project'
+                && projectCodexConfig?.snapshot.plugins[
+                  `${probe.pluginName}@${probe.marketplaceName}`
+                ]?.enabled === true);
+            return configEnabled
               ? 'present' as const
               : 'partial' as const;
           })
@@ -1490,6 +1499,7 @@ async function statusCommandV7InSession(options: {
                         nativeCliRunner,
                         reporter: createNoopReporter(),
                         debugLogger: createNoopDebugLogger(),
+                        codexObservationSession: options.codexObservationSession,
                       },
                       userActivationDesired: codexDesiredUserActivationIds,
                       nativeProbe: readOnlyNativeProbe({
@@ -1652,6 +1662,7 @@ async function statusCommandV7InSession(options: {
                                   nativeCliRunner,
                                   reporter: createNoopReporter(),
                                   debugLogger: createNoopDebugLogger(),
+                                  codexObservationSession: options.codexObservationSession,
                                 },
                                 userActivationDesired: codexDesiredUserActivationIds,
                                 nativeProbe: readOnlyNativeProbe({
@@ -1848,7 +1859,6 @@ async function statusCommandV7InSession(options: {
                   : {
                       observation: { state: 'unobserved' as const },
                       observations: { user: false, project: false },
-                      activations: {},
                     };
                 let residueFailed = false;
                 const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>
@@ -1917,16 +1927,11 @@ async function statusCommandV7InSession(options: {
                   ?.snapshot.plugins[codexPluginId]?.enabled;
                 const configuredProjectActivation = projectCodexConfig
                   ?.snapshot.plugins[codexPluginId]?.enabled;
-                const userActivation = sharedInspection?.activationObservations.user
-                  ? sharedInspection.activations.user === true
-                  : configuredUserActivation;
-                const projectActivation = sharedInspection?.activationObservations.project
-                  && configuredProjectActivation !== undefined
-                  ? configuredProjectActivation && sharedInspection.activations.project === true
-                  : configuredProjectActivation;
+                const userActivation = configuredUserActivation;
+                const projectActivation = configuredProjectActivation;
                 const activationObserved = registrationScope === 'project'
-                  ? sharedInspection?.activationObservations.project === true
-                  : sharedInspection?.activationObservations.user === true;
+                  ? userCodexConfig !== undefined && projectCodexConfig !== undefined
+                  : userCodexConfig !== undefined;
                 codexStatus = {
                   pluginId: codexPluginId,
                   nativeKinds: codexSurface.nativeKinds,
@@ -2372,7 +2377,7 @@ async function statusCommandV7InSession(options: {
     const activation = baseActivation && systemConsumer
       ? {
           ...baseActivation,
-          evidence: baseActivation.evidence === 'observed'
+          evidence: systemConsumer.state === 'compatible'
             ? 'observed' as const
             : systemConsumer.state === 'missing' ? 'assumed' as const : 'unobserved' as const,
           systemConsumer,

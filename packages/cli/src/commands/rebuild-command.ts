@@ -2580,6 +2580,20 @@ async function runRebuildCommandInSession(options: {
         const placementNodes: DependencyPlacementNodeInput[] = [];
         const blockingTargets = new Map<string, string>();
         const actualStates = new Map<string, 'absent' | 'present' | 'partial' | 'error'>();
+        const loadPlacementCodexConfigs = async () => {
+          const [user, project] = await Promise.all((['user', 'project'] as const).map((scope) =>
+            readCodexConfigFile(resolveCodexPaths(
+              options.commandOptions.cwd,
+              scope,
+              runtimeEnv,
+            ).configTomlPath)));
+          return { user, project };
+        };
+        let placementCodexConfigs: ReturnType<typeof loadPlacementCodexConfigs> | undefined;
+        const readPlacementCodexConfigs = () => {
+          placementCodexConfigs ??= loadPlacementCodexConfigs();
+          return placementCodexConfigs;
+        };
         for (const [order, { entry, platform }] of executionSelections.entries()) {
           const relation = selectedIds.has(entry.pluginId) ? 'requested' as const : 'dependency' as const;
           let resolvedScope = options.commandOptions.scope;
@@ -2684,6 +2698,9 @@ async function runRebuildCommandInSession(options: {
           if (codexRegistration) {
             plannedCodexRegistrations.set(codexPluginId, codexRegistration);
           }
+          const placementActivationConfigs = codexRegistration
+            ? await readPlacementCodexConfigs()
+            : undefined;
           const placementState = (
             inspected: typeof requestedInspection,
             scope: Scope,
@@ -2696,8 +2713,12 @@ async function runRebuildCommandInSession(options: {
             if (codexRegistration.observation.state === 'failed') return 'error';
             if (codexRegistration.observation.state === 'unobserved') return 'partial';
             if (codexRegistration.observation.value === 'absent') return 'absent';
-            return codexRegistration.observations[scope]
-              && codexRegistration.activations[scope] === true
+            const configEnabled = placementActivationConfigs!.user
+              .snapshot.plugins[codexPluginId]?.enabled === true
+              || (scope === 'project'
+                && placementActivationConfigs!.project
+                  .snapshot.plugins[codexPluginId]?.enabled === true);
+            return configEnabled
               ? inspected.state
               : 'partial';
           };
@@ -3061,16 +3082,17 @@ async function runRebuildCommandInSession(options: {
           return [...scopes].sort();
         };
         const inspectBothScopes = options.command !== 'cleanup' && options.command !== 'uninstall';
-        const readActivationConfig = async (scope: Scope) => {
-          return readCodexConfigFile(resolveCodexPaths(
-            options.commandOptions.cwd,
-            scope,
-            runtimeEnv,
-          ).configTomlPath);
-        };
         const [userConfig, projectConfig] = await Promise.all([
-          readActivationConfig('user'),
-          readActivationConfig('project'),
+          readCodexConfigFile(resolveCodexPaths(
+            options.commandOptions.cwd,
+            'user',
+            runtimeEnv,
+          ).configTomlPath),
+          readCodexConfigFile(resolveCodexPaths(
+            options.commandOptions.cwd,
+            'project',
+            runtimeEnv,
+          ).configTomlPath),
         ]);
         const catalogClosure: CodexReconcilerCatalogTarget[] = [];
         const liveEvidence: CodexReconcilerLiveEvidence[] = [];
@@ -3206,15 +3228,8 @@ async function runRebuildCommandInSession(options: {
           liveEvidence.push({
             codexPluginId,
             sharedNative,
-            ...(sharedInspection?.actualPayloadDigest
-              ? { sharedNativePayloadDigest: sharedInspection.actualPayloadDigest }
-              : {}),
-            ...(sharedInspection?.payloadPath
-              ? { sharedNativePayloadPath: sharedInspection.payloadPath }
-              : {}),
             activations: {
-              user: sharedInspection?.activations.user
-                ?? userConfig?.snapshot.plugins[codexPluginId]?.enabled,
+              user: userConfig.snapshot.plugins[codexPluginId]?.enabled,
               project: projectConfig?.snapshot.plugins[codexPluginId]?.enabled,
             },
             extensions,
@@ -3375,8 +3390,11 @@ async function runRebuildCommandInSession(options: {
             ? codexPlans.flatMap((codexPlan) => codexPlan.sharedNativeActions).find((action) =>
                 action.pluginId === entry.pluginId)
             : undefined;
+          const codexNativeStillDesired = platform === 'codex'
+            && codexPlans.some((codexPlan) => codexPlan.desiredTargets.some((target) =>
+              target.pluginId === entry.pluginId && target.scopes.length > 0));
           const preserveSharedNative = plannedNative?.action === 'reuse'
-            || plannedNative?.action === 'none';
+            || (plannedNative?.action === 'none' && codexNativeStillDesired);
           const marketplaceName = marketplaceNameFor(entry, platform, planned.resolvedScope);
           try {
             const target = await measureCommandPerformanceStage(
@@ -3435,7 +3453,10 @@ async function runRebuildCommandInSession(options: {
               target.codexNativeObservationExpectation = preserveSharedNative && hasExtensionMutation
                 ? (plannedNative.action === 'reuse' ? 'installed' : 'observed')
                 : undefined;
-              if (!writesSharedNative) {
+              const removesSharedNative = !writesSharedNative
+                && !preserveSharedNative
+                && (buildCommand === 'cleanup' || buildCommand === 'uninstall');
+              if (!writesSharedNative && !removesSharedNative) {
                 const isSharedNativeComponent = (component: OwnedComponent) =>
                   component.kind === 'native-plugin'
                   || (component.kind === 'shared-config'
