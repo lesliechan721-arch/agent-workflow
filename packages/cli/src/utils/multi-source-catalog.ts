@@ -438,6 +438,7 @@ export async function withResolvedCatalogPlugin<T>(
     );
     plugin.sourceId = source.sourceId;
     plugin.sourceIdentity = source.sourceIdentity;
+    plugin.catalogLogicalIdentity = source.logicalIdentity;
     plugin.pluginId = formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName });
     plugin.marketplaceName = source.sourceId === catalog.primarySourceId ? 'aw' : `aw-${source.sourceId}`;
     const resolvedPlugin = { pluginId: plugin.pluginId, source, plugin };

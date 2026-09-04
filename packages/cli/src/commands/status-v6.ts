@@ -1357,6 +1357,7 @@ export async function statusCommandV7(options: {
               const codexSurface = analyzeCodexSurface(plugin.manifest);
               plugin.sourceId = item.resolution!.sourceId;
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
+              plugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let configIssues: StatusV7PluginSummary['configIssues'];
               let configDiagnostic: StatusV7PluginSummary['configDiagnostic'];
@@ -1368,6 +1369,7 @@ export async function statusCommandV7(options: {
                       ? await resolveProjectArtifactRenderConfig({
                           sourceId: plugin.sourceId,
                           sourceIdentity: plugin.sourceIdentity,
+                          logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
                           cwd: options.cwd,
@@ -1376,6 +1378,7 @@ export async function statusCommandV7(options: {
                       : await resolveEffectivePluginConfig({
                           sourceId: plugin.sourceId,
                           sourceIdentity: plugin.sourceIdentity,
+                          logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
                           targetScope: 'user',
@@ -1594,6 +1597,7 @@ export async function statusCommandV7(options: {
                           ).then((dependencyPlugin) => {
                             dependencyPlugin.sourceId = item.resolution!.sourceId;
                             dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
+                            dependencyPlugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
                             dependencyPlugin.pluginId = dependencyId;
                             return dependencyPlugin;
                           });

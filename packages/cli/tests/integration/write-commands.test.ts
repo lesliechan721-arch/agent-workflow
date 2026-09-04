@@ -124,6 +124,13 @@ async function replaceCatalogSourcesConfig(
   return result;
 }
 
+async function readCatalogLogicalIdentity(rootDir: string): Promise<string> {
+  const marker = await fs.readJson(path.join(rootDir, '.aw-generated.json')) as {
+    workspaceIdentity: string;
+  };
+  return marker.workspaceIdentity;
+}
+
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
   const root = path.join(isolation.layout.fixtureCwd, 'write-source');
@@ -681,7 +688,8 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
     await writePluginConfigStore({
-      sourceId: 'official', sourceIdentity, pluginName: 'demo', scope: 'project',
+      sourceId: 'official', sourceIdentity, logicalIdentity: 'workspace:official-transport',
+      pluginName: 'demo', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { mode: 'https' },
     });
 
@@ -728,12 +736,112 @@ describe('five namespaced write commands', () => {
       configWrite: 'succeeded', overallState: 'succeeded',
     });
     await expect(readPluginConfigStore({
-      sourceId: 'official', sourceIdentity, pluginName: 'demo', scope: 'project',
+      sourceId: 'official', sourceIdentity, logicalIdentity: 'workspace:official-transport',
+      pluginName: 'demo', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ exists: true, values: { mode: 'ssh' } });
     await expect(reinstallWriteCommand(['official/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
+  });
+
+  it('keeps project config usable after a path source identity changes with the same logical identity', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = path.join(isolation.layout.fixtureCwd, 'project-config-first-source');
+    const secondRoot = path.join(isolation.layout.fixtureCwd, 'project-config-second-source');
+    const otherRoot = path.join(isolation.layout.fixtureCwd, 'project-config-other-source');
+    const configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'configured', title: 'Configured', content: 'Configured.' }],
+      };
+      manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+    };
+    await Promise.all([
+      createCatalogSnapshotFixture(firstRoot, 'demo', [], 'first\n', configureManifest),
+      createCatalogSnapshotFixture(secondRoot, 'demo', [], 'second\n', configureManifest),
+      createCatalogSnapshotFixture(otherRoot, 'demo', [], 'other\n', configureManifest),
+    ]);
+    const logicalIdentity = 'workspace:portable-project-config';
+    for (const root of [firstRoot, secondRoot]) {
+      const markerPath = path.join(root, '.aw-generated.json');
+      const marker = await fs.readJson(markerPath) as Record<string, unknown>;
+      await fs.writeJson(markerPath, { ...marker, workspaceIdentity: logicalIdentity });
+    }
+    const otherMarkerPath = path.join(otherRoot, '.aw-generated.json');
+    const otherMarker = await fs.readJson(otherMarkerPath) as Record<string, unknown>;
+    await fs.writeJson(otherMarkerPath, {
+      ...otherMarker,
+      workspaceIdentity: 'workspace:different-project-config',
+    });
+
+    const firstSource = { id: 'team', type: 'path', primary: true, path: firstRoot } as const;
+    const secondSource = { ...firstSource, path: secondRoot };
+    const otherSource = { ...firstSource, path: otherRoot };
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [firstSource] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const nativeRuntime = createCodexNativeTestRuntime(isolation);
+    const runPublic = async (args: string[]) => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli([...args, '--json'], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: false,
+        nativeCliRunner: nativeRuntime.nativeCliRunner,
+      });
+      return {
+        exitCode,
+        stdout: captured.readStdout(),
+        stderr: captured.readStderr(),
+      };
+    };
+    expect(await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--scope', 'project', '--value-json', '"first"',
+    ])).toMatchObject({ exitCode: 0 });
+
+    const firstIdentity = await calculateCatalogSourceIdentity(firstSource);
+    const secondIdentity = await calculateCatalogSourceIdentity(secondSource);
+    expect(secondIdentity).not.toBe(firstIdentity);
+    const beforeSecond = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfigWithoutActive({
+      config: { schemaVersion: 2, sources: [secondSource] },
+      expectedDigest: beforeSecond.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    await expect(readPluginConfigStore({
+      sourceId: 'team', sourceIdentity: secondIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({ state: 'ready', values: { mode: 'first' } });
+    expect(await runPublic([
+      'install', 'team/demo', '--platform', 'codex', '--scope', 'project',
+    ])).toMatchObject({ exitCode: 0 });
+    expect(await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--scope', 'project', '--value-json', '"second"',
+      '--apply', '--yes',
+    ])).toMatchObject({ exitCode: 0 });
+
+    const beforeOther = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfigWithoutActive({
+      config: { schemaVersion: 2, sources: [otherSource] },
+      expectedDigest: beforeOther.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const rejected = await runPublic([
+      'config', 'list', 'team/demo', '--scope', 'project',
+    ]);
+    expect(rejected.exitCode).toBe(1);
+    expect(rejected.stderr).toContain('identityMismatch');
   });
 
   it('pins successful TUI source generations when another source is unavailable', async () => {
@@ -835,9 +943,11 @@ describe('five namespaced write commands', () => {
     const sourceIdentity = await calculateCatalogSourceIdentity({
       id: 'good', type: 'path', primary: true, path: sourceRoot,
     });
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     await expect(readPluginConfigStore({
       sourceId: 'good',
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'demo',
       scope: 'project',
       projectLayer: 'shared',
@@ -935,9 +1045,11 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     await writePluginConfigStore({
       sourceId: source.id,
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'target-scoped',
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
@@ -973,6 +1085,7 @@ describe('five namespaced write commands', () => {
     await writePluginConfigStore({
       sourceId: source.id,
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'target-scoped',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -987,6 +1100,7 @@ describe('five namespaced write commands', () => {
     await writePluginConfigStore({
       sourceId: source.id,
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'target-scoped',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -4355,6 +4469,7 @@ describe('five namespaced write commands', () => {
     });
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: { schemaVersion: 2, sources: [source] },
@@ -4425,6 +4540,7 @@ describe('five namespaced write commands', () => {
     await expect(readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'demo',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -4977,9 +5093,10 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     for (const pluginName of ['cleanup-target', 'uninstall-target', 'guard-target']) {
       await writePluginConfigStore({
-        sourceId: 'team', sourceIdentity, pluginName, scope: 'project',
+        sourceId: 'team', sourceIdentity, logicalIdentity, pluginName, scope: 'project',
         cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { mode: 'valid' },
       });
     }
@@ -5421,6 +5538,7 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     const context = createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -5461,12 +5579,14 @@ describe('five namespaced write commands', () => {
     });
     expect(saveResult).toMatchObject({ state: 'stale', review: { title: '保存插件设置' } });
     await expect(readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'project', projectLayer: 'shared',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ exists: false });
 
     await writePluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'project', projectLayer: 'shared',
       cwd: isolation.layout.fixtureCwd, env: isolation.env, values: { mode: 'preserved' },
     });
     const resetResult = await executeWithSourceAdvance({
@@ -5474,7 +5594,8 @@ describe('five namespaced write commands', () => {
     });
     expect(resetResult).toMatchObject({ state: 'stale', review: { title: '重置插件设置' } });
     await expect(readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'demo', scope: 'project', projectLayer: 'shared',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).resolves.toMatchObject({ exists: true, values: { mode: 'preserved' } });
   });
@@ -8320,9 +8441,11 @@ describe('five namespaced write commands', () => {
       expect(concurrentResults[1].reason).toMatchObject({ code: 'operationReviewStale' });
     } else {
       expect(concurrentResults[1].value).toMatchObject({ configWrite: 'succeeded' });
+      const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
       await expect(readPluginConfigStore({
         sourceId: 'team',
         sourceIdentity: (await calculateCatalogSourceIdentity({ id: 'team', type: 'path', primary: true, path: sourceRoot })),
+        logicalIdentity,
         pluginName: 'demo',
         scope: 'project',
         projectLayer: 'shared',
@@ -9052,9 +9175,11 @@ describe('five namespaced write commands', () => {
     const dualSourceIdentity = await calculateCatalogSourceIdentity({
       id: 'dual', type: 'path', primary: false, path: dualRoot,
     });
+    const dualLogicalIdentity = await readCatalogLogicalIdentity(dualRoot);
     expect((await readPluginConfigStore({
       sourceId: 'dual',
       sourceIdentity: dualSourceIdentity,
+      logicalIdentity: dualLogicalIdentity,
       pluginName: 'config-dual',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -9701,6 +9826,7 @@ describe('five namespaced write commands', () => {
     });
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: { schemaVersion: 2, sources: [source] },
@@ -9730,6 +9856,7 @@ describe('five namespaced write commands', () => {
     const readStore = () => readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'demo',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -9799,6 +9926,7 @@ describe('five namespaced write commands', () => {
     await writePluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'demo',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -9908,6 +10036,7 @@ describe('five namespaced write commands', () => {
     });
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: { schemaVersion: 2, sources: [source] },
@@ -9954,6 +10083,7 @@ describe('five namespaced write commands', () => {
     await writePluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
+      logicalIdentity,
       pluginName: 'native-config',
       scope: 'project',
       cwd: isolation.layout.fixtureCwd,
@@ -10416,6 +10546,7 @@ describe('five namespaced write commands', () => {
     const before = await readCatalogSourcesConfigSnapshot(isolation.env);
     const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
     await replaceCatalogSourcesConfig({
       config: { schemaVersion: 2, sources: [source] },
       expectedDigest: before.digest,
@@ -10467,7 +10598,8 @@ describe('five namespaced write commands', () => {
       'codex-explore', 'codex-subagent-guide',
     ]);
     const projectStore = await readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'codex-enhance', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
     expect(projectStore.values.standardProfile).toEqual({
@@ -10497,7 +10629,8 @@ describe('five namespaced write commands', () => {
       payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigUserScopeRequired' })] },
     });
     const projectStoreAfterReject = await readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'project',
+      sourceId: 'team', sourceIdentity, logicalIdentity,
+      pluginName: 'codex-enhance', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
     });
     expect(projectStoreAfterReject.values).not.toHaveProperty('exploreMinimumInitialWaitMinutes');

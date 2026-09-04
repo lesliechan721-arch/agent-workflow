@@ -45,6 +45,9 @@ import {
   withAwHomeMutationLock,
   type AwHomeMutationToken,
 } from './aw-home-mutation-lock.js';
+import {
+  assertProjectSharedConfigPathVisible,
+} from './project-boundary.js';
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -244,6 +247,7 @@ async function reinstallVisibleTargets(options: {
         ...(options.plugin.sourceId ? {
           sourceId: options.plugin.sourceId,
           sourceIdentity: options.plugin.sourceIdentity,
+          logicalIdentity: options.plugin.catalogLogicalIdentity,
         } : {}),
         pluginName: options.plugin.manifest.name,
         manifest: options.plugin.manifest,
@@ -398,6 +402,7 @@ async function configApplyHasIssues(options: {
       ...(options.plugin.sourceId ? {
         sourceId: options.plugin.sourceId,
         sourceIdentity: options.plugin.sourceIdentity,
+        logicalIdentity: options.plugin.catalogLogicalIdentity,
       } : {}),
       pluginName: options.plugin.manifest.name,
       manifest: options.plugin.manifest,
@@ -533,6 +538,7 @@ async function applyPluginConfigWriteUnlocked(
   const configIdentity = options.plugin?.sourceId ? {
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
   } : {};
   const requestedUpdates = options.request.updates ?? {};
   const requestedRemoveKeys = uniqueInOrder(options.request.removeKeys ?? []);
@@ -640,7 +646,7 @@ async function applyPluginConfigWriteUnlocked(
     throw error;
   }
   if (changedKeys.length > 0) {
-    await patchPluginConfigStore({
+    const write = await patchPluginConfigStore({
       ...configIdentity,
       pluginName,
       scope: options.scope,
@@ -650,6 +656,7 @@ async function applyPluginConfigWriteUnlocked(
       removeKeys: requestedRemoveKeys,
       schema,
     });
+    warnings.push(...write.warnings);
   }
 
   const effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
@@ -739,6 +746,20 @@ export async function applyPluginConfigWrite(
   const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
   if (!requestedPluginName) throw new Error('Plugin name is required for config write.');
   assertSafePluginConfigSegment(requestedPluginName);
+  if (options.scope === 'project') {
+    const targetPath = resolvePluginConfigStorePath({
+      sourceId: options.plugin?.sourceId,
+      pluginName: requestedPluginName,
+      scope: 'project',
+      cwd: options.cwd,
+      env: options.env,
+    });
+    await assertProjectSharedConfigPathVisible({
+      cwd: options.cwd,
+      targetPath,
+      env: options.env,
+    });
+  }
   return withAwHomeMutationLock({
     env: options.env,
     token: options.awHomeMutationToken,
@@ -763,6 +784,7 @@ export async function applyPluginConfigWrite(
               ...(options.plugin.sourceId ? {
                 sourceId: options.plugin.sourceId,
                 sourceIdentity: options.plugin.sourceIdentity,
+                logicalIdentity: options.plugin.catalogLogicalIdentity,
               } : {}),
               pluginName: options.plugin.manifest.name,
               manifest: options.plugin.manifest,
@@ -809,6 +831,7 @@ type ResetPluginConfigWriteOptions = {
   pluginName: string;
   sourceId?: string;
   sourceIdentity?: string;
+  logicalIdentity?: string;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -834,12 +857,18 @@ async function resetPluginConfigWithHelperUnlocked(
     cwd: options.cwd,
     env: options.env,
   }) : undefined;
-  let configIdentity = options.plugin?.sourceId ? {
+  let configIdentity: {
+    sourceId?: string;
+    sourceIdentity?: string;
+    logicalIdentity?: string;
+  } = options.plugin?.sourceId ? {
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
   } : options.sourceId ? {
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
+    logicalIdentity: options.logicalIdentity,
   } : {};
   if (options.sourceId && !options.sourceIdentity) {
     try {
@@ -850,9 +879,13 @@ async function resetPluginConfigWithHelperUnlocked(
         cwd: options.cwd,
         env: options.env,
       });
-      if (identity) configIdentity = {
+      if (identity?.binding.kind === 'source') configIdentity = {
         sourceId: options.sourceId,
-        sourceIdentity: identity.sourceIdentity,
+        sourceIdentity: identity.binding.sourceIdentity,
+      };
+      if (identity?.binding.kind === 'catalog') configIdentity = {
+        sourceId: options.sourceId,
+        logicalIdentity: identity.binding.logicalIdentity,
       };
     } catch {
       // Reset does not require a readable or valid envelope.
@@ -994,6 +1027,7 @@ export async function resetPluginConfigWithHelper(
 export async function describeResetAffectedFields(options: {
   sourceId?: string;
   sourceIdentity?: string;
+  logicalIdentity?: string;
   pluginName: string;
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
@@ -1024,9 +1058,11 @@ export async function describeResetAffectedFields(options: {
       ...(options.plugin?.sourceId ? {
         sourceId: options.plugin.sourceId,
         sourceIdentity: options.plugin.sourceIdentity,
+        logicalIdentity: options.plugin.catalogLogicalIdentity,
       } : options.sourceId ? {
         sourceId: options.sourceId,
         sourceIdentity: options.sourceIdentity,
+        logicalIdentity: options.logicalIdentity,
       } : {}),
       pluginName: options.pluginName,
       scope: options.scope,

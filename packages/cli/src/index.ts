@@ -762,7 +762,7 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
-    sourceIdentity: string;
+    sourceIdentity?: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -776,12 +776,11 @@ async function loadStoredConfigWizardCandidates(
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
-        sourceIdentity: store.sourceIdentity,
+        ...(store.binding.kind === 'source'
+          ? { sourceIdentity: store.binding.sourceIdentity }
+          : {}),
         keys: new Set<string>(),
       };
-      if (existing.sourceIdentity !== store.sourceIdentity) {
-        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
-      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -792,7 +791,7 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
-      sourceIdentity: store.sourceIdentity,
+      ...(store.sourceIdentity ? { sourceIdentity: store.sourceIdentity } : {}),
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
@@ -815,7 +814,13 @@ async function resolveStoredConfigResetIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   scope: Scope;
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity?: string }> {
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity?: string;
+  logicalIdentity?: string;
+}> {
   const parsed = parsePluginId(options.selector);
   if (parsed.sourceId) {
     return {
@@ -842,7 +847,9 @@ async function resolveStoredConfigResetIdentity(options: {
     pluginName: match!.pluginName,
     pluginId: match!.pluginId,
     sourceId: match!.sourceId,
-    sourceIdentity: match!.sourceIdentity,
+    ...(match!.binding.kind === 'source'
+      ? { sourceIdentity: match!.binding.sourceIdentity }
+      : { logicalIdentity: match!.binding.logicalIdentity }),
   };
 }
 
@@ -850,7 +857,13 @@ async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity?: string;
+  logicalIdentity?: string;
+}> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
   const stores = (await Promise.all(options.locations.map((location) =>
@@ -860,12 +873,14 @@ async function resolveStoredOnlyConfigIdentity(options: {
       scope: location.scope,
     })))).flat().filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
-  const identities = new Set(stores.map((store) => store.sourceIdentity));
-  if (identities.size !== 1) {
-    throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
+  const sourceBindings = stores.flatMap((store) => store.binding.kind === 'source'
+    ? [store.binding.sourceIdentity] : []);
+  const catalogBindings = stores.flatMap((store) => store.binding.kind === 'catalog'
+    ? [store.binding.logicalIdentity] : []);
+  if (new Set(sourceBindings).size > 1 || new Set(catalogBindings).size > 1) {
+    throw new Error(`identityMismatch: ${options.selector} config stores have different bindings.`);
   }
-  const sourceIdentity = [...identities][0]!;
-  await withResolvedMultiSourceCatalog({
+  const currentSource = await withResolvedMultiSourceCatalog({
     cliVersion: resolveCliVersion(),
     sourceIds: [parsed.sourceId],
     env: options.context.env,
@@ -874,16 +889,24 @@ async function resolveStoredOnlyConfigIdentity(options: {
       if (!source?.resolution) {
         throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
       }
-      if (source.resolution.sourceIdentity !== sourceIdentity) {
-        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
-      }
+      return {
+        sourceIdentity: source.resolution.sourceIdentity,
+        logicalIdentity: source.resolution.logicalIdentity,
+      };
     },
   });
+  if (sourceBindings[0] && sourceBindings[0] !== currentSource.sourceIdentity) {
+    throw new Error(`identityMismatch: ${options.selector} user config does not match the current source identity.`);
+  }
+  if (catalogBindings[0] && catalogBindings[0] !== currentSource.logicalIdentity) {
+    throw new Error(`identityMismatch: ${options.selector} project config does not match the current Catalog logical identity.`);
+  }
   return {
     pluginName: parsed.pluginName,
     pluginId: options.selector,
     sourceId: parsed.sourceId,
-    sourceIdentity,
+    sourceIdentity: currentSource.sourceIdentity,
+    logicalIdentity: currentSource.logicalIdentity,
   };
 }
 
@@ -942,6 +965,7 @@ async function resolveMultiSourceConfigRead(options: {
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
       sourceIdentity: stored.sourceIdentity,
+      logicalIdentity: stored.logicalIdentity,
       pluginName: stored.pluginName,
       plugin: null,
       scope: resolveConfigReadResolution(options.rawOptions.scope),
@@ -3396,6 +3420,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const store = await readPluginConfigStore({
           sourceId: source.sourceId,
           sourceIdentity: source.sourceIdentity,
+          logicalIdentity: source.logicalIdentity,
           pluginName: plugin.manifest.name,
           scope,
           cwd: context.cwd,
@@ -3535,6 +3560,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const affectedFields = await describeResetAffectedFields({
               sourceId: located.sourceId,
               sourceIdentity: located.sourceIdentity,
+              logicalIdentity: located.logicalIdentity,
               pluginName: located.pluginName,
               plugin,
               pluginError,
@@ -3545,6 +3571,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const resetReceipt = await resetPluginConfigWithHelper({
               sourceId: located.sourceId,
               sourceIdentity: located.sourceIdentity,
+              logicalIdentity: located.logicalIdentity,
               pluginName: located.pluginName,
               scope: selectedScope,
               cwd: context.cwd,

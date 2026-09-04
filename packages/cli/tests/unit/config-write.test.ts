@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   visible: new Set<string>(),
   states: new Map<string, 'present' | 'partial' | 'absent' | 'error'>(),
   status: vi.fn(),
+  configVisibility: vi.fn(async () => ({ state: 'visible' as const })),
 }));
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
@@ -19,7 +20,7 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/utils/project-boundary.js')>(),
-  assertProjectSharedConfigPathVisible: vi.fn(async () => undefined),
+  assertProjectSharedConfigPathVisible: mocks.configVisibility,
   ensureProjectPrivateStateIgnore: vi.fn(async () => ({ updated: false })),
 }));
 
@@ -192,6 +193,8 @@ function createReinstallMock(options: {
 beforeEach(() => {
   mocks.visible.clear();
   mocks.states.clear();
+  mocks.configVisibility.mockReset();
+  mocks.configVisibility.mockResolvedValue({ state: 'visible' });
   mocks.status.mockImplementation(async (options: { scope?: Scope }) => ({
     payload: {
       targets: [...mocks.visible].flatMap((key) => {
@@ -270,9 +273,9 @@ describe('config write full reinstall apply', () => {
       };
       const filePath = resolvePluginConfigStorePath(storeOptions);
       await fs.outputFile(filePath, `${JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId: storeOptions.sourceId,
-        sourceIdentity,
+        binding: { kind: 'source', sourceIdentity },
         pluginName: storeOptions.pluginName,
         values: Object.fromEntries([[dangerousKey, 'preserved']]),
       })}\n`);
@@ -341,9 +344,9 @@ describe('config write full reinstall apply', () => {
     };
     const filePath = resolvePluginConfigStorePath(storeOptions);
     await fs.outputJson(filePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: storeOptions.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: storeOptions.pluginName,
       values: { mode: 42 },
     }, { spaces: 2 });
@@ -581,6 +584,7 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     }), '{invalid');
+    mocks.configVisibility.mockClear();
 
     await expect(resetPluginConfigWithHelper({
       pluginName: fixture.plugin.manifest.name,
@@ -594,6 +598,7 @@ describe('config write full reinstall apply', () => {
       resetDisposition: 'deletedFile',
     });
     await expect(fs.pathExists(projectPath)).resolves.toBe(false);
+    expect(mocks.configVisibility).not.toHaveBeenCalled();
   });
 
   it('resets an invalid project store after the inherited user store is ready', async () => {
@@ -977,11 +982,13 @@ describe('config write full reinstall apply', () => {
     const fixture = await createFixture('root');
     fixture.plugin.sourceId = 'team';
     fixture.plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    fixture.plugin.catalogLogicalIdentity = 'catalog.example/team';
     fixture.plugin.pluginId = 'team/root';
     fixture.plugin.marketplaceName = 'aw-team';
     const rootTarget: ReceiptTargetIdentity = {
       sourceId: 'team',
       sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
       pluginId: 'team/root',
       pluginName: 'root',
       platform: 'codex',
@@ -1037,6 +1044,7 @@ describe('config write full reinstall apply', () => {
     expect((await readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
       pluginName: 'root',
       scope: 'project',
       cwd: fixture.cwd,
@@ -1064,6 +1072,72 @@ describe('config write full reinstall apply', () => {
     expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'project']);
     expect(reinstall.mock.calls.every((call) => call[1].scope === 'project')).toBe(true);
     expect(receipt.otherProjectsRequireReinstall).toBe(false);
+  });
+
+  it('writes project config with an unverified shareability warning when Git evidence is unavailable', async () => {
+    const fixture = await createFixture();
+    Object.assign(fixture.plugin, {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'b'.repeat(64)}`,
+      catalogLogicalIdentity: 'catalog.example/official',
+      pluginId: `official/${fixture.plugin.manifest.name}`,
+    });
+    mocks.configVisibility.mockResolvedValue({ state: 'unverified' });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      apply: false,
+    });
+
+    expect(receipt.warnings).toContainEqual(expect.stringContaining(
+      'projectConfigShareabilityUnverified',
+    ));
+    await expect(readPluginConfigStore({
+      sourceId: fixture.plugin.sourceId,
+      sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).resolves.toMatchObject({ state: 'ready', values: { mode: 'fast' } });
+  });
+
+  it('fails before the final write when the project path becomes ignored after the lock-free check', async () => {
+    const fixture = await createFixture();
+    Object.assign(fixture.plugin, {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'c'.repeat(64)}`,
+      catalogLogicalIdentity: 'catalog.example/official',
+      pluginId: `official/${fixture.plugin.manifest.name}`,
+    });
+    const ignored = Object.assign(new Error('projectConfigIgnored: ignored after Review'), {
+      code: 'projectConfigIgnored',
+    });
+    mocks.configVisibility
+      .mockResolvedValueOnce({ state: 'visible' })
+      .mockRejectedValueOnce(ignored);
+    const filePath = resolvePluginConfigStorePath({
+      sourceId: fixture.plugin.sourceId,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      apply: false,
+    })).rejects.toMatchObject({ code: 'projectConfigIgnored' });
+    await expect(fs.pathExists(filePath)).resolves.toBe(false);
   });
 
   it('does not install an absent target', async () => {

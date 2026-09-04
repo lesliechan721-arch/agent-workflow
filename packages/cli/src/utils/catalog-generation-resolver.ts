@@ -43,6 +43,7 @@ export interface ResolvedActiveCatalogGeneration extends CatalogGenerationSetSou
 export interface ResolvedActiveCatalogPluginShallow {
   sourceId: string;
   sourceIdentity: string;
+  logicalIdentity: string;
   catalogVersion: string;
   snapshotPath: string;
   plugin: PluginMeta;
@@ -254,6 +255,7 @@ export async function resolveActiveCatalogPluginShallow(options: {
   return {
     sourceId: source.id,
     sourceIdentity,
+    logicalIdentity: active.logicalIdentity,
     catalogVersion: metadata.catalogVersion,
     snapshotPath: location.snapshotRoot,
     plugin,

@@ -218,6 +218,7 @@ describe('preApply script', () => {
     const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
     const sourceIdentity = `sha256:${'4'.repeat(64)}`;
     plugin.sourceIdentity = sourceIdentity;
+    plugin.catalogLogicalIdentity = 'catalog.example/local';
     const cwd = path.join(plugin.rootDir, 'project');
     const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
     await writePluginConfigStore({
@@ -232,6 +233,7 @@ describe('preApply script', () => {
     await writePluginConfigStore({
       sourceId: plugin.sourceId,
       sourceIdentity,
+      logicalIdentity: plugin.catalogLogicalIdentity,
       pluginName: plugin.manifest.name,
       scope: 'project',
       cwd,

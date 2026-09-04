@@ -42,7 +42,9 @@ import {
   readPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
+  resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
+import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
 import {
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
@@ -277,6 +279,7 @@ function sourceEvidenceForPlugin(
   return {
     sourceId: source.sourceId,
     sourceIdentity: source.sourceIdentity,
+    logicalIdentity: source.logicalIdentity,
     requestedRef: source.requestedRef,
     resolvedCommit: source.resolvedCommit,
     manifestDigest: source.manifestDigest,
@@ -288,15 +291,40 @@ function sourceEvidenceForPlugin(
   };
 }
 
+async function inspectConfigShareability(options: {
+  sourceId?: string;
+  pluginName: string;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<'verified' | 'unverified' | undefined> {
+  if (options.scope !== 'project') return undefined;
+  const targetPath = resolvePluginConfigStorePath({
+    sourceId: options.sourceId,
+    pluginName: options.pluginName,
+    scope: 'project',
+    cwd: options.cwd,
+    env: options.env,
+  });
+  const visibility = await assertProjectSharedConfigPathVisible({
+    cwd: options.cwd,
+    targetPath,
+    env: options.env,
+  });
+  return visibility.state === 'unverified' ? 'unverified' : 'verified';
+}
+
 function assertSourceEvidenceMatches(
   expected: OperationSourceEvidence,
   actual: Pick<
     RebuildReviewPreflightEvidence,
-    'sourceId' | 'sourceIdentity' | 'resolvedCommit' | 'manifestDigest' | 'snapshotDigest' | 'contentDigest'
+    'sourceId' | 'sourceIdentity' | 'logicalIdentity' | 'resolvedCommit'
+    | 'manifestDigest' | 'snapshotDigest' | 'contentDigest'
   >,
 ): void {
   if (actual.sourceId !== expected.sourceId
     || actual.sourceIdentity !== expected.sourceIdentity
+    || actual.logicalIdentity !== expected.logicalIdentity
     || actual.resolvedCommit !== expected.resolvedCommit
     || actual.manifestDigest !== expected.manifestDigest
     || actual.snapshotDigest !== expected.snapshotDigest
@@ -637,6 +665,7 @@ export function createTuiControllerDependencies(
   const readConfigStoresForTui = async (config: {
     sourceId?: string;
     sourceIdentity?: string;
+    logicalIdentity?: string;
     pluginName: string;
     schema: PluginConfigSchema['fields'];
     scope: Scope | 'effective';
@@ -646,6 +675,7 @@ export function createTuiControllerDependencies(
     const stores = await Promise.all(scopes.map((scope) => readPluginConfigStore({
       sourceId: config.sourceId,
       sourceIdentity: config.sourceIdentity,
+      logicalIdentity: config.logicalIdentity,
       pluginName: config.pluginName,
       scope,
       cwd: context.cwd,
@@ -1251,6 +1281,9 @@ export function createTuiControllerDependencies(
         ...(selected.source?.sourceIdentity
           ? { sourceIdentity: selected.source.sourceIdentity }
           : {}),
+        ...(selected.source?.logicalIdentity
+          ? { logicalIdentity: selected.source.logicalIdentity }
+          : {}),
         pluginName: selected.pluginName,
         scope: intent.scope,
         cwd: context.cwd,
@@ -1511,6 +1544,9 @@ export function createTuiControllerDependencies(
       const store = await readPluginConfigStore({
         sourceId: selected.source.sourceId,
         sourceIdentity: selected.source.sourceIdentity,
+        ...('logicalIdentity' in selected.source
+          ? { logicalIdentity: selected.source.logicalIdentity }
+          : {}),
         pluginName: selected.pluginName,
         scope: intent.scope,
         cwd: context.cwd,
@@ -1524,6 +1560,15 @@ export function createTuiControllerDependencies(
           : {}),
         storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
         affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
+        ...(intent.scope === 'project' ? {
+          shareability: await inspectConfigShareability({
+            sourceId: selected.source.sourceId,
+            pluginName: selected.pluginName,
+            scope: intent.scope,
+            cwd: context.cwd,
+            env: context.env,
+          }),
+        } : {}),
         ...('sharedNativeRenderTargets' in selected
           && selected.sharedNativeRenderTargets.length > 0
           ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
@@ -1738,6 +1783,7 @@ export function createTuiControllerDependencies(
           const stores = await readConfigStoresForTui({
             sourceId: plugin.sourceId,
             sourceIdentity: plugin.sourceIdentity,
+            logicalIdentity: plugin.catalogLogicalIdentity,
             pluginName: plugin.manifest.name,
             schema: plugin.manifest.config.fields,
             scope: layer.scope,
@@ -1772,6 +1818,7 @@ export function createTuiControllerDependencies(
           const effectiveRaw = await resolveEffectivePluginConfig({
             sourceId: plugin.sourceId,
             sourceIdentity: plugin.sourceIdentity,
+            logicalIdentity: plugin.catalogLogicalIdentity,
             pluginName: plugin.manifest.name,
             manifest: plugin.manifest,
             targetScope: layer.scope === 'user' ? 'user' : 'project',
@@ -1809,9 +1856,10 @@ export function createTuiControllerDependencies(
         throw new TuiOperationBlockedError('invalidPluginId', '设置目标必须使用 canonical pluginId。');
       }
       let sourceIdentity: string | undefined;
+      let logicalIdentity: string | undefined;
       try {
         const packageInfo = await readCliPackageInfo();
-        sourceIdentity = await withResolvedCatalogPlugin({
+        const source = await withResolvedCatalogPlugin({
           selector: pluginId,
           cliVersion: packageInfo.version,
           env: context.env,
@@ -1819,10 +1867,16 @@ export function createTuiControllerDependencies(
           ...(sessionContextForPlugin(pluginId)
             ? { operationContext: sessionContextForPlugin(pluginId)! }
             : {}),
-          consume: async ({ source }) => source.sourceIdentity,
+          consume: async ({ source }) => ({
+            sourceIdentity: source.sourceIdentity,
+            logicalIdentity: source.logicalIdentity,
+          }),
         });
+        sourceIdentity = source.sourceIdentity;
+        logicalIdentity = source.logicalIdentity;
       } catch {
         sourceIdentity = undefined;
+        logicalIdentity = undefined;
       }
       signal.throwIfAborted();
       const target = await inspectPluginConfigResetTarget({
@@ -1837,6 +1891,7 @@ export function createTuiControllerDependencies(
         const store = await readPluginConfigStore({
           sourceId: parsed.sourceId,
           ...(sourceIdentity ? { sourceIdentity } : {}),
+          ...(logicalIdentity ? { logicalIdentity } : {}),
           pluginName: parsed.pluginName,
           scope: layer.scope,
           cwd: context.cwd,

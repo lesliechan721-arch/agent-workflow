@@ -2474,6 +2474,7 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
     tempDirs.push(tempRoot);
     const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    const logicalIdentity = 'catalog.example/context-helper';
 
     const helperPath = path.join(
       repoRoot(),
@@ -2488,10 +2489,10 @@ describe('authoring tools', () => {
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity,
       pluginName: 'context-helper',
+      binding: { kind: 'source', sourceIdentity },
       values: {
         apiKey: 'user-store-secret',
         mode: 'standard',
@@ -2499,10 +2500,10 @@ describe('authoring tools', () => {
       },
     });
     await fs.writeJson(projectStorePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity,
       pluginName: 'context-helper',
+      binding: { kind: 'catalog', logicalIdentity },
       values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
@@ -2510,6 +2511,7 @@ describe('authoring tools', () => {
         name: 'context-helper',
         sourceId: 'team',
         sourceIdentity,
+        logicalIdentity,
         pluginId: 'team/context-helper',
       },
       config: {
@@ -2608,6 +2610,7 @@ describe('authoring tools', () => {
     const awHome = path.join(tempRoot, 'aw-home');
     const sourceId = 'team';
     const sourceIdentity = `sha256:${'2'.repeat(64)}`;
+    const logicalIdentity = 'catalog.example/config-demo';
     const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
     const bundleRoot = path.join(marketplaceRoot, 'plugins', 'config-demo');
     await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
@@ -2684,6 +2687,7 @@ describe('authoring tools', () => {
       schemaVersion: 2,
       sourceId,
       sourceIdentity,
+      logicalIdentity,
       marketplaceName: `aw-${sourceId}`,
     });
     await fs.ensureDir(projectSubdir);
@@ -2693,10 +2697,10 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId,
-        sourceIdentity,
         pluginName: 'config-demo',
+        binding: { kind: 'source', sourceIdentity },
         values: {
           token: 'user-secret',
           staleUserSecret: 'do-not-print-user',
@@ -2710,10 +2714,10 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId,
-        sourceIdentity,
         pluginName: 'config-demo',
+        binding: { kind: 'catalog', logicalIdentity },
         values: {
           token: 'project-secret',
           mode: 'strict',
@@ -2836,10 +2840,10 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId,
-        sourceIdentity,
         pluginName: 'config-demo',
+        binding: { kind: 'catalog', logicalIdentity },
         values: { token: 'project-secret', metadata: { toString: extraValue } },
       },
       { spaces: 2 },
@@ -2859,10 +2863,10 @@ describe('authoring tools', () => {
     await fs.writeJson(
       path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId,
-        sourceIdentity: `sha256:${'3'.repeat(64)}`,
         pluginName: 'config-demo',
+        binding: { kind: 'catalog', logicalIdentity: 'catalog.example/other' },
         values: { token: 'wrong-source-secret' },
       },
       { spaces: 2 },

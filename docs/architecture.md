@@ -22,7 +22,7 @@
 - `commands/operation-plan.ts` 只拥有 Review fingerprint 和 Receipt 中的已确认动作描述；rebuild executor 不执行该描述。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/multi-source-catalog.ts` 解析 Catalog Sources Config v2 的 Git/path source，并读取本地 Catalog store 中的 Active snapshot。
-- `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v3 和 config v4 输出。
+- `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v4 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 Receipt v6。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
@@ -74,7 +74,7 @@ generated schema 7 snapshot
 - published snapshot 的 release metadata 只含 `state` 和 `sourceHead`，不含 plugin release ledger。Catalog manifest 的 owner/interface 是 Codex 和 Claude projection 的唯一根 metadata 真值。
 - `<AW_HOME>/catalog-sources.json` 缺失时使用内置 `official` source；首次来源修改才物化文件。文件损坏时，TUI 提供显式 Review：精确备份原始 bytes，再原子恢复唯一的 primary `official`；恢复不修改 `catalog-state.json` 或 Catalog store，自定义来源需之后重新添加。并发修复或删除使恢复 stale，TUI 只重新加载当前状态。稳定 CLI 使用 `catalog/latest`，预发布 CLI 使用 `catalog/beta`。`catalog-sources.json` 使用 schema 2；Path source 可带由 Workspace marker identity 绑定的 managed ownership。
 - `runtimes/codex/**` 和 store snapshot 都可删除和重建。它们不决定 live ownership，也不建立新的锁、GC、历史数据库、跨系统事务或补偿状态机。
-- Manifest v3、Catalog snapshot v7、config envelope v3、owner marker/token v3、Intent v2、Status v7 和 Receipt v6 是 beta hard cut。旧状态不读取、不迁移，也不自动删除。推荐使用新的 `AW_HOME`；如需保留旧环境，先用旧 CLI cleanup，再用新 CLI 重建强配置。
+- Manifest v3、Catalog snapshot v7、config envelope v4、owner marker/token v3、Intent v2、Status v7 和 Receipt v6 是 beta hard cut。旧状态不读取、不迁移，也不自动删除。config envelope v3 报告稳定 unsupported issue；schema-independent `config reset` 仍可删除。推荐使用新的 `AW_HOME`；如需保留旧环境，先用旧 CLI cleanup，再用新 CLI 重建强配置。
 
 ### Portable Agent Skills Distribution
 
@@ -211,7 +211,9 @@ TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | e
 
 ownership health 只表示当前 live 组件是否完整。Status v7 的 shared native version 比较投影为 `replaceable: outdated`，target 状态为 `needsSync`，并使用 `codexSharedNativeUpdateRequired` 原因。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v7 JSON。
 
-配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用带 source identity 的 namespaced schemaVersion 3 envelope，并通过原子替换写入。store 结构层只验证 envelope identity 和标量或一层标量对象的基础值形状；字段的 type、preset、required、format、object property 和危险 key 约束在 effective resolution 中验证。无效高层覆盖保留低层值作为解释用 fallback，但 runtime 不使用该 fallback；任一无效覆盖或缺失 required 字段都阻止 apply。对象在层之间完整覆盖，不做子属性深合并。读取只在内存中 canonicalize；真实写入使用 canonical JSON，相同语义的 set 不写 store 或 apply，Review stale evidence 仍绑定原始 store bytes。旧 `plugin-config.local` 和 store v2 不读取、不迁移，也不由 reset 删除。`config set/unset` 要求当前 `config.fields`；它们可保留同层其它基础形状合法但 schema-invalid 的字段以增量修复。写后仍无效时 receipt 报告 `partial`、`configWrite: succeeded` 和 `applySkippedReason: invalidConfig`。`config reset` 是不依赖 Catalog、schema 或 store envelope 有效性的最终恢复入口。完整 plugin ID 和 scope 直接定位；裸名只在所选 scope 的 store 中唯一时允许。final regular file 和 symlink 只 unlink 自身；final directory 原子改名为同父 quarantine basename，不递归删除；其它特殊节点稳定拒绝。receipt 公开 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory`，quarantine 只公开 basename。默认写命令只提交配置；显式 `--apply` 才对当前 cwd 可见的 desired placement 执行 sync。配置提交后，平台 apply 失败不回滚配置；receipt 和 status 报告 partial 结果，用户可再次 sync 恢复。
+配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用 namespaced schemaVersion 4 envelope，并通过原子替换写入。user binding 严格绑定当前 source identity。project binding 只绑定从已验证 Active 或候选证据明确传入的 Catalog logical identity，不绑定 Git URL、SSH/HTTPS transport、本地 path 或 source identity；因此同一 source ID 和 logical identity 在 transport 改变后仍可共享读取。缺少 logical identity 证据时 project 读写 fail closed，不从 URL 或 path 推导。project 写入在 Review 和现有 AW_HOME mutation lock 内的最终提交前检查 Git ignore；明确 ignored 时以 `projectConfigIgnored` 阻止写入且不改 store。Git 缺失、非 worktree 或 `check-ignore` 无法可靠执行时允许写入，并用 `projectConfigShareabilityUnverified` warning 明确表示可共享性未经验证；Receipt v6 与 TUI 的安全 Review/结果投影显示该 warning。reset 不经过 Git visibility 门禁。
+
+store 结构层只验证 envelope identity 和标量或一层标量对象的基础值形状；字段的 type、preset、required、format、object property 和危险 key 约束在 effective resolution 中验证。无效高层覆盖保留低层值作为解释用 fallback，但 runtime 不使用该 fallback；任一无效覆盖或缺失 required 字段都阻止 apply。对象在层之间完整覆盖，不做子属性深合并。读取只在内存中 canonicalize；真实写入使用 canonical JSON，相同语义的 set 不写 store 或 apply，Review stale evidence 仍绑定原始 store bytes。旧 `plugin-config.local`、store v2 和 envelope v3 不读取、不迁移或自动重写；schema-independent reset 仍可删除 namespaced v3。`config set/unset` 要求当前 `config.fields`；它们可保留同层其它基础形状合法但 schema-invalid 的字段以增量修复。写后仍无效时 receipt 报告 `partial`、`configWrite: succeeded` 和 `applySkippedReason: invalidConfig`。`config reset` 是不依赖 Catalog、schema 或 store envelope 有效性的最终恢复入口。完整 plugin ID 和 scope 直接定位；裸名只在所选 scope 的 store 中唯一时允许。final regular file 和 symlink 只 unlink 自身；final directory 原子改名为同父 quarantine basename，不递归删除；其它特殊节点稳定拒绝。receipt 公开 `absent | deletedFile | unlinkedSymlink | quarantinedDirectory`，quarantine 只公开 basename。默认写命令只提交配置；显式 `--apply` 才对当前 cwd 可见的 desired placement 执行 sync。配置提交后，平台 apply 失败不回滚配置；receipt 和 status 报告 partial 结果，用户可再次 sync 恢复。
 
 user scope 变更命中 `codex-native` target 的 `refreshKeys`，且 `--apply` 将更新可见 Codex placement 时，公开 CLI 必须在写 config 或 materialize 前要求 `--yes`；不带 `--apply` 仍只保存 user config。
 

@@ -118,6 +118,7 @@ export interface CatalogSourcesConfig {
 export interface CatalogSourceResolution {
   sourceId: CatalogSourceId;
   sourceIdentity: SourceIdentity;
+  logicalIdentity: string;
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;

@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/manifest';
@@ -5,7 +7,10 @@ import { normalizePluginConfigDefinition } from '@lesliechan721/aw-plugin-core/m
 import type { NormalizedPluginManifest } from '../../src/types.js';
 import {
   patchPluginConfigStore,
+  listNamespacedPluginConfigStores,
+  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
+  resetPluginConfigStore,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
   writePluginConfigStore,
@@ -13,6 +18,7 @@ import {
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const sourceIdentity = `sha256:${'7'.repeat(64)}`;
+const logicalIdentity = 'catalog.example/config-tests';
 const config = normalizePluginConfigDefinition({
   fields: {
     connection: {
@@ -42,6 +48,7 @@ function storeOptions(scope: 'user' | 'project') {
   return {
     sourceId: 'official',
     sourceIdentity,
+    logicalIdentity,
     pluginName: manifest.name,
     scope,
     cwd: isolation.layout.fixtureCwd,
@@ -49,7 +56,114 @@ function storeOptions(scope: 'user' | 'project') {
   };
 }
 
-describe('plugin config Store v3', () => {
+describe('plugin config Store v4', () => {
+  it('binds user config to transport identity and project config to Catalog logical identity', async () => {
+    const user = storeOptions('user');
+    const project = storeOptions('project');
+    await writePluginConfigStore({ ...user, values: { labels: { transport: 'https' } } });
+    await writePluginConfigStore({ ...project, values: { labels: { shared: 'project' } } });
+
+    await expect(readPluginConfigStore({
+      ...user,
+      sourceIdentity: `sha256:${'8'.repeat(64)}`,
+    })).resolves.toMatchObject({ state: 'invalid', invalidCode: 'identityMismatch' });
+    for (const transportIdentity of [
+      `sha256:${'8'.repeat(64)}`,
+      `sha256:${'9'.repeat(64)}`,
+      `sha256:${'a'.repeat(64)}`,
+    ]) {
+      await expect(readPluginConfigStore({
+        ...project,
+        sourceIdentity: transportIdentity,
+      })).resolves.toMatchObject({ state: 'ready', values: { labels: { shared: 'project' } } });
+    }
+    await expect(readPluginConfigStore({
+      ...project,
+      logicalIdentity: 'catalog.example/other',
+    })).resolves.toMatchObject({ state: 'invalid', invalidCode: 'identityMismatch' });
+
+    await expect(writePluginConfigStore({
+      ...user,
+      pluginName: `${manifest.name}-missing-user`,
+      sourceIdentity: undefined,
+      values: { labels: { invalid: 'user' } },
+    })).rejects.toThrow('sourceChanged');
+    await expect(writePluginConfigStore({
+      ...project,
+      pluginName: `${manifest.name}-missing-project`,
+      logicalIdentity: undefined,
+      values: { labels: { invalid: 'project' } },
+    })).rejects.toThrow('catalogUnavailable');
+  });
+
+  it('does not read or migrate schema v3 and resets it without Catalog evidence', async () => {
+    for (const scope of ['user', 'project'] as const) {
+      const options = storeOptions(scope);
+      const filePath = resolvePluginConfigStorePath(options);
+      await fs.outputJson(filePath, {
+        schemaVersion: 3,
+        sourceId: options.sourceId,
+        sourceIdentity,
+        pluginName: manifest.name,
+        values: { labels: { old: 'value' } },
+      });
+      const before = await fs.readFile(filePath);
+      await expect(readPluginConfigStore(options)).resolves.toMatchObject({
+        state: 'invalid',
+        invalidCode: 'schemaVersionUnsupported',
+      });
+      await expect(fs.readFile(filePath)).resolves.toEqual(before);
+      await expect(resetPluginConfigStore({
+        sourceId: options.sourceId,
+        pluginName: options.pluginName,
+        scope,
+        cwd: options.cwd,
+        env: options.env,
+      })).resolves.toMatchObject({ deleted: true, resetDisposition: 'deletedFile' });
+    }
+  });
+
+  it('rejects extra v4 envelope fields in runtime and inventory readers', async () => {
+    const user = storeOptions('user');
+    await writePluginConfigStore({ ...user, values: { labels: { mode: 'strict' } } });
+    const filePath = resolvePluginConfigStorePath(user);
+    const envelope = await fs.readJson(filePath) as Record<string, unknown>;
+    envelope.sourceIdentity = sourceIdentity;
+    await fs.writeJson(filePath, envelope);
+
+    await expect(readPluginConfigStore(user)).resolves.toMatchObject({
+      state: 'invalid',
+      invalidCode: 'schemaVersionUnsupported',
+    });
+    await expect(readNamespacedPluginConfigStoreIdentity(user))
+      .rejects.toThrow('schemaVersionUnsupported');
+    await expect(listNamespacedPluginConfigStores({
+      cwd: user.cwd,
+      env: user.env,
+      scope: 'user',
+    })).rejects.toThrow('schemaVersionUnsupported');
+  });
+
+  it('writes project config with a warning when Git spawn returns ENOENT', async () => {
+    const project = storeOptions('project');
+    const receipt = await writePluginConfigStore({
+      ...project,
+      env: {
+        ...project.env,
+        PATH: path.join(getCurrentSourceTestIsolation().layout.rootDir, 'missing-bin'),
+      },
+      values: { labels: { shareability: 'unknown' } },
+    });
+
+    expect(receipt.warnings).toContainEqual(expect.stringContaining(
+      'projectConfigShareabilityUnverified',
+    ));
+    await expect(readPluginConfigStore(project)).resolves.toMatchObject({
+      state: 'ready',
+      values: { labels: { shareability: 'unknown' } },
+    });
+  });
+
   it('atomically overrides an object at its top-level key and unsets to inheritance', async () => {
     const user = storeOptions('user');
     const project = storeOptions('project');
@@ -65,6 +179,7 @@ describe('plugin config Store v3', () => {
     const overridden = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       cwd: user.cwd,
       env: user.env,
@@ -80,6 +195,7 @@ describe('plugin config Store v3', () => {
     const userTarget = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       targetScope: 'user',
       cwd: user.cwd,
@@ -88,6 +204,7 @@ describe('plugin config Store v3', () => {
     const projectTarget = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       targetScope: 'project',
       cwd: user.cwd,
@@ -107,6 +224,7 @@ describe('plugin config Store v3', () => {
     const inherited = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       cwd: user.cwd,
       env: user.env,
@@ -118,6 +236,7 @@ describe('plugin config Store v3', () => {
     await expect(resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       targetScope: 'user',
       cwd: user.cwd,
@@ -139,9 +258,9 @@ describe('plugin config Store v3', () => {
     const user = storeOptions('user');
     const filePath = resolvePluginConfigStorePath(user);
     await fs.outputJson(filePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: user.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
       values: { connection: { region: 42 } },
     });
@@ -154,6 +273,7 @@ describe('plugin config Store v3', () => {
       await expect(resolveEffectivePluginConfig({
         sourceId: user.sourceId,
         sourceIdentity,
+        logicalIdentity,
         manifest,
         targetScope,
         cwd: user.cwd,
@@ -174,9 +294,9 @@ describe('plugin config Store v3', () => {
   it('validates fixed and key-value objects without mixing their schemas', async () => {
     const user = storeOptions('user');
     await fs.outputJson(resolvePluginConfigStorePath(user), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: user.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
       values: {
         connection: { 'display-name': 'fixed' },
@@ -193,9 +313,9 @@ describe('plugin config Store v3', () => {
     });
 
     await fs.outputJson(resolvePluginConfigStorePath(user), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: user.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
       values: { labels: { 'bad key': 'dynamic' } },
     });
@@ -206,6 +326,7 @@ describe('plugin config Store v3', () => {
     await expect(resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       targetScope: 'user',
       cwd: user.cwd,
@@ -224,9 +345,9 @@ describe('plugin config Store v3', () => {
       values: { connection: { region: 'user', token: 'user-secret' } },
     });
     await fs.outputJson(resolvePluginConfigStorePath(project), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: project.sourceId,
-      sourceIdentity,
+      binding: { kind: 'catalog', logicalIdentity },
       pluginName: manifest.name,
       values: { connection: { region: 42 } },
     });
@@ -234,6 +355,7 @@ describe('plugin config Store v3', () => {
     const invalid = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       cwd: user.cwd,
       env: user.env,
@@ -251,6 +373,7 @@ describe('plugin config Store v3', () => {
     const restored = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       cwd: user.cwd,
       env: user.env,
@@ -261,9 +384,9 @@ describe('plugin config Store v3', () => {
   it('treats a dangerous dynamic object key as a recoverable field error', async () => {
     const user = storeOptions('user');
     await fs.outputFile(resolvePluginConfigStorePath(user), JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: user.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
       values: { labels: JSON.parse('{"__proto__":"value"}') },
     }));
@@ -273,6 +396,7 @@ describe('plugin config Store v3', () => {
     const effective = await resolveEffectivePluginConfig({
       sourceId: user.sourceId,
       sourceIdentity,
+      logicalIdentity,
       manifest,
       targetScope: 'user',
       cwd: user.cwd,
@@ -286,9 +410,9 @@ describe('plugin config Store v3', () => {
     const user = storeOptions('user');
     const filePath = resolvePluginConfigStorePath(user);
     await fs.outputJson(filePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: user.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: manifest.name,
       values: { labels: { z: 'last', a: 'first' }, connection: { token: 'secret', region: 'west' } },
     });

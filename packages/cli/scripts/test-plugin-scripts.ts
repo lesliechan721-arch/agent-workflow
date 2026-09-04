@@ -401,6 +401,7 @@ async function writeTestContext(options: {
   testConfigValues?: Record<string, PluginConfigValue>;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
   const sourceId = 'plugin-test';
+  const logicalIdentity = 'plugin-test';
   const sourceIdentity = `sha256:${crypto.createHash('sha256')
     .update(`${sourceId}/${options.manifest.name}`, 'utf8')
     .digest('hex')}`;
@@ -421,18 +422,25 @@ async function writeTestContext(options: {
     }),
   };
   if (options.manifest.config?.fields) {
-    await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
-      schemaVersion: 3,
-      sourceId,
-      sourceIdentity,
-      pluginName: options.manifest.name,
-      values: options.testConfigValues ?? {},
-    }, { spaces: 2 })));
+    await Promise.all(Object.entries(configStores).map(([scope, storePath]) => fs.outputJson(
+      storePath,
+      {
+        schemaVersion: 4,
+        sourceId,
+        pluginName: options.manifest.name,
+        binding: scope === 'user'
+          ? { kind: 'source', sourceIdentity }
+          : { kind: 'catalog', logicalIdentity },
+        values: options.testConfigValues ?? {},
+      },
+      { spaces: 2 },
+    )));
   }
   const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
         sourceId,
         sourceIdentity,
+        logicalIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
@@ -448,6 +456,7 @@ async function writeTestContext(options: {
       rootDir: options.bundleRoot,
       sourceId,
       sourceIdentity,
+      logicalIdentity,
       pluginId: `${sourceId}/${options.manifest.name}`,
     },
     sourceRoot: options.sourceRoot,

@@ -174,6 +174,7 @@ export interface OperationEvidence {
   source?: {
     sourceId: string;
     sourceIdentity: string;
+    logicalIdentity?: string;
     requestedRef?: string;
     resolvedCommit?: string;
     manifestDigest?: string;
@@ -199,6 +200,7 @@ export interface OperationEvidence {
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+    shareability?: 'verified' | 'unverified';
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
   };
   resetTarget?: {
@@ -631,8 +633,14 @@ export function operationEvidenceFingerprint(evidence: OperationEvidence): strin
       .digest('hex');
   }
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
+  const config = staleEvidence.config
+    ? (({ shareability: _shareability, ...identity }) => identity)(staleEvidence.config)
+    : undefined;
   return crypto.createHash('sha256')
-    .update(JSON.stringify(stableValue(staleEvidence)))
+    .update(JSON.stringify(stableValue({
+      ...staleEvidence,
+      ...(config ? { config } : {}),
+    })))
     .digest('hex');
 }
 
@@ -2805,6 +2813,12 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     const quarantineBasename = typeof execution === 'object' && execution !== null
       ? (execution as { quarantineBasename?: unknown }).quarantineBasename
       : undefined;
+    const publicWarnings = typeof execution === 'object' && execution !== null
+      && Array.isArray((execution as { warnings?: unknown }).warnings)
+      ? (execution as { warnings: unknown[] }).warnings.filter((warning): warning is string =>
+          typeof warning === 'string'
+          && warning.startsWith('projectConfigShareabilityUnverified:'))
+      : [];
     const partial = overallState === 'partial'
       || invalidConfig
       || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
@@ -2820,6 +2834,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       configScope: intent.scope,
       configApplyRetryAvailable: intent.kind === 'configSave'
         && intent.apply && !invalidConfig && (failed || partial),
+      ...(publicWarnings.length > 0 ? { messages: publicWarnings.map((warning) => `警告：${warning}`) } : {}),
       ...(intent.kind === 'configSave'
         ? { configApplied: invalidConfig ? false : intent.apply }
         : invalidConfig ? { configApplied: false } : {}),

@@ -772,17 +772,31 @@ function missingStore(filePath) {
   return { path: filePath, state: 'missing', exists: false, values: {} };
 }
 
-function readStore(filePath, identity, schema) {
+function readStore(filePath, identity, schema, scope) {
   if (!fs.existsSync(filePath)) return missingStore(filePath);
   const envelope = readJsonFile(filePath, 'plugin config store');
-  if (!isRecord(envelope) || envelope.schemaVersion !== 3) {
-    fail('schemaVersionUnsupported: Only plugin config store schemaVersion 3 is supported.');
+  if (!isRecord(envelope) || envelope.schemaVersion !== 4) {
+    fail('schemaVersionUnsupported: Only plugin config store schemaVersion 4 is supported.');
   }
   if (
     envelope.sourceId !== identity.sourceId
-    || envelope.sourceIdentity !== identity.sourceIdentity
     || envelope.pluginName !== identity.pluginName
   ) fail('identityMismatch: Plugin config store identity does not match its path.');
+  const binding = envelope.binding;
+  const bindingMatches = scope === 'user'
+    ? isRecord(binding)
+      && binding.kind === 'source'
+      && binding.sourceIdentity === identity.sourceIdentity
+      && Object.keys(binding).every((key) => ['kind', 'sourceIdentity'].includes(key))
+    : isRecord(binding)
+      && binding.kind === 'catalog'
+      && binding.logicalIdentity === identity.logicalIdentity
+      && Object.keys(binding).every((key) => ['kind', 'logicalIdentity'].includes(key));
+  if (!bindingMatches) fail('identityMismatch: Plugin config store binding does not match its scope identity.');
+  if (Object.keys(envelope).some((key) =>
+    !['schemaVersion', 'sourceId', 'pluginName', 'binding', 'values'].includes(key))) {
+    fail('schemaVersionUnsupported: Plugin config store schemaVersion 4 envelope is invalid.');
+  }
   return {
     path: filePath,
     state: 'ready',
@@ -850,6 +864,7 @@ function resolveFromStores({ identity, schema, scope, stores }) {
     pluginName: identity.pluginName,
     sourceId: identity.sourceId,
     sourceIdentity: identity.sourceIdentity,
+    logicalIdentity: identity.logicalIdentity,
     pluginId: `${identity.sourceId}/${identity.pluginName}`,
     scope,
     values: state.values,
@@ -864,14 +879,19 @@ function resolveFromStores({ identity, schema, scope, stores }) {
 function contextIdentity(context, pluginName) {
   const sourceId = context.plugin?.sourceId;
   const sourceIdentity = context.plugin?.sourceIdentity;
-  if ((sourceId === undefined) !== (sourceIdentity === undefined)) {
+  const logicalIdentity = context.plugin?.logicalIdentity;
+  if ([sourceId, sourceIdentity, logicalIdentity].some((value) => value === undefined)
+    && [sourceId, sourceIdentity, logicalIdentity].some((value) => value !== undefined)) {
     fail('AW_PLUGIN_CONTEXT contains an incomplete source identity.');
   }
   if (sourceId === undefined) return null;
   if (typeof sourceIdentity !== 'string' || !SOURCE_IDENTITY_PATTERN.test(sourceIdentity)) {
     fail('AW_PLUGIN_CONTEXT contains an invalid source identity.');
   }
-  return { pluginName, sourceId: safeSegment(sourceId), sourceIdentity };
+  if (typeof logicalIdentity !== 'string' || logicalIdentity.trim() === '') {
+    fail('AW_PLUGIN_CONTEXT contains an invalid Catalog logical identity.');
+  }
+  return { pluginName, sourceId: safeSegment(sourceId), sourceIdentity, logicalIdentity };
 }
 
 function resolveFromContext(scope) {
@@ -900,6 +920,7 @@ function resolveFromContext(scope) {
       ...(identity ? {
         sourceId: identity.sourceId,
         sourceIdentity: identity.sourceIdentity,
+        logicalIdentity: identity.logicalIdentity,
         pluginId: `${identity.sourceId}/${pluginName}`,
       } : {}),
       scope,
@@ -925,7 +946,7 @@ function resolveFromContext(scope) {
   if (typeof storePath !== 'string' || storePath.trim() === '') {
     fail(`AW_PLUGIN_CONTEXT does not provide a ${scope} config store path.`);
   }
-  const store = readStore(storePath, identity, schema);
+  const store = readStore(storePath, identity, schema, scope);
   return resolveFromStores({
     identity,
     schema,
@@ -948,14 +969,17 @@ function resolveFallback(scope) {
   const marketplace = readJsonFile(path.join(marketplaceRoot, 'config.json'), 'marketplace config');
   const sourceId = safeSegment(marketplace.sourceId);
   const sourceIdentity = marketplace.sourceIdentity;
+  const logicalIdentity = marketplace.logicalIdentity;
   if (
     marketplace.schemaVersion !== 2
     || sourceId !== path.basename(marketplaceRoot)
     || typeof sourceIdentity !== 'string'
     || !SOURCE_IDENTITY_PATTERN.test(sourceIdentity)
+    || typeof logicalIdentity !== 'string'
+    || logicalIdentity.trim() === ''
     || !['aw', `aw-${sourceId}`].includes(marketplace.marketplaceName)
   ) fail('Marketplace config does not contain a canonical schema 2 source identity.');
-  const identity = { sourceId, sourceIdentity, pluginName };
+  const identity = { sourceId, sourceIdentity, logicalIdentity, pluginName };
   const cwd = process.cwd();
   const projectRoot = resolveProjectRoot(cwd);
   for (const legacyPath of [
@@ -967,10 +991,10 @@ function resolveFallback(scope) {
   const stores = {
     user: scope === 'project'
       ? missingStore('')
-      : readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema),
+      : readStore(resolveStorePath(sourceId, pluginName, 'user', cwd), identity, schema, 'user'),
     project: scope === 'user'
       ? missingStore('')
-      : readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema),
+      : readStore(resolveStorePath(sourceId, pluginName, 'project', cwd), identity, schema, 'project'),
   };
   return resolveFromStores({ identity, schema, scope, stores });
 }

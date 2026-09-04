@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
-  it('writes the exact schema 3 namespaced envelope with source identity', async () => {
+  it('writes the exact schema 4 namespaced envelope with source binding', async () => {
     const fixture = await makeFixture();
     const options = {
       sourceId: 'official',
@@ -54,9 +54,9 @@ describe('plugin config atomic writes', () => {
     };
     await writePluginConfigStore({ ...options, values: { enabled: true } });
     await expect(fs.readJson(resolvePluginConfigStorePath(options))).resolves.toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: options.sourceId,
-      sourceIdentity: options.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
       values: { enabled: true },
     });
@@ -195,9 +195,9 @@ describe('plugin config atomic writes', () => {
     {
       code: 'identityMismatch',
       content: JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId: 'other',
-        sourceIdentity: `sha256:${'f'.repeat(64)}`,
+        binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
         values: { mode: 'safe' },
       }),
@@ -205,9 +205,9 @@ describe('plugin config atomic writes', () => {
     {
       code: 'invalidValues',
       content: JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId: 'official',
-        sourceIdentity: `sha256:${'f'.repeat(64)}`,
+        binding: { kind: 'source', sourceIdentity: `sha256:${'f'.repeat(64)}` },
         pluginName: 'invalid-projection',
         values: { mode: { nested: { rejected: true } } },
       }),
@@ -249,9 +249,9 @@ describe('plugin config atomic writes', () => {
       exists: true,
       state: 'ready',
       issues: [],
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'other',
-      sourceIdentity: options.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: options.sourceIdentity },
       pluginName: options.pluginName,
       values: { mode: 'safe' },
     });
@@ -259,7 +259,7 @@ describe('plugin config atomic writes', () => {
     await expect(readPluginConfigStore(options)).resolves.toMatchObject({
       path: filePath,
       state: 'invalid',
-      invalidCode: 'identityMismatch',
+      invalidCode: 'schemaVersionUnsupported',
       values: {},
     });
   });
@@ -424,9 +424,9 @@ describe('plugin config atomic writes', () => {
     const foreignOptions = { ...base, pluginName: 'foreign-store' };
     const foreignPath = resolvePluginConfigStorePath(foreignOptions);
     await fs.outputJson(foreignPath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'someone-else',
-      sourceIdentity: base.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: base.sourceIdentity },
       pluginName: foreignOptions.pluginName,
       values: { retained: true },
     });

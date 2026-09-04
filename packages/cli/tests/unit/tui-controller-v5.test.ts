@@ -3371,6 +3371,39 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.activeReview).toBeUndefined();
   });
 
+  it('projects only the stable project shareability warning into the config result', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+        warnings: [
+          'projectConfigShareabilityUnverified: Git evidence unavailable.',
+          'private diagnostic /Users/example',
+        ],
+      }),
+    }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'project', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      apply: false,
+      updates: { mode: 'strict' },
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result.summary.messages).toEqual([
+      '警告：projectConfigShareabilityUnverified: Git evidence unavailable.',
+    ]);
+  });
+
   it('reports a saved invalid config with no target writes as unapplied partial', async () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({

@@ -257,6 +257,7 @@ async function materializePluginCandidates(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: options.scope,
@@ -460,6 +461,7 @@ export async function materializePortableSkillsFromCatalog(
         for (const plugin of plugins) {
           plugin.sourceId = source.sourceId;
           plugin.sourceIdentity = source.sourceIdentity;
+          plugin.catalogLogicalIdentity = source.logicalIdentity;
           plugin.pluginId = `${source.sourceId}/${plugin.manifest.name}`;
         }
         const materialized = await materializePortableSkills({

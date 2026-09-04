@@ -161,6 +161,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   namespacedSource?: {
     sourceId: string;
     sourceIdentity: string;
+    logicalIdentity: string;
     marketplaceName: string;
     marketplaceRoot: string;
   };
@@ -229,6 +230,7 @@ export interface RebuildReviewPreflightEvidence {
   generationSetDigest?: string;
   sourceId?: string;
   sourceIdentity?: string;
+  logicalIdentity?: string;
   resolvedCommit?: string;
   manifestDigest?: string;
   snapshotDigest?: string;
@@ -706,6 +708,7 @@ async function runSingleSourceRebuildCommand(options: {
     for (const plugin of catalogPlugins) {
       plugin.sourceId = options.runtime.namespacedSource.sourceId;
       plugin.sourceIdentity = options.runtime.namespacedSource.sourceIdentity;
+      plugin.catalogLogicalIdentity = options.runtime.namespacedSource.logicalIdentity;
       plugin.pluginId = formatPluginId({
         sourceId: options.runtime.namespacedSource.sourceId,
         pluginName: plugin.manifest.name,
@@ -1433,6 +1436,7 @@ async function buildForceExclusiveCleanupPlan(options: {
     const pluginId = formatPluginId({ sourceId, pluginName: parsed.pluginName });
     plugin.sourceId = sourceId;
     plugin.sourceIdentity = active.sourceIdentity;
+    plugin.catalogLogicalIdentity = active.logicalIdentity;
     plugin.pluginId = pluginId;
     plugin.marketplaceName = sourceId === options.primarySourceId ? 'aw' : `aw-${sourceId}`;
     const context: RebuildExecutionContext = {
@@ -2162,6 +2166,7 @@ export async function runRebuildCommand(options: {
         );
         plugin.sourceId = candidate.source.sourceId;
         plugin.sourceIdentity = candidate.source.sourceIdentity;
+        plugin.catalogLogicalIdentity = candidate.source.logicalIdentity;
         plugin.pluginId = candidate.pluginId;
         return { source: candidate.source, plugin, pluginId: candidate.pluginId };
       }));
@@ -2776,6 +2781,7 @@ export async function runRebuildCommand(options: {
               ? await resolveArtifactRenderConfig({
                   sourceId: entry.source.sourceId,
                   sourceIdentity: entry.source.sourceIdentity,
+                  logicalIdentity: entry.source.logicalIdentity,
                   pluginName: entry.plugin.manifest.name,
                   manifest: entry.plugin.manifest,
                   scope: 'project',
@@ -2785,6 +2791,7 @@ export async function runRebuildCommand(options: {
               : await resolveEffectivePluginConfig({
                   sourceId: entry.source.sourceId,
                   sourceIdentity: entry.source.sourceIdentity,
+                  logicalIdentity: entry.source.logicalIdentity,
                   pluginName: entry.plugin.manifest.name,
                   manifest: entry.plugin.manifest,
                   targetScope: 'user',
@@ -3441,6 +3448,7 @@ export async function runRebuildCommand(options: {
           const effective = await resolveEffectivePluginConfig({
             sourceId: entry.source.sourceId,
             sourceIdentity: entry.source.sourceIdentity,
+            logicalIdentity: entry.source.logicalIdentity,
             pluginName: entry.plugin.manifest.name,
             manifest: entry.plugin.manifest,
             targetScope: scope,
@@ -3553,6 +3561,7 @@ export async function runRebuildCommand(options: {
               : {}),
             sourceId: entry.source.sourceId,
             sourceIdentity: entry.source.sourceIdentity,
+            logicalIdentity: entry.source.logicalIdentity,
             resolvedCommit: entry.source.resolvedCommit,
             manifestDigest: entry.source.manifestDigest,
             snapshotDigest: entry.source.snapshotDigest,
@@ -4356,6 +4365,7 @@ export async function runRebuildCommand(options: {
         const namespacedSource = {
           sourceId: entry.source.sourceId,
           sourceIdentity: entry.source.sourceIdentity,
+          logicalIdentity: entry.source.logicalIdentity,
           marketplaceName,
           marketplaceRoot: path.join(resolveAwHome(runtimeEnv), 'marketplaces', entry.source.sourceId),
         };
@@ -4397,6 +4407,7 @@ export async function runRebuildCommand(options: {
                   : {}),
                 sourceId: entry.source.sourceId,
                 sourceIdentity: entry.source.sourceIdentity,
+                logicalIdentity: entry.source.logicalIdentity,
                 resolvedCommit: entry.source.resolvedCommit,
                 manifestDigest: entry.source.manifestDigest,
                 snapshotDigest: entry.source.snapshotDigest,
@@ -4563,6 +4574,7 @@ export async function runRebuildCommand(options: {
               namespacedSource: {
                 sourceId: entry.source.sourceId,
                 sourceIdentity: entry.source.sourceIdentity,
+                logicalIdentity: entry.source.logicalIdentity,
                 marketplaceName,
                 marketplaceRoot: path.join(
                   resolveAwHome(runtimeEnv),

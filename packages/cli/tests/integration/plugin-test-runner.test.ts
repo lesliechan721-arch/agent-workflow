@@ -278,7 +278,7 @@ describe('plugin script test runner', () => {
     expect(output.readStderr()).not.toContain('bad-neighbor');
   });
 
-  it('runs the standard author helper against two namespaced schema 3 test stores', async () => {
+  it('runs the standard author helper against two namespaced schema 4 test stores', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);
     manifest.config = {
@@ -341,13 +341,13 @@ describe('plugin script test runner', () => {
       'const execFileAsync = promisify(execFile);',
       'test("namespaced config scopes", async () => {',
       '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
-      '  const { sourceId, sourceIdentity, name, pluginId } = context.plugin;',
+      '  const { sourceId, sourceIdentity, logicalIdentity, name, pluginId } = context.plugin;',
       '  assert.equal(pluginId, `${sourceId}/${name}`);',
       '  for (const [scope, key] of [["user", "user"], ["project", "project"]]) {',
       '    const storePath = context.paths.configStores[key];',
       '    assert.equal(storePath.includes(path.join(sourceId, name, "config.json")), true);',
       '    const envelope = JSON.parse(await readFile(storePath, "utf8"));',
-      '    assert.deepEqual(envelope, { schemaVersion: 3, sourceId, sourceIdentity, pluginName: name, values: {} });',
+      '    assert.deepEqual(envelope, { schemaVersion: 4, sourceId, pluginName: name, binding: scope === "user" ? { kind: "source", sourceIdentity } : { kind: "catalog", logicalIdentity }, values: {} });',
       '    envelope.values.mode = `${scope}-mode`;',
       '    await writeFile(storePath, `${JSON.stringify(envelope)}\\n`, "utf8");',
       '    const result = await execFileAsync(process.execPath, [',

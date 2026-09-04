@@ -25,6 +25,7 @@ import {
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -500,9 +501,9 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     const storePath = path.join(isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json');
     const envelope = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: evidence.source.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: evidence.source.sourceIdentity },
       pluginName: 'demo',
       values: { mode: 'saved' },
     };
@@ -513,7 +514,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     await fs.outputFile(storePath, `${JSON.stringify({
       values: envelope.values,
       pluginName: envelope.pluginName,
-      sourceIdentity: envelope.sourceIdentity,
+      binding: envelope.binding,
       sourceId: envelope.sourceId,
       schemaVersion: envelope.schemaVersion,
     })}\n`);
@@ -712,9 +713,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     await fs.writeJson(storePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: invalidUserAvailability.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: invalidUserAvailability.sourceIdentity },
       pluginName: 'demo',
       values: { mode: 'ready' },
     });
@@ -803,19 +804,22 @@ describe('TUI controller runtime scope conflict validation', () => {
     const identity = (await dependencies.getConfigResetAvailability!(
       'team/demo', { scope: 'user' }, new AbortController().signal,
     )).sourceIdentity!;
-    const envelope = (values: Record<string, unknown>) => ({
-      schemaVersion: 3,
+    const logicalIdentity = await readCatalogSnapshotLogicalIdentity(sourceRoot);
+    const envelope = (scope: 'user' | 'project', values: Record<string, unknown>) => ({
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: identity,
+      binding: scope === 'user'
+        ? { kind: 'source', sourceIdentity: identity }
+        : { kind: 'catalog', logicalIdentity },
       pluginName: 'demo',
       values,
     });
     await fs.outputJson(path.join(
       isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ token: 'lower-secret' }));
+    ), envelope('user', { token: 'lower-secret' }));
     await fs.outputJson(path.join(
       isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ mode: 42, token: 'project-secret' }));
+    ), envelope('project', { mode: 42, token: 'project-secret' }));
 
     const page = await dependencies.getConfigPage!(
       'team/demo', { scope: 'project' }, new AbortController().signal,
@@ -838,7 +842,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ));
     await fs.outputJson(path.join(
       isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ mode: 42, token: 'user-secret' }));
+    ), envelope('user', { mode: 42, token: 'user-secret' }));
     const projectPage = await dependencies.getConfigPage!(
       'team/demo', { scope: 'project' }, new AbortController().signal,
     );

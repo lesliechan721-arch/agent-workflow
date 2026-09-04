@@ -323,6 +323,7 @@ export type NormalizedPluginManifest = Omit<
 export interface PluginMeta {
   sourceId?: CatalogSourceId;
   sourceIdentity?: SourceIdentity;
+  catalogLogicalIdentity?: string;
   pluginId?: PluginId;
   marketplaceName?: string;
   rootDir: string;

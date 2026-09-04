@@ -1288,6 +1288,7 @@ async function resolveDynamicArtifacts(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: options.scope,
@@ -2546,6 +2547,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: 'user',
@@ -3867,6 +3869,7 @@ async function mirrorCatalog(
   catalog: CatalogResolution,
   env: NodeJS.ProcessEnv,
   target?: Pick<RebuildTargetIdentity, 'sourceId' | 'sourceIdentity' | 'marketplaceName' | 'marketplaceRoot'>,
+  logicalIdentity?: string,
   prepareStaging?: (stagingRoot: string) => Promise<void>,
 ): Promise<{
   rootDir: string;
@@ -3920,6 +3923,7 @@ async function mirrorCatalog(
       schemaVersion: 2,
       sourceId: target.sourceId,
       sourceIdentity: target.sourceIdentity,
+      logicalIdentity,
       marketplaceName,
     }, { spaces: 2 });
     const destinationExists = await fs.lstat(destination).then(
@@ -4638,6 +4642,7 @@ function createNativeDriver(options: {
             catalog,
             options.context.env,
             target.identity,
+            target.plugin.catalogLogicalIdentity,
             target.identity.platform === 'codex' ? async (stagingRoot) => {
               for (const action of requiredSkillWrites) {
                 await applyPlannedOperationAction({
