@@ -2326,13 +2326,13 @@ describe('rebuild adapter integration', () => {
           scope: oppositeScope,
         },
       });
-      const failedAfterCleanup = await executeRebuildOperation({
+      const failedBeforeCleanup = await executeRebuildOperation({
         command: 'install',
         target,
         driver: integration.driver,
       });
-      expect(failedAfterCleanup.status).toBe('failed');
-      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(false);
+      expect(failedBeforeCleanup.status).toBe('failed');
+      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(true);
 
       const userLegacySkillRoot = path.join(userSkillsRoot, 'native-skill');
       const projectLegacySkillRoot = path.join(projectSkillsRoot, 'native-skill');

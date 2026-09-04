@@ -3711,47 +3711,7 @@ async function runRebuildCommandInSession(options: {
             action.action === 'install'
             || action.action === 'replace'
             || action.action === 'repair'));
-        const activationOnlyOperation = !codexManagerRequired
-          && provisionalLockedCodexPlans.some((plan) =>
-            plan.postcheck.support === 'observed'
-            && plan.postcheck.plugins.length > 0);
-        const activationScope: Scope = provisionalLockedCodexPlans.some((plan) =>
-          plan.requirement.requiresProjectPluginContract) ? 'project' : 'user';
-        const readOnlyConsumerRequired = activationOnlyOperation
-          || (codexManagerRequired
-            && (options.runtime?.codexManagerResolver === undefined
-              || options.runtime.codexOperationConsumerResolver !== undefined));
-        const readOnlyCodexConsumer = readOnlyConsumerRequired
-          ? await (
-              options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
-            )({
-              cwd: options.commandOptions.cwd,
-              env: runtimeEnv,
-              runner: executionContext.nativeCliRunner,
-              operationRequirement: getCodexOperationRequirement(activationScope),
-              requiresNativeMaterialization: false,
-            })
-          : undefined;
-        if (readOnlyCodexConsumer?.support === 'observed') {
-          executionContext.codexManager = readOnlyCodexConsumer.manager;
-          executionContext.codexObservationSession?.setManager(readOnlyCodexConsumer.manager);
-        }
-        let lockedCodexPlans = readOnlyCodexConsumer?.support === 'assumed'
-          ? await createCodexPlans(lockedPlan, 'assumed')
-          : provisionalLockedCodexPlans;
-        if (executionContext.codexManager) {
-          lockedPlan = await createPlan(stateInventory, executionContext.codexManager);
-          assertWriteInventoryComplete(
-            stateInventory,
-            exactOwnedTextTargets(lockedPlan),
-            exactSkillMarkerTargets(lockedPlan),
-          );
-          lockedCodexPlans = await createCodexPlans(
-            lockedPlan,
-            'observed',
-            executionContext.codexManager,
-          );
-        }
+        let lockedCodexPlans = provisionalLockedCodexPlans;
         let lockedPreparation = await prepareRenderedTargets(lockedPlan, lockedCodexPlans, true);
         let lockedOperationPlan = createRebuildOperationPlan({
           command: options.command,
@@ -3929,13 +3889,40 @@ async function runRebuildCommandInSession(options: {
               ? [key]
               : [],
           ));
-          if (codexManagerRequired
-            && executionContext.codexManager === undefined
-            && nativePreparationKeys.size > 0) {
-            const codexRequirementScope: Scope = provisionalLockedCodexPlans.some((plan) =>
-              plan.requirement.requiresProjectPluginContract)
+          const activationPluginIds = new Set(provisionalLockedCodexPlans.flatMap((plan) =>
+            plan.postcheck.plugins.map((plugin) => plugin.pluginId)));
+          const activationPreparationKeys = new Set([...operationPreparations].flatMap(
+            ([key, preparation]) => preparation.target.identity.platform === 'codex'
+              && preparation.target.identity.pluginId
+              && activationPluginIds.has(preparation.target.identity.pluginId)
+              ? [key]
+              : [],
+          ));
+          const codexRequirementScopeFor = (keys: ReadonlySet<string>): Scope => {
+            const pluginIds = new Set([...keys].flatMap((key) => {
+              const pluginId = operationPreparations.get(key)?.target.identity.pluginId;
+              return pluginId ? [pluginId] : [];
+            }));
+            return provisionalLockedCodexPlans.some((plan) => plan.desiredTargets.some((target) =>
+              pluginIds.has(target.pluginId) && target.scopes.includes('project')))
               ? 'project'
               : 'user';
+          };
+          let refreshManagedNativePlan = false;
+          const failPreparedTargets = (keys: ReadonlySet<string>, error: unknown): void => {
+            const message = error instanceof Error ? error.message : String(error);
+            for (const key of keys) {
+              const target = operationPreparations.get(key)?.target;
+              if (!target) continue;
+              operationPreparations.delete(key);
+              operationPreparationFailures.set(
+                key,
+                failedResult(options.command, target.identity, message),
+              );
+            }
+          };
+          if (executionContext.codexManager === undefined
+            && nativePreparationKeys.size > 0) {
             try {
               if (options.runtime?.codexManagerResolver) {
                 executionContext.codexManager = await options.runtime.codexManagerResolver({
@@ -3943,7 +3930,9 @@ async function runRebuildCommandInSession(options: {
                   env: runtimeEnv,
                   runner: executionContext.nativeCliRunner,
                   authorizer: options.runtime?.managedCodexAuthorizer,
-                  operationRequirement: getCodexOperationRequirement(codexRequirementScope),
+                  operationRequirement: getCodexOperationRequirement(
+                    codexRequirementScopeFor(nativePreparationKeys),
+                  ),
                 });
               } else {
                 const consumer = await (
@@ -3953,7 +3942,9 @@ async function runRebuildCommandInSession(options: {
                   env: runtimeEnv,
                   runner: executionContext.nativeCliRunner,
                   authorizer: options.runtime?.managedCodexAuthorizer,
-                  operationRequirement: getCodexOperationRequirement(codexRequirementScope),
+                  operationRequirement: getCodexOperationRequirement(
+                    codexRequirementScopeFor(nativePreparationKeys),
+                  ),
                   requiresNativeMaterialization: true,
                 });
                 if (consumer.support !== 'observed') {
@@ -3961,29 +3952,53 @@ async function runRebuildCommandInSession(options: {
                 }
                 executionContext.codexManager = consumer.manager;
               }
+              refreshManagedNativePlan = true;
             } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              for (const key of nativePreparationKeys) {
-                const target = operationPreparations.get(key)!.target;
-                operationPreparations.delete(key);
-                operationPreparationFailures.set(
-                  key,
-                  failedResult(options.command, target.identity, message),
-                );
-              }
+              failPreparedTargets(nativePreparationKeys, error);
             }
-            if (executionContext.codexManager) {
-              executionContext.codexObservationSession?.setManager(executionContext.codexManager);
+          } else if (executionContext.codexManager === undefined
+            && activationPreparationKeys.size > 0) {
+            try {
+              const consumer = await (
+                options.runtime?.codexOperationConsumerResolver ?? resolveCodexOperationConsumer
+              )({
+                cwd: options.commandOptions.cwd,
+                env: runtimeEnv,
+                runner: executionContext.nativeCliRunner,
+                operationRequirement: getCodexOperationRequirement(
+                  codexRequirementScopeFor(activationPreparationKeys),
+                ),
+                requiresNativeMaterialization: false,
+              });
+              if (consumer.support === 'observed') {
+                executionContext.codexManager = consumer.manager;
+              } else {
+                lockedCodexPlans = lockedCodexPlans.map((plan) => ({
+                  ...plan,
+                  warnings: [...new Set([
+                    ...plan.warnings,
+                    'codexProjectActivationAssumed',
+                  ])],
+                  postcheck: { ...plan.postcheck, support: 'assumed' },
+                }));
+              }
+            } catch (error) {
+              failPreparedTargets(activationPreparationKeys, error);
             }
           }
+          if (executionContext.codexManager) {
+            executionContext.codexObservationSession?.setManager(executionContext.codexManager);
+          }
 
-          if (executionContext.codexManager && nativePreparationKeys.size > 0) {
-            lockedPlan = await createPlan(stateInventory, executionContext.codexManager);
-            assertWriteInventoryComplete(
-              stateInventory,
-              exactOwnedTextTargets(lockedPlan),
-              exactSkillMarkerTargets(lockedPlan),
-            );
+          if (refreshManagedNativePlan) {
+            if (executionContext.codexManager) {
+              lockedPlan = await createPlan(stateInventory, executionContext.codexManager);
+              assertWriteInventoryComplete(
+                stateInventory,
+                exactOwnedTextTargets(lockedPlan),
+                exactSkillMarkerTargets(lockedPlan),
+              );
+            }
             lockedCodexPlans = await createCodexPlans(
               lockedPlan,
               'observed',
@@ -4010,6 +4025,11 @@ async function runRebuildCommandInSession(options: {
               operationPreparationFailures.set(key, failure);
             }
           }
+          const eligibleTargets = [...operationPreparations.keys()].flatMap((key) => {
+            const prepared = lockedPreparation.preparedTargets.get(key);
+            return prepared ? [prepared.target] : [];
+          });
+          lockedPreparation.integration.setNativeMarketplaceEligibleTargets(eligibleTargets);
         }
         lockedOperationPlan = createRebuildOperationPlan({
           command: options.command,

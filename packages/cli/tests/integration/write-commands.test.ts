@@ -1636,6 +1636,228 @@ describe('five namespaced write commands', () => {
     }
   }, 30_000);
 
+  it('preflights native render once and excludes a preApply failure from its marketplace group', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-pre-apply-group-source');
+    const counterRoot = path.join(isolation.layout.fixtureCwd, 'native-pre-apply-group-counts');
+    await fs.ensureDir(counterRoot);
+    const configureDynamicNative = (manifest: PluginMeta['manifest']) => {
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        preApply: { path: './scripts/preApply.mjs' },
+      };
+      manifest.artifacts = { targets: [{
+        id: 'dynamic-skill',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'dynamic-skill',
+      }] };
+    };
+    const definitions = ['alpha', 'beta'].map((name) => ({
+      name,
+      configureManifest: configureDynamicNative,
+    }));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    await Promise.all(definitions.flatMap(({ name }) => [
+      writeDynamicSkillRenderer({
+        pluginRoot: path.join(sourceRoot, 'plugins', name),
+        skillKey: 'dynamic-skill',
+        counterRoot,
+      }),
+      fs.outputFile(path.join(sourceRoot, 'plugins', name, 'scripts', 'preApply.mjs'), [
+        'import { readFile, writeFile } from "node:fs/promises";',
+        `const renderCount = await readFile(${JSON.stringify(path.join(
+          counterRoot,
+          `render-count-${name}.txt`,
+        ))}, "utf8");`,
+        'if (renderCount !== "1") throw new Error("native renderer was not preflighted once");',
+        `await writeFile(${JSON.stringify(path.join(counterRoot, `pre-apply-${name}.txt`))}, "1");`,
+        ...(name === 'alpha' ? ['throw new Error("alpha preApply failed");'] : []),
+      ].join('\n')),
+    ]));
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const codexOperationConsumerResolver = vi.fn(async (
+      options: Parameters<NonNullable<
+        RebuildCommandRuntime['codexOperationConsumerResolver']
+      >>[0],
+    ) => {
+      expect(options.requiresNativeMaterialization).toBe(true);
+      await expect(fs.readFile(path.join(counterRoot, 'pre-apply-alpha.txt'), 'utf8'))
+        .resolves.toBe('1');
+      await expect(fs.readFile(path.join(counterRoot, 'pre-apply-beta.txt'), 'utf8'))
+        .resolves.toBe('1');
+      return {
+        support: 'observed' as const,
+        manager: {
+          kind: 'system' as const,
+          version: '0.200.0',
+          command: 'codex',
+          argsPrefix: [] as string[],
+        },
+        requirement: options.operationRequirement,
+      };
+    });
+
+    const unauthorized = await installWriteCommand(['team/alpha', 'team/beta'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, {
+      env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      codexOperationConsumerResolver,
+      directCli: true,
+    });
+    expect(unauthorized.overallState).toBe('failed');
+    expect(unauthorized.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ errorCode: 'preApplyAuthorizationRequired' }),
+    ]));
+    expect(codexOperationConsumerResolver).not.toHaveBeenCalled();
+    await expect(fs.pathExists(path.join(counterRoot, 'render-count-alpha.txt')))
+      .resolves.toBe(false);
+    await expect(fs.pathExists(path.join(counterRoot, 'pre-apply-alpha.txt')))
+      .resolves.toBe(false);
+
+    const result = await installWriteCommand(['team/alpha', 'team/beta'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      yes: true,
+    }, {
+      env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      codexOperationConsumerResolver,
+    });
+
+    expect(result.overallState, JSON.stringify(result, null, 2)).toBe('partial');
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/alpha' }),
+        state: 'failed',
+        errorCode: 'preApplyFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/beta' }),
+        state: 'completed',
+      }),
+    ]));
+    expect(codexOperationConsumerResolver).toHaveBeenCalledTimes(1);
+    expect(runtime.installed).toEqual(new Set(['beta@aw']));
+    for (const name of ['alpha', 'beta']) {
+      await expect(fs.readFile(path.join(counterRoot, `render-count-${name}.txt`), 'utf8'))
+        .resolves.toBe('1');
+      await expect(fs.readFile(path.join(counterRoot, `pre-apply-${name}.txt`), 'utf8'))
+        .resolves.toBe('1');
+    }
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await expect(fs.pathExists(path.join(
+      marketplaceRoot,
+      'plugins',
+      'alpha',
+      'skills',
+      'dynamic-skill',
+    ))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(
+      marketplaceRoot,
+      'plugins',
+      'beta',
+      'skills',
+      'dynamic-skill',
+      'SKILL.md',
+    ), 'utf8')).resolves.toContain('name: dynamic-skill');
+  }, 30_000);
+
+  it('stops before preApply and manager resolution when native render preflight fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-render-preflight-failure-source');
+    const counterRoot = path.join(isolation.layout.fixtureCwd, 'native-render-preflight-failure-counts');
+    await fs.ensureDir(counterRoot);
+    const definitions = [{
+      name: 'demo',
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.scripts = {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+          preApply: { path: './scripts/preApply.mjs' },
+        };
+        manifest.artifacts = { targets: [{
+          id: 'dynamic-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic-skill',
+        }] };
+      },
+    }];
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    await Promise.all([
+      writeDynamicSkillRenderer({
+        pluginRoot: path.join(sourceRoot, 'plugins', 'demo'),
+        skillKey: 'dynamic-skill',
+        counterRoot,
+        fail: true,
+      }),
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+        `await import("node:fs/promises").then(({ writeFile }) => writeFile(${JSON.stringify(
+          path.join(counterRoot, 'pre-apply.txt'),
+        )}, "1"));\n`,
+      ),
+    ]);
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const codexOperationConsumerResolver = vi.fn();
+
+    const result = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      yes: true,
+    }, {
+      env: isolation.env,
+      nativeCliRunner: runtime.nativeCliRunner,
+      codexOperationConsumerResolver,
+    });
+
+    expect(result.overallState).toBe('failed');
+    expect(result.targetResults).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/demo' }),
+        state: 'failed',
+      }),
+    ]);
+    await expect(fs.readFile(path.join(counterRoot, 'render-count-demo.txt'), 'utf8'))
+      .resolves.toBe('1');
+    await expect(fs.pathExists(path.join(counterRoot, 'pre-apply.txt'))).resolves.toBe(false);
+    expect(codexOperationConsumerResolver).not.toHaveBeenCalled();
+    expect(runtime.installed).toEqual(new Set());
+  }, 30_000);
+
   it('uses only one neutral Codex list per generation for public user-only writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-observation-source');
@@ -4204,7 +4426,7 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      values: { token: 'abc' },
+      values: { token: 'private-pre-apply-token-7f3e9c' },
     });
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
@@ -4319,7 +4541,7 @@ describe('five namespaced write commands', () => {
     const serializedReceipt = JSON.stringify(receipt);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
     for (const privateValue of [
-      'abc',
+      'private-pre-apply-token-7f3e9c',
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
     ]) {
