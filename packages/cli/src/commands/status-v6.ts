@@ -780,6 +780,7 @@ function statusRecovery(options: {
   desired: DesiredTargetState;
   platform: PlatformName;
   pluginId: string;
+  dependencyMoves?: Array<{ pluginId: string; fromScope: Scope; toScope: Scope }>;
   sharedNative?: StatusSharedNativeProjection;
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
@@ -835,6 +836,16 @@ function statusRecovery(options: {
         description: `先移除或重命名 ${collision}，再运行 aw sync ${options.pluginId} --platform ${options.platform}。cleanup 会保留 foreign 内容，不会删除该冲突。`,
       },
     ];
+  }
+  if (options.dependencyMoves?.length) {
+    const cleanupCommands = options.dependencyMoves.map((move) =>
+      `aw cleanup ${move.pluginId} --platform ${options.platform} --scope ${move.fromScope}`);
+    const targetScope = options.dependencyMoves[0]!.toScope;
+    return [{
+      command: 'cleanup',
+      scope: options.dependencyMoves[0]!.fromScope,
+      description: `运行 ${cleanupCommands.join('，再运行 ')}，再运行 aw sync --all --platform ${options.platform} --scope ${targetScope}。`,
+    }];
   }
   return [{
     command: options.errorCodes?.some((code) =>
@@ -2540,6 +2551,27 @@ export async function statusCommandV7(options: {
         ?? (groupedScopes.includes('user') ? 'user' : groupedScopes[0] ?? target.scope));
     const representativeTarget = observedTargets.find((candidate) =>
       candidate.scope === representativeScope) ?? target;
+    const dependencyMoves = (representativeTarget.dependencyReadiness ?? []).flatMap((dependency) => {
+      if (dependency.state !== 'incomplete' || dependency.dependencyScope !== 'project') return [];
+      const parsed = parsePluginId(dependency.dependencyPluginId);
+      const override = projectIntent.dependencyScopeOverrides.find((candidate) =>
+        candidate.pluginId === dependency.dependencyPluginId
+        && candidate.scope === 'project'
+        && (candidate.platform === undefined || candidate.platform === target.platform));
+      const dependencyDesired = desiredTargetStates.get(desiredTargetKey(
+        dependency.dependencyPluginId,
+        target.platform,
+      ));
+      const hasPreservedUserActual = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === parsed.sourceId
+        && reference.pluginName === parsed.pluginName
+        && reference.platform === target.platform
+        && reference.scope === 'user');
+      return override && !dependencyDesired?.scopes.includes('user') && hasPreservedUserActual
+        ? [{ pluginId: dependency.dependencyPluginId, fromScope: 'user' as const, toScope: 'project' as const }]
+        : [];
+    });
     const components: StatusV7Component[] = [
       {
         kind: 'intent',
@@ -2641,6 +2673,7 @@ export async function statusCommandV7(options: {
         desired,
         platform: target.platform,
         pluginId: target.pluginId,
+        ...(dependencyMoves.length > 0 ? { dependencyMoves } : {}),
         ...(sharedNative ? { sharedNative } : {}),
         conflictRoots: rootIntentsForTarget({
           pluginId: target.pluginId,
