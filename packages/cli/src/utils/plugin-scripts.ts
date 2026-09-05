@@ -380,6 +380,10 @@ export async function runPreApplyScript(options: {
   const codexHome = options.context.env.AW_CODEX_HOME || path.join(awHome, 'isolated-codex-home');
   const claudeHome = options.context.env.AW_CLAUDE_HOME || path.join(awHome, 'isolated-claude-home');
   let tempDir: string | undefined;
+  let interruptSignal: 'SIGINT' | 'SIGTERM' | undefined;
+  let interruptReason: Error | undefined;
+  let runnerCleanupConfirmed = false;
+  let removeInterruptListeners: (() => void) | undefined;
   const privateRoots = (): Array<{ root: string; replacement: string }> => [
     ...(tempDir ? [
       { root: path.join(tempDir, 'home'), replacement: '[temporary-home]' },
@@ -411,14 +415,37 @@ export async function runPreApplyScript(options: {
     const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
-    let result: PluginProcessResult;
+    const interruptController = new AbortController();
+    const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+      if (interruptSignal) return;
+      interruptSignal = signal;
+      interruptReason = new Error(`preApply interrupted by ${signal}.`);
+      interruptController.abort(interruptReason);
+    };
+    const handleSigint = (): void => handleInterrupt('SIGINT');
+    const handleSigterm = (): void => handleInterrupt('SIGTERM');
+    process.on('SIGINT', handleSigint);
+    process.on('SIGTERM', handleSigterm);
+    removeInterruptListeners = () => {
+      process.removeListener('SIGINT', handleSigint);
+      process.removeListener('SIGTERM', handleSigterm);
+    };
+    let result: PluginProcessResult | undefined;
     try {
       result = options.runner
-        ? await options.runner.run(invocation, runOptions)
-        : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues });
-    } catch {
-      throw new Error('preApply could not start.');
+        ? await options.runner.run(invocation, { ...runOptions, signal: interruptController.signal })
+        : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues, signal: interruptController.signal });
+      runnerCleanupConfirmed = true;
+    } catch (error) {
+      if (interruptSignal && error === interruptReason) {
+        runnerCleanupConfirmed = true;
+      } else if (interruptSignal) {
+        throw new Error(`preApply process cleanup failed after ${interruptSignal}.`);
+      } else {
+        throw new Error('preApply could not start.');
+      }
     }
+    if (!result) return;
     const stdout = summarizePreApplyFailureOutput(
       sanitizePreApplyErrorMessage(result.stdout, privateRoots()),
       sensitiveValues,
@@ -439,6 +466,26 @@ export async function runPreApplyScript(options: {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
   } finally {
-    if (tempDir) await fs.remove(tempDir);
+    let tempCleanupError: unknown;
+    try {
+      if (tempDir) await fs.remove(tempDir);
+    } catch (error) {
+      tempCleanupError = error;
+    }
+    removeInterruptListeners?.();
+    if (interruptSignal) {
+      if (tempCleanupError) {
+        process.stderr.write(`preApply temporary directory cleanup failed after ${interruptSignal}.\n`);
+        process.exit(1);
+      }
+      if (!runnerCleanupConfirmed) {
+        process.stderr.write(`preApply process cleanup failed after ${interruptSignal}.\n`);
+        process.exit(1);
+      }
+      process.exit(interruptSignal === 'SIGINT' ? 130 : 143);
+    }
+    if (tempCleanupError) {
+      throw tempCleanupError;
+    }
   }
 }

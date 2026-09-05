@@ -187,6 +187,8 @@ preApply 失败时，该 target 不执行任何 AW-owned cleanup 或 write，rec
 
 preApply 不允许遗留后台后代；AW 在脚本正常退出、超时或中断后先终止并确认本次脚本的进程树，再完成该 target。进程树清理无法确认时，preApply 失败并阻止该 target 的 AW-owned cleanup 或 write。身份无法证明属于本次脚本的 foreign 进程不会被终止。
 
+CLI 在 preApply 执行期间收到 `SIGINT` 或 `SIGTERM` 时，先清理脚本进程树和本次临时目录，再分别以标准信号退出码 `130` 或 `143` 退出，不继续其它 target。清理无法确认时以 `1` 退出。
+
 ## Live Status and Config
 
 `aw status` 输出 Status v7。它组合 user/project intent、当前 Active Catalog、live native/config evidence 和 AW extension projection。它严格只读：不创建 `.agent-workflows`、AW_HOME 或平台目录，不运行 preApply，不下载或授权 manager，不调用 native add/remove，不修改 trust/config，也不调用 Catalog provider。对于 static native，status 只使用 official scoped list 检查 registration、plugin ID 和 active version，并检查必要文件是否存在，不计算完整 payload digest；完整 payload digest 只在 `sync`、`reinstall` 或 replace 操作中计算。receipt-backed dynamic `codex-native` 是只读检查例外：status 还检查 AW-owned canonical marketplace source projection，计算 actual payload digest，并与 canonical marketplace expected、live receipt 三方比较，但绝不运行 renderer；可重建输入不一致报告 `renderDrift`，payload 不一致报告 `damaged`/`corrupt`。Active 缺失或来源不可用时，它保留可识别的 desired intent，并从 live AW ownership 输出结构化 `blocked`、`orphaned` 与恢复动作。PATH 中没有 Codex consumer 时，activation evidence 只标为 `assumed`，不把缺失 PATH 当成命令失败。

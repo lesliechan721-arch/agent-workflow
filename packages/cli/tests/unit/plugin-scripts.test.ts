@@ -1,7 +1,10 @@
+import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +27,11 @@ const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
 const OUTPUT_LIMIT = 64 * 1024;
 const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
+const vitestPackagePath = realpathSync(fileURLToPath(
+  new URL('../../node_modules/vitest/package.json', import.meta.url),
+));
+const viteNodePath = path.resolve(path.dirname(vitestPackagePath), '..', 'vite-node', 'vite-node.mjs');
+const interruptHostPath = fileURLToPath(new URL('../fixtures/pre-apply-interrupt-host.ts', import.meta.url));
 let hostProcessInspectionAvailable = false;
 try {
   await assertProcessTreeInspectionAvailable();
@@ -59,6 +67,33 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
   };
 }
 
+async function waitForFile(filePath: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fs.pathExists(filePath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}.`);
+}
+
+function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function expectStandardSignalExit(
+  outcome: { code: number | null; signal: NodeJS.Signals | null },
+  signal: 'SIGINT' | 'SIGTERM',
+): void {
+  const conventionalExitCode = 128 + os.constants.signals[signal];
+  expect(
+    outcome.signal === signal && outcome.code === null
+      || outcome.signal === null && outcome.code === conventionalExitCode,
+  ).toBe(true);
+}
+
 afterEach(async () => {
   for (const pid of descendantPids) {
     try {
@@ -72,6 +107,126 @@ afterEach(async () => {
 });
 
 describe('preApply script', () => {
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
+    'SIGINT',
+    'SIGTERM',
+  ] as const)(
+    'cleans the production preApply process tree before the host exits on %s',
+    async (signal) => {
+      const plugin = await createPlugin();
+      const awHome = path.join(plugin.rootDir, 'aw-home');
+      const rootPidPath = path.join(plugin.rootDir, 'root.pid');
+      const descendantPidPath = path.join(plugin.rootDir, 'descendant.pid');
+      const continuedPath = path.join(plugin.rootDir, 'continued');
+      const descendantSource = [
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        `writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));`,
+        `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], { detached: true, stdio: 'ignore' });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+        'descendant.unref();',
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n'));
+      const host = spawn(process.execPath, [
+        viteNodePath,
+        interruptHostPath,
+        plugin.rootDir,
+        awHome,
+        continuedPath,
+      ], {
+        cwd: path.resolve(fileURLToPath(new URL('../..', import.meta.url))),
+        env: {
+          PATH: process.env.PATH,
+          HOME: path.join(plugin.rootDir, 'host-home'),
+          AW_HOME: awHome,
+          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
+          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+        },
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      const exited = waitForChildExit(host);
+
+      await Promise.all([waitForFile(rootPidPath), waitForFile(descendantPidPath)]);
+      const rootPid = Number(await fs.readFile(rootPidPath, 'utf8'));
+      const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+      descendantPids.add(rootPid);
+      descendantPids.add(descendantPid);
+      host.kill(signal);
+
+      expectStandardSignalExit(await exited, signal);
+      await Promise.all([waitForProcessExit(rootPid), waitForProcessExit(descendantPid)]);
+      descendantPids.delete(rootPid);
+      descendantPids.delete(descendantPid);
+      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'exits with a clear failure when interrupted process cleanup fails',
+    async () => {
+      const plugin = await createPlugin();
+      const awHome = path.join(plugin.rootDir, 'aw-home');
+      const continuedPath = path.join(plugin.rootDir, 'continued');
+      const readyPath = path.join(plugin.rootDir, 'runner-ready');
+      const host = spawn(process.execPath, [
+        viteNodePath,
+        interruptHostPath,
+        plugin.rootDir,
+        awHome,
+        continuedPath,
+        readyPath,
+      ], {
+        cwd: path.resolve(fileURLToPath(new URL('../..', import.meta.url))),
+        env: {
+          PATH: process.env.PATH,
+          HOME: path.join(plugin.rootDir, 'host-home'),
+          AW_HOME: awHome,
+          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
+          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      host.stderr?.setEncoding('utf8');
+      host.stderr?.on('data', (chunk: string) => { stderr += chunk; });
+      const exited = waitForChildExit(host);
+
+      await waitForFile(readyPath);
+      host.kill('SIGTERM');
+
+      await expect(exited).resolves.toEqual({ code: 1, signal: null });
+      expect(stderr).toContain('preApply process cleanup failed after SIGTERM.');
+      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
+    },
+  );
+
+  it('removes its interrupt listeners after normal completion', async () => {
+    const plugin = await createPlugin();
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
+
+    await runPreApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() {
+        return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      } },
+    });
+
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+  });
+
   it('routes a Windows script through the Job helper and waits for helper close after abort', async () => {
     const stdout = new PassThrough();
     const stderr = new PassThrough();
