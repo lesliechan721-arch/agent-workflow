@@ -1142,6 +1142,7 @@ async function statusCommandV7InSession(options: {
       return {
         observation: { state: 'unobserved' as const },
         observations: { user: false, project: false },
+        activations: {},
       };
     }
     let inspection = codexRegistrationCache.get(pluginId);
@@ -1943,6 +1944,7 @@ async function statusCommandV7InSession(options: {
                   : {
                       observation: { state: 'unobserved' as const },
                       observations: { user: false, project: false },
+                      activations: {},
                     };
                 let residueFailed = false;
                 const hasNativeRenderTargets = (plugin.manifest.artifacts?.targets ?? []).some((target) =>

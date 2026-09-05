@@ -548,6 +548,13 @@ export async function postcheckCodexReconcileActivations(options: {
             `codexNativeObservationFailed: ${check.codexPluginId} was not observed after Codex activation mutation.`,
           );
         }
+        const userActive = registration.activations.user === true;
+        const projectActive = registration.activations.project === true;
+        if (userActive !== check.expectedUserEnabled
+          || (observationScope === 'both'
+            && projectActive !== (check.expectedUserEnabled || check.expectedProjectEnabled))) {
+          throw new CodexProjectConfigNotEffectiveError(check.codexPluginId);
+        }
       } catch (error) {
         failedPluginIds.push(check.codexPluginId);
         failureDetails.push(error instanceof Error ? error.message : String(error));
@@ -2682,6 +2689,10 @@ export interface CodexPluginRegistrationLiveInspection {
     user: boolean;
     project: boolean;
   };
+  activations: {
+    user?: boolean;
+    project?: boolean;
+  };
 }
 
 function observedCodexNativeState(
@@ -2719,6 +2730,7 @@ export async function inspectCodexPluginRegistrationLive(options: {
     return {
       observation: { state: 'unobserved' },
       observations: { user: false, project: false },
+      activations: {},
     };
   }
   const ownedSession = options.observationSession ? undefined
@@ -2737,6 +2749,7 @@ export async function inspectCodexPluginRegistrationLive(options: {
     return {
       observation: inspected.observation,
       observations: inspected.observations,
+      activations: inspected.activations,
     };
   } finally {
     await ownedSession?.dispose();

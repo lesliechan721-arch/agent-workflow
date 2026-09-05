@@ -764,7 +764,7 @@ describe('pack smoke', () => {
     expect(untrustedInstallFailure).not.toBeNull();
     expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
       ok: false,
-      overallState: 'failed',
+      overallState: 'partial',
       targetResults: expect.arrayContaining([expect.objectContaining({
         target: expect.objectContaining({
           pluginId: `${developmentSourceId}/packed-build`,
