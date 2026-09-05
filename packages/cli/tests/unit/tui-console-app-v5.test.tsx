@@ -2172,16 +2172,8 @@ describe('ConsoleAppV4', () => {
       platform: 'claude',
     });
     await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({
-      name: 'installPlacement', pluginId: 'official/agent-lab',
-    });
-    expect(value.snapshot.result).toBeUndefined();
-    await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({
-      name: 'pluginPreview', pluginId: 'official/agent-lab',
-    });
-    await input(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
+    expect(value.snapshot.result).toBeUndefined();
   });
 
   it.each([
@@ -4336,7 +4328,7 @@ describe('ConsoleAppV4', () => {
     expect(partialInstance.lastFrame()).toContain('reinstall 或 sync');
     await input(partialInstance, '\u001B[B', '\r');
     expect(partial.snapshot.router.current.route).toMatchObject({
-      name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user' },
+      name: 'pluginDetail', pluginId: 'team-tools/review-gate',
     });
     expect(partial.snapshot.result).toBeUndefined();
     expect(partial.snapshot.router.depth).toBe(2);
@@ -5181,6 +5173,25 @@ describe('ConsoleAppV4', () => {
     }), expect.anything(), expect.any(AbortSignal));
     expect(screens).toContain('S12');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    expect(value.snapshot.router).toMatchObject({
+      depth: 3,
+      current: { route: { name: 'result' } },
+    });
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(value.snapshot.router).toMatchObject({
+      depth: 2,
+      current: { route: { name: 'sourceList' } },
+    });
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' } },
+    });
   });
 
   it('discards the complete add-source route segment from S07 and returns to the source list', async () => {
@@ -7165,11 +7176,8 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
   });
 
-  it('selects force cleanup, reviews its risk and equivalent command, and executes force intent', async () => {
-    const executeIntent = vi.fn().mockResolvedValue({
-      overallState: 'succeeded',
-      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
-    });
+  it('does not expose force cleanup from a dependency removal blocker', async () => {
+    const executeIntent = vi.fn();
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })),
       executeIntent,
@@ -7184,9 +7192,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(screens).toContain('D12');
     expect(instance.lastFrame()).toContain('Agent Lab');
-    expect(instance.lastFrame()).toContain('强制清理');
+    expect(instance.lastFrame()).not.toContain('强制清理');
     expect(instance.lastFrame()).not.toContain('› Agent Lab');
-    expect(instance.lastFrame()).toContain('› 强制清理');
+    expect(instance.lastFrame()).toContain('› 查看完整依赖关系');
     expect(instance.lastFrame()).toContain('↑↓ 移动');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
 
@@ -7194,41 +7202,12 @@ describe('ConsoleAppV4', () => {
     const technicalFrame = instance.lastFrame() ?? '';
     expect(technicalFrame).toContain('dependencyStillRequired');
     expect(technicalFrame).toContain('已安装插件仍在使用这个依赖');
-    expect(technicalFrame).toContain('› 强制清理');
+    expect(technicalFrame).not.toContain('强制清理');
     expect(technicalFrame).toContain('d 技术详情');
     expect(technicalFrame).toContain('↑↓ 移动');
     expect(technicalFrame.match(/›/gu)).toHaveLength(1);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(18);
-    await input(instance, 'd');
-
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B');
-    expect(instance.lastFrame()).toContain('› 技术详情');
-    await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('dependencyStillRequired');
-    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
-    await input(instance, '\r', '\u001B[A', '\u001B[A', '\u001B[A');
-
-    await input(instance, '\r');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(instance.lastFrame()).toContain('强制清理插件');
-    expect(instance.lastFrame()).toContain('跳过依赖保护');
-    expect(instance.lastFrame()).toContain('依赖者会变为不完整');
-    expect(value.snapshot.activeReview?.equivalentCommand).toBe(
-      'aw cleanup official/skill-toolkit --platform codex --scope user --force',
-    );
-    expect(instance.lastFrame()).not.toContain('等价命令：');
-    await input(instance, 'd');
-    expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/skill-toolkit');
-    expect(instance.lastFrame()).toContain('--force');
-
-    await confirmReview(instance, value);
-    await nextTurn(4);
-    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/skill-toolkit',
-      platform: 'codex', scope: 'user', force: true,
-    }), expect.anything());
+    expect(executeIntent).not.toHaveBeenCalled();
   });
 
   it('renders dependency target incompatibility as D16 and only offers compatible target platforms', async () => {
@@ -7492,5 +7471,170 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     expect(instance.lastFrame()).not.toContain('8 依赖 · 5 被依赖 · 已折叠');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+  });
+
+  it('closes a completed install with two real Esc presses and preserves the browse anchor', async () => {
+    const value = controller();
+    await value.load();
+    value.push(
+      { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      {
+        focusIndex: 0,
+        scrollOffset: 0,
+        query: 'agent',
+        sourceTabId: 'official',
+        installFilter: 'all',
+        focusedEntityId: 'official/agent-lab',
+      },
+    );
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    value.beginInstallFlow('official/agent-lab', 'user');
+    value.push({ name: 'installPlacement', pluginId: 'official/agent-lab' });
+    value.push({ name: 'installTargets', pluginId: 'official/agent-lab' });
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite',
+      action: 'install',
+      pluginId: 'official/agent-lab',
+      platform: 'codex',
+      scope: 'user',
+    });
+    await value.executeOperation(review.reviewToken);
+
+    expect(value.snapshot.router).toMatchObject({
+      depth: 4,
+      current: { route: { name: 'result', operationId: review.operationId } },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/agent-lab',
+    });
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(value.snapshot.router.current).toEqual({
+      route: { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      context: {
+        focusIndex: 0,
+        scrollOffset: 0,
+        query: 'agent',
+        sourceTabId: 'official',
+        installFilter: 'all',
+        focusedEntityId: 'official/agent-lab',
+      },
+    });
+    expect(instance.lastFrame()).toContain('/ agent');
+
+    await input(instance, '\r', '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'installPlacement', pluginId: 'official/agent-lab',
+    });
+  });
+
+  it('returns a removed config field route to its surviving layer', async () => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
+    await value.load();
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' },
+      fieldKey: 'removed-field',
+      editor: 'string',
+    });
+    render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' },
+    });
+  });
+
+  it('restores list focus by entity ID after a reload changes row order', async () => {
+    const initial = loadResult();
+    const reordered = loadResult();
+    reordered.pluginSummaries.unshift({
+      pluginName: 'aardvark',
+      pluginId: 'official/aardvark',
+      displayName: 'Aardvark',
+      description: '排序变化夹具',
+      version: '1.0.0',
+      supportedTargets: { codex: ['user'], claude: [] },
+      configFieldCount: 0,
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(reordered),
+    });
+    await value.load();
+    value.push(
+      { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      {
+        focusIndex: 1,
+        scrollOffset: 10,
+        sourceTabId: 'official',
+        installFilter: 'all',
+        focusedEntityId: 'official/review-gate',
+      },
+    );
+    value.push({ name: 'pluginPreview', pluginId: 'official/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await value.load();
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('› Review Gate');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginPreview', pluginId: 'official/review-gate',
+    });
+  });
+
+  it('uses the adjacent list row when the focused entity disappears during reload', async () => {
+    const initial = loadResult();
+    const withoutFocusedPlugin = loadResult();
+    withoutFocusedPlugin.pluginSummaries = withoutFocusedPlugin.pluginSummaries
+      .filter((plugin) => plugin.pluginId !== 'official/review-gate');
+    withoutFocusedPlugin.payload.targets = withoutFocusedPlugin.payload.targets
+      .filter((target) => target.pluginId !== 'official/review-gate');
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(withoutFocusedPlugin),
+    });
+    await value.load();
+    value.push(
+      { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      {
+        focusIndex: 1,
+        scrollOffset: 10,
+        sourceTabId: 'official',
+        installFilter: 'all',
+        focusedEntityId: 'official/review-gate',
+      },
+    );
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await value.load();
+    const remaining = value.listPlugins({
+      mode: 'browse', sourceId: 'official', installFilter: 'all',
+    });
+    const adjacent = remaining[Math.min(1, remaining.length - 1)];
+    if (!adjacent) throw new Error('expected an adjacent plugin row');
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginPreview', pluginId: adjacent.pluginId,
+    });
   });
 });

@@ -743,9 +743,7 @@ describe('TUI v4 router and ViewModel', () => {
     preview.resolve(undefined);
 
     await expect(preparation).rejects.toMatchObject({ name: 'AbortError' });
-    expect(controller.snapshot.installPlacementDraft).toMatchObject({
-      state: 'selecting', canContinue: false, targets: [],
-    });
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
   });
 
   it('projects manifest order, presentation groups, choices, and private values safely', () => {
@@ -1208,7 +1206,7 @@ describe('TUI v4 router and ViewModel', () => {
     );
     router.push({ name: 'pluginDetail', pluginId: 'team/review-gate' });
 
-    expect(router.back()).toEqual({
+    expect(router.back()).toMatchObject({
       depth: 2,
       current: {
         route: { name: 'pluginList', mode: 'browse', sourceId: 'team' },
@@ -1222,11 +1220,61 @@ describe('TUI v4 router and ViewModel', () => {
     router.push({ name: 'pluginPreview', pluginId: 'official/root' }, { focusIndex: 1 });
     router.push({ name: 'pluginDependencies', pluginId: 'official/root' });
 
-    expect(router.back()).toEqual({
+    expect(router.back()).toMatchObject({
       depth: 2,
       current: {
         route: { name: 'pluginPreview', pluginId: 'official/root' },
         context: { focusIndex: 1 },
+      },
+    });
+  });
+
+  it('owns transient frames by a stable flow and finishes at the preserved plugin anchor', () => {
+    const router = new TuiRouter();
+    router.push(
+      { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      {
+        focusIndex: 2,
+        scrollOffset: 1,
+        query: 'agent',
+        sourceTabId: 'official',
+        focusedEntityId: 'official/demo',
+      },
+    );
+    router.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    const originFrameId = router.snapshot.currentFrameId;
+    const flow = router.beginPluginFlow('pluginInstall', 'official/demo');
+    router.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    const stepFrameId = router.snapshot.currentFrameId;
+    router.push({ name: 'installTargets', pluginId: 'official/demo' });
+
+    expect(router.snapshot.currentFlowId).toBe(flow.id);
+    expect(flow.originFrameId).toBe(originFrameId);
+    expect(router.back().currentFrameId).toBe(stepFrameId);
+
+    router.push({ name: 'review', operationId: 'operation-1' });
+    router.replace({ name: 'progress', operationId: 'operation-1' });
+    router.finishFlow(
+      { name: 'pluginDetail', pluginId: 'official/demo' },
+      { name: 'result', operationId: 'operation-1' },
+    );
+
+    expect(router.snapshot).toMatchObject({
+      depth: 4,
+      current: { route: { name: 'result', operationId: 'operation-1' } },
+    });
+    expect(router.snapshot.currentFlowId).toBeUndefined();
+    router.back();
+    expect(router.snapshot.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    router.back();
+    expect(router.snapshot.current).toEqual({
+      route: { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      context: {
+        focusIndex: 2,
+        scrollOffset: 1,
+        query: 'agent',
+        sourceTabId: 'official',
+        focusedEntityId: 'official/demo',
       },
     });
   });
@@ -2799,10 +2847,8 @@ describe('TUI v4 Review safety', () => {
         expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
       ]) },
     });
-    expect(controller.snapshot.progressTargets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept' }),
-      expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
-    ]));
+    expect(controller.snapshot.progressTargets).toEqual([]);
+    expect(controller.snapshot.progress).toEqual({ messages: [] });
   });
 
   it('keeps a failed dependency execution failed when no target completed or was kept', async () => {
@@ -3041,7 +3087,9 @@ describe('TUI v4 Review safety', () => {
       returnRoute,
     });
     controller.leaveResult();
-    expect(controller.snapshot.router.current.route).toEqual(returnRoute);
+    expect(controller.snapshot.router.current.route).toEqual(
+      intent.kind === 'sourceMutation' ? { name: 'sourceList' } : returnRoute,
+    );
   });
 
   it.each([
@@ -3081,6 +3129,97 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.router).toMatchObject({ depth: 1, current: { route: { name: 'home' } } });
   });
 
+  it('clears install selection and progress at Result, and clears an abandoned install draft', async () => {
+    const progressFeed = createRebuildProgressFeed();
+    const controller = new TuiController(dependencies(), progressFeed);
+    await controller.load();
+    controller.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    controller.beginInstallFlow('official/demo', 'user');
+    controller.setInstallPlatforms(['codex']);
+    controller.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    progressFeed.setCurrent({ target: 'demo · Codex/当前用户', phase: '写入平台插件' }, '正在写入');
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    await controller.executeOperation(review.reviewToken);
+
+    expect(controller.snapshot.router.current.route.name).toBe('result');
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+    expect(controller.snapshot.progress).toEqual({ messages: [] });
+    expect(controller.snapshot.progressTargets).toEqual([]);
+
+    controller.leaveResult();
+    controller.beginInstallFlow('official/demo', 'project');
+    controller.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toBeDefined();
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+  });
+
+  it('keeps a blocked install draft private until the user explicitly returns to modify it', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockRejectedValue(new Error('writeRejected')),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    controller.beginInstallFlow('official/demo', 'user');
+    controller.setInstallPlatforms(['codex']);
+    controller.push({ name: 'installTargets', pluginId: 'official/demo' });
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    await controller.executeOperation(review.reviewToken);
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+
+    controller.resumeResultDraft();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'installTargets', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({
+      pluginId: 'official/demo', rootScope: 'user', platforms: ['codex'],
+    });
+  });
+
+  it('owns every source-add wizard step from the source list and removes them before Result', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before',
+        proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory',
+        referenceCount: 0,
+        inventoryComplete: true,
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+    }));
+    await controller.load();
+    controller.push({ name: 'sourceList' });
+    controller.push({ name: 'sourceAdd', step: 'type', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'id', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'location', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'refPolicy', owner: 'source-draft' });
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'team',
+      source: { id: 'team', type: 'path', primary: false, path: '/safe/fixture' },
+    });
+
+    await controller.executeOperation(review.reviewToken);
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: 3,
+      current: { route: { name: 'result', operationId: review.operationId } },
+    });
+    controller.leaveResult();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceList' });
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
+  });
+
   it.each([
     ['plugin', { name: 'pluginDetail' as const, pluginId: 'official/demo' }],
     ['source', { name: 'sourceList' as const }],
@@ -3100,7 +3239,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(controller.snapshot.result).toBeUndefined();
     expect(controller.snapshot.router.current.route).toEqual(targetRoute);
-    expect(controller.snapshot.router.depth).toBe(2);
+    expect(controller.snapshot.router.depth).toBe(targetRoute.name === 'home' ? 1 : 2);
     controller.back();
     expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
   });
@@ -3668,7 +3807,7 @@ describe('TUI v4 Review safety', () => {
     });
     controller.leaveResult();
     expect(controller.snapshot.router.current.route).toEqual({
-      name: 'configUnavailable', pluginId: 'official/demo',
+      name: 'pluginDetail', pluginId: 'official/demo',
     });
   });
 
@@ -4242,9 +4381,9 @@ describe('TUI v4 Review safety', () => {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
     const first = await value.buildOperationReview(intent);
-    await value.executeOperation(first.reviewToken);
-    expect(value.snapshot.progress.current).toBeDefined();
-    const messages = value.snapshot.progress.messages;
+    const firstResult = await value.executeOperation(first.reviewToken);
+    expect(firstResult).toMatchObject({ summary: { messages: expect.any(Array) } });
+    expect(value.snapshot.progress).toEqual({ messages: [] });
 
     const next = await value.buildOperationReview(intent);
     const executing = value.executeOperation(next.reviewToken);
@@ -4252,7 +4391,6 @@ describe('TUI v4 Review safety', () => {
     expect(value.snapshot.progress.current).toEqual({
       target: 'official/demo', phase: '验证当前状态',
     });
-    expect(messages).not.toEqual([]);
     expect(value.snapshot.progress.messages).toEqual([]);
     second.resolve({ ok: true });
     const secondResult = await executing;

@@ -1429,6 +1429,14 @@ export function ConsoleAppV4(props: {
     || route.name === 'configFieldAction'
     ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
     : undefined;
+  useEffect(() => {
+    if (!configRoute || configRoute.name === 'configFields' || !currentConfigPage || activeField) return;
+    props.controller.replace({
+      name: 'configFields',
+      pluginId: configRoute.pluginId,
+      layer: configRoute.layer,
+    }, snapshot.router.current.context);
+  }, [props.controller, configRoute, currentConfigPage, activeField, snapshot.router.current.context]);
   const activeObjectKey = activeField?.type === 'object' && configRoute
     ? `${configOwnerKey(configRoute)}\0${activeField.key}`
     : undefined;
@@ -1580,13 +1588,60 @@ export function ConsoleAppV4(props: {
   };
 
   const go = (next: TuiRoute): void => {
-    props.controller.updatePageContext({ focusIndex: focus, scrollOffset, query, installFilter, sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined });
+    props.controller.updatePageContext({
+      focusIndex: focus,
+      scrollOffset,
+      query,
+      installFilter,
+      sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
+      focusedEntityId: route.name === 'pluginList'
+        ? pluginRows[focus]?.pluginId
+        : route.name === 'sourceList' ? props.controller.listSources()[focus]?.id : undefined,
+    });
     props.controller.push(next);
     setFocus(0);
     setScrollOffset(0);
     setSearchFocus(false);
     setShowTechnical(false);
     setActionError(undefined);
+  };
+  const restorePageContext = (): void => {
+    const restoredFrame = props.controller.snapshot.router.current;
+    const restored = restoredFrame.context;
+    let restoredFocus = restored.focusIndex ?? 0;
+    let itemCount: number | undefined;
+    if (restoredFrame.route.name === 'pluginList') {
+      const items = props.controller.listPlugins({
+        mode: restoredFrame.route.mode,
+        ...(restoredFrame.route.sourceId ? { sourceId: restoredFrame.route.sourceId } : {}),
+        ...(restored.query ? { query: restored.query } : {}),
+        installFilter: restored.installFilter ?? 'all',
+      });
+      itemCount = items.length;
+      const entityIndex = restored.focusedEntityId
+        ? items.findIndex((item) => item.pluginId === restored.focusedEntityId)
+        : -1;
+      restoredFocus = entityIndex >= 0
+        ? entityIndex
+        : Math.min(restoredFocus, Math.max(0, items.length - 1));
+    } else if (restoredFrame.route.name === 'sourceList') {
+      const sources = props.controller.listSources();
+      itemCount = sources.length + 1;
+      const entityIndex = restored.focusedEntityId
+        ? sources.findIndex((source) => source.id === restored.focusedEntityId)
+        : -1;
+      restoredFocus = entityIndex >= 0
+        ? entityIndex
+        : Math.min(restoredFocus, Math.max(0, itemCount - 1));
+    }
+    let restoredScroll = Math.min(restored.scrollOffset ?? 0, Math.max(0, (itemCount ?? 1) - 1));
+    if (restoredFocus < restoredScroll) restoredScroll = restoredFocus;
+    else if (restoredFocus >= restoredScroll + 4) restoredScroll = Math.max(0, restoredFocus - 3);
+    setFocus(restoredFocus);
+    setScrollOffset(restoredScroll);
+    setQuery(restored.query ?? '');
+    setInstallFilter(restored.installFilter ?? 'all');
+    setSearchFocus(false);
   };
   const beginConfigFlow = (pluginId: string): void => {
     props.controller.updatePageContext({
@@ -1606,22 +1661,12 @@ export function ConsoleAppV4(props: {
   const back = (): void => {
     if (route.name === 'result') props.controller.leaveResult();
     else props.controller.back();
-    const restored = props.controller.snapshot.router.current.context;
-    setFocus(restored.focusIndex ?? 0);
-    setScrollOffset(restored.scrollOffset ?? 0);
-    setQuery(restored.query ?? '');
-    setInstallFilter(restored.installFilter ?? 'all');
-    setSearchFocus(false);
+    restorePageContext();
     setActionError(undefined);
   };
   const leaveResult = (target?: TuiRoute): void => {
     props.controller.leaveResult(target);
-    const restored = props.controller.snapshot.router.current.context;
-    setFocus(restored.focusIndex ?? 0);
-    setScrollOffset(restored.scrollOffset ?? 0);
-    setQuery(restored.query ?? '');
-    setInstallFilter(restored.installFilter ?? 'all');
-    setSearchFocus(false);
+    restorePageContext();
     setShowTechnical(false);
     setActionError(undefined);
   };
@@ -2684,19 +2729,6 @@ export function ConsoleAppV4(props: {
       title = `无法移除 ${plugin.displayName}`;
       description = '仍有插件依赖它。请先处理依赖者，再重新尝试。';
       actions = [
-        ...(route.platform && route.scope ? [{
-          label: '强制清理…',
-          description: '依赖者会变为不完整；下一页仍需明确确认',
-          status: 'error' as const,
-          run: () => beginReview({
-            kind: 'pluginWrite',
-            action: 'cleanup',
-            pluginId: plugin.pluginId,
-            platform: route.platform!,
-            scope: route.scope!,
-            force: true,
-          }),
-        }] : []),
         { label: '查看完整依赖关系', run: () => {
           props.controller.replace({ name: 'pluginDependencies', pluginId: plugin.pluginId });
           setFocus(0);
@@ -2714,7 +2746,7 @@ export function ConsoleAppV4(props: {
         <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={blockedRemovalViewport.offset} limit={blockedRemovalViewport.limit} />
         {showTechnical ? <IssueTechnicalDetails details={[{
           code: 'dependencyStillRequired',
-          message: '已安装插件仍在使用这个依赖；强制清理会使依赖者变为不完整。',
+          message: '已安装插件仍在使用这个依赖；请先处理依赖者。',
         }]} compact={policy.mode === 'compact'} /> : null}
       </Box>;
     } else {
@@ -4911,7 +4943,7 @@ export function ConsoleAppV4(props: {
             { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
           ]
       : sourceOperation
-      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? leaveResult() : leaveResult({ name: 'sourceList' }) }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
+      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult({ name: 'sourceList' }) }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
       : configOperation && partial
       ? [
           ...(configRetryAvailable ? [{
@@ -4931,7 +4963,7 @@ export function ConsoleAppV4(props: {
         ]
       : configOperation && blocked
       ? [
-          { label: '返回设置', run: () => leaveResult() },
+          { label: '返回设置', run: () => props.controller.resumeResultDraft() },
           { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
         ]
       : [{ label: partial || blockedDependencyFailure ? '查看失败项' : successfulConfigOperation && configOrigin
@@ -4997,7 +5029,7 @@ export function ConsoleAppV4(props: {
     const hiddenResultTargets = resultTargets.length - visibleResultTargets.length;
     const portableMissingSkills = new Set(portableReceipt?.missing.map((entry) => entry.skill) ?? []);
     const portableSelectedSkills = portableReceipt?.selectedSkills
-      ?? snapshot.portableDraft?.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.name)
+      ?? snapshot.portableResultSkills
       ?? [];
     const prioritizedPortableSkills = [...portableSelectedSkills].sort((left, right) =>
       Number(portableMissingSkills.has(right)) - Number(portableMissingSkills.has(left)));

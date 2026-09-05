@@ -535,6 +535,7 @@ export interface TuiControllerSnapshot {
   activeReview?: OperationReviewModel;
   reviewPreparation?: ReviewPreparationSnapshot;
   result?: OperationExecuteResult;
+  portableResultSkills?: string[];
   loadError?: { code: string; message: string };
   portableDraft?: PortableSkillSelectionViewModel & {
     agentMode: 'automatic' | 'explicit';
@@ -722,13 +723,17 @@ export class TuiController {
   #reviewPreparation?: ActiveReviewPreparation;
   #reviewPreparationToken = 0;
   #result?: OperationExecuteResult;
+  #resultAnchor?: TuiRoute;
+  #portableResultSkills?: string[];
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
+  #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
   #portableRepreparePluginId?: string;
   #portableRequestToken = 0;
   #portableRequestAbort?: AbortController;
   #portablePending?: { key: string; promise: Promise<unknown> };
   #installPlacementDraft?: InstallPlacementDraftState;
+  #recoverableInstallPlacementDraft?: InstallPlacementDraftState;
   #installPlacementRequestToken = 0;
   #installPlacementRequestAbort?: AbortController;
   #generation = 0;
@@ -759,6 +764,7 @@ export class TuiController {
     });
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
+        if (this.#router.snapshot.current.route.name === 'result') return;
         this.#progress = {
           ...structuredClone(progress),
           messages: progress.messages.slice(-8),
@@ -805,6 +811,7 @@ export class TuiController {
         ? { reviewPreparation: this.#reviewPreparation.snapshot }
         : {}),
       ...(this.#result ? { result: this.#result } : {}),
+      ...(this.#portableResultSkills ? { portableResultSkills: this.#portableResultSkills } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
       ...(this.#portableDraft ? { portableDraft: this.#portableDraft } : {}),
       ...(this.#installPlacementDraft
@@ -887,6 +894,8 @@ export class TuiController {
       || route.name === 'configLayer'
       || route.name === 'configFields'
       || route.name === 'configFieldEditor'
+      || route.name === 'configObjectPropertyEditor'
+      || route.name === 'configFieldAction'
       || route.name === 'configUnavailable';
     if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
       return {
@@ -905,7 +914,12 @@ export class TuiController {
     if ((route.name === 'sourceDetail'
       || route.name === 'sourceTechnical'
       || route.name === 'sourceEdit'
-      || route.name === 'sourceRemoveBlocked')
+      || route.name === 'sourceRemoveBlocked'
+      || route.name === 'catalogCandidate'
+      || route.name === 'catalogRefreshPolicy'
+      || route.name === 'catalogRefresh'
+      || route.name === 'catalogImmutableViolation'
+      || route.name === 'catalogActivationBlocked')
       && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
       return { name: 'sourceList' };
     }
@@ -916,6 +930,96 @@ export class TuiController {
     const route = this.#router.snapshot.current.route;
     const normalized = this.#normalizeRoute(route);
     if (normalized !== route) this.#router.replace(normalized);
+  }
+
+  #ensureOperationFlow(intent: OperationIntent): void {
+    const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWrite') {
+      const kind = intent.action === 'install' ? 'pluginInstall' : 'pluginMaintenance';
+      if (active?.kind === kind) return;
+      this.#router.beginPluginFlow(
+        kind,
+        intent.pluginId,
+      );
+      return;
+    }
+    if (intent.kind === 'portableInstall') {
+      if (active?.kind === 'portableInstall') return;
+      this.#router.beginPortableFlow(intent.pluginId);
+      return;
+    }
+    if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+      if (active?.kind === 'configEdit') return;
+      const route = this.#router.snapshot.current.route;
+      if ((route.name === 'pluginPreview' || route.name === 'pluginDetail')
+        && route.pluginId === intent.pluginId) {
+        this.#router.beginConfigFlow(intent.pluginId);
+      } else {
+        this.#router.beginFlow('configEdit', { name: 'pluginDetail', pluginId: intent.pluginId });
+      }
+      return;
+    }
+    const kind = intent.kind === 'catalogSourcesRecovery' ? 'sourceRecovery' : 'sourceEdit';
+    if (active?.kind === kind) return;
+    this.#router.beginFlow(
+      kind,
+      active ? this.#router.snapshot.current.route
+        : intent.kind === 'sourceMutation' && intent.action !== 'remove'
+        ? { name: 'sourceDetail', sourceId: intent.sourceId }
+        : intent.kind === 'catalogGeneration'
+          ? { name: 'sourceDetail', sourceId: intent.sourceId }
+          : { name: 'sourceList' },
+    );
+  }
+
+  #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
+    const active = this.#router.activeFlow();
+    if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
+    if (active && (intent.kind === 'portableInstall'
+      || intent.kind === 'configSave' || intent.kind === 'configReset')) {
+      return this.#normalizeRoute(active.returnTarget);
+    }
+    if (intent.kind === 'pluginWrite') {
+      if (intent.originIssue && result.state === 'succeeded') return { name: 'issueList' };
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
+    }
+    if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
+    }
+    if (intent.kind === 'sourceMutation' && intent.action === 'update') {
+      return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
+    }
+    if (intent.kind === 'catalogGeneration') {
+      return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
+    }
+    return { name: 'sourceList' };
+  }
+
+  #showResult(result: OperationExecuteResult, intent: OperationIntent): void {
+    const terminal = { name: 'result' as const, operationId: result.operationId };
+    const target = this.#stableResultRoute(intent, result);
+    this.#resultAnchor = structuredClone(target);
+    this.#cancelReviewPreparation();
+    this.#progress = { messages: [] };
+    this.#progressTargets = [];
+    this.#recoverableInstallPlacementDraft = result.state === 'blocked'
+      && intent.kind === 'pluginWrite' && intent.action === 'install'
+      && this.#installPlacementDraft?.pluginId === intent.pluginId
+      ? structuredClone(this.#installPlacementDraft)
+      : undefined;
+    this.#installPlacementDraft = undefined;
+    this.#recoverablePortableDraft = result.state !== 'succeeded'
+      && intent.kind === 'portableInstall'
+      && this.#portableDraft?.pluginId === intent.pluginId
+      ? structuredClone(this.#portableDraft)
+      : undefined;
+    this.#portableResultSkills = intent.kind === 'portableInstall'
+      ? this.#portableDraft?.candidates
+        .filter((candidate) => candidate.selected)
+        .map((candidate) => candidate.name)
+      : undefined;
+    this.#portableDraft = undefined;
+    if (!this.#router.finishFlow(target, terminal)) this.#router.replace(terminal);
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
@@ -1005,6 +1109,10 @@ export class TuiController {
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
     this.#discardPortableDraftForRoute(route);
+    if ((route.name === 'sourceAdd' || route.name === 'sourceEdit')
+      && this.#router.activeFlow()?.kind !== 'sourceEdit') {
+      this.#router.beginFlow('sourceEdit', this.#router.snapshot.current.route);
+    }
     this.#router.push(route, context);
     this.#publish();
   }
@@ -1222,7 +1330,15 @@ export class TuiController {
   }
 
   configOrigin(pluginId: string): TuiRoute | undefined {
-    return this.#router.configOrigin(pluginId);
+    const origin = this.#router.configOrigin(pluginId);
+    if (origin) return origin;
+    if (this.#router.snapshot.current.route.name === 'result'
+      && this.#resultAnchor
+      && (this.#resultAnchor.name === 'pluginPreview' || this.#resultAnchor.name === 'pluginDetail')
+      && this.#resultAnchor.pluginId === pluginId) {
+      return structuredClone(this.#resultAnchor);
+    }
+    return undefined;
   }
 
   updatePageContext(context: Partial<TuiPageContext>): void {
@@ -1232,6 +1348,7 @@ export class TuiController {
 
   back(): void {
     const route = this.#router.snapshot.current.route;
+    const activeFlow = this.#router.activeFlow();
     this.#cancelReviewPreparation();
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
@@ -1240,6 +1357,12 @@ export class TuiController {
       this.#activeReview = undefined;
     }
     this.#router.back();
+    if (activeFlow
+      && this.#router.snapshot.currentFrameId === activeFlow.originFrameId) {
+      this.#router.abandonFlow(activeFlow.id);
+      if (activeFlow.kind === 'pluginInstall') this.#installPlacementDraft = undefined;
+      if (activeFlow.kind === 'portableInstall') this.#portableDraft = undefined;
+    }
     this.#normalizeCurrentRoute();
     this.#discardPortableDraftForRoute(this.#router.snapshot.current.route);
     this.#publish();
@@ -1254,13 +1377,33 @@ export class TuiController {
       this.#activeReview = undefined;
     }
     this.#result = undefined;
-    this.#router.discardSourceFlow(owner, returnRoute);
+    const activeFlow = this.#router.activeFlow();
+    if (activeFlow?.kind === 'sourceEdit') {
+      this.#router.abandonFlow(activeFlow.id);
+      if (JSON.stringify(this.#router.snapshot.current.route) !== JSON.stringify(returnRoute)) {
+        this.#router.replace(returnRoute);
+      }
+    } else {
+      this.#router.discardSourceFlow(owner, returnRoute);
+    }
     this.#normalizeCurrentRoute();
     this.#publish();
   }
 
   leaveResult(target?: TuiRoute): void {
     if (this.#router.snapshot.current.route.name !== 'result') return;
+    if (target?.name === 'home') {
+      this.#router.resetToRoot();
+      this.#portableDraft = undefined;
+      this.#recoverablePortableDraft = undefined;
+      this.#installPlacementDraft = undefined;
+      this.#recoverableInstallPlacementDraft = undefined;
+      this.#result = undefined;
+      this.#resultAnchor = undefined;
+      this.#portableResultSkills = undefined;
+      this.#publish();
+      return;
+    }
     if (this.#result?.operationKind === 'portableInstall'
       && 'pluginId' in this.#result && this.#result.pluginId) {
       const preserveDraft = target?.name === 'portableSkillSelect'
@@ -1276,14 +1419,45 @@ export class TuiController {
       this.#publish();
       return;
     }
-    const route = target ?? (this.#result && 'returnRoute' in this.#result
-      ? this.#result.returnRoute
-      : undefined);
     this.#router.back();
-    if (route) this.#router.replace(this.#normalizeRoute(route));
+    if (target) this.#router.replace(this.#normalizeRoute(target));
     else this.#normalizeCurrentRoute();
     this.#discardPortableDraftForRoute(this.#router.snapshot.current.route);
     this.#result = undefined;
+    this.#resultAnchor = undefined;
+    this.#portableResultSkills = undefined;
+    this.#recoverableInstallPlacementDraft = undefined;
+    this.#recoverablePortableDraft = undefined;
+    this.#publish();
+  }
+
+  resumeResultDraft(): void {
+    const result = this.#result;
+    if (this.#router.snapshot.current.route.name !== 'result' || !result
+      || !('returnRoute' in result) || !result.returnRoute) return;
+    const returnRoute = this.#normalizeRoute(result.returnRoute);
+    this.#router.back();
+    const kind = result.operationKind === 'configSave' || result.operationKind === 'configReset'
+      ? 'configEdit' as const
+      : result.operationKind === 'portableInstall'
+        ? 'portableInstall' as const
+        : result.operationKind === 'sourceMutation' || result.operationKind === 'catalogGeneration'
+          || result.operationKind === 'catalogSourcesRecovery'
+          ? 'sourceEdit' as const
+          : 'pluginMaintenance' as const;
+    this.#router.beginFlow(kind, this.#router.snapshot.current.route);
+    if (result.operationKind === 'pluginWrite') {
+      this.#installPlacementDraft = this.#recoverableInstallPlacementDraft;
+    }
+    if (result.operationKind === 'portableInstall') {
+      this.#portableDraft = this.#recoverablePortableDraft;
+    }
+    this.#router.push(returnRoute);
+    this.#recoverableInstallPlacementDraft = undefined;
+    this.#recoverablePortableDraft = undefined;
+    this.#result = undefined;
+    this.#resultAnchor = undefined;
+    this.#portableResultSkills = undefined;
     this.#publish();
   }
 
@@ -1312,13 +1486,20 @@ export class TuiController {
     preserveDraft = false,
   ): void {
     this.#cancelPortableRequest();
+    if (preserveDraft && !this.#portableDraft) {
+      this.#portableDraft = this.#recoverablePortableDraft;
+    }
     if (!preserveDraft) this.#portableDraft = undefined;
+    this.#recoverablePortableDraft = undefined;
     if (this.#activeReview?.operationKind === 'portableInstall') {
       this.#tickets.delete(this.#activeReview.reviewToken);
       this.#activeReview = undefined;
     }
     if (this.#result?.operationKind === 'portableInstall') this.#result = undefined;
-    this.#router.resetPortableFlow(pluginId);
+    this.#resultAnchor = undefined;
+    this.#portableResultSkills = undefined;
+    if (this.#router.snapshot.current.route.name === 'result') this.#router.back();
+    else this.#router.resetPortableFlow(pluginId);
     if (target && JSON.stringify(this.#router.snapshot.current.route) !== JSON.stringify(target)) {
       this.#router.beginPortableFlow(pluginId);
       this.#router.push(this.#normalizeRoute(target));
@@ -1368,6 +1549,8 @@ export class TuiController {
     options: { adjustingExisting?: boolean } = {},
   ): void {
     this.#cancelInstallPlacementRequest();
+    const active = this.#router.activeFlow();
+    if (active?.kind !== 'pluginInstall') this.#router.beginPluginFlow('pluginInstall', pluginId);
     this.#installPlacementDraft = {
       pluginId,
       rootScope,
@@ -1826,6 +2009,7 @@ export class TuiController {
         );
       }
     }
+    this.#ensureOperationFlow(intent);
     const inheritedReturnRoute = this.#reviewPreparation?.returnRoute;
     const current = this.#router.snapshot.current.route;
     const navigation = current.name === 'result' || current.name === 'reviewPreparing'
@@ -2041,6 +2225,7 @@ export class TuiController {
     navigation: 'push' | 'replace' = 'push',
     returnRoute: TuiRoute = this.#router.snapshot.current.route,
   ): OperationReviewModel {
+    this.#ensureOperationFlow(intent);
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
     const projection = buildOperationReviewProjection({
       intent,
@@ -2288,7 +2473,7 @@ export class TuiController {
           };
           this.#result = structuredClone(result);
           this.#activeReview = undefined;
-          this.#router.replace({ name: 'result', operationId });
+          this.#showResult(result, ticket.intent);
           this.#publish();
           return cloneFrozen(result);
         }
@@ -2387,7 +2572,7 @@ export class TuiController {
           };
           this.#result = structuredClone(result);
           this.#activeReview = undefined;
-          this.#router.replace({ name: 'result', operationId });
+          this.#showResult(result, ticket.intent);
           this.#publish();
           return cloneFrozen(result);
         }
@@ -2428,7 +2613,7 @@ export class TuiController {
       }
       this.#result = result;
       this.#activeReview = undefined;
-      this.#router.replace({ name: 'result', operationId });
+      this.#showResult(result, ticket.intent);
       this.#publish();
       return cloneFrozen(result);
     } catch (error) {
@@ -2529,7 +2714,7 @@ export class TuiController {
       };
       this.#result = structuredClone(result);
       this.#activeReview = undefined;
-      this.#router.replace({ name: 'result', operationId });
+      this.#showResult(result, ticket.intent);
       this.#publish();
       return cloneFrozen(result);
     }
@@ -2612,6 +2797,7 @@ export class TuiController {
       this.#router.back();
       this.#normalizeCurrentRoute();
     }
+    else if (options?.intent) this.#showResult(result, options.intent);
     else this.#router.replace({ name: 'result', operationId });
     this.#publish();
     return cloneFrozen(result);

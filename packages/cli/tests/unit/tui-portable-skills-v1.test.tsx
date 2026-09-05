@@ -336,6 +336,25 @@ describe('Portable Skills TUI V1', () => {
     }
   });
 
+  it('resets a Portable result home action to one root frame without a retained flow', async () => {
+    const { value } = portableController();
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    await value.preparePortableInstall('official/toolkit');
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+
+    value.leaveResult({ name: 'home' });
+
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' } },
+    });
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
+    expect(value.snapshot.portableDraft).toBeUndefined();
+    expect(value.snapshot.result).toBeUndefined();
+  });
+
   it('uses typed portable blocker codes before a message prefix fallback', () => {
     expect(extractPortableError(Object.assign(new Error('portableSkillInvalid: detail'), {
       code: 'portableSkillsCliMissing',
