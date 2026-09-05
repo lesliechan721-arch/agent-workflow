@@ -367,6 +367,17 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
+  it('packs both Windows Job helper architectures in the Eval tarball', async () => {
+    const { evalTarballPath } = await preparePackedCli();
+    const { stdout } = await execFileAsync('tar', ['-tzf', evalTarballPath], {
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    const entries = new Set(stdout.trim().split('\n'));
+    expect(entries).toContain('package/dist/native/windows/manifest.json');
+    expect(entries).toContain('package/dist/native/windows/x64/aw-windows-job.exe');
+    expect(entries).toContain('package/dist/native/windows/arm64/aw-windows-job.exe');
+  }, 300_000);
+
   it('runs external authoring workflow from installed tarballs', async () => {
     const { packageRoot, cliTarballPath, evalTarballPath, coreTarballPath, tempRoot } = await preparePackedCli();
     const installPrefix = path.join(tempRoot, 'install-prefix');
@@ -427,6 +438,38 @@ describe('pack smoke', () => {
       const packageStats = await fs.lstat(path.join(globalNodeModules, ...packageName.split('/')));
       expect(packageStats.isSymbolicLink()).toBe(false);
     }
+    const installedRe2Wasm = path.join(
+      globalNodeModules,
+      '@lesliechan721',
+      'aw-plugin-core',
+      'node_modules',
+      're2-wasm',
+      'build',
+      'wasm',
+      're2.wasm',
+    );
+    await expect(fs.pathExists(installedRe2Wasm)).resolves.toBe(true);
+    const installedCoreManifestImport = pathToFileURL(path.join(
+      globalNodeModules,
+      '@lesliechan721',
+      'aw-plugin-core',
+      'dist',
+      'manifest.js',
+    )).href;
+    await expect(execFileAsync(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      [
+        'const { normalizePluginConfigDefinition, validatePluginConfigValue } = await import(process.argv[1]);',
+        "const config = normalizePluginConfigDefinition({ fields: { value: { type: 'string', validation: { pattern: '\\\\p{Han}+', maxLength: 20 } } } });",
+        "if (validatePluginConfigValue(config.fields.value, 'prefix中文suffix', 'value').length !== 0) process.exit(1);",
+      ].join('\n'),
+      installedCoreManifestImport,
+    ], {
+      cwd: tempRoot,
+      env: envWithoutNodePath,
+      maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({ stdout: '' });
     const installedCodexManagerImport = pathToFileURL(path.join(
       globalNodeModules,
       '@lesliechan721',
@@ -1087,14 +1130,52 @@ describe('pack smoke', () => {
       'author-smoke',
       '--description',
       'A deterministic fixture for packed CLI scaffolding.',
-      '--skill-description',
-      'Create and validate a deterministic packed CLI authoring fixture.',
-      '--skill-short-description',
-      'Create a packed CLI authoring fixture.',
       '--with-config-api',
+      '--no-skills',
       '--workspace-root',
       authorRepo,
     ], { cwd: authorRepo, env: process.env });
+    const helperPath = path.join(
+      authorRepo,
+      'plugins',
+      'author-smoke',
+      'scripts',
+      'aw-config.mjs',
+    );
+    await expect(fs.pathExists(path.join(
+      path.dirname(helperPath),
+      're2-wasm',
+    ))).resolves.toBe(false);
+    await expect(execFileAsync(awBin, [
+      'plugin',
+      'validate',
+      path.join('plugins', 'author-smoke'),
+      '--workspace-root',
+      authorRepo,
+      '--json',
+    ], { cwd: authorRepo, env: externalAuthoringEnv })).resolves.toMatchObject({
+      stdout: expect.stringMatching(/"ok":\s*true/u),
+      stderr: '',
+    });
+    const buildReceipt = await execFileAsync(awBin, [
+      'plugin',
+      'build',
+      path.join('plugins', 'author-smoke'),
+      '--workspace-root',
+      authorRepo,
+      '--json',
+    ], { cwd: authorRepo, env: externalAuthoringEnv });
+    const builtHelperPath = path.join(JSON.parse(buildReceipt.stdout).outputRoot, 'scripts', 'aw-config.mjs');
+    await expect(fs.pathExists(path.join(
+      path.dirname(builtHelperPath),
+      're2-wasm',
+    ))).resolves.toBe(false);
+    const helperHelp = await execFileAsync(process.execPath, [builtHelperPath, '--help'], {
+      cwd: authorRepo,
+      env: externalAuthoringEnv,
+    });
+    expect(helperHelp.stdout).toContain('--scope effective');
+    expect(helperHelp.stderr).toBe('');
     await execFileAsync(awBin, [
       'plugin',
       'add-skill',
@@ -1116,19 +1197,6 @@ describe('pack smoke', () => {
       'second-skill',
       'SKILL.md',
     ))).resolves.toBe(true);
-    const helperPath = path.join(
-      authorRepo,
-      'plugins',
-      'author-smoke',
-      'scripts',
-      'aw-config.mjs',
-    );
-    const helperHelp = await execFileAsync(process.execPath, [helperPath, '--help'], {
-      cwd: authorRepo,
-      env: externalAuthoringEnv,
-    });
-    expect(helperHelp.stdout).toContain('effective|user|project');
-    expect(helperHelp.stderr).toBe('');
     const evalHelp = await execFileAsync(evalBin, ['--help'], {
       cwd: tempRoot,
       env: process.env,

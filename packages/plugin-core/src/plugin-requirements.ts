@@ -48,7 +48,7 @@ export function deriveAwCapabilitiesFromManifest(
   if (manifest.skills) capabilities.push('aw.plugin-skills.v1')
   if (manifest.buildConfig) capabilities.push('aw.plugin-build-config.v1')
   if (manifest.config) capabilities.push('aw.plugin-config.v2')
-  if (manifest.scripts?.postApply) capabilities.push('aw.plugin-post-apply.v1')
+  if (manifest.scripts?.preApply) capabilities.push('aw.plugin-pre-apply.v1')
   if ((manifest.artifacts?.targets?.length ?? 0) > 0) capabilities.push('aw.dynamic-artifacts.v2')
   if (manifest.distributions?.agentSkills) capabilities.push('aw.portable-skills.v1')
   if (hasRuntimeImports(manifest)) capabilities.push('aw.runtime-imports.v1')

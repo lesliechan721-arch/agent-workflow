@@ -41,6 +41,7 @@ type PluginTestPlatformSelection = PlatformName | 'both';
 export interface PluginTestRunnerOptions {
   repoRoot?: string;
   env?: NodeJS.ProcessEnv;
+  testConfigValues?: Record<string, PluginConfigValue>;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
 }
@@ -397,8 +398,10 @@ async function writeTestContext(options: {
   projectRoot: string;
   env: NodeJS.ProcessEnv;
   tempDir: string;
+  testConfigValues?: Record<string, PluginConfigValue>;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
   const sourceId = 'plugin-test';
+  const logicalIdentity = 'plugin-test';
   const sourceIdentity = `sha256:${crypto.createHash('sha256')
     .update(`${sourceId}/${options.manifest.name}`, 'utf8')
     .digest('hex')}`;
@@ -419,18 +422,25 @@ async function writeTestContext(options: {
     }),
   };
   if (options.manifest.config?.fields) {
-    await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
-      schemaVersion: 3,
-      sourceId,
-      sourceIdentity,
-      pluginName: options.manifest.name,
-      values: {},
-    }, { spaces: 2 })));
+    await Promise.all(Object.entries(configStores).map(([scope, storePath]) => fs.outputJson(
+      storePath,
+      {
+        schemaVersion: 4,
+        sourceId,
+        pluginName: options.manifest.name,
+        binding: scope === 'user'
+          ? { kind: 'source', sourceIdentity }
+          : { kind: 'catalog', logicalIdentity },
+        values: options.testConfigValues ?? {},
+      },
+      { spaces: 2 },
+    )));
   }
   const effective = options.manifest.config?.fields
     ? await resolveEffectivePluginConfig({
         sourceId,
         sourceIdentity,
+        logicalIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
@@ -446,6 +456,7 @@ async function writeTestContext(options: {
       rootDir: options.bundleRoot,
       sourceId,
       sourceIdentity,
+      logicalIdentity,
       pluginId: `${sourceId}/${options.manifest.name}`,
     },
     sourceRoot: options.sourceRoot,
@@ -520,6 +531,7 @@ async function runPreparedPluginTests(options: {
   platform: PlatformName;
   testName?: string;
   env: NodeJS.ProcessEnv;
+  testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
@@ -573,6 +585,7 @@ async function runPreparedPluginTests(options: {
       projectRoot: canonicalProjectRoot,
       env,
       tempDir,
+      testConfigValues: options.testConfigValues,
     });
     const spawnEnv = buildPluginScriptSpawnEnv({
       commandEnv: env,
@@ -641,6 +654,7 @@ async function runPreparedPluginSelection(options: {
   selection: PreparedPluginTestSelection;
   parsed: ParsedArgs;
   env: NodeJS.ProcessEnv;
+  testConfigValues?: Record<string, PluginConfigValue>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }): Promise<number> {
@@ -664,6 +678,7 @@ async function runPreparedPluginSelection(options: {
           platform,
           testName: options.parsed.testName,
           env: options.env,
+          testConfigValues: options.testConfigValues,
           stdout: options.stdout,
           stderr: options.stderr,
         });
@@ -727,6 +742,7 @@ export async function runPluginScriptTests(
             selection,
             parsed,
             env,
+            testConfigValues: options.testConfigValues,
             stdout,
             stderr,
           });
@@ -752,6 +768,7 @@ export async function runPluginScriptTests(
           selection,
           parsed,
           env,
+          testConfigValues: options.testConfigValues,
           stdout,
           stderr,
         });
@@ -771,7 +788,14 @@ export async function runPluginScriptTests(
     const sourceSet = await resolvePluginRuntimeSourceSet(repoRoot, [plugin]);
     const runtimeResolver = createCatalogRuntimeImportResolver(sourceSet);
     const selection = await preparePluginSelection({ plugin, parsed, runtimeResolver });
-    return await runPreparedPluginSelection({ selection, parsed, env, stdout, stderr });
+    return await runPreparedPluginSelection({
+      selection,
+      parsed,
+      env,
+      testConfigValues: options.testConfigValues,
+      stdout,
+      stderr,
+    });
   } catch (error) {
     print(stderr, error instanceof Error ? error.message : String(error));
     return 1;

@@ -8,6 +8,10 @@ import {
   type ProcessTreeDependencies,
   type ProcessTreeObservation,
 } from './process-tree.js'
+import {
+  createWindowsJobInvocation,
+  type WindowsJobInvocation,
+} from './windows-job.js'
 import type {
   ProcessLifecycleHooks,
   ProcessRequest,
@@ -29,6 +33,10 @@ const VERIFIED_OBSERVED_CONTAINMENT_LIMITATION =
 export interface ProviderProcessDependencies {
   containment?: 'managed' | 'verified-observed' | 'observed' | 'unmanaged-confirmed'
   processTree?: ProcessTreeDependencies
+  createWindowsJobInvocation?: (
+    executable: string,
+    args: readonly string[],
+  ) => WindowsJobInvocation
 }
 
 export class ProviderProcessCleanupError extends Error {
@@ -87,13 +95,18 @@ export async function runProviderProcess(
 ): Promise<ProcessResult> {
   const platform = dependencies.processTree?.platform ?? process.platform
   const containment = dependencies.containment ?? 'managed'
-  const descendantCleanupGuaranteed = containment === 'managed'
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
+    (process.platform === 'win32' ? createWindowsJobInvocation : undefined)
+  const usesWindowsJob = platform === 'win32' && createWindowsJobInvocationImpl !== undefined
+  const descendantCleanupGuaranteed = containment === 'managed' || usesWindowsJob
   const gradingEvidenceAccepted = descendantCleanupGuaranteed || containment === 'verified-observed'
-  if (descendantCleanupGuaranteed) assertProviderProcessSupported(platform, hooks)
+  if (containment === 'managed') assertProviderProcessSupported(platform, hooks)
   if (containment === 'observed' && !hooks.terminateProcessTree) {
     throw new Error('Observed provider execution requires a process cleanup hook.')
   }
-  const containmentLimitation = containment === 'observed'
+  const containmentLimitation = usesWindowsJob
+    ? undefined
+    : containment === 'observed'
     ? OBSERVED_CONTAINMENT_LIMITATION
     : containment === 'verified-observed'
       ? VERIFIED_OBSERVED_CONTAINMENT_LIMITATION
@@ -124,7 +137,7 @@ export async function runProviderProcess(
         enforceCooperativeProcessGroup: true,
       }
     : dependencies.processTree
-  const inspectionLease = containment === 'verified-observed'
+  const inspectionLease = containment === 'verified-observed' && !usesWindowsJob
     ? await acquireProcessTreeInspectionLease(verifiedProcessTree)
     : undefined
   const marker = inspectionLease?.marker ??
@@ -134,16 +147,23 @@ export async function runProviderProcess(
   else delete childEnvironment[PROVIDER_PROCESS_MARKER_ENV]
 
   const running = new Promise<ProcessResult>((resolve, reject) => {
-    const child = spawn(request.executable, request.args, {
-      cwd: request.cwd,
-      env: childEnvironment,
-      shell: false,
-      detached: platform !== 'win32',
-      stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-    })
+    const windowsJobInvocation = usesWindowsJob
+      ? createWindowsJobInvocationImpl!(request.executable, request.args)
+      : undefined
+    const child = spawn(
+      windowsJobInvocation?.command ?? request.executable,
+      windowsJobInvocation?.args ?? request.args,
+      {
+        cwd: request.cwd,
+        env: childEnvironment,
+        shell: false,
+        detached: platform !== 'win32',
+        stdio: [request.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      },
+    )
     const handle = child.pid === undefined ? null : { pid: child.pid }
     const verifiedObservation: ProcessTreeObservation | undefined =
-      containment === 'verified-observed' && handle
+      containment === 'verified-observed' && !usesWindowsJob && handle
         ? observeProcessTree(handle.pid, marker, verifiedProcessTree, inspectionLease)
         : undefined
     let stdout = Buffer.alloc(0)
@@ -169,6 +189,10 @@ export async function runProviderProcess(
 
     const performCleanup = async (reason: ProcessTerminationReason): Promise<void> => {
       if (!handle) return
+      if (usesWindowsJob) {
+        if (reason !== 'complete') killDirectChild()
+        return
+      }
       if (containment === 'unmanaged-confirmed') {
         if (reason !== 'complete') killDirectChild()
         return

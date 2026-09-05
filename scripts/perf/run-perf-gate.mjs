@@ -86,8 +86,11 @@ export function assertExpectedPerfSummaries(output) {
   }
 }
 
-export async function runPerfGate() {
-  const performanceResult = await runChild('performance Vitest', [
+export async function runPerfGate(dependencies = {}) {
+  const executeChild = dependencies.runChild ?? runChild;
+  const now = dependencies.now ?? (() => performance.now());
+  const log = dependencies.log ?? ((text) => console.log(text));
+  const performanceResult = await executeChild('performance Vitest', [
     '--filter',
     '@lesliechan721/aw',
     'exec',
@@ -98,15 +101,18 @@ export async function runPerfGate() {
   ], PERF_HARD_TIMEOUT_MS);
   assertExpectedPerfSummaries(performanceResult.stdout);
 
-  const fastUnitStartedAt = performance.now();
-  await runChild('fast unit lane', [
+  const fastUnitStartedAt = now();
+  await executeChild('fast unit lane', [
     '--filter',
     '@lesliechan721/aw',
+    'exec',
+    'vitest',
     'run',
-    'test:unit:fast',
+    '--config',
+    'vitest.fast.config.ts',
   ], FAST_UNIT_HARD_TIMEOUT_MS);
-  const fastUnitWallMs = Math.round((performance.now() - fastUnitStartedAt) * 100) / 100;
-  console.log(`${SUMMARY_PREFIX}${JSON.stringify({
+  const fastUnitWallMs = Math.round((now() - fastUnitStartedAt) * 100) / 100;
+  log(`${SUMMARY_PREFIX}${JSON.stringify({
     name: 'unit-fast-wall',
     samples: 1,
     p50Ms: fastUnitWallMs,

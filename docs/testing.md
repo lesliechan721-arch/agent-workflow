@@ -2,7 +2,9 @@
 
 本文件面向仓库维护者，负责测试书写、测试层级选择和验证命令。产品行为以[架构说明](architecture.md)为准；单插件作者合同见[插件作者指南](plugin-authoring.md)，Catalog 聚合与发布合同见[Catalog 作者指南](catalog-authoring.md)。
 
-`pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+`pnpm test` 使用 package source 和默认 Vitest 多项目配置，只运行 unit 和 integration 测试，不要求预先生成 `dist/`。Performance、dist contract 和 smoke 测试使用独立命令，不包含在 `pnpm test` 中。
+
+默认多项目按资源顺序运行：pure、filesystem-isolated 和 integration 使用最多 2 workers，process-lifecycle 使用 `forks`、1 worker 且关闭 file parallelism。Performance 和 smoke 各使用 1 worker；performance gate 先完成 process-lifecycle 自测，再运行业务性能预算。
 
 日常开发使用以下三个入口：
 
@@ -21,6 +23,7 @@
 | Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Native qualification | `pnpm qualification:codex-project-native` | 显式验证精确 Codex CLI 的 shared native 与 project activation 行为；不进入普通测试或构建 |
 | Native performance qualification | `pnpm qualification:codex-native-performance` | 显式验证精确 Codex CLI 的 scoped list、隔离本地安装和中位数预算；不进入普通测试或构建 |
+| Windows Job qualification | `pnpm qualification:windows-job` | 在真实 Windows x64/arm64 主机验证 Job containment；不进入普通测试、构建或 release |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -29,8 +32,10 @@
 | 命令 | 责任 |
 |------|------|
 | `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
+| `pnpm test:dist` | 正式 build 一次，再运行 Eval、Core、CLI authoring 的 dist contract 和 CLI build smoke |
+| `pnpm test:dist:dev` | 使用弱目标缓存执行开发 build，再运行与 `test:dist` 相同的 dist contract 和 CLI build smoke；不替代 release 验证 |
 | `pnpm test:smoke` | 运行完整 smoke suite |
-| `pnpm test:smoke:build` | 校验 `pnpm build` 产物，并证明官方入口使用 `--strict-requirements` 语义 |
+| `pnpm test:smoke:build` | 等价于 `pnpm test:dist`；校验正式 build 产物，并证明官方入口使用 `--strict-requirements` 语义 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:authoring:external` | 从三个已安装 tarball 在全新 Workspace v1 执行 `catalog init → plugin init/validate/test/build → catalog build/validate → path source add → source sync → install source/plugin -p both`，并验证隔离 homes 内的 receipt 和安装结果 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 catalog staging、Git publish、fetch 和 Git provider 消费 |
@@ -42,6 +47,8 @@
 | `pnpm qualification:codex-project-native` | 使用 PATH 中精确 `codex-cli 0.151.0` 运行离线真实 qualification，并输出单个 schema 1 JSON report |
 | `pnpm test:qualification:codex-native-performance:harness` | 使用 fake executable 验证三个版本的参数、隔离、缺失 binary 和报告合同；不提供真实性能证据 |
 | `pnpm qualification:codex-native-performance` | 使用显式提供的精确 `0.145.0`、`0.151.0` 或 `0.153.0` binary，运行五次本地 native plugin 安装并输出 schema 1 JSON report |
+| `pnpm test:qualification:windows-job:harness` | 在非 Windows 主机验证 qualification 的 timeout 配置和 AbortSignal 确实进入生产 runner；不提供 Windows 支持证据 |
+| `pnpm qualification:windows-job` | 在真实 Windows 主机验证 stdio、退出码、快速成功、正常 root 退出后的后代、嵌套后代、forced helper exit、生产 timeout、生产 abort 和 parent crash 清理；mock 和非 Windows 运行不提供此证据 |
 
 首次运行 browser smoke 前，使用 `pnpm --filter @lesliechan721/aw exec playwright install chromium` 安装与当前 Playwright 版本匹配的 Chromium。browser smoke 属于完整 `pnpm test:smoke`，但不属于 `plugin:test` 或 `release:verify:cli:core`。
 
@@ -56,6 +63,8 @@ Codex project native qualification 是显式 suite。它不得由 `pnpm test`、
 Harness 的确定性测试可以使用 fake executable，但 fake 只验证 runner 本身。native kind 的 `supported` 结果、project activation 和 trust 行为只能来自显式真实 qualification；无法从 `0.151.0` 离线 JSON 或行为证明的 kind 必须报告 `unsupported`。
 
 Native performance qualification 必须通过 `CODEX_QUALIFICATION_VERSION` 选择 `0.145.0`、`0.151.0` 或 `0.153.0`，并通过 `CODEX_QUALIFICATION_CLI` 提供本机已有的精确 binary。runner 不自动下载。每个 sample 使用新的临时 home、项目和 local marketplace。三个版本都验证 marketplace-scoped JSON list；`0.153.0` 还要求该 local list 在阻断 proxy 时成功。代表性 local native install 的五次同机中位数必须低于 15 秒；有可比较旧实现证据时，也可接受改善至少 70%。binary 缺失或版本不精确时必须报告未运行或失败，不能用 fake harness 代替。
+
+Windows Job containment 的确定性测试只验证配置编码、Windows argv quoting、manifest、PE header、调用路由和关闭等待合同。普通 `pnpm build` 只运行 manifest/hash/PE 校验，不要求 Go。强 release verification 运行 `pnpm windows-job:reproducibility`；它要求 manifest 记录的精确 Go 版本，并使用固定 `GOAMD64=v1`、`GOARM64=v8.0`、关闭用户 Go env/flags/experiments/toolchain 自动选择、隔离 module/workspace/cache 后重建两个 PE，再逐字节比较。Go 缺失、版本不同或 binary 不可复现时停止 release。真实支持证据只能来自对应架构的 Windows 主机运行 `pnpm qualification:windows-job`。该入口的 timeout 必须来自生产 runner 的真实 `timeoutMs`，abort 必须来自传入生产 runner 的 `AbortSignal`；forced helper exit 是独立场景。每个清理场景确认记录的 root 和后代 PID 已退出。macOS 交叉编译或 mock 成功不能关闭此 qualification gap。
 
 含 `buildImports` 或 `skillRuntimeFiles.import` 的 synthetic fixture 必须显式构造同一 source set 的 catalog runtime resolver。`plugin:test` 和 eval materialization 通过真实入口验证 resolver 注入；单插件 helper 缺 resolver 的 fail-closed 行为在最低 unit 层验证，不建立 sibling layout fallback。
 
@@ -124,6 +133,8 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 ## Build Reuse
 
 `scripts/build/ensure-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
+
+`pnpm build:dev` 只用于本地开发。它按 Eval、Core、CLI TypeScript 和 plugin bundle 分别计算生产输入与输出 identity；test、Vitest config、docs、change metadata、Eval 和 report 不进入 key。每个 TypeScript 目标使用独立 `tsBuildInfoFile`。输入文件删除、输出损坏、cache metadata 或 `tsbuildinfo` 损坏时，只 clean 并重建该目标。CLI key 还绑定 Eval 和 Core 输出 identity，plugin bundle 使用独立 key 和输出验证。
 
 Release unit/integration 覆盖 schema 2 CLI target 更新的 package 同步、Catalog exact version mutation、local prepared artifacts、CLI attempted marker、Catalog publication journal、启用轴的 `Eval → Core → CLI → CLI tag → Catalog` 顺序，以及 Catalog-only 不访问 npm/CLI tag 的边界。fixture 使用注入的本地 remote 或 registry 命令，不访问真实 official remote 或 npm registry。
 

@@ -89,7 +89,7 @@ describe('AW capability contracts', () => {
         }],
       },
       config: { fields: {} },
-      scripts: { postApply: { path: './scripts/post-apply.mjs' } },
+      scripts: { preApply: { path: './scripts/pre-apply.mjs' } },
       artifacts: { targets: [{ id: 'dynamic', scopes: ['user'], target: 'codex.skill', delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [] }] },
       distributions: { agentSkills: { skills: './portable' } },
     }))).toEqual([
@@ -97,7 +97,7 @@ describe('AW capability contracts', () => {
       'aw.plugin-build-config.v1',
       'aw.plugin-config.v2',
       'aw.plugin-manifest.v3',
-      'aw.plugin-post-apply.v1',
+      'aw.plugin-pre-apply.v1',
       'aw.plugin-skills.v1',
       'aw.portable-skills.v1',
       'aw.runtime-imports.v1',

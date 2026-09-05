@@ -1,11 +1,28 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 import {
   codexPermissionProfileStatus,
   normalizedCodexPermissionProfile,
   resolveEvalProcessManagement,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 describe('Eval process management preflight', () => {
+  it('uses the minimal pure test isolation and rejects network access', async () => {
+    const sentinelHome = process.env.HOME
+    const npmUserConfigPath = process.env.npm_config_userconfig
+
+    expect(sentinelHome).toContain('aw-pure-test-home-')
+    expect(npmUserConfigPath).toBe(path.join(sentinelHome!, '.npmrc'))
+    await expect(fs.stat(sentinelHome!)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.stat(npmUserConfigPath!)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(process.cwd().startsWith(sentinelHome!)).toBe(false)
+    await expect(fetch('https://example.invalid/pure-test')).rejects.toThrow(
+      'Network access is disabled in tests',
+    )
+  })
+
   it('normalizes the permission profile and blocks restricted sessions before other probes', async () => {
     const readKeychains = vi.fn(async () => '')
     const inspectProcessTree = vi.fn(async () => undefined)
@@ -76,6 +93,39 @@ describe('Eval process management preflight', () => {
       descendantCleanupGuaranteed: false,
       limitation: expect.stringContaining('not OS-enforced containment'),
     })
+  })
+
+  it('admits Windows managed mode through the Job helper without process-table inspection', async () => {
+    const inspectProcessTree = vi.fn(async () => undefined)
+    const resolveWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
+
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: false,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access' },
+      dependencies: {
+        platform: 'win32',
+        inspectProcessTree,
+        resolveWindowsJobHelper,
+      },
+    })).resolves.toMatchObject({
+      mode: 'managed',
+      inspectionAvailable: true,
+      descendantCleanupGuaranteed: false,
+      limitation: expect.stringContaining('Job containment'),
+    })
+    expect(resolveWindowsJobHelper).toHaveBeenCalledOnce()
+    expect(inspectProcessTree).not.toHaveBeenCalled()
+  })
+
+  it('fails Windows managed admission when the Job helper is unavailable', async () => {
+    await expect(resolveEvalProcessManagement({
+      allowUnmanaged: false,
+      sourceEnv: { CODEX_PERMISSION_PROFILE: ':danger-full-access' },
+      dependencies: {
+        platform: 'win32',
+        resolveWindowsJobHelper: () => { throw new Error('helper missing') },
+      },
+    })).rejects.toThrow('Full Access process management is unavailable')
   })
 
   it('blocks an injected keychain before process inspection', async () => {

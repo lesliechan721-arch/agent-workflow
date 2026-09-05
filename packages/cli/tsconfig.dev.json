@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "../../.release/cache/dev-build/cli-typescript.tsbuildinfo"
+  },
+  "include": ["index.ts", "src/**/*.ts", "src/**/*.tsx", "scripts/**/*.ts", "authoring/**/*.mjs"]
+}

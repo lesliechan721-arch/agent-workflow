@@ -776,6 +776,44 @@ function calculateDesiredTargetStates(options: {
   }]));
 }
 
+function projectDependencyClosureForTarget(options: {
+  pluginId: string;
+  platform: PlatformName;
+  available: Array<{
+    name: string;
+    dependencies: string[];
+    source: { id: string };
+    targets: Record<PlatformName, Record<Scope, boolean>>;
+  }>;
+}): Set<string> {
+  const byId = new Map(options.available.map((entry) => [
+    formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+    entry,
+  ]));
+  const closure = new Set<string>();
+  const visit = (pluginId: string): void => {
+    const entry = byId.get(pluginId);
+    if (!entry) return;
+    for (const dependency of entry.dependencies) {
+      const dependencyId = formatPluginId({
+        sourceId: entry.source.id,
+        pluginName: dependency,
+      });
+      const dependencyEntry = byId.get(dependencyId);
+      if (!dependencyEntry
+        || (!dependencyEntry.targets[options.platform].user
+          && !dependencyEntry.targets[options.platform].project)
+        || closure.has(dependencyId)) {
+        continue;
+      }
+      closure.add(dependencyId);
+      visit(dependencyId);
+    }
+  };
+  visit(options.pluginId);
+  return closure;
+}
+
 function statusRecovery(options: {
   state: StatusV7State;
   desired: DesiredTargetState;
@@ -1402,6 +1440,7 @@ async function statusCommandV7InSession(options: {
               const codexSurface = analyzeCodexSurface(plugin.manifest);
               plugin.sourceId = item.resolution!.sourceId;
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
+              plugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
               let configIssues: StatusV7PluginSummary['configIssues'];
               let configDiagnostic: StatusV7PluginSummary['configDiagnostic'];
@@ -1413,6 +1452,7 @@ async function statusCommandV7InSession(options: {
                       ? await resolveProjectArtifactRenderConfig({
                           sourceId: plugin.sourceId,
                           sourceIdentity: plugin.sourceIdentity,
+                          logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
                           cwd: options.cwd,
@@ -1421,6 +1461,7 @@ async function statusCommandV7InSession(options: {
                       : await resolveEffectivePluginConfig({
                           sourceId: plugin.sourceId,
                           sourceIdentity: plugin.sourceIdentity,
+                          logicalIdentity: plugin.catalogLogicalIdentity,
                           pluginName: plugin.manifest.name,
                           manifest: plugin.manifest,
                           targetScope: 'user',
@@ -1650,6 +1691,7 @@ async function statusCommandV7InSession(options: {
                           ).then((dependencyPlugin) => {
                             dependencyPlugin.sourceId = item.resolution!.sourceId;
                             dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
+                            dependencyPlugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
                             dependencyPlugin.pluginId = dependencyId;
                             return dependencyPlugin;
                           });
@@ -2485,6 +2527,39 @@ async function statusCommandV7InSession(options: {
           kinds: codex!.extensionKinds,
         };
     const desiredEnabled = desired.scopes.length > 0;
+    const projectDependencyIds = projectIntent.roots.some((root) =>
+      root.pluginId === target.pluginId && root.platforms.includes(target.platform))
+      ? projectDependencyClosureForTarget({
+          pluginId: target.pluginId,
+          platform: target.platform,
+          available,
+        })
+      : new Set<string>();
+    const dependencyMoves = projectIntent.dependencyScopeOverrides.flatMap((override) => {
+      if (override.scope !== 'project'
+        || (override.platform !== undefined && override.platform !== target.platform)
+        || !projectDependencyIds.has(override.pluginId)) {
+        return [];
+      }
+      const dependencyDesired = desiredTargetStates.get(desiredTargetKey(
+        override.pluginId,
+        target.platform,
+      ));
+      if (!dependencyDesired?.scopes.includes('project')
+        || dependencyDesired.scopes.includes('user')) {
+        return [];
+      }
+      const parsed = parsePluginId(override.pluginId);
+      const hasPreservedUserActual = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === parsed.sourceId
+        && reference.pluginName === parsed.pluginName
+        && reference.platform === target.platform
+        && reference.scope === 'user');
+      return hasPreservedUserActual
+        ? [{ pluginId: override.pluginId, fromScope: 'user' as const, toScope: 'project' as const }]
+        : [];
+    }).sort((left, right) => left.pluginId.localeCompare(right.pluginId, 'en'));
     const consumerIssue = activation?.systemConsumer?.state === 'incompatible'
       || activation?.systemConsumer?.state === 'unresolved'
       ? activation.systemConsumer
@@ -2506,6 +2581,8 @@ async function statusCommandV7InSession(options: {
             ? ownershipState !== 'absent' || desired.relation === 'managed'
               ? 'orphaned'
               : 'absent'
+            : dependencyMoves.length > 0
+              ? 'needsSync'
             : sharedNative?.state === 'missing'
               || sharedNative?.state === 'replaceable'
               || sharedNative?.state === 'unobserved'
@@ -2532,6 +2609,16 @@ async function statusCommandV7InSession(options: {
       ...(extensions?.state === 'drifted'
         ? [warning('codexExtensionDrift', `${target.pluginId} extension projection has drifted.`)]
         : []),
+      ...dependencyMoves.map((move): StatusV7Reason => ({
+        ...warning(
+          'dependencyScopeMigrationCleanupRequired',
+          `${move.pluginId} has preserved user-scope output after moving to project scope.`,
+        ),
+        dependencyPluginId: move.pluginId,
+        dependencyPlatform: target.platform,
+        dependencyScope: move.toScope,
+        dependencyProject: 'current',
+      })),
       ...(target.platform === 'codex' && hasSourceError && desiredEnabled
         ? [warning('codexIntentSourceUnavailable', `${target.pluginId} desired intent cannot be resolved from the current Catalog.`)]
         : []),
@@ -2556,30 +2643,6 @@ async function statusCommandV7InSession(options: {
         ?? (groupedScopes.includes('user') ? 'user' : groupedScopes[0] ?? target.scope));
     const representativeTarget = observedTargets.find((candidate) =>
       candidate.scope === representativeScope) ?? target;
-    const dependencyMoves = (representativeTarget.dependencyReadiness ?? []).flatMap((dependency) => {
-      if (dependency.state !== 'incomplete' || dependency.dependencyScope !== 'project') return [];
-      const parsed = parsePluginId(dependency.dependencyPluginId);
-      const override = projectIntent.dependencyScopeOverrides.find((candidate) =>
-        candidate.pluginId === dependency.dependencyPluginId
-        && candidate.scope === 'project'
-        && (candidate.platform === undefined || candidate.platform === target.platform));
-      const dependencyDesired = desiredTargetStates.get(desiredTargetKey(
-        dependency.dependencyPluginId,
-        target.platform,
-      ));
-      const hasPreservedUserActual = ownerInventory.references.some((reference) =>
-        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
-        && reference.sourceId === parsed.sourceId
-        && reference.pluginName === parsed.pluginName
-        && reference.platform === target.platform
-        && reference.scope === 'user');
-      return override && !dependencyDesired?.scopes.includes('user') && hasPreservedUserActual
-        ? [{ pluginId: dependency.dependencyPluginId, fromScope: 'user' as const, toScope: 'project' as const }]
-        : [];
-    });
-    const projectedState: StatusV7State = state === 'ready' && dependencyMoves.length > 0
-      ? 'needsSync'
-      : state;
     const components: StatusV7Component[] = [
       {
         kind: 'intent',
@@ -2673,11 +2736,11 @@ async function statusCommandV7InSession(options: {
     return {
       ...identity,
       scope: representativeScope,
-      state: projectedState,
+      state,
       components,
       reasons: dedupedErrors,
       recoveryActions: statusRecovery({
-        state: projectedState,
+        state,
         desired,
         platform: target.platform,
         pluginId: target.pluginId,

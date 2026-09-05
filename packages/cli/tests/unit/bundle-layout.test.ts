@@ -166,7 +166,7 @@ async function writeRuntimeScriptFixture(repoRoot: string): Promise<void> {
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'aw-config.mjs'), 'import "./shared.mjs";\n', 'utf8');
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'shared.mjs'), 'export const ok = true;\n', 'utf8');
   manifest.scripts = {
-    postApply: { path: './scripts/lifecycle.mjs' },
+    preApply: { path: './scripts/lifecycle.mjs' },
     helpers: {
       config: './scripts/aw-config.mjs',
     },
@@ -193,7 +193,7 @@ async function writePackageRuntimeFixture(repoRoot: string): Promise<void> {
   );
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
   manifest.scripts = {
-    postApply: { path: './scripts/lifecycle.mjs' },
+    preApply: { path: './scripts/lifecycle.mjs' },
     node: {
       packageRoot: './scripts',
     },
@@ -1023,7 +1023,7 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(message);
   });
 
-  it('rejects bundles missing postApply, helper, or runtime sibling files', async () => {
+  it('rejects bundles missing preApply, helper, or runtime sibling files', async () => {
     const repoRoot = await makeTempRepo();
     await writeRuntimeScriptFixture(repoRoot);
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -1033,7 +1033,7 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
 
     await fs.remove(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'));
-    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('scripts.postApply.path');
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow('scripts.preApply.path');
 
     await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "./shared.mjs";\n', 'utf8');
     await fs.remove(path.join(pluginRoot, 'scripts', 'aw-config.mjs'));
@@ -1120,7 +1120,7 @@ describe('bundle layout validation', () => {
     await fs.writeFile(path.join(scriptsRoot, 'helper.cjs'), 'module.exports = "helper-ok";\n', 'utf8');
     await fs.writeFile(path.join(scriptsRoot, 'aw-config.mjs'), 'export default {};\n', 'utf8');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.scripts.postApply = { path: './scripts/lifecycle.cjs' };
+      manifest.scripts.preApply = { path: './scripts/lifecycle.cjs' };
     });
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -1159,7 +1159,7 @@ describe('bundle layout validation', () => {
     });
     await fs.writeFile(path.join(scriptsRoot, 'aw-config.mjs'), 'export default {};\n', 'utf8');
     await updateFixturePluginManifest(repoRoot, (manifest) => {
-      manifest.scripts.postApply = { path: './scripts/lifecycle.cjs' };
+      manifest.scripts.preApply = { path: './scripts/lifecycle.cjs' };
     });
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
@@ -1580,20 +1580,6 @@ describe('runtime Skill resource closure', () => {
     ].join('\n'));
 
     await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
-  });
-
-  it('accepts the current bundled Skill closures', async () => {
-    const pluginsRoot = path.resolve(import.meta.dirname, '../../plugins-dist/plugins');
-    const pluginEntries = await fs.readdir(pluginsRoot, { withFileTypes: true });
-    for (const pluginEntry of pluginEntries) {
-      if (!pluginEntry.isDirectory()) continue;
-      for (const platform of ['claude', 'codex']) {
-        const skillsRoot = path.join(pluginsRoot, pluginEntry.name, platform, 'skills');
-        if (await fs.pathExists(skillsRoot)) {
-          await expect(validateRuntimeSkillClosuresRoot(skillsRoot)).resolves.toBeUndefined();
-        }
-      }
-    }
   });
 
   it('does not exempt a Windows environment placeholder embedded in an inline local path', async () => {

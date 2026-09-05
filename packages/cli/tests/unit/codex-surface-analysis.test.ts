@@ -91,7 +91,7 @@ describe('codex-surface-analysis', () => {
       .toMatchObject({ owner: 'aw', dynamic: true, name: 'generated-review' });
   });
 
-  it('treats config as input and postApply as target-local behavior', () => {
+  it('treats config as input and preApply as target-local behavior', () => {
     const configOnly = analyzeCodexSurface(manifest({
       config: { fields: { mode: { type: 'string' } } },
     }));
@@ -119,13 +119,13 @@ describe('codex-surface-analysis', () => {
       scopeOverlap: 'native-compatible',
     });
 
-    const nativeAndPostApply = analyzeCodexSurface(manifest({
+    const nativeAndPreApply = analyzeCodexSurface(manifest({
       skills: './skills',
       scripts: {
-        postApply: { path: './post-apply.mjs' },
+        preApply: { path: './pre-apply.mjs' },
       },
     }));
-    expect(nativeAndPostApply).toMatchObject({
+    expect(nativeAndPreApply).toMatchObject({
       ok: true,
       nativeKinds: ['skill'],
       extensionKinds: [],

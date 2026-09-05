@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "sourceDigest": "sha256:579833fd69b5e995c8078584bda37b044dd635eb56499fa2a14f07cf7cce2233",
+  "build": {
+    "goVersion": "go1.25.7",
+    "cgoEnabled": false,
+    "environment": {
+      "CGO_ENABLED": "0",
+      "GO111MODULE": "on",
+      "GOAMD64": "v1",
+      "GOARM64": "v8.0",
+      "GOENV": "off",
+      "GOEXPERIMENT": "",
+      "GOFLAGS": "",
+      "GOOS": "windows",
+      "GOPROXY": "off",
+      "GOSUMDB": "off",
+      "GOTOOLCHAIN": "local",
+      "GOWORK": "off"
+    },
+    "cacheMode": "isolated-temporary",
+    "temporaryEnvironment": {
+      "GOCACHE": "go-build-cache",
+      "GOMODCACHE": "go-module-cache",
+      "TEMP": "go-temp",
+      "TMP": "go-temp",
+      "TMPDIR": "go-temp"
+    },
+    "hostEnvironmentKeys": [
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "SYSTEMROOT",
+      "WINDIR"
+    ],
+    "flags": [
+      "-trimpath",
+      "-buildvcs=false",
+      "-ldflags=-buildid="
+    ]
+  },
+  "binaries": {
+    "x64": {
+      "goarch": "amd64",
+      "path": "x64/aw-windows-job.exe",
+      "peMachine": "0x8664",
+      "sha256": "sha256:a34dd213c9eebed9c1726d0278505fe02e212ea6c2121f28f32f3948351c7f8f"
+    },
+    "arm64": {
+      "goarch": "arm64",
+      "path": "arm64/aw-windows-job.exe",
+      "peMachine": "0xaa64",
+      "sha256": "sha256:2f23c78a17f045317b32ad10090c9363949423281f291a22213b635af7ac653e"
+    }
+  }
+}

@@ -18,6 +18,7 @@ import {
   assertProcessTreeInspectionAvailable,
   type ProcessTreeDependencies,
 } from './process-tree.js'
+import { resolveWindowsJobHelperPath } from './windows-job.js'
 
 export interface EvalProviderDoctorResult {
   providers: BuiltinEvalProviderId[]
@@ -44,7 +45,7 @@ export interface EvalProviderDoctorResult {
   cleanup: {
     platform: NodeJS.Platform
     supported: boolean
-    mechanism: 'process-tree' | 'unsupported'
+    mechanism: 'process-tree' | 'windows-job' | 'unsupported'
   }
 }
 
@@ -56,6 +57,7 @@ export interface EvalProviderDoctorOptions {
   processTree?: ProcessTreeDependencies
   canAccess?: (candidate: string) => Promise<boolean>
   checkCleanup?: (platform: NodeJS.Platform) => Promise<boolean>
+  resolveWindowsJobHelper?: () => string
   readUserKeychainSearchList?: () => Promise<string>
 }
 
@@ -105,14 +107,18 @@ export async function doctorEvalProviders(
     platform,
     canAccess: options.canAccess ?? defaultCanAccess,
   })
-  const platformCanClean = platform === 'darwin' || platform === 'linux'
+  const platformCanClean = platform === 'darwin' || platform === 'linux' || platform === 'win32'
   const cleanupSupported = platformCanClean && await (
     options.checkCleanup ?? (async (currentPlatform: NodeJS.Platform) => {
       try {
-        await assertProcessTreeInspectionAvailable({
-          ...options.processTree,
-          platform: currentPlatform,
-        })
+        if (currentPlatform === 'win32') {
+          (options.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+        } else {
+          await assertProcessTreeInspectionAvailable({
+            ...options.processTree,
+            platform: currentPlatform,
+          })
+        }
         return true
       } catch {
         return false
@@ -164,7 +170,9 @@ export async function doctorEvalProviders(
     cleanup: {
       platform,
       supported: cleanupSupported,
-      mechanism: cleanupSupported ? 'process-tree' : 'unsupported',
+      mechanism: cleanupSupported
+        ? platform === 'win32' ? 'windows-job' : 'process-tree'
+        : 'unsupported',
     },
   }
 }

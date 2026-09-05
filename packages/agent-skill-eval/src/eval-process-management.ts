@@ -5,12 +5,15 @@ import {
   assertProcessTreeInspectionAvailable,
   type ProcessTreeDependencies,
 } from './process-tree.js'
+import { resolveWindowsJobHelperPath } from './windows-job.js'
 
 const FULL_ACCESS_PERMISSION_PROFILE = 'danger-full-access'
 const UNMANAGED_LIMITATION =
   'Only the direct provider child is targeted; descendant discovery and cleanup are not available.'
 const MANAGED_LIMITATION =
   'Process-tree inspection verifies cooperative descendants, but it is not OS-enforced containment and does not guarantee descendant cleanup.'
+const WINDOWS_MANAGED_LIMITATION =
+  'Windows uses OS-enforced Job containment; the current EvalResult contract does not claim portable descendant cleanup.'
 const UNMANAGED_RISK =
   'Unmanaged mode skips process-tree inspection, targets only the direct provider child, and can leave descendant processes running. It does not bypass the macOS keychain or cmux checks.'
 
@@ -23,6 +26,7 @@ export interface EvalProcessManagementDependencies {
   }) => Promise<string | null>
   readUserKeychainSearchList?: () => Promise<string>
   inspectProcessTree?: () => Promise<void>
+  resolveWindowsJobHelper?: () => string
   processTree?: ProcessTreeDependencies
 }
 
@@ -95,17 +99,21 @@ export async function resolveEvalProcessManagement(options: {
   }
 
   try {
-    if (dependencies.inspectProcessTree) await dependencies.inspectProcessTree()
-    else await assertProcessTreeInspectionAvailable({
-      ...dependencies.processTree,
-      platform,
-    })
+    if (platform === 'win32') {
+      (dependencies.resolveWindowsJobHelper ?? resolveWindowsJobHelperPath)()
+    } else if (dependencies.inspectProcessTree) await dependencies.inspectProcessTree()
+    else {
+      await assertProcessTreeInspectionAvailable({
+        ...dependencies.processTree,
+        platform,
+      })
+    }
     return {
       mode: 'managed',
       inspectionAvailable: true,
       userAcknowledged: false,
       descendantCleanupGuaranteed: false,
-      limitation: MANAGED_LIMITATION,
+      limitation: platform === 'win32' ? WINDOWS_MANAGED_LIMITATION : MANAGED_LIMITATION,
     }
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : String(error)

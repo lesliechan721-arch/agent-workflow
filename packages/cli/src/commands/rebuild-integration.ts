@@ -101,8 +101,9 @@ import {
   getCodexHome,
 } from '../utils/paths.js';
 import {
+  assertNoSensitiveConfigInFiles,
   collectSensitivePluginConfigValues,
-  runPostApplyScript,
+  runPreApplyScript,
 } from '../utils/plugin-scripts.js';
 import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import {
@@ -149,8 +150,8 @@ import {
 } from '../utils/codex-roles.js';
 import type {
   DesiredTarget,
+  RebuildPreApplyInvocation,
   DeferredRebuildPostcheckFailure,
-  RebuildPostApplyInvocation,
   RebuildTargetIdentity,
   RebuildTargetDriver,
 } from './rebuild-operations.js';
@@ -179,6 +180,7 @@ interface PlannedWrite {
 
 export interface RebuildIntegration {
   driver: RebuildTargetDriver;
+  setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
   buildTarget(options: {
@@ -1394,13 +1396,16 @@ async function resolveDynamicArtifacts(options: {
 }): Promise<{
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
+  sensitiveValues: string[];
 }> {
   const requestedArtifactIds = resolveAwDeliveredArtifactIds({
     manifest: options.plugin.manifest,
     platform: options.platform,
     scope: options.scope,
   });
-  if (requestedArtifactIds.length === 0) return { artifacts: [], sourceDirs: () => [] };
+  if (requestedArtifactIds.length === 0) {
+    return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
+  }
   const render = await runArtifactRenderer({
     event: options.event,
     plugin: options.plugin,
@@ -1415,6 +1420,7 @@ async function resolveDynamicArtifacts(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: options.scope,
@@ -1435,6 +1441,7 @@ async function resolveDynamicArtifacts(options: {
     artifacts,
     sourceDirs: (artifact) => render.context.artifactSources.find((entry) =>
       entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [],
+    sensitiveValues: collectSensitivePluginConfigValues(options.plugin.manifest, config.values),
   };
 }
 
@@ -1651,6 +1658,11 @@ async function buildClaudeWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    assertNoSensitiveConfigInFiles(
+      tree.files,
+      dynamic.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+    );
     writes.push(dynamicSkillWrite({
       ...options,
       platform: 'claude',
@@ -1748,6 +1760,11 @@ async function buildCodexWrites(options: {
       requirementsReceipt: requirementsReceipt(options.plugin),
       sourceRequirementsReceiptPolicy: 'allow',
     });
+    assertNoSensitiveConfigInFiles(
+      tree.files,
+      dynamic.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+    );
     writes.push(dynamicSkillWrite({
       ...options,
       platform: 'codex',
@@ -2585,6 +2602,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: 'user',
@@ -3299,6 +3317,43 @@ interface StagedCodexNativeRender {
   targetSkillKeys: string[];
 }
 
+interface PreparedCodexNativeRender {
+  logicalPluginId: string;
+  sourceIdentity: string;
+  rendererDigest: string;
+  skillsRelativeRoot: string;
+  renderedArtifacts: Array<{
+    artifact: ValidatedArtifactPlanArtifact;
+    skillKey: string;
+    tree: DynamicSkillTree;
+  }>;
+  receiptTargets: Array<{
+    id: string;
+    skillKey: string;
+    configDigest: string;
+    artifactDigest: string;
+  }>;
+  projection: CodexNativeRenderProjection;
+  presentSkillKeys: string[];
+  targetSkillKeys: string[];
+}
+
+const codexNativeRenderPreparationCaches = new WeakMap<
+  RebuildExecutionContext,
+  WeakMap<PluginMeta, Promise<PreparedCodexNativeRender | null>>
+>();
+
+function codexNativeRenderPreparationCache(
+  context: RebuildExecutionContext,
+): WeakMap<PluginMeta, Promise<PreparedCodexNativeRender | null>> {
+  let cache = codexNativeRenderPreparationCaches.get(context);
+  if (!cache) {
+    cache = new WeakMap();
+    codexNativeRenderPreparationCaches.set(context, cache);
+  }
+  return cache;
+}
+
 function pluginHasCodexNativeSkillSurface(plugin: PluginMeta): boolean {
   return plugin.manifest.skills !== undefined
     || codexNativeRenderTargets(plugin).length > 0;
@@ -3399,13 +3454,11 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
   }
 }
 
-async function materializeCodexNativeRender(options: {
+async function prepareCodexNativeRender(options: {
   plugin: PluginMeta;
-  stagingRoot: string;
   env: NodeJS.ProcessEnv;
   scriptTimeoutMs?: number;
-  hasStaticSkills: boolean;
-}): Promise<StagedCodexNativeRender | null> {
+}): Promise<PreparedCodexNativeRender | null> {
   const targets = codexNativeRenderTargets(options.plugin);
   if (targets.length === 0) return null;
   const byScope = new Map<Scope, typeof targets>();
@@ -3416,10 +3469,9 @@ async function materializeCodexNativeRender(options: {
     byScope.set(requestScope, group);
   }
 
-  const renderedArtifacts: Array<{
-    artifact: ValidatedArtifactPlanArtifact;
-    sourceDirs: string[];
-  }> = [];
+  const renderedArtifacts: PreparedCodexNativeRender['renderedArtifacts'] = [];
+  const receiptTargets: PreparedCodexNativeRender['receiptTargets'] = [];
+  const presentSkillKeys: string[] = [];
   let rendererDigest: string | undefined;
   for (const scope of ['user', 'project'] as const) {
     const group = byScope.get(scope);
@@ -3448,10 +3500,38 @@ async function materializeCodexNativeRender(options: {
       manifestDigest: rendered.target.manifestDigest,
     });
     for (const artifact of validated.artifacts) {
+      if (artifact.target !== 'codex.skill') {
+        throw new Error(`Codex native renderer returned non-Skill artifact "${artifact.id}".`);
+      }
+      const sourceDirs = rendered.context.artifactSources.find((entry) =>
+        entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
+      const tree = await createCodexSkillExpectedTree({
+        artifact,
+        sourceDirs,
+        requireReadme: true,
+        requirementsReceipt: requirementsReceipt(options.plugin),
+        sourceRequirementsReceiptPolicy: 'allow',
+      });
+      assertNoSensitiveConfigInFiles(
+        tree.files,
+        collectSensitivePluginConfigValues(
+          options.plugin.manifest,
+          rendered.context.config.values,
+        ),
+        'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+      );
+      const skillKey = artifact.skillKey!;
       renderedArtifacts.push({
         artifact,
-        sourceDirs: rendered.context.artifactSources.find((entry) =>
-          entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [],
+        skillKey,
+        tree,
+      });
+      if (artifact.state === 'present') presentSkillKeys.push(skillKey);
+      receiptTargets.push({
+        id: artifact.id,
+        skillKey,
+        configDigest: artifact.configDigest,
+        artifactDigest: createCodexSkillStagingTreeContentDigest(tree),
       });
     }
   }
@@ -3460,46 +3540,6 @@ async function materializeCodexNativeRender(options: {
   }
 
   const skillsRelativeRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
-  const skillsRoot = path.join(
-    options.stagingRoot,
-    'plugins',
-    options.plugin.manifest.name,
-    ...skillsRelativeRoot.split('/'),
-  );
-  const receiptTargets = [];
-  const presentSkillKeys: string[] = [];
-  for (const { artifact, sourceDirs } of renderedArtifacts) {
-    if (artifact.target !== 'codex.skill') {
-      throw new Error(`Codex native renderer returned non-Skill artifact "${artifact.id}".`);
-    }
-    const skillKey = artifact.skillKey!;
-    const tree = await createCodexSkillExpectedTree({
-      artifact,
-      sourceDirs,
-      requireReadme: true,
-      requirementsReceipt: requirementsReceipt(options.plugin),
-      sourceRequirementsReceiptPolicy: 'allow',
-    });
-    const skillRoot = path.join(skillsRoot, skillKey);
-    if (artifact.state === 'present') {
-      await writeDynamicSkillTree(skillRoot, tree);
-      presentSkillKeys.push(skillKey);
-    } else {
-      await fs.remove(skillRoot);
-    }
-    receiptTargets.push({
-      id: artifact.id,
-      skillKey,
-      configDigest: artifact.configDigest,
-      artifactDigest: createCodexSkillStagingTreeContentDigest(tree),
-    });
-  }
-
-  await ensureCodexActiveSkillsManifest({
-    plugin: options.plugin,
-    marketplaceRoot: options.stagingRoot,
-    hasRequiredSkills: options.hasStaticSkills || presentSkillKeys.length > 0,
-  });
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
   if (!logicalPluginId || !options.plugin.sourceIdentity) {
@@ -3512,14 +3552,82 @@ async function materializeCodexNativeRender(options: {
     rendererDigest,
     targets: receiptTargets,
   });
+  return {
+    logicalPluginId,
+    sourceIdentity: options.plugin.sourceIdentity,
+    rendererDigest,
+    skillsRelativeRoot,
+    renderedArtifacts,
+    receiptTargets,
+    projection,
+    presentSkillKeys: presentSkillKeys.sort(),
+    targetSkillKeys: targets.map((target) => target.skillKey!).sort(),
+  };
+}
+
+function prepareCodexNativeRenderCached(options: {
+  context: RebuildExecutionContext;
+  plugin: PluginMeta;
+  scriptTimeoutMs?: number;
+}): Promise<PreparedCodexNativeRender | null> {
+  const cache = codexNativeRenderPreparationCache(options.context);
+  let preparation = cache.get(options.plugin);
+  if (!preparation) {
+    preparation = prepareCodexNativeRender({
+      plugin: options.plugin,
+      env: options.context.env,
+      scriptTimeoutMs: options.scriptTimeoutMs,
+    });
+    cache.set(options.plugin, preparation);
+  }
+  return preparation;
+}
+
+async function requirePreparedCodexNativeRender(options: {
+  context: RebuildExecutionContext;
+  plugin: PluginMeta;
+}): Promise<PreparedCodexNativeRender | null> {
+  if (codexNativeRenderTargets(options.plugin).length === 0) return null;
+  const preparation = codexNativeRenderPreparationCache(options.context).get(options.plugin);
+  if (!preparation) {
+    throw new Error('codexNativeRenderPreflightMissing: Codex native renderer was not prepared.');
+  }
+  return preparation;
+}
+
+async function materializeCodexNativeRender(options: {
+  plugin: PluginMeta;
+  stagingRoot: string;
+  prepared: PreparedCodexNativeRender;
+  hasStaticSkills: boolean;
+}): Promise<StagedCodexNativeRender> {
+  const skillsRoot = path.join(
+    options.stagingRoot,
+    'plugins',
+    options.plugin.manifest.name,
+    ...options.prepared.skillsRelativeRoot.split('/'),
+  );
+  for (const { artifact, skillKey, tree } of options.prepared.renderedArtifacts) {
+    const skillRoot = path.join(skillsRoot, skillKey);
+    if (artifact.state === 'present') {
+      await writeDynamicSkillTree(skillRoot, tree);
+    } else {
+      await fs.remove(skillRoot);
+    }
+  }
+  await ensureCodexActiveSkillsManifest({
+    plugin: options.plugin,
+    marketplaceRoot: options.stagingRoot,
+    hasRequiredSkills: options.hasStaticSkills || options.prepared.presentSkillKeys.length > 0,
+  });
   const pluginRoot = path.join(options.stagingRoot, 'plugins', options.plugin.manifest.name);
   const payloadDigest = await calculateCodexNativeRenderPayloadDigest(pluginRoot);
   const receipt = createCodexNativeRenderReceipt({
-    logicalPluginId,
-    sourceIdentity: options.plugin.sourceIdentity,
+    logicalPluginId: options.prepared.logicalPluginId,
+    sourceIdentity: options.prepared.sourceIdentity,
     pluginVersion: options.plugin.manifest.version,
-    rendererDigest,
-    targets: receiptTargets,
+    rendererDigest: options.prepared.rendererDigest,
+    targets: options.prepared.receiptTargets,
     payloadDigest,
   });
   await fs.outputFile(
@@ -3529,9 +3637,9 @@ async function materializeCodexNativeRender(options: {
   );
   return {
     payloadDigest,
-    projection,
-    presentSkillKeys: presentSkillKeys.sort(),
-    targetSkillKeys: targets.map((target) => target.skillKey!).sort(),
+    projection: options.prepared.projection,
+    presentSkillKeys: options.prepared.presentSkillKeys,
+    targetSkillKeys: options.prepared.targetSkillKeys,
   };
 }
 
@@ -3539,6 +3647,7 @@ async function mirrorCatalog(
   catalog: CatalogResolution,
   env: NodeJS.ProcessEnv,
   target?: Pick<RebuildTargetIdentity, 'sourceId' | 'sourceIdentity' | 'marketplaceName' | 'marketplaceRoot'>,
+  logicalIdentity?: string,
   prepareStaging?: (stagingRoot: string) => Promise<void>,
 ): Promise<{
   rootDir: string;
@@ -3592,6 +3701,7 @@ async function mirrorCatalog(
       schemaVersion: 2,
       sourceId: target.sourceId,
       sourceIdentity: target.sourceIdentity,
+      logicalIdentity,
       marketplaceName,
     }, { spaces: 2 });
     const destinationExists = await fs.lstat(destination).then(
@@ -3776,6 +3886,7 @@ function createNativeDriver(options: {
   scriptTimeoutMs?: number;
   operationScopedNativePhases?: boolean;
 }): RebuildTargetDriver & {
+  setNativeMarketplaceEligibleTargets(targets: readonly DesiredTarget[]): void;
   prepareNativeMarketplaceGroup(target: DesiredTarget): Promise<void>;
   captureCodexPostMutationSnapshots(marketplaceNames?: readonly string[]): Promise<void>;
 } {
@@ -3788,6 +3899,7 @@ function createNativeDriver(options: {
   const codexMutationMarketplaces = new Set<string>();
   const completedNativeSkillWrites = new WeakSet<OperationAction>();
   const committedNativeGroups = new Set<string>();
+  let nativeMarketplaceEligibleTargets: ReadonlySet<DesiredTarget> | undefined;
   let deferredPostchecks: Array<{
     target: DesiredTarget;
     postcheck: () => Promise<void>;
@@ -3808,7 +3920,9 @@ function createNativeDriver(options: {
   const groupTargets = (target: DesiredTarget): DesiredTarget[] => {
     if (!options.operationScopedNativePhases) return [target];
     const key = nativeGroupKey(target);
-    return options.targets.filter((candidate) => nativeGroupKey(candidate) === key);
+    return options.targets.filter((candidate) =>
+      nativeGroupKey(candidate) === key
+      && (nativeMarketplaceEligibleTargets?.has(candidate) ?? true));
   };
   const nativeSkillOverlay = async (target: DesiredTarget): Promise<{
     marketplaceRoot: string;
@@ -3936,6 +4050,7 @@ function createNativeDriver(options: {
           first.catalog,
           options.context.env,
           first.identity,
+          first.plugin.catalogLogicalIdentity,
           first.identity.platform === 'codex' ? async (stagingRoot) => {
             for (const candidate of materializationTargets) {
               const overlay = nativeSkillOverlays.get(candidate)!;
@@ -3952,13 +4067,18 @@ function createNativeDriver(options: {
               }
               const hasStaticSkills = candidate.plugin.manifest.skills !== undefined
                 || requiredSkillWrites.length > 0;
-              const nativeRender = await materializeCodexNativeRender({
+              const preparedNativeRender = await requirePreparedCodexNativeRender({
+                context: options.context,
                 plugin: candidate.plugin,
-                stagingRoot,
-                env: options.context.env,
-                scriptTimeoutMs: options.scriptTimeoutMs,
-                hasStaticSkills,
               });
+              const nativeRender = preparedNativeRender
+                ? await materializeCodexNativeRender({
+                    plugin: candidate.plugin,
+                    stagingRoot,
+                    prepared: preparedNativeRender,
+                    hasStaticSkills,
+                  })
+                : null;
               if (!nativeRender) {
                 await ensureCodexActiveSkillsManifest({
                   plugin: candidate.plugin,
@@ -4272,6 +4392,9 @@ function createNativeDriver(options: {
   };
   return {
     ownership,
+    setNativeMarketplaceEligibleTargets: (eligibleTargets) => {
+      nativeMarketplaceEligibleTargets = new Set(eligibleTargets);
+    },
     prepareNativeMarketplaceGroup: prepareNativeGroup,
     selectRecoveryCleanupComponents: (target, components) => {
       if (!committedNativeGroups.has(nativeGroupKey(target))) return components;
@@ -4364,7 +4487,9 @@ function createNativeDriver(options: {
         session.snapshot(
           marketplaceName,
           options.context.codexObservationScopeByMarketplace?.get(marketplaceName)
-            ?? (options.targets.some((target) => target.identity.platform === 'codex'
+            ?? (options.targets.some((target) =>
+              (nativeMarketplaceEligibleTargets?.has(target) ?? true)
+              && target.identity.platform === 'codex'
               && (target.identity.marketplaceName ?? MARKETPLACE_NAME) === marketplaceName
               && target.identity.scope === 'project')
               ? 'both'
@@ -4436,6 +4561,13 @@ function createNativeDriver(options: {
         throw new Error(
           `externalOwnershipPresent: Codex marketplace ${marketplaceName} has a foreign source instead of its canonical namespaced root.`,
         );
+      }
+      if (target.nativeOverlayDesired) {
+        await prepareCodexNativeRenderCached({
+          context: options.context,
+          plugin: target.plugin,
+          scriptTimeoutMs: options.scriptTimeoutMs,
+        });
       }
     },
     finalizeCleanup: async () => undefined,
@@ -4747,32 +4879,15 @@ function createNativeDriver(options: {
       }
       return target.artifacts;
     },
-    runPostApply: async (invocation: RebuildPostApplyInvocation) => {
-      try {
-        await runPostApplyScript({
+    runPreApply: async (invocation: RebuildPreApplyInvocation) => {
+      await runPreApplyScript({
         plugin: invocation.plugin,
         platform: invocation.target.identity.platform,
         scope: invocation.target.identity.scope,
         cwd: invocation.target.identity.cwd,
         context: options.context as never,
-        artifacts: [...invocation.artifacts],
-        components: invocation.components,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
-      } catch (error) {
-        await options.context.reporter.notice({
-          level: 'warning',
-          message: error instanceof Error ? error.message : String(error),
-          source: {
-            plugin: invocation.plugin.manifest.name,
-            platform: invocation.target.identity.platform,
-            scope: invocation.target.identity.scope,
-            action: 'postApply',
-          },
-          target: 'stderr',
-        });
-        throw error;
-      }
     },
   };
 }
@@ -4787,6 +4902,7 @@ export function createRebuildIntegration(options: {
   const driver = createNativeDriver({ targets, ...options });
   return {
     driver,
+    setNativeMarketplaceEligibleTargets: driver.setNativeMarketplaceEligibleTargets,
     prepareNativeMarketplaceGroup: driver.prepareNativeMarketplaceGroup,
     captureCodexPostMutationSnapshots: driver.captureCodexPostMutationSnapshots,
     buildTarget: async (input) => {
@@ -5136,13 +5252,23 @@ export function createRebuildIntegration(options: {
       ]);
       bindNamespacedOwnerIdentity(allComponents, input);
       const desiredKeys = new Set(desiredComponents.map(componentIdentityKey));
-      const operationActions = writes.flatMap((write) => [
-        ...(write.action ? [write.action] : []),
-        ...(write.additionalActions ?? []),
-      ]);
-      finalizeOwnedArtifactActions(operationActions);
+      const operationActions: OperationAction[] = [];
+      const preApply = input.plugin.manifest.scripts?.preApply;
+      if (preApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
+        const script = path.resolve(input.plugin.rootDir, preApply.path.replace(/^\.\//u, ''));
+        const scriptDigest = `sha256:${crypto.createHash('sha256')
+          .update(await fs.readFile(script)).digest('hex')}`;
+        operationActions.push({
+          kind: 'runPreApply',
+          pluginId: input.pluginId ?? pluginActionId(input.plugin),
+          platform: input.platform,
+          scope: input.scope,
+          script: preApply.path,
+          scriptDigest,
+        });
+      }
       if (nativeDesired) {
-        operationActions.unshift({
+        operationActions.push({
           kind: 'ensureNativeRegistration',
           pluginId: input.pluginId ?? pluginActionId(input.plugin),
           platform: input.platform,
@@ -5152,20 +5278,11 @@ export function createRebuildIntegration(options: {
           marketplaceRoot: input.marketplaceRoot ?? resolveAwHome(options.context.env),
         });
       }
-      const postApply = input.plugin.manifest.scripts?.postApply;
-      if (postApply && input.command !== 'cleanup' && input.command !== 'uninstall') {
-        const script = path.resolve(input.plugin.rootDir, postApply.path.replace(/^\.\//u, ''));
-        const scriptDigest = `sha256:${crypto.createHash('sha256')
-          .update(await fs.readFile(script)).digest('hex')}`;
-        operationActions.push({
-          kind: 'runPostApply',
-          pluginId: input.pluginId ?? pluginActionId(input.plugin),
-          platform: input.platform,
-          scope: input.scope,
-          script: postApply.path,
-          scriptDigest,
-        });
-      }
+      operationActions.push(...writes.flatMap((write) => [
+        ...(write.action ? [write.action] : []),
+        ...(write.additionalActions ?? []),
+      ]));
+      finalizeOwnedArtifactActions(operationActions);
       const target: DesiredTarget = {
         plugin: input.plugin,
         identity: {
@@ -5193,7 +5310,7 @@ export function createRebuildIntegration(options: {
         artifacts: writes.map((write) => write.artifact),
         operationActions,
         catalog: input.catalog,
-        postApplySource: input.plugin,
+        preApplySource: input.plugin,
       };
       targets.push(target);
       return target;

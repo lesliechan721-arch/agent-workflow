@@ -153,6 +153,7 @@ describe('agent-version', () => {
     });
     expect(claudeInvocation?.env).toEqual(claudeEnv);
     expect(claudeInvocation?.env?.CODEX_HOME).toBeUndefined();
+    expect(claudeInvocation?.agentKind).toBe('claude');
   });
 
   it('caches matching probes within the current process', async () => {

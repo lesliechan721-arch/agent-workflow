@@ -26,12 +26,20 @@ describe('project config Git visibility', () => {
       '.agent-workflows/plugin-config/team/\n',
     );
     await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
-      .rejects.toThrow('.agent-workflows/plugin-config/team/demo/config.json');
+      .rejects.toMatchObject({ code: 'projectConfigIgnored' });
 
     await fs.outputFile(
       path.join(cwd, '.gitignore'),
       '.agent-workflows/plugin-config/demo/\n',
     );
-    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath })).resolves.toBeUndefined();
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .resolves.toEqual({ state: 'visible' });
+  });
+
+  it('reports unverified when the project is not a Git worktree', async () => {
+    const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    const targetPath = path.join(cwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json');
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .resolves.toEqual({ state: 'unverified' });
   });
 });

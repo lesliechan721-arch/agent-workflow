@@ -34,7 +34,7 @@ export type RebuildActionName =
   | 'stale.cleanup'
   | 'native.write'
   | 'artifacts.write'
-  | 'postApply'
+  | 'preApply'
   | 'postcheck.inspect'
   | 'recovery.cleanup'
   | 'cleanup.owned'
@@ -77,6 +77,7 @@ export type ConfigValueState = 'default' | 'configured' | 'invalid';
 export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'failed';
+export type ConfigApplyTargetState = TargetWriteState | 'skipped';
 export type ReceiptOverallState = 'succeeded' | 'failed';
 export type RebuildReceiptOverallState = ReceiptOverallState | 'partial';
 
@@ -116,6 +117,7 @@ export interface CatalogSourcesConfig {
 export interface CatalogSourceResolution {
   sourceId: CatalogSourceId;
   sourceIdentity: SourceIdentity;
+  logicalIdentity: string;
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
@@ -328,6 +330,56 @@ export interface ReceiptTargetResult {
   recoveryActions?: string[];
 }
 
+export interface ConfigApplyTargetIdentity {
+  pluginName: string;
+  pluginId?: PluginId;
+  platform: PlatformName;
+  scope: Scope;
+}
+
+export interface ConfigApplyTargetResult {
+  target: ConfigApplyTargetIdentity;
+  action: string;
+  state: ConfigApplyTargetState;
+  message?: string;
+  errorCode?: string;
+  relation?: 'requested' | 'dependency';
+  requiredBy?: string[];
+}
+
+export interface ConfigApplyError {
+  stage: 'schema' | 'source' | 'effectiveConfig' | 'targetDiscovery' | 'targetValidation' | 'apply';
+  code: string;
+  message: string;
+}
+
+export type ConfigApplyResult =
+  | {
+      state: 'skipped';
+      reason: 'notRequested' | 'noConfigChange' | 'noEffectiveConfigChange' | 'noVisibleTarget';
+      targetResults: [];
+    }
+  | {
+      state: 'unavailable';
+      reason:
+        | 'invalidConfig'
+        | 'schemaUnavailable'
+        | 'sourceUnavailable'
+        | 'effectiveConfigUnavailable'
+        | 'targetDiscoveryFailed';
+      targetResults: ConfigApplyTargetResult[];
+      error?: ConfigApplyError;
+    }
+  | {
+      state: 'succeeded';
+      targetResults: ConfigApplyTargetResult[];
+    }
+  | {
+      state: 'partial';
+      targetResults: ConfigApplyTargetResult[];
+      errors?: ConfigApplyError[];
+    };
+
 export interface ConfigFieldEntry {
   key: string;
   title: string;
@@ -345,10 +397,18 @@ export interface ConfigFieldEntry {
     sourceLayer: 'default' | 'user' | 'project';
     issues: unknown[];
   };
-  fallback?: {
-    effectiveValue: unknown;
-    sourceLayer: 'default' | 'user' | 'project';
-  };
+  fallback?:
+    | {
+        state: 'valid';
+        effectiveValue: unknown;
+        sourceLayer: 'default' | 'user' | 'project';
+      }
+    | {
+        state: 'invalid';
+        sourceLayer: 'default' | 'user' | 'project';
+        issues: unknown[];
+      }
+    | { state: 'missing' };
   value: unknown | null;
   source: 'default' | 'user' | 'project' | 'missing';
   matchedPreset: string | null;
@@ -364,9 +424,10 @@ export interface ConfigReceiptFieldEntry {
   action: 'set' | 'unset' | 'reset';
   scope: Scope;
   valueState?: ConfigValueState;
+  stale?: true;
 }
 
-export const CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION = 6;
+export const CONFIG_MUTATION_RECEIPT_SCHEMA_VERSION = 7;
 
 export type ConfigMutationCommand = 'config:set' | 'config:unset' | 'config:reset';
 
@@ -377,6 +438,7 @@ export interface ConfigMutationReceiptBase<
   command: Command;
   ok: boolean;
   overallState: RebuildReceiptOverallState;
+  configWrite: 'notStarted' | 'failed' | 'succeeded';
 }
 
 export interface ConfigSchemaEvidence {

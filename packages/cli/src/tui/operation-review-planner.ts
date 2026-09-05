@@ -527,6 +527,12 @@ function reviewChanges(
             { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
           ];
     return [
+      ...(evidence?.config?.shareability === 'unverified' ? [{
+        kind: 'warning' as const,
+        group: 'configImpact' as const,
+        title: 'Git 无法验证 project config 可共享',
+        description: '可以继续写入，但不要将该路径视为已验证可提交。',
+      }] : []),
       ...intent.changes.map((change): OperationReviewChange => ({
         kind: removeKeys.has(change.key) ? 'remove' : 'change',
         group: 'configChanges',

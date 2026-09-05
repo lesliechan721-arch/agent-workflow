@@ -343,29 +343,57 @@ describe('command receipt v6', () => {
     expect(receipt).not.toHaveProperty('planFingerprint');
   });
 
-  it('keeps a core-success outcome when postApply reports a warning', () => {
-    const warning = 'postApplyFailed: team/demo: hook exited with code 1';
-    const rebuild = successfulRebuild();
-    rebuild.actions.push({ name: 'postApply', status: 'failed' });
+  it('keeps a stable target failure when preApply blocks materialization', () => {
+    const message = 'preApply failed with exit code 1. stderr: setup failed';
+    const rebuild: RebuildResult = {
+      status: 'failed',
+      command: 'install',
+      target: {
+        ...target,
+        sourceIdentity: `sha256:${'1'.repeat(64)}`,
+        pluginVersion: '1.0.0',
+        cwd: '/repo',
+      },
+      actions: [{ name: 'preApply', status: 'failed' }],
+      cleanupAttempted: false,
+      removed: [],
+      absent: [],
+      residual: [],
+      quarantined: [],
+      failures: [{ phase: 'preApply', message }],
+      error: { phase: 'preApply', message },
+    };
     const result = {
-      platforms: ['codex'], plugins: ['team/demo'], warnings: [warning],
-      overallState: 'succeeded' as const,
-      targetResults: [completedTarget()],
+      platforms: ['codex'], plugins: [], warnings: [],
+      overallState: 'failed' as const,
+      targetResults: [{
+        target,
+        action: 'install',
+        state: 'failed' as const,
+        message,
+        errorCode: 'preApplyFailed',
+      }],
       rebuildResults: [rebuild],
     };
     const receipt = buildRebuildReceiptJson('install', result);
 
     expect(receipt).toMatchObject({
-      ok: true,
-      overallState: 'succeeded',
-      warnings: [warning],
-      targetResults: [{ state: 'completed', recoveryActions: [] }],
+      ok: false,
+      overallState: 'failed',
+      warnings: [],
+      targetResults: [{
+        state: 'failed',
+        errorCode: 'preApplyFailed',
+        cleanupAttempted: false,
+        actions: [{ name: 'preApply', status: 'failed' }],
+        failures: [{ phase: 'preApply', message }],
+      }],
     });
-    expect(renderRebuildReceipt('install', result).join('\n')).toContain(`警告：${warning}`);
+    expect(renderRebuildReceipt('install', result).join('\n')).toContain(message);
   });
 
   it('renders the three-state summary, warnings, recovery, and target results without layers', () => {
-    const warning = 'postApplyFailed: a completed dependency hook failed';
+    const warning = 'dependencyNotice: a completed dependency needs attention';
     const result = {
       platforms: ['codex', 'claude'], plugins: ['team/leaf'], warnings: [warning],
       overallState: 'failed' as const,

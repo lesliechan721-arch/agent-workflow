@@ -302,20 +302,25 @@ describe('Catalog source impact inspection', () => {
   it('keeps user and current-project config references as separate projections', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const envelope = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: `sha256:${'1'.repeat(64)}`,
       pluginName: 'demo',
       values: {},
     };
     await Promise.all([
       fs.outputJson(
         `${isolation.layout.awHomeDir}/plugin-config/team/demo/config.json`,
-        envelope,
+        {
+          ...envelope,
+          binding: { kind: 'source', sourceIdentity: `sha256:${'1'.repeat(64)}` },
+        },
       ),
       fs.outputJson(
         `${isolation.layout.fixtureCwd}/.agent-workflows/plugin-config/team/demo/config.json`,
-        envelope,
+        {
+          ...envelope,
+          binding: { kind: 'catalog', logicalIdentity: 'catalog.example/team' },
+        },
       ),
     ]);
 

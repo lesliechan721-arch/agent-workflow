@@ -31,10 +31,12 @@ import {
 import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import type { CatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import type { CatalogOperationContext } from '../utils/catalog-operation-context.js';
-import { collectSensitivePluginConfigValues } from '../utils/plugin-scripts.js';
+import {
+  assertNoSensitiveConfigInFiles,
+  collectSensitivePluginConfigValues,
+} from '../utils/plugin-scripts.js';
 import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { isSkillAuthorOnlyPath } from '../utils/skill-authoring.js';
-import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import { validateCatalogSnapshotPluginEntriesComplete } from '../utils/catalog-snapshot.js';
 import {
   AwCapabilityUnsupportedError,
@@ -190,15 +192,16 @@ function assertNoSensitiveValues(
   candidate: CandidateTree,
   sensitiveValues: readonly string[],
 ): void {
+  assertNoSensitiveConfigInFiles(
+    candidate.tree.files,
+    sensitiveValues,
+    'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
+  );
   for (const [relativePath, content] of Object.entries(candidate.tree.files)) {
     const text = content.toString('utf8');
     if (/\{\{[^{}]+\}\}/u.test(text)) {
       throw new Error(`Portable Skill "${candidate.tree.skillKey}" contains an unresolved template in "${relativePath}".`);
     }
-  }
-  const leakedPath = findSensitiveTokenPath(candidate.tree.files, sensitiveValues);
-  if (leakedPath) {
-    throw new Error(`Portable Skill "${candidate.tree.skillKey}" exposes sensitive config in "${leakedPath}".`);
   }
 }
 
@@ -258,6 +261,7 @@ async function materializePluginCandidates(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
     scope: options.scope,
@@ -272,6 +276,10 @@ async function materializePluginCandidates(options: {
     `sha256:${crypto.createHash('sha256')
       .update(JSON.stringify(canonicalizePluginConfigValues(config.values)))
       .digest('hex')}`,
+  );
+  const sensitiveValues = collectSensitivePluginConfigValues(
+    options.plugin.manifest,
+    config.values,
   );
   const staticRoot = distribution.skills
     ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))
@@ -299,7 +307,6 @@ async function materializePluginCandidates(options: {
   }
 
   const finalizeCandidates = (): CandidateTree[] => {
-    const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, config.values);
     const receipt = createAwPluginRequirementsReceipt(
       { name: options.plugin.manifest.name, version: options.plugin.manifest.version },
       options.plugin.manifest.requires?.aw.capabilities ?? [],
@@ -401,6 +408,11 @@ async function materializePluginCandidates(options: {
       }
       files[relativePath] = Buffer.from(content, 'utf8');
     }
+    assertNoSensitiveConfigInFiles(
+      files,
+      sensitiveValues,
+      'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
+    );
     const stagingRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-tree-'));
     try {
       const skillRoot = path.join(stagingRoot, artifact.skillKey);
@@ -461,6 +473,7 @@ export async function materializePortableSkillsFromCatalog(
         for (const plugin of plugins) {
           plugin.sourceId = source.sourceId;
           plugin.sourceIdentity = source.sourceIdentity;
+          plugin.catalogLogicalIdentity = source.logicalIdentity;
           plugin.pluginId = `${source.sourceId}/${plugin.manifest.name}`;
         }
         const materialized = await materializePortableSkills({

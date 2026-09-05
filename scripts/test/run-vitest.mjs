@@ -1,10 +1,15 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 import { runProcessTree } from '../perf/process-tree.mjs';
 
 const TEST_RUNNER_PROCESS_TREE_ENV = 'AW_TEST_RUNNER_PROCESS_TREE';
+const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
+const TEST_METRICS_DIR_ENV = 'AW_TEST_METRICS_DIR';
 const SIGNAL_EXIT_CODES = new Map([
   ['SIGINT', 130],
   ['SIGTERM', 143],
@@ -16,6 +21,10 @@ function resolveVitestEntry(cwd) {
 }
 
 export async function runVitest(args = process.argv.slice(2)) {
+  const startedAt = performance.now();
+  const correlationRunId = process.env[TEST_RUN_ID_ENV] || undefined;
+  const runId = randomUUID();
+  const processTreeMetrics = {};
   const controller = new AbortController();
   const forceController = new AbortController();
   let receivedSignal;
@@ -42,7 +51,9 @@ export async function runVitest(args = process.argv.slice(2)) {
       env: {
         ...process.env,
         [TEST_RUNNER_PROCESS_TREE_ENV]: '1',
+        [TEST_RUN_ID_ENV]: runId,
       },
+      metrics: process.env[TEST_METRICS_DIR_ENV] ? processTreeMetrics : undefined,
       signal: controller.signal,
       forceSignal: forceController.signal,
       timeoutMs: null,
@@ -63,6 +74,32 @@ export async function runVitest(args = process.argv.slice(2)) {
   } finally {
     for (const [signal, handler] of signalHandlers) {
       process.removeListener(signal, handler);
+    }
+    const metricsDir = process.env[TEST_METRICS_DIR_ENV];
+    if (metricsDir) {
+      await fs.mkdir(metricsDir, { recursive: true });
+      const resourceUsage = process.resourceUsage();
+      const metrics = {
+        runId,
+        correlationRunId,
+        wallMs: performance.now() - startedAt,
+        maxRssMb: resourceUsage.maxRSS / 1024,
+        managedSpawnCount: processTreeMetrics.managedSpawnCount ?? 0,
+        processTableScanCount: processTreeMetrics.processTableScanCount ?? 0,
+        peakLiveDescendants: processTreeMetrics.peakLiveDescendants === undefined
+          ? 0
+          : processTreeMetrics.peakLiveDescendants,
+        cleanupFailureCount: processTreeMetrics.cleanupFailureCount ?? 0,
+        leakedProcessCount: processTreeMetrics.leakedProcessCount === undefined
+          ? 0
+          : processTreeMetrics.leakedProcessCount,
+        maxRssScope: 'vitest-wrapper',
+      };
+      await fs.writeFile(
+        path.join(metricsDir, `${encodeURIComponent(runId)}.json`),
+        `${JSON.stringify(metrics)}${os.EOL}`,
+        { flag: 'wx' },
+      );
     }
   }
 }

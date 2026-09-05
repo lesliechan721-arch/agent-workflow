@@ -3,6 +3,7 @@ import { access, link, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, w
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BUILTIN_EVAL_PROVIDER_IDS,
@@ -21,10 +22,13 @@ import {
   type CodexEvalTransport,
   type BuiltinEvalProviderRunInput,
   type TriggerRunEvidence,
-} from '../../dist/index.js'
-import { conversationModelOutputOf } from '../../dist/providers.js'
+} from '../../src/index.js'
+import { conversationModelOutputOf } from '../../src/providers.js'
 
 const roots: string[] = []
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 let sentinelMarker = ''
 let sentinelAlive = false
@@ -43,9 +47,9 @@ const availableProcessTree = {
     args: string[],
     _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
     callback: (error: Error | null, stdout: string) => void,
-  ): void => callback(null, args.includes('pid=,command=')
+  ): void => callback(null, args.some((arg) => arg.includes('command='))
     ? sentinelAlive
-      ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
+      ? `900001 1 900001 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${sentinelMarker}`
       : ''
     : sentinelAlive
       ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
@@ -70,8 +74,8 @@ function releaseFailingProcessTree(message = 'inspection release failed') {
       callback: (error: Error | null, stdout: string) => void,
     ): void => callback(
       null,
-      args.includes('pid=,command=')
-        ? `900011 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
+      args.some((arg) => arg.includes('command='))
+        ? `900011 1 900011 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
         : '900011 1 900011 S Mon Aug 24 12:00:00 2026',
     ),
   }
@@ -1144,8 +1148,9 @@ describe('custom process provider', () => {
     let childPid = 0
     let marker = ''
     let inspectionRounds = 0
+    let cleanupSignalSent = false
     let sentinelAlive = false
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1153,13 +1158,13 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid))`,
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       `fs.writeFileSync(${JSON.stringify(secretPath)}, process.env.OPENAI_API_KEY)`,
       `fs.chmodSync(${JSON.stringify(secretPath)}, 0o400)`,
-      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
+      "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 500)",
     ].join(';')
     const readProviderPids = async (): Promise<[string, string]> => {
       for (let attempt = 0; attempt < 50; attempt += 1) {
@@ -1191,25 +1196,26 @@ describe('custom process provider', () => {
               }
             },
             execFile: (_command, args, _options, callback) => {
-              if (!args.includes('pid=,command=')) inspectionRounds += 1
-              if (inspectionRounds >= 3) {
+              const markerScan = args.some((arg) => arg.includes('command='))
+              if (!markerScan) inspectionRounds += 1
+              if (markerScan && cleanupSignalSent) {
                 callback(new Error('inspection failed after startup'), '')
                 return
               }
-              void (inspectionRounds === 2
+              void (inspectionRounds >= 2
                 ? readProviderPids()
                 : Promise.resolve(['', ''] as [string, string]))
                 .then(([rootPid, providerChildPid]) => {
-                  if (args.includes('pid=,command=')) {
+                  if (markerScan) {
                     callback(null, [
                       ...(sentinelAlive
-                        ? [`900005 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`900005 1 900005 S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                       ...(rootPid
-                        ? [`${rootPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`${rootPid} 1 ${rootPid} S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                       ...(providerChildPid
-                        ? [`${providerChildPid} node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
+                        ? [`${providerChildPid} ${rootPid} ${rootPid} S Mon Aug 24 12:00:00 2026 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`]
                         : []),
                     ].join('\n'))
                     return
@@ -1226,6 +1232,10 @@ describe('custom process provider', () => {
                       : []),
                   ].join('\n'))
                 })
+            },
+            kill: (pid, signal) => {
+              cleanupSignalSent = true
+              process.kill(pid, signal)
             },
           },
         })
@@ -1249,7 +1259,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const childPidPath = path.join(paths.outputDir, 'markerless-child.pid')
     let childPid = 0
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1259,7 +1269,7 @@ describe('custom process provider', () => {
       "const fs = require('node:fs')",
       'const childEnv = { ...process.env }',
       'delete childEnv.AW_AGENT_SKILL_EVAL_PROCESS_MARKER',
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: childEnv, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { env: childEnv, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "setTimeout(() => process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } })), 200)",
@@ -1287,7 +1297,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
@@ -1310,7 +1320,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const childPidPath = path.join(paths.outputDir, 'ordinary-child.pid')
     let childPid = 0
-    const foreign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    const foreign = spawn(process.execPath, [syntheticProcessPath], {
       detached: true,
       stdio: 'ignore',
     })
@@ -1318,7 +1328,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       "process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))",
@@ -1365,7 +1375,7 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
       'process.exitCode = 7',
@@ -1557,7 +1567,7 @@ describe('custom process provider', () => {
   it.each([
     ['success', 'success', 2_000],
     ['failure', 'failure', 2_000],
-    ['timeout', 'timeout', 120],
+    ['timeout', 'timeout', 2_000],
   ])('removes credential plaintext and temporary state after %s', async (_label, mode, timeoutMs) => {
     const paths = await runRoot()
     const secret = `custom-provider-${mode}-secret`
@@ -1583,7 +1593,7 @@ describe('custom process provider', () => {
         ? "  process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))"
         : mode === 'failure'
           ? '  process.exitCode = 7'
-          : '  setInterval(() => {}, 1000)',
+          : '  setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000)',
       '})',
     ].join(';')
     let result: Awaited<ReturnType<typeof executeCustomProcessProvider>> | undefined
@@ -1787,7 +1797,7 @@ describe('custom process provider', () => {
   it('terminates a timed-out provider process', async () => {
     const paths = await runRoot()
     await expect(executeCustomProcessProvider({
-      command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      command: [process.execPath, syntheticProcessPath],
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), timeoutMs: 25 },
       sourceEnv: { PATH: process.env.PATH },
@@ -1799,7 +1809,7 @@ describe('custom process provider', () => {
     const paths = await runRoot()
     const controller = new AbortController()
     const running = executeCustomProcessProvider({
-      command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+      command: [process.execPath, syntheticProcessPath],
       evalRoot: paths.root,
       input: { ...input(paths, { id: 'case-1' }), signal: controller.signal },
       sourceEnv: { PATH: process.env.PATH },
@@ -1819,7 +1829,7 @@ describe('custom process provider', () => {
     const controller = new AbortController()
     const script = mode === 'success'
       ? `process.stderr.write(process.env.HTTP_PROXY); process.stdout.write(JSON.stringify({ version: 1, usage: null, grade: { passed: true, score: 1 } }))`
-      : 'process.stderr.write(process.env.HTTP_PROXY); setInterval(() => {}, 1000)'
+      : 'process.stderr.write(process.env.HTTP_PROXY); setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000)'
     const running = executeCustomProcessProvider({
       command: [process.execPath, '-e', script],
       evalRoot: paths.root,
@@ -1877,16 +1887,17 @@ describe('custom process provider', () => {
     const script = [
       "const { spawn } = require('node:child_process')",
       "const fs = require('node:fs')",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+      `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
       'child.unref()',
       `fs.writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid))`,
+      'setTimeout(() => process.exit(124), 30_000)',
       'setInterval(() => {}, 1000)',
     ].join(';')
     try {
       await expect(executeCustomProcessProvider({
         command: [process.execPath, '-e', script],
         evalRoot: paths.root,
-        input: { ...input(paths, { id: 'case-1' }), timeoutMs: 120 },
+        input: { ...input(paths, { id: 'case-1' }), timeoutMs: 2_000 },
         sourceEnv: { PATH: process.env.PATH },
       })).rejects.toThrow('contract violation')
       childPid = Number(await readFile(childPidPath, 'utf8'))
@@ -1898,6 +1909,25 @@ describe('custom process provider', () => {
 })
 
 describe('provider doctor', () => {
+  it('reports Windows Job cleanup without probing the process table', async () => {
+    const { root } = await runRoot()
+    const resolveWindowsJobHelper = vi.fn(() => 'C:\\aw\\aw-windows-job.exe')
+    const result = await doctorEvalProviders({
+      sourceEnv: { CODEX_HOME: root },
+      platform: 'win32',
+      canAccess: async () => false,
+      resolveWindowsJobHelper,
+    })
+
+    expect(result.cleanup).toEqual({
+      platform: 'win32',
+      supported: true,
+      mechanism: 'windows-job',
+    })
+    expect(result.processManagement.managedAvailable).toBe(true)
+    expect(resolveWindowsJobHelper).toHaveBeenCalledOnce()
+  })
+
   it('reports cleanup only after a live sentinel probe and immediately releases it', async () => {
     const { root } = await runRoot()
     let marker = ''
@@ -1916,8 +1946,8 @@ describe('provider doctor', () => {
         },
         execFile: (_command, args, _options, callback) => callback(
           null,
-          args.includes('pid=,command=')
-            ? `900008 node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
+          args.some((arg) => arg.includes('command='))
+            ? `900008 1 900008 S sentinel-start node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
             : '900008 1 900008 S Mon Aug 24 12:00:00 2026',
         ),
       },

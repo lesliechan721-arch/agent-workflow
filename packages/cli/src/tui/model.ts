@@ -1842,6 +1842,7 @@ function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceL
 function configEditorDefinition(field: PluginConfigSchemaField): PluginConfigSchemaField {
   const definition = structuredClone(field);
   delete definition.default;
+  if (definition.sensitive === true) delete definition.choices;
   return definition;
 }
 
@@ -1948,12 +1949,31 @@ export function buildConfigGroups(options: {
         .filter((layer) => layer !== omittedLayer)
         .map((layer) => ({ layer, entry: layerEntry(layer, key) }))
         .find((candidate) => candidate.entry?.storedSourceLayer !== undefined);
-    const fallbackValue = fallback?.entry?.storedValue ?? schema.default;
-    const fallbackRawValue = fallback
-      ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
-      : schema.default;
-    const fallbackConfigured = fallback !== undefined || schema.default !== undefined;
-    const fallbackSource = fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
+    const projectedFallback = entry?.fallback;
+    const fallbackInvalid = projectedFallback?.state === 'invalid';
+    const fallbackValue = projectedFallback?.state === 'valid'
+      ? projectedFallback.effectiveValue
+      : projectedFallback
+        ? undefined
+        : fallback?.entry?.storedValue ?? schema.default;
+    const fallbackRawValue = projectedFallback?.state === 'valid'
+      ? projectedFallback.sourceLayer === 'user'
+        ? options.rawLayerValues?.user?.[key] ?? fallbackValue
+        : fallbackValue
+      : projectedFallback
+        ? undefined
+        : fallback
+          ? options.rawLayerValues?.[fallback.layer]?.[key] ?? fallbackValue
+          : schema.default;
+    const fallbackConfigured = projectedFallback
+      ? projectedFallback.state !== 'missing'
+      : fallback !== undefined || schema.default !== undefined;
+    const fallbackSource = projectedFallback?.state === 'valid'
+      || projectedFallback?.state === 'invalid'
+      ? projectedFallback.sourceLayer
+      : projectedFallback
+        ? undefined
+        : fallback?.layer ?? (schema.default !== undefined ? 'default' : undefined);
     return {
       key,
       title: schema.title ?? key,
@@ -1969,8 +1989,10 @@ export function buildConfigGroups(options: {
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
-      writable: entry?.writable ?? effectivePage,
-      canSet: entry?.canSet ?? effectivePage,
+      writable: (entry?.writable ?? effectivePage)
+        && !(options.read.scope === 'project' && privateValue),
+      canSet: (entry?.canSet ?? effectivePage)
+        && !(options.read.scope === 'project' && privateValue),
       canUnset: entry?.canUnset ?? false,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
@@ -1997,15 +2019,17 @@ export function buildConfigGroups(options: {
           : `字段“${schema.title ?? key}”在${configSourceLabel(invalidOverrideSource ?? null)}中的值无效。请切换到该设置层修改或删除此字段。`,
       } : {}),
       ...(!effectivePage && configured ? {
-        fallbackDisplayValue: displayConfigValue({
-          field: schema,
-          privateValue,
-          inherited: false,
-          configured: fallbackConfigured,
-          value: schema.type === 'object' ? fallbackRawValue : fallbackValue,
-        }),
+        fallbackDisplayValue: fallbackInvalid
+          ? '值无效；保存可成功，但应用会被阻止'
+          : displayConfigValue({
+              field: schema,
+              privateValue,
+              inherited: false,
+              configured: fallbackConfigured,
+              value: schema.type === 'object' ? fallbackRawValue : fallbackValue,
+            }),
         fallbackSourceLabel: fallbackSource ? configSourceLabel(fallbackSource) : '未设置',
-        ...(schema.type === 'object'
+        ...(!fallbackInvalid && schema.type === 'object'
           && typeof (selectedRawValue ?? selectedValue) === 'object'
           && (selectedRawValue ?? selectedValue) !== null
           ? { fallbackObjectChanges: configObjectChildChanges(
@@ -2033,7 +2057,7 @@ export function buildConfigGroups(options: {
             : selectedRawValue ?? options.effectiveRawValues?.[key])! }
         : {}),
       ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
-      ...(choices ? { choices: choices.presets } : {}),
+      ...(!privateValue && choices ? { choices: choices.presets } : {}),
       allowCustom: choices?.allowCustom ?? true,
       ...(!privateValue && !configObjectHasSensitiveChild(schema)
         && (selectedRawValue ?? selectedValue) !== undefined && (selectedRawValue ?? selectedValue) !== null

@@ -98,6 +98,7 @@ async function createContext(options: {
     const resolution: CatalogSourceResolution = {
       sourceId: generation.sourceId,
       sourceIdentity: generation.sourceIdentity,
+      logicalIdentity: generation.logicalIdentity,
       requestedRef: active.requestedRef,
       resolvedCommit: generation.resolvedCommit,
       rootDir: generation.snapshotPath,

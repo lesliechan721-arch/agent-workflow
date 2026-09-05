@@ -12,6 +12,7 @@ import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
 import { calculateCatalogSourceIdentity } from './catalog-source-identity.js';
 import { checkAwCapabilitySupport } from './manifest.js';
+import { readCatalogSnapshotLogicalIdentity } from './catalog-generation-store.js';
 import {
   canonicalizePathThroughExistingAncestorSync,
   ensureRegularDirectoryPath,
@@ -66,6 +67,7 @@ async function resolvePathCatalogSource(
     return {
       sourceId: source.id,
       sourceIdentity,
+      logicalIdentity: await readCatalogSnapshotLogicalIdentity(stagingDir),
       requestedRef: 'path',
       resolvedCommit: `path:${copied.snapshotDigest}`,
       rootDir: stagingDir,

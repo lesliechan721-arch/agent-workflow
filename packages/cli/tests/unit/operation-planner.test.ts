@@ -53,7 +53,7 @@ describe('operation planner', () => {
       overallState: 'partial',
       changes: ['official/demo:codex:user:updated'],
       targetResults: [],
-      warnings: ['postApply failed'],
+      warnings: ['source warning'],
       recoveryActions: ['run sync'],
       planFingerprint: 'sha256:plan',
       errors: [],
@@ -62,7 +62,7 @@ describe('operation planner', () => {
     expect(result).toEqual(expect.objectContaining({
       state: 'partial',
       changes: ['official/demo:codex:user:updated'],
-      warnings: ['postApply failed'],
+      warnings: ['source warning'],
       recoveryActions: ['run sync'],
       planFingerprint: 'sha256:plan',
     }));

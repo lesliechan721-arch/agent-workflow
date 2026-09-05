@@ -85,6 +85,18 @@ export type {
   ProcessTreeTerminationOptions,
 } from './process-tree.js'
 export {
+  buildWindowsCommandLine,
+  createWindowsJobInvocation,
+  encodeWindowsJobHelperConfig,
+  quoteWindowsCommandLineArgument,
+  resolveWindowsJobHelperPath,
+  WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION,
+} from './windows-job.js'
+export type {
+  WindowsJobHelperConfig,
+  WindowsJobInvocation,
+} from './windows-job.js'
+export {
   BUILTIN_EVAL_PROVIDER_IDS,
   createConversationGraderPrompt,
   EvalProviderExecutionError,

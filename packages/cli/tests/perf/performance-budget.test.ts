@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -46,6 +47,9 @@ const SAMPLES = 20;
 const BUDGET_MS = 500;
 const DIAGNOSTIC_COMMAND_BUDGET_MS = 5_000;
 const execFileAsync = promisify(execFile);
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+);
 
 async function sample(operation: () => Promise<void>, samples = SAMPLES): Promise<number[]> {
   await operation();
@@ -553,7 +557,7 @@ describe('multi-source performance budgets', () => {
   it('fails a local remote deadline within budget and confirms process cleanup', async () => {
     let pid = 0;
     setNativeCliRunnerOverrideForTests((invocation) => new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      const child = spawn(process.execPath, [syntheticProcessPath], {
         env: invocation.env,
         stdio: 'ignore',
       });

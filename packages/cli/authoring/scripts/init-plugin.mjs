@@ -137,11 +137,11 @@ function buildPluginManifest(pluginName, version, description, displayName, shor
     };
   }
 
-  if (opts.withConfigApi || opts.withPostApply) {
+  if (opts.withConfigApi || opts.withPreApply) {
     manifest.scripts = {
-      ...(opts.withPostApply
+      ...(opts.withPreApply
         ? {
-            postApply: { path: './scripts/postApply.mjs' },
+            preApply: { path: './scripts/preApply.mjs' },
           }
         : {}),
       ...(opts.withConfigApi
@@ -178,12 +178,14 @@ function renderAppJson() {
 `;
 }
 
-function renderPostApplyMjs() {
+function renderPreApplyMjs() {
   return `let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const context = JSON.parse(input);
-const pluginName = context.plugin?.name ?? context.pluginName ?? 'plugin';
-console.log(\`[\${pluginName}] postApply completed.\`);
+if (context.schemaVersion !== 1 || !context.plugin?.name || !context.target?.platform) {
+  throw new Error('Invalid AW preApply context.');
+}
+console.log(\`[\${context.plugin.name}] preApply environment check completed.\`);
 `;
 }
 
@@ -224,27 +226,26 @@ test('aw config helper reads AW_PLUGIN_CONTEXT without fallback discovery', asyn
 });
 `
     : '';
-  const postApplyTest = opts.withPostApply
+  const preApplyTest = opts.withPreApply
     ? `
-test('postApply script accepts JSON context from stdin', async () => {
-  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-postApply-'));
+test('preApply script accepts the minimal JSON context from stdin', async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), '${pluginName}-preApply-'));
   const contextPath = join(tempDir, 'context.json');
   await writeFile(contextPath, JSON.stringify({
     schemaVersion: 1,
     plugin: { pluginId: 'official/${pluginName}', name: '${pluginName}', version: '0.1.0', rootDir: tempDir },
     target: { platform: 'codex', scope: 'project', projectRoot: tempDir },
-    config: { values: {} },
-    components: []
+    config: { values: {} }
   }), 'utf8');
 
-  const postApplyPath = join(dirname(fileURLToPath(import.meta.url)), 'postApply.mjs');
-  const postApply = spawnSync(process.execPath, [postApplyPath], {
+  const preApplyPath = join(dirname(fileURLToPath(import.meta.url)), 'preApply.mjs');
+  const preApply = spawnSync(process.execPath, [preApplyPath], {
     cwd: tempDir,
     input: await readFile(contextPath, 'utf8'),
     encoding: 'utf8',
   });
-  assert.equal(postApply.status, 0, postApply.stderr);
-  assert.match(postApply.stdout, /postApply completed/);
+  assert.equal(preApply.status, 0, preApply.stderr);
+  assert.match(preApply.stdout, /preApply environment check completed/);
 });
 `
     : '';
@@ -259,7 +260,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
-${configTest}${postApplyTest}`;
+${configTest}${preApplyTest}`;
 }
 
 function printUsage() {
@@ -281,7 +282,7 @@ Options:
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
   --with-config-api             Add AW config schema, standard config helper, and Node script test.
-  --with-post-apply              Add Node postApply script sample and Node script test.
+  --with-pre-apply               Add an idempotent Node preApply environment check and test.
   -h, --help                    Show this help message.
 
 Note:
@@ -315,7 +316,7 @@ function parseArgs(argv) {
     withMcp: false,
     withApps: false,
     withConfigApi: false,
-    withPostApply: false,
+    withPreApply: false,
     noSkills: false,
     skillInvocation: 'model',
   };
@@ -340,8 +341,8 @@ function parseArgs(argv) {
       options.withConfigApi = true;
       continue;
     }
-    if (arg === '--with-post-apply') {
-      options.withPostApply = true;
+    if (arg === '--with-pre-apply') {
+      options.withPreApply = true;
       continue;
     }
     if (arg === '--no-skills') {
@@ -460,7 +461,7 @@ function main() {
       withMcp: args.withMcp,
       withApps: args.withApps,
       withConfigApi: args.withConfigApi,
-      withPostApply: args.withPostApply,
+      withPreApply: args.withPreApply,
       noSkills: args.noSkills,
       initialSkillName,
     },
@@ -547,16 +548,16 @@ function main() {
     writeText(helperPath, fs.readFileSync(helperTemplatePath, 'utf8'));
     createdPaths.push(helperPath);
   }
-  if (args.withPostApply) {
-    const postApplyPath = path.join(pluginRoot, 'scripts', 'postApply.mjs');
-    writeText(postApplyPath, renderPostApplyMjs());
-    createdPaths.push(postApplyPath);
+  if (args.withPreApply) {
+    const preApplyPath = path.join(pluginRoot, 'scripts', 'preApply.mjs');
+    writeText(preApplyPath, renderPreApplyMjs());
+    createdPaths.push(preApplyPath);
   }
-  if (args.withConfigApi || args.withPostApply) {
+  if (args.withConfigApi || args.withPreApply) {
     const testPath = path.join(pluginRoot, 'scripts', 'generated-script.test.mjs');
     writeText(testPath, renderGeneratedScriptTest(pluginName, {
       withConfigApi: args.withConfigApi,
-      withPostApply: args.withPostApply,
+      withPreApply: args.withPreApply,
     }));
     createdPaths.push(testPath);
   }

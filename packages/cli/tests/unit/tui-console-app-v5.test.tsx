@@ -2404,7 +2404,11 @@ describe('ConsoleAppV4', () => {
         for (let index = 1; index <= 10; index += 1) {
           progress.addNotice({ level: 'notice', identity: `message-${index}`, message: `safe ${index}` });
         }
-        return { configWrite: 'succeeded', targetResults: [] };
+        return {
+          configWrite: 'succeeded',
+          overallState: 'succeeded',
+          apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+        };
       }),
     }, progress);
     await value.load();
@@ -3405,7 +3409,7 @@ describe('ConsoleAppV4', () => {
     closedInstance.unmount();
     const invalidPage = configPage();
     const note = invalidPage.groups[0]!.fields.find((field) => field.key === 'note')!;
-    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$' } };
+    note.definition = { type: 'string', validation: { pattern: '^[A-Z]+$', maxLength: 20 } };
     const invalid = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...invalidPage, pluginId, layer })),
     });
@@ -3443,7 +3447,9 @@ describe('ConsoleAppV4', () => {
     delete field.value;
     delete field.draftValue;
     const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
@@ -3508,7 +3514,7 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn().mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: [],
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
@@ -3605,7 +3611,7 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn().mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: [],
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
@@ -3660,7 +3666,7 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn().mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: [],
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
@@ -3781,7 +3787,9 @@ describe('ConsoleAppV4', () => {
     field.draftValue = {};
     field.effectiveValue = {};
     const executeIntent = vi.fn().mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
@@ -4097,7 +4105,7 @@ describe('ConsoleAppV4', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'succeeded',
-        targetResults: [],
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
       }),
     });
     value.push(previous);
@@ -4305,10 +4313,13 @@ describe('ConsoleAppV4', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'partial',
-        targetResults: [
-          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
-          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
-        ],
+        apply: {
+          state: 'partial',
+          targetResults: [
+            { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+            { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+          ],
+        },
       }),
     });
     partial.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -4962,11 +4973,14 @@ describe('ConsoleAppV4', () => {
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
-        overallState: 'failed',
-        targetResults: [
-          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
-          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
-        ],
+        overallState: 'partial',
+        apply: {
+          state: 'partial',
+          targetResults: [
+            { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+            { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+          ],
+        },
       }),
     });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -5004,8 +5018,7 @@ describe('ConsoleAppV4', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'partial',
-        applySkippedReason: 'invalidConfig',
-        targetResults: [],
+        apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
       }),
     });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
@@ -5050,7 +5063,7 @@ describe('ConsoleAppV4', () => {
       executeIntent: vi.fn().mockResolvedValue({
         configWrite: 'succeeded',
         overallState: 'succeeded',
-        targetResults: [],
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
         resetDisposition,
         ...(quarantineBasename ? { quarantineBasename } : {}),
       }),
@@ -5072,7 +5085,11 @@ describe('ConsoleAppV4', () => {
   });
 
   it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {
-    const executeIntent = vi.fn().mockResolvedValue({ configWrite: 'succeeded', overallState: 'succeeded', targetResults: [] });
+    const executeIntent = vi.fn().mockResolvedValue({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+    });
     const value = controller({ executeIntent });
     await value.load();
     await value.buildOperationReview({

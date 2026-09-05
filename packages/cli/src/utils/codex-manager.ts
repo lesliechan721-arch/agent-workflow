@@ -1071,6 +1071,14 @@ export async function resolveCodexOperationConsumer(
     );
   }
   if (!options.requiresNativeMaterialization) {
+    const managed = await inspectManagedCodexRuntime(options);
+    if (managed.state === 'valid') {
+      return {
+        support: 'observed',
+        manager: managed.manager,
+        requirement: options.operationRequirement,
+      };
+    }
     return {
       support: 'assumed',
       requirement: options.operationRequirement,

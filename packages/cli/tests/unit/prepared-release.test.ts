@@ -143,17 +143,32 @@ describe('local prepared release', () => {
 
   it('rejects assume-unchanged and skip-worktree release inputs', async () => {
     const root = await temporaryRoot();
-    await fs.mkdir(path.join(root, 'release'));
-    await fs.writeFile(path.join(root, 'release', 'version-targets.json'), '{}\n');
+    const authoringPath = path.join(root, 'packages', 'cli', 'authoring', 'index.mjs');
+    const relativeAuthoringPath = 'packages/cli/authoring/index.mjs';
+    await fs.mkdir(path.dirname(authoringPath), { recursive: true });
+    await fs.writeFile(authoringPath, 'export const value = 1;\n');
     await captureCommand('git', ['init', '--quiet'], { cwd: root });
-    await captureCommand('git', ['add', 'release/version-targets.json'], { cwd: root });
+    await captureCommand('git', ['add', relativeAuthoringPath], { cwd: root });
     await captureCommand('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
       'commit', '--quiet', '-m', 'base'], { cwd: root });
-    await captureCommand('git', ['update-index', '--assume-unchanged', 'release/version-targets.json'], { cwd: root });
-    await expect(assertTrackedHeadClean(root)).rejects.toThrow('assume-unchanged');
-    await captureCommand('git', ['update-index', '--no-assume-unchanged', 'release/version-targets.json'], { cwd: root });
-    await captureCommand('git', ['update-index', '--skip-worktree', 'release/version-targets.json'], { cwd: root });
-    await expect(assertTrackedHeadClean(root)).rejects.toThrow('skip-worktree');
+    await expect(assertTrackedHeadClean(root)).resolves.toEqual([]);
+
+    await captureCommand('git', ['update-index', '--assume-unchanged', relativeAuthoringPath], { cwd: root });
+    await fs.writeFile(authoringPath, 'export const value = 2;\n');
+    await expect(assertTrackedHeadClean(root)).rejects.toThrow(
+      `assume-unchanged: ${relativeAuthoringPath}`,
+    );
+    await fs.writeFile(authoringPath, 'export const value = 1;\n');
+    await captureCommand('git', ['update-index', '--no-assume-unchanged', relativeAuthoringPath], { cwd: root });
+
+    await captureCommand('git', ['update-index', '--skip-worktree', relativeAuthoringPath], { cwd: root });
+    await fs.writeFile(authoringPath, 'export const value = 2;\n');
+    await expect(assertTrackedHeadClean(root)).rejects.toThrow(
+      `skip-worktree: ${relativeAuthoringPath}`,
+    );
+    await fs.writeFile(authoringPath, 'export const value = 1;\n');
+    await captureCommand('git', ['update-index', '--no-skip-worktree', relativeAuthoringPath], { cwd: root });
+    await expect(assertTrackedHeadClean(root)).resolves.toEqual([]);
   });
 
   it('keeps all public package versions and exact workspace dependencies synchronized', async () => {

@@ -76,7 +76,7 @@
               "app",
               "dynamic-artifact",
               "config-helper",
-              "post-apply",
+              "pre-apply",
               "node-build",
               "readme",
               "eval-assets"

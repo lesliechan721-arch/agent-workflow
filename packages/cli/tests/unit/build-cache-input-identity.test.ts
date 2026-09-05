@@ -120,6 +120,28 @@ describe('build cache input and environment identity', () => {
     expect(await computeBuildInputDigest(repoRoot)).not.toBe(nestedDigest);
   });
 
+  it('excludes only the Stage 5 development build implementation from strong inputs', async () => {
+    const repoRoot = await createRepo();
+    const buildScriptsRoot = path.join(repoRoot, 'scripts', 'build');
+    await fs.mkdir(buildScriptsRoot, { recursive: true });
+    await fs.writeFile(path.join(buildScriptsRoot, 'run-build.mjs'), 'release build\n');
+    const initialDigest = await computeBuildInputDigest(repoRoot);
+    const devOnlyPaths = [
+      path.join(buildScriptsRoot, 'dev-build-cache.mjs'),
+      path.join(buildScriptsRoot, 'run-dev-build.mjs'),
+    ];
+
+    await Promise.all(devOnlyPaths.map((filePath) => fs.writeFile(filePath, 'development build\n')));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+    await Promise.all(devOnlyPaths.map((filePath) => fs.writeFile(filePath, 'changed development build\n')));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+    await Promise.all(devOnlyPaths.map((filePath) => fs.rm(filePath)));
+    await expect(computeBuildInputDigest(repoRoot)).resolves.toBe(initialDigest);
+
+    await fs.writeFile(path.join(buildScriptsRoot, 'run-build.mjs'), 'changed release build\n');
+    await expect(computeBuildInputDigest(repoRoot)).resolves.not.toBe(initialDigest);
+  });
+
   it('invalidates the build cache when a canonical Eval schema changes', async () => {
     const repoRoot = await createRepo();
     const schemaPath = path.join(
@@ -266,6 +288,11 @@ describe('build cache input and environment identity', () => {
       "fs.writeFileSync('packages/agent-skill-eval/dist/index.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/bin.js', 'export {};\\n');",
       "fs.writeFileSync('packages/agent-skill-eval/dist/schemas/digests.json', '{}\\n');",
+      "fs.mkdirSync('packages/agent-skill-eval/dist/native/windows/x64', { recursive: true });",
+      "fs.mkdirSync('packages/agent-skill-eval/dist/native/windows/arm64', { recursive: true });",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/native/windows/manifest.json', '{}\\n');",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/native/windows/x64/aw-windows-job.exe', 'x64');",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/native/windows/arm64/aw-windows-job.exe', 'arm64');",
       "fs.mkdirSync('packages/plugin-core/dist', { recursive: true });",
       "fs.writeFileSync('packages/plugin-core/dist/index.js', 'export {};\\n');",
       "fs.mkdirSync('packages/cli/dist/scripts', { recursive: true });",

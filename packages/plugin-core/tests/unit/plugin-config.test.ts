@@ -70,51 +70,66 @@ describe('Plugin Config v2 contract', () => {
       .toBe('type')
   })
 
-  it('preserves object child choices and sensitive metadata', () => {
-    const config = normalizePluginConfigDefinition({
-      fields: {
-        fixed: {
-          type: 'object',
-          sensitive: true,
-          properties: {
-            token: {
-              type: 'string',
-              sensitive: true,
-              choices: {
-                allowCustom: false,
-                presets: [{ id: 'managed', title: 'Managed', value: 'managed' }],
-              },
-            },
-          },
-        },
-        dynamic: {
-          type: 'object',
-          additionalProperties: {
-            type: 'boolean',
-            sensitive: true,
-            choices: {
-              allowCustom: false,
-              presets: [{ id: 'enabled', title: 'Enabled', value: true }],
-            },
-          },
-        },
-      },
-    })
+  it('allows only top-level string fields to be sensitive and forbids exposed values', () => {
+    expect(normalizePluginConfigDefinition({
+      fields: { token: { type: 'string', sensitive: true, required: true } },
+    }).fields.token).toMatchObject({ type: 'string', sensitive: true, required: true })
 
-    expect(config.fields.fixed).toMatchObject({
-      sensitive: true,
-      properties: {
-        token: { sensitive: true, choices: { allowCustom: false } },
+    for (const field of [
+      { type: 'string', sensitive: true, default: 'secret' },
+      {
+        type: 'string',
+        sensitive: true,
+        choices: { allowCustom: true, presets: [{ id: 'secret', title: 'Secret', value: 'secret' }] },
+      },
+      { type: 'number', sensitive: true },
+      { type: 'boolean', sensitive: true },
+      { type: 'object', sensitive: true, properties: {} },
+      { type: 'object', properties: { token: { type: 'string', sensitive: true } } },
+      { type: 'object', additionalProperties: { type: 'string', sensitive: true } },
+    ]) {
+      expect(() => normalizePluginConfigDefinition({ fields: { value: field } })).toThrow()
+    }
+  })
+
+  it('uses bounded RE2 validation for field values and object keys', () => {
+    const unicode = normalizePluginConfigDefinition({
+      fields: {
+        value: { type: 'string', validation: { pattern: '\\p{Han}+', maxLength: 4096 } },
+        labels: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          validation: { key: { pattern: '标签', maxLength: 20 } },
+        },
       },
     })
-    expect(config.fields.dynamic).toMatchObject({
-      additionalProperties: { sensitive: true, choices: { allowCustom: false } },
+    expect(validatePluginConfigValue(unicode.fields.value!, 'prefix中文suffix', 'value')).toEqual([])
+    expect(validatePluginConfigValue(unicode.fields.labels!, { 'my标签key': 'ok' }, 'labels')).toEqual([])
+    expect(validatePluginConfigValue(unicode.fields.value!, 'latin', 'value')[0]?.code).toBe('pattern')
+    expect(() => normalizePluginConfigDefinition({
+      fields: {
+        value: { type: 'string', validation: { pattern: '😀'.repeat(512), maxLength: 4096 } },
+        empty: { type: 'string', validation: { pattern: '^$', maxLength: 0 } },
+      },
+    })).not.toThrow()
+
+    for (const validation of [
+      { pattern: 'value' },
+      { pattern: 'a'.repeat(513), maxLength: 4096 },
+      { pattern: '(?=value)', maxLength: 4096 },
+      { pattern: '(value)\\1', maxLength: 4096 },
+      { maxLength: 4097 },
+    ]) {
+      expect(() => normalizePluginConfigDefinition({
+        fields: { value: { type: 'string', validation } },
+      })).toThrow()
+    }
+
+    const linear = normalizePluginConfigDefinition({
+      fields: { value: { type: 'string', validation: { pattern: '(a+)+$', maxLength: 4096 } } },
     })
-    expect(validatePluginConfigValue(config.fields.dynamic!, { feature: false }, 'dynamic'))
-      .toContainEqual(expect.objectContaining({
-        code: 'choice',
-        path: { field: 'dynamic', property: 'feature' },
-      }))
+    expect(validatePluginConfigValue(linear.fields.value!, `${'a'.repeat(100_000)}!`, 'value')[0]?.code)
+      .toBe('maxLength')
   })
 
   it('rejects removed fields, arrays, null, and nested objects', () => {
@@ -279,7 +294,7 @@ describe('Plugin Config v2 contract', () => {
     })).toThrow(/unsupported string format/u)
   })
 
-  it('matches actual preset values, canonicalizes objects, and redacts one object level', () => {
+  it('matches actual preset values, canonicalizes objects, and redacts sensitive strings', () => {
     const config = normalizePluginConfigDefinition({
       fields: {
         credentials: {
@@ -294,7 +309,7 @@ describe('Plugin Config v2 contract', () => {
             }],
           },
           properties: {
-            token: { type: 'string', sensitive: true, required: true },
+            token: { type: 'string', required: true },
             region: { type: 'string', required: true },
           },
         },
@@ -309,7 +324,7 @@ describe('Plugin Config v2 contract', () => {
     expect(matchPluginConfigPreset(field, value)?.id).toBe('service')
     expect(validatePluginConfigValue(field, { region: 'east', token: 'secret' }, 'credentials'))
       .toContainEqual(expect.objectContaining({ code: 'choice' }))
-    expect(redactPluginConfigValue(field, value)).toEqual({ region: 'west', token: '[redacted]' })
+    expect(redactPluginConfigValue(field, value)).toEqual(value)
     expect(validatePluginConfigPreset(field, {
       id: 'bad',
       title: 'Bad',
@@ -318,16 +333,10 @@ describe('Plugin Config v2 contract', () => {
       code: 'required',
       path: { field: 'credentials', property: 'token' },
     })
-    const dynamic = normalizePluginConfigDefinition({
-      fields: {
-        secrets: {
-          type: 'object',
-          additionalProperties: { type: 'string', sensitive: true },
-        },
-      },
-    }).fields.secrets!
-    expect(redactPluginConfigValue(dynamic, { first: 'private', public: false }))
-      .toEqual({ first: '[redacted]', public: '[redacted]' })
+    const token = normalizePluginConfigDefinition({
+      fields: { token: { type: 'string', sensitive: true } },
+    }).fields.token!
+    expect(redactPluginConfigValue(token, 'private')).toBe('[redacted]')
   })
 
   it('rejects invalid preset and schema combinations', () => {
@@ -367,15 +376,6 @@ describe('Plugin Config v2 contract', () => {
         },
       },
     })).toThrow(/declared preset value/u)
-    expect(normalizePluginConfigDefinition({
-      fields: {
-        token: {
-          type: 'string',
-          sensitive: true,
-          choices: { allowCustom: true, presets: [{ id: 'one', title: 'One', value: 'one' }] },
-        },
-      },
-    }).fields.token).toMatchObject({ sensitive: true, choices: { allowCustom: true } })
     expect(() => normalizePluginConfigDefinition({
       fields: {
         mode: {

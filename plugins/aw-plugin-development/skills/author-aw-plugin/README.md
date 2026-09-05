@@ -1,6 +1,6 @@
 # author-aw-plugin
 
-在一个既有合法 AW Catalog Workspace 中创建或维护单个 AW Plugin Source，包括 manifest、Skill、extension、MCP/App、slash command、config、postApply、dynamic artifact、插件版本和构建配置。安全删除只处理 `author-aw-catalog` 已明确交接的任务。
+在一个既有合法 AW Catalog Workspace 中创建或维护单个 AW Plugin Source，包括 manifest、Skill、extension、MCP/App、slash command、config、preApply、dynamic artifact、插件版本和构建配置。安全删除只处理 `author-aw-catalog` 已明确交接的任务。
 
 ## 使用前提
 

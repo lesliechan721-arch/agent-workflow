@@ -70,6 +70,8 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
       contents = `{"plugins":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('catalog-manifest.json')) {
       contents = `{"schemaVersion":7,"release":{"state":"development"},"entries":[],"generation":${generation}}\n`;
+    } else if (relativePath.endsWith('native/windows/manifest.json')) {
+      contents = `{"schemaVersion":1,"generation":${generation}}\n`;
     }
     await fs.writeFile(outputPath, contents);
   }));

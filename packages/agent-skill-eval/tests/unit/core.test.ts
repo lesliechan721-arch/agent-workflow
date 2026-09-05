@@ -4,6 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/pr
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   assertProviderProcessSupported,
@@ -15,7 +16,11 @@ import {
   getSchema,
   getSchemaDigest,
   runProviderProcess as runProviderProcessWithoutContainment,
-} from '../../dist/index.js'
+} from '../../src/index.js'
+
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 const containedProcessHooks = {
   externalContainment: {
@@ -64,13 +69,7 @@ describe('public Eval execution contracts', () => {
     }
   })
 
-  it('prints only the v1 command surface and embeds the three v1 schemas', async () => {
-    const bin = path.resolve('dist/bin.js')
-    const help = await execFileAsync(process.execPath, [bin, '--help'], { cwd: path.resolve('.') })
-    expect(help.stdout).toContain('spec validate <spec.json>')
-    expect(help.stdout).toContain('run <spec.json> --audit <audit.json>')
-    expect(help.stdout).toContain('doctor --json')
-
+  it('loads the three canonical schemas and their digests', async () => {
     for (const name of ['eval-spec', 'eval-audit', 'eval-result'] as const) {
       const schema = await getSchema(name)
       expect(await getSchemaDigest(name)).toBe(digest(JSON.stringify(schema)))
@@ -187,7 +186,7 @@ describe('public Eval execution contracts', () => {
 
     const timedOut = await runProviderProcess({
       ...request,
-      args: ['-e', 'setInterval(() => {}, 1000)'],
+      args: [syntheticProcessPath],
       timeoutMs: 50,
     })
     expect(timedOut).toMatchObject({ exitCode: null, timedOut: true, cancelled: false })

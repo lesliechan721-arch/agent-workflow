@@ -12,6 +12,7 @@ import {
   statusTargetSharedNative,
 } from '../../src/commands/status-v6.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -37,7 +38,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function configurePathSource(
   sourceRoot: string,
   sourceId = 'local',
-): Promise<{ env: NodeJS.ProcessEnv; sourceIdentity: string }> {
+): Promise<{ env: NodeJS.ProcessEnv; sourceIdentity: string; logicalIdentity: string }> {
   const isolation = getCurrentSourceTestIsolation();
   const source = { id: sourceId, type: 'path', primary: true, path: sourceRoot } as const;
   const current = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -51,9 +52,12 @@ async function configurePathSource(
     cliVersion: '1.0.0',
     env: isolation.env,
   });
+  const active = (await readCatalogGenerationState(isolation.env)).sources[sourceId]?.active;
+  if (!active) throw new Error(`Missing Active Catalog generation for ${sourceId}.`);
   return {
     env: { ...isolation.env, PATH: '' },
     sourceIdentity: await calculateCatalogSourceIdentity(source),
+    logicalIdentity: active.logicalIdentity,
   };
 }
 
@@ -178,13 +182,13 @@ describe('status v7 current behavior', () => {
         }],
       };
     });
-    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    const { env, sourceIdentity, logicalIdentity } = await configurePathSource(sourceRoot);
     await writePluginConfigStore({
       sourceId: 'local', sourceIdentity, pluginName: 'demo', scope: 'user',
       cwd: isolation.layout.fixtureCwd, env, values: { mode: 'user' },
     });
     await writePluginConfigStore({
-      sourceId: 'local', sourceIdentity, pluginName: 'demo', scope: 'project',
+      sourceId: 'local', sourceIdentity, logicalIdentity, pluginName: 'demo', scope: 'project',
       cwd: isolation.layout.fixtureCwd, env, values: { mode: 42 },
     });
 

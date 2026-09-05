@@ -253,9 +253,10 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(124), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
       `writeFileSync(${JSON.stringify(started)}, String(process.pid));`,
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const controller = new AbortController();
@@ -290,8 +291,9 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root, createManifest(), [
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
+      `const descendant = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(124), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS}); setInterval(() => {}, 1000)"], { stdio: ["ignore", "inherit", "inherit"], detached: true });`,
       `writeFileSync(${JSON.stringify(descendantStarted)}, String(descendant.pid));`,
+      'setTimeout(() => process.exit(124), 30_000);',
       'setInterval(() => {}, 1000);',
     ].join('\n'));
     const controller = new AbortController();
@@ -686,6 +688,87 @@ describe('artifact renderer runtime', () => {
     expect(String(error)).toContain('[REDACTED]');
     expect(String(error)).not.toContain('secret-token');
     expect(String(error)).not.toContain('nested-render-secret');
+  });
+
+  it('rejects a sensitive config value in a dynamic file name without disclosing it', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-sensitive-plan-');
+    const cwd = path.join(root, 'repo');
+    const awHome = path.join(root, 'aw-home');
+    const secret = 'sensitive-file-name';
+    await fs.ensureDir(cwd);
+    const manifest = createManifest();
+    manifest.artifacts!.targets.push({
+      id: 'sensitive-skill',
+      platform: 'codex',
+      scopes: ['user'],
+      target: 'codex.skill',
+      states: ['present'],
+      refreshKeys: ['token'],
+      skillKey: 'sensitive-skill',
+    });
+    const plugin = await writePlugin(root, manifest);
+    const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: secret },
+    });
+    const plan = {
+      version: 2,
+      artifacts: [{
+        id: 'lightweight-instruction',
+        kind: 'instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        state: 'present',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+        content: 'Safe instruction.',
+      }, {
+        id: 'codex-explorer-role',
+        kind: 'codexRole',
+        platform: 'codex',
+        target: 'codex.agentRole',
+        state: 'present',
+        roleKey: 'codex-explorer',
+        refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+        content: {
+          roleFile: {
+            name: 'codex-explorer',
+            developer_instructions: 'Safe role instructions.',
+          },
+        },
+      }, {
+        id: 'sensitive-skill',
+        kind: 'skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        state: 'present',
+        skillKey: 'sensitive-skill',
+        refreshKeys: ['token'],
+        content: {
+          files: {
+            'SKILL.md': '---\nname: sensitive-skill\ndescription: Test.\n---\n',
+            [`references/${secret}.md`]: 'Safe content.',
+          },
+        },
+      }],
+    };
+
+    const error = await runArtifactRenderer({
+      event: 'install', plugin, platform: 'codex', scope: 'user', cwd, commandEnv: env,
+      runner: {
+        async run() {
+          return {
+            exitCode: 0, signal: null, stdout: JSON.stringify(plan), stderr: '', timedOut: false,
+          };
+        },
+      },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('artifactRendererSensitiveConfigExposed');
+    expect(error.message).not.toContain(secret);
   });
 
   it('redacts a sensitive renderer token split across the output limit by the default runner', async () => {

@@ -1,27 +1,49 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { PluginMeta } from '../../src/types.js';
 import {
   redactPluginScriptOutput,
-  runPostApplyScript,
+  createDefaultPluginProcessRunner,
+  runPreApplyScript,
   summarizePluginScriptOutput,
   type PluginProcessRunner,
   type PluginScriptInvocation,
 } from '../../src/utils/plugin-scripts.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
+import { assertProcessTreeInspectionAvailable } from '../../src/utils/process-tree.js';
+import { waitForProcessExit } from '../support/process-tree.js';
 
 const tempDirs: string[] = [];
+const descendantPids = new Set<number>();
 const OUTPUT_LIMIT = 64 * 1024;
+const SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS = 30_000;
+const vitestPackagePath = realpathSync(fileURLToPath(
+  new URL('../../node_modules/vitest/package.json', import.meta.url),
+));
+const viteNodePath = path.resolve(path.dirname(vitestPackagePath), '..', 'vite-node', 'vite-node.mjs');
+const interruptHostPath = fileURLToPath(new URL('../fixtures/pre-apply-interrupt-host.ts', import.meta.url));
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // Default-runner process-tree tests require host process inspection permission.
+}
 
 async function createPlugin(options: { sensitiveDefault?: string } = {}): Promise<PluginMeta> {
-  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-post-apply-'));
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-pre-apply-'));
   tempDirs.push(rootDir);
-  await fs.outputFile(path.join(rootDir, 'scripts', 'postApply.mjs'), 'process.stdin.resume();\n');
+  await fs.outputFile(path.join(rootDir, 'scripts', 'preApply.mjs'), 'process.stdin.resume();\n');
   return {
     sourceId: 'local',
     pluginId: 'local/demo',
@@ -31,13 +53,13 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
       schemaVersion: 3,
       name: 'demo',
       version: '1.0.0',
-      description: 'postApply fixture',
+      description: 'preApply fixture',
       marketplace: {
         category: 'test',
         strict: true,
         policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
-      scripts: { postApply: { path: './scripts/postApply.mjs', timeoutMs: 2_000 } },
+      scripts: { preApply: { path: './scripts/preApply.mjs', timeoutMs: 2_000 } },
       ...(options.sensitiveDefault ? {
         config: { fields: { token: { type: 'string', sensitive: true, default: options.sensitiveDefault } } },
       } : {}),
@@ -45,26 +67,303 @@ async function createPlugin(options: { sensitiveDefault?: string } = {}): Promis
   };
 }
 
+async function waitForFile(filePath: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fs.pathExists(filePath)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}.`);
+}
+
+function waitForChildExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+function expectStandardSignalExit(
+  outcome: { code: number | null; signal: NodeJS.Signals | null },
+  signal: 'SIGINT' | 'SIGTERM',
+): void {
+  const conventionalExitCode = 128 + os.constants.signals[signal];
+  expect(
+    outcome.signal === signal && outcome.code === null
+      || outcome.signal === null && outcome.code === conventionalExitCode,
+  ).toBe(true);
+}
+
 afterEach(async () => {
+  for (const pid of descendantPids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // The preApply runner cleanup can already have terminated the descendant.
+    }
+  }
+  descendantPids.clear();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('postApply script', () => {
-  it('redacts short sensitive scalar tokens only at token boundaries', () => {
-    expect(summarizePluginScriptOutput(
-      'a 1 true long-secret-value cat 10 1.5 -1 untrue command:start',
-      ['a', '1', 'true', 'long-secret-value'],
-    )).toBe(
-      '[REDACTED] [REDACTED] [REDACTED] [REDACTED] cat 10 1.5 -1 untrue command:start',
+describe('preApply script', () => {
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
+    'SIGINT',
+    'SIGTERM',
+  ] as const)(
+    'cleans the production preApply process tree before the host exits on %s',
+    async (signal) => {
+      const plugin = await createPlugin();
+      const awHome = path.join(plugin.rootDir, 'aw-home');
+      const rootPidPath = path.join(plugin.rootDir, 'root.pid');
+      const descendantPidPath = path.join(plugin.rootDir, 'descendant.pid');
+      const continuedPath = path.join(plugin.rootDir, 'continued');
+      const descendantSource = [
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        `writeFileSync(${JSON.stringify(rootPidPath)}, String(process.pid));`,
+        `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], { detached: true, stdio: 'ignore' });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+        'descendant.unref();',
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n'));
+      const host = spawn(process.execPath, [
+        viteNodePath,
+        interruptHostPath,
+        plugin.rootDir,
+        awHome,
+        continuedPath,
+      ], {
+        cwd: path.resolve(fileURLToPath(new URL('../..', import.meta.url))),
+        env: {
+          PATH: process.env.PATH,
+          HOME: path.join(plugin.rootDir, 'host-home'),
+          AW_HOME: awHome,
+          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
+          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+        },
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      const exited = waitForChildExit(host);
+
+      await Promise.all([waitForFile(rootPidPath), waitForFile(descendantPidPath)]);
+      const rootPid = Number(await fs.readFile(rootPidPath, 'utf8'));
+      const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+      descendantPids.add(rootPid);
+      descendantPids.add(descendantPid);
+      host.kill(signal);
+
+      expectStandardSignalExit(await exited, signal);
+      await Promise.all([waitForProcessExit(rootPid), waitForProcessExit(descendantPid)]);
+      descendantPids.delete(rootPid);
+      descendantPids.delete(descendantPid);
+      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'exits with a clear failure when interrupted process cleanup fails',
+    async () => {
+      const plugin = await createPlugin();
+      const awHome = path.join(plugin.rootDir, 'aw-home');
+      const continuedPath = path.join(plugin.rootDir, 'continued');
+      const readyPath = path.join(plugin.rootDir, 'runner-ready');
+      const host = spawn(process.execPath, [
+        viteNodePath,
+        interruptHostPath,
+        plugin.rootDir,
+        awHome,
+        continuedPath,
+        readyPath,
+      ], {
+        cwd: path.resolve(fileURLToPath(new URL('../..', import.meta.url))),
+        env: {
+          PATH: process.env.PATH,
+          HOME: path.join(plugin.rootDir, 'host-home'),
+          AW_HOME: awHome,
+          AW_CODEX_HOME: path.join(awHome, 'codex-home'),
+          AW_CLAUDE_HOME: path.join(awHome, 'claude-home'),
+        },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      host.stderr?.setEncoding('utf8');
+      host.stderr?.on('data', (chunk: string) => { stderr += chunk; });
+      const exited = waitForChildExit(host);
+
+      await waitForFile(readyPath);
+      host.kill('SIGTERM');
+
+      await expect(exited).resolves.toEqual({ code: 1, signal: null });
+      expect(stderr).toContain('preApply process cleanup failed after SIGTERM.');
+      expect(await fs.pathExists(continuedPath)).toBe(false);
+      expect(await fs.readdir(path.join(awHome, 'tmp'))).toEqual([]);
+    },
+  );
+
+  it('removes its interrupt listeners after normal completion', async () => {
+    const plugin = await createPlugin();
+    const sigintListeners = process.listenerCount('SIGINT');
+    const sigtermListeners = process.listenerCount('SIGTERM');
+
+    await runPreApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() {
+        return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
+      } },
+    });
+
+    expect(process.listenerCount('SIGINT')).toBe(sigintListeners);
+    expect(process.listenerCount('SIGTERM')).toBe(sigtermListeners);
+  });
+
+  it('routes a Windows script through the Job helper and waits for helper close after abort', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const spawn = vi.fn(() => child);
+    const observeProcessTree = vi.fn();
+    const terminateProcessTree = vi.fn();
+    const runner = createDefaultPluginProcessRunner({
+      platform: 'win32',
+      spawn: spawn as unknown as typeof import('node:child_process').spawn,
+      createWindowsJobInvocation: () => ({
+        command: 'C:\\aw\\aw-windows-job.exe',
+        args: ['--config', 'encoded'],
+        config: { schemaVersion: 1, executable: 'node.exe', args: ['script.js'], parentPid: 42 },
+      }),
+      observeProcessTree,
+      terminateProcessTree,
+    });
+    const controller = new AbortController();
+    const running = runner.run({
+      command: 'node.exe',
+      args: ['script.js'],
+      cwd: '/',
+      env: {},
+    }, { timeoutMs: 2_000, signal: controller.signal });
+    let settled = false;
+    void running.then(() => { settled = true; }, () => { settled = true; });
+
+    controller.abort(new Error('script aborted'));
+    await Promise.resolve();
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(settled).toBe(false);
+    child.signalCode = 'SIGKILL';
+    child.emit('close', null, 'SIGKILL');
+
+    await expect(running).rejects.toThrow('script aborted');
+    expect(spawn).toHaveBeenCalledWith(
+      'C:\\aw\\aw-windows-job.exe',
+      ['--config', 'encoded'],
+      expect.objectContaining({ detached: false }),
     );
+    expect(observeProcessTree).not.toHaveBeenCalled();
+    expect(terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['normal POSIX exit', 'linux', 'exit', false, true, true, false],
+    ['normal POSIX cleanup rejection', 'linux', 'exit', true, true, true, false],
+    ['POSIX abort cleanup rejection', 'linux', 'abort', true, false, true, false],
+    ['normal Windows close', 'win32', 'close', false, true, false, true],
+    ['Windows abort cleanup rejection', 'win32', 'abort', true, false, false, false],
+  ] as const)('settles only after process-tree cleanup on %s', async (
+    _name,
+    platform,
+    completion,
+    rejectCleanup,
+    requireConfirmedCleanup,
+    detached,
+    allowUnobservedWindowsProcessOnNormalCompletion,
+  ) => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: 0 as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const observation = {
+      pid: 321,
+      onFailure: () => () => undefined,
+      dispose: vi.fn(),
+    };
+    const terminateProcessTree = vi.fn(async () => {
+      if (rejectCleanup) throw new Error('cleanup rejected');
+    });
+    const spawn = vi.fn(() => child);
+    const runner = createDefaultPluginProcessRunner({
+      platform,
+      spawn: spawn as unknown as typeof import('node:child_process').spawn,
+      observeProcessTree: () => observation,
+      terminateProcessTree,
+    });
+    const controller = new AbortController();
+    const running = runner.run({
+      command: 'node',
+      args: [],
+      cwd: '/',
+      env: {},
+    }, { timeoutMs: 2_000, signal: controller.signal });
+    if (completion === 'abort') controller.abort(new Error('script aborted'));
+    else child.emit(completion, 0, null);
+
+    if (rejectCleanup) {
+      await expect(running).rejects.toThrow('cleanup rejected');
+    } else {
+      await expect(running).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+    }
+    expect(terminateProcessTree).toHaveBeenCalledWith(
+      321,
+      expect.any(Function),
+      {},
+      {
+        observation,
+        requireConfirmedCleanup,
+        ...(allowUnobservedWindowsProcessOnNormalCompletion
+          ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+          : {}),
+      },
+    );
+    expect(spawn).toHaveBeenCalledWith(
+      'node',
+      [],
+      expect.objectContaining({ detached }),
+    );
+  });
+
+  it('redacts every exact substring of a short sensitive scalar', () => {
     expect(summarizePluginScriptOutput(
-      `${'x'.repeat(OUTPUT_LIMIT - 2)} az`,
-      ['a'],
-    )).toMatch(/ a$/u);
-    expect(summarizePluginScriptOutput(
-      `${'x'.repeat(OUTPUT_LIMIT - 2)} a `,
-      ['a'],
-    )).toMatch(/ \[REDACTED\]$/u);
+      'prefixabcSuffix ordinary short text',
+      ['abc', ''],
+    )).toBe(
+      'prefix[REDACTED]Suffix ordinary short text',
+    );
   });
 
   it('keeps generic credential redaction in plugin script summaries', () => {
@@ -137,10 +436,11 @@ describe('postApply script', () => {
     expect(summary).not.toContain('tail');
   });
 
-  it('redacts a sensitive token split across the output limit by the default runner', async () => {
-    const secret = '§post-apply-cross-boundary-sensitive-token';
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'redacts a sensitive token split across the output limit by the default runner', async () => {
+    const secret = '§pre-apply-cross-boundary-sensitive-token';
     const plugin = await createPlugin({ sensitiveDefault: secret });
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'let input = "";',
       'process.stdin.setEncoding("utf8");',
       'process.stdin.on("data", (chunk) => { input += chunk; });',
@@ -156,24 +456,25 @@ describe('postApply script', () => {
       '});',
     ].join('\n'));
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
     }).catch((failure: unknown) => failure as Error);
 
     expect(error.message).toContain('[REDACTED]');
     for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
       expect(error.message).not.toContain(secret.slice(0, prefixLength));
     }
-  });
+    },
+  );
 
-  it('keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'keeps default-runner non-sensitive output summaries at 64 KiB', async () => {
     const plugin = await createPlugin();
-    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'postApply.mjs'), [
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'process.stdin.resume();',
       `process.stderr.write("x".repeat(${OUTPUT_LIMIT}), () => {`,
       '  setTimeout(() => {',
@@ -182,25 +483,26 @@ describe('postApply script', () => {
       '});',
     ].join('\n'));
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
     }).catch((failure: unknown) => failure as Error);
-    const prefix = 'postApply failed with exit code 7. stderr: ';
+    const prefix = 'preApply failed with exit code 7. stderr: ';
 
     expect(error.message.startsWith(prefix)).toBe(true);
     expect(error.message.slice(prefix.length)).toHaveLength(OUTPUT_LIMIT);
     expect(error.message).not.toContain('tail');
-  });
+    },
+  );
 
   it('uses only user config for a user target', async () => {
     const plugin = await createPlugin({ sensitiveDefault: 'default-value' });
     const sourceIdentity = `sha256:${'4'.repeat(64)}`;
     plugin.sourceIdentity = sourceIdentity;
+    plugin.catalogLogicalIdentity = 'catalog.example/local';
     const cwd = path.join(plugin.rootDir, 'project');
     const env = { AW_HOME: path.join(plugin.rootDir, 'aw-home') };
     await writePluginConfigStore({
@@ -215,6 +517,7 @@ describe('postApply script', () => {
     await writePluginConfigStore({
       sourceId: plugin.sourceId,
       sourceIdentity,
+      logicalIdentity: plugin.catalogLogicalIdentity,
       pluginName: plugin.manifest.name,
       scope: 'project',
       cwd,
@@ -222,13 +525,12 @@ describe('postApply script', () => {
       values: { token: 'project-value' },
     });
     let invocation: PluginScriptInvocation | undefined;
-    await runPostApplyScript({
+    await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd,
       context: createCommandExecutionContext({ env }),
-      artifacts: [],
       runner: { async run(value) {
         invocation = value;
         return { exitCode: 0, signal: null, stdout: '', stderr: '', timedOut: false };
@@ -248,14 +550,17 @@ describe('postApply script', () => {
       },
     };
     const cwd = path.join(plugin.rootDir, 'project');
-    await runPostApplyScript({
+    let timeoutMs: number | undefined;
+    await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'project',
       cwd,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH } }),
-      artifacts: [],
-      runner,
+      runner: { async run(value, options) {
+        timeoutMs = options.timeoutMs;
+        return runner.run(value, options);
+      } },
     });
 
     expect(invocation?.command).toBe(process.execPath);
@@ -266,8 +571,8 @@ describe('postApply script', () => {
       plugin: { pluginId: 'local/demo', name: 'demo', version: '1.0.0', rootDir: plugin.rootDir },
       target: { platform: 'codex', scope: 'project', projectRoot: cwd },
       config: { values: {} },
-      components: [{ kind: 'target', key: 'codex:project', outcome: 'unchanged' }],
     });
+    expect(timeoutMs).toBe(2_000);
   });
 
   it('reports timeout and redacts sensitive stderr', async () => {
@@ -277,15 +582,93 @@ describe('postApply script', () => {
         return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: 'secret-value', timedOut: true };
       },
     };
-    await expect(runPostApplyScript({
+    await expect(runPreApplyScript({
       plugin,
       platform: 'claude',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
-      artifacts: [],
       runner,
-    })).rejects.toThrow('postApply timed out. stderr: [REDACTED]');
+    })).rejects.toThrow('preApply timed out. stderr: [REDACTED]');
+  });
+
+  it('redacts stdout and stderr in a non-zero failure', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    await expect(runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: 'stdout secret-value',
+          stderr: 'stderr secret-value',
+          timedOut: false,
+        };
+      } },
+    })).rejects.toThrow(
+      'preApply failed with exit code 7. stdout: stdout [REDACTED]; stderr: stderr [REDACTED]',
+    );
+  });
+
+  it('removes private roots and a short embedded secret from public failures', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'abc' });
+    const cwd = path.join(plugin.rootDir, 'prefixabcSuffix-project');
+    const awHome = path.join(plugin.rootDir, 'prefixabcSuffix-aw-home');
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'project',
+      cwd,
+      context: createCommandExecutionContext({ env: { AW_HOME: awHome } }),
+      runner: { async run(invocation) {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: '',
+          stderr: [
+            'prefixabcSuffix ordinary',
+            invocation.cwd,
+            cwd,
+            invocation.env.AW_HOME,
+            invocation.env.AW_CODEX_HOME,
+            invocation.env.AW_CLAUDE_HOME,
+            invocation.env.HOME,
+            invocation.env.TMPDIR,
+          ].join(' | '),
+          timedOut: false,
+        };
+      } },
+    }).catch((failure: unknown) => failure as Error);
+    const serialized = JSON.stringify(error.message);
+
+    expect(serialized).toContain('prefix[REDACTED]Suffix ordinary');
+    expect(serialized).toContain('[plugin-root]');
+    expect(serialized).toContain('[project-root]');
+    expect(serialized).toContain('[aw-home]');
+    expect(serialized).toContain('[codex-home]');
+    expect(serialized).toContain('[claude-home]');
+    expect(serialized).toContain('[temporary-home]');
+    for (const privateValue of ['abc', plugin.rootDir, cwd, awHome]) {
+      expect(serialized).not.toContain(privateValue);
+    }
+  });
+
+  it('reports a stable spawn failure without exposing runner diagnostics', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() { throw new Error(`spawn ${plugin.rootDir} secret-value`); } },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toBe('preApply could not start.');
   });
 
   it('redacts every scalar leaf of a top-level sensitive object from stderr', async () => {
@@ -327,13 +710,12 @@ describe('postApply script', () => {
       },
     };
 
-    const error = await runPostApplyScript({
+    const error = await runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env }),
-      artifacts: [],
       runner,
     }).catch((failure: unknown) => failure as Error);
     expect(error.message).not.toContain('object-secret');
@@ -349,15 +731,49 @@ describe('postApply script', () => {
         return { exitCode: 7, signal: null, stdout: '', stderr: 'failed', timedOut: false };
       },
     };
-    await expect(runPostApplyScript({
+    await expect(runPreApplyScript({
       plugin,
       platform: 'codex',
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: awHome } }),
-      artifacts: [],
       runner,
-    })).rejects.toThrow('postApply failed with exit code 7');
+    })).rejects.toThrow('preApply failed with exit code 7');
     expect(await fs.pathExists(path.join(awHome, 'lifecycle'))).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'terminates a detached descendant when the preApply parent exits non-zero',
+    async () => {
+      const plugin = await createPlugin();
+      const descendantPidPath = path.join(plugin.rootDir, 'descendant.pid');
+      const descendantSource = [
+        `setTimeout(() => process.exit(0), ${SYNTHETIC_DESCENDANT_MAX_LIFETIME_MS});`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], { detached: true, stdio: 'ignore' });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+        'descendant.unref();',
+        'setTimeout(() => process.exit(7), 100);',
+      ].join('\n'));
+
+      await expect(runPreApplyScript({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: plugin.rootDir,
+        context: createCommandExecutionContext({
+          env: { AW_HOME: path.join(plugin.rootDir, 'aw-home'), PATH: process.env.PATH },
+        }),
+      })).rejects.toThrow('preApply failed with exit code 7');
+
+      const descendantPid = Number(await fs.readFile(descendantPidPath, 'utf8'));
+      descendantPids.add(descendantPid);
+      await waitForProcessExit(descendantPid);
+      descendantPids.delete(descendantPid);
+    },
+  );
 });

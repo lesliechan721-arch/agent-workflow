@@ -2,11 +2,14 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
 import {
+  createWindowsJobInvocation,
   observeProcessTree,
   terminateProcessTree,
   type ProcessTreeObservation,
+  type WindowsJobInvocation,
 } from './process-tree.js';
 import { getCodexHome } from './state-paths.js';
+import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
 
 const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
@@ -242,6 +245,10 @@ interface ExecFileNativeCliRunnerDependencies {
   ) => NativeCliChildProcess;
   observeProcessTree?: typeof observeProcessTree;
   terminateProcessTree?: typeof terminateProcessTree;
+  createWindowsJobInvocation?: (
+    executable: string,
+    args: readonly string[],
+  ) => WindowsJobInvocation;
   platform?: NodeJS.Platform;
   killProcess?: typeof process.kill;
 }
@@ -266,6 +273,11 @@ function isProcessGroupMissing(error: unknown): boolean {
       'code' in error &&
       (error as { code?: unknown }).code === 'ESRCH',
   );
+}
+
+function isPosixProcessInspectionUnavailableError(error: Error): boolean {
+  return /POSIX (?:process (?:identity|marker) lookup|termination (?:audit|verification)) failed/u
+    .test(error.message);
 }
 
 async function terminateNativeCliProcessGroup(
@@ -317,7 +329,10 @@ function settleNativeCliTerminationCleanup(
   terminateProcessTreeImpl: typeof terminateProcessTree,
   observation: ProcessTreeObservation | undefined,
   requireConfirmedCleanup: boolean,
+  allowUnobservedWindowsProcessOnNormalCompletion: boolean,
   processGroup: boolean,
+  allowUnavailablePosixAudit: boolean,
+  processTreeAuditPreparationError: Error | undefined,
   killProcess: typeof process.kill,
 ): Promise<Error | undefined> {
   let directKillAttempted = false;
@@ -370,12 +385,51 @@ function settleNativeCliTerminationCleanup(
     let cleanup: Promise<void>;
     try {
       cleanup = processGroup
-        ? terminateNativeCliProcessGroup(childPid, killProcess)
+        ? (async () => {
+            let processGroupError: Error | undefined;
+            try {
+              await terminateNativeCliProcessGroup(childPid, killProcess);
+            } catch (error) {
+              processGroupError = error instanceof Error
+                ? error
+                : new Error('Native CLI cleanup unconfirmed: process-group cleanup rejected.');
+            }
+
+            let auditError = processTreeAuditPreparationError;
+            if (observation) {
+              try {
+                await terminateProcessTreeImpl(
+                  childPid,
+                  () => killDirectChild(),
+                  {},
+                  { observation, requireConfirmedCleanup: true },
+                );
+              } catch (error) {
+                auditError = error instanceof Error
+                  ? error
+                  : new Error('Native CLI cleanup unconfirmed: cleanup audit rejected.');
+              }
+            }
+
+            if (processGroupError) throw processGroupError;
+            if (
+              auditError &&
+              !(allowUnavailablePosixAudit && isPosixProcessInspectionUnavailableError(auditError))
+            ) {
+              throw auditError;
+            }
+          })()
         : terminateProcessTreeImpl(
           childPid,
           () => killDirectChild(),
           {},
-          { observation, requireConfirmedCleanup },
+          {
+            observation,
+            requireConfirmedCleanup,
+            ...(allowUnobservedWindowsProcessOnNormalCompletion
+              ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+              : {}),
+          },
         );
     } catch (error) {
       finish(error instanceof Error
@@ -417,11 +471,37 @@ export function createExecFileNativeCliRunner(
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
   const platform = dependencies.platform ?? process.platform;
   const killProcess = dependencies.killProcess ?? process.kill;
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
+    (dependencies.execFile ? undefined : createWindowsJobInvocation);
 
   return async (invocation) => {
     if (invocation.signal?.aborted) {
       throw createAbortedNativeCliError(invocation);
     }
+
+    let executableCommand = invocation.command;
+    let executableArgs = invocation.args;
+    if (
+      platform === 'win32'
+      && createWindowsJobInvocationImpl
+      && normalizeNativeCliCommandName(invocation.command) === 'claude'
+    ) {
+      const resolved = await resolveWindowsClaudeCommand({
+        command: invocation.command,
+        cwd: invocation.cwd,
+        env: invocation.env,
+      });
+      executableCommand = resolved.command;
+      executableArgs = [...resolved.argsPrefix, ...invocation.args];
+    }
+    const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
+      ? createWindowsJobInvocationImpl(executableCommand, executableArgs)
+      : undefined;
+    const cleanupStrategy = windowsJobInvocation
+      ? 'windows-job'
+      : platform !== 'win32'
+        ? 'process-group'
+        : isAgentNativeCliInvocation(invocation) ? 'on-demand-tree' : 'observed-tree';
 
     return new Promise<NativeCliResult>((resolve, reject) => {
       let settled = false;
@@ -433,15 +513,58 @@ export function createExecFileNativeCliRunner(
       let streamedStderr = '';
       let timeout: NodeJS.Timeout | undefined;
       let processTreeObservation: ProcessTreeObservation | undefined;
+      let processTreeCleanup: Promise<Error | undefined> | undefined;
+      let processTreeAuditPreparationError: Error | undefined;
+      let completionStarted = false;
+      let windowsJobCloseTimer: NodeJS.Timeout | undefined;
       let detachOutputListeners = (): void => {};
       const abortListener = (): void => {
         startTermination('aborted', invocation.signal?.reason);
+      };
+
+      const cleanupProcessTree = (
+        requireConfirmedCleanup: boolean,
+        allowUnobservedWindowsProcessOnNormalCompletion: boolean = false,
+        allowUnavailablePosixAudit: boolean = false,
+        auditTrustedPosixFailure: boolean = false,
+      ): Promise<Error | undefined> => {
+        if (
+          cleanupStrategy === 'process-group' &&
+          (!trustedAgentCli || auditTrustedPosixFailure) &&
+          processTreeObservation === undefined &&
+          child.pid !== undefined
+        ) {
+          try {
+            processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+          } catch (error) {
+            processTreeAuditPreparationError = new Error(
+              'Native CLI cleanup unconfirmed: POSIX process marker lookup failed.',
+              { cause: error },
+            );
+          }
+        }
+        processTreeCleanup ??= settleNativeCliTerminationCleanup(
+          child,
+          terminateProcessTreeImpl,
+          processTreeObservation,
+          requireConfirmedCleanup,
+          allowUnobservedWindowsProcessOnNormalCompletion,
+          cleanupStrategy === 'process-group',
+          allowUnavailablePosixAudit,
+          processTreeAuditPreparationError,
+          killProcess,
+        );
+        return processTreeCleanup;
       };
 
       const clearLifecycle = (): void => {
         if (timeout) {
           clearTimeout(timeout);
           timeout = undefined;
+        }
+        if (windowsJobCloseTimer) {
+          clearTimeout(windowsJobCloseTimer);
+          windowsJobCloseTimer = undefined;
         }
         invocation.signal?.removeEventListener('abort', abortListener);
         detachOutputListeners();
@@ -505,6 +628,27 @@ export function createExecFileNativeCliRunner(
           clearTimeout(timeout);
           timeout = undefined;
         }
+        if (cleanupStrategy === 'windows-job') {
+          try {
+            if (
+              child.exitCode == null &&
+              child.signalCode == null &&
+              child.kill('SIGKILL') === false
+            ) {
+              throw new Error('Windows Job helper did not accept termination.');
+            }
+          } catch (error) {
+            finishTermination(error instanceof Error
+              ? error
+              : new Error('Windows Job helper termination failed.'));
+            return;
+          }
+          windowsJobCloseTimer = setTimeout(() => finishTermination(
+            new Error('Windows Job helper exit could not be confirmed.'),
+          ), NATIVE_CLI_CLEANUP_TIMEOUT_MS);
+          windowsJobCloseTimer.unref();
+          return;
+        }
         if (cleanupStrategy === 'on-demand-tree' && child.pid !== undefined) {
           try {
             processTreeObservation = (observeProcessTreeImpl ?? observeProcessTree)(
@@ -526,34 +670,95 @@ export function createExecFileNativeCliRunner(
           }
         }
         Promise.resolve()
-          .then(() => settleNativeCliTerminationCleanup(
-            child,
-            terminateProcessTreeImpl,
-            processTreeObservation,
+          .then(() => cleanupProcessTree(
             cleanupStrategy === 'observed-tree'
               ? (child.exitCode != null || child.signalCode != null) && callbackOutput === undefined
               : true,
-            cleanupStrategy === 'process-group',
-            killProcess,
+            false,
+            false,
+            true,
           ))
           .then(finishTermination);
       }
 
+      const finishCallback = (cleanupError?: Error): void => {
+        if (terminationReason) return;
+        const output = callbackOutput ?? { stdout: streamedStdout, stderr: streamedStderr };
+        const childFailed =
+          child.exitCode != null && child.exitCode !== 0 || child.signalCode != null;
+        if (callbackError || childFailed) {
+          const callbackExitCode = callbackError && typeof callbackError === 'object' &&
+            typeof (callbackError as { code?: number | string }).code === 'number'
+            ? (callbackError as { code: number }).code
+            : undefined;
+          const exitCode =
+            callbackExitCode !== undefined
+              ? callbackExitCode
+              : child.exitCode != null
+                ? child.exitCode
+              : isAbortLikeError(callbackError) ||
+                  isTimeoutLikeError(callbackError, invocation.timeoutMs)
+                ? 124
+                : 1;
+          rejectOnce(new NativeCliError({
+            invocation,
+            exitCode,
+            ...output,
+            cause: callbackError ?? new Error(
+              `Command exited with ${child.signalCode ?? `code ${exitCode}`}.`,
+            ),
+            cleanupError,
+          }));
+          return;
+        }
+        if (cleanupError) {
+          rejectOnce(new NativeCliError({
+            invocation,
+            exitCode: 1,
+            ...output,
+            cause: cleanupError,
+            cleanupError,
+            reason: 'exit',
+          }));
+          return;
+        }
+        resolveOnce({ exitCode: 0, ...output });
+      };
+
+      const startCompletion = (
+        allowUnobservedWindowsProcessOnNormalCompletion: boolean = false,
+      ): void => {
+        if (settled || terminationReason || completionStarted) return;
+        completionStarted = true;
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+        void cleanupProcessTree(
+          true,
+          allowUnobservedWindowsProcessOnNormalCompletion,
+          platform !== 'win32' && callbackError == null &&
+            (child.exitCode == null || child.exitCode === 0) && child.signalCode == null,
+          platform !== 'win32' && trustedAgentCli && Boolean(
+            callbackError
+            || child.exitCode != null && child.exitCode !== 0
+            || child.signalCode != null
+          ),
+        ).then(finishCallback);
+      };
+
       const processMarker = randomUUID();
       const trustedAgentCli = isAgentNativeCliInvocation(invocation);
-      const cleanupStrategy = trustedAgentCli
-        ? platform === 'win32' ? 'on-demand-tree' : 'process-group'
-        : 'observed-tree';
       child = execFileImpl(
-        invocation.command,
-        invocation.args,
+        windowsJobInvocation?.command ?? executableCommand,
+        windowsJobInvocation?.args ?? executableArgs,
         {
           cwd: invocation.cwd,
           env: {
             ...(invocation.env ?? process.env),
             [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
           },
-          detached: cleanupStrategy === 'process-group',
+          detached: platform !== 'win32',
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -564,32 +769,29 @@ export function createExecFileNativeCliRunner(
           callbackOutput = { stdout, stderr };
 
           if (terminationReason) {
+            if (cleanupStrategy === 'windows-job') {
+              if (windowsJobCloseTimer) {
+                clearTimeout(windowsJobCloseTimer);
+                windowsJobCloseTimer = undefined;
+              }
+              finishTermination();
+            }
             return;
           }
-
-          if (!error) {
-            resolveOnce({
-              exitCode: 0,
-              stdout,
-              stderr,
-            });
+          if (cleanupStrategy === 'windows-job') {
+            queueMicrotask(() => finishCallback());
             return;
           }
-
-          const exitCode =
-            typeof (error as { code?: number | string }).code === 'number'
-              ? ((error as { code: number }).code)
-              : isAbortLikeError(error) || isTimeoutLikeError(error, invocation.timeoutMs)
-                ? 124
-                : 1;
-
-          rejectOnce(new NativeCliError({
-            invocation,
-            exitCode,
-            stdout,
-            stderr,
-            cause: error,
-          }));
+          if (cleanupStrategy === 'on-demand-tree') {
+            queueMicrotask(() => finishCallback());
+            return;
+          }
+          queueMicrotask(() => startCompletion(
+            platform === 'win32' &&
+            error === null &&
+            (child.exitCode == null || child.exitCode === 0) &&
+            child.signalCode == null,
+          ));
         },
       );
       if (cleanupStrategy === 'observed-tree' && child.pid !== undefined) {
@@ -608,6 +810,15 @@ export function createExecFileNativeCliRunner(
         child.stdout?.removeListener?.('data', stdoutListener);
         child.stderr?.removeListener?.('data', stderrListener);
       };
+      if (cleanupStrategy !== 'on-demand-tree' && cleanupStrategy !== 'windows-job') {
+        child.once('exit', () => {
+          if (!terminationReason) {
+            startCompletion(
+              platform === 'win32' && child.exitCode === 0 && child.signalCode == null,
+            );
+          }
+        });
+      }
 
       if (invocation.timeoutMs && invocation.timeoutMs > 0) {
         child.once('spawn', () => {

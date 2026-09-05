@@ -65,6 +65,7 @@ import {
   resolveConfigWriteScope,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
+  resolveScriptTimeoutMs,
 } from './commands/options.js';
 import {
   isCommandWarningError,
@@ -86,6 +87,7 @@ import {
 import { resolveCliPackageRoot } from './utils/paths.js';
 import {
   findConfigFieldEntry,
+  formatPluginConfigSetRecoveryCommand,
   listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
   readPluginConfigStore,
@@ -95,6 +97,7 @@ import {
 import {
   applyPluginConfigWrite,
   buildConfigMutationReceipt,
+  configWriteStateForError,
   describeResetAffectedFields,
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
@@ -244,9 +247,11 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   scope?: string;
   json?: boolean;
   valueJson?: string;
+  valueStdin?: boolean;
   preset?: string;
   yes?: boolean;
   apply?: boolean;
+  scriptTimeout?: string;
 }
 
 type ReceiptWriteCommand = RebuildReceiptJson['command'];
@@ -479,11 +484,13 @@ function configMutationFailure(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: string; message: string } {
+): { code: string; message: string; configWrite: 'notStarted' | 'failed' } {
+  const configWrite = configWriteStateForError(error);
   if (error instanceof CommanderError) {
     return {
       code: 'invalidArguments',
       message: 'error: invalid config mutation arguments',
+      configWrite,
     };
   }
   const message = catalogPublicationFailure({
@@ -491,31 +498,31 @@ function configMutationFailure(
     env,
     sensitiveRoots: [cwd],
   }).message;
-  if (message.includes('Usage:')) return { code: 'invalidArguments', message };
+  if (message.includes('Usage:')) return { code: 'invalidArguments', message, configWrite };
   const generationCode = catalogGenerationErrorCode(error);
   if (generationCode === 'catalogGenerationUnavailable'
     || generationCode === 'catalogGenerationSourceMissing') {
-    return { code: 'catalogSourceUnavailable', message };
+    return { code: 'catalogSourceUnavailable', message, configWrite };
   }
-  if (generationCode !== 'catalogGenerationFailed') return { code: generationCode, message };
+  if (generationCode !== 'catalogGenerationFailed') return { code: generationCode, message, configWrite };
   const explicitCode = (error as { code?: unknown })?.code;
   if (typeof explicitCode === 'string' && /^[A-Za-z][A-Za-z0-9]*$/u.test(explicitCode)) {
-    return { code: explicitCode, message };
+    return { code: explicitCode, message, configWrite };
   }
-  if (message.includes('legacyStateUnsupported')) return { code: 'legacyStateUnsupported', message };
-  if (message.includes('sourceChanged')) return { code: 'sourceChanged', message };
-  if (message.includes('sourceMissing')) return { code: 'sourceMissing', message };
+  if (message.includes('legacyStateUnsupported')) return { code: 'legacyStateUnsupported', message, configWrite };
+  if (message.includes('sourceChanged')) return { code: 'sourceChanged', message, configWrite };
+  if (message.includes('sourceMissing')) return { code: 'sourceMissing', message, configWrite };
   if (message.startsWith('Cannot resolve required catalog sources:')) {
-    return { code: 'catalogSourceUnavailable', message };
+    return { code: 'catalogSourceUnavailable', message, configWrite };
   }
   const prefix = message.match(/^([A-Za-z][A-Za-z0-9]*):/u)?.[1];
-  return { code: prefix ?? 'configMutationFailed', message };
+  return { code: prefix ?? 'configMutationFailed', message, configWrite };
 }
 
 function writeConfigMutationFailureReceipt(
   write: (text: string) => void,
   request: PreparsedConfigMutationJsonRequest,
-  failure: { code: string; message: string },
+  failure: { code: string; message: string; configWrite: 'notStarted' | 'failed' },
 ): void {
   let plugin: string | undefined;
   try {
@@ -529,6 +536,7 @@ function writeConfigMutationFailureReceipt(
   writeJsonReceipt(write, buildConfigMutationReceipt(request.command, {
     ok: false,
     overallState: 'failed',
+    configWrite: failure.configWrite,
     ...(plugin ? { plugin } : {}),
     errors: [failure],
   }));
@@ -615,7 +623,7 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
   const argumentsByCommand = {
     list: '<plugin>',
     get: '<plugin> [key]',
-    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --preset <id>)',
+    set: '<plugin> <field> --scope <project|user> (--value-json <json> | --value-stdin | --preset <id>)',
     unset: '<plugin> <key>',
     reset: '<plugin> --scope <project|user> --yes',
   } as const;
@@ -624,6 +632,14 @@ function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset')
     `Usage: aw config ${command} ${argumentsByCommand[command]}`,
     `Example: aw config ${command} example-plugin${command === 'set' ? ' mode --scope user --value-json \'"safe"\'' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
   ].join('\n');
+}
+
+async function readUtf8Stdin(stdin: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stdin as AsyncIterable<string | Buffer | Uint8Array>) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function equivalentWriteCommand(
@@ -652,7 +668,9 @@ export function buildEquivalentWriteCommandTokens(
     ...(command === 'install'
       ? (rawOptions.dependencyScope ?? []).flatMap((value) => ['--dependency-scope', value])
       : []),
-    ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
+    ...((command === 'install' || command === 'reinstall')
+      ? optionTokens('--script-timeout', rawOptions.scriptTimeout)
+      : []),
     ...(selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
 }
@@ -763,7 +781,7 @@ async function loadStoredConfigWizardCandidates(
   }
   const storesByPlugin = new Map<string, {
     sourceId: string;
-    sourceIdentity: string;
+    sourceIdentity?: string;
     keys: Set<string>;
   }>();
   for (const location of locations) {
@@ -777,12 +795,11 @@ async function loadStoredConfigWizardCandidates(
       if (keys.length === 0 && options.includeEmptyStores !== true) continue;
       const existing = storesByPlugin.get(store.pluginId) ?? {
         sourceId: store.sourceId,
-        sourceIdentity: store.sourceIdentity,
+        ...(store.binding.kind === 'source'
+          ? { sourceIdentity: store.binding.sourceIdentity }
+          : {}),
         keys: new Set<string>(),
       };
-      if (existing.sourceIdentity !== store.sourceIdentity) {
-        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
-      }
       for (const key of keys) existing.keys.add(key);
       storesByPlugin.set(store.pluginId, existing);
     }
@@ -793,7 +810,7 @@ async function loadStoredConfigWizardCandidates(
       pluginName: pluginId,
       pluginId,
       sourceId: store.sourceId,
-      sourceIdentity: store.sourceIdentity,
+      ...(store.sourceIdentity ? { sourceIdentity: store.sourceIdentity } : {}),
       targets: [],
       configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
@@ -816,7 +833,13 @@ async function resolveStoredConfigResetIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   scope: Scope;
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity?: string }> {
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity?: string;
+  logicalIdentity?: string;
+}> {
   const parsed = parsePluginId(options.selector);
   if (parsed.sourceId) {
     return {
@@ -843,7 +866,9 @@ async function resolveStoredConfigResetIdentity(options: {
     pluginName: match!.pluginName,
     pluginId: match!.pluginId,
     sourceId: match!.sourceId,
-    sourceIdentity: match!.sourceIdentity,
+    ...(match!.binding.kind === 'source'
+      ? { sourceIdentity: match!.binding.sourceIdentity }
+      : { logicalIdentity: match!.binding.logicalIdentity }),
   };
 }
 
@@ -851,7 +876,13 @@ async function resolveStoredOnlyConfigIdentity(options: {
   selector: string;
   context: CliExecutionContext;
   locations: ConfigWizardStoreLocation[];
-}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity?: string;
+  logicalIdentity?: string;
+}> {
   const parsed = parsePluginId(options.selector);
   if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
   const stores = (await Promise.all(options.locations.map((location) =>
@@ -861,12 +892,14 @@ async function resolveStoredOnlyConfigIdentity(options: {
       scope: location.scope,
     })))).flat().filter((store) => store.pluginId === options.selector);
   if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
-  const identities = new Set(stores.map((store) => store.sourceIdentity));
-  if (identities.size !== 1) {
-    throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
+  const sourceBindings = stores.flatMap((store) => store.binding.kind === 'source'
+    ? [store.binding.sourceIdentity] : []);
+  const catalogBindings = stores.flatMap((store) => store.binding.kind === 'catalog'
+    ? [store.binding.logicalIdentity] : []);
+  if (new Set(sourceBindings).size > 1 || new Set(catalogBindings).size > 1) {
+    throw new Error(`identityMismatch: ${options.selector} config stores have different bindings.`);
   }
-  const sourceIdentity = [...identities][0]!;
-  await withResolvedMultiSourceCatalog({
+  const currentSource = await withResolvedMultiSourceCatalog({
     cliVersion: resolveCliVersion(),
     sourceIds: [parsed.sourceId],
     env: options.context.env,
@@ -875,16 +908,24 @@ async function resolveStoredOnlyConfigIdentity(options: {
       if (!source?.resolution) {
         throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
       }
-      if (source.resolution.sourceIdentity !== sourceIdentity) {
-        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
-      }
+      return {
+        sourceIdentity: source.resolution.sourceIdentity,
+        logicalIdentity: source.resolution.logicalIdentity,
+      };
     },
   });
+  if (sourceBindings[0] && sourceBindings[0] !== currentSource.sourceIdentity) {
+    throw new Error(`identityMismatch: ${options.selector} user config does not match the current source identity.`);
+  }
+  if (catalogBindings[0] && catalogBindings[0] !== currentSource.logicalIdentity) {
+    throw new Error(`identityMismatch: ${options.selector} project config does not match the current Catalog logical identity.`);
+  }
   return {
     pluginName: parsed.pluginName,
     pluginId: options.selector,
     sourceId: parsed.sourceId,
-    sourceIdentity,
+    sourceIdentity: currentSource.sourceIdentity,
+    logicalIdentity: currentSource.logicalIdentity,
   };
 }
 
@@ -943,6 +984,7 @@ async function resolveMultiSourceConfigRead(options: {
     const result = await resolveConfigRead({
       sourceId: stored.sourceId,
       sourceIdentity: stored.sourceIdentity,
+      logicalIdentity: stored.logicalIdentity,
       pluginName: stored.pluginName,
       plugin: null,
       scope: resolveConfigReadResolution(options.rawOptions.scope),
@@ -1238,26 +1280,30 @@ function writeConfigApplyNotice(
   receipt: {
     plugin: string;
     overallState: RebuildReceiptOverallState;
-    targetResults: Array<{
-      target: { platform: string; scope: Scope };
-      state: string;
-      message?: string;
-    }>;
-    applySkippedReason?: string;
-    otherProjectsRequireReinstall: boolean;
+    apply: import('./types.js').ConfigApplyResult;
+    otherProjectsMayRequireSync: boolean;
   },
 ): void {
-  if (receipt.targetResults.length === 0) {
-    const message = receipt.applySkippedReason === 'noConfigChange'
+  const targetResults = receipt.apply.targetResults;
+  if (receipt.apply.state === 'skipped') {
+    const message = receipt.apply.reason === 'noConfigChange'
       ? '配置内容没有变化，因此没有运行 reinstall。'
-      : receipt.applySkippedReason === 'invalidConfig'
-        ? '配置已保存，但当前配置无效，因此没有运行 reinstall。请先修复无效字段。'
-      : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
+      : receipt.apply.reason === 'noEffectiveConfigChange'
+        ? '配置存储已更新，但有效配置没有变化，因此没有运行 reinstall。'
+      : receipt.apply.reason === 'notRequested'
+        ? '配置已保存，但未请求应用配置。'
+        : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
+    writeLine(write, message);
+  } else if (receipt.apply.state === 'unavailable') {
+    const message = receipt.apply.reason === 'invalidConfig'
+      ? '配置已保存，但可见目标的配置无效，因此没有应用。请先修复无效字段。'
+      : '配置已保存，但当前无法应用配置。请修复报告的问题后运行 aw sync。';
     writeLine(write, message);
   } else {
-    const completed = receipt.targetResults.filter((entry) => entry.state === 'completed').length;
-    const failed = receipt.targetResults.filter((entry) => entry.state === 'failed');
-    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个。`);
+    const completed = targetResults.filter((entry) => entry.state === 'completed').length;
+    const failed = targetResults.filter((entry) => entry.state === 'failed');
+    const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
+    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个；跳过 ${skipped} 个。`);
     for (const entry of failed) {
       writeLine(
         write,
@@ -1266,8 +1312,8 @@ function writeConfigApplyNotice(
       );
     }
   }
-  if (receipt.otherProjectsRequireReinstall) {
-    writeLine(write, '其它项目没有被扫描。请进入每个项目目录并运行对应的 aw reinstall 命令。');
+  if (receipt.otherProjectsMayRequireSync) {
+    writeLine(write, '其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。');
   }
 }
 
@@ -1297,11 +1343,20 @@ function writeConfigReadHuman(
     }
     if (field.kind === 'manifest' && field.valueState === 'invalid') {
       const sourceScope = field.sourceLayer === 'project'
-        ? ' -s project'
-        : ' -s user';
-      writeLine(write, `  aw config set ${pluginName} ${field.key}${sourceScope} --value-json '<json>'`);
-      writeLine(write, `  aw config unset ${pluginName} ${field.key}${sourceScope}`);
-      writeLine(write, `  aw config reset ${pluginName}${sourceScope}`);
+        ? 'project'
+        : 'user';
+      const definition = resolved.fieldDefinitions?.[field.key];
+      if (definition) {
+        writeLine(write, `  ${formatPluginConfigSetRecoveryCommand(
+          pluginName,
+          field.key,
+          definition,
+          sourceScope,
+        )}`);
+      }
+      const scopeOption = ` -s ${sourceScope}`;
+      writeLine(write, `  aw config unset ${pluginName} ${field.key}${scopeOption}`);
+      writeLine(write, `  aw config reset ${pluginName}${scopeOption}`);
     }
   }
 }
@@ -1373,7 +1428,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('capabilities')
     .description('Show the current plugin manifest authoring surface')
-    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | post-apply | artifacts')
+    .option('--surface <surface>', 'manifest | build-config | extensions | slash-commands | mcp-apps | config | pre-apply | artifacts')
     .option('--json', 'emit one machine-readable JSON object', false)
     .action((rawOptions: { surface?: string; json?: boolean }) => {
       try {
@@ -1914,7 +1969,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--with-mcp', 'add a minimal .mcp.json', false)
     .option('--with-apps', 'add a minimal .app.json', false)
     .option('--with-config-api', 'add AW config schema and helper', false)
-    .option('--with-post-apply', 'add a Node postApply script sample', false);
+    .option('--with-pre-apply', 'add an idempotent Node preApply environment check', false);
 
   plugin
     .command('add-skill')
@@ -2937,7 +2992,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .requiredOption('-p, --platform <platform>', 'codex, claude, or both')
     .option('-a, --all', 'reconcile every desired plugin in the selected scope', false)
     .option('--refresh', 'refresh only Catalog sources required by selected intent roots', false)
-    .option('-y, --yes', 'authorize shared native replacement or forced repair', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'authorize preApply and shared native replacement or forced repair', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print sync receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -2950,6 +3006,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform: string;
         all?: boolean;
         refresh?: boolean;
+        scriptTimeout?: string;
         yes?: boolean;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
@@ -2960,6 +3017,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           scope: rawOptions.scope,
           platform: rawOptions.platform,
+          scriptTimeout: rawOptions.scriptTimeout,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
         }));
       const syncPlatform = normalized.platform;
@@ -2978,6 +3036,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           interactive: context.interactive && context.isTty && !context.isCi,
           prompt: context.prompt,
           allowManagedCodexInstall: rawOptions.allowManagedCodexInstall,
+          scriptTimeoutMs: normalized.scriptTimeoutMs,
         },
         context,
       ));
@@ -3001,9 +3060,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       (value: string, previous: string[]) => [...previous, value],
       [],
     )
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement', false)
+    .option('-y, --yes', 'authorize preApply and shared Codex native replacement', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3043,7 +3102,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3054,7 +3112,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
-        scriptTimeout?: string;
         allowManagedCodexInstall?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
@@ -3118,9 +3175,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--script-timeout <ms>', 'override plugin postApply script timeout in milliseconds')
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
-    .option('-y, --yes', 'authorize shared Codex native replacement or forced reinstall', false)
+    .option('-y, --yes', 'authorize preApply and shared Codex native replacement or forced reinstall', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3299,9 +3356,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[field]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--value-json <json>', 'set the field to an exact JSON value')
+    .option('--value-stdin', 'read the exact string value from stdin until EOF', false)
     .option('--preset <id>', 'set the field to the current manifest preset value')
     .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('-y, --yes', 'confirm shared Codex native config apply', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3317,8 +3376,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
-        if ((rawOptions.valueJson === undefined) === (rawOptions.preset === undefined)) {
-          throw new Error('Use exactly one of --value-json <json> or --preset <id>.');
+        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
+        const explicitValueCount = [
+          rawOptions.valueJson !== undefined,
+          rawOptions.valueStdin === true,
+          rawOptions.preset !== undefined,
+        ].filter(Boolean).length;
+        if (explicitValueCount > 1
+          || (explicitValueCount === 0
+            && !(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true))) {
+          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
         }
         return withResolvedConfigMutationPlugin(
             context,
@@ -3331,8 +3398,49 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (!field) {
           throw new Error(`Unknown config key "${key}".`);
         }
+        const sensitive = field.sensitive === true;
+        if (sensitive && scope !== 'user') {
+          const error = new Error(
+            'sensitiveProjectConfigUnsupported: Sensitive config can only be set in user scope.',
+          ) as Error & { code: string };
+          error.code = 'sensitiveProjectConfigUnsupported';
+          throw error;
+        }
+        if (sensitive && (rawOptions.valueJson !== undefined || rawOptions.preset !== undefined)) {
+          const error = new Error(
+            'sensitiveConfigInputUnsupported: Sensitive config cannot use --value-json or --preset.',
+          ) as Error & { code: string };
+          error.code = 'sensitiveConfigInputUnsupported';
+          throw error;
+        }
+        if (!sensitive && explicitValueCount !== 1) {
+          throw new Error('Use exactly one of --value-json <json>, --value-stdin, or --preset <id>.');
+        }
         let inputValue: unknown;
-        if (rawOptions.valueJson !== undefined) {
+        if (rawOptions.valueStdin === true) {
+          inputValue = await readUtf8Stdin(context.stdin);
+        } else if (sensitive) {
+          if (!(context.interactive && context.isTty && !context.isCi && rawOptions.json !== true)
+            || !context.prompt.password) {
+            const error = new Error(
+              'sensitiveConfigStdinRequired: Use --value-stdin for sensitive config outside an interactive terminal.',
+            ) as Error & { code: string };
+            error.code = 'sensitiveConfigStdinRequired';
+            throw error;
+          }
+          const response = await context.prompt.password({
+            message: `输入 ${field.title ?? key}`,
+            mask: true,
+          });
+          if (response.cancelled || response.action !== 'select' || response.value === undefined) {
+            const error = new Error(
+              'sensitiveConfigInputCancelled: Sensitive config input was cancelled.',
+            ) as Error & { code: string };
+            error.code = 'sensitiveConfigInputCancelled';
+            throw error;
+          }
+          inputValue = response.value;
+        } else if (rawOptions.valueJson !== undefined) {
           try {
             inputValue = JSON.parse(rawOptions.valueJson) as unknown;
           } catch {
@@ -3355,6 +3463,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             awHomeMutationToken,
             catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
           },
           awHomeMutationToken,
           request: {
@@ -3403,7 +3512,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[key]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
-    .option('-y, --yes', 'confirm shared Codex native config apply', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
+    .option('-y, --yes', 'confirm preApply and shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3414,6 +3524,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       try {
         outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
+        const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
         const execute = async (
           selectedPlugin: string,
           selectedKey: string,
@@ -3423,12 +3534,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             context,
             selectedPlugin,
             async ({ pluginId, source, plugin }, awHomeMutationToken, catalogOperationContext) => {
-        if (plugin.manifest.config?.fields && !plugin.manifest.config.fields[selectedKey]) {
-          throw new Error(`Unknown config key "${selectedKey}".`);
-        }
         const store = await readPluginConfigStore({
           sourceId: source.sourceId,
           sourceIdentity: source.sourceIdentity,
+          logicalIdentity: source.logicalIdentity,
           pluginName: plugin.manifest.name,
           scope,
           cwd: context.cwd,
@@ -3449,6 +3558,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             awHomeMutationToken,
             catalogOperationContext,
             expectedGenerationSetDigest: catalogOperationContext.generationSetDigest,
+            ...(scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs }),
           },
           awHomeMutationToken,
           request: {
@@ -3474,6 +3584,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             reserved: false,
             action: 'unset' as const,
             scope,
+            ...(!plugin.manifest.config?.fields?.[selectedKey] ? { stale: true as const } : {}),
           }],
         });
             },
@@ -3536,6 +3647,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
+    .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
     .option('-y, --yes', 'confirm destructive reset', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -3551,6 +3663,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           selectedScope: Scope,
           confirmed: boolean,
         ) => {
+          const scriptTimeoutMs = resolveScriptTimeoutMs(rawOptions);
           if (!confirmed) {
             throw new Error(
               `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope} --yes\` to delete this store.`,
@@ -3568,6 +3681,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const affectedFields = await describeResetAffectedFields({
               sourceId: located.sourceId,
               sourceIdentity: located.sourceIdentity,
+              logicalIdentity: located.logicalIdentity,
               pluginName: located.pluginName,
               plugin,
               pluginError,
@@ -3578,6 +3692,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             const resetReceipt = await resetPluginConfigWithHelper({
               sourceId: located.sourceId,
               sourceIdentity: located.sourceIdentity,
+              logicalIdentity: located.logicalIdentity,
               pluginName: located.pluginName,
               scope: selectedScope,
               cwd: context.cwd,
@@ -3586,6 +3701,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               plugin,
               pluginError,
               apply: rawOptions.apply === true,
+              rebuildRuntime: scriptTimeoutMs === undefined ? undefined : { scriptTimeoutMs },
               sharedNativeApplyConfirmed: confirmed,
             });
             return buildConfigMutationReceipt('config:reset', {
