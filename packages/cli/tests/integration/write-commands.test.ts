@@ -8020,9 +8020,19 @@ describe('five namespaced write commands', () => {
 
     const result = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime);
+    }, {
+      ...runtime,
+      removeObsoleteInstallationContracts: async () => {
+        throw new Error(`private cleanup failure at ${isolation.env.AW_HOME}`);
+      },
+    });
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.warnings).toEqual([
+      'obsoleteContractsCleanupFailed: Obsolete installation contracts could not be removed.',
+    ]);
+    expect(JSON.stringify(result)).not.toContain('private cleanup failure');
+    expect(JSON.stringify(result.warnings)).not.toContain(isolation.env.AW_HOME);
   });
 
   it('fails closed when shared Codex user config inventory is damaged during project repair', async () => {

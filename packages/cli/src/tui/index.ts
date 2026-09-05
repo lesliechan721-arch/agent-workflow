@@ -43,6 +43,17 @@ export {
   type DiagnosticTechnicalViewModel,
 } from './diagnostics.js';
 export {
+  OperationHistoryStore,
+  type OperationDiagnosticDetail,
+  type OperationEffectFacts,
+  type OperationEffectState,
+  type OperationHistorySummary,
+  type OperationHistoryTarget,
+  type OperationReportPreview,
+  type SafeOperationDiagnostic,
+  type SaveOperationReportResult,
+} from './operation-history.js';
+export {
   resolveTuiKeyAction,
   resolveTuiSessionNavigationKey,
   type TuiInputMode,

@@ -24,6 +24,7 @@ import {
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
+import { OperationHistoryStore } from '../../src/tui/operation-history.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 
 afterEach(() => cleanup());
@@ -786,9 +787,9 @@ async function confirmReview(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the complete 109-state design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(109);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 109);
+  it('keeps the complete 112-state design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(112);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 112);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -801,6 +802,7 @@ describe('ConsoleAppV4', () => {
       'I10', 'I11', 'I12', 'I13',
       'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
       'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
+      'D18', 'D19', 'D20',
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
       'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07',
     ]);
@@ -1330,7 +1332,7 @@ describe('ConsoleAppV4', () => {
       ['↑/↓ · j/k', '移动当前唯一焦点'],
       ['Enter', '打开、选择或继续'],
       ['q / Ctrl-C', '退出控制台'],
-      ['?', '关闭帮助'],
+      ['? / o', '关闭帮助 / 查看操作记录'],
     ]) {
       expect(instance.lastFrame()).toContain(`${key}  ${meaning}`);
     }
@@ -7701,5 +7703,109 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({
       name: 'pluginPreview', pluginId: adjacent.pluginId,
     });
+  });
+
+  it('keeps all diagnostics and the oldest of 20 reports after a failed save at 60 × 18', async () => {
+    const value = controller();
+    const history = new OperationHistoryStore();
+    history.record({
+      summary: {
+        recordId: '1:operation-1',
+        epoch: 1,
+        operationId: 'operation-1',
+        createdAtMs: 1,
+        state: 'partial',
+        code: 'operationPartial',
+        message: '部分目标没有完成。',
+        diagnosticCount: 1,
+        effects: {
+          configCommit: 'completed',
+          awWrite: 'partial',
+          preApplyExternalEffect: 'possible',
+          finalVerification: 'failed',
+        },
+      },
+      diagnostics: [{
+        id: '1:operation-1:target-0',
+        code: 'preApplyExited',
+        stage: 'preApply',
+        safeMessage: '安装前检查没有完成。',
+        target: { pluginId: 'official/target-0', platform: 'codex', scope: 'project' },
+        causes: [{ code: 'EACCES', safeMessage: '服务报告 EACCES。' }],
+        detailLines: ['安全详情第 1 行'],
+      }],
+      targets: Array.from({ length: 100 }, (_, index) => ({
+        pluginId: `official/target-${index}`,
+        platform: 'codex' as const,
+        scope: 'project' as const,
+        state: index === 0 ? 'failed' as const : 'completed' as const,
+        ...(index === 0 ? { errorCode: 'preApplyExited', diagnosticIds: ['1:operation-1:target-0'] } : { diagnosticIds: [] }),
+      })),
+    });
+    for (let index = 2; index <= 20; index += 1) {
+      history.record({
+        summary: {
+          recordId: `1:operation-${index}`,
+          epoch: 1,
+          operationId: `operation-${index}`,
+          createdAtMs: index,
+          state: 'succeeded',
+          code: 'operationSucceeded',
+          message: `操作 ${index} 已完成。`,
+          diagnosticCount: 0,
+          effects: {
+            configCommit: 'notApplicable',
+            awWrite: 'completed',
+            preApplyExternalEffect: 'notApplicable',
+            finalVerification: 'completed',
+          },
+        },
+        diagnostics: [],
+        targets: [],
+      });
+    }
+    value.attachOperationHistory(history, 1);
+    value.push({ name: 'home' });
+    const saveReport = vi.spyOn(value, 'saveOperationReport')
+      .mockRejectedValueOnce(new Error('private write error'))
+      .mockResolvedValueOnce({ path: '/private/tmp/operation-report.md' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+
+    await input(instance, '?', 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    expect(instance.lastFrame()).toContain('操作 20 已完成。');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await input(instance, ...Array.from({ length: 19 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('部分目标没有完成。');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('安全技术详情');
+    expect(instance.lastFrame()).toContain('↓ 还有');
+    await input(instance, '\u001B[6~', '\u001B[6~', '\u001B[6~');
+    expect(instance.lastFrame()).toContain('official/target-0');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('State: partial');
+    await input(instance, '\r', '/tmp/operation-report.md', '\r');
+    expect(saveReport).toHaveBeenCalledWith('1:operation-1', '/tmp/operation-report.md');
+    expect(instance.lastFrame()).toContain('报告未保存');
+    expect(instance.lastFrame()).not.toContain('private write error');
+    expect(instance.lastFrame()).toContain('Record: 1:operation-1');
+    expect(value.listOperationHistory()).toHaveLength(20);
+    expect(value.previewOperationReport('1:operation-1')).toMatchObject({ recordId: '1:operation-1' });
+    await input(instance, '\u001B[B', '\r');
+    expect(saveReport).toHaveBeenLastCalledWith('1:operation-1');
+    expect(instance.lastFrame()).toContain('报告已保存到临时目录');
+    expect(instance.lastFrame()).not.toContain('/private/tmp/operation-report.md');
+
+    value.replace({ name: 'result' });
+    await nextTurn(2);
+    await input(instance, 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+
+    const issue = value.listUserIssues()[0]!;
+    value.replace({ name: 'issueDetail', issueId: issue.issueId });
+    await nextTurn(2);
+    await input(instance, 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
   });
 });

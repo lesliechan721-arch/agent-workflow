@@ -194,6 +194,7 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   codexManagerPreviewer?: typeof previewCodexManager;
   onPreviewStage?: (stage: 'catalog' | 'inventory' | 'dependencyPlan') => Promise<void> | void;
   removeObsoleteInstallationContracts?: (directory: string) => Promise<void>;
+  operationDiagnosticSink?: (results: readonly RebuildResult[]) => void;
 };
 
 export type CommandPerformanceStageName =
@@ -309,6 +310,8 @@ function assertRebuildCatalogSourceInventoryComplete(
 
 const MALFORMED_CONFIG_PRESERVED_WARNING =
   'pluginConfigPreserved: 目标插件的无效配置文件已保留。可稍后运行 aw config reset 清理。';
+const OBSOLETE_CONTRACTS_CLEANUP_WARNING =
+  'obsoleteContractsCleanupFailed: Obsolete installation contracts could not be removed.';
 
 function omitSelectedPluginConfigErrors(
   inventory: CatalogSourceReferenceInventory,
@@ -1324,8 +1327,8 @@ async function cleanupOfflineOwnedComponents(options: {
   const obsoleteContracts = path.join(resolveAwHome(options.env), 'installation-contracts');
   try {
     await (options.removeObsoleteInstallationContracts ?? fs.remove)(obsoleteContracts);
-  } catch (error) {
-    warnings.push(`obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    warnings.push(OBSOLETE_CONTRACTS_CLEANUP_WARNING);
   }
   return leaseSafeRebuildResult({
     platforms: [...new Set(results.map((result) => result.target.platform))],
@@ -2001,10 +2004,8 @@ async function runRebuildCommandInSession(options: {
           await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
             path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
           );
-        } catch (error) {
-          result.warnings.push(
-            `obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+        } catch {
+          result.warnings.push(OBSOLETE_CONTRACTS_CLEANUP_WARNING);
         }
       }
       return result;
@@ -4926,10 +4927,8 @@ async function runRebuildCommandInSession(options: {
         await (options.runtime?.removeObsoleteInstallationContracts ?? fs.remove)(
           path.join(resolveAwHome(runtimeEnv), 'installation-contracts'),
         );
-      } catch (error) {
-        resolvedResult.warnings.push(
-          `obsoleteContractsCleanupFailed: ${error instanceof Error ? error.message : String(error)}`,
-        );
+      } catch {
+        resolvedResult.warnings.push(OBSOLETE_CONTRACTS_CLEANUP_WARNING);
       }
     }
     return resolvedResult;

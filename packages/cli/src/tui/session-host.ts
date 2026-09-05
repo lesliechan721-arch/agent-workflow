@@ -1,6 +1,7 @@
 import type { CommandReporter } from '../commands/runtime.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { OperationExecuteResult, TuiController } from './controller.js';
+import { OperationHistoryStore } from './operation-history.js';
 
 export type SessionNavigation = 'home' | 'reload';
 
@@ -9,12 +10,9 @@ export interface SessionResultRecord {
   result: OperationExecuteResult;
 }
 
-export interface SessionHistoryOwner {
-  readonly latestResult?: SessionResultRecord;
-  recordResult(record: SessionResultRecord): void;
-}
+export type SessionHistoryOwner = OperationHistoryStore;
 
-export class LatestSessionResultHistory implements SessionHistoryOwner {
+export class LatestSessionResultHistory extends OperationHistoryStore {
   #latestResult?: SessionResultRecord;
 
   get latestResult(): SessionResultRecord | undefined {
@@ -52,10 +50,11 @@ export class SessionHost {
     history?: SessionHistoryOwner;
   }) {
     this.#createSession = options.createSession;
-    this.history = options.history ?? new LatestSessionResultHistory();
+    this.history = options.history ?? new OperationHistoryStore();
     const session = this.#createSession();
     this.#controller = session.controller;
     this.#progressFeed = session.progressFeed;
+    this.#attachOperationHistory();
     this.#subscribeController();
   }
 
@@ -140,6 +139,7 @@ export class SessionHost {
     this.#epoch += 1;
     this.#controller = next.controller;
     this.#progressFeed = next.progressFeed;
+    this.#attachOperationHistory();
     this.#pendingNavigation = undefined;
     this.#reloading = false;
     this.#subscribeController();
@@ -160,7 +160,9 @@ export class SessionHost {
         this.#publish();
         return;
       }
-      this.history.recordResult({ epoch, result: snapshot.result });
+      if (this.history instanceof LatestSessionResultHistory) {
+        this.history.recordResult({ epoch, result: snapshot.result });
+      }
       if (pending === 'home') {
         controller.goHome({ discardDrafts: true });
         this.#publish();
@@ -168,6 +170,13 @@ export class SessionHost {
         void this.#reload();
       }
     });
+  }
+
+  #attachOperationHistory(): void {
+    const controller = this.#controller as TuiController & {
+      attachOperationHistory?: TuiController['attachOperationHistory'];
+    };
+    controller.attachOperationHistory?.(this.history, this.#epoch);
   }
 
   #publish(): void {

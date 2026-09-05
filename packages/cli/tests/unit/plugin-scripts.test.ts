@@ -614,6 +614,28 @@ describe('preApply script', () => {
     );
   });
 
+  it('keeps a typed safe diagnostic for a non-zero preApply exit', async () => {
+    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() {
+        return { exitCode: 9, signal: null, stdout: '', stderr: 'secret-value', timedOut: false };
+      } },
+    }).catch((failure: unknown) => failure as Error & { operationDiagnostic?: unknown });
+
+    expect(error.operationDiagnostic).toEqual({
+      code: 'preApplyExited',
+      stage: 'preApply',
+      safeMessage: 'The preApply process exited unsuccessfully.',
+      exitCode: 9,
+    });
+    expect(JSON.stringify(error.operationDiagnostic)).not.toContain('secret-value');
+  });
+
   it('removes private roots and a short embedded secret from public failures', async () => {
     const plugin = await createPlugin({ sensitiveDefault: 'abc' });
     const cwd = path.join(plugin.rootDir, 'prefixabcSuffix-project');

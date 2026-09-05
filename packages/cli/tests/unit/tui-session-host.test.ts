@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import type { OperationExecuteResult, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
 import { LatestSessionResultHistory, SessionHost } from '../../src/tui/session-host.js';
+import type { OperationHistoryStore } from '../../src/tui/operation-history.js';
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
@@ -45,6 +46,7 @@ function fakeController(options: {
   goHome: ReturnType<typeof vi.fn>;
   beginRetirement: ReturnType<typeof vi.fn>;
   waitForWrites: ReturnType<typeof vi.fn>;
+  attachOperationHistory: ReturnType<typeof vi.fn>;
 } {
   let listener: ((snapshot: TuiControllerSnapshot) => void) | undefined;
   let subscribedListener: ((snapshot: TuiControllerSnapshot) => void) | undefined;
@@ -74,6 +76,7 @@ function fakeController(options: {
     }),
     beginRetirement: vi.fn(),
     waitForWrites: vi.fn().mockResolvedValue(undefined),
+    attachOperationHistory: vi.fn((_history: OperationHistoryStore, _epoch: number) => undefined),
     goHome: vi.fn(() => true),
     dispose: vi.fn(),
     emitResult(value: OperationExecuteResult) {
@@ -123,6 +126,8 @@ describe('TUI session host', () => {
     await expect(reload).resolves.toBe('completed');
     expect(first.dispose).toHaveBeenCalledOnce();
     expect(host.snapshot).toMatchObject({ epoch: 2, controller: second, reloading: false });
+    expect(first.attachOperationHistory).toHaveBeenCalledWith(host.history, 1);
+    expect(second.attachOperationHistory).toHaveBeenCalledWith(host.history, 2);
 
     second.setWrite(true);
     await host.requestNavigation('home');

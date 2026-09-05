@@ -72,6 +72,7 @@ export function safeDiagnosticCode(value: unknown, fallback: string): string {
 export function sanitizeDiagnosticText(
   value: string,
   sensitiveRoots: readonly string[] = [],
+  sensitiveValues: readonly string[] = [],
 ): string {
   let output = value
     .replace(ANSI_ESCAPE, '')
@@ -95,6 +96,11 @@ export function sanitizeDiagnosticText(
     ...sensitiveRoots,
   ].filter((entry): entry is string => Boolean(entry?.trim())));
   for (const root of roots) output = replaceRoot(output, root);
+  for (const sensitiveValue of sensitiveValues) {
+    if (sensitiveValue.length > 0) {
+      output = output.replace(new RegExp(escapeRegExp(sensitiveValue), 'gu'), '[REDACTED]');
+    }
+  }
   output = output
     .replace(/(^|[\s("'=])\/(?:[^/\s]+\/)+[^\s,;)]*/gu, '$1[private-path]')
     .replace(/(^|[\s("'=])[A-Za-z]:\\(?:[^\\\s]+\\)+[^\s,;)]*/gu, '$1[private-path]')

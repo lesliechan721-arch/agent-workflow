@@ -2311,6 +2311,12 @@ export function createTuiControllerDependencies(
             return result;
           }
           if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+            const operationRebuildResults: import('../commands/rebuild-operations.js').RebuildResult[] = [];
+            const operationDiagnosticSink = (
+              results: readonly import('../commands/rebuild-operations.js').RebuildResult[],
+            ): void => {
+              operationRebuildResults.push(...structuredClone(results));
+            };
             const currentSource = currentEvidence.source;
             if (intent.kind === 'configReset') {
               const parsed = parsePluginId(intent.pluginId);
@@ -2361,6 +2367,7 @@ export function createTuiControllerDependencies(
                         rebuildRuntime: {
                           ...context,
                           awHomeMutationToken,
+                          operationDiagnosticSink,
                           ...(catalogOperation ? {
                             catalogOperationContext: catalogOperation,
                             expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
@@ -2380,6 +2387,7 @@ export function createTuiControllerDependencies(
                       rebuildRuntime: {
                         ...context,
                         awHomeMutationToken,
+                        operationDiagnosticSink,
                         ...(catalogOperation ? {
                           catalogOperationContext: catalogOperation,
                           expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
@@ -2390,7 +2398,7 @@ export function createTuiControllerDependencies(
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
                       sharedNativeApplyConfirmed: true,
                       });
-                return result;
+                return { ...result, operationRebuildResults };
               },
             });
           }

@@ -3840,6 +3840,9 @@ describe('TUI v4 Review safety', () => {
       },
       returnRoute: { name: 'configUnavailable', pluginId: 'official/demo' },
     });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { configCommit: 'completed', finalVerification: 'failed' },
+    });
     expect(controller.snapshot.phase).toBe('ready');
     expect(JSON.stringify(controller.snapshot)).not.toContain('/private/reload');
   });
@@ -4322,6 +4325,78 @@ describe('TUI v4 Review safety', () => {
       message: '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。',
     }));
     expect(JSON.stringify({ success: succeeded.snapshot, failure: failed.snapshot })).not.toContain(secret);
+  });
+
+  it('keeps typed target diagnostics and preApply effect facts in safe operation history', async () => {
+    const secret = 'stderr: Authorization=private-token';
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        platforms: ['codex'],
+        plugins: ['official/demo'],
+        warnings: [secret, 'obsolete contract at /Users/private/.aw/state.json'],
+        overallState: 'failed',
+        targetResults: [{
+          target: { pluginId: 'official/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'failed', errorCode: 'preApplyFailed', message: secret,
+        }],
+        rebuildResults: [{
+          status: 'failed', command: 'install',
+          target: { pluginId: 'official/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          actions: [{ name: 'preApply', status: 'failed' }],
+          error: {
+            phase: 'preApply', message: secret,
+            operationDiagnostic: {
+              code: 'preApplyExited', stage: 'preApply', exitCode: 7,
+              safeMessage: 'The preApply process exited unsuccessfully.',
+            },
+          },
+        }],
+      }),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+    const recordId = controller.snapshot.result?.operationRecordId;
+    const detail = controller.getOperationDiagnostic(recordId!);
+
+    expect(result).toMatchObject({ state: 'blocked' });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { awWrite: 'notStarted', preApplyExternalEffect: 'possible' },
+    });
+    expect(detail).toMatchObject({
+      diagnostics: [{ code: 'preApplyExited', stage: 'preApply', exitCode: 7 }],
+      targets: [{ state: 'failed', errorCode: 'preApplyFailed' }],
+    });
+    expect(JSON.stringify({ snapshot: controller.snapshot, detail })).not.toContain(secret);
+  });
+
+  it('transfers terminal diagnostics into the twenty-record history without retaining operation-private state', async () => {
+    let token = 0;
+    const controller = new TuiController(dependencies({
+      createToken: () => `token-${++token}`,
+      executeIntent: vi.fn().mockResolvedValue({
+        platforms: ['codex'],
+        plugins: ['official/demo'],
+        overallState: 'succeeded',
+        targetResults: [{
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'completed',
+        }],
+      }),
+    }));
+
+    for (let index = 0; index < 25; index += 1) {
+      const review = await controller.buildOperationReview({
+        kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+      });
+      await controller.executeOperation(review.reviewToken);
+      controller.leaveResult();
+    }
+
+    expect(controller.listOperationHistory()).toHaveLength(20);
+    expect(controller.operationDiagnosticRetentionCountForTests()).toBe(0);
   });
 
   it('isolates nested router, status, ticket, progress, and result values from caller mutation', async () => {

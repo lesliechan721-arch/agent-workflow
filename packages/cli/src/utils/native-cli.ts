@@ -8,6 +8,7 @@ import {
   type ProcessTreeObservation,
   type WindowsJobInvocation,
 } from './process-tree.js';
+import type { SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
 import { getCodexHome } from './state-paths.js';
 import { resolveWindowsClaudeCommand } from './windows-claude-shim.js';
 
@@ -105,6 +106,7 @@ export class NativeCliError extends Error {
   readonly stderr: string;
   readonly reason: NativeCliErrorReason;
   readonly cleanupError?: Error;
+  readonly operationDiagnostic: SafeOperationErrorMetadata;
 
   constructor(options: NativeCliErrorOptions) {
     const renderedArgs = options.invocation.args.join(' ');
@@ -124,6 +126,20 @@ export class NativeCliError extends Error {
     this.reason = options.reason ?? 'exit';
     this.cleanupError = options.cleanupError;
     this.cause = options.cause;
+    const causeCode = readNativeCliErrorCode(options.cause);
+    const safeCauseCode = causeCode === 'ENOENT' || causeCode === 'EACCES' || causeCode === 'EPERM'
+      ? causeCode : undefined;
+    this.operationDiagnostic = {
+      code: safeCauseCode === 'ENOENT' ? 'nativeCliExecutableMissing'
+        : this.reason === 'timeout' ? 'nativeCliTimedOut' : 'nativeCliFailed',
+      safeMessage: causeCode === 'ENOENT' ? 'The required platform CLI is not installed or cannot be found.'
+        : this.reason === 'timeout' ? 'The platform CLI timed out.'
+          : 'The platform CLI exited unsuccessfully.',
+      exitCode: options.exitCode,
+      ...(safeCauseCode === undefined ? {} : {
+        cause: { code: safeCauseCode, safeMessage: `The platform CLI reported ${safeCauseCode}.` },
+      }),
+    };
   }
 }
 

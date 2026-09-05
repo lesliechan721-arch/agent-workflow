@@ -120,6 +120,9 @@ export type TuiRoute =
     }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
+  | { name: 'operationHistory' }
+  | { name: 'operationDiagnostic'; recordId: string }
+  | { name: 'operationReportPreview'; recordId: string }
   | { name: 'reviewPreparing'; preparationId: string }
   | { name: 'review'; operationId: string }
   | { name: 'progress'; operationId: string }

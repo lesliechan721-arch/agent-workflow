@@ -14,6 +14,7 @@ import type {
 import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
+import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
 import type {
   CatalogGenerationFreshnessState,
   CatalogGenerationFreshnessResult,
@@ -51,7 +52,18 @@ import {
   type UserIssueCategory,
   type UserIssueViewModel,
 } from './model.js';
-import { safeDiagnosticCode } from './diagnostics.js';
+import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
+import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
+import {
+  OperationHistoryStore,
+  type OperationDiagnosticDetail,
+  type OperationEffectFacts,
+  type OperationHistorySummary,
+  type OperationHistoryTarget,
+  type OperationReportPreview,
+  type SafeOperationDiagnostic,
+  type SaveOperationReportResult,
+} from './operation-history.js';
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
@@ -333,6 +345,9 @@ export type OperationExecuteResult =
       pluginId?: string;
       originIssue?: IssueOrigin;
       returnRoute?: TuiRoute;
+      operationRecordId?: string;
+      diagnosticIds?: string[];
+      effects?: OperationEffectFacts;
     }
   | {
       state: 'partial';
@@ -343,6 +358,9 @@ export type OperationExecuteResult =
       pluginId?: string;
       originIssue?: IssueOrigin;
       returnRoute?: TuiRoute;
+      operationRecordId?: string;
+      diagnosticIds?: string[];
+      effects?: OperationEffectFacts;
     }
   | {
       state: 'stale';
@@ -351,6 +369,9 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       review: OperationReviewModel;
       originIssue?: IssueOrigin;
+      operationRecordId?: string;
+      diagnosticIds?: string[];
+      effects?: OperationEffectFacts;
     }
   | {
       state: 'blocked';
@@ -365,6 +386,9 @@ export type OperationExecuteResult =
       writeMayHaveCompleted?: boolean;
       verification?: 'issueStillPresent' | 'verificationFailed';
       summary?: OperationResultSummary;
+      operationRecordId?: string;
+      diagnosticIds?: string[];
+      effects?: OperationEffectFacts;
     };
 
 export interface OperationResultSummary {
@@ -387,6 +411,8 @@ export interface OperationResultSummary {
   warnings?: string[];
   recoveryActions?: string[];
   planFingerprint?: string;
+  diagnosticIds?: string[];
+  effects?: OperationEffectFacts;
   portable?: {
     selectedSkills: string[];
     agentMode: 'automatic' | 'explicit';
@@ -406,10 +432,9 @@ export interface OperationResultSummary {
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     relation?: 'requested' | 'direct' | 'transitive';
     requiredBy?: string[];
-    errorCode?: 'dependencyStillRequired'
-      | 'codexSystemCliUnsupported'
-      | 'managedCodexAuthorizationRequired'
-      | 'managedCodexUnavailable';
+    errorCode?: string;
+    diagnosticIds?: string[];
+    effects?: OperationEffectFacts;
   }>;
 }
 
@@ -536,6 +561,7 @@ export interface TuiControllerSnapshot {
   activeReview?: OperationReviewModel;
   reviewPreparation?: ReviewPreparationSnapshot;
   result?: OperationExecuteResult;
+  operationHistorySummaries: OperationHistorySummary[];
   portableResultSkills?: string[];
   loadError?: { code: string; message: string };
   portableDraft?: PortableSkillSelectionViewModel & {
@@ -594,6 +620,43 @@ function stableValue(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>)
     .sort(([left], [right]) => left.localeCompare(right, 'en'))
     .map(([key, entry]) => [key, stableValue(entry)]));
+}
+
+function collectOperationSensitiveValues(intent: OperationIntent): string[] {
+  if (intent.kind !== 'configSave') return [];
+  const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
+  const values: string[] = [];
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') values.push(value);
+    else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === 'object') Object.values(value as Record<string, unknown>).forEach(visit);
+  };
+  for (const [key, value] of Object.entries(intent.updates ?? {})) {
+    if (sensitiveKeys.has(key)) visit(value);
+  }
+  return values;
+}
+
+function sanitizeOperationSummary(
+  summary: OperationResultSummary,
+  sensitiveValues: readonly string[],
+): OperationResultSummary {
+  const text = (value: string): string => sanitizeDiagnosticText(value, [], sensitiveValues);
+  return {
+    ...summary,
+    message: text(summary.message),
+    ...(summary.messages ? { messages: summary.messages.map(text) } : {}),
+    ...(summary.changes ? { changes: summary.changes.map(text) } : {}),
+    ...(summary.warnings ? { warnings: summary.warnings.map(text) } : {}),
+    ...(summary.recoveryActions ? { recoveryActions: summary.recoveryActions.map(text) } : {}),
+    ...(summary.quarantineBasename ? { quarantineBasename: text(summary.quarantineBasename) } : {}),
+    ...(summary.portable ? {
+      portable: {
+        ...summary.portable,
+        ...(summary.portable.recovery ? { recovery: text(summary.portable.recovery) } : {}),
+      },
+    } : {}),
+  };
 }
 
 function deepFreeze<T>(value: T): T {
@@ -743,6 +806,16 @@ export class TuiController {
   #disposed = false;
   #retiring = false;
   #externalDraft?: 'configDraft' | 'sourceDraft';
+  #operationHistory = new OperationHistoryStore();
+  #sessionEpoch = 0;
+  #lastRecordedResultId?: string;
+  readonly #operationDiagnostics = new Map<string, {
+    diagnostics: SafeOperationDiagnostic[];
+    effects: OperationEffectFacts;
+    targetEffects?: Map<string, OperationEffectFacts>;
+    targets?: OperationHistoryTarget[];
+    sensitiveValues?: string[];
+  }>();
 
   constructor(
     readonly dependencies: TuiControllerDependencies,
@@ -816,6 +889,7 @@ export class TuiController {
         ? { reviewPreparation: this.#reviewPreparation.snapshot }
         : {}),
       ...(this.#result ? { result: this.#result } : {}),
+      operationHistorySummaries: this.#operationHistory.list(),
       ...(this.#portableResultSkills ? { portableResultSkills: this.#portableResultSkills } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
       ...(this.#portableDraft ? { portableDraft: this.#portableDraft } : {}),
@@ -854,6 +928,68 @@ export class TuiController {
     return this.#externalDraft !== undefined
       || this.#portableDraft !== undefined
       || this.#installPlacementDraft !== undefined;
+  }
+
+  attachOperationHistory(history: OperationHistoryStore, epoch: number): void {
+    this.#operationHistory = history;
+    this.#sessionEpoch = epoch;
+  }
+
+  listOperationHistory(): OperationHistorySummary[] {
+    return this.#operationHistory.list();
+  }
+
+  getOperationDiagnostic(recordId: string): OperationDiagnosticDetail | undefined {
+    return this.#operationHistory.get(recordId);
+  }
+
+  previewOperationReport(recordId: string): OperationReportPreview | undefined {
+    return this.#operationHistory.preview(recordId);
+  }
+
+  saveOperationReport(recordId: string, filePath?: string): Promise<SaveOperationReportResult> {
+    return this.#operationHistory.save(recordId, filePath);
+  }
+
+  /** @internal Test-only observability for bounded private diagnostic ownership. */
+  operationDiagnosticRetentionCountForTests(): number {
+    return this.#operationDiagnostics.size;
+  }
+
+  recordSafeUiFailure(code: string, stage: string): string {
+    const recordId = this.#recordStandaloneFailure(code, stage);
+    this.#publish();
+    return recordId;
+  }
+
+  #recordStandaloneFailure(code: string, stage: string, error?: unknown): string {
+    const operationId = `ui-${crypto.randomUUID()}`;
+    const recordId = `${this.#sessionEpoch}:${operationId}`;
+    const diagnostic = projectThrownOperationDiagnostic({
+      error,
+      id: `${recordId}:failure`,
+      stage: safeDiagnosticCode(stage, 'ui'),
+      fallbackCode: safeDiagnosticCode(code, 'uiOperationFailed'),
+    });
+    this.#operationHistory.record({
+      summary: {
+        recordId,
+        epoch: this.#sessionEpoch,
+        operationId,
+        createdAtMs: this.dependencies.now?.() ?? Date.now(),
+        state: 'blocked',
+        code: diagnostic.code,
+        message: diagnostic.safeMessage,
+        diagnosticCount: 1,
+        effects: {
+          configCommit: 'notApplicable', awWrite: 'notStarted',
+          preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
+        },
+      },
+      diagnostics: [diagnostic],
+      targets: [],
+    });
+    return recordId;
   }
 
   #trackRead<T>(promise: Promise<T>): Promise<T> {
@@ -921,8 +1057,101 @@ export class TuiController {
 
   #publish(): void {
     if (this.#disposed) return;
+    this.#recordTerminalResult();
     const snapshot = this.snapshot;
     for (const listener of this.#listeners) listener(snapshot);
+  }
+
+  #recordTerminalResult(): void {
+    const result = this.#result;
+    if (!result || result.state === 'stale') return;
+    const recordId = `${this.#sessionEpoch}:${result.operationId}`;
+    if (this.#lastRecordedResultId === recordId) return;
+    const projected = this.#operationDiagnostics.get(result.operationId) ?? {
+      diagnostics: [],
+      effects: {
+        configCommit: 'notApplicable' as const,
+        awWrite: result.state === 'succeeded' ? 'completed' as const : 'unknown' as const,
+        preApplyExternalEffect: 'notApplicable' as const,
+        finalVerification: result.state === 'succeeded' ? 'completed' as const : 'unknown' as const,
+      },
+    };
+    if ('summary' in result && result.summary) {
+      Object.assign(result.summary, sanitizeOperationSummary(
+        result.summary,
+        projected.sensitiveValues ?? [],
+      ));
+    }
+    const diagnosticIds = projected.diagnostics.map((diagnostic) => diagnostic.id);
+    Object.assign(result, { operationRecordId: recordId, diagnosticIds, effects: projected.effects });
+    if ('summary' in result && result.summary) {
+      result.summary.diagnosticIds = diagnosticIds;
+      result.summary.effects = projected.effects;
+      for (const target of result.summary.targets ?? []) {
+        const targetDiagnostics = projected.diagnostics.filter((diagnostic) => diagnostic.target
+          && diagnostic.target.platform === target.platform
+          && diagnostic.target.scope === target.scope
+          && (diagnostic.target.pluginId === undefined || diagnostic.target.pluginId === target.pluginId));
+        target.diagnosticIds = targetDiagnostics.map((diagnostic) => diagnostic.id);
+        target.effects = projected.targetEffects?.get(`${target.pluginId ?? ''}\0${target.platform}\0${target.scope}`);
+      }
+    }
+    const code = result.state === 'succeeded' || result.state === 'partial'
+      ? result.summary.code : result.summary?.code ?? result.code;
+    const message = result.state === 'succeeded' || result.state === 'partial'
+      ? result.summary.message : result.summary?.message ?? result.message;
+    this.#operationHistory.record({
+      summary: {
+        recordId,
+        epoch: this.#sessionEpoch,
+        operationId: result.operationId,
+        createdAtMs: this.dependencies.now?.() ?? Date.now(),
+        state: result.state,
+        code,
+        message,
+        ...('operationKind' in result && result.operationKind ? { operationKind: result.operationKind } : {}),
+        ...('pluginId' in result && result.pluginId ? { pluginId: result.pluginId } : {}),
+        diagnosticCount: projected.diagnostics.length,
+        effects: projected.effects,
+      },
+      diagnostics: projected.diagnostics,
+      targets: 'summary' in result && result.summary
+        ? structuredClone((result.summary.targets ?? []).map((target) => ({
+            ...target,
+            diagnosticIds: target.diagnosticIds ?? [],
+          })))
+        : structuredClone(projected.targets ?? []),
+    }, { sensitiveValues: projected.sensitiveValues });
+    this.#operationDiagnostics.delete(result.operationId);
+    this.#lastRecordedResultId = recordId;
+  }
+
+  #captureThrownProjection(
+    operationId: string,
+    error: unknown,
+    code: string,
+    stage: string,
+    intent?: OperationIntent,
+    effects?: OperationEffectFacts,
+  ): void {
+    const sensitiveValues = intent ? collectOperationSensitiveValues(intent) : [];
+    this.#operationDiagnostics.set(operationId, {
+      diagnostics: [projectThrownOperationDiagnostic({
+        error,
+        id: `${this.#sessionEpoch}:${operationId}:failure`,
+        stage,
+        fallbackCode: code,
+        sensitiveValues,
+        ...(intent && 'pluginId' in intent && 'platform' in intent && intent.platform !== 'both'
+          ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
+          : {}),
+      })],
+      effects: effects ?? {
+        configCommit: 'notApplicable', awWrite: 'notStarted',
+        preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
+      },
+      sensitiveValues,
+    });
   }
 
   async #logErrorSafe(
@@ -1178,6 +1407,7 @@ export class TuiController {
       await this.#logErrorSafe(error, code);
       this.#phase = 'error';
       this.#loadError = { code, message: '无法安全读取插件状态。请检查诊断后重试或退出。' };
+      this.#recordStandaloneFailure(code, 'statusReload', error);
       this.#publish();
       return;
     }
@@ -2263,6 +2493,34 @@ export class TuiController {
         : code === 'catalogGenerationUnavailable'
         ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
         : '无法准备确认信息。请返回检查选择，或重试。';
+      const preparationRecordId = `${this.#sessionEpoch}:${active.snapshot.id}`;
+      const preparationDiagnostic = projectThrownOperationDiagnostic({
+        error,
+        id: `${preparationRecordId}:failure`,
+        stage: active.snapshot.currentStage ?? 'reviewPreparation',
+        fallbackCode: code,
+        sensitiveValues: collectOperationSensitiveValues(intent),
+      });
+      this.#operationHistory.record({
+        summary: {
+          recordId: preparationRecordId,
+          epoch: this.#sessionEpoch,
+          operationId: active.snapshot.id,
+          createdAtMs: this.dependencies.now?.() ?? Date.now(),
+          state: 'blocked',
+          code: preparationDiagnostic.code,
+          message: active.snapshot.message,
+          operationKind: intent.kind,
+          ...('pluginId' in intent ? { pluginId: intent.pluginId } : {}),
+          diagnosticCount: 1,
+          effects: {
+            configCommit: 'notApplicable', awWrite: 'notStarted',
+            preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
+          },
+        },
+        diagnostics: [preparationDiagnostic],
+        targets: [],
+      }, { sensitiveValues: collectOperationSensitiveValues(intent) });
       this.#publish();
       await this.#logOperationError(error, code, intent);
     }
@@ -2512,6 +2770,15 @@ export class TuiController {
             structuredClone(ticket.intent),
             structuredClone(ticket.evidence),
           );
+      const executionProjection = projectExecutionDiagnostics(
+        execution,
+        `${this.#sessionEpoch}:${operationId}`,
+        collectOperationSensitiveValues(ticket.intent),
+      );
+      this.#operationDiagnostics.set(operationId, {
+        ...executionProjection,
+        sensitiveValues: collectOperationSensitiveValues(ticket.intent),
+      });
       if (ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update') {
         const confirmedAutoCheck = catalogSourceAutoCheckOnlyValue(ticket.intent.update);
         if (confirmedAutoCheck !== undefined) {
@@ -2552,6 +2819,14 @@ export class TuiController {
         await this.#logErrorSafe(error, verificationCode, {
           privateConfigOperation: true,
         });
+        const existingProjection = this.#operationDiagnostics.get(operationId)!;
+        existingProjection.diagnostics.push(projectThrownOperationDiagnostic({
+          error,
+          id: `${this.#sessionEpoch}:${operationId}:status-reload`,
+          stage: 'statusReload',
+          fallbackCode: verificationCode,
+        }));
+        existingProjection.effects.finalVerification = 'failed';
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const configCommitted = typeof execution === 'object'
           && execution !== null
@@ -2569,7 +2844,11 @@ export class TuiController {
               ...this.#progress.messages,
               ...(baseSummary.messages ?? []),
               '状态刷新失败。配置写入已经提交；请稍后刷新状态。',
-            ].slice(-8),
+            ].slice(-8).map((message) => sanitizeDiagnosticText(
+              message,
+              [],
+              collectOperationSensitiveValues(ticket.intent),
+            )),
           };
           this.#progress = { ...this.#progress, elapsedMs };
           const result: OperationExecuteResult = {
@@ -2597,6 +2876,10 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#applyStatus(refreshed);
+      const verifiedProjection = this.#operationDiagnostics.get(operationId);
+      if (verifiedProjection && verifiedProjection.effects.finalVerification !== 'failed') {
+        verifiedProjection.effects.finalVerification = 'completed';
+      }
       if (ticket.intent.kind === 'catalogSourcesRecovery') {
         this.#phase = 'ready';
         this.#loadError = undefined;
@@ -2614,6 +2897,18 @@ export class TuiController {
       const dependencyFailure = pluginSummary?.code === 'operationFailed'
         && Boolean(hasFailedDependencyTarget);
       if (pluginSummary?.code === 'operationFailed') {
+        const projected = this.#operationDiagnostics.get(operationId);
+        if (projected) {
+          projected.targets = (pluginSummary.targets ?? []).map((target) => ({
+            ...target,
+            diagnosticIds: projected.diagnostics.filter((diagnostic) => diagnostic.target
+              && diagnostic.target.platform === target.platform
+              && diagnostic.target.scope === target.scope
+              && (diagnostic.target.pluginId === undefined || diagnostic.target.pluginId === target.pluginId))
+              .map((diagnostic) => diagnostic.id),
+            effects: projected.targetEffects?.get(`${target.pluginId ?? ''}\0${target.platform}\0${target.scope}`),
+          }));
+        }
         const unsuccessfulTargets = pluginSummary.targets?.filter((target) =>
           target.state === 'failed' || target.state === 'skipped') ?? [];
         const managerFailureCode = unsuccessfulTargets.map((target) => target.errorCode).find((code) =>
@@ -2635,7 +2930,9 @@ export class TuiController {
           navigation: 'result',
           returnRoute: ticket.returnRoute,
           ...(dependencyFailure || dependencyStillRequired ? { summary: pluginSummary } : {}),
-          ...(!dependencyFailure && !dependencyStillRequired ? { writeMayHaveCompleted: true } : {}),
+          ...(!dependencyFailure && !dependencyStillRequired && ['started', 'partial', 'completed', 'failed', 'unknown'].includes(
+            this.#operationDiagnostics.get(operationId)?.effects.awWrite ?? 'unknown',
+          ) ? { writeMayHaveCompleted: true } : {}),
         });
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
@@ -2666,7 +2963,12 @@ export class TuiController {
       const summary: OperationResultSummary = {
         ...baseSummary,
         elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
-        messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8),
+        messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8)
+          .map((message) => sanitizeDiagnosticText(
+            message,
+            [],
+            collectOperationSensitiveValues(ticket.intent),
+          )),
       };
       this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
       if (summary.code === 'operationFailed') {
@@ -2714,6 +3016,7 @@ export class TuiController {
       };
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
         && this.#portableRepreparePluginId === ticket.intent.pluginId) {
+        this.#operationDiagnostics.delete(operationId);
         this.#portableRepreparePluginId = undefined;
         this.#activeReview = undefined;
         this.#result = undefined;
@@ -2728,9 +3031,22 @@ export class TuiController {
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
+      const metadata = readSafeOperationError(error);
+      const preApply = metadata?.stage === 'preApply';
+      const configWrite = error && typeof error === 'object' && 'configWrite' in error
+        ? (error as { configWrite?: unknown }).configWrite : undefined;
+      this.#captureThrownProjection(operationId, error, code, 'execute', ticket.intent, {
+        configCommit: ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset'
+          ? configWrite === 'succeeded' ? 'completed'
+            : configWrite === 'failed' ? 'failed' : 'notStarted' : 'notApplicable',
+        awWrite: preApply ? 'notStarted' : 'unknown',
+        preApplyExternalEffect: preApply ? 'possible' : 'notApplicable',
+        finalVerification: 'notStarted',
+      });
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
+        this.#operationDiagnostics.delete(operationId);
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
       generation = ++this.#generation;
@@ -2744,6 +3060,7 @@ export class TuiController {
           this.#loadError = undefined;
           this.#activeReview = undefined;
           this.#result = undefined;
+          this.#operationDiagnostics.delete(operationId);
           this.#router.replace({ name: 'home' });
           this.#publish();
           return cloneFrozen({
@@ -2775,6 +3092,7 @@ export class TuiController {
   }
 
   #detachedBlocked(operationId: string, intent: OperationIntent): OperationExecuteResult {
+    this.#operationDiagnostics.delete(operationId);
     return cloneFrozen({
       state: 'blocked',
       operationId,
@@ -2874,6 +3192,9 @@ export class TuiController {
       summary?: OperationResultSummary;
     },
   ): OperationExecuteResult {
+    if (!this.#operationDiagnostics.has(operationId)) {
+      this.#captureThrownProjection(operationId, undefined, code, 'execute', options?.intent);
+    }
     const message = code === 'managedCodexAuthorizationRequired'
       ? '操作在插件写入前停止。请在 Review 中确认获取 Codex runtime，或在命令行传入 --allow-managed-codex-install。'
       : code === 'codexSystemCliUnsupported'
@@ -2943,7 +3264,7 @@ export class TuiController {
   }
 }
 
-function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
   if (intent.kind === 'catalogSourcesRecovery') {
     const result = execution as { backupPath: string };
     return {
@@ -3095,12 +3416,7 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         relation: entry.relation === 'requested' ? 'requested'
           : entry.requiredBy.some((pluginId) => requestedIds.has(pluginId)) ? 'direct' : 'transitive',
         requiredBy: entry.requiredBy,
-        ...(entry.errorCode === 'dependencyStillRequired'
-          || entry.errorCode === 'codexSystemCliUnsupported'
-          || entry.errorCode === 'managedCodexAuthorizationRequired'
-          || entry.errorCode === 'managedCodexUnavailable'
-          ? { errorCode: entry.errorCode }
-          : {}),
+        ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
       })),
     };
   }
@@ -3128,6 +3444,9 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
           : entry.state === 'failed' ? 'failed' as const
             : entry.action === 'keep' ? 'kept' as const
               : entry.state as 'completed' | 'failed',
+        ...(typeof entry.errorCode === 'string'
+          ? { errorCode: safeDiagnosticCode(entry.errorCode, 'configApplyFailed') }
+          : {}),
       }];
     });
     const overallState = typeof execution === 'object' && execution !== null
@@ -3202,4 +3521,11 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     message: overallFailed ? '操作结果无法确认。' : '操作已完成。',
     ...(sourceWarnings.length > 0 ? { messages: sourceWarnings } : {}),
   };
+}
+
+function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  return sanitizeOperationSummary(
+    operationResultSummaryUnsafe(intent, execution),
+    collectOperationSensitiveValues(intent),
+  );
 }

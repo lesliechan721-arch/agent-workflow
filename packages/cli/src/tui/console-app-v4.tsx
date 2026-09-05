@@ -74,6 +74,14 @@ import {
   catalogSourceFreshnessLabel,
   catalogSourceListPresentation,
 } from './catalog-sources/screens.js';
+import {
+  operationDiagnosticLineCount,
+  operationHistoryMeta,
+  operationHistoryState,
+  operationReportLineCount,
+  OperationDiagnosticScreen,
+  OperationReportPreviewScreen,
+} from './operation-diagnostic-screens.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { catalogRefPolicyForPreset } from './source-ref-presets.js';
@@ -115,6 +123,7 @@ export const CONSOLE_V4_SCREEN_IDS = [
   'I10', 'I11', 'I12', 'I13',
   'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
   'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
+  'D18', 'D19', 'D20',
   'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
   'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07',
 ] as const;
@@ -225,7 +234,7 @@ function helpRowsForRoute(
     rows.push(['Esc', '撤销等待中的页面跳转']);
   }
   rows.push(['q / Ctrl-C', busy ? '操作完成后退出' : '退出控制台']);
-  rows.push(['?', '关闭帮助']);
+  rows.push(['? / o', '关闭帮助 / 查看操作记录']);
   return rows;
 }
 
@@ -1136,6 +1145,9 @@ export function resolveConsoleV4ScreenId(
       diagnostic: 'I09',
     }[category ?? 'diagnostic'] as ConsoleV4ScreenId;
   }
+  if (route.name === 'operationHistory') return 'D18';
+  if (route.name === 'operationDiagnostic') return 'D19';
+  if (route.name === 'operationReportPreview') return 'D20';
   return 'G02';
 }
 
@@ -1202,6 +1214,10 @@ export function ConsoleAppV4(props: {
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
+  const [reportSaveMode, setReportSaveMode] = useState(false);
+  const [reportSavePath, setReportSavePath] = useState('');
+  const [reportSaveResult, setReportSaveResult] = useState<string>();
+  const [reportSaveError, setReportSaveError] = useState<string>();
   const [draftOwner, setDraftOwner] = useState<string>();
   const [pendingPresetId, setPendingPresetId] = useState<string>();
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
@@ -1239,7 +1255,7 @@ export function ConsoleAppV4(props: {
     const unsubscribe = props.controller.subscribe(setSnapshot);
     if (props.controller.snapshot.phase === 'idle') {
       void props.controller.load().catch(() => {
-        setActionError('操作未完成。请重新检查后重试。');
+        props.controller.recordSafeUiFailure('tuiLoadFailed', 'ui-load');
       });
     }
     return () => {
@@ -1285,6 +1301,13 @@ export function ConsoleAppV4(props: {
   }, [route.name, snapshot.result]);
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
+  }, [route.name]);
+  useEffect(() => {
+    if (route.name === 'operationReportPreview') return;
+    setReportSaveMode(false);
+    setReportSavePath('');
+    setReportSaveResult(undefined);
+    setReportSaveError(undefined);
   }, [route.name]);
   useEffect(() => {
     if (route.name === 'portableAgentInput') {
@@ -1424,6 +1447,8 @@ export function ConsoleAppV4(props: {
     else if (route.name === 'issueList') {
       const issueCount = props.controller.listUserIssues().length;
       count = issueCount || 2;
+    } else if (route.name === 'operationHistory') {
+      count = snapshot.operationHistorySummaries.length + 1;
     } else if (route.name === 'pluginList') {
       const itemCount = props.controller.listPlugins({
         mode: route.mode,
@@ -1446,6 +1471,11 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginList' ? route.sourceId : '',
     snapshot.viewModel,
   ]);
+
+  useEffect(() => {
+    if (route.name !== 'operationReportPreview') return;
+    setScrollOffset(0);
+  }, [route.name, route.name === 'operationReportPreview' ? route.recordId : '']);
 
   const activeField = route.name === 'configFieldEditor'
     || route.name === 'configObjectPropertyEditor'
@@ -1604,6 +1634,10 @@ export function ConsoleAppV4(props: {
     staticRows,
   });
   const dependencyPlacementStaticRows = policy.mode === 'compact' ? 3 : 10;
+  const actionViewportStaticRows = route.name === 'dependencyPlacement'
+    ? dependencyPlacementStaticRows
+    : route.name === 'operationHistory' ? 4
+      : route.name === 'operationReportPreview' ? 5 : 0;
   const responsiveBudget = (compactRows: number, standardRows: number): number => {
     const baseline = policy.mode === 'compact' ? 18 : 24;
     const base = policy.mode === 'compact' ? compactRows : standardRows;
@@ -1686,6 +1720,10 @@ export function ConsoleAppV4(props: {
     else props.controller.back();
     restorePageContext();
     setActionError(undefined);
+  };
+  const showSafeUiFailure = (code: string, stage: string): void => {
+    const recordId = props.controller.recordSafeUiFailure(code, stage);
+    go({ name: 'operationDiagnostic', recordId });
   };
   const leaveResult = (target?: TuiRoute): void => {
     props.controller.leaveResult(target);
@@ -2226,6 +2264,7 @@ export function ConsoleAppV4(props: {
       });
       setConfigActionError(undefined);
     } catch {
+      props.controller.recordSafeUiFailure('tuiConfigReviewFailed', 'config-review');
       setConfigActionError('设置值未通过验证。请重新检查修改。');
     }
   };
@@ -4398,6 +4437,143 @@ export function ConsoleAppV4(props: {
         ? policy.mode === 'compact' ? recoveryRows : <SectionCard title="恢复证据">{recoveryRows}</SectionCard>
         : null}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={issueActionViewport.offset} limit={issueActionViewport.limit} /></Box>;
     }
+  } else if (route.name === 'operationHistory') {
+    const records = snapshot.operationHistorySummaries;
+    breadcrumb = '操作记录';
+    context = `本次会话 · ${records.length} 项`;
+    title = records.length === 0 ? '还没有操作记录' : '最近操作';
+    description = records.length === 0
+      ? '完成操作或遇到问题后，安全摘要会保留在这里。'
+      : '记录只包含安全摘要，不携带可重放的确认票据。';
+    actions = records.length === 0
+      ? [{ label: '返回首页', run: () => go({ name: 'home' }) }]
+      : [
+          ...records.map((record) => ({
+            label: record.message,
+            description: `${operationHistoryState(record).label} · ${record.diagnosticCount} 项安全诊断`,
+            meta: operationHistoryMeta(record),
+            status: operationHistoryState(record).status,
+            run: () => go({ name: 'operationDiagnostic', recordId: record.recordId }),
+          })),
+          { label: '返回上一页', run: back },
+        ];
+    const viewport = actionViewport(
+      actions,
+      policy.mode === 'compact',
+      focus,
+      scrollOffset,
+      pageActionBudget(4),
+    );
+    content = <Box flexDirection="column">
+      <StatusCard
+        status={records.some((record) => record.state !== 'succeeded') ? 'warning' : 'success'}
+        title={records.length === 0 ? '没有可回看的安全结果' : '操作结果与问题'}
+        description="选择一项可查看完整安全详情或报告预览。"
+        compact={policy.mode === 'compact'}
+      />
+      <SemanticRows
+        actions={actions}
+        focus={focus}
+        kind="action"
+        compact={policy.mode === 'compact'}
+        offset={viewport.offset}
+        limit={viewport.limit}
+      />
+    </Box>;
+  } else if (route.name === 'operationDiagnostic') {
+    const detail = props.controller.getOperationDiagnostic(route.recordId);
+    breadcrumb = '操作记录 / 技术详情';
+    context = '只读 · 已脱敏';
+    title = detail ? '安全技术详情' : '操作记录已不可用';
+    description = detail
+      ? '可滚动查看所有目标、阶段、代码和已保留的安全原因。'
+      : '这项会话记录已经不再可用。';
+    const preview = detail ? props.controller.previewOperationReport(route.recordId) : undefined;
+    actions = detail ? [
+      preview
+        ? { label: '预览安全报告', description: '确认内容后选择本地保存位置', run: () => go({ name: 'operationReportPreview', recordId: route.recordId }) }
+        : { label: '报告当前不可用', disabled: '无法生成这项记录的报告' },
+      { label: '返回操作记录', run: back },
+    ] : [{ label: '返回操作记录', run: back }];
+    const detailLineLimit = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
+    content = detail ? <Box flexDirection="column">
+      <OperationDiagnosticScreen
+        detail={detail}
+        compact={policy.mode === 'compact'}
+        offset={scrollOffset}
+        limit={detailLineLimit}
+      />
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box> : <Box flexDirection="column">
+      <Callout status="warning" title="记录已不可用" description="返回操作记录后可查看仍在本次会话中的结果。" />
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box>;
+  } else if (route.name === 'operationReportPreview') {
+    const preview = props.controller.previewOperationReport(route.recordId);
+    breadcrumb = '操作记录 / 报告预览';
+    context = '只读预览';
+    title = reportSaveMode ? '选择报告保存位置' : preview ? '安全报告预览' : '报告已不可用';
+    description = reportSaveMode
+      ? '输入一个新的本地文件路径，然后按 Enter 保存。'
+      : preview
+        ? '保存前请确认报告内容。不会自动上传或发送。'
+        : '这项会话报告已经不再可用。';
+    if (reportSaveMode && preview) {
+      help = 'Enter 保存 · Esc 返回报告预览';
+      content = <Box flexDirection="column">
+        <InputCard title="本地文件路径" focused compact={policy.mode === 'compact'}>
+          <InputDisplay
+            value={reportSavePath}
+            placeholder="/tmp/aw-operation-report.md"
+            columns={Math.max(12, size.columns - 10)}
+          />
+        </InputCard>
+        {reportSaveError ? <Callout status="error" title="报告未保存" description={reportSaveError} compact={policy.mode === 'compact'} /> : null}
+        <StaticRow title="仅保存当前预览中的安全内容。" status="muted" compact />
+      </Box>;
+    } else if (preview) {
+      actions = [
+        { label: '选择本地保存位置…', description: '保存前输入明确的文件路径', run: () => {
+          setReportSaveMode(true);
+          setReportSaveError(undefined);
+          setReportSaveResult(undefined);
+        } },
+        { label: '保存到临时目录', description: '使用唯一的临时文件名保存当前安全报告', run: () => {
+          void props.controller.saveOperationReport(route.recordId).then(() => {
+            setReportSaveResult('报告已保存到临时目录。');
+            setReportSaveError(undefined);
+          }).catch(() => {
+            setReportSaveError('报告未保存。请检查保存位置后重试。');
+          });
+        } },
+        { label: '返回技术详情', run: back },
+      ];
+      const reportLineLimit = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
+      const reportActionViewport = actionViewport(
+        actions,
+        policy.mode === 'compact',
+        focus,
+        scrollOffset,
+        pageActionBudget(5),
+      );
+      content = <Box flexDirection="column">
+        <OperationReportPreviewScreen
+          preview={preview}
+          compact={policy.mode === 'compact'}
+          offset={scrollOffset}
+          limit={reportLineLimit}
+        />
+        {reportSaveResult ? <Callout status="success" title="报告已保存" description={reportSaveResult} compact={policy.mode === 'compact'} /> : null}
+        {reportSaveError ? <Callout status="error" title="报告未保存" description={reportSaveError} compact={policy.mode === 'compact'} /> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={reportActionViewport.offset} limit={reportActionViewport.limit} />
+      </Box>;
+    } else {
+      actions = [{ label: '返回技术详情', run: back }];
+      content = <Box flexDirection="column">
+        <Callout status="warning" title="报告已不可用" description="返回技术详情后可查看仍在本次会话中的记录。" />
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+      </Box>;
+    }
   } else if (route.name === 'reviewPreparing' && snapshot.reviewPreparation) {
     const preparation = snapshot.reviewPreparation;
     const labels = preparation.operationKind === 'portableInstall'
@@ -5214,10 +5390,10 @@ export function ConsoleAppV4(props: {
       const pending = action.run?.();
       if (pending) void pending.catch((error: unknown) => {
         if (error instanceof Error && error.name === 'AbortError') return;
-        setActionError('操作未完成。请重新检查后重试。');
+        showSafeUiFailure('tuiActionFailed', 'ui-action');
       });
     } catch {
-      setActionError('操作未完成。请重新检查后重试。');
+      showSafeUiFailure('tuiActionFailed', 'ui-action');
     }
   };
 
@@ -5231,7 +5407,7 @@ export function ConsoleAppV4(props: {
       setDiscardForSessionNavigation(navigation);
       setOverlayFocus(0);
       setOverlay('sessionNavigation');
-    }).catch(() => setActionError('操作未完成。请重新检查后重试。'));
+    }).catch(() => showSafeUiFailure('tuiSessionNavigationFailed', 'session-navigation'));
   };
 
   useInput((input, key) => {
@@ -5290,6 +5466,11 @@ export function ConsoleAppV4(props: {
         requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
         return;
       }
+      if (overlay === 'help' && input.toLowerCase() === 'o') {
+        setOverlay(undefined);
+        go({ name: 'operationHistory' });
+        return;
+      }
       if (key.escape || input.toLowerCase() === 'b' || input === '?') {
         setOverlay(undefined);
         if (overlay === 'sessionNavigation') setDiscardForSessionNavigation(undefined);
@@ -5304,8 +5485,8 @@ export function ConsoleAppV4(props: {
       if (key.return) {
         if (overlay === 'help') {
           setOverlay(undefined);
-          if (overlayFocus === 1) requestSessionNavigation('home');
-          else if (overlayFocus === 2) requestSessionNavigation('reload');
+          if (props.onSessionNavigation && overlayFocus === 1) requestSessionNavigation('home');
+          else if (props.onSessionNavigation && overlayFocus === 2) requestSessionNavigation('reload');
         } else if (overlayFocus === 0) setOverlay(undefined);
         else if (overlay === 'discard') {
           setOverlay(undefined);
@@ -5346,6 +5527,48 @@ export function ConsoleAppV4(props: {
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
       requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+      return;
+    }
+    if (route.name === 'operationReportPreview' && reportSaveMode) {
+      if (key.escape) {
+        setReportSaveMode(false);
+        setReportSaveError(undefined);
+        return;
+      }
+      if (key.return) {
+        const savePath = reportSavePath.trim();
+        if (!savePath) {
+          setReportSaveError('请输入要保存到的本地文件路径。');
+          return;
+        }
+        void props.controller.saveOperationReport(route.recordId, savePath).then(() => {
+          setReportSaveMode(false);
+          setReportSaveResult('报告已保存到你选择的位置。');
+          setReportSaveError(undefined);
+        }).catch(() => {
+          setReportSaveMode(false);
+          setReportSaveError('报告未保存。请检查保存位置后重试。');
+        });
+        return;
+      }
+      if (key.backspace || key.delete) setReportSavePath(removeLastGrapheme);
+      else if (input && !key.ctrl && !key.meta && input >= ' ') setReportSavePath((value) => value + input);
+      setReportSaveError(undefined);
+      return;
+    }
+    if ((route.name === 'operationDiagnostic' || route.name === 'operationReportPreview')
+      && (key.pageUp || key.pageDown)) {
+      const detail = route.name === 'operationDiagnostic'
+        ? props.controller.getOperationDiagnostic(route.recordId) : undefined;
+      const preview = route.name === 'operationReportPreview'
+        ? props.controller.previewOperationReport(route.recordId) : undefined;
+      const total = detail ? operationDiagnosticLineCount(detail)
+        : preview ? operationReportLineCount(preview) : 0;
+      const pageRows = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
+      setScrollOffset((value) => Math.min(
+        Math.max(0, total - pageRows),
+        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
+      ));
       return;
     }
     if (route.name === 'portableAgentInput') {
@@ -5413,14 +5636,14 @@ export function ConsoleAppV4(props: {
         setSourceInputError(undefined);
         if (route.step === 'id') go({ name: 'sourceAdd', step: 'location', owner: route.owner });
         else if (route.step === 'location') {
-          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
+          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
           else if (next.type === 'git') go({ name: 'sourceAdd', step: 'refPolicy', owner: route.owner });
-          else void beginSourceAddReviewWith(next).catch(() => setActionError('来源未通过验证。请检查输入后重试。'));
+          else void beginSourceAddReviewWith(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
         } else if (route.step === 'ref') {
-          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
+          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
           else go({ name: 'sourceAdd', step: 'subdir', owner: route.owner });
-        } else if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
-        else void beginSourceAddReviewWith(next).catch(() => setActionError('来源未通过验证。请检查输入后重试。'));
+        } else if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
+        else void beginSourceAddReviewWith(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
         return;
       }
       if (key.backspace || key.delete) setSourceInput(removeLastGrapheme);
@@ -5577,6 +5800,12 @@ export function ConsoleAppV4(props: {
     );
     if (sessionNavigation) {
       requestSessionNavigation(sessionNavigation);
+    } else if (input.toLowerCase() === 'o'
+      && (route.name === 'home'
+        || route.name === 'issueList'
+        || route.name === 'issueDetail'
+        || route.name === 'result')) {
+      go({ name: 'operationHistory' });
     } else if (canOpenHelp && input === '?') {
       setOverlayFocus(0);
       setOverlay('help');
@@ -5692,7 +5921,7 @@ export function ConsoleAppV4(props: {
               policy.mode === 'compact',
               next,
               scrollOffset,
-              pageActionBudget(route.name === 'dependencyPlacement' ? dependencyPlacementStaticRows : 0),
+              pageActionBudget(actionViewportStaticRows),
             );
         setScrollOffset(viewport.offset);
         return next;
@@ -5725,7 +5954,7 @@ export function ConsoleAppV4(props: {
               policy.mode === 'compact',
               next,
               scrollOffset,
-              pageActionBudget(route.name === 'dependencyPlacement' ? dependencyPlacementStaticRows : 0),
+              pageActionBudget(actionViewportStaticRows),
             );
         setScrollOffset(viewport.offset);
         return next;
