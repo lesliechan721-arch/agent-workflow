@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   readCatalogSourcesConfigSnapshot,
@@ -71,7 +71,7 @@ describe('Catalog store CLI', () => {
     expect(status.exitCode, status.stderr).toBe(0);
     const statusPayload = status.parseJsonStdout();
     expect(statusPayload).toMatchObject({
-      catalogStoreSchemaVersion: 1,
+      catalogStoreSchemaVersion: 2,
       command: 'catalog:store:status',
       ok: true,
       totals: { reclaimableEntries: 1 },
@@ -94,7 +94,7 @@ describe('Catalog store CLI', () => {
     expect(dryRun.exitCode, dryRun.stderr).toBe(0);
     const dryRunPayload = dryRun.parseJsonStdout();
     expect(dryRunPayload).toMatchObject({
-      catalogStoreSchemaVersion: 1,
+      catalogStoreSchemaVersion: 2,
       command: 'catalog:store:prune',
       ok: true,
       overallState: 'succeeded',
@@ -129,24 +129,140 @@ describe('Catalog store CLI', () => {
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(false);
   });
 
-  it('returns a typed failure and deletes nothing when generation state is damaged', async () => {
+  it.each([
+    ['catalog-state.json', 'catalogGenerationStateInvalid'],
+    ['catalog-sources.json', 'catalogSourcesConfigInvalid'],
+  ])('returns typed failed receipts and deletes nothing when %s is damaged', async (fileName, code) => {
     const fixture = await setupInactiveEntry();
-    await fs.writeFile(path.join(fixture.env.AW_HOME!, 'catalog-state.json'), '{ invalid\n');
+    await fs.writeFile(path.join(fixture.env.AW_HOME!, fileName), '{ invalid\n');
+    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(status.exitCode).toBe(1);
+    expect(status.parseJsonStdout()).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      command: 'catalog:store:status',
+      ok: false,
+      entries: [],
+      errors: [{ code }],
+    });
     const failed = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
       cwd: fixture.cwd, env: fixture.env, interactive: false,
     });
     expect(failed.exitCode).toBe(1);
     expect(failed.parseJsonStdout()).toMatchObject({
-      catalogStoreSchemaVersion: 1,
+      catalogStoreSchemaVersion: 2,
       command: 'catalog:store:prune',
       ok: false,
       overallState: 'failed',
       deleted: [],
-      errors: [{ code: 'catalogGenerationStateInvalid' }],
+      errors: [{ code }],
     });
     expect(failed.stdout).not.toContain(fixture.env.AW_HOME!);
     expect(failed.stderr).not.toContain(fixture.env.AW_HOME!);
     await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
+  });
+
+  it('uses the same stable code for status and prune store-root read failures', async () => {
+    const fixture = await setupInactiveEntry();
+    const storeRoot = path.join(fixture.env.AW_HOME!, 'catalog-store');
+    const realReaddir = fs.readdir.bind(fs);
+    const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (location, options) => {
+      if (path.resolve(String(location)) === path.resolve(storeRoot)) {
+        throw Object.assign(new Error(`EACCES: cannot read ${fixture.env.AW_HOME}`), {
+          code: 'EACCES',
+        });
+      }
+      return realReaddir(location, options as never);
+    }) as typeof fs.readdir);
+    try {
+      const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+        cwd: fixture.cwd, env: fixture.env, interactive: false,
+      });
+      const prune = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+        cwd: fixture.cwd, env: fixture.env, interactive: false,
+      });
+      expect(status.exitCode).toBe(1);
+      expect(prune.exitCode).toBe(1);
+      expect(status.parseJsonStdout()).toMatchObject({
+        catalogStoreSchemaVersion: 2,
+        command: 'catalog:store:status',
+        errors: [{ code: 'catalogStoreInspectionFailed' }],
+      });
+      expect(prune.parseJsonStdout()).toMatchObject({
+        catalogStoreSchemaVersion: 2,
+        command: 'catalog:store:prune',
+        overallState: 'failed',
+        deleted: [],
+        errors: [{ code: 'catalogStoreInspectionFailed' }],
+      });
+      expect(status.stdout).not.toContain(fixture.env.AW_HOME!);
+      expect(prune.stdout).not.toContain(fixture.env.AW_HOME!);
+      await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
+    } finally {
+      readdir.mockRestore();
+    }
+  });
+
+  it('returns exit 1 and partial receipts while retaining an unsafe item and pruning a safe item', async () => {
+    const fixture = await setupInactiveEntry();
+    const unsafePath = path.join(path.dirname(fixture.entryDir), 'unsafe-link');
+    await fs.symlink(fixture.cwd, unsafePath);
+
+    const status = await runCliEntry(['catalog', 'store', 'status', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(status.exitCode).toBe(1);
+    expect(status.parseJsonStdout()).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      command: 'catalog:store:status',
+      ok: false,
+      totals: { reclaimableEntries: 1, reclaimableBytes: null },
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
+    expect(status.parseJsonStdout().entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ storeKey: fixture.storeKey, status: 'reclaimable', generationReference: 'none' }),
+      expect.objectContaining({ status: 'error', generationReference: 'none', reason: 'unsafeSymlink' }),
+    ]));
+    expect(status.stdout).not.toContain(fixture.env.AW_HOME!);
+
+    const human = await runCliEntry(['catalog', 'store', 'status'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(human.exitCode).toBe(1);
+    expect(human.stderr).toContain('could not be fully inspected');
+
+    const dryRun = await runCliEntry(['catalog', 'store', 'prune', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(dryRun.exitCode).toBe(1);
+    expect(dryRun.parseJsonStdout()).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      ok: false,
+      overallState: 'partial',
+      dryRun: true,
+      deleted: [],
+      reclaimableBytes: null,
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
+    await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(true);
+
+    const pruned = await runCliEntry(['catalog', 'store', 'prune', '--yes', '--json'], {
+      cwd: fixture.cwd, env: fixture.env, interactive: false,
+    });
+    expect(pruned.exitCode).toBe(1);
+    expect(pruned.parseJsonStdout()).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      ok: false,
+      overallState: 'partial',
+      dryRun: false,
+      deleted: [{ storeKey: fixture.storeKey }],
+      reclaimableBytes: null,
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
+    expect(pruned.stdout).not.toContain(fixture.env.AW_HOME!);
+    await expect(fs.pathExists(fixture.entryDir)).resolves.toBe(false);
+    await expect(fs.pathExists(unsafePath)).resolves.toBe(true);
   });
 
   it('reports and removes an old safe delete claim left by an earlier partial prune', async () => {

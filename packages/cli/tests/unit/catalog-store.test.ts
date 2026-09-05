@@ -69,9 +69,10 @@ describe('Catalog immutable store maintenance', () => {
     await sync(root, env, 'second\n');
 
     const young = await catalogStoreStatus({ env, now: NOW });
+    expect(young).toMatchObject({ catalogStoreSchemaVersion: 2, ok: true, errors: [] });
     expect(young.entries).toEqual(expect.arrayContaining([
-      expect.objectContaining({ storeKey: firstLocation.storeKey, status: 'retained', reason: 'inactiveWithin30Days' }),
-      expect.objectContaining({ status: 'active', reason: 'active' }),
+      expect.objectContaining({ storeKey: firstLocation.storeKey, status: 'retained', generationReference: 'none', reason: 'inactiveWithin30Days' }),
+      expect.objectContaining({ status: 'active', generationReference: 'active', reason: 'active' }),
     ]));
 
     await setTreeTime(firstLocation.entryDir, OLD_FORMAL);
@@ -181,7 +182,7 @@ describe('Catalog immutable store maintenance', () => {
     }));
   });
 
-  it('fails closed on invalid generation state and retains symlink, unsafe, and foreign nodes', async () => {
+  it('deletes a safe old entry but reports partial when an unsafe entry cannot be inspected', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-unsafe');
     const env = await configureSource(root);
@@ -189,20 +190,128 @@ describe('Catalog immutable store maintenance', () => {
     const location = resolveCatalogStoreLocation({
       logicalIdentity: active.logicalIdentity, snapshotDigest: active.snapshotDigest, env,
     });
+    await sync(root, env, 'second\n');
+    await setTreeTime(location.entryDir, OLD_FORMAL);
     await fs.symlink(root, path.join(location.logicalIdentityDirectory, 'foreign-link'));
     await fs.writeFile(path.join(location.logicalIdentityDirectory, 'foreign-file'), 'foreign\n');
     await fs.ensureDir(path.join(location.logicalIdentityDirectory, '.staging-malformed'));
     const status = await catalogStoreStatus({ env, now: NOW });
+    expect(status).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      ok: false,
+      totals: { reclaimableEntries: 1, reclaimableBytes: null },
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
     expect(status.entries.filter((entry) => entry.category === 'foreign')).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: 'error', reason: 'unsafeSymlink', reclaimableBytes: null }),
-      expect.objectContaining({ status: 'retained', reason: 'unrecognizedStoreNode', reclaimableBytes: null }),
+      expect.objectContaining({ status: 'error', generationReference: 'none', reason: 'unsafeSymlink', reclaimableBytes: null }),
+      expect.objectContaining({ status: 'retained', generationReference: 'none', reason: 'unrecognizedStoreNode', reclaimableBytes: null }),
     ]));
+    expect(JSON.stringify(status)).not.toContain(env.AW_HOME!);
 
-    await fs.writeFile(path.join(env.AW_HOME!, 'catalog-state.json'), '{ invalid\n');
-    await expect(catalogStorePrune({ dryRun: false, env, now: NOW }))
-      .rejects.toMatchObject({ code: 'catalogGenerationStateInvalid' });
+    const dryRun = await catalogStorePrune({ env, now: NOW });
+    expect(dryRun).toMatchObject({
+      catalogStoreSchemaVersion: 2,
+      ok: false,
+      overallState: 'partial',
+      dryRun: true,
+      deleted: [],
+      reclaimableBytes: null,
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
     await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+
+    const pruned = await catalogStorePrune({ dryRun: false, env, now: NOW });
+    expect(pruned).toMatchObject({
+      ok: false,
+      overallState: 'partial',
+      deleted: [{ storeKey: location.storeKey }],
+      reclaimableBytes: null,
+      errors: [{ code: 'catalogStoreInspectionFailed' }],
+    });
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(location.logicalIdentityDirectory, 'foreign-file'))).resolves.toBe(true);
+  });
+
+  it('fails closed on invalid source config and deletes no old entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-invalid-config');
+    const env = await configureSource(root);
+    const active = (await sync(root, env)).active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+    await fs.writeFile(path.join(env.AW_HOME!, 'catalog-sources.json'), '{ invalid\n');
+
+    await expect(catalogStoreStatus({ env, now: NOW }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigInvalid' });
+    await expect(catalogStorePrune({ dryRun: false, env, now: NOW }))
+      .rejects.toMatchObject({ code: 'catalogSourcesConfigInvalid' });
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+  });
+
+  it('keeps a shared key active when a configured source and an orphan source both reference it', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-shared-active');
+    const env = await configureSource(root);
+    const active = (await sync(root, env)).active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    const state = await readCatalogGenerationState(env);
+    await fs.writeJson(path.join(env.AW_HOME!, 'catalog-state.json'), {
+      ...state,
+      sources: {
+        ...state.sources,
+        orphan: { active },
+      },
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+
+    const status = await catalogStoreStatus({ env, now: NOW });
+    expect(status.entries).toContainEqual(expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'active',
+      generationReference: 'active',
+      reason: 'active',
+    }));
+    const pruned = await catalogStorePrune({ dryRun: false, env, now: NOW });
+    expect(pruned.deleted).toEqual([]);
+    await expect(fs.pathExists(location.entryDir)).resolves.toBe(true);
+  });
+
+  it('reports an orphan generation reference without protecting the formal entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-orphan-reference');
+    const env = await configureSource(root);
+    const active = (await sync(root, env)).active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    const current = await readCatalogSourcesConfigSnapshot(env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'replacement', type: 'path', primary: true, path: root }],
+      },
+      expectedDigest: current.digest,
+      env,
+    });
+    await setTreeTime(location.entryDir, OLD_FORMAL);
+
+    const status = await catalogStoreStatus({ env, now: NOW });
+    expect(status.entries).toContainEqual(expect.objectContaining({
+      storeKey: location.storeKey,
+      status: 'reclaimable',
+      generationReference: 'orphan',
+      reason: 'inactiveOlderThan30Days',
+    }));
   });
 
   it('continues after one deletion failure and returns a partial receipt', async () => {
@@ -277,6 +386,58 @@ describe('Catalog immutable store maintenance', () => {
       storeKey: failedClaimStoreKey,
     }));
     await expect(fs.pathExists(failedClaimPath!)).resolves.toBe(false);
+  });
+
+  it('keeps completed deletion evidence when a later candidate reinspection fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-reinspection-partial');
+    const env = await configureSource(root);
+    const first = (await sync(root, env)).active!;
+    const second = (await sync(root, env, 'second\n')).active!;
+    await sync(root, env, 'third\n');
+    const locations = [first, second].map((active) => resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    })).sort((left, right) => left.storeKey.localeCompare(right.storeKey));
+    await Promise.all(locations.map((location) => setTreeTime(location.entryDir, OLD_FORMAL)));
+    let removals = 0;
+
+    const result = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      remove: async (target) => {
+        await fs.remove(target);
+        removals += 1;
+        if (removals === 1) {
+          await fs.writeFile(path.join(env.AW_HOME!, 'catalog-state.json'), '{ invalid\n');
+        }
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      overallState: 'partial',
+      deleted: [{ storeKey: locations[0]!.storeKey }],
+      deletedBytes: expect.any(Number),
+      errors: [{
+        storeKey: locations[1]!.storeKey,
+        code: 'catalogStoreInspectionFailed',
+      }],
+    });
+    expect(result.deletedBytes).toBeGreaterThan(0);
+    expect(result.entries).toContainEqual(expect.objectContaining({
+      storeKey: locations[1]!.storeKey,
+      status: 'error',
+      reason: 'reinspectionFailed',
+    }));
+    expect(result.retained).toContainEqual({
+      storeKey: locations[1]!.storeKey,
+      reason: 'reinspectionFailed',
+    });
+    await expect(fs.pathExists(locations[0]!.entryDir)).resolves.toBe(false);
+    await expect(fs.pathExists(locations[1]!.entryDir)).resolves.toBe(true);
   });
 
   it('restores the original entry when setting the delete claim time fails', async () => {

@@ -12,6 +12,7 @@ import type {
   CatalogSourceImpactReference,
   CatalogSourcePlatformSupportChange,
   CatalogSourcePluginChanges,
+  CatalogSourcePrimaryChange,
   PlatformName,
 } from '../types.js';
 import { IMPLEMENTED_AW_CAPABILITIES } from '../commands/aw-capabilities.js';
@@ -68,13 +69,14 @@ function publicReference(options: {
   reference: CatalogSourceReference;
 }): CatalogSourceImpactReference {
   const reference = options.reference;
+  const referenceSourceId = reference.sourceId ?? options.sourceId;
   const projectRecord = reference.scope !== 'project' ? undefined
     : reference.projectKey === undefined || reference.projectKey === null ? 'unknown' as const
       : reference.projectKey === options.currentProjectKey ? 'current' as const : 'historical' as const;
   return {
     category: category(reference),
-    sourceId: reference.sourceId ?? options.sourceId,
-    ...(reference.pluginName ? { pluginId: pluginId(options.sourceId, reference.pluginName) } : {}),
+    sourceId: referenceSourceId,
+    ...(reference.pluginName ? { pluginId: pluginId(referenceSourceId, reference.pluginName) } : {}),
     ...(reference.platform === 'codex' || reference.platform === 'claude'
       ? { platform: reference.platform } : {}),
     ...(reference.scope === 'user' || reference.scope === 'project' ? { scope: reference.scope } : {}),
@@ -267,11 +269,42 @@ function sourceReferences(options: {
       && reference.kind.startsWith('legacy')));
 }
 
+function primaryChangeReferences(options: {
+  primaryChange: CatalogSourcePrimaryChange;
+  inventory: CatalogSourceReferenceInventory;
+}): CatalogSourceReference[] {
+  const sourceIds = new Set([
+    options.primaryChange.fromSourceId,
+    options.primaryChange.toSourceId,
+  ]);
+  return options.inventory.references.filter((reference) => {
+    if (reference.kind === 'legacyOwner'
+      || reference.kind === 'legacyConfig'
+      || reference.kind === 'legacyMarketplace') return reference.sourceId === undefined;
+    return reference.kind === 'namespacedMarketplace'
+      && reference.marketplaceName === 'aw'
+      && reference.sourceId !== undefined
+      && sourceIds.has(reference.sourceId);
+  });
+}
+
+function relevantInventoryError(options: {
+  error: CatalogSourceReferenceInventory['errors'][number];
+  sourceId: string;
+  primaryChange?: CatalogSourcePrimaryChange;
+}): boolean {
+  if (options.error.relevance.global || options.error.relevance.sourceId === undefined) return true;
+  return options.error.relevance.sourceId === options.sourceId
+    || options.error.relevance.sourceId === options.primaryChange?.fromSourceId
+    || options.error.relevance.sourceId === options.primaryChange?.toSourceId;
+}
+
 export async function inspectCatalogSourceImpact(options: {
   sourceId: string;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   sourcePrimary?: boolean;
+  primaryChange?: CatalogSourcePrimaryChange;
   mode: 'none' | 'remove' | 'identityChange' | 'generation';
   currentManifest?: CatalogManifestV7;
   candidateManifest?: CatalogManifestV7;
@@ -283,22 +316,34 @@ export async function inspectCatalogSourceImpact(options: {
     env,
     includePlatformHistoricalProjects: true,
   });
-  const internalReferences = sourceReferences({
-    sourceId: options.sourceId,
-    sourcePrimary: options.sourcePrimary === true,
-    inventory,
-  });
   const projectRoot = resolveRepoRootSync(options.cwd);
   const currentProjectKey = await fs.realpath(projectRoot).catch(() => path.resolve(projectRoot));
-  const references = uniqueReferences(internalReferences.map((reference) => publicReference({
-    sourceId: options.sourceId,
-    currentProjectKey,
-    reference,
-  })));
+  const primaryReferences = options.primaryChange
+    ? primaryChangeReferences({ primaryChange: options.primaryChange, inventory }).map((reference) =>
+        publicReference({
+          sourceId: options.primaryChange!.fromSourceId,
+          currentProjectKey,
+          reference,
+        }))
+    : [];
+  const references = uniqueReferences([
+    ...(options.mode === 'none' ? [] : sourceReferences({
+      sourceId: options.sourceId,
+      sourcePrimary: options.sourcePrimary === true,
+      inventory,
+    }).map((reference) => publicReference({
+      sourceId: options.sourceId,
+      currentProjectKey,
+      reference,
+    }))),
+    ...primaryReferences,
+  ]);
   const errors: CatalogSourceImpactError[] = inventory.errors
-    .filter((error) => error.relevance.global
-      || error.relevance.sourceId === undefined
-      || error.relevance.sourceId === options.sourceId)
+    .filter((error) => relevantInventoryError({
+      error,
+      sourceId: options.sourceId,
+      ...(options.primaryChange ? { primaryChange: options.primaryChange } : {}),
+    }))
     .map((error) => ({
     code: 'stateInventoryFailed',
     kind: error.kind,
@@ -367,13 +412,17 @@ export async function inspectCatalogSourceImpact(options: {
       errors.push({ code: 'catalogManifestUnavailable', kind: 'currentManifestRead' });
     }
   }
+  if (options.primaryChange) {
+    affectedReferences = uniqueReferences([...affectedReferences, ...primaryReferences]);
+  }
   const uniqueErrors = [...new Map(errors.map((error) => [
     `${error.code}\0${error.kind}\0${JSON.stringify(error.relevance ?? null)}`,
     error,
   ])).values()];
   return {
-    impactSchemaVersion: 2,
+    impactSchemaVersion: 3,
     sourceId: options.sourceId,
+    primaryChange: options.primaryChange ?? null,
     inventoryComplete: uniqueErrors.length === 0,
     references,
     affectedReferences: uniqueReferences(affectedReferences),

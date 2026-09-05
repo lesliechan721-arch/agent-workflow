@@ -49,6 +49,9 @@ const runtimeMocks = vi.hoisted(() => ({
   reinstallWriteCommand: vi.fn(),
   uninstallWriteCommand: vi.fn(),
   preflightCatalogSourceMutation: vi.fn(),
+  setPrimaryCatalogSourceCommand: vi.fn(),
+  probeCatalogSourceGeneration: vi.fn(),
+  activateCatalogSourceGeneration: vi.fn(),
   preparePortableInstall: vi.fn(),
   applyPluginConfigWrite: vi.fn(),
   replayConfigRuntimeWrites: vi.fn(),
@@ -71,11 +74,18 @@ vi.mock('../../src/commands/write-commands.js', () => ({
 vi.mock('../../src/commands/catalog-source.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/catalog-source.js')>(),
   preflightCatalogSourceMutation: runtimeMocks.preflightCatalogSourceMutation,
+  setPrimaryCatalogSourceCommand: runtimeMocks.setPrimaryCatalogSourceCommand,
 }));
 
 vi.mock('../../src/portable/commands.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/portable/commands.js')>(),
   preparePortableInstall: runtimeMocks.preparePortableInstall,
+}));
+
+vi.mock('../../src/utils/catalog-generation-service.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/catalog-generation-service.js')>(),
+  probeCatalogSourceGeneration: runtimeMocks.probeCatalogSourceGeneration,
+  activateCatalogSourceGeneration: runtimeMocks.activateCatalogSourceGeneration,
 }));
 
 vi.mock('../../src/utils/plugin-config-write.js', () => ({
@@ -1557,10 +1567,19 @@ describe('TUI controller runtime scope conflict validation', () => {
 
   it('uses one source mutation preflight for review validation and evidence', async () => {
     runtimeMocks.preflightCatalogSourceMutation.mockResolvedValue({
+      sourceId: 'team',
       configDigest: 'sha256:before',
       proposedConfigDigest: 'sha256:after',
       sourceIdentity: 'sha256:source',
-      references: { references: [], errors: [] },
+      identityChanged: false,
+      impactDigest: 'sha256:impact',
+      references: {
+        inventorySchemaVersion: 2,
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        inventoryComplete: true,
+        references: [{ category: 'marketplace', sourceId: 'official', marketplaceName: 'aw' }],
+        errors: [],
+      },
     });
     const isolation = getCurrentSourceTestIsolation();
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
@@ -1581,6 +1600,154 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledOnce();
     expect(stages).toEqual(['validate', 'evidence']);
     expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
+  });
+
+  it('passes reviewed primary impact to execution and surfaces lock-time stale', async () => {
+    runtimeMocks.preflightCatalogSourceMutation.mockResolvedValue({
+      sourceId: 'team',
+      configDigest: 'sha256:before',
+      proposedConfigDigest: 'sha256:after',
+      identityChanged: false,
+      impactDigest: 'sha256:impact',
+      references: {
+        inventorySchemaVersion: 2,
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        inventoryComplete: true,
+        references: [{ category: 'marketplace', sourceId: 'official', marketplaceName: 'aw' }],
+        errors: [],
+      },
+    });
+    runtimeMocks.setPrimaryCatalogSourceCommand.mockRejectedValue(Object.assign(
+      new Error('Catalog source impact changed after review.'),
+      { code: 'operationReviewStale' },
+    ));
+    const isolation = getCurrentSourceTestIsolation();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = { kind: 'sourceMutation' as const, action: 'setPrimary' as const, sourceId: 'team' };
+    const evidence = await dependencies.prepareReviewEvidence!(
+      intent,
+      new AbortController().signal,
+      () => undefined,
+    );
+
+    await expect(dependencies.executeIntent!(intent, evidence)).rejects.toMatchObject({
+      code: 'operationReviewStale',
+    });
+    expect(runtimeMocks.setPrimaryCatalogSourceCommand).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: 'team',
+      expectedConfigDigest: 'sha256:before',
+      expectedImpactDigest: 'sha256:impact',
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+    }));
+  });
+
+  it('reviews activate-then-primary impact and preserves activation when primary evidence becomes stale', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activate-primary');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfigWithoutActive({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          ...before.config.sources,
+          { id: 'team', type: 'path', path: sourceRoot, primary: false },
+        ],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const manifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
+    const candidate = {
+      sourceId: 'team',
+      sourceConfigFingerprint: `sha256:${'1'.repeat(64)}`,
+      sourceIdentity: `sha256:${'2'.repeat(64)}`,
+      logicalIdentity: 'fixture-workspace',
+      requestedRef: 'path',
+      resolvedCommit: 'path',
+      catalogVersion: '1.0.0',
+      channel: 'latest' as const,
+      manifestDigest: `sha256:${'3'.repeat(64)}`,
+      snapshotDigest: `sha256:${'4'.repeat(64)}`,
+    };
+    runtimeMocks.probeCatalogSourceGeneration.mockResolvedValue({
+      sourceId: 'team', candidate, manifest,
+    });
+    runtimeMocks.preflightCatalogSourceMutation.mockResolvedValue({
+      sourceId: 'team',
+      configDigest: config.digest,
+      proposedConfigDigest: `sha256:${'5'.repeat(64)}`,
+      identityChanged: false,
+      impactDigest: `sha256:${'6'.repeat(64)}`,
+      references: {
+        inventorySchemaVersion: 2,
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        inventoryComplete: true,
+        references: [{
+          category: 'config', sourceId: 'official', pluginId: 'official/demo', scope: 'user',
+        }],
+        errors: [],
+      },
+    });
+    const generation = {
+      catalogGenerationSchemaVersion: 1 as const,
+      sourceId: 'team', mode: 'sync' as const, outcome: 'activated' as const,
+      activeChanged: true, resolution: candidate,
+      lastSync: { syncedAt: '2026-01-01T00:00:00.000Z', mode: 'sync' as const, state: 'succeeded' as const, resolvedCommit: 'path' },
+    };
+    runtimeMocks.activateCatalogSourceGeneration.mockResolvedValue(generation);
+    runtimeMocks.setPrimaryCatalogSourceCommand.mockRejectedValue(Object.assign(
+      new Error('primary impact changed'), { code: 'operationReviewStale' },
+    ));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'catalogGeneration' as const,
+      action: 'activate' as const,
+      sourceId: 'team',
+      setPrimaryAfterActivation: true,
+    };
+    const evidence = await dependencies.prepareReviewEvidence!(
+      intent,
+      new AbortController().signal,
+      () => undefined,
+    );
+
+    expect(runtimeMocks.preflightCatalogSourceMutation).toHaveBeenCalledWith(expect.objectContaining({
+      request: { action: 'setPrimary', sourceId: 'team' },
+    }));
+    expect(evidence.catalogGeneration).toMatchObject({
+      primaryConfigDigest: config.digest,
+      primaryImpactDigest: `sha256:${'6'.repeat(64)}`,
+      primaryImpact: {
+        primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+        affectedReferences: [expect.objectContaining({ pluginId: 'official/demo' })],
+      },
+    });
+    await expect(dependencies.executeIntent!(intent, evidence)).resolves.toMatchObject({
+      status: 'partial',
+      partialReason: 'primary',
+      activeAvailable: true,
+      generation,
+      errorCode: 'operationReviewStale',
+    });
+    expect(runtimeMocks.setPrimaryCatalogSourceCommand).toHaveBeenCalledWith(expect.objectContaining({
+      expectedConfigDigest: config.digest,
+      expectedImpactDigest: `sha256:${'6'.repeat(64)}`,
+      requireImpactConfirmation: true,
+      confirmImpact: true,
+    }));
+    expect((await readCatalogSourcesConfigSnapshot(isolation.env)).config.sources
+      .find((source) => source.id === 'official')).toMatchObject({ primary: true });
   });
 
   it('stops a managed source mutation when public preflight rejects it', async () => {

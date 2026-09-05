@@ -29,7 +29,7 @@ export default defineConfig({
       'tests/unit/template-engine.test.ts',
     ],
     setupFiles: ['tests/setup/test-isolation-pure.ts'],
-    maxWorkers: 4,
+    maxWorkers: 2,
     coverage: {
       reporter: ['text', 'html'],
     },

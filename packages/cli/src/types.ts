@@ -238,9 +238,15 @@ export interface CatalogSourceImpactError {
       };
 }
 
+export interface CatalogSourcePrimaryChange {
+  fromSourceId: string;
+  toSourceId: string;
+}
+
 export interface CatalogSourceImpact {
-  impactSchemaVersion: 2;
+  impactSchemaVersion: 3;
   sourceId: string;
+  primaryChange: CatalogSourcePrimaryChange | null;
   inventoryComplete: boolean;
   references: CatalogSourceImpactReference[];
   affectedReferences: CatalogSourceImpactReference[];

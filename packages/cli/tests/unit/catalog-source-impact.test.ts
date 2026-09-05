@@ -157,7 +157,8 @@ describe('Catalog source impact inspection', () => {
       inventory,
     });
 
-    expect(impact.impactSchemaVersion).toBe(2);
+    expect(impact.impactSchemaVersion).toBe(3);
+    expect(impact.primaryChange).toBeNull();
     expect(impact.changes.platformSupportChanged).toEqual([{
       pluginId: 'team/dependency',
       removedPlatforms: ['claude'],
@@ -384,5 +385,52 @@ describe('Catalog source impact inspection', () => {
       affectedReferences: [],
       errors: [{ code: 'catalogManifestUnavailable', kind: 'currentManifestRead' }],
     });
+  });
+
+  it('projects only legacy and canonical aw evidence for a primary source change', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const impact = await inspectCatalogSourceImpact({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      mode: 'none',
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      inventory: {
+        inventorySchemaVersion: 1,
+        references: [
+          { kind: 'legacyOwner', location: 'legacy-owner', pluginName: 'owned', platform: 'codex', scope: 'user' },
+          { kind: 'legacyConfig', location: 'legacy-config', pluginName: 'configured', scope: 'user' },
+          { kind: 'legacyMarketplace', location: 'legacy-marketplace', marketplaceName: 'aw' },
+          { kind: 'namespacedMarketplace', location: 'from-registration', sourceId: 'official', marketplaceName: 'aw' },
+          { kind: 'namespacedMarketplace', location: 'from-consumer', sourceId: 'official', marketplaceName: 'aw', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          { kind: 'namespacedMarketplace', location: 'to-installed', sourceId: 'team', marketplaceName: 'aw', pluginName: 'demo', platform: 'claude', scope: 'project' },
+          { kind: 'namespacedMarketplace', location: 'namespaced-other', sourceId: 'team', marketplaceName: 'aw-team', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          { kind: 'namespacedLifecycle', location: 'lifecycle', sourceId: 'team', pluginName: 'demo', platform: 'codex', scope: 'user' },
+        ],
+        errors: [
+          { code: 'stateInventoryFailed', kind: 'fromUnknown', location: 'from', message: 'unreadable', relevance: { global: false, sourceId: 'official' } },
+          { code: 'stateInventoryFailed', kind: 'unrelatedUnknown', location: 'other', message: 'unreadable', relevance: { global: false, sourceId: 'other' } },
+        ],
+      },
+    });
+
+    expect(impact).toMatchObject({
+      impactSchemaVersion: 3,
+      primaryChange: { fromSourceId: 'official', toSourceId: 'team' },
+      inventoryComplete: false,
+      errors: [{ kind: 'fromUnknown' }],
+    });
+    expect(impact.affectedReferences).toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'installation', sourceId: 'official', pluginId: 'official/owned' }),
+      expect.objectContaining({ category: 'config', sourceId: 'official', pluginId: 'official/configured' }),
+      expect.objectContaining({ category: 'marketplace', sourceId: 'official', marketplaceName: 'aw' }),
+      expect.objectContaining({ category: 'installation', sourceId: 'official', pluginId: 'official/demo', platform: 'codex' }),
+      expect.objectContaining({ category: 'installation', sourceId: 'team', pluginId: 'team/demo', platform: 'claude' }),
+    ]));
+    expect(impact.affectedReferences).toHaveLength(5);
+    expect(impact.affectedReferences).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ category: 'lifecycle' }),
+      expect.objectContaining({ marketplaceName: 'aw-team' }),
+    ]));
   });
 });

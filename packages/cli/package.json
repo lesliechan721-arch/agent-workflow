@@ -20,7 +20,7 @@
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "build:dev:typescript": "tsc -p tsconfig.dev.json",
     "test": "pnpm run test:unit && pnpm run test:integration",
-    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=4 tests/unit && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 tests/unit && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/unit",
+    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=2 tests/unit && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 tests/unit && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/unit",
     "test:unit:fast": "node ../../scripts/test/run-vitest.mjs run --config vitest.fast.config.ts",
     "test:integration": "node ../../scripts/test/run-vitest.mjs run --project integration --maxWorkers=2 tests/integration && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism tests/integration",
     "test:coverage": "node ../../scripts/test/run-vitest.mjs run --coverage",

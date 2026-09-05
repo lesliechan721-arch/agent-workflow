@@ -3885,8 +3885,13 @@ describe('five namespaced write commands', () => {
       }],
     });
 
+    const binRoot = await writeStatusSystemCodexPackage(
+      path.join(isolation.layout.fixtureCwd, 'dependency-user-to-project-prefix'),
+      '0.151.0',
+    );
     const status = await statusCommandV7({
-      plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      plugins: ['team/root'], cwd: isolation.layout.fixtureCwd,
+      env: { ...isolation.env, PATH: binRoot },
       cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
       nativeCliRunner: runtime.nativeCliRunner,
     });

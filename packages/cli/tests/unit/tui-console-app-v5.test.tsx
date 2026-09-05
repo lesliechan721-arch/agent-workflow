@@ -5434,7 +5434,8 @@ describe('ConsoleAppV4', () => {
           referenceCount: 4,
           inventoryComplete: false,
           impact: {
-            impactSchemaVersion: 2,
+            impactSchemaVersion: 3,
+            primaryChange: null,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [
@@ -5501,7 +5502,8 @@ describe('ConsoleAppV4', () => {
             activatedAt: 500,
           },
           impact: {
-            impactSchemaVersion: 2,
+            impactSchemaVersion: 3,
+            primaryChange: null,
             sourceId: 'team-tools',
             inventoryComplete: false,
             references: [{ category: 'lifecycle' as const, sourceId: 'team-tools', pluginId: 'team-tools/review-gate' }],

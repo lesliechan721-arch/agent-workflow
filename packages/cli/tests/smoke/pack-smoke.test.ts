@@ -847,12 +847,13 @@ describe('pack smoke', () => {
       'catalog', 'dev', 'deactivate', '--workspace-root', standaloneWorkspace, '--yes', '--json',
     ], { cwd: standaloneWorkspace, env: externalAuthoringEnv });
     expect(JSON.parse(developmentSourceRemoval.stdout)).toMatchObject({
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       command: 'catalog:dev:deactivate', ok: true,
       source: { id: developmentSourceId, action: 'removed', previousPrimary: true },
       replacementPrimarySourceId: 'official',
       impact: {
-        inventorySchemaVersion: 1,
+        inventorySchemaVersion: 2,
+        primaryChange: { fromSourceId: developmentSourceId, toSourceId: 'official' },
         inventoryComplete: true,
         references: expect.arrayContaining([expect.objectContaining({
           category: 'installation',
