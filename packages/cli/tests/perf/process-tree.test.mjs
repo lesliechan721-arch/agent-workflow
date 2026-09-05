@@ -6,15 +6,19 @@ import { performance } from 'node:perf_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  createWindowsJobInvocation,
   ProcessTreeTimeoutError,
   parsePosixProcessTree,
   parseWindowsProcessTree,
+  resolveWindowsJobHelperPath,
   runProcessTree,
+  snapshotWindowsProcessTree,
 } from '../../../../scripts/perf/process-tree.mjs';
 
 const roots = [];
 const observedPids = [];
 const itOnPosix = process.platform === 'win32' ? it.skip : it;
+const syntheticWatchdogSource = 'setTimeout(() => process.exit(124), 30_000);';
 
 function isProcessAlive(pid) {
   try {
@@ -74,6 +78,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -82,10 +87,12 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
 
     const startedAt = performance.now();
+    const metrics = {};
     let grandchildKilled = false;
     let failure;
     try {
@@ -98,6 +105,7 @@ describe('performance gate process tree cleanup', () => {
         descendantMonitorIntervalMs: 25,
         terminationGraceMs: 100,
         cleanupSettleMs: 150,
+        metrics,
       }, {
         snapshotPosixProcessTree: async (rootPid) => processTreeSnapshot(
           rootPid,
@@ -129,6 +137,13 @@ describe('performance gate process tree cleanup', () => {
     expect(elapsedMs).toBeLessThan(1_500);
     expect(isProcessAlive(pids.child)).toBe(false);
     expect(isProcessAlive(pids.grandchild)).toBe(false);
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      peakLiveDescendants: 1,
+      cleanupFailureCount: 0,
+      leakedProcessCount: 0,
+    });
+    expect(metrics.processTableScanCount).toBeLessThanOrEqual(3);
   });
 
   itOnPosix('aborts an active tree through an external signal', async () => {
@@ -137,6 +152,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -145,6 +161,7 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const controller = new AbortController();
@@ -194,6 +211,7 @@ describe('performance gate process tree cleanup', () => {
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -243,15 +261,29 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const fakeDescendantPid = 900_001;
     const descendantSignals = [];
     let termObserved = false;
-    const snapshotPosixProcessTree = async (rootPid) => parsePosixProcessTree(rootPid, [
-      `${rootPid} 1 child-start`,
-      `${fakeDescendantPid} ${rootPid} ${termObserved ? 'reused-start' : 'original-start'}`,
-    ].join('\n'));
+    const auditPosixProcessTree = async (rootPid) => {
+      const rootIdentity = { pid: rootPid, parentPid: 1, startIdentity: 'child-start' };
+      const descendant = {
+        pid: fakeDescendantPid,
+        parentPid: rootPid,
+        startIdentity: termObserved ? 'reused-start' : 'original-start',
+      };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([
+          [rootPid, rootIdentity],
+          [fakeDescendantPid, descendant],
+        ]),
+        owned: termObserved ? [] : [descendant],
+      };
+    };
 
     await expect(runProcessTree({
       label: 'reused PID fixture',
@@ -263,8 +295,7 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcess: (pid, signal) => {
         if (pid === fakeDescendantPid) {
           descendantSignals.push(signal);
@@ -281,20 +312,25 @@ describe('performance gate process tree cleanup', () => {
   });
 
   itOnPosix('rejects new descendants from a reused POSIX root', async () => {
-    const childSource = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const newChildPid = 900_002;
     const descendantSignals = [];
     let snapshotCalls = 0;
     let newChildKilled = false;
-    const snapshotPosixProcessTree = async (rootPid) => {
+    const auditPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
       const rootStart = snapshotCalls === 1 ? 'original-root' : 'reused-root';
-      return parsePosixProcessTree(rootPid, [
-        `${rootPid} 1 ${rootStart}`,
-        ...(snapshotCalls === 1 || newChildKilled
-          ? []
-          : [`${newChildPid} ${rootPid} new-child-start`]),
-      ].join('\n'));
+      const rootIdentity = { pid: rootPid, parentPid: 1, startIdentity: rootStart };
+      const newChild = { pid: newChildPid, parentPid: rootPid, startIdentity: 'new-child-start' };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([
+          [rootPid, rootIdentity],
+          ...(snapshotCalls === 1 || newChildKilled ? [] : [[newChildPid, newChild]]),
+        ]),
+        owned: snapshotCalls === 1 ? [rootIdentity] : [],
+      };
     };
 
     await expect(runProcessTree({
@@ -307,8 +343,7 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcess: (pid, signal) => {
         if (pid === newChildPid) {
           descendantSignals.push(signal);
@@ -323,23 +358,31 @@ describe('performance gate process tree cleanup', () => {
     expect(descendantSignals).toEqual([]);
   });
 
-  itOnPosix('does not force KILL a process group after the root identity changes', async () => {
+  itOnPosix('does not force KILL a process group after the audited root identity changes', async () => {
     const controller = new AbortController();
     const forceController = new AbortController();
     const abortReason = new Error('interrupt fixture');
     const groupSignals = [];
     let snapshotCalls = 0;
-    const snapshotPosixProcessTree = async (rootPid) => {
+    const auditPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
-      return parsePosixProcessTree(
-        rootPid,
-        `${rootPid} 1 ${snapshotCalls === 1 ? 'original-root' : 'reused-root'}`,
-      );
+      const rootIdentity = {
+        pid: rootPid,
+        parentPid: 1,
+        processGroupId: rootPid,
+        startIdentity: snapshotCalls === 1 ? 'original-root' : 'reused-root',
+      };
+      return {
+        rootIdentity,
+        descendants: [],
+        identitiesByPid: new Map([[rootPid, rootIdentity]]),
+        owned: snapshotCalls === 1 ? [rootIdentity] : [],
+      };
     };
     const running = runProcessTree({
       label: 'reused POSIX group fixture',
       command: process.execPath,
-      args: ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"],
+      args: ['-e', `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`],
       env: process.env,
       signal: controller.signal,
       forceSignal: forceController.signal,
@@ -348,27 +391,25 @@ describe('performance gate process tree cleanup', () => {
       terminationGraceMs: 10_000,
       cleanupSettleMs: 100,
     }, {
-      snapshotPosixProcessTree,
-      verifyPosixProcessTree: snapshotPosixProcessTree,
+      auditPosixProcessTree,
       killPosixProcessGroup: (_pid, signal) => groupSignals.push(signal),
     });
-    while (snapshotCalls === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
     controller.abort(abortReason);
     forceController.abort(new Error('repeat interrupt fixture'));
     await expect(running).rejects.toBe(abortReason);
 
-    expect(groupSignals).toEqual([]);
+    expect(groupSignals).toEqual(['SIGTERM']);
   });
 
-  itOnPosix('discovers root and detached grandchild on the third snapshot', async () => {
+  itOnPosix('reports a final audit failure after killing the direct root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-third-snapshot-root-'));
     roots.push(root);
     const pidFile = path.join(root, 'pids.json');
     const grandchildSource = [
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const childSource = [
@@ -377,16 +418,13 @@ describe('performance gate process tree cleanup', () => {
       `const grandchild = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildSource)}], { detached: true, stdio: 'ignore' });`,
       `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
-    let grandchildKilled = false;
     const snapshotPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
-      if (snapshotCalls < 3) {
-        throw new Error(`synthetic snapshot failure ${snapshotCalls}`);
-      }
-      return processTreeSnapshot(rootPid, await readJsonEventually(pidFile));
+      throw new Error(`synthetic snapshot failure ${snapshotCalls}`);
     };
 
     await expect(runProcessTree({
@@ -401,25 +439,14 @@ describe('performance gate process tree cleanup', () => {
       cleanupSettleMs: 100,
     }, {
       snapshotPosixProcessTree,
-      verifyPosixProcessTree: async (rootPid) => processTreeSnapshot(
-        rootPid,
-        await readJsonEventually(pidFile),
-        { omitGrandchild: grandchildKilled },
-      ),
-      killPosixProcess: (pid, signal) => {
-        if (signal === 'SIGKILL') {
-          grandchildKilled = true;
-        }
-        process.kill(pid, signal);
-      },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not verify process-tree ownership');
 
     const pids = await readJsonEventually(pidFile);
     observedPids.push(pids.child, pids.grandchild);
-    await waitForProcessesToExit([pids.child, pids.grandchild], 500);
-    expect(snapshotCalls).toBe(3);
+    await waitForProcessesToExit([pids.child], 500);
+    expect(snapshotCalls).toBe(1);
     expect(isProcessAlive(pids.child)).toBe(false);
-    expect(isProcessAlive(pids.grandchild)).toBe(false);
+    expect(isProcessAlive(pids.grandchild)).toBe(true);
   });
 
   itOnPosix('falls back to the owned process group when snapshots lack root identity', async () => {
@@ -430,10 +457,12 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     let snapshotCalls = 0;
     const groupSignals = [];
+    const metrics = {};
     const snapshotPosixProcessTree = async (rootPid) => {
       snapshotCalls += 1;
       if (snapshotCalls < 3) {
@@ -452,6 +481,7 @@ describe('performance gate process tree cleanup', () => {
       descendantMonitorIntervalMs: 1_000,
       terminationGraceMs: 50,
       cleanupSettleMs: 100,
+      metrics,
     }, {
       snapshotPosixProcessTree,
       killPosixProcessGroup: (pid, signal) => {
@@ -465,9 +495,14 @@ describe('performance gate process tree cleanup', () => {
     const pid = Number(await fs.readFile(pidFile, 'utf8'));
     observedPids.push(pid);
     await waitForProcessesToExit([pid], 500);
-    expect(snapshotCalls).toBe(3);
-    expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(snapshotCalls).toBe(1);
+    expect(groupSignals).toEqual(['SIGTERM']);
     expect(isProcessAlive(pid)).toBe(false);
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      cleanupFailureCount: 1,
+      leakedProcessCount: null,
+    });
   });
 
   itOnPosix('parses recursive identities in leaf-to-root order', () => {
@@ -480,6 +515,199 @@ describe('performance gate process tree cleanup', () => {
     ].join('\n'));
     expect(snapshot.rootIdentity).toMatchObject({ pid: 10, startIdentity: 'root-start' });
     expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([30, 40, 20]);
+  });
+
+  it('validates every Windows PPID edge by creation order', () => {
+    const snapshot = parseWindowsProcessTree(10, [
+      { ProcessId: 10, ParentProcessId: 1, CreationDateTicks: '638000000000002000' },
+      { ProcessId: 20, ParentProcessId: 10, CreationDateTicks: '638000000000003000' },
+      { ProcessId: 30, ParentProcessId: 20, CreationDateTicks: '638000000000002500' },
+      { ProcessId: 40, ParentProcessId: 30, CreationDateTicks: '638000000000004000' },
+    ]);
+
+    expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
+    expect(snapshot.unconfirmedDescendants.map((identity) => identity.pid)).toEqual([40, 30]);
+  });
+
+  itOnPosix('projects PowerShell CreationDate to exact UTC ticks before parsing', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-snapshot-contract-'));
+    roots.push(root);
+    const executable = path.join(root, 'powershell.exe');
+    const argsFile = path.join(root, 'args.json');
+    await fs.writeFile(executable, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.POWERSHELL_ARGS_FILE, JSON.stringify(process.argv.slice(2)));",
+      'process.stdout.write(JSON.stringify([',
+      "  { ProcessId: 10, ParentProcessId: 1, CreationDateTicks: '638000000000001001' },",
+      "  { ProcessId: 20, ParentProcessId: 10, CreationDateTicks: '638000000000001002' },",
+      ']));',
+    ].join('\n'));
+    await fs.chmod(executable, 0o755);
+    const originalPath = process.env.PATH;
+    const originalArgsFile = process.env.POWERSHELL_ARGS_FILE;
+    process.env.PATH = `${root}${path.delimiter}${originalPath}`;
+    process.env.POWERSHELL_ARGS_FILE = argsFile;
+    let snapshot;
+    try {
+      snapshot = await snapshotWindowsProcessTree(10, new AbortController().signal);
+    } finally {
+      process.env.PATH = originalPath;
+      if (originalArgsFile === undefined) delete process.env.POWERSHELL_ARGS_FILE;
+      else process.env.POWERSHELL_ARGS_FILE = originalArgsFile;
+    }
+    const args = JSON.parse(await fs.readFile(argsFile, 'utf8'));
+    const command = args[args.indexOf('-Command') + 1];
+
+    expect(command).toContain("($_.CreationDate.ToUniversalTime().Ticks).ToString()");
+    expect(snapshot.rootIdentity.startIdentity).toBe('638000000000001001');
+    expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
+  });
+
+  itOnPosix('resolves source and built Windows Job helpers and launches the fixed protocol', async () => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-path-'));
+    roots.push(packageRoot);
+    const sourceHelper = path.join(
+      packageRoot,
+      'native/windows/x64/aw-windows-job.exe',
+    );
+    const distHelper = path.join(
+      packageRoot,
+      'dist/native/windows/x64/aw-windows-job.exe',
+    );
+    const configFile = path.join(packageRoot, 'config.json');
+    await fs.mkdir(path.dirname(sourceHelper), { recursive: true });
+    await fs.writeFile(sourceHelper, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const encoded = process.argv[process.argv.indexOf('--config') + 1];",
+      "fs.writeFileSync(process.env.WINDOWS_JOB_CONFIG_FILE, Buffer.from(encoded, 'base64url'));",
+      "process.stdout.write('helper stdout');",
+    ].join('\n'));
+    await fs.chmod(sourceHelper, 0o755);
+
+    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(sourceHelper);
+    const invocation = createWindowsJobInvocation('target.exe', ['two words'], {
+      helperPath: sourceHelper,
+      parentPid: 42,
+    });
+    expect(invocation.args).toEqual([
+      '--config',
+      expect.stringMatching(/^[A-Za-z0-9_-]+$/u),
+    ]);
+    expect(JSON.parse(Buffer.from(invocation.args[1], 'base64url').toString('utf8'))).toEqual({
+      schemaVersion: 1,
+      executable: 'target.exe',
+      args: ['two words'],
+      parentPid: 42,
+    });
+    const metrics = {};
+    const result = await runProcessTree({
+      label: 'Windows Job protocol fixture',
+      command: 'target.exe',
+      args: ['two words', 'quote"value'],
+      env: { ...process.env, WINDOWS_JOB_CONFIG_FILE: configFile },
+      timeoutMs: 1_000,
+      metrics,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    });
+    const config = JSON.parse(await fs.readFile(configFile, 'utf8'));
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: 'helper stdout' });
+    expect(config).toEqual({
+      schemaVersion: 1,
+      executable: 'target.exe',
+      args: ['two words', 'quote"value'],
+      parentPid: process.pid,
+    });
+    expect(metrics).toMatchObject({
+      managedSpawnCount: 1,
+      processTableScanCount: 0,
+      peakLiveDescendants: null,
+      cleanupFailureCount: 0,
+      leakedProcessCount: 0,
+    });
+
+    await fs.mkdir(path.dirname(distHelper), { recursive: true });
+    await fs.writeFile(distHelper, 'built helper');
+    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(distHelper);
+  });
+
+  it('fails closed for unsupported, missing, and shell-script Windows Job targets', async () => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-missing-'));
+    roots.push(packageRoot);
+
+    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'ia32' }))
+      .toThrow('unsupported on architecture ia32');
+    expect(() => resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' }))
+      .toThrow('helper is missing for architecture x64');
+    expect(() => createWindowsJobInvocation('target.cmd', [], {
+      helperPath: 'aw-windows-job.exe',
+    })).toThrow('.cmd and .bat targets are unsupported');
+    await expect(runProcessTree({
+      label: 'missing Windows Job helper fixture',
+      command: 'target.exe',
+      args: [],
+      env: process.env,
+      timeoutMs: 1_000,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    })).rejects.toThrow('helper is missing for architecture x64');
+    await expect(runProcessTree({
+      label: 'Windows Job startup failure fixture',
+      command: 'target.exe',
+      args: [],
+      env: process.env,
+      timeoutMs: 1_000,
+    }, {
+      platform: 'win32',
+      createWindowsJobInvocation: () => ({
+        command: path.join(packageRoot, 'does-not-exist.exe'),
+        args: ['--config', 'invalid'],
+      }),
+    })).rejects.toThrow('Windows Job helper failed');
+  });
+
+  it.each(['timeout', 'abort'])('closes the Windows Job helper on %s', async (reason) => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-windows-job-${reason}-`));
+    roots.push(packageRoot);
+    const helperPath = path.join(packageRoot, 'native/windows/x64/aw-windows-job.exe');
+    const pidFile = path.join(packageRoot, 'helper.pid');
+    await fs.mkdir(path.dirname(helperPath), { recursive: true });
+    await fs.writeFile(helperPath, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "fs.writeFileSync(process.env.WINDOWS_JOB_PID_FILE, String(process.pid));",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    await fs.chmod(helperPath, 0o755);
+    const controller = new AbortController();
+    const abortReason = new Error('synthetic Windows Job abort');
+    const run = runProcessTree({
+      label: `Windows Job ${reason} fixture`,
+      command: 'target.exe',
+      args: [],
+      env: { ...process.env, WINDOWS_JOB_PID_FILE: pidFile },
+      signal: controller.signal,
+      timeoutMs: reason === 'timeout' ? 100 : null,
+    }, {
+      platform: 'win32',
+      arch: 'x64',
+      windowsJobPackageRoot: packageRoot,
+    });
+    const helperPid = await readJsonEventually(pidFile);
+    observedPids.push(helperPid);
+    if (reason === 'abort') controller.abort(abortReason);
+
+    if (reason === 'timeout') await expect(run).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    else await expect(run).rejects.toBe(abortReason);
+    await waitForProcessesToExit([helperPid], 500);
+    expect(isProcessAlive(helperPid)).toBe(false);
   });
 
   itOnPosix('bounds ps pending and throw fallback without leaving the direct child', async () => {
@@ -498,6 +726,7 @@ describe('performance gate process tree cleanup', () => {
         "const fs = require('node:fs');",
         `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
         "process.on('SIGTERM', () => {});",
+        syntheticWatchdogSource,
         'setInterval(() => {}, 1000);',
       ].join('\n');
       const startedAt = performance.now();
@@ -538,6 +767,7 @@ describe('performance gate process tree cleanup', () => {
       "const fs = require('node:fs');",
       `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
       "process.on('SIGTERM', () => {});",
+      syntheticWatchdogSource,
       'setInterval(() => {}, 1000);',
     ].join('\n');
     const invocations = [];
@@ -558,7 +788,7 @@ describe('performance gate process tree cleanup', () => {
         rootKilled ? [] : {
           ProcessId: rootPid,
           ParentProcessId: 1,
-          CreationDate: 'root-created',
+          CreationDateTicks: '100',
         }),
       taskkillProcessTree: async (invocation) => {
         invocations.push(invocation);
@@ -583,7 +813,7 @@ describe('performance gate process tree cleanup', () => {
   it('fails Windows external abort when the original identity remains after taskkill success', async () => {
     const controller = new AbortController();
     const reason = new Error('synthetic Windows abort');
-    const childSource = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
     const taskkillInvocations = [];
     const run = runProcessTree({
       label: 'Windows abort verification fixture',
@@ -600,7 +830,7 @@ describe('performance gate process tree cleanup', () => {
       snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, {
         ProcessId: rootPid,
         ParentProcessId: 1,
-        CreationDate: 'original-root',
+        CreationDateTicks: '100',
       }),
       taskkillProcessTree: async (invocation) => {
         taskkillInvocations.push(invocation);
@@ -619,7 +849,7 @@ describe('performance gate process tree cleanup', () => {
 
   it.each([
     ['disappears', null],
-    ['changes identity', 'reused-root'],
+    ['changes identity', '200'],
   ])('accepts Windows external abort when the original identity %s', async (_label, finalIdentity) => {
     const controller = new AbortController();
     const reason = new Error('synthetic Windows abort');
@@ -627,7 +857,7 @@ describe('performance gate process tree cleanup', () => {
     const run = runProcessTree({
       label: 'Windows abort completed fixture',
       command: process.execPath,
-      args: ['-e', 'setInterval(() => {}, 1000);'],
+      args: ['-e', `${syntheticWatchdogSource} setInterval(() => {}, 1000);`],
       env: process.env,
       signal: controller.signal,
       timeoutMs: null,
@@ -640,7 +870,7 @@ describe('performance gate process tree cleanup', () => {
         cleanupCompleted && finalIdentity === null ? [] : {
           ProcessId: rootPid,
           ParentProcessId: 1,
-          CreationDate: cleanupCompleted ? finalIdentity : 'original-root',
+          CreationDateTicks: cleanupCompleted ? finalIdentity : '100',
         }),
       taskkillProcessTree: async (invocation) => {
         if (invocation.force) {
@@ -679,11 +909,11 @@ describe('performance gate process tree cleanup', () => {
         snapshotCalls += 1;
         await new Promise((resolve) => setTimeout(resolve, 300));
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: rootPid, ParentProcessId: 1, CreationDate: 'reused-created' },
+          { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: '200' },
           {
             ProcessId: newChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'new-child-created',
+            CreationDateTicks: '300',
           },
         ]);
       },
@@ -691,7 +921,7 @@ describe('performance gate process tree cleanup', () => {
         taskkillInvocations.push(invocation);
         return true;
       },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
 
     expect(snapshotCalls).toBeGreaterThanOrEqual(3);
     expect(taskkillInvocations).toEqual([]);
@@ -719,18 +949,18 @@ describe('performance gate process tree cleanup', () => {
       platform: 'win32',
       snapshotWindowsProcessTree: async (rootPid) => {
         snapshotCalls += 1;
-        const rootCreationDate = snapshotCalls === 1 ? 'original-root' : 'reused-root';
+        const rootCreationDate = snapshotCalls === 1 ? '100' : '300';
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: rootPid, ParentProcessId: 1, CreationDate: rootCreationDate },
+          { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: rootCreationDate },
           ...(!oldChildKilled ? [{
             ProcessId: oldChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'old-child-created',
+            CreationDateTicks: '200',
           }] : []),
           ...(snapshotCalls === 1 ? [] : [{
             ProcessId: newChildPid,
             ParentProcessId: rootPid,
-            CreationDate: 'new-child-created',
+            CreationDateTicks: '400',
           }]),
         ]);
       },
@@ -741,7 +971,7 @@ describe('performance gate process tree cleanup', () => {
         }
         return true;
       },
-    })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
 
     expect(taskkillInvocations.map((invocation) => ({
       pid: invocation.pid,
@@ -753,11 +983,154 @@ describe('performance gate process tree cleanup', () => {
     expect(taskkillInvocations.some((invocation) => invocation.pid === newChildPid)).toBe(false);
   });
 
+  it('fails a normal Windows exit when every process snapshot fails', async () => {
+    const taskkillInvocations = [];
+    const metrics = {};
+
+    await expect(runProcessTree({
+      label: 'Windows normal exit snapshot failure fixture',
+      command: process.execPath,
+      args: ['-e', 'process.exit(0);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantSnapshotTimeoutMs: 25,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+      metrics,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async () => {
+        throw new Error('synthetic Windows snapshot failure');
+      },
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows descendant cleanup could not be verified');
+
+    expect(taskkillInvocations).toEqual([]);
+    expect(metrics).toMatchObject({
+      cleanupFailureCount: 1,
+      leakedProcessCount: null,
+    });
+  });
+
+  it('fails a normal Windows exit when the root identity still appears alive', async () => {
+    const taskkillInvocations = [];
+
+    await expect(runProcessTree({
+      label: 'Windows live root after exit fixture',
+      command: process.execPath,
+      args: ['-e', 'process.exit(0);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, {
+        ProcessId: rootPid,
+        ParentProcessId: 1,
+        CreationDateTicks: '100',
+      }),
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows process-tree cleanup is unconfirmed');
+
+    expect(taskkillInvocations).toEqual([]);
+  });
+
+  it('fails a normal Windows exit without killing an unverified late child candidate', async () => {
+    const candidatePid = 900_103;
+    const taskkillInvocations = [];
+    let snapshotCalls = 0;
+
+    await expect(runProcessTree({
+      label: 'Windows late child candidate fixture',
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => process.exit(0), 100);'],
+      env: process.env,
+      timeoutMs: 1_000,
+      descendantMonitorIntervalMs: 1_000,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => {
+        snapshotCalls += 1;
+        return parseWindowsProcessTree(rootPid, snapshotCalls === 1
+          ? { ProcessId: rootPid, ParentProcessId: 1, CreationDateTicks: '100' }
+          : {
+              ProcessId: candidatePid,
+              ParentProcessId: rootPid,
+              CreationDateTicks: '200',
+            });
+      },
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        return true;
+      },
+    })).rejects.toThrow('Windows process-tree cleanup is unconfirmed');
+
+    expect(snapshotCalls).toBeGreaterThanOrEqual(2);
+    expect(taskkillInvocations).toEqual([]);
+  });
+
+  it('does not kill a same-millisecond Windows PPID candidate that started before its parent', async () => {
+    const candidatePid = 777;
+    const taskkillInvocations = [];
+    let rootKilled = false;
+    const childSource = `${syntheticWatchdogSource} process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
+
+    await expect(runProcessTree({
+      label: 'Windows reused PPID edge fixture',
+      command: process.execPath,
+      args: ['-e', childSource],
+      env: process.env,
+      timeoutMs: 300,
+      descendantMonitorIntervalMs: 25,
+      terminationGraceMs: 25,
+      cleanupSettleMs: 25,
+      taskkillTimeoutMs: 25,
+    }, {
+      platform: 'win32',
+      snapshotWindowsProcessTree: async (rootPid) => parseWindowsProcessTree(rootPid, [
+        ...(!rootKilled ? [{
+          ProcessId: rootPid,
+          ParentProcessId: 1,
+          CreationDateTicks: '638000000000002000',
+        }] : []),
+        {
+          ProcessId: candidatePid,
+          ParentProcessId: rootPid,
+          CreationDateTicks: '638000000000001000',
+        },
+      ]),
+      taskkillProcessTree: async (invocation) => {
+        taskkillInvocations.push(invocation);
+        if (invocation.pid !== candidatePid && invocation.force) {
+          rootKilled = true;
+          process.kill(invocation.pid, 'SIGKILL');
+        }
+        return true;
+      },
+    })).rejects.toThrow('cleanup could not confirm Windows process-tree termination');
+
+    expect(taskkillInvocations.some((invocation) => invocation.pid === candidatePid)).toBe(false);
+  });
+
   it('cleans an observed Windows detached child after root exit zero', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-windows-normal-exit-'));
     roots.push(root);
     const pidFile = path.join(root, 'pids.json');
-    const grandchildSource = 'setInterval(() => {}, 1000);';
+    const grandchildSource = `${syntheticWatchdogSource} setInterval(() => {}, 1000);`;
     const childSource = [
       "const fs = require('node:fs');",
       "const { spawn } = require('node:child_process');",
@@ -783,11 +1156,15 @@ describe('performance gate process tree cleanup', () => {
       snapshotWindowsProcessTree: async (rootPid) => {
         const pids = await readJsonEventually(pidFile);
         return parseWindowsProcessTree(rootPid, [
-          { ProcessId: pids.child, ParentProcessId: 1, CreationDate: 'child-created' },
+          ...(isProcessAlive(pids.child) ? [{
+            ProcessId: pids.child,
+            ParentProcessId: 1,
+            CreationDateTicks: '100',
+          }] : []),
           ...(!grandchildKilled ? [{
             ProcessId: pids.grandchild,
             ParentProcessId: pids.child,
-            CreationDate: 'grandchild-created',
+            CreationDateTicks: '200',
           }] : []),
         ]);
       },
@@ -826,6 +1203,7 @@ describe('performance gate process tree cleanup', () => {
         "const fs = require('node:fs');",
         `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
         "process.on('SIGTERM', () => {});",
+        syntheticWatchdogSource,
         'setInterval(() => {}, 1000);',
       ].join('\n');
       const startedAt = performance.now();
@@ -844,7 +1222,7 @@ describe('performance gate process tree cleanup', () => {
           isProcessAlive(rootPid) ? {
             ProcessId: rootPid,
             ParentProcessId: 1,
-            CreationDate: 'root-created',
+            CreationDateTicks: '100',
           } : []),
         taskkillProcessTree,
       })).rejects.toBeInstanceOf(ProcessTreeTimeoutError);

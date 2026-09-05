@@ -1,8 +1,13 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+);
 
 const descendant = spawn(
   process.execPath,
-  ['-e', 'setInterval(() => {}, 10_000);'],
+  [syntheticProcessPath],
   {
     detached: true,
     stdio: ['ignore', 'inherit', 'inherit'],

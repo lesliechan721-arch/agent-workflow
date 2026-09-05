@@ -1,5 +1,9 @@
-import type { Mock } from 'vitest';
-import { afterEach, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach } from 'vitest';
+
+import {
+  installNoNetworkFetchGuard,
+  restoreFetch,
+} from '../../../../scripts/test/pure-test-isolation.js';
 
 import {
   createIsolatedTestEnv,
@@ -55,18 +59,7 @@ function replaceProcessEnv(nextEnv: NodeJS.ProcessEnv): void {
 }
 
 function restoreWorkerBaseFetch(): void {
-  if (workerBaseFetch === undefined) {
-    delete (globalThis as { fetch?: typeof fetch }).fetch;
-    return;
-  }
-
-  globalThis.fetch = workerBaseFetch;
-}
-
-function installNoNetworkFetchGuard(): void {
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    throw new Error(`Network access is disabled in tests. Use a path source or local bare Git remote for ${String(input)}.`);
-  }) as Mock);
+  restoreFetch(workerBaseFetch);
 }
 
 function installSourceTestPathFence(

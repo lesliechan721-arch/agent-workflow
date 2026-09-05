@@ -21,6 +21,10 @@ import {
   createSmokeStagingRunner,
   type SmokeStagingRunner,
 } from '../support/smoke-staging-runner.js';
+import {
+  assertCompatibleRuntimeVersion,
+  assertRunnerSkillBundle,
+} from '../../../../scripts/verify-eval-runtime-owner.mjs';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -83,6 +87,30 @@ afterEach(async () => {
 
 describe('build smoke', () => {
   const root = repoRoot();
+
+  it.each(['claude', 'codex'])('ships the current %s Eval Runner bundle', async (platform) => {
+    const snapshot = await requireBuildSnapshot();
+    const runnerRoot = path.join(
+      snapshot.catalogOutputRoot,
+      'plugins',
+      'aw-skill-eval-runner',
+      platform,
+      'skills',
+      'run-aw-skill-evals',
+    );
+    const bundle = await assertRunnerSkillBundle(runnerRoot);
+
+    expect(new Set(bundle.files)).toEqual(new Set([
+      'README.md',
+      'SKILL.md',
+      'agents/openai.yaml',
+      'aw-plugin-requirements.json',
+    ]));
+    expect(() => assertCompatibleRuntimeVersion({
+      packageVersion: '0.1.0',
+      minimumPackageVersion: bundle.minimumPackageVersion,
+    })).not.toThrow();
+  });
 
   it('reports plugin development status through the built public entry', async () => {
     const snapshot = await requireBuildSnapshot();
@@ -216,11 +244,42 @@ describe('build smoke', () => {
     ));
 
     expect(outputRoot).toBe(path.join(snapshot.root, 'packages', 'cli', 'plugins-dist'));
-    await expect(fs.readJson(path.join(root, '.release', 'cache', 'build-stamp.json')))
-      .resolves.toMatchObject({
-        generationId: snapshot.generationId,
-        outputDigest: snapshot.outputDigest,
-      });
+    if (snapshot.mode === 'release') {
+      await expect(fs.readJson(path.join(root, '.release', 'cache', 'build-stamp.json')))
+        .resolves.toMatchObject({
+          generationId: snapshot.generationId,
+          outputDigest: snapshot.outputDigest,
+        });
+    } else {
+      for (const target of ['agent-skill-eval', 'plugin-core', 'cli-typescript', 'plugin-bundle']) {
+        await expect(fs.readJson(path.join(
+          root,
+          '.release',
+          'cache',
+          'dev-build',
+          `${target}.json`,
+        ))).resolves.toMatchObject({
+          schemaVersion: 1,
+          target,
+          outputDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        });
+      }
+    }
+
+    for (const arch of ['x64', 'arm64']) {
+      const helperPath = path.join(
+        snapshot.root,
+        'packages',
+        'agent-skill-eval',
+        'dist',
+        'native',
+        'windows',
+        arch,
+        'aw-windows-job.exe',
+      );
+      const bytes = await fs.readFile(helperPath);
+      expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
+    }
 
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
@@ -600,7 +659,7 @@ describe('build smoke', () => {
   });
 
   it('reuses a warm build without changing key output mtimes', async () => {
-    await requireBuildSnapshot();
+    const snapshot = await requireBuildSnapshot();
     const keyOutputs = [
       path.join(root, 'packages', 'cli', 'dist', 'index.js'),
       path.join(root, 'packages', 'cli', 'dist', 'scripts', 'bundle-plugins.js'),
@@ -608,7 +667,7 @@ describe('build smoke', () => {
     ];
     const before = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
 
-    await execPnpmForTest(['build:ensure'], {
+    await execPnpmForTest([snapshot.mode === 'release' ? 'build:ensure' : 'build:dev'], {
       cwd: root,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,

@@ -1369,12 +1369,13 @@ function testCommitMessageAssertions() {
 
 async function testEvalChildTimeout() {
   const descendantProgram = process.platform === 'win32'
-    ? "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"
-    : "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
+    ? "process.stdout.write('ready\\n'); setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000);"
+    : "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setTimeout(() => process.exit(124), 30_000); setInterval(() => {}, 1000);";
   const program = [
     "const { spawn } = require('node:child_process');",
     `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantProgram)}], { stdio: ['ignore', 'pipe', 'ignore'] });`,
     "descendant.stdout.once('data', () => process.stdout.write(String(descendant.pid) + '\\n'));",
+    'setTimeout(() => process.exit(124), 30_000);',
     'setInterval(() => {}, 1000);',
   ].join(' ');
   const child = spawn(process.execPath, ['-e', program], {

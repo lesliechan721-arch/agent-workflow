@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   summarizeTriggerCase,
   type TriggerRunEvidence,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 import type {
   AwSkillEvalTriggerCase,
   AwSkillEvalTriggerSuiteCaseContract,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 function suite(
   overrides: Partial<AwSkillEvalTriggerSuiteCaseContract> = {},

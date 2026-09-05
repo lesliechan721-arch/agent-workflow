@@ -9,6 +9,7 @@ import { gunzip } from 'node:zlib';
 
 import {
   assertBuildInputPathSafety,
+  buildCacheContract,
   computeBuildInputDigest,
   computeCliPackageDigest,
   withBuildSnapshot,
@@ -685,32 +686,8 @@ async function resolveReleaseDirtyEntries(options = {}) {
 
 const RELEASE_INPUT_PATHS = [
   'release/version-targets.json',
-  'package.json',
-  'pnpm-lock.yaml',
-  'pnpm-workspace.yaml',
-  'tsconfig.base.json',
-  'scripts/build',
   'scripts/release',
-  'packages/agent-skill-eval/package.json',
-  'packages/agent-skill-eval/tsconfig.json',
-  'packages/agent-skill-eval/vitest.config.ts',
-  'packages/agent-skill-eval/src',
-  'packages/agent-skill-eval/schemas',
-  'packages/agent-skill-eval/scripts',
-  'packages/plugin-core/package.json',
-  'packages/plugin-core/tsconfig.json',
-  'packages/plugin-core/vitest.config.ts',
-  'packages/plugin-core/src',
-  'packages/plugin-core/schemas',
-  'packages/plugin-core/scripts',
-  'packages/cli/package.json',
-  'packages/cli/tsconfig.json',
-  'packages/cli/index.ts',
-  'packages/cli/vitest.config.ts',
-  'packages/cli/src',
-  'packages/cli/scripts',
-  'plugins',
-  '.changes',
+  ...buildCacheContract.inputPaths,
 ];
 
 function isAllowedIgnoredReleaseInput(relativePath) {

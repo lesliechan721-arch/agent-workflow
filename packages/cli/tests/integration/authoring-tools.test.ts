@@ -24,9 +24,47 @@ async function waitForAll(tasks: readonly Promise<unknown>[]): Promise<void> {
   }
 }
 
+async function mapWithConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  task: (value: T) => Promise<unknown>,
+): Promise<void> {
+  let nextIndex = 0;
+  const failures: Array<{ index: number; reason: unknown }> = [];
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      const value = values[index];
+      nextIndex += 1;
+      try {
+        await task(value!);
+      } catch (reason) {
+        failures.push({ index, reason });
+      }
+    }
+  });
+  await Promise.all(workers);
+  failures.sort((left, right) => left.index - right.index);
+  if (failures[0]) throw failures[0].reason;
+}
+
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
+
+describe('authoring subprocess batch scheduling', () => {
+  it('keeps the observed task peak at two', async () => {
+    let active = 0;
+    let peak = 0;
+    await mapWithConcurrency([1, 2, 3, 4, 5], 2, async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+    });
+    expect(peak).toBe(2);
+  });
+});
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -1238,7 +1276,7 @@ describe('authoring tools', () => {
       'skill-target-file',
       'skill-target-directory',
     ] as const;
-    await waitForAll(cases.map(async (pathCase) => {
+    await mapWithConcurrency(cases, 2, async (pathCase) => {
       const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-add-skill-${pathCase}-`));
       tempDirs.push(tempRoot);
       const workspaceRoot = path.join(tempRoot, 'workspace');
@@ -1320,7 +1358,7 @@ describe('authoring tools', () => {
       expect(pluginEntries.some((entry) => entry.startsWith('.aw-add-skill-'))).toBe(false);
       const manifestEntries = await fs.readdir(path.join(pluginRoot, '.agents-plugin')).catch(() => []);
       expect(manifestEntries.some((entry) => entry.includes('.aw-tmp-'))).toBe(false);
-    }));
+    });
   });
 
   externalPluginRootTest('rejects the removed plugin-root option', async () => {
@@ -3576,8 +3614,8 @@ describe('authoring tools', () => {
       const scenarioRoot = path.join(tempRoot, 'scenarios', scenario);
       scenarioRoots.set(scenario, scenarioRoot);
     }
-    await waitForAll([...scenarioRoots.values()].map((scenarioRoot) =>
-      runGit(tempRoot, ['clone', '--shared', tempRoot, scenarioRoot])));
+    await mapWithConcurrency([...scenarioRoots.values()], 2, (scenarioRoot) =>
+      runGit(tempRoot, ['clone', '--shared', tempRoot, scenarioRoot]));
     const scenarioPlugin = (scenario: typeof scenarios[number]) => path.join(
       scenarioRoots.get(scenario)!,
       'plugins',
@@ -3684,11 +3722,11 @@ describe('authoring tools', () => {
         stdout: expect.stringContaining(diagnostic),
       });
     };
-    await waitForAll([
-      expectFailure('portable-root-file', '直接子节点必须是普通目录'),
-      expectFailure('unresolved-runtime', 'final file tree contains an unresolved template'),
-      expectFailure('unresolved-provider-runtime', 'final file tree contains an unresolved template'),
-      ...(['missing-provider', 'missing-export'] as const).map(async (scenario) => {
+    const validations: Array<() => Promise<unknown>> = [
+      () => expectFailure('portable-root-file', '直接子节点必须是普通目录'),
+      () => expectFailure('unresolved-runtime', 'final file tree contains an unresolved template'),
+      () => expectFailure('unresolved-provider-runtime', 'final file tree contains an unresolved template'),
+      ...(['missing-provider', 'missing-export'] as const).map((scenario) => async () => {
         const failure = await runValidatePlugin(scenarioPlugin(scenario))
           .catch((error: unknown) => error as { stdout: string });
         expect(failure.stdout).toContain('Cannot resolve artifacts target');
@@ -3696,16 +3734,17 @@ describe('authoring tools', () => {
         expect(failure.stdout).not.toContain(scenarioRoots.get(scenario)!);
         expect(failure.stdout).not.toContain(providerBytes.trim());
       }),
-      expectFailure('import-collision', 'final file tree path "references" conflicts with "references/runtime.txt"'),
-      expectFailure('missing-distribution', 'agent-skills targets require distributions.agentSkills'),
-      expectFailure('portable-only', 'portable-only plugins are not supported'),
-      expect(runValidatePlugin(scenarioPlugin('native-capability'), ['--json'])).resolves.toMatchObject({
+      () => expectFailure('import-collision', 'final file tree path "references" conflicts with "references/runtime.txt"'),
+      () => expectFailure('missing-distribution', 'agent-skills targets require distributions.agentSkills'),
+      () => expectFailure('portable-only', 'portable-only plugins are not supported'),
+      () => expect(runValidatePlugin(scenarioPlugin('native-capability'), ['--json'])).resolves.toMatchObject({
         stdout: expect.stringContaining('"ok": true'),
       }),
-      expectFailure('invalid-distribution', '/buildConfig/skillRuntimeFiles/0/distributions/0'),
-      expectFailure('uppercase-skill-key', 'ASCII lowercase hyphen-case'),
-      expectFailure('wrong-skill-name', 'name 必须与 Skill 目录一致'),
-    ]);
+      () => expectFailure('invalid-distribution', '/buildConfig/skillRuntimeFiles/0/distributions/0'),
+      () => expectFailure('uppercase-skill-key', 'ASCII lowercase hyphen-case'),
+      () => expectFailure('wrong-skill-name', 'name 必须与 Skill 目录一致'),
+    ];
+    await mapWithConcurrency(validations, 2, (validation) => validation());
   }, 30_000);
 
   it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
@@ -3918,22 +3957,23 @@ describe('authoring tools', () => {
       path.join(tempRoot, 'claude-only-products'),
       { products: ['claude'] },
     );
-    await waitForAll([
-      expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
+    const productValidations: Array<() => Promise<unknown>> = [
+      () => expect(runValidatePlugin(omittedProducts.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       }),
-      expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+      () => expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       }),
-      expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
+      () => expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
         stdout: expect.stringContaining('[PASS] All checks passed.'),
       }),
-      expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
+      () => expect(runValidatePlugin(claudeOnly.pluginDir)).rejects.toMatchObject({
         stdout: expect.stringContaining(
           'artifacts.targets[0].platform requires CODEX support',
         ),
       }),
-    ]);
+    ];
+    await mapWithConcurrency(productValidations, 2, (validation) => validation());
 
     const dynamicCodex = await writeSourcePlugin(
       path.join(tempRoot, 'codex-dynamic'),
@@ -4151,33 +4191,33 @@ describe('authoring tools', () => {
       });
     };
 
-    await waitForAll([
-      (async () => {
+    const variantValidations: Array<() => Promise<unknown>> = [
+      async () => {
         await fs.writeJson(variantManifestPath('duplicate-source'), manifestWithSources([
           './skills/claude-dynamic',
           './skills/claude-dynamic',
         ]), { spaces: 2 });
         await expectVariantFailure('duplicate-source', 'sourceDirs must not contain duplicate directories');
-      })(),
-      (async () => {
+      },
+      async () => {
         await fs.writeJson(variantManifestPath('normalized-duplicate-source'), manifestWithSources([
           './skills/claude-dynamic',
           './skills/claude-dynamic/../claude-dynamic',
         ]), { spaces: 2 });
         await expectVariantFailure('normalized-duplicate-source', 'sourceDirs must not contain duplicate directories');
-      })(),
-      (async () => {
+      },
+      async () => {
         await fs.remove(path.join(variantSource('missing-skill'), 'SKILL.md'));
         await expectVariantFailure('missing-skill', 'final file tree must contain a non-empty SKILL.md');
-      })(),
-      (async () => {
+      },
+      async () => {
         await fs.outputFile(path.join(variantSource('path-collision'), 'references'), 'static file\n');
         await expectVariantFailure(
           'path-collision',
           'final file tree path "references" conflicts with "references/runtime.md"',
         );
-      })(),
-      (async () => {
+      },
+      async () => {
         await waitForAll([
           fs.ensureDir(path.join(variantSource('missing-skill-root'), 'evals')),
           fs.writeJson(
@@ -4190,8 +4230,8 @@ describe('authoring tools', () => {
           'missing-skill-root',
           'sourceDirs must include "./skills/claude-dynamic" so README.md is published',
         );
-      })(),
-      (async () => {
+      },
+      async () => {
         await waitForAll([
           fs.ensureDir(path.join(variantSource('author-only-source'), 'evals')),
           fs.writeJson(
@@ -4201,8 +4241,8 @@ describe('authoring tools', () => {
           ),
         ]);
         await expectVariantFailure('author-only-source', 'must not point inside an author-only Skill directory');
-      })(),
-      (async () => {
+      },
+      async () => {
         await waitForAll([
           fs.ensureDir(path.join(variantSource('runtime-evals-source'), 'evals')),
           fs.outputFile(
@@ -4221,8 +4261,8 @@ describe('authoring tools', () => {
         await expect(runValidatePlugin(variantRoots.get('runtime-evals-source')!)).resolves.toMatchObject({
           stdout: expect.stringContaining('[PASS] All checks passed.'),
         });
-      })(),
-      (async () => {
+      },
+      async () => {
         await waitForAll([
           fs.symlink('.', path.join(variantSource('symlink-source'), 'source-link')),
           fs.writeJson(
@@ -4235,8 +4275,8 @@ describe('authoring tools', () => {
           'symlink-source',
           'Invalid plugin input tree: symbolic links are not supported',
         );
-      })(),
-      (async () => {
+      },
+      async () => {
         await fs.writeJson(variantManifestPath('duplicate-owner'), {
           ...dynamicClaudeManifest,
           artifacts: {
@@ -4253,8 +4293,9 @@ describe('authoring tools', () => {
           'duplicate-owner',
           'duplicate skill ownership "claude:user:claude-dynamic"',
         );
-      })(),
-    ]);
+      },
+    ];
+    await mapWithConcurrency(variantValidations, 2, (validation) => validation());
   });
 
   it('validate_plugin.mjs uses production-equivalent renderer request partitions', async () => {
@@ -4516,26 +4557,27 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-role-'));
     tempDirs.push(tempRoot);
 
-    await waitForAll([
-      writeDynamicArtifactPlugin(
+    const roleValidations: Array<() => Promise<unknown>> = [
+      () => writeDynamicArtifactPlugin(
         path.join(tempRoot, 'missing-role'),
         { includeRoleKey: false },
       ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
         stdout: expect.stringContaining('codex.agentRole targets must declare a static roleKey'),
       })),
-      writeDynamicArtifactPlugin(
+      () => writeDynamicArtifactPlugin(
         path.join(tempRoot, 'mismatched-role'),
         { rendererRoleKey: 'other-explorer' },
       ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
         stdout: expect.stringContaining('expected "codex-explorer" from static metadata'),
       })),
-      writeDynamicArtifactPlugin(
+      () => writeDynamicArtifactPlugin(
         path.join(tempRoot, 'missing-policy'),
         { omitCodexInvocationPolicy: true },
       ).then(({ pluginDir }) => expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
         stdout: expect.stringContaining('[missing-policy]'),
       })),
-    ]);
+    ];
+    await mapWithConcurrency(roleValidations, 2, (validation) => validation());
   });
 
   it('validate_plugin.mjs accepts native hooks and rejects hook contract mistakes', async () => {
@@ -4782,7 +4824,7 @@ describe('authoring tools', () => {
       },
     ];
 
-    await waitForAll(cases.map(async (testCase) => {
+    await mapWithConcurrency(cases, 2, async (testCase) => {
       const { pluginDir } = await writeSourcePlugin(
         tempRoot,
         testCase.name,
@@ -4810,7 +4852,7 @@ describe('authoring tools', () => {
           stdout: expect.stringContaining('[PASS] All checks passed.'),
         });
       }
-    }));
+    });
   });
 
   it('validate_plugin.mjs validates public slashCommands source contracts', async () => {

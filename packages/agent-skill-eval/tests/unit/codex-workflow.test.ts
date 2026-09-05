@@ -16,8 +16,8 @@ import {
   type CodexWorkflowRequest,
   type CodexWorkflowTransport,
   type ProcessTreeDependencies,
-} from '../../dist/index.js'
-import { codexWorkflowMissingFinalMessageDiagnostic } from '../../dist/codex-workflow.js'
+} from '../../src/index.js'
+import { codexWorkflowMissingFinalMessageDiagnostic } from '../../src/codex-workflow.js'
 
 const roots: string[] = []
 
@@ -75,13 +75,16 @@ function deterministicProcessTree(): ProcessTreeDependencies {
         stop: async () => { sentinelAlive = false },
       }
     },
-    execFile: (_command, args, _options, callback) => callback(null, args.includes('pid=,command=')
+    execFile: (_command, args, _options, callback) => callback(
+      null,
+      args.some((arg) => arg.includes('command='))
       ? sentinelAlive
-        ? `900001 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
+        ? `900001 1 900001 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`
         : ''
       : sentinelAlive
         ? '900001 1 900001 S Mon Aug 24 12:00:00 2026'
-        : ''),
+        : '',
+    ),
   }
 }
 

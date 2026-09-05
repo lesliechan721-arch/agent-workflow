@@ -1,10 +1,17 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+import { startSyntheticProcessWatchdog } from '../../../../scripts/test/synthetic-process.mjs';
+
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+);
 
 const config = JSON.parse(await fs.readFile(process.argv[2], 'utf8'));
 await fs.mkdir(config.snapshotRoot, { recursive: true });
 await fs.mkdir(config.stageTempRoot, { recursive: true });
-const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+const grandchild = spawn(process.execPath, [syntheticProcessPath], {
   env: process.env,
   stdio: 'ignore',
 });
@@ -30,5 +37,6 @@ if (config.resultMode) {
     process.stdout.write('null');
   }
 } else {
+  startSyntheticProcessWatchdog();
   setInterval(() => {}, 1000);
 }

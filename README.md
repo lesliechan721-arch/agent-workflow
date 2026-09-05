@@ -281,6 +281,8 @@ make build
 make test
 ```
 
+日常开发可使用 `pnpm build:dev` 复用按目标划分的弱缓存；`pnpm test:dist:dev` 在该开发 build 后运行与正式 `test:dist` 相同的 dist contract 和 build smoke。正式交付和发布仍使用 `pnpm build`、`pnpm build:ensure` 与 release verification。
+
 本地 CLI 包含一个精确版本的共享 Eval 依赖。打包命令从同一 build snapshot 生成两个
 tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖：
 
@@ -292,6 +294,8 @@ pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz>
 ```
 
 `pnpm build` 对官方 Catalog source 使用 `--strict-requirements` 语义，并生成 `packages/cli/plugins-dist/` schema 7 本地 snapshot。`release:verify:catalog:core` 通过此官方 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
+
+Windows Job helper 以 Go 源码和预编译的 x64/arm64 PE 分发。普通 `pnpm build` 只校验 manifest、源码 digest、binary digest 和 PE 架构，不要求 Go。修改 helper 源码或 toolchain 后，维护者运行 `pnpm --filter @lesliechan721/agent-skill-eval windows-job:refresh`；该命令固定交叉编译环境，并在 manifest 记录当前精确 Go 版本。强 release verification 运行 `pnpm windows-job:reproducibility`，要求安装该精确 Go 版本，使用本机 toolchain 重建两个 PE 并逐字节比较；Go 缺失、版本不同或结果不一致时停止。真实 Windows 行为仍用对应架构的 `pnpm qualification:windows-job` 验证。
 
 Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的三个精确 binary 运行；命令不会自动下载：
 

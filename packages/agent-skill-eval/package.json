@@ -23,9 +23,14 @@
     "dist/"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs",
-    "test": "pnpm run build && node ../../scripts/test/run-vitest.mjs run",
-    "test:unit": "pnpm run build && node ../../scripts/test/run-vitest.mjs run tests/unit",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs && node scripts/copy-windows-job-helper.mjs",
+    "build:dev": "tsc -p tsconfig.dev.json && node scripts/embed-schemas.mjs && node scripts/copy-windows-job-helper.mjs",
+    "windows-job:refresh": "node scripts/refresh-windows-job-helper.mjs",
+    "windows-job:reproducibility": "node scripts/reproduce-windows-job-helper.mjs",
+    "windows-job:verify": "node scripts/verify-windows-job-helper.mjs",
+    "test": "pnpm run test:unit",
+    "test:unit": "node ../../scripts/test/run-vitest.mjs run --project pure --maxWorkers=4 && node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated --maxWorkers=2 && node ../../scripts/test/run-vitest.mjs run --project process-lifecycle --pool=forks --maxWorkers=1 --no-file-parallelism",
+    "test:dist": "node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
   "dependencies": {

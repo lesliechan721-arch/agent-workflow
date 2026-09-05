@@ -34,6 +34,7 @@ import {
   validateAwSkillEvalConversationCaseDocument,
   type AwSkillEvalIsolation,
 } from './codex-eval-cases.js';
+import { createWindowsJobInvocation } from './windows-job.js';
 
 export interface CodexEvalProcessManagementEvidence {
   mode: 'managed' | 'observed' | 'unmanaged-confirmed' | 'not-applicable';
@@ -726,17 +727,26 @@ export class EvalAppServerSession {
     const executableArgs = options.hostReadContainmentProfile
       ? ['-p', options.hostReadContainmentProfile, options.codexBin, ...args]
       : args;
-    this.process = spawn(executable, executableArgs, {
-      cwd: options.cwd,
-      env: managed
-        ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId }
-        : { ...options.env },
-      shell: false,
-      detached: managed && process.platform !== 'win32',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }) as unknown as AppServerProcess;
+    const windowsJobInvocation = managed && process.platform === 'win32'
+      ? createWindowsJobInvocation(executable, executableArgs)
+      : undefined;
+    this.process = spawn(
+      windowsJobInvocation?.command ?? executable,
+      windowsJobInvocation?.args ?? executableArgs,
+      {
+        cwd: options.cwd,
+        env: managed
+          ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId }
+          : { ...options.env },
+        shell: false,
+        detached: managed && process.platform !== 'win32',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    ) as unknown as AppServerProcess;
     this.processTreeMonitor = managed
-      ? createChildProcessTreeMonitor(
+      ? windowsJobInvocation
+        ? createDirectChildProcessMonitor(this.process as unknown as ChildProcess)
+        : createChildProcessTreeMonitor(
           this.process as unknown as ChildProcess,
           { treeId: this.processTreeId },
         )
@@ -1296,8 +1306,9 @@ async function runConversationOnce(options: {
     options.onStage?.('workspace-materialized');
     const before = await snapshotWorkspace(workspaceRoot);
     if (
-      options.processManagement.mode === 'managed' ||
-      options.processManagement.mode === 'observed'
+      process.platform !== 'win32' &&
+      (options.processManagement.mode === 'managed' ||
+        options.processManagement.mode === 'observed')
     ) {
       await assertProcessTreeInspectionAvailable();
     }
@@ -1696,7 +1707,10 @@ export async function runCodexEvalIsolationProbe(options: {
         trustedProject: workspaceRoot,
       }),
     ]);
-    if (processManagement.mode === 'managed' || processManagement.mode === 'observed') {
+    if (
+      process.platform !== 'win32' &&
+      (processManagement.mode === 'managed' || processManagement.mode === 'observed')
+    ) {
       await assertProcessTreeInspectionAvailable();
     }
     control.throwIfStopped('initialize');

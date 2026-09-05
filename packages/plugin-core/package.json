@@ -27,11 +27,13 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && pnpm run generate:check && tsc -p tsconfig.json",
+    "build:dev": "pnpm run generate:check && tsc -p tsconfig.dev.json",
     "generate": "node scripts/generate-manifest-types.mjs",
     "generate:check": "node scripts/generate-manifest-types.mjs --check",
-    "test": "pnpm run build && pnpm run test:types && node ../../scripts/test/run-vitest.mjs run",
+    "test": "node ../../scripts/test/run-vitest.mjs run",
     "test:types": "tsc -p tsconfig.type-contract.json",
-    "test:unit": "pnpm run build && pnpm run test:types && node ../../scripts/test/run-vitest.mjs run tests/unit",
+    "test:unit": "node ../../scripts/test/run-vitest.mjs run tests/unit",
+    "test:dist": "node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts",
     "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
   "dependencies": {

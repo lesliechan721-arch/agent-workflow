@@ -5,7 +5,13 @@ import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
 import type { DistributionName, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
 import { redactString } from '../output/redact.js';
-import { observeProcessTree, terminateProcessTree, type ProcessTreeObservation } from './process-tree.js';
+import {
+  createWindowsJobInvocation,
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeObservation,
+  type WindowsJobInvocation,
+} from './process-tree.js';
 import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -15,6 +21,7 @@ export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
+const WINDOWS_JOB_CLOSE_TIMEOUT_MS = 4_500;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
@@ -23,6 +30,18 @@ export interface PluginProcessRunner {
 }
 
 interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[] }
+
+/** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
+interface DefaultPluginProcessRunnerDependencies {
+  platform?: NodeJS.Platform;
+  spawn?: typeof spawn;
+  observeProcessTree?: typeof observeProcessTree;
+  terminateProcessTree?: typeof terminateProcessTree;
+  createWindowsJobInvocation?: (
+    executable: string,
+    args: readonly string[],
+  ) => WindowsJobInvocation;
+}
 
 export async function resolveBundledPluginFilePath(options: { bundleRoot: string; pluginRelativePath: string; fieldName: string }): Promise<string> {
   const bundleRoot = await fs.realpath(options.bundleRoot);
@@ -237,42 +256,113 @@ function sanitizePreApplyErrorMessage(
   return output;
 }
 
-export const defaultPluginProcessRunner = {
+export function createDefaultPluginProcessRunner(
+  dependencies: DefaultPluginProcessRunnerDependencies = {},
+) {
+  const platform = dependencies.platform ?? process.platform;
+  const spawnImpl = dependencies.spawn ?? spawn;
+  const observeProcessTreeImpl = dependencies.observeProcessTree ?? observeProcessTree;
+  const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
+  const createWindowsJobInvocationImpl = dependencies.createWindowsJobInvocation ??
+    (dependencies.spawn ? undefined : createWindowsJobInvocation);
+  return {
   run(invocation: PluginScriptInvocation, options: DefaultPluginProcessRunOptions): Promise<PluginProcessResult> {
     return new Promise<PluginProcessResult>((resolve, reject) => {
       options.signal?.throwIfAborted();
       const marker = randomUUID();
-      const child = spawn(invocation.command, invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      const windowsJobInvocation = platform === 'win32' && createWindowsJobInvocationImpl
+        ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
+        : undefined;
+      const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
       child.stdin?.end(invocation.stdin ?? '');
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
+      let windowsJobCloseTimer: NodeJS.Timeout | undefined;
       const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
-      let observation: ProcessTreeObservation | undefined; if (child.pid !== undefined) observation = observeProcessTree(child.pid, marker);
+      let observation: ProcessTreeObservation | undefined; if (!windowsJobInvocation && child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
-      const cleanup = (): void => { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
-      const settle = (): void => { if (settled) return; settled = true; cleanup(); if (aborted) { try { options.signal?.throwIfAborted(); } catch (error) { reject(error); return; } } resolve({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut }); };
-      function terminate(): void {
-        if (settled || terminating) return; terminating = true;
+      const cleanup = (): void => { clearTimeout(timer); if (windowsJobCloseTimer) clearTimeout(windowsJobCloseTimer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
+      const result = (): PluginProcessResult => ({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut });
+      const settle = (cleanupError?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (cleanupError) {
+          reject(cleanupError);
+          return;
+        }
+        if (aborted) {
+          try { options.signal?.throwIfAborted(); } catch (error) { reject(error); return; }
+        }
+        resolve(result());
+      };
+      function terminate(
+        requireConfirmedCleanup: boolean = false,
+        allowUnobservedWindowsProcessOnNormalCompletion: boolean = false,
+      ): void {
+        if (settled || terminating) return;
+        terminating = true;
+        clearTimeout(timer);
         const direct = (signal: 'SIGTERM' | 'SIGKILL'): void => { if (child.exitCode === null && child.signalCode === null) child.kill(signal); };
-        const termination = child.pid === undefined ? Promise.resolve(direct('SIGKILL')) : terminateProcessTree(child.pid, direct, {}, { observation });
-        void Promise.resolve(termination).then(settle, settle);
+        if (windowsJobInvocation) {
+          try {
+            if (child.exitCode === null && child.signalCode === null && child.kill('SIGKILL') === false) {
+              throw new Error('Windows Job helper did not accept termination.');
+            }
+          } catch (error) {
+            settle(error);
+            return;
+          }
+          windowsJobCloseTimer = setTimeout(
+            () => settle(new Error('Windows Job helper exit could not be confirmed.')),
+            WINDOWS_JOB_CLOSE_TIMEOUT_MS,
+          );
+          windowsJobCloseTimer.unref();
+          return;
+        }
+        const termination = child.pid === undefined
+          ? Promise.resolve(direct('SIGKILL'))
+          : terminateProcessTreeImpl(
+              child.pid,
+              direct,
+              {},
+              {
+                observation,
+                requireConfirmedCleanup,
+                ...(allowUnobservedWindowsProcessOnNormalCompletion
+                  ? { allowUnobservedWindowsProcessOnNormalCompletion: true }
+                  : {}),
+              },
+            );
+        void Promise.resolve(termination).then(
+          () => settle(),
+          (error: unknown) => settle(error),
+        );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
-      child.on('error', (error) => { if (!settled && !terminating) { settled = true; cleanup(); reject(error); } });
-      child.on('close', (exitCode, signal) => {
-        if (settled || terminating) return;
-        if (exitCode !== 0 || signal !== null) {
-          terminate();
+      child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settle(error); });
+      const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
+        if (settled) return;
+        if (windowsJobInvocation) {
+          settle();
           return;
         }
-        settled = true; cleanup(); resolve({ exitCode, signal, stdout, stderr, timedOut });
-      });
+        if (terminating) return;
+        terminate(
+          true,
+          platform === 'win32' && exitCode === 0 && signal === null,
+        );
+      };
+      child.on(platform === 'win32' ? 'close' : 'exit', complete);
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();
     });
   },
-} satisfies PluginProcessRunner;
+  };
+}
+
+export const defaultPluginProcessRunner = createDefaultPluginProcessRunner();
 
 export interface PreApplyContextV1 {
   schemaVersion: 1;
@@ -290,6 +380,10 @@ export async function runPreApplyScript(options: {
   const codexHome = options.context.env.AW_CODEX_HOME || path.join(awHome, 'isolated-codex-home');
   const claudeHome = options.context.env.AW_CLAUDE_HOME || path.join(awHome, 'isolated-claude-home');
   let tempDir: string | undefined;
+  let interruptSignal: 'SIGINT' | 'SIGTERM' | undefined;
+  let interruptReason: Error | undefined;
+  let runnerCleanupConfirmed = false;
+  let removeInterruptListeners: (() => void) | undefined;
   const privateRoots = (): Array<{ root: string; replacement: string }> => [
     ...(tempDir ? [
       { root: path.join(tempDir, 'home'), replacement: '[temporary-home]' },
@@ -321,14 +415,37 @@ export async function runPreApplyScript(options: {
     const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
-    let result: PluginProcessResult;
+    const interruptController = new AbortController();
+    const handleInterrupt = (signal: 'SIGINT' | 'SIGTERM'): void => {
+      if (interruptSignal) return;
+      interruptSignal = signal;
+      interruptReason = new Error(`preApply interrupted by ${signal}.`);
+      interruptController.abort(interruptReason);
+    };
+    const handleSigint = (): void => handleInterrupt('SIGINT');
+    const handleSigterm = (): void => handleInterrupt('SIGTERM');
+    process.on('SIGINT', handleSigint);
+    process.on('SIGTERM', handleSigterm);
+    removeInterruptListeners = () => {
+      process.removeListener('SIGINT', handleSigint);
+      process.removeListener('SIGTERM', handleSigterm);
+    };
+    let result: PluginProcessResult | undefined;
     try {
       result = options.runner
-        ? await options.runner.run(invocation, runOptions)
-        : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues });
-    } catch {
-      throw new Error('preApply could not start.');
+        ? await options.runner.run(invocation, { ...runOptions, signal: interruptController.signal })
+        : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues, signal: interruptController.signal });
+      runnerCleanupConfirmed = true;
+    } catch (error) {
+      if (interruptSignal && error === interruptReason) {
+        runnerCleanupConfirmed = true;
+      } else if (interruptSignal) {
+        throw new Error(`preApply process cleanup failed after ${interruptSignal}.`);
+      } else {
+        throw new Error('preApply could not start.');
+      }
     }
+    if (!result) return;
     const stdout = summarizePreApplyFailureOutput(
       sanitizePreApplyErrorMessage(result.stdout, privateRoots()),
       sensitiveValues,
@@ -349,6 +466,26 @@ export async function runPreApplyScript(options: {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
   } finally {
-    if (tempDir) await fs.remove(tempDir);
+    let tempCleanupError: unknown;
+    try {
+      if (tempDir) await fs.remove(tempDir);
+    } catch (error) {
+      tempCleanupError = error;
+    }
+    removeInterruptListeners?.();
+    if (interruptSignal) {
+      if (tempCleanupError) {
+        process.stderr.write(`preApply temporary directory cleanup failed after ${interruptSignal}.\n`);
+        process.exit(1);
+      }
+      if (!runnerCleanupConfirmed) {
+        process.stderr.write(`preApply process cleanup failed after ${interruptSignal}.\n`);
+        process.exit(1);
+      }
+      process.exit(interruptSignal === 'SIGINT' ? 130 : 143);
+    }
+    if (tempCleanupError) {
+      throw tempCleanupError;
+    }
   }
 }

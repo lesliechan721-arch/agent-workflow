@@ -15,6 +15,10 @@ import {
   withSafeTestCwd,
 } from '../helpers/test-isolation.js';
 import { normalizeAbsolutePath } from '../helpers/path-fence.js';
+import {
+  createPureTestIsolationContext,
+  PURE_TEST_ENV_KEYS,
+} from '../../../../scripts/test/pure-test-isolation.js';
 
 const cleanupTasks: Array<() => Promise<void>> = [];
 const extraTempDirs: string[] = [];
@@ -37,6 +41,58 @@ afterEach(async () => {
 });
 
 describe('test isolation helpers', () => {
+  it('keeps non-pure tests on the full filesystem isolation', async () => {
+    expect(process.env.HOME).toContain('aw-test-isolation-');
+    expect(process.env.HOME).not.toContain('aw-pure-test-home-');
+    expect(path.basename(process.cwd())).toBe('fixture-cwd');
+    expect(process.cwd()).toContain(path.basename(path.dirname(process.env.HOME!)));
+    await expect(fs.pathExists(path.dirname(process.env.HOME!))).resolves.toBe(true);
+    await expect(fs.pathExists(process.env.npm_config_userconfig!)).resolves.toBe(true);
+  });
+
+  it('patches and restores only the controlled pure environment keys', async () => {
+    const before = new Map(Object.entries(process.env));
+    const cwd = process.cwd();
+    const uncontrolledKey = 'AW_PURE_TEST_UNCONTROLLED_SENTINEL';
+    process.env[uncontrolledKey] = 'preserved';
+    const context = await createPureTestIsolationContext();
+
+    try {
+      const changedKeys = Object.keys(process.env).filter((key) =>
+        process.env[key] !== before.get(key) && key !== uncontrolledKey);
+      expect(changedKeys.sort()).toEqual([...PURE_TEST_ENV_KEYS].sort());
+      expect(process.env[uncontrolledKey]).toBe('preserved');
+      expect(process.cwd()).toBe(cwd);
+      await expect(fs.pathExists(context.sentinelHome)).resolves.toBe(false);
+      await expect(fs.pathExists(context.npmUserConfigPath)).resolves.toBe(false);
+    } finally {
+      await context.teardown();
+      delete process.env[uncontrolledKey];
+    }
+
+    for (const key of PURE_TEST_ENV_KEYS) {
+      expect(Object.hasOwn(process.env, key)).toBe(before.has(key));
+      expect(process.env[key]).toBe(before.get(key));
+    }
+  });
+
+  it('fails and removes only its sentinel HOME when a pure test creates it', async () => {
+    const context = await createPureTestIsolationContext();
+    const foreignSibling = `${context.sentinelHome}-foreign`;
+    await Promise.all([
+      fs.ensureDir(context.sentinelHome),
+      fs.ensureDir(foreignSibling),
+    ]);
+
+    try {
+      await expect(context.teardown()).rejects.toThrow('Pure test created its sentinel HOME');
+      await expect(fs.pathExists(context.sentinelHome)).resolves.toBe(false);
+      await expect(fs.pathExists(foreignSibling)).resolves.toBe(true);
+    } finally {
+      await fs.remove(foreignSibling);
+    }
+  });
+
   it('creates required paths and leaves business state paths lazy', async () => {
     const isolated = await createIsolatedTestEnv();
     cleanupTasks.push(isolated.cleanup);

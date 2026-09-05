@@ -1,8 +1,13 @@
 import { EventEmitter } from 'node:events';
+import os from 'node:os';
+import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
+import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
+import { probeAgentVersion } from '../../src/utils/agent-version.js';
 import {
   NativeCliError,
   CodexProjectConfigNotEffectiveError,
@@ -25,13 +30,269 @@ import {
   type NativeCliInvocation,
   type NativeCliResult,
 } from '../../src/utils/native-cli.js';
+import {
+  assertProcessTreeInspectionAvailable,
+  observeProcessTree,
+} from '../../src/utils/process-tree.js';
 import { TestNativeCliGuardError } from '../helpers/native-guard.js';
+
+let hostProcessInspectionAvailable = false;
+try {
+  await assertProcessTreeInspectionAvailable();
+  hostProcessInspectionAvailable = true;
+} catch {
+  // This integration test requires permission to inspect the host process table.
+}
 
 function result(stdout = '', stderr = '', exitCode = 0): NativeCliResult {
   return { stdout, stderr, exitCode };
 }
 
+function renderClaudeNpmShim(target: string): string {
+  return [
+    '@ECHO off',
+    'GOTO start',
+    ':find_dp0',
+    'SET dp0=%~dp0',
+    'EXIT /b',
+    ':start',
+    'SETLOCAL',
+    'CALL :find_dp0',
+    '',
+    'IF EXIST "%dp0%\\node.exe" (',
+    '  SET "_prog=%dp0%\\node.exe"',
+    ') ELSE (',
+    '  SET "_prog=node"',
+    '  SET PATHEXT=%PATHEXT:;.JS;=;%',
+    ')',
+    '',
+    'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & ' +
+      `"%_prog%"  "%dp0%\\${target}" %*`,
+    '',
+  ].join('\r\n');
+}
+
+async function writeWindowsClaudeNpmFixture(root: string): Promise<{
+  binRoot: string;
+  launcher: string;
+  shim: string;
+}> {
+  const binRoot = path.join(root, 'npm-prefix');
+  const packageRoot = path.join(binRoot, 'node_modules', '@anthropic-ai', 'claude-code');
+  const launcher = path.join(packageRoot, 'cli.js');
+  const shim = path.join(binRoot, 'claude.CMD');
+  await fs.ensureDir(packageRoot);
+  await Promise.all([
+    fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: '@anthropic-ai/claude-code',
+      version: '2.1.88',
+      bin: { claude: 'cli.js' },
+    }),
+    fs.writeFile(launcher, '#!/usr/bin/env node\n'),
+    fs.writeFile(
+      shim,
+      renderClaudeNpmShim('node_modules\\@anthropic-ai\\claude-code\\cli.js'),
+    ),
+  ]);
+  return { binRoot, launcher, shim };
+}
+
 describe('native-cli', () => {
+  it('resolves the official Windows Claude npm shim for version probes and runner calls', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-shim-'));
+    try {
+      const fixture = await writeWindowsClaudeNpmFixture(root);
+      const childProcesses: Array<EventEmitter & {
+        pid: number;
+        exitCode: number | null;
+        signalCode: NodeJS.Signals | null;
+        kill: ReturnType<typeof vi.fn>;
+      }> = [];
+      let targetArgs: readonly string[] = [];
+      const execFile = vi.fn((_command, _args, _options, callback) => {
+        const child = Object.assign(new EventEmitter(), {
+          pid: 320 + childProcesses.length,
+          exitCode: 0 as number | null,
+          signalCode: null as NodeJS.Signals | null,
+          kill: vi.fn(() => true),
+        });
+        childProcesses.push(child);
+        queueMicrotask(() => callback(
+          null,
+          targetArgs.includes('--version') ? '2.1.88 (Claude Code)' : 'ok',
+          '',
+        ));
+        return child;
+      });
+      const createWindowsJobInvocation = vi.fn((executable, args: readonly string[]) => {
+        targetArgs = args;
+        return {
+          command: 'C:\\aw\\aw-windows-job.exe',
+          args: ['--config', 'encoded'] as ['--config', string],
+          config: { schemaVersion: 1 as const, executable, args: [...args], parentPid: 42 },
+        };
+      });
+      const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
+        execFile,
+        createWindowsJobInvocation,
+      });
+      const env = { PATH: fixture.binRoot, PATHEXT: '.CMD' };
+
+      await expect(probeAgentVersion('claude', {
+        cache: false,
+        cwd: root,
+        env,
+        runner,
+      })).resolves.toMatchObject({ status: 'supported', detectedVersion: '2.1.88' });
+      await expect(runner({
+        command: 'claude',
+        args: ['plugin', 'list'],
+        agentKind: 'claude',
+        cwd: root,
+        env,
+      })).resolves.toMatchObject({ exitCode: 0, stdout: 'ok' });
+
+      const canonicalLauncher = await fs.realpath(fixture.launcher);
+      expect(createWindowsJobInvocation).toHaveBeenNthCalledWith(
+        1,
+        process.execPath,
+        [canonicalLauncher, '--version'],
+      );
+      expect(createWindowsJobInvocation).toHaveBeenNthCalledWith(
+        2,
+        process.execPath,
+        [canonicalLauncher, 'plugin', 'list'],
+      );
+    } finally {
+      await fs.remove(root);
+    }
+  });
+
+  it.each([
+    ['malicious shim', async (fixture: Awaited<ReturnType<typeof writeWindowsClaudeNpmFixture>>) => {
+      await fs.appendFile(fixture.shim, '@calc.exe\r\n');
+    }],
+    ['foreign package', async (fixture: Awaited<ReturnType<typeof writeWindowsClaudeNpmFixture>>) => {
+      await fs.writeJson(path.join(
+        fixture.binRoot,
+        'node_modules',
+        '@anthropic-ai',
+        'claude-code',
+        'package.json',
+      ), { name: '@example/claude', bin: { claude: 'cli.js' } });
+    }],
+  ] as const)('fails closed before the Windows Job helper for a %s', async (_label, mutate) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-claude-shim-invalid-'));
+    try {
+      const fixture = await writeWindowsClaudeNpmFixture(root);
+      await mutate(fixture);
+      const execFile = vi.fn();
+      const createWindowsJobInvocation = vi.fn();
+      const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
+        execFile,
+        createWindowsJobInvocation,
+      });
+
+      await expect(runner({
+        command: 'claude',
+        args: ['--version'],
+        env: { PATH: fixture.binRoot, PATHEXT: '.CMD' },
+      })).rejects.toThrow('Windows Claude launcher is unsupported');
+      expect(createWindowsJobInvocation).not.toHaveBeenCalled();
+      expect(execFile).not.toHaveBeenCalled();
+    } finally {
+      await fs.remove(root);
+    }
+  });
+
+  it('routes Windows commands through the Job helper and settles after its callback', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: 0 as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(() => true),
+    });
+    const execFile = vi.fn((_command, _args, _options, callback) => {
+      queueMicrotask(() => callback(null, 'ready', ''));
+      return child;
+    });
+    const createWindowsJobInvocation = vi.fn(() => ({
+      command: 'C:\\aw\\aw-windows-job.exe',
+      args: ['--config', 'encoded'] as ['--config', string],
+      config: {
+        schemaVersion: 1 as const,
+        executable: 'agent.exe',
+        args: ['--flag'],
+        parentPid: 42,
+      },
+    }));
+    const observeProcessTree = vi.fn();
+    const terminateProcessTree = vi.fn();
+    const runner = createExecFileNativeCliRunner({
+      platform: 'win32',
+      execFile,
+      createWindowsJobInvocation,
+      observeProcessTree,
+      terminateProcessTree,
+    });
+
+    await expect(runner({ command: 'agent.exe', args: ['--flag'] })).resolves.toEqual({
+      exitCode: 0,
+      stdout: 'ready',
+      stderr: '',
+    });
+    expect(createWindowsJobInvocation).toHaveBeenCalledWith('agent.exe', ['--flag']);
+    expect(execFile).toHaveBeenCalledWith(
+      'C:\\aw\\aw-windows-job.exe',
+      ['--config', 'encoded'],
+      expect.objectContaining({ detached: false }),
+      expect.any(Function),
+    );
+    expect(observeProcessTree).not.toHaveBeenCalled();
+    expect(terminateProcessTree).not.toHaveBeenCalled();
+  });
+
+  it('waits for the Windows Job helper callback after timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        kill: vi.fn(() => true),
+      });
+      let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
+      const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
+        execFile: (_command, _args, _options, nextCallback) => {
+          callback = nextCallback;
+          return child;
+        },
+        createWindowsJobInvocation: () => ({
+          command: 'C:\\aw\\aw-windows-job.exe',
+          args: ['--config', 'encoded'],
+          config: { schemaVersion: 1, executable: 'agent.exe', args: [], parentPid: 42 },
+        }),
+      });
+      const running = runner({ command: 'agent.exe', args: [], timeoutMs: 100 });
+      let settled = false;
+      void running.then(() => { settled = true; }, () => { settled = true; });
+
+      child.emit('spawn');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(settled).toBe(false);
+      child.signalCode = 'SIGKILL';
+      callback!(new Error('helper terminated'), '', '');
+
+      await expect(running).rejects.toMatchObject({ reason: 'timeout', exitCode: 124 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('blocks guarded agent CLIs by default in tests', async () => {
     const invocation = {
       command: 'codex',
@@ -361,7 +622,9 @@ describe('native-cli', () => {
   });
 
   it('captures stdout and stderr from execFile', async () => {
-    const result = await execFileNativeCliRunner({
+    const result = await createExecFileNativeCliRunner({
+      terminateProcessTree: async () => {},
+    })({
       command: process.execPath,
       args: ['-e', 'process.stdout.write("ready"); process.stderr.write("warn");'],
     });
@@ -373,17 +636,74 @@ describe('native-cli', () => {
     });
   });
 
+  it.each([
+    ['confirms cleanup before returning success', async () => {}, false],
+    ['reports cleanup failure instead of returning success', async () => {
+      throw new Error('cleanup rejected');
+    }, true],
+  ])('%s', async (_name, terminateProcessTreeImpl, rejects) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: 0 as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(() => true),
+    });
+    const observation = {
+      pid: 321,
+      onFailure: () => () => undefined,
+      dispose: vi.fn(),
+    };
+    const terminateProcessTree = vi.fn(terminateProcessTreeImpl);
+    const runner = createExecFileNativeCliRunner({
+      platform: 'win32',
+      execFile: (_command, _args, _options, callback) => {
+        queueMicrotask(() => callback(null, 'ready', ''));
+        return child;
+      },
+      observeProcessTree: () => observation,
+      terminateProcessTree,
+    });
+    const running = runner({ command: 'tar', args: [] });
+
+    if (rejects) {
+      await expect(running).rejects.toMatchObject({
+        reason: 'exit',
+        cleanupError: expect.objectContaining({ message: 'cleanup rejected' }),
+      });
+    } else {
+      await expect(running).resolves.toEqual({ exitCode: 0, stdout: 'ready', stderr: '' });
+    }
+    expect(terminateProcessTree).toHaveBeenCalledWith(
+      321,
+      expect.any(Function),
+      {},
+      {
+        observation,
+        requireConfirmedCleanup: true,
+        allowUnobservedWindowsProcessOnNormalCompletion: true,
+      },
+    );
+  });
+
   it('overwrites a caller-supplied process marker with a per-run UUID', async () => {
     let receivedEnv: NodeJS.ProcessEnv | undefined;
+    let receivedDetached: boolean | undefined;
     const child = Object.assign(new EventEmitter(), {
+      pid: 321,
       kill: vi.fn(() => true),
     });
     const runner = createExecFileNativeCliRunner({
+      platform: 'linux',
       execFile: (_command, _args, options, callback) => {
         receivedEnv = options.env;
+        receivedDetached = options.detached;
         callback(null, '', '');
         return child;
       },
+      terminateProcessTree: async () => {},
+      killProcess: vi.fn(() => {
+        throw Object.assign(new Error('missing process group'), { code: 'ESRCH' });
+      }),
     });
 
     await runner({
@@ -396,6 +716,7 @@ describe('native-cli', () => {
     });
 
     expect(receivedEnv).toMatchObject({ KEEP_ME: 'yes' });
+    expect(receivedDetached).toBe(true);
     expect(receivedEnv?.AW_NATIVE_CLI_PROCESS_MARKER).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     );
@@ -407,11 +728,21 @@ describe('native-cli', () => {
       const observe = vi.fn();
       let receivedOptions: { detached: boolean } | undefined;
       const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        exitCode: 0 as number | null,
+        signalCode: null as NodeJS.Signals | null,
         kill: vi.fn(() => true),
+      });
+      const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+        if (signal === 0) {
+          throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+        }
+        return true;
       });
       const runner = createExecFileNativeCliRunner({
         platform,
         observeProcessTree: observe,
+        killProcess,
         execFile: (_command, _args, options, callback) => {
           receivedOptions = options;
           callback(null, 'ok', '');
@@ -425,6 +756,40 @@ describe('native-cli', () => {
       });
       expect(observe).not.toHaveBeenCalled();
       expect(receivedOptions?.detached).toBe(platform !== 'win32');
+      expect(killProcess).toHaveBeenCalledTimes(platform === 'win32' ? 0 : 3);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps a successful real POSIX command successful when marker lookup is denied',
+    async () => {
+      const groupSignals: Array<number | NodeJS.Signals | undefined> = [];
+      const runner = createExecFileNativeCliRunner({
+        platform: process.platform,
+        observeProcessTree: (pid, marker) => observeProcessTree(pid, marker, {
+          platform: process.platform,
+          execFile: (_command, args, _options, callback) => {
+            if (args.includes('pid=,ppid=,pgid=,state=,lstart=,command=')) {
+              callback(Object.assign(new Error('operation not permitted'), { code: 'EPERM' }), '');
+              return undefined;
+            }
+            callback(null, '');
+            return undefined;
+          },
+        }),
+        killProcess: (pid, signal) => {
+          groupSignals.push(signal);
+          process.kill(pid, signal);
+          return true;
+        },
+      });
+
+      await expect(runner({ command: '/usr/bin/true', args: [] })).resolves.toEqual({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+      });
+      expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL', 0]);
     },
   );
 
@@ -475,6 +840,7 @@ describe('native-cli', () => {
         finishCleanup = resolve;
       }));
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: (_command, _args, _options, nextCallback) => {
           callback = nextCallback;
           return child;
@@ -529,6 +895,7 @@ describe('native-cli', () => {
       });
       let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: (_command, _args, _options, nextCallback) => {
           callback = nextCallback;
           return child;
@@ -564,7 +931,7 @@ describe('native-cli', () => {
     }
   });
 
-  it('runs observed cleanup after root exit without signaling the root PID', async () => {
+  it('returns the original success after root-exit cleanup without signaling the root PID', async () => {
     vi.useFakeTimers();
     try {
       const stdout = new PassThrough();
@@ -580,6 +947,7 @@ describe('native-cli', () => {
       const terminate = vi.fn(async () => {});
       const observation = { pid: 321, dispose: vi.fn() };
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: () => child,
         observeProcessTree: vi.fn(() => observation),
         terminateProcessTree: terminate,
@@ -590,19 +958,14 @@ describe('native-cli', () => {
         args: [],
         timeoutMs: 100,
       });
-      const errorPromise = promise.catch((error: unknown) => error);
       child.emit('spawn');
       stdout.write('partial');
       stderr.write('warning');
       child.exitCode = 0;
       child.emit('exit');
 
-      expect(vi.getTimerCount()).toBe(1);
-      await vi.advanceTimersByTimeAsync(100);
-
-      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
-        exitCode: 124,
-        reason: 'timeout',
+      await expect(promise).resolves.toEqual({
+        exitCode: 0,
         stdout: 'partial',
         stderr: 'warning',
       });
@@ -610,7 +973,11 @@ describe('native-cli', () => {
         321,
         expect.any(Function),
         {},
-        { observation, requireConfirmedCleanup: true },
+        {
+          observation,
+          requireConfirmedCleanup: true,
+          allowUnobservedWindowsProcessOnNormalCompletion: true,
+        },
       );
       expect(child.kill).not.toHaveBeenCalled();
       expect(stdout.destroyed).toBe(true);
@@ -629,6 +996,7 @@ describe('native-cli', () => {
       });
       let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: (_command, _args, _options, nextCallback) => {
           callback = nextCallback;
           return child;
@@ -670,9 +1038,11 @@ describe('native-cli', () => {
         pid: 321,
         kill: vi.fn(() => true),
       });
+      const terminateProcessTree = vi.fn(terminate);
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: () => child,
-        terminateProcessTree: terminate,
+        terminateProcessTree,
       });
 
       const promise = runner({
@@ -696,6 +1066,12 @@ describe('native-cli', () => {
       if (expectedDirectKills > 0) {
         expect(child.kill).toHaveBeenCalledWith('SIGKILL');
       }
+      expect(terminateProcessTree).toHaveBeenCalledWith(
+        321,
+        expect.any(Function),
+        {},
+        { observation: undefined, requireConfirmedCleanup: false },
+      );
       const error = await errorPromise as NativeCliError;
       if (_label === 'resolved') {
         expect(error.cleanupError).toBeUndefined();
@@ -709,30 +1085,23 @@ describe('native-cli', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'finishes group cleanup when the root exits on TERM and an ignored-stdio descendant ignores TERM',
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable)(
+    'cleans a detached marked descendant after a generic POSIX command exits normally',
     async () => {
       let descendantPid: number | undefined;
       try {
-        const startedAt = Date.now();
-        const promise = execFileNativeCliRunner({
+        const result = await execFileNativeCliRunner({
           command: process.execPath,
-          agentKind: 'codex',
-          args: ['-e', [
-            'const { spawn } = require("node:child_process")',
-            'const child = spawn(process.execPath, ["-e", "process.on(\\"SIGTERM\\", () => {}); setTimeout(() => process.exit(0), 10000); setInterval(() => {}, 1000)"], { stdio: "ignore" })',
-            'process.stdout.write(String(child.pid))',
-            'process.on("SIGTERM", () => process.exit(0))',
-            'setInterval(() => {}, 1000)',
-          ].join(';')],
+          args: [fileURLToPath(new URL(
+            '../fixtures/native-cli-detached-descendant.mjs',
+            import.meta.url,
+          ))],
           timeoutMs: 200,
         });
-        const error = await promise.catch((cause: unknown) => cause) as NativeCliError;
-        expect(error).toMatchObject({ exitCode: 124, reason: 'timeout' });
-        expect(error.cleanupError).toBeUndefined();
-        descendantPid = Number.parseInt(error.stdout.trim(), 10);
+        expect(result.exitCode).toBe(0);
+        descendantPid = Number.parseInt(result.stdout.trim(), 10);
         expect(descendantPid).toBeGreaterThan(0);
-        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        expect(() => process.kill(descendantPid!, 0)).toThrow();
       } finally {
         if (descendantPid !== undefined) {
           try {
@@ -745,47 +1114,163 @@ describe('native-cli', () => {
     },
   );
 
-  it('signals a trusted POSIX CLI process group with TERM then KILL', async () => {
+  it.skipIf(process.platform === 'win32' || !hostProcessInspectionAvailable).each([
+    ['timeout', 'timeout'],
+    ['abort', 'aborted'],
+    ['exit', 'exit'],
+  ] as const)(
+    'cleans a detached marked descendant after a trusted POSIX CLI %s',
+    async (mode, reason) => {
+      const controller = new AbortController();
+      let descendantPid: number | undefined;
+      const abortTimer = mode === 'abort'
+        ? setTimeout(() => controller.abort(new Error('test abort')), 200)
+        : undefined;
+      try {
+        const error = await execFileNativeCliRunner({
+          command: process.execPath,
+          args: [fileURLToPath(new URL(
+            '../fixtures/native-cli-trusted-detached-failure.mjs',
+            import.meta.url,
+          )), mode],
+          agentKind: 'claude',
+          signal: controller.signal,
+          timeoutMs: mode === 'timeout' ? 200 : 2_000,
+        }).catch((failure: unknown) => failure) as NativeCliError;
+        descendantPid = Number.parseInt(error.stdout.trim(), 10);
+        expect(error).toMatchObject({ reason, cleanupError: undefined });
+        expect(descendantPid).toBeGreaterThan(0);
+        expect(() => process.kill(descendantPid!, 0)).toThrow();
+      } finally {
+        if (abortTimer) clearTimeout(abortTimer);
+        if (descendantPid !== undefined) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // The cleanup under test already terminated the descendant.
+          }
+        }
+      }
+    },
+  );
+
+  it.each(['codex', 'claude', 'git'])(
+    'signals the same POSIX process group for %s',
+    async (command) => {
+      vi.useFakeTimers();
+      try {
+        const child = Object.assign(new EventEmitter(), {
+          pid: 321,
+          kill: vi.fn(() => true),
+        });
+        const signals: Array<number | NodeJS.Signals> = [];
+        const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
+          signals.push(signal ?? 'SIGTERM');
+          if (signal === 0) {
+            throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+          }
+          return true;
+        });
+        const observation = { pid: 321, onFailure: () => () => undefined, dispose: vi.fn() };
+        const observe = vi.fn(() => observation);
+        const terminate = vi.fn(async () => {});
+        const runner = createExecFileNativeCliRunner({
+          platform: 'linux',
+          execFile: () => child,
+          killProcess,
+          observeProcessTree: observe,
+          terminateProcessTree: terminate,
+        });
+        const promise = runner({ command, args: [], timeoutMs: 100 });
+        const errorPromise = promise.catch((error: unknown) => error);
+
+        child.emit('spawn');
+        await vi.advanceTimersByTimeAsync(200);
+
+        await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
+          exitCode: 124,
+          reason: 'timeout',
+          cleanupError: undefined,
+        });
+        expect(killProcess.mock.calls.map(([, signal]) => signal)).toEqual([
+          'SIGTERM',
+          'SIGKILL',
+          0,
+        ]);
+        expect(killProcess.mock.calls.every(([pid]) => pid === -321)).toBe(true);
+        expect(child.kill).not.toHaveBeenCalled();
+        expect(observe).toHaveBeenCalledTimes(1);
+        expect(terminate).toHaveBeenCalledWith(
+          321,
+          expect.any(Function),
+          {},
+          { observation, requireConfirmedCleanup: true },
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ['abort', 'aborted'],
+    ['non-zero exit', 'exit'],
+  ] as const)('audits the trusted POSIX process marker after %s', async (mode, reason) => {
     vi.useFakeTimers();
     try {
+      const controller = new AbortController();
       const child = Object.assign(new EventEmitter(), {
         pid: 321,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
         kill: vi.fn(() => true),
       });
-      const signals: Array<number | NodeJS.Signals> = [];
+      let callback: ((error: unknown, stdout: string, stderr: string) => void) | undefined;
       const killProcess = vi.fn((_pid: number, signal?: number | NodeJS.Signals) => {
-        signals.push(signal ?? 'SIGTERM');
-        if (signal === 0) {
-          throw Object.assign(new Error('missing'), { code: 'ESRCH' });
-        }
+        if (signal === 0) throw Object.assign(new Error('missing'), { code: 'ESRCH' });
         return true;
       });
+      const observation = { pid: 321, onFailure: () => () => undefined, dispose: vi.fn() };
+      const observe = vi.fn(() => observation);
       const terminate = vi.fn(async () => {});
       const runner = createExecFileNativeCliRunner({
         platform: 'linux',
-        execFile: () => child,
+        execFile: (_command, _args, _options, nextCallback) => {
+          callback = nextCallback;
+          return child;
+        },
         killProcess,
+        observeProcessTree: observe,
         terminateProcessTree: terminate,
       });
-      const promise = runner({ command: 'codex', args: [], timeoutMs: 100 });
+      const promise = runner({
+        command: 'claude',
+        args: ['plugin', 'list'],
+        signal: controller.signal,
+      });
       const errorPromise = promise.catch((error: unknown) => error);
 
-      child.emit('spawn');
-      await vi.advanceTimersByTimeAsync(200);
+      if (mode === 'abort') {
+        controller.abort(new Error('cancelled'));
+      } else {
+        child.exitCode = 7;
+        callback!(Object.assign(new Error('failed'), { code: 7 }), '', 'failed');
+      }
+      await vi.advanceTimersByTimeAsync(100);
 
-      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
-        exitCode: 124,
-        reason: 'timeout',
-        cleanupError: undefined,
-      });
-      expect(killProcess.mock.calls.map(([, signal]) => signal)).toEqual([
-        'SIGTERM',
-        'SIGKILL',
-        0,
+      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({ reason });
+      expect(killProcess.mock.calls.map(([pid, signal]) => [pid, signal])).toEqual([
+        [-321, 'SIGTERM'],
+        [-321, 'SIGKILL'],
+        [-321, 0],
       ]);
-      expect(killProcess.mock.calls.every(([pid]) => pid === -321)).toBe(true);
-      expect(child.kill).not.toHaveBeenCalled();
-      expect(terminate).not.toHaveBeenCalled();
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(terminate).toHaveBeenCalledWith(
+        321,
+        expect.any(Function),
+        {},
+        { observation, requireConfirmedCleanup: true },
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -920,6 +1405,7 @@ describe('native-cli', () => {
       });
       const terminate = vi.fn(async () => {});
       const runner = createExecFileNativeCliRunner({
+        platform: 'win32',
         execFile: () => child,
         terminateProcessTree: terminate,
       });

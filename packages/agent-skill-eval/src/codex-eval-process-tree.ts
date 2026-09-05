@@ -1,5 +1,10 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import {
+  observeProcessTree,
+  terminateProcessTree as terminateSharedProcessTree,
+  type ProcessTreeDependencies,
+} from './process-tree.js';
 
 const execFileAsync = promisify(execFile);
 const PROCESS_TERMINATION_GRACE_MS = 1_000;
@@ -29,8 +34,10 @@ interface PosixProcessTreeDependencies {
     timeoutMs?: number,
   ) => Promise<Map<number, PosixProcessEntry>>;
   kill?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
+  execFile?: ProcessTreeDependencies['execFile'];
   treeId?: string;
   canUseProcessGroup?: () => boolean;
+  killDirectChild?: (signal: 'SIGTERM' | 'SIGKILL') => void;
   allowRootIdentityDiscovery?: boolean;
 }
 
@@ -657,6 +664,38 @@ export async function terminatePosixProcessTree(
   rootPid: number,
   dependencies: PosixProcessTreeDependencies = {},
 ): Promise<string[]> {
+  if (
+    dependencies.readProcessTable === undefined &&
+    dependencies.readTaggedProcessTable === undefined
+  ) {
+    const processTreeDependencies = {
+      platform: process.platform,
+      ...(dependencies.execFile ? { execFile: dependencies.execFile } : {}),
+      ...(dependencies.kill
+        ? {
+            kill: (pid: number, signal: 'SIGTERM' | 'SIGKILL' | 'SIGSTOP') => {
+              dependencies.kill!(pid, signal);
+            },
+          }
+        : {}),
+    } as const;
+    const observation = observeProcessTree(rootPid, undefined, processTreeDependencies);
+    try {
+      await terminateSharedProcessTree(
+        rootPid,
+        dependencies.killDirectChild ?? (() => undefined),
+        processTreeDependencies,
+        { observation, requireConfirmedCleanup: true },
+      );
+      return [];
+    } catch (error) {
+      return [
+        `${PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ];
+    }
+  }
   return terminateKnownPosixProcessTree(rootPid, dependencies);
 }
 
@@ -664,6 +703,48 @@ export function createPosixProcessTreeMonitor(
   rootPid: number,
   dependencies: PosixProcessTreeDependencies = {},
 ): ChildProcessTreeMonitor {
+  if (
+    dependencies.readProcessTable === undefined &&
+    dependencies.readTaggedProcessTable === undefined
+  ) {
+    const processTreeDependencies = {
+      platform: process.platform,
+      markerEnvironmentVariable: CODEX_EVAL_PROCESS_TREE_ID_ENV,
+      enforceCooperativeProcessGroup: dependencies.treeId !== undefined,
+      ...(dependencies.execFile ? { execFile: dependencies.execFile } : {}),
+      ...(dependencies.kill
+        ? {
+            kill: (pid: number, signal: 'SIGTERM' | 'SIGKILL' | 'SIGSTOP') => {
+              dependencies.kill!(pid, signal);
+            },
+          }
+        : {}),
+    } as const;
+    const observation = observeProcessTree(
+      rootPid,
+      dependencies.treeId,
+      processTreeDependencies,
+    );
+    let terminationPromise: Promise<string[]> | undefined;
+    return {
+      terminate: () => {
+        terminationPromise ??= terminateSharedProcessTree(
+          rootPid,
+          dependencies.killDirectChild ?? (() => undefined),
+          processTreeDependencies,
+          { observation, requireConfirmedCleanup: true },
+        ).then(
+          () => [],
+          (error: unknown) => [
+            `${PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ],
+        );
+        return terminationPromise;
+      },
+    };
+  }
   const readProcessTable = dependencies.readProcessTable ?? readPosixProcessTable;
   const readTaggedProcessTable = dependencies.readTaggedProcessTable ??
     readTaggedPosixProcessTable;
@@ -1051,6 +1132,9 @@ export function createChildProcessTreeMonitor(
   return createPosixProcessTreeMonitor(child.pid, {
     treeId: options.treeId,
     canUseProcessGroup: () => child.exitCode === null && child.signalCode === null,
+    killDirectChild: (signal) => {
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    },
   });
 }
 

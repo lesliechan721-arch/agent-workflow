@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,8 +11,30 @@ import {
   parseDependencyScopeOverrides,
   parseScriptTimeoutMs,
 } from '../../src/commands/options.js';
+import { runNativeCli } from '../../src/utils/native-cli.js';
+import { TestNativeCliGuardError } from '../helpers/native-guard.js';
 
 describe('write command options', () => {
+  it('uses the minimal pure test isolation and keeps external I/O guards', async () => {
+    const sentinelHome = process.env.HOME;
+    const npmUserConfigPath = process.env.npm_config_userconfig;
+
+    expect(sentinelHome).toContain('aw-pure-test-home-');
+    expect(npmUserConfigPath).toBe(path.join(sentinelHome!, '.npmrc'));
+    await expect(fs.stat(sentinelHome!)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(npmUserConfigPath!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(process.cwd().startsWith(sentinelHome!)).toBe(false);
+
+    await expect(fetch('https://example.invalid/pure-test')).rejects.toThrow(
+      'Network access is disabled in tests',
+    );
+    await expect(runNativeCli({
+      command: 'codex',
+      args: ['exec', 'must-not-run'],
+      agentKind: 'codex',
+    })).rejects.toBeInstanceOf(TestNativeCliGuardError);
+  });
+
   it('requires explicit platforms for every write command', () => {
     for (const normalize of [
       normalizeInstallCommandOptions,

@@ -19,6 +19,7 @@ const INPUT_PATHS = [
   'packages/agent-skill-eval/vitest.config.ts',
   'packages/agent-skill-eval/src',
   'packages/agent-skill-eval/schemas',
+  'packages/agent-skill-eval/native/windows',
   'packages/agent-skill-eval/scripts',
   'packages/plugin-core/package.json',
   'packages/plugin-core/tsconfig.json',
@@ -53,6 +54,9 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/agent-skill-eval/dist/index.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/bin.js', type: 'text' },
   { path: 'packages/agent-skill-eval/dist/schemas/digests.json', type: 'text' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/manifest.json', type: 'json' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/x64/aw-windows-job.exe', type: 'file' },
+  { path: 'packages/agent-skill-eval/dist/native/windows/arm64/aw-windows-job.exe', type: 'file' },
   { path: 'packages/plugin-core/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/scripts/bundle-plugins.js', type: 'text' },
@@ -93,6 +97,12 @@ function normalizeRelativePath(relativePath) {
 function isExcludedInputPath(relativePath) {
   const normalizedPath = normalizeRelativePath(relativePath);
   const segments = normalizedPath.split('/');
+  if (
+    normalizedPath === 'scripts/build/dev-build-cache.mjs'
+    || normalizedPath === 'scripts/build/run-dev-build.mjs'
+  ) {
+    return true;
+  }
   if (segments.includes('node_modules')) {
     return true;
   }
@@ -202,7 +212,7 @@ async function collectEntries(
   }
   if (stats.isFile()) {
     entries.push({
-      contents: await fs.readFile(absolutePath),
+      absolutePath,
       kind: 'file',
       mode: stats.mode & 0o777,
       path: normalizedPath,
@@ -212,7 +222,39 @@ async function collectEntries(
   entries.push({ kind: 'other', mode: stats.mode, path: normalizedPath });
 }
 
-function digestEntries(entries) {
+async function updateFileContents(hash, absolutePath) {
+  const handle = await fs.open(absolutePath, 'r');
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) {
+      throw new Error(`Tree digest input changed type while reading: ${absolutePath}.`);
+    }
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(stats.size));
+    hash.update(length);
+
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (offset < stats.size) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, stats.size - offset),
+        offset,
+      );
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    if (offset !== stats.size || (await handle.stat()).size !== stats.size) {
+      throw new Error(`Tree digest input changed size while reading: ${absolutePath}.`);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function digestEntries(entries) {
   entries.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   const hash = crypto.createHash('sha256');
   for (const entry of entries) {
@@ -221,7 +263,7 @@ function digestEntries(entries) {
     updateLengthPrefixed(entryHash, entry.path);
     if (entry.kind === 'file') {
       updateLengthPrefixed(entryHash, String(entry.mode));
-      updateLengthPrefixed(entryHash, entry.contents);
+      await updateFileContents(entryHash, entry.absolutePath);
     } else if (entry.kind === 'symlink') {
       updateLengthPrefixed(entryHash, String(entry.mode));
       updateLengthPrefixed(entryHash, entry.target);
@@ -242,7 +284,7 @@ function updateLengthPrefixed(hash, value) {
   hash.update(contents);
 }
 
-async function computeTreeDigest(repoRoot, roots, exclude) {
+export async function computeTreeDigest(repoRoot, roots, exclude = () => false) {
   const entries = [];
   for (const relativePath of [...roots].sort()) {
     await collectEntries(repoRoot, relativePath, entries, exclude);
@@ -373,7 +415,7 @@ async function readExpectedStampIdentity(repoRoot, launcherIdentity) {
   };
 }
 
-async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
+export async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
   async function findPathChainSymlink(relativePath) {
     const segments = normalizeRelativePath(relativePath).split('/').filter(Boolean);
     let currentPath = path.resolve(repoRoot);
@@ -494,22 +536,22 @@ async function findReuseDisabledReason(repoRoot) {
   return null;
 }
 
-async function validateRequiredOutputs(repoRoot) {
-  for (const output of REQUIRED_OUTPUTS) {
+export async function validateRequiredOutputs(repoRoot, outputs = REQUIRED_OUTPUTS) {
+  for (const output of outputs) {
     const outputPath = path.join(repoRoot, output.path);
     let contents;
     try {
-      contents = await fs.readFile(outputPath, 'utf8');
+      contents = await fs.readFile(outputPath, output.type === 'file' ? undefined : 'utf8');
     } catch (error) {
       if (error?.code === 'ENOENT') {
         return { valid: false, reason: `missing output ${output.path}` };
       }
       return { valid: false, reason: `unreadable output ${output.path}` };
     }
-    if (contents.trim().length === 0) {
+    if (contents.length === 0 || (typeof contents === 'string' && contents.trim().length === 0)) {
       return { valid: false, reason: `empty output ${output.path}` };
     }
-    if (output.type !== 'text') {
+    if (output.type !== 'text' && output.type !== 'file') {
       try {
         const parsed = JSON.parse(contents);
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

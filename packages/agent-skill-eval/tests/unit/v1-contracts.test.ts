@@ -19,14 +19,14 @@ import {
   validateEvalSpec,
   validateEvalSpecFile,
   validateJsonSchema,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 import type {
   Digest,
   EvalAudit,
   EvalResult,
   EvalResultBinding,
   EvalSpec,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 const roots: string[] = []
 

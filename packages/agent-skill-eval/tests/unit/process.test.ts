@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
-import { describe, expect, it } from 'vitest'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it, vi } from 'vitest'
 import {
   assertProcessTreeInspectionAvailable,
   observeProcessTree,
@@ -10,9 +11,12 @@ import {
   runProviderProcess,
   terminateProcessTree,
   type ProcessLifecycleHooks,
-} from '../../dist/index.js'
+} from '../../src/index.js'
 
 const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
+const syntheticProcessPath = fileURLToPath(
+  new URL('../../../../scripts/test/synthetic-process.mjs', import.meta.url),
+)
 
 function baseRequest(root: string) {
   return {
@@ -80,7 +84,64 @@ async function waitForPid(pidPath: string): Promise<number> {
   throw new Error('provider did not record its detached descendant PID')
 }
 
+function renderMarkerScan(
+  processes: Iterable<readonly [number, {
+    ppid: number
+    pgid?: number
+    state: string
+    startTime: string
+    marked?: boolean
+  }]>,
+  marker: string,
+  isMarked: (pid: number, entry: { marked?: boolean }) => boolean =
+    (_pid, entry) => entry.marked !== false,
+): string {
+  return [...processes].map(([pid, entry]) => [
+    pid,
+    entry.ppid,
+    entry.pgid ?? 100,
+    entry.state,
+    entry.startTime,
+    'node',
+    ...(isMarked(pid, entry) ? [`${PROVIDER_PROCESS_MARKER_ENV}=${marker}`] : []),
+  ].join(' ')).join('\n')
+}
+
 describe('managed provider containment gate', () => {
+  it('routes a Windows provider through the Job helper before spawn', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-windows-job-'))
+    const createWindowsJobInvocation = vi.fn(() => ({
+      command: process.execPath,
+      args: ['-e', 'process.stdout.write("job-helper")'] as ['--config', string],
+      config: {
+        schemaVersion: 1 as const,
+        executable: 'provider.exe',
+        args: ['--flag'],
+        parentPid: 42,
+      },
+    }))
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        executable: 'provider.exe',
+        args: ['--flag'],
+      }, {}, {
+        containment: 'unmanaged-confirmed',
+        processTree: { platform: 'win32' },
+        createWindowsJobInvocation,
+      })
+
+      expect(createWindowsJobInvocation).toHaveBeenCalledWith('provider.exe', ['--flag'])
+      expect(result).toMatchObject({
+        stdout: 'job-helper',
+        exitCode: 0,
+        descendantCleanupGuaranteed: true,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed before spawn without confirmed external containment', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-contained-'))
     const startedPath = path.join(root, 'started')
@@ -114,6 +175,164 @@ describe('managed provider containment gate', () => {
 })
 
 describe('shared provider process behavior', () => {
+  it('shares layered POSIX scans across observers and stops with no subscribers', async () => {
+    vi.useFakeTimers()
+    try {
+      let identityScans = 0
+      let markerScans = 0
+      const execFile = (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        if (args.some((arg) => arg.includes('command='))) {
+          markerScans += 1
+          callback(null, [
+            `100 1 100 S first-start node ${PROVIDER_PROCESS_MARKER_ENV}=first`,
+            `200 1 200 S second-start node ${PROVIDER_PROCESS_MARKER_ENV}=second`,
+          ].join('\n'))
+          return
+        }
+        identityScans += 1
+        callback(null, [
+          '100 1 100 S first-start',
+          '200 1 200 S second-start',
+        ].join('\n'))
+      }
+      const dependencies = {
+        platform: 'linux' as const,
+        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+        enforceCooperativeProcessGroup: true,
+        execFile,
+      }
+      const first = observeProcessTree(100, 'first', dependencies)
+      const second = observeProcessTree(200, 'second', dependencies)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(identityScans).toBe(1)
+      expect(markerScans).toBe(1)
+      await vi.advanceTimersByTimeAsync(999)
+      expect(identityScans).toBe(4)
+      expect(markerScans).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(identityScans).toBe(5)
+      expect(markerScans).toBe(2)
+
+      first.dispose()
+      second.dispose()
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(identityScans).toBe(5)
+      expect(markerScans).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not throttle or periodically scan sequential general observers', async () => {
+    vi.useFakeTimers()
+    try {
+      let markerScans = 0
+      const execFile = (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: (error: Error | null, stdout: string) => void,
+      ): void => {
+        if (args.some((arg) => arg.includes('command='))) {
+          markerScans += 1
+          callback(null, [
+            `100 1 100 S first-start node ${PROVIDER_PROCESS_MARKER_ENV}=first`,
+            `200 1 200 S second-start node ${PROVIDER_PROCESS_MARKER_ENV}=second`,
+          ].join('\n'))
+          return
+        }
+        callback(null, '')
+      }
+
+      const first = observeProcessTree(100, 'first', { platform: 'linux', execFile })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(markerScans).toBe(1)
+      first.dispose()
+      vi.setSystemTime(100)
+      const second = observeProcessTree(200, 'second', { platform: 'linux', execFile })
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(markerScans).toBe(2)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(markerScans).toBe(2)
+      expect(vi.getTimerCount()).toBe(0)
+      second.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not signal a reused PID or process group from interleaved scan generations', async () => {
+    vi.useFakeTimers()
+    try {
+      type ScanCallback = (error: Error | null, stdout: string) => void
+      let identityCallback: ScanCallback | undefined
+      let markerCallback: ScanCallback | undefined
+      let cleanup = false
+      const execFile = (
+        _command: string,
+        args: string[],
+        _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+        callback: ScanCallback,
+      ): void => {
+        if (!cleanup) {
+          if (args.some((arg) => arg.includes('command='))) markerCallback = callback
+          else identityCallback = callback
+          return
+        }
+        callback(null, args.some((arg) => arg.includes('command='))
+          ? [
+              '100 1 100 S foreign-root-start node',
+              '101 100 100 S foreign-child-start node',
+            ].join('\n')
+          : [
+              '100 1 100 S foreign-root-start',
+              '101 100 100 S foreign-child-start',
+            ].join('\n'))
+      }
+      const kill = vi.fn()
+      const dependencies = {
+        platform: 'linux' as const,
+        markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+        enforceCooperativeProcessGroup: true,
+        execFile,
+        kill,
+      }
+      const observation = observeProcessTree(100, 'tree', dependencies)
+      markerCallback!(null, [
+        `100 1 100 S root-start node ${PROVIDER_PROCESS_MARKER_ENV}=tree`,
+        `101 100 100 S old-start node ${PROVIDER_PROCESS_MARKER_ENV}=tree`,
+      ].join('\n'))
+      identityCallback!(null, [
+        '100 1 100 S foreign-root-start',
+        '101 100 100 S foreign-child-start',
+      ].join('\n'))
+      await Promise.resolve()
+      await Promise.resolve()
+      cleanup = true
+
+      const termination = terminateProcessTree(
+        100,
+        vi.fn(),
+        dependencies,
+        { observation, requireConfirmedCleanup: true },
+      )
+      await vi.runAllTimersAsync()
+      await expect(termination).resolves.toBeUndefined()
+
+      expect(kill).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('retries a transient POSIX marker lookup inside the original deadline', async () => {
     let marker = ''
     let markerLookups = 0
@@ -125,7 +344,7 @@ describe('shared provider process behavior', () => {
         return { pid: 900_011, stop: async () => undefined }
       },
       execFile: (_command, args, _options, callback) => {
-        if (!args.includes('pid=,command=')) {
+        if (!args.some((arg) => arg.includes('command='))) {
           callback(null, '900011 1 900011 S Mon Aug 24 12:00:00 2026')
           return
         }
@@ -134,11 +353,47 @@ describe('shared provider process behavior', () => {
           markerLookups === 1 ? Object.assign(new Error('transient'), { code: 'EAGAIN' }) : null,
           markerLookups === 1
             ? ''
-            : `900011 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
+            : `900011 1 900011 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
         )
       },
     })).resolves.toBeUndefined()
     expect(markerLookups).toBe(2)
+  })
+
+  it('accepts an atomic marker row in the macOS ps format', async () => {
+    let marker = ''
+    let stopped = false
+    const execFile = vi.fn((_command, args, _options, callback) => {
+      if (args.some((arg: string) => arg.includes('command='))) {
+        expect(args).toEqual([
+          'eww',
+          '-A',
+          '-o',
+          'pid=,ppid=,pgid=,state=,lstart=,command=',
+        ])
+        callback(
+          null,
+          `900012 1 900012 R    Fri Sep  4 21:06:32 2026     /usr/local/bin/node -e setInterval AW_AGENT_SKILL_EVAL_PROCESS_MARKER=${marker}`,
+        )
+        return
+      }
+      callback(null, '900012 1 900012 R Fri Sep  4 21:06:32 2026')
+    })
+
+    await expect(assertProcessTreeInspectionAvailable({
+      platform: 'darwin',
+      markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
+      createSentinel: async (_markerEnvironmentVariable, value) => {
+        marker = value
+        return {
+          pid: 900_012,
+          stop: async () => { stopped = true },
+        }
+      },
+      execFile,
+    })).resolves.toBeUndefined()
+
+    expect(stopped).toBe(true)
   })
 
   it('keeps the provider exit and stderr when inspection lease release fails', async () => {
@@ -163,8 +418,8 @@ describe('shared provider process behavior', () => {
             },
             execFile: (_command, args, _options, callback) => callback(
               null,
-              args.includes('pid=,command=')
-                ? `900010 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+              args.some((arg) => arg.includes('command='))
+                ? `900010 1 900010 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
                 : '900010 1 900010 S Mon Aug 24 12:00:00 2026',
             ),
           },
@@ -188,7 +443,7 @@ describe('shared provider process behavior', () => {
     }
   })
 
-  it('kills identities frozen from the last trusted POSIX marker snapshot when refresh fails', async () => {
+  it('does not signal identities after the final POSIX marker audit fails', async () => {
     const marker = 'marker-value'
     const processes = new Map([
       [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
@@ -204,7 +459,7 @@ describe('shared provider process behavior', () => {
       _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
       callback: (error: Error | null, stdout: string) => void,
     ): void => {
-      if (args.includes('pid=,command=')) {
+      if (args.some((arg) => arg.includes('command='))) {
         markerLookup += 1
         const failed = markerLookup === 3 || markerLookup === 4
         callback(
@@ -217,9 +472,7 @@ describe('shared provider process behavior', () => {
             : null,
           failed
             ? ''
-            : [...processes.keys()].map((pid) =>
-              `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
-            ).join('\n'),
+            : renderMarkerScan(processes, marker),
         )
         return
       }
@@ -227,7 +480,7 @@ describe('shared provider process behavior', () => {
     }
     const kill = (pid: number, signal: string): void => {
       const entry = processes.get(pid)
-      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+      if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
       if (signal === 'SIGKILL') processes.delete(pid)
     }
     const dependencies = {
@@ -252,12 +505,12 @@ describe('shared provider process behavior', () => {
     }
 
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).message).toMatch(
-      /POSIX process marker lookup failed \(stage=termination-freeze, attempts=2, reason=callback-error, code=ETIMEDOUT, signal=SIGTERM, killed=true\)/u,
+    expect((error as Error).message).toContain(
+      'POSIX process marker lookup failed (stage=termination-kill, attempts=1, reason=callback-error, code=ETIMEDOUT, signal=SIGTERM, killed=true)',
     )
     expect((error as Error).message).not.toContain(marker)
 
-    expect(processes.has(101)).toBe(false)
+    expect(processes.has(101)).toBe(true)
   })
 
   it('uses a verified ordinary-child process group fallback and preserves a foreign process', async () => {
@@ -277,18 +530,15 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes]
-            .filter(([, entry]) => entry.marked)
-            .map(([pid]) => `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`)
-            .join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes]
             .map(([pid, entry]) =>
               `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
             .join('\n')),
       kill: (pid: number, signal: string): void => {
         signals.push([pid, signal])
-        if (pid === -100 && signal === 'SIGSTOP') {
+        if (pid === -100 && signal === 'SIGTERM') {
           for (const [candidatePid, entry] of processes) {
             if (entry.pgid === 100) processes.set(candidatePid, { ...entry, state: 'T' })
           }
@@ -329,18 +579,15 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes]
-            .filter(([, entry]) => entry.marked)
-            .map(([pid]) => `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`)
-            .join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes]
             .map(([pid, entry]) =>
               `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
             .join('\n')),
       kill: (pid: number, signal: string): void => {
         const entry = processes.get(pid)
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
         if (pid > 0 && signal === 'SIGKILL') processes.delete(pid)
       },
     }
@@ -376,17 +623,15 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes.keys()]
-            .map((pid) => `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`)
-            .join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes]
             .map(([pid, entry]) =>
               `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
             .join('\n')),
       kill: (pid: number, signal: string): void => {
         const entry = processes.get(pid)
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
         if (pid > 0 && signal === 'SIGKILL') processes.delete(pid)
       },
     }
@@ -404,7 +649,7 @@ describe('shared provider process behavior', () => {
     )).resolves.toBeUndefined()
   })
 
-  it('does not inspect or signal a shared process group owned by the parent runner', async () => {
+  it('rejects but does not signal a shared process group owned by the parent runner', async () => {
     const marker = 'marker-value'
     const processes = new Map([
       [50, { ppid: 1, pgid: 50, state: 'S', startTime: 'runner-start', marked: false }],
@@ -422,11 +667,8 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes]
-            .filter(([, entry]) => entry.marked)
-            .map(([pid]) => `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`)
-            .join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes]
             .map(([pid, entry]) =>
               `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
@@ -434,7 +676,7 @@ describe('shared provider process behavior', () => {
       kill: (pid: number, signal: string): void => {
         signals.push([pid, signal])
         const entry = processes.get(pid)
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
         if (pid > 0 && signal === 'SIGKILL') processes.delete(pid)
       },
     }
@@ -445,7 +687,7 @@ describe('shared provider process behavior', () => {
       () => undefined,
       dependencies,
       { observation, requireConfirmedCleanup: true },
-    )).resolves.toBeUndefined()
+    )).rejects.toThrow('provider root left its initial process group')
 
     expect(signals.some(([pid]) => pid < 0)).toBe(false)
     expect(signals.some(([pid]) => pid === 50 || pid === 200)).toBe(false)
@@ -469,11 +711,8 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes]
-            .filter(([, entry]) => entry.marked)
-            .map(([pid]) => `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`)
-            .join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes]
             .map(([pid, entry]) =>
               `${pid} ${entry.ppid} ${entry.pgid} ${entry.state} ${entry.startTime}`)
@@ -481,7 +720,7 @@ describe('shared provider process behavior', () => {
       kill: (pid: number, signal: string): void => {
         signals.push([pid, signal])
         const entry = processes.get(pid)
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
         if (pid > 0 && signal === 'SIGKILL') processes.delete(pid)
       },
     }
@@ -521,16 +760,13 @@ describe('shared provider process behavior', () => {
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
       ): void => {
-        if (args.includes('pid=,command=')) {
+        if (args.some((arg) => arg.includes('command='))) {
           markerLookups += 1
-          callback(null, [
-            ...(processes.has(100)
-              ? [`100 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`]
-              : []),
-            ...(processes.has(101) && markerLookups <= markedRounds
-              ? [`101 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`]
-              : []),
-          ].join('\n'))
+          callback(null, renderMarkerScan(
+            processes,
+            marker,
+            (pid) => pid === 100 || pid === 101 && markerLookups <= markedRounds,
+          ))
           return
         }
         callback(null, [...processes].map(([pid, entry]) =>
@@ -539,7 +775,7 @@ describe('shared provider process behavior', () => {
       },
       kill: (pid: number, signal: string): void => {
         signals.push([pid, signal])
-        if (pid === -100 && signal === 'SIGSTOP') {
+        if (pid === -100 && signal === 'SIGTERM') {
           for (const [candidatePid, entry] of processes) {
             if (entry.pgid === 100) processes.set(candidatePid, { ...entry, state: 'T' })
           }
@@ -570,7 +806,7 @@ describe('shared provider process behavior', () => {
     expect(signals).not.toContainEqual([-200, 'SIGKILL'])
   })
 
-  it('uses legacy four-column snapshots only for identity cleanup', async () => {
+  it('uses the atomic marker snapshot for identity cleanup', async () => {
     const marker = 'marker-value'
     const processes = new Map([
       [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
@@ -586,17 +822,15 @@ describe('shared provider process behavior', () => {
         args: string[],
         _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
         callback: (error: Error | null, stdout: string) => void,
-      ): void => callback(null, args.includes('pid=,command=')
-        ? [...processes.keys()].map((pid) =>
-            `${pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
-          ).join('\n')
+      ): void => callback(null, args.some((arg) => arg.includes('command='))
+        ? renderMarkerScan(processes, marker)
         : [...processes].map(([pid, entry]) =>
             `${pid} ${entry.ppid} ${entry.state} ${entry.startTime}`
           ).join('\n')),
       kill: (pid: number, signal: string): void => {
         signals.push([pid, signal])
         const entry = processes.get(pid)
-        if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' })
+        if (entry && signal === 'SIGTERM') processes.set(pid, { ...entry, state: 'T' })
         if (pid > 0 && signal === 'SIGKILL') processes.delete(pid)
       },
     }
@@ -609,7 +843,6 @@ describe('shared provider process behavior', () => {
       { observation, requireConfirmedCleanup: true },
     )).resolves.toBeUndefined()
 
-    expect(signals.some(([pid]) => pid < 0)).toBe(false)
     expect(processes.size).toBe(0)
   })
 
@@ -696,8 +929,8 @@ describe('shared provider process behavior', () => {
       const request = configure({
         ...baseRequest(root),
         args: reason === 'max-buffer'
-          ? ['-e', 'process.stdout.write("overflow"); setInterval(() => {}, 1000)']
-          : ['-e', 'setInterval(() => {}, 1000)'],
+          ? [syntheticProcessPath, '--stdout', 'overflow']
+          : [syntheticProcessPath],
       }, controller.signal)
       const running = runProviderProcess(request, managedHooks({
         onSpawn: ({ pid }) => {
@@ -724,7 +957,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
         timeoutMs: 25,
       }, managedHooks({
         onSpawn: ({ pid }) => { providerPid = pid },
@@ -743,7 +976,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, managedHooks({
         onSpawn: ({ pid }) => {
           providerPid = pid
@@ -791,12 +1024,12 @@ describe('shared provider process behavior', () => {
     [
       'marker on the wrong PID',
       '900003 1 900003 S Mon Aug 24 12:00:00 2026',
-      '900004 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=MARKER',
+      '900003 1 900003 S sentinel-start node\n900004 1 900004 S wrong-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=MARKER',
     ],
     [
       'wrong marker value',
       '900003 1 900003 S Mon Aug 24 12:00:00 2026',
-      '900003 node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=MARKER-wrong',
+      '900003 1 900003 S sentinel-start node AW_AGENT_SKILL_EVAL_PROCESS_MARKER=MARKER-wrong',
     ],
   ])('rejects before provider spawn for %s', async (_name, identityOutput, markerOutput) => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-verified-'))
@@ -817,7 +1050,7 @@ describe('shared provider process behavior', () => {
           },
           execFile: (_command, args, _options, callback) => callback(
             null,
-            args.includes('pid=,command=')
+            args.some((arg) => arg.includes('command='))
               ? markerOutput.replace('MARKER', marker)
               : identityOutput,
           ),
@@ -847,8 +1080,8 @@ describe('shared provider process behavior', () => {
           },
           execFile: (_command, args, _options, callback) => callback(
             null,
-            args.includes('pid=,command=')
-              ? `900004 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+            args.some((arg) => arg.includes('command='))
+              ? `900004 1 900004 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
               : '900004 1 900004 S Mon Aug 24 12:00:00 2026',
           ),
         },
@@ -875,7 +1108,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, {
         onSpawn: ({ pid }) => { providerPid = pid },
       }, {
@@ -888,14 +1121,18 @@ describe('shared provider process behavior', () => {
             return { pid: 900_008, stop: async () => undefined }
           },
           execFile: (_command, args, _options, callback) => {
-            if (args.includes('pid=,command=') && providerPid > 0 && live) {
+            if (args.some((arg) => arg.includes('command=')) && providerPid > 0 && live) {
               providerMarkerLookups += 1
             }
-            callback(null, args.includes('pid=,command=')
+            callback(null, args.some((arg) => arg.includes('command='))
               ? [
-                  `900008 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
-                  ...(providerPid > 0 && live && providerMarkerLookups <= markedRounds
-                    ? [`${providerPid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`]
+                  `900008 1 900008 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
+                  ...(providerPid > 0 && live
+                    ? [`${providerPid} 1 ${providerPid} ${stopped ? 'T' : 'S'} provider-start node${
+                      providerMarkerLookups <= markedRounds
+                        ? ` ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+                        : ''
+                    }`]
                     : []),
                 ].join('\n')
               : [
@@ -907,7 +1144,7 @@ describe('shared provider process behavior', () => {
           },
           kill: (pid, signal) => {
             if (pid !== providerPid) return
-            if (signal === 'SIGSTOP') stopped = true
+            if (signal === 'SIGTERM') stopped = true
             if (signal === 'SIGKILL') {
               live = false
               killProcess(providerPid)
@@ -948,12 +1185,12 @@ describe('shared provider process behavior', () => {
             }
           },
           execFile: (_command, args, _options, callback) => {
-            if (!args.includes('pid=,command=')) identityInspections += 1
-            const blind = identityInspections >= 5
+            if (!args.some((arg) => arg.includes('command='))) identityInspections += 1
+            const blind = identityInspections >= 2
             callback(null, blind
               ? ''
-              : args.includes('pid=,command=')
-                ? `900006 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+              : args.some((arg) => arg.includes('command='))
+                ? `900006 1 900006 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
                 : '900006 1 900006 S Mon Aug 24 12:00:00 2026')
           },
         },
@@ -977,7 +1214,7 @@ describe('shared provider process behavior', () => {
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
       }, {
         onSpawn: ({ pid }) => { providerPid = pid },
       }, {
@@ -990,15 +1227,15 @@ describe('shared provider process behavior', () => {
             return { pid: 900_007, stop: async () => undefined }
           },
           execFile: (_command, args, _options, callback) => {
-            if (!args.includes('pid=,command=') && providerPid > 0 && live) {
+            if (!args.some((arg) => arg.includes('command=')) && providerPid > 0 && live) {
               providerInspections += 1
             }
             const providerPgid = providerInspections <= 1 ? providerPid : providerPid + 1
-            callback(null, args.includes('pid=,command=')
+            callback(null, args.some((arg) => arg.includes('command='))
               ? [
-                  `900007 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
+                  `900007 1 900007 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
                   ...(providerPid > 0 && live
-                    ? [`${providerPid} node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`]
+                    ? [`${providerPid} 1 ${providerPgid} ${stopped ? 'T' : 'S'} provider-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`]
                     : []),
                 ].join('\n')
               : [
@@ -1010,7 +1247,7 @@ describe('shared provider process behavior', () => {
           },
           kill: (pid, signal) => {
             if (pid !== providerPid) return
-            if (signal === 'SIGSTOP') stopped = true
+            if (signal === 'SIGTERM') stopped = true
             if (signal === 'SIGKILL') {
               live = false
               killProcess(providerPid)
@@ -1050,11 +1287,11 @@ describe('shared provider process behavior', () => {
           execFile: (_command, args, _options, callback) => {
             void readFile(identityPath, 'utf8').then((raw) => {
               const identity = JSON.parse(raw) as { pid: number; marker: string }
-              callback(null, args.includes('pid=,command=')
+              callback(null, args.some((arg) => arg.includes('command='))
                 ? [
-                    `900002 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
+                    `900002 1 900002 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`,
                     ...(live
-                      ? [`${identity.pid} node ${PROVIDER_PROCESS_MARKER_ENV}=${identity.marker}`]
+                      ? [`${identity.pid} 1 ${identity.pid} ${stopped ? 'T' : 'S'} provider-start node ${PROVIDER_PROCESS_MARKER_ENV}=${identity.marker}`]
                       : []),
                   ].join('\n')
                 : [
@@ -1063,12 +1300,12 @@ describe('shared provider process behavior', () => {
                       ? [`${identity.pid} 1 ${identity.pid} ${stopped ? 'T' : 'S'} Mon Aug 24 12:00:00 2026`]
                       : []),
                   ].join('\n'))
-            }, () => callback(null, args.includes('pid=,command=')
-              ? `900002 node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
+            }, () => callback(null, args.some((arg) => arg.includes('command='))
+              ? `900002 1 900002 S sentinel-start node ${PROVIDER_PROCESS_MARKER_ENV}=${marker}`
               : '900002 1 900002 S Mon Aug 24 12:00:00 2026'))
           },
           kill: (pid, signal) => {
-            if (signal === 'SIGSTOP') stopped = true
+            if (signal === 'SIGTERM') stopped = true
             if (signal === 'SIGKILL' && pid !== -900_002) live = false
           },
         },
@@ -1097,7 +1334,7 @@ describe('explicit unmanaged-confirmed provider mode', () => {
       const script = [
         "const { spawn } = require('node:child_process')",
         "const fs = require('node:fs')",
-        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+        `const child = spawn(process.execPath, [${JSON.stringify(syntheticProcessPath)}], { detached: true, stdio: 'ignore' })`,
         'child.unref()',
         `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid))`,
         `process.stdout.write(String(process.env.${PROVIDER_PROCESS_MARKER_ENV}))`,
@@ -1135,7 +1372,7 @@ describe('explicit unmanaged-confirmed provider mode', () => {
     try {
       const result = await runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'setInterval(() => {}, 1000)'],
+        args: [syntheticProcessPath],
         timeoutMs: 50,
       }, {}, { containment: 'unmanaged-confirmed' })
       expect(result).toMatchObject({
