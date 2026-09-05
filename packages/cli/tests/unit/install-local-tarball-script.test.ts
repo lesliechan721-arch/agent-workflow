@@ -13,6 +13,8 @@ const execFileAsync = promisify(execFile);
 const cliPackageName = '@lesliechan721/aw';
 const evalPackageName = '@lesliechan721/agent-skill-eval';
 const corePackageName = '@lesliechan721/aw-plugin-core';
+const windowsX64PackageName = '@lesliechan721/aw-windows-job-win32-x64';
+const windowsArm64PackageName = '@lesliechan721/aw-windows-job-win32-arm64';
 
 async function createTempDirectory(): Promise<string> {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-install-local-tarball-'));
@@ -75,11 +77,35 @@ function cliManifest(overrides: Record<string, unknown> = {}): Record<string, un
 }
 
 function evalManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return { name: evalPackageName, version: '1.2.3', ...overrides };
+  return {
+    name: evalPackageName,
+    version: '1.2.3',
+    optionalDependencies: {
+      [windowsX64PackageName]: '1.2.3',
+      [windowsArm64PackageName]: '1.2.3',
+    },
+    ...overrides,
+  };
 }
 
 function coreManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { name: corePackageName, version: '1.2.3', ...overrides };
+}
+
+async function createWindowsTarballs(root: string): Promise<{
+  windowsX64TarballPath: string;
+  windowsArm64TarballPath: string;
+}> {
+  return {
+    windowsX64TarballPath: await createPackageTarball(root, 'windows-x64.tgz', {
+      name: windowsX64PackageName,
+      version: '1.2.3',
+    }),
+    windowsArm64TarballPath: await createPackageTarball(root, 'windows-arm64.tgz', {
+      name: windowsArm64PackageName,
+      version: '1.2.3',
+    }),
+  };
 }
 
 afterEach(async () => {
@@ -101,6 +127,7 @@ describe('install-local-tarball script', () => {
     await createPackageTarball(tarballDirectory, path.basename(cliTarballPath), cliManifest());
     await createPackageTarball(tarballDirectory, path.basename(evalTarballPath), evalManifest());
     await createPackageTarball(tarballDirectory, path.basename(coreTarballPath), coreManifest());
+    const windowsTarballs = await createWindowsTarballs(tarballDirectory);
     await fs.writeFile(oldTarballPath, 'old\n');
     const newerTime = new Date(Date.now() + 60_000);
     await fs.utimes(oldTarballPath, newerTime, newerTime);
@@ -110,15 +137,16 @@ describe('install-local-tarball script', () => {
     ]);
     expect(oldStats.mtimeMs).toBeGreaterThan(packedStats.mtimeMs);
 
-    const packCliBundle = vi.fn(async () => ({ cliTarballPath, evalTarballPath, coreTarballPath }));
+    const bundle = { cliTarballPath, evalTarballPath, coreTarballPath, ...windowsTarballs };
+    const packCliBundle = vi.fn(async () => bundle);
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(undefined, { packCliBundle, runCommand }))
-      .resolves.toEqual({ cliTarballPath, evalTarballPath, coreTarballPath });
+      .resolves.toEqual(bundle);
     expect(packCliBundle).toHaveBeenCalledOnce();
     expect(runCommand).toHaveBeenCalledWith(
       'npm',
-      ['install', '-g', evalTarballPath, coreTarballPath, cliTarballPath],
+      ['install', '-g', '--omit=optional', evalTarballPath, coreTarballPath, cliTarballPath],
     );
   });
 
@@ -127,10 +155,13 @@ describe('install-local-tarball script', () => {
     const cliTarballPath = await createPackageTarball(cwd, 'cli.tgz', cliManifest());
     const evalTarballPath = await createPackageTarball(cwd, 'eval.tgz', evalManifest());
     const coreTarballPath = await createPackageTarball(cwd, 'core.tgz', coreManifest());
+    const windowsTarballs = await createWindowsTarballs(cwd);
     const packCliBundle = vi.fn(async () => ({
       cliTarballPath: path.join(cwd, 'unexpected-cli.tgz'),
       evalTarballPath: path.join(cwd, 'unexpected-eval.tgz'),
       coreTarballPath: path.join(cwd, 'unexpected-core.tgz'),
+      windowsX64TarballPath: path.join(cwd, 'unexpected-windows-x64.tgz'),
+      windowsArm64TarballPath: path.join(cwd, 'unexpected-windows-arm64.tgz'),
     }));
     const runCommand = vi.fn(async () => undefined);
 
@@ -138,21 +169,75 @@ describe('install-local-tarball script', () => {
       cwd,
       evalTarballArg: 'eval.tgz',
       coreTarballArg: 'core.tgz',
+      windowsX64TarballArg: path.basename(windowsTarballs.windowsX64TarballPath),
+      windowsArm64TarballArg: path.basename(windowsTarballs.windowsArm64TarballPath),
       packCliBundle,
       runCommand,
-    })).resolves.toEqual({ cliTarballPath, evalTarballPath, coreTarballPath });
+    })).resolves.toEqual({ cliTarballPath, evalTarballPath, coreTarballPath, ...windowsTarballs });
     expect(packCliBundle).not.toHaveBeenCalled();
     expect(runCommand).toHaveBeenCalledWith(
       'npm',
-      ['install', '-g', evalTarballPath, coreTarballPath, cliTarballPath],
+      ['install', '-g', '--omit=optional', evalTarballPath, coreTarballPath, cliTarballPath],
     );
   });
 
-  it('rejects an explicit CLI tarball without its exact shared Eval tarball', async () => {
+  it.each([
+    { arch: 'x64', platformTarball: 'windowsX64TarballPath' },
+    { arch: 'arm64', platformTarball: 'windowsArm64TarballPath' },
+  ] as const)('installs only the matching $arch Windows Job platform tarball', async ({
+    arch,
+    platformTarball,
+  }) => {
+    const tarballDirectory = await createTempDirectory();
+    const cliTarballPath = await createPackageTarball(tarballDirectory, 'cli.tgz', cliManifest());
+    const evalTarballPath = await createPackageTarball(tarballDirectory, 'eval.tgz', evalManifest());
+    const coreTarballPath = await createPackageTarball(tarballDirectory, 'core.tgz', coreManifest());
+    const windowsTarballs = await createWindowsTarballs(tarballDirectory);
+    const bundle = { cliTarballPath, evalTarballPath, coreTarballPath, ...windowsTarballs };
+    const runCommand = vi.fn(async () => undefined);
+
+    await installLocalTarball(undefined, {
+      packCliBundle: async () => bundle,
+      platform: 'win32',
+      arch,
+      runCommand,
+    });
+
+    expect(runCommand).toHaveBeenCalledWith('npm', [
+      'install',
+      '-g',
+      evalTarballPath,
+      coreTarballPath,
+      cliTarballPath,
+      windowsTarballs[platformTarball],
+    ]);
+  });
+
+  it('rejects an unsupported Windows architecture before npm install', async () => {
+    const bundle = {
+      cliTarballPath: '/bundle/cli.tgz',
+      evalTarballPath: '/bundle/eval.tgz',
+      coreTarballPath: '/bundle/core.tgz',
+      windowsX64TarballPath: '/bundle/windows-x64.tgz',
+      windowsArm64TarballPath: '/bundle/windows-arm64.tgz',
+    };
+    const runCommand = vi.fn(async () => undefined);
+
+    await expect(installLocalTarball(undefined, {
+      packCliBundle: async () => bundle,
+      validateBundle: async () => bundle,
+      platform: 'win32',
+      arch: 'ia32',
+      runCommand,
+    })).rejects.toThrow('unsupported on architecture ia32');
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicit CLI tarball without all release tarballs', async () => {
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball('cli.tgz', { runCommand })).rejects.toThrow(
-      'requires both the CLI tarball and its exact shared Eval tarball',
+      'requires all five release tarballs',
     );
     expect(runCommand).not.toHaveBeenCalled();
   });
@@ -187,11 +272,14 @@ describe('install-local-tarball script', () => {
     const cliTarballPath = await createPackageTarball(root, 'cli.tgz', cli);
     const evalTarballPath = await createPackageTarball(root, 'eval.tgz', evalPackage);
     const coreTarballPath = await createPackageTarball(root, 'core.tgz', coreManifest());
+    const windowsTarballs = await createWindowsTarballs(root);
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(cliTarballPath, {
       evalTarballArg: evalTarballPath,
       coreTarballArg: coreTarballPath,
+      windowsX64TarballArg: windowsTarballs.windowsX64TarballPath,
+      windowsArm64TarballArg: windowsTarballs.windowsArm64TarballPath,
       runCommand,
     })).rejects.toThrow(message);
     expect(runCommand).not.toHaveBeenCalled();
@@ -219,11 +307,14 @@ describe('install-local-tarball script', () => {
       { duplicateManifest },
     );
     const coreTarballPath = await createPackageTarball(root, 'core.tgz', coreManifest());
+    const windowsTarballs = await createWindowsTarballs(root);
     const runCommand = vi.fn(async () => undefined);
 
     await expect(installLocalTarball(cliTarballPath, {
       evalTarballArg: evalTarballPath,
       coreTarballArg: coreTarballPath,
+      windowsX64TarballArg: windowsTarballs.windowsX64TarballPath,
+      windowsArm64TarballArg: windowsTarballs.windowsArm64TarballPath,
       runCommand,
     })).rejects.toThrow(message);
     expect(runCommand).not.toHaveBeenCalled();

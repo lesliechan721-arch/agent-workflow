@@ -24,6 +24,8 @@ const MAX_PACKAGE_TREE_BYTES = 128 * 1024 * 1024;
 const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const EVAL_PACKAGE_NAME = '@lesliechan721/agent-skill-eval';
 const CORE_PACKAGE_NAME = '@lesliechan721/aw-plugin-core';
+const WINDOWS_X64_PACKAGE_NAME = '@lesliechan721/aw-windows-job-win32-x64';
+const WINDOWS_ARM64_PACKAGE_NAME = '@lesliechan721/aw-windows-job-win32-arm64';
 const RELEASE_VERSION_SENTINEL = '0.0.0';
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -31,6 +33,10 @@ export const releaseRoot = path.join(repoRoot, '.release');
 export const tarballDir = path.join(releaseRoot, 'tarballs');
 export const evalPackageJsonPath = path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json');
 export const evalPackageRoot = path.join(repoRoot, 'packages', 'agent-skill-eval');
+export const windowsX64PackageJsonPath = path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json');
+export const windowsX64PackageRoot = path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64');
+export const windowsArm64PackageJsonPath = path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json');
+export const windowsArm64PackageRoot = path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64');
 export const corePackageJsonPath = path.join(repoRoot, 'packages', 'plugin-core', 'package.json');
 export const corePackageRoot = path.join(repoRoot, 'packages', 'plugin-core');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
@@ -975,9 +981,19 @@ export async function findLatestTarball(directoryPath = tarballDir) {
 }
 
 export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
-  const [rootPackageJson, targets, evalPackageJson, corePackageJson, cliPackageJson] = await Promise.all([
+  const [
+    rootPackageJson,
+    targets,
+    windowsX64PackageJson,
+    windowsArm64PackageJson,
+    evalPackageJson,
+    corePackageJson,
+    cliPackageJson,
+  ] = await Promise.all([
     readPackageJson(path.join(repoRootPath, 'package.json')),
     readPackageJson(path.join(repoRootPath, 'release', 'version-targets.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'aw-windows-job-win32-x64', 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'aw-windows-job-win32-arm64', 'package.json')),
     readPackageJson(path.join(repoRootPath, 'packages', 'agent-skill-eval', 'package.json')),
     readPackageJson(path.join(repoRootPath, 'packages', 'plugin-core', 'package.json')),
     readPackageJson(path.join(repoRootPath, 'packages', 'cli', 'package.json')),
@@ -996,15 +1012,35 @@ export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
   }
   const targetVersion = assertValidVersion(targets.cli);
   assertVersionKind(targetVersion, 'stable');
+  const windowsX64Version = assertValidVersion(windowsX64PackageJson.version);
+  const windowsArm64Version = assertValidVersion(windowsArm64PackageJson.version);
   const evalVersion = assertValidVersion(evalPackageJson.version);
   const coreVersion = assertValidVersion(corePackageJson.version);
   const cliVersion = assertValidVersion(cliPackageJson.version);
-  if (targetVersion !== cliVersion || targetVersion !== evalVersion || targetVersion !== coreVersion) {
+  if (
+    targetVersion !== cliVersion
+    || targetVersion !== evalVersion
+    || targetVersion !== coreVersion
+    || targetVersion !== windowsX64Version
+    || targetVersion !== windowsArm64Version
+  ) {
     throw new Error(
       `Version mismatch: release/version-targets.json cli "${targetVersion}" must match ` +
+      `packages/aw-windows-job-win32-x64/package.json version "${windowsX64Version}", ` +
+      `packages/aw-windows-job-win32-arm64/package.json version "${windowsArm64Version}", ` +
       `packages/agent-skill-eval/package.json version "${evalVersion}", ` +
       `packages/plugin-core/package.json version "${coreVersion}", and ` +
       `packages/cli/package.json version "${cliVersion}".`,
+    );
+  }
+  if (evalPackageJson.optionalDependencies?.[WINDOWS_X64_PACKAGE_NAME] !== `workspace:${targetVersion}`) {
+    throw new Error(
+      `${EVAL_PACKAGE_NAME} must exactly optionally depend on ${WINDOWS_X64_PACKAGE_NAME}@workspace:${targetVersion}.`,
+    );
+  }
+  if (evalPackageJson.optionalDependencies?.[WINDOWS_ARM64_PACKAGE_NAME] !== `workspace:${targetVersion}`) {
+    throw new Error(
+      `${EVAL_PACKAGE_NAME} must exactly optionally depend on ${WINDOWS_ARM64_PACKAGE_NAME}@workspace:${targetVersion}.`,
     );
   }
   if (cliPackageJson.dependencies?.[EVAL_PACKAGE_NAME] !== `workspace:${targetVersion}`) {
@@ -1019,10 +1055,71 @@ export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
   }
   return {
     targetVersion,
+    windowsX64Version,
+    windowsArm64Version,
     evalVersion,
     coreVersion,
     cliVersion,
   };
+}
+
+async function packWindowsJobFromSnapshot(snapshot, arch, destination, options = {}) {
+  const targetDir = path.resolve(repoRoot, destination);
+  await ensureDirectory(targetDir);
+  const packageRoot = arch === 'x64'
+    ? snapshot.windowsX64PackageRoot
+    : snapshot.windowsArm64PackageRoot;
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), `aw-windows-job-${arch}-pack-`),
+    async (packDirectory) => {
+      await (options.runPackCommand ?? runCommand)('pnpm', [
+        '--config.ignore-scripts=true',
+        'pack',
+        '--pack-destination',
+        packDirectory,
+      ], {
+        cwd: packageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
+      });
+      const tarballs = await listTarballs(packDirectory);
+      if (tarballs.length !== 1) {
+        throw new Error(`Expected Windows Job ${arch} pack to produce exactly one tarball, found ${tarballs.length}.`);
+      }
+      const targetPath = path.join(targetDir, path.basename(tarballs[0]));
+      await fs.rename(tarballs[0], targetPath).catch(async (error) => {
+        if (error?.code !== 'EXDEV') throw error;
+        await fs.copyFile(tarballs[0], targetPath);
+      });
+      return targetPath;
+    },
+    `Windows Job ${arch} tarball pack staging cleanup also failed`,
+  );
+}
+
+export async function packWindowsJobX64({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
+  if (snapshot) return packWindowsJobFromSnapshot(snapshot, 'x64', destination, { quiet, runPackCommand });
+  await assertPublicPackageVersions();
+  return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
+    packWindowsJobFromSnapshot(ownedSnapshot, 'x64', destination, { quiet, runPackCommand })
+  );
+}
+
+export async function packWindowsJobArm64({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
+  if (snapshot) return packWindowsJobFromSnapshot(snapshot, 'arm64', destination, { quiet, runPackCommand });
+  await assertPublicPackageVersions();
+  return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
+    packWindowsJobFromSnapshot(ownedSnapshot, 'arm64', destination, { quiet, runPackCommand })
+  );
 }
 
 async function packCliFromSnapshot(snapshot, destination, options = {}) {

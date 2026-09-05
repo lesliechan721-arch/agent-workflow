@@ -60,9 +60,13 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
   const artifacts = path.join(root, 'artifacts');
   await fs.mkdir(artifacts, { recursive: true });
   const evalBytes = Buffer.from('eval-tarball');
+  const windowsX64Bytes = Buffer.from('windows-x64-tarball');
+  const windowsArm64Bytes = Buffer.from('windows-arm64-tarball');
   const coreBytes = Buffer.from('core-tarball');
   const cliBytes = Buffer.from('cli-tarball');
   await fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes);
+  await fs.writeFile(path.join(artifacts, 'windows-x64.tgz'), windowsX64Bytes);
+  await fs.writeFile(path.join(artifacts, 'windows-arm64.tgz'), windowsArm64Bytes);
   await fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes);
   await fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes);
   const catalogPublication = catalogPublicationPlan();
@@ -81,11 +85,15 @@ async function publicationFixture(axes: { cli: boolean; catalog: boolean }) {
       npm: axes.cli ? {
         version: '1.2.0',
         packages: [
+          { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: sha256(windowsX64Bytes) },
+          { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: sha256(windowsArm64Bytes) },
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: sha256(evalBytes) },
           { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: sha256(coreBytes) },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: sha256(cliBytes) },
         ],
         treeDigests: {
+          '@lesliechan721/aw-windows-job-win32-x64': 'windows-x64-tree',
+          '@lesliechan721/aw-windows-job-win32-arm64': 'windows-arm64-tree',
           '@lesliechan721/agent-skill-eval': 'eval-tree',
           '@lesliechan721/aw-plugin-core': 'core-tree',
           '@lesliechan721/aw': 'cli-tree',
@@ -110,9 +118,12 @@ function publishOptions(fixture: Awaited<ReturnType<typeof publicationFixture>>)
     resolveCandidates: async () => fixture.descriptor.candidates,
     assertCliTagAvailable: async () => undefined,
     publishCliTag: async () => undefined,
-    computeTarballTreeDigest: async (file: string) => file.endsWith('eval.tgz')
-      ? 'eval-tree'
-      : file.endsWith('core.tgz') ? 'core-tree' : 'cli-tree',
+    computeTarballTreeDigest: async (file: string) => {
+      if (file.endsWith('windows-x64.tgz')) return 'windows-x64-tree';
+      if (file.endsWith('windows-arm64.tgz')) return 'windows-arm64-tree';
+      if (file.endsWith('eval.tgz')) return 'eval-tree';
+      return file.endsWith('core.tgz') ? 'core-tree' : 'cli-tree';
+    },
     attemptPath: path.join(fixture.root, 'attempted.json'),
   };
 }
@@ -177,6 +188,8 @@ describe('local prepared release', () => {
       fs.mkdir(path.join(root, 'release'), { recursive: true }),
       fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true }),
       fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'aw-windows-job-win32-x64'), { recursive: true }),
+      fs.mkdir(path.join(root, 'packages', 'aw-windows-job-win32-arm64'), { recursive: true }),
       fs.mkdir(path.join(root, 'packages', 'plugin-core'), { recursive: true }),
     ]);
     await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
@@ -191,6 +204,16 @@ describe('local prepared release', () => {
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
+      optionalDependencies: {
+        '@lesliechan721/aw-windows-job-win32-x64': 'workspace:1.2.0',
+        '@lesliechan721/aw-windows-job-win32-arm64': 'workspace:1.2.0',
+      },
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'aw-windows-job-win32-x64', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/aw-windows-job-win32-x64', version: '1.2.0',
+    }, null, 2)}\n`);
+    await fs.writeFile(path.join(root, 'packages', 'aw-windows-job-win32-arm64', 'package.json'), `${JSON.stringify({
+      name: '@lesliechan721/aw-windows-job-win32-arm64', version: '1.2.0',
     }, null, 2)}\n`);
     await fs.writeFile(path.join(root, 'packages', 'plugin-core', 'package.json'), `${JSON.stringify({
       name: '@lesliechan721/aw-plugin-core', version: '1.2.0',
@@ -198,6 +221,14 @@ describe('local prepared release', () => {
     await fs.writeFile(path.join(root, 'pnpm-lock.yaml'), [
       'lockfileVersion: 9.0',
       'importers:',
+      '  packages/agent-skill-eval:',
+      '    optionalDependencies:',
+      "      '@lesliechan721/aw-windows-job-win32-x64':",
+      '        specifier: workspace:1.2.0',
+      '        version: link:../aw-windows-job-win32-x64',
+      "      '@lesliechan721/aw-windows-job-win32-arm64':",
+      '        specifier: workspace:1.2.0',
+      '        version: link:../aw-windows-job-win32-arm64',
       '  packages/cli:',
       "    dependencies:",
       "      '@lesliechan721/agent-skill-eval':",
@@ -217,9 +248,21 @@ describe('local prepared release', () => {
     const corePackage = JSON.parse(await fs.readFile(
       path.join(root, 'packages', 'plugin-core', 'package.json'), 'utf8',
     ));
+    const windowsX64Package = JSON.parse(await fs.readFile(
+      path.join(root, 'packages', 'aw-windows-job-win32-x64', 'package.json'), 'utf8',
+    ));
+    const windowsArm64Package = JSON.parse(await fs.readFile(
+      path.join(root, 'packages', 'aw-windows-job-win32-arm64', 'package.json'), 'utf8',
+    ));
     expect(cli.version).toBe('1.2.1');
     expect(evalPackage.version).toBe('1.2.1');
     expect(corePackage.version).toBe('1.2.1');
+    expect(windowsX64Package.version).toBe('1.2.1');
+    expect(windowsArm64Package.version).toBe('1.2.1');
+    expect(evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-x64'])
+      .toBe('workspace:1.2.1');
+    expect(evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-arm64'])
+      .toBe('workspace:1.2.1');
     expect(cli.dependencies['@lesliechan721/agent-skill-eval']).toBe('workspace:1.2.1');
     expect(cli.dependencies['@lesliechan721/aw-plugin-core']).toBe('workspace:1.2.1');
     expect(await fs.readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'))
@@ -514,11 +557,29 @@ describe('local prepared release', () => {
     const root = await temporaryRoot();
     const releaseRoot = path.join(root, '.release');
     const evalRoot = path.join(root, 'eval');
+    const windowsX64Root = path.join(root, 'windows-x64');
+    const windowsArm64Root = path.join(root, 'windows-arm64');
     const coreRoot = path.join(root, 'core');
     const cliRoot = path.join(root, 'cli');
-    await Promise.all([fs.mkdir(evalRoot), fs.mkdir(coreRoot), fs.mkdir(cliRoot)]);
+    await Promise.all([
+      fs.mkdir(windowsX64Root),
+      fs.mkdir(windowsArm64Root),
+      fs.mkdir(evalRoot),
+      fs.mkdir(coreRoot),
+      fs.mkdir(cliRoot),
+    ]);
+    await fs.writeFile(path.join(windowsX64Root, 'package.json'), JSON.stringify({
+      name: '@lesliechan721/aw-windows-job-win32-x64', version: '1.2.0',
+    }));
+    await fs.writeFile(path.join(windowsArm64Root, 'package.json'), JSON.stringify({
+      name: '@lesliechan721/aw-windows-job-win32-arm64', version: '1.2.0',
+    }));
     await fs.writeFile(path.join(evalRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/agent-skill-eval', version: '1.2.0',
+      optionalDependencies: {
+        '@lesliechan721/aw-windows-job-win32-x64': 'workspace:1.2.0',
+        '@lesliechan721/aw-windows-job-win32-arm64': 'workspace:1.2.0',
+      },
     }));
     await fs.writeFile(path.join(coreRoot, 'package.json'), JSON.stringify({
       name: '@lesliechan721/aw-plugin-core', version: '1.2.0',
@@ -532,6 +593,8 @@ describe('local prepared release', () => {
     }));
     const snapshot = {
       ...build,
+      windowsX64PackageRoot: windowsX64Root,
+      windowsArm64PackageRoot: windowsArm64Root,
       evalPackageRoot: evalRoot,
       corePackageRoot: coreRoot,
       cliPackageRoot: cliRoot,
@@ -558,6 +621,8 @@ describe('local prepared release', () => {
       resolveCandidates: async () => ({ cli: '1.2.0', catalog: '2.3.0' }),
       withSnapshot: async (callback: (value: typeof snapshot) => unknown) => callback(snapshot),
       packEval: pack('eval', evalRoot),
+      packWindowsJobX64: pack('windows-x64', windowsX64Root),
+      packWindowsJobArm64: pack('windows-arm64', windowsArm64Root),
       packCore: pack('core', coreRoot),
       packCli: pack('cli', cliRoot),
       computeTarballTreeDigest: async (file: string) => sha256(await fs.readFile(file)),
@@ -582,39 +647,38 @@ describe('local prepared release', () => {
   });
 
   it.each([
-    [{ cli: true, catalog: false }, ['eval', 'core', 'cli']],
+    [{ cli: true, catalog: false }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli']],
     [{ cli: false, catalog: true }, ['catalog']],
-    [{ cli: true, catalog: true }, ['eval', 'core', 'cli', 'catalog']],
+    [{ cli: true, catalog: true }, ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli', 'catalog']],
   ] as const)('publishes enabled axes in eval, CLI, Catalog order: %j', async (axes, expected) => {
     const fixture = await publicationFixture(axes);
     const events: string[] = [];
     await publishPreparedRelease({
       ...publishOptions(fixture),
       runCommand: async (_command: string, args: string[]) => {
-        events.push(args[1].includes('eval.tgz')
-          ? 'eval'
-          : args[1].includes('core.tgz') ? 'core' : 'cli');
+        events.push(path.basename(args[1], '.tgz'));
       },
       publishCatalog: async () => { events.push('catalog'); },
     });
     expect(events).toEqual(expected);
   });
 
-  it.each(['eval', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
+  it.each(['windows-x64', 'eval', 'cli'] as const)('stops before Catalog when %s publication is uncertain and requires a bump', async (failure) => {
     const fixture = await publicationFixture({ cli: true, catalog: true });
     const events: string[] = [];
     const publishCatalog = vi.fn();
     await expect(publishPreparedRelease({
       ...publishOptions(fixture),
       runCommand: async (_command: string, args: string[]) => {
-        const current = args[1].includes('eval.tgz') ? 'eval' : 'cli';
+        const current = path.basename(args[1], '.tgz');
         events.push(current);
         if (current === failure) throw new Error('uncertain');
       },
       publishCatalog,
     })).rejects.toThrow('run pnpm release again with --cli-bump');
     expect(publishCatalog).not.toHaveBeenCalled();
-    expect(events).toEqual(failure === 'eval' ? ['eval'] : ['eval', 'cli']);
+    const order = ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli'];
+    expect(events).toEqual(order.slice(0, order.indexOf(failure) + 1));
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.0' } });
   });
@@ -636,6 +700,8 @@ describe('local prepared release', () => {
       descriptorDigest: calculateCanonicalDigest(fixture.descriptor),
     }));
     const published = new Set([
+      '@lesliechan721/aw-windows-job-win32-x64',
+      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
     ]);
@@ -668,6 +734,8 @@ describe('local prepared release', () => {
 
     expect(runNpmCommand).toHaveBeenCalledTimes(1);
     expect(verified).toEqual([
+      '@lesliechan721/aw-windows-job-win32-x64',
+      '@lesliechan721/aw-windows-job-win32-arm64',
       '@lesliechan721/agent-skill-eval',
       '@lesliechan721/aw-plugin-core',
       '@lesliechan721/aw',
@@ -755,7 +823,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(fixture.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: candidates.cli } });
   });
@@ -781,7 +849,7 @@ describe('local prepared release', () => {
       publishCatalog: async () => { events.push('catalog'); },
     });
 
-    expect(events).toEqual(['cli', 'cli', 'cli', 'catalog']);
+    expect(events).toEqual(['cli', 'cli', 'cli', 'cli', 'cli', 'catalog']);
     expect(JSON.parse(await fs.readFile(path.join(failed.root, 'attempted.json'), 'utf8')))
       .toMatchObject({ candidates: { cli: '1.2.1' } });
   });

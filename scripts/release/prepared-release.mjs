@@ -15,11 +15,15 @@ import {
   packCli,
   packCore,
   packEval,
+  packWindowsJobArm64,
+  packWindowsJobX64,
   readPackageJson,
   releaseRoot,
   repoRoot as defaultRepoRoot,
   resolveRegistryUrl,
   resolveReleaseHead,
+  windowsArm64PackageJsonPath,
+  windowsX64PackageJsonPath,
   withReleaseBuildSnapshot,
   writePackageJson,
 } from './common.mjs';
@@ -42,11 +46,15 @@ export const preparedReleaseRoot = path.join(releaseRoot, 'prepared');
 export const preparedDescriptorPath = path.join(preparedReleaseRoot, 'descriptor.json');
 export const releaseAttemptPath = path.join(releaseRoot, 'attempted.json');
 const CLI_PACKAGES = [
+  '@lesliechan721/aw-windows-job-win32-x64',
+  '@lesliechan721/aw-windows-job-win32-arm64',
   '@lesliechan721/agent-skill-eval',
   '@lesliechan721/aw-plugin-core',
   '@lesliechan721/aw',
 ];
 const CLI_PACKAGE_JSON_PATHS = [
+  windowsX64PackageJsonPath,
+  windowsArm64PackageJsonPath,
   evalPackageJsonPath,
   corePackageJsonPath,
   cliPackageJsonPath,
@@ -318,15 +326,23 @@ export function assertSelectedCandidates(axes, candidates) {
 }
 
 async function stampCandidatePackages(snapshot, candidateVersion) {
+  const windowsX64Path = path.join(snapshot.windowsX64PackageRoot, 'package.json');
+  const windowsArm64Path = path.join(snapshot.windowsArm64PackageRoot, 'package.json');
   const evalPath = path.join(snapshot.evalPackageRoot, 'package.json');
   const corePath = path.join(snapshot.corePackageRoot, 'package.json');
   const cliPath = path.join(snapshot.cliPackageRoot, 'package.json');
-  const [evalPackage, corePackage, cliPackage] = await Promise.all([
+  const [windowsX64Package, windowsArm64Package, evalPackage, corePackage, cliPackage] = await Promise.all([
+    readPackageJson(windowsX64Path),
+    readPackageJson(windowsArm64Path),
     readPackageJson(evalPath),
     readPackageJson(corePath),
     readPackageJson(cliPath),
   ]);
+  windowsX64Package.version = candidateVersion;
+  windowsArm64Package.version = candidateVersion;
   evalPackage.version = candidateVersion;
+  evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-x64'] = candidateVersion;
+  evalPackage.optionalDependencies['@lesliechan721/aw-windows-job-win32-arm64'] = candidateVersion;
   corePackage.version = candidateVersion;
   cliPackage.version = candidateVersion;
   cliPackage.dependencies['@lesliechan721/agent-skill-eval'] = candidateVersion;
@@ -335,6 +351,8 @@ async function stampCandidatePackages(snapshot, candidateVersion) {
   delete corePackage.awRelease;
   delete cliPackage.awRelease;
   await Promise.all([
+    writePackageJson(windowsX64Path, windowsX64Package),
+    writePackageJson(windowsArm64Path, windowsArm64Package),
     writePackageJson(evalPath, evalPackage),
     writePackageJson(corePath, corePackage),
     writePackageJson(cliPath, cliPackage),
@@ -381,7 +399,9 @@ export async function prepareLocalRelease(channel, options = {}) {
       let npm = null;
       if (candidates.cli !== null) {
         await stampCandidatePackages(snapshot, candidates.cli);
-        const [evalTarball, coreTarball, cliTarball] = await Promise.all([
+        const [windowsX64Tarball, windowsArm64Tarball, evalTarball, coreTarball, cliTarball] = await Promise.all([
+          (options.packWindowsJobX64 ?? packWindowsJobX64)({ snapshot, destination: artifactRoot, quiet: true }),
+          (options.packWindowsJobArm64 ?? packWindowsJobArm64)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packEval ?? packEval)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCore ?? packCore)({ snapshot, destination: artifactRoot, quiet: true }),
           (options.packCli ?? packCli)({ snapshot, destination: artifactRoot, quiet: true }),
@@ -389,27 +409,41 @@ export async function prepareLocalRelease(channel, options = {}) {
         npm = {
           version: candidates.cli,
           packages: [
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[0], evalTarball, await fileDigest(evalTarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[1], coreTarball, await fileDigest(coreTarball)),
-            descriptorArtifact(temporaryRoot, CLI_PACKAGES[2], cliTarball, await fileDigest(cliTarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[0], windowsX64Tarball, await fileDigest(windowsX64Tarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[1], windowsArm64Tarball, await fileDigest(windowsArm64Tarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[2], evalTarball, await fileDigest(evalTarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[3], coreTarball, await fileDigest(coreTarball)),
+            descriptorArtifact(temporaryRoot, CLI_PACKAGES[4], cliTarball, await fileDigest(cliTarball)),
           ],
           treeDigests: {
             [CLI_PACKAGES[0]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(evalTarball, {
+              ?? computePackageTarballTreeDigest)(windowsX64Tarball, {
                 normalizeReleaseMetadata: true,
                 expectedPackageName: CLI_PACKAGES[0],
                 expectedVersion: candidates.cli,
               }),
             [CLI_PACKAGES[1]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(coreTarball, {
+              ?? computePackageTarballTreeDigest)(windowsArm64Tarball, {
                 normalizeReleaseMetadata: true,
                 expectedPackageName: CLI_PACKAGES[1],
                 expectedVersion: candidates.cli,
               }),
             [CLI_PACKAGES[2]]: await (options.computeTarballTreeDigest
-              ?? computePackageTarballTreeDigest)(cliTarball, {
+              ?? computePackageTarballTreeDigest)(evalTarball, {
                 normalizeReleaseMetadata: true,
                 expectedPackageName: CLI_PACKAGES[2],
+                expectedVersion: candidates.cli,
+              }),
+            [CLI_PACKAGES[3]]: await (options.computeTarballTreeDigest
+              ?? computePackageTarballTreeDigest)(coreTarball, {
+                normalizeReleaseMetadata: true,
+                expectedPackageName: CLI_PACKAGES[3],
+                expectedVersion: candidates.cli,
+              }),
+            [CLI_PACKAGES[4]]: await (options.computeTarballTreeDigest
+              ?? computePackageTarballTreeDigest)(cliTarball, {
+                normalizeReleaseMetadata: true,
+                expectedPackageName: CLI_PACKAGES[4],
                 expectedVersion: candidates.cli,
               }),
           },
@@ -734,14 +768,11 @@ export async function publishPreparedRelease(options = {}) {
   };
 
   if (descriptor.axes.cli) {
-    const [evalArtifact, coreArtifact, cliArtifact] = descriptor.npm.packages;
     await (options.consumeCandidate ?? consumePreparedCandidate)(descriptor, 'cli', options);
-    await publishNpm(CLI_PACKAGES[0], resolvePreparedPath(root, evalArtifact.path),
-      descriptor.candidates.cli, descriptor.channel, publicationOptions);
-    await publishNpm(CLI_PACKAGES[1], resolvePreparedPath(root, coreArtifact.path),
-      descriptor.candidates.cli, descriptor.channel, publicationOptions);
-    await publishNpm(CLI_PACKAGES[2], resolvePreparedPath(root, cliArtifact.path),
-      descriptor.candidates.cli, descriptor.channel, publicationOptions);
+    for (const artifact of descriptor.npm.packages) {
+      await publishNpm(artifact.name, resolvePreparedPath(root, artifact.path),
+        descriptor.candidates.cli, descriptor.channel, publicationOptions);
+    }
     await (options.publishCliTag ?? ensureCliTag)(
       descriptor.candidates.cli,
       descriptor.source.head,

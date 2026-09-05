@@ -17,6 +17,38 @@ const DEPENDENCY_INPUT_PATHS = [
 
 const TARGETS = [
   {
+    id: 'windows-job-x64',
+    inputPaths: [
+      ...DEPENDENCY_INPUT_PATHS,
+      'packages/aw-windows-job-win32-x64/package.json',
+      'packages/agent-skill-eval/native/windows',
+      'packages/agent-skill-eval/scripts/copy-windows-job-platform-package.mjs',
+      'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
+    ],
+    outputRoots: ['packages/aw-windows-job-win32-x64/dist'],
+    requiredOutputs: [
+      { path: 'packages/aw-windows-job-win32-x64/dist/aw-windows-job.exe', type: 'file' },
+    ],
+    packageName: '@lesliechan721/aw-windows-job-win32-x64',
+    scriptName: 'build',
+  },
+  {
+    id: 'windows-job-arm64',
+    inputPaths: [
+      ...DEPENDENCY_INPUT_PATHS,
+      'packages/aw-windows-job-win32-arm64/package.json',
+      'packages/agent-skill-eval/native/windows',
+      'packages/agent-skill-eval/scripts/copy-windows-job-platform-package.mjs',
+      'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
+    ],
+    outputRoots: ['packages/aw-windows-job-win32-arm64/dist'],
+    requiredOutputs: [
+      { path: 'packages/aw-windows-job-win32-arm64/dist/aw-windows-job.exe', type: 'file' },
+    ],
+    packageName: '@lesliechan721/aw-windows-job-win32-arm64',
+    scriptName: 'build',
+  },
+  {
     id: 'agent-skill-eval',
     inputPaths: [
       ...DEPENDENCY_INPUT_PATHS,
@@ -28,7 +60,6 @@ const TARGETS = [
       'packages/agent-skill-eval/schemas',
       'packages/agent-skill-eval/native/windows',
       'packages/agent-skill-eval/scripts/embed-schemas.mjs',
-      'packages/agent-skill-eval/scripts/copy-windows-job-helper.mjs',
       'packages/agent-skill-eval/scripts/windows-job-helper-artifacts.mjs',
     ],
     outputRoots: ['packages/agent-skill-eval/dist'],
@@ -36,9 +67,6 @@ const TARGETS = [
       { path: 'packages/agent-skill-eval/dist/index.js', type: 'text' },
       { path: 'packages/agent-skill-eval/dist/bin.js', type: 'text' },
       { path: 'packages/agent-skill-eval/dist/schemas/digests.json', type: 'text' },
-      { path: 'packages/agent-skill-eval/dist/native/windows/manifest.json', type: 'json' },
-      { path: 'packages/agent-skill-eval/dist/native/windows/x64/aw-windows-job.exe', type: 'file' },
-      { path: 'packages/agent-skill-eval/dist/native/windows/arm64/aw-windows-job.exe', type: 'file' },
     ],
     tsBuildInfoPath: '.release/cache/dev-build/agent-skill-eval.tsbuildinfo',
     packageName: '@lesliechan721/agent-skill-eval',
@@ -382,7 +410,12 @@ export async function buildDevWithCache(repoRoot, options = {}) {
   const results = [];
   const upstream = {};
   for (const target of TARGETS) {
-    const targetUpstream = target.id === 'agent-skill-eval' || target.id === 'plugin-core'
+    const targetUpstream = [
+      'windows-job-x64',
+      'windows-job-arm64',
+      'agent-skill-eval',
+      'plugin-core',
+    ].includes(target.id)
       ? {}
       : { ...upstream };
     const result = await buildTarget(repoRoot, target, targetUpstream, options);

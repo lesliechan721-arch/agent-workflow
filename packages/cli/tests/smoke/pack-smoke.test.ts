@@ -25,6 +25,8 @@ let packedCliPromise: Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
+  windowsX64TarballPath: string;
+  windowsArm64TarballPath: string;
   tempRoot: string;
 }> | null = null;
 
@@ -117,6 +119,8 @@ async function preparePackedCli(): Promise<{
   cliTarballPath: string;
   evalTarballPath: string;
   coreTarballPath: string;
+  windowsX64TarballPath: string;
+  windowsArm64TarballPath: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -154,23 +158,31 @@ async function preparePackedCli(): Promise<{
     const tarballs = (await fs.readdir(packDir))
       .filter((entry) => entry.endsWith('.tgz'))
       .sort();
-    expect(tarballs).toHaveLength(3);
+    expect(tarballs).toHaveLength(5);
     const cliTarballName = tarballs.find((entry) =>
-      entry.includes('-aw-') && !entry.includes('-aw-plugin-core-'));
+      /-aw-\d/u.test(entry));
     const evalTarballName = tarballs.find((entry) => entry.includes('-agent-skill-eval-'));
     const coreTarballName = tarballs.find((entry) => entry.includes('-aw-plugin-core-'));
+    const windowsX64TarballName = tarballs.find((entry) => entry.includes('-aw-windows-job-win32-x64-'));
+    const windowsArm64TarballName = tarballs.find((entry) => entry.includes('-aw-windows-job-win32-arm64-'));
     expect(cliTarballName).toBeDefined();
     expect(evalTarballName).toBeDefined();
     expect(coreTarballName).toBeDefined();
+    expect(windowsX64TarballName).toBeDefined();
+    expect(windowsArm64TarballName).toBeDefined();
     const cliTarballPath = path.join(packDir, cliTarballName!);
     const evalTarballPath = path.join(packDir, evalTarballName!);
     const coreTarballPath = path.join(packDir, coreTarballName!);
+    const windowsX64TarballPath = path.join(packDir, windowsX64TarballName!);
+    const windowsArm64TarballPath = path.join(packDir, windowsArm64TarballName!);
 
     return {
       packageRoot: await unpackTarball(cliTarballPath, unpackDir),
       cliTarballPath,
       evalTarballPath,
       coreTarballPath,
+      windowsX64TarballPath,
+      windowsArm64TarballPath,
       tempRoot,
     };
   })();
@@ -367,15 +379,48 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
-  it('packs both Windows Job helper architectures in the Eval tarball', async () => {
-    const { evalTarballPath } = await preparePackedCli();
-    const { stdout } = await execFileAsync('tar', ['-tzf', evalTarballPath], {
-      maxBuffer: 20 * 1024 * 1024,
-    });
-    const entries = new Set(stdout.trim().split('\n'));
-    expect(entries).toContain('package/dist/native/windows/manifest.json');
-    expect(entries).toContain('package/dist/native/windows/x64/aw-windows-job.exe');
-    expect(entries).toContain('package/dist/native/windows/arm64/aw-windows-job.exe');
+  it('packs one Windows Job helper in each platform tarball and none in Eval', async () => {
+    const { evalTarballPath, windowsX64TarballPath, windowsArm64TarballPath } = await preparePackedCli();
+    const platformUnpackRoot = await createSmokeTempRoot(
+      'aw-platform-pack-smoke-',
+      'platform package smoke unpack root',
+    );
+    const x64UnpackRoot = path.join(platformUnpackRoot, 'x64');
+    const arm64UnpackRoot = path.join(platformUnpackRoot, 'arm64');
+    await Promise.all([fs.ensureDir(x64UnpackRoot), fs.ensureDir(arm64UnpackRoot)]);
+    const [{ stdout: evalEntries }, { stdout: x64Entries }, { stdout: arm64Entries }] = await Promise.all([
+      execFileAsync('tar', ['-tzf', evalTarballPath], { maxBuffer: 20 * 1024 * 1024 }),
+      execFileAsync('tar', ['-tzf', windowsX64TarballPath], { maxBuffer: 20 * 1024 * 1024 }),
+      execFileAsync('tar', ['-tzf', windowsArm64TarballPath], { maxBuffer: 20 * 1024 * 1024 }),
+    ]);
+    expect(evalEntries).not.toContain('aw-windows-job.exe');
+    const expectedEntries = new Set([
+      'package/dist/aw-windows-job.exe',
+      'package/package.json',
+    ]);
+    expect(new Set(x64Entries.trim().split('\n'))).toEqual(expectedEntries);
+    expect(new Set(arm64Entries.trim().split('\n'))).toEqual(expectedEntries);
+
+    const [x64PackageRoot, arm64PackageRoot] = await Promise.all([
+      unpackTarball(windowsX64TarballPath, x64UnpackRoot),
+      unpackTarball(windowsArm64TarballPath, arm64UnpackRoot),
+    ]);
+    for (const [arch, packageRoot, machine] of [
+      ['x64', x64PackageRoot, 0x8664],
+      ['arm64', arm64PackageRoot, 0xaa64],
+    ] as const) {
+      await expect(fs.readJson(path.join(packageRoot, 'package.json'))).resolves.toMatchObject({
+        name: `@lesliechan721/aw-windows-job-win32-${arch}`,
+        os: ['win32'],
+        cpu: [arch],
+        exports: { './aw-windows-job.exe': './dist/aw-windows-job.exe' },
+      });
+      const bytes = await fs.readFile(path.join(packageRoot, 'dist', 'aw-windows-job.exe'));
+      expect(bytes.subarray(0, 2).toString('ascii')).toBe('MZ');
+      const peOffset = bytes.readUInt32LE(0x3c);
+      expect(bytes.subarray(peOffset, peOffset + 4).toString('ascii')).toBe('PE\0\0');
+      expect(bytes.readUInt16LE(peOffset + 4)).toBe(machine);
+    }
   }, 300_000);
 
   it('runs external authoring workflow from installed tarballs', async () => {
@@ -390,6 +435,7 @@ describe('pack smoke', () => {
       [
         'install',
         '--global',
+        '--omit=optional',
         '--prefix',
         installPrefix,
         evalTarballPath,

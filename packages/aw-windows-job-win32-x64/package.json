@@ -1,0 +1,24 @@
+{
+  "name": "@lesliechan721/aw-windows-job-win32-x64",
+  "version": "0.1.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "exports": {
+    "./aw-windows-job.exe": "./dist/aw-windows-job.exe"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node ../agent-skill-eval/scripts/copy-windows-job-platform-package.mjs x64",
+    "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
+  }
+}

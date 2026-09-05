@@ -116,9 +116,33 @@ async function writeRepoPackageVersions(
     { spaces: 2 },
   );
   await fs.outputJson(
+    path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json'),
+    {
+      name: '@lesliechan721/aw-windows-job-win32-x64',
+      version: versions.evalVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
+    path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json'),
+    {
+      name: '@lesliechan721/aw-windows-job-win32-arm64',
+      version: versions.evalVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
     path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
     {
       name: '@lesliechan721/agent-skill-eval',
+      version: versions.evalVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
+    path.join(repoRoot, 'packages', 'plugin-core', 'package.json'),
+    {
+      name: '@lesliechan721/aw-plugin-core',
       version: versions.evalVersion,
     },
     { spaces: 2 },
@@ -464,7 +488,10 @@ describe('bundle layout validation', () => {
   it.each([
     'package.json',
     'release/version-targets.json',
+    'packages/aw-windows-job-win32-x64/package.json',
+    'packages/aw-windows-job-win32-arm64/package.json',
     'packages/agent-skill-eval/package.json',
+    'packages/plugin-core/package.json',
     'packages/cli/package.json',
   ])('rejects an incomplete release version truth set missing %s', async (missing) => {
     const repoRoot = await makeTempRepo();
@@ -514,7 +541,7 @@ describe('bundle layout validation', () => {
       repoRoot,
       outputRoot: path.join(repoRoot, 'embedded'),
     })).rejects.toThrow(
-      'Invalid release versions: release/version-targets.json cli 1.0.0 must match packages/agent-skill-eval/package.json version 1.0.0 and packages/cli/package.json version 1.0.1.',
+      'Invalid release versions: release/version-targets.json cli 1.0.0 must match all five public package versions',
     );
   });
 

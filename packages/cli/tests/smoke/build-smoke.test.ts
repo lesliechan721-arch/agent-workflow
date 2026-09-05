@@ -251,7 +251,14 @@ describe('build smoke', () => {
           outputDigest: snapshot.outputDigest,
         });
     } else {
-      for (const target of ['agent-skill-eval', 'plugin-core', 'cli-typescript', 'plugin-bundle']) {
+      for (const target of [
+        'windows-job-x64',
+        'windows-job-arm64',
+        'agent-skill-eval',
+        'plugin-core',
+        'cli-typescript',
+        'plugin-bundle',
+      ]) {
         await expect(fs.readJson(path.join(
           root,
           '.release',
@@ -270,11 +277,8 @@ describe('build smoke', () => {
       const helperPath = path.join(
         snapshot.root,
         'packages',
-        'agent-skill-eval',
+        `aw-windows-job-win32-${arch}`,
         'dist',
-        'native',
-        'windows',
-        arch,
         'aw-windows-job.exe',
       );
       const bytes = await fs.readFile(helperPath);

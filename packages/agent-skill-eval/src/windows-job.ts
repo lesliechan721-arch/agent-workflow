@@ -1,9 +1,16 @@
 import { lstatSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 export const WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION = 1
+
+const require = createRequire(import.meta.url)
+const WINDOWS_JOB_PACKAGES = {
+  x64: '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
+  arm64: '@lesliechan721/aw-windows-job-win32-arm64/aw-windows-job.exe',
+} as const
 
 export interface WindowsJobHelperConfig {
   schemaVersion: typeof WINDOWS_JOB_HELPER_CONFIG_SCHEMA_VERSION
@@ -35,11 +42,21 @@ function isRegularFile(filePath: string): boolean {
 export function resolveWindowsJobHelperPath(options: {
   arch?: string
   moduleUrl?: string
+  resolvePackage?: (specifier: string) => string
 } = {}): string {
   const arch = assertWindowsJobArch(options.arch ?? process.arch)
   const moduleDirectory = path.dirname(fileURLToPath(options.moduleUrl ?? import.meta.url))
+  let packagePath: string | undefined
+  const resolvePackage = options.resolvePackage ?? (options.moduleUrl ? undefined : require.resolve)
+  if (resolvePackage) {
+    try {
+      packagePath = resolvePackage(WINDOWS_JOB_PACKAGES[arch])
+    } catch {
+      // Source checkouts can use the committed artifact before workspace packages are built.
+    }
+  }
   const candidates = [
-    path.join(moduleDirectory, 'native', 'windows', arch, 'aw-windows-job.exe'),
+    ...(packagePath ? [packagePath] : []),
     path.join(moduleDirectory, '..', 'native', 'windows', arch, 'aw-windows-job.exe'),
   ]
   const helperPath = candidates.find(isRegularFile)

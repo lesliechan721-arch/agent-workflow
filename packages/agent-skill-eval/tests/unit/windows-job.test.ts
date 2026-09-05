@@ -162,7 +162,14 @@ describe('Windows Job helper contract', () => {
     ['x64', 0x8664],
     ['arm64', 0xaa64],
   ] as const)('resolves a regular %s PE helper with the expected machine', async (arch, machine) => {
-    const helperPath = resolveWindowsJobHelperPath({ arch })
+    const expectedSpecifier = `@lesliechan721/aw-windows-job-win32-${arch}/aw-windows-job.exe`
+    const helperPath = resolveWindowsJobHelperPath({
+      arch,
+      resolvePackage: (specifier) => {
+        expect(specifier).toBe(expectedSpecifier)
+        return path.join(nativeRoot, arch, 'aw-windows-job.exe')
+      },
+    })
     const bytes = await readFile(helperPath)
     const peOffset = bytes.readUInt32LE(0x3c)
 
@@ -241,7 +248,7 @@ describe('Windows Job helper contract', () => {
     })
   })
 
-  it('stages and verifies ordinary helper artifacts without Go', async () => {
+  it('stages platform package helpers and verifies ordinary artifacts without Go', async () => {
     const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-build-test-'))
     const fixtureRepositoryRoot = path.join(temporaryRoot, 'repo')
     const fixturePackageRoot = path.join(
@@ -249,12 +256,32 @@ describe('Windows Job helper contract', () => {
       'packages',
       'agent-skill-eval',
     )
+    const fixtureX64PackageRoot = path.join(
+      fixtureRepositoryRoot,
+      'packages',
+      'aw-windows-job-win32-x64',
+    )
+    const fixtureArm64PackageRoot = path.join(
+      fixtureRepositoryRoot,
+      'packages',
+      'aw-windows-job-win32-arm64',
+    )
     const probeDirectory = path.join(temporaryRoot, 'bin')
     try {
       await mkdir(fixturePackageRoot, { recursive: true })
       await copyFile(
         path.join(packageRoot, 'package.json'),
         path.join(fixturePackageRoot, 'package.json'),
+      )
+      await mkdir(fixtureX64PackageRoot, { recursive: true })
+      await mkdir(fixtureArm64PackageRoot, { recursive: true })
+      await copyFile(
+        path.join(repositoryRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json'),
+        path.join(fixtureX64PackageRoot, 'package.json'),
+      )
+      await copyFile(
+        path.join(repositoryRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json'),
+        path.join(fixtureArm64PackageRoot, 'package.json'),
       )
       await cp(nativeRoot, path.join(fixturePackageRoot, 'native', 'windows'), { recursive: true })
       await cp(path.join(packageRoot, 'scripts'), path.join(fixturePackageRoot, 'scripts'), {
@@ -272,14 +299,13 @@ describe('Windows Job helper contract', () => {
       const pnpmPath = await findExecutable('pnpm')
 
       await runPnpm(pnpmPath, ['run', 'build'], environment, fixturePackageRoot)
+      await runPnpm(pnpmPath, ['run', 'build'], environment, fixtureX64PackageRoot)
+      await runPnpm(pnpmPath, ['run', 'build'], environment, fixtureArm64PackageRoot)
       await runPnpm(pnpmPath, ['run', 'windows-job:verify'], environment, fixturePackageRoot)
 
       await expect(readFile(path.join(
-        fixturePackageRoot,
+        fixtureX64PackageRoot,
         'dist',
-        'native',
-        'windows',
-        'x64',
         'aw-windows-job.exe',
       ))).resolves.toEqual(await readFile(path.join(
         fixturePackageRoot,
