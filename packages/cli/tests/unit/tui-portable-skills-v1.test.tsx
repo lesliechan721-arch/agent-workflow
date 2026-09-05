@@ -5,6 +5,8 @@ import type { PortableReview, PortableInstallReceipt } from '../../src/portable/
 import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
+import { SessionHost } from '../../src/tui/session-host.js';
 import {
   extractPortableError,
   TuiController,
@@ -113,6 +115,137 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('Portable Skills TUI V1', () => {
+  it('uses h in place and H to remount a fresh controller session', async () => {
+    const first = portableController();
+    const second = portableController();
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(4);
+    expect(instance.lastFrame()).toContain('最近成功读取状态');
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+
+    await send(instance, 'h');
+    expect(host.snapshot.epoch).toBe(1);
+    expect(first.value.snapshot.router.current.route).toEqual({ name: 'home' });
+
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+    await send(instance, 'H');
+    expect(host.snapshot.epoch).toBe(2);
+    expect(host.snapshot.controller).toBe(second.value);
+    expect(first.value.snapshot.phase).toBe('disposed');
+    await tick(4);
+    expect(second.value.snapshot.phase).toBe('ready');
+    host.dispose();
+  });
+
+  it('unmounts the old interactive UI while H drains a read', async () => {
+    const pending = deferred<TuiStatusLoadResult>();
+    const first = portableController({ loadStatus: vi.fn(() => pending.promise) });
+    const second = portableController();
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(2);
+
+    await send(instance, 'H', '\r');
+    expect(instance.lastFrame()).toContain('正在安全结束当前会话');
+    expect(host.snapshot.epoch).toBe(1);
+
+    pending.resolve(status());
+    await tick(4);
+    expect(host.snapshot.epoch).toBe(2);
+    expect(host.snapshot.controller).toBe(second.value);
+    host.dispose();
+  });
+
+  it('offers the same home and reload actions from the help menu', async () => {
+    const first = portableController({ now: () => 1_000 });
+    const second = portableController({ now: () => 2_000 });
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(4);
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+
+    await send(instance, '?');
+    expect(instance.lastFrame()).toContain('返回首页并重新加载');
+    await send(instance, '\u001B[B', '\r');
+    expect(first.value.snapshot.router.current.route).toEqual({ name: 'home' });
+    expect(first.value.snapshot.statusReadAtMs).toBe(1_000);
+
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+    await send(instance, '?', '\u001B[B', '\u001B[B', '\r');
+    await tick(4);
+    expect(host.snapshot.epoch).toBe(2);
+    expect(second.value.snapshot.statusReadAtMs).toBe(2_000);
+    host.dispose();
+  });
+
+  it('keeps h, H, q, and b as characters in Portable agent input', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentInput', pluginId: 'official/toolkit' });
+    const onSessionNavigation = vi.fn().mockResolvedValue('completed');
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await tick();
+
+    await send(instance, 'h', 'H', 'q', 'b');
+
+    expect(instance.lastFrame()).toContain('hHqb');
+    expect(onSessionNavigation).not.toHaveBeenCalled();
+  });
+
+  it.each(['portable', 'dependency'] as const)(
+    'keeps the %s draft when h opens the default continue-editing guard',
+    async (owner) => {
+      const { value } = portableController();
+      await value.load();
+      if (owner === 'portable') await value.preparePortableInstall('official/toolkit');
+      else value.beginInstallFlow('official/toolkit', 'project');
+      const onSessionNavigation = vi.fn(async (
+        _navigation: 'home' | 'reload',
+        options?: { discardDrafts?: boolean },
+      ) => value.hasSessionDraft && !options?.discardDrafts ? 'draftBlocked' as const : 'completed' as const);
+      const instance = render(<ConsoleAppV4
+        controller={value}
+        size={{ columns: 80, rows: 24 }}
+        onSessionNavigation={onSessionNavigation}
+      />);
+      await tick();
+
+      await send(instance, 'h');
+      expect(instance.lastFrame()).toContain('放弃未保存修改？');
+      expect(instance.lastFrame()).toContain('继续编辑');
+      await send(instance, '\r');
+
+      expect(value.hasSessionDraft).toBe(true);
+      expect(onSessionNavigation).toHaveBeenCalledTimes(1);
+    },
+  );
   it('returns a completed detail-origin flow to detail without exposing old Portable pages', async () => {
     const { value } = portableController();
     await value.load();

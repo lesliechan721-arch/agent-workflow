@@ -42,7 +42,13 @@ export {
   type DiagnosticSummaryViewModel,
   type DiagnosticTechnicalViewModel,
 } from './diagnostics.js';
-export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
+export {
+  resolveTuiKeyAction,
+  resolveTuiSessionNavigationKey,
+  type TuiInputMode,
+  type TuiKeyContext,
+  type TuiSessionNavigationKeyAction,
+} from './keys.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export {
   loadCatalogGenerationViewModels,
@@ -80,6 +86,15 @@ export {
   resolveConsoleV4ScreenId,
   type ConsoleV4ScreenId,
 } from './console-app-v4.js';
+export {
+  LatestSessionResultHistory,
+  SessionHost,
+  type SessionHistoryOwner,
+  type SessionHostSnapshot,
+  type SessionNavigation,
+  type SessionNavigationResult,
+  type SessionResultRecord,
+} from './session-host.js';
 export {
   buildConfigGroups,
   buildTuiViewModel,

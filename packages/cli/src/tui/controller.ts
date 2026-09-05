@@ -523,6 +523,7 @@ export interface ConfigResetAvailability {
 
 export interface TuiControllerSnapshot {
   phase: 'idle' | 'loading' | 'ready' | 'error' | 'disposed';
+  statusReadAtMs?: number;
   cliChannel?: 'latest' | 'beta';
   router: TuiRouterSnapshot;
   viewModel?: TuiViewModel;
@@ -707,11 +708,13 @@ export class TuiController {
     operationId: string;
     promise: Promise<OperationExecuteResult>;
   }>();
+  readonly #pendingReads = new Set<Promise<unknown>>();
   readonly #abort = new AbortController();
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
   #phase: TuiControllerSnapshot['phase'] = 'idle';
   #status?: TuiStatusLoadResult;
+  #statusReadAtMs?: number;
   readonly #catalogGenerations = new Map<string, CatalogSourceGenerationViewModel>();
   readonly #catalogFreshness = new Map<string, CatalogSourceFreshnessViewModel>();
   readonly #catalogSourcesSession: CatalogSourcesSession;
@@ -738,6 +741,7 @@ export class TuiController {
   #installPlacementRequestAbort?: AbortController;
   #generation = 0;
   #disposed = false;
+  #retiring = false;
   #externalDraft?: 'configDraft' | 'sourceDraft';
 
   constructor(
@@ -795,6 +799,7 @@ export class TuiController {
   get snapshot(): TuiControllerSnapshot {
     return cloneFrozen({
       phase: this.#phase,
+      ...(this.#statusReadAtMs !== undefined ? { statusReadAtMs: this.#statusReadAtMs } : {}),
       ...(this.#status?.cliChannel ? { cliChannel: this.#status.cliChannel } : {}),
       router: this.#router.snapshot,
       ...(this.#viewModel ? { viewModel: this.#viewModel } : {}),
@@ -835,6 +840,83 @@ export class TuiController {
     this.#listeners.add(listener);
     listener(this.snapshot);
     return () => this.#listeners.delete(listener);
+  }
+
+  get hasActiveWrite(): boolean {
+    return this.#inflightOperations.size > 0;
+  }
+
+  get retiring(): boolean {
+    return this.#retiring;
+  }
+
+  get hasSessionDraft(): boolean {
+    return this.#externalDraft !== undefined
+      || this.#portableDraft !== undefined
+      || this.#installPlacementDraft !== undefined;
+  }
+
+  #trackRead<T>(promise: Promise<T>): Promise<T> {
+    this.#pendingReads.add(promise);
+    void promise.finally(() => this.#pendingReads.delete(promise)).catch(() => undefined);
+    return promise;
+  }
+
+  beginRetirement(): void {
+    this.#retiring = true;
+  }
+
+  async waitForWrites(): Promise<void> {
+    this.beginRetirement();
+    while (this.#inflightOperations.size > 0) {
+      await Promise.allSettled(
+        [...this.#inflightOperations.values()].map((operation) => operation.promise),
+      );
+    }
+  }
+
+  async cancelAndWaitForReads(): Promise<boolean> {
+    if (this.hasActiveWrite) return false;
+    this.beginRetirement();
+    this.#generation += 1;
+    this.#cancelReviewPreparation();
+    this.#cancelPortableRequest();
+    this.#cancelInstallPlacementRequest();
+    this.#abort.abort();
+    const catalogDrain = this.#catalogSourcesSession.cancelAndWait();
+    while (this.#pendingReads.size > 0) {
+      await Promise.allSettled([...this.#pendingReads]);
+    }
+    await catalogDrain;
+    return !this.hasActiveWrite;
+  }
+
+  #assertAcceptingActions(): void {
+    if (this.#retiring || this.#disposed) {
+      throw new DOMException('Controller session is retiring.', 'AbortError');
+    }
+  }
+
+  goHome(options: { discardDrafts?: boolean } = {}): boolean {
+    if (this.hasSessionDraft && !options.discardDrafts) return false;
+    this.#cancelReviewPreparation();
+    this.#cancelPortableRequest();
+    this.#cancelInstallPlacementRequest();
+    this.#tickets.clear();
+    this.#activeReview = undefined;
+    this.#portableDraft = undefined;
+    this.#recoverablePortableDraft = undefined;
+    this.#installPlacementDraft = undefined;
+    this.#recoverableInstallPlacementDraft = undefined;
+    this.#externalDraft = undefined;
+    this.#result = undefined;
+    this.#resultAnchor = undefined;
+    this.#portableResultSkills = undefined;
+    this.#progress = { messages: [] };
+    this.#progressTargets = [];
+    this.#router.resetToRoot();
+    this.#publish();
+    return true;
   }
 
   #publish(): void {
@@ -1024,6 +1106,7 @@ export class TuiController {
 
   #applyStatus(status: TuiStatusLoadResult): void {
     this.#status = structuredClone(status);
+    this.#statusReadAtMs = this.dependencies.now?.() ?? Date.now();
     if (status.catalogGenerations) {
       this.#catalogGenerations.clear();
       for (const source of status.catalogGenerations) {
@@ -1081,13 +1164,14 @@ export class TuiController {
   }
 
   async load(): Promise<void> {
+    this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
     let status: TuiStatusLoadResult;
     try {
-      status = await this.dependencies.loadStatus(this.#abort.signal);
+      status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
     } catch (error) {
       if (this.#disposed || generation !== this.#generation) return;
       const code = issueCode(error);
@@ -1125,6 +1209,7 @@ export class TuiController {
     pluginId: string,
     navigation: 'push' | 'replace' = 'push',
   ): Promise<PortableSkillSelectionViewModel> {
+    this.#assertAcceptingActions();
     if (!this.hasPortableSkills(pluginId)) {
       throw new TuiOperationBlockedError('portableUnsupported', '插件不提供通用 Skills。');
     }
@@ -1141,6 +1226,7 @@ export class TuiController {
   }
 
   refreshPortableInstallDraft(pluginId: string): Promise<PortableSkillSelectionViewModel> {
+    this.#assertAcceptingActions();
     const expectedRoute = this.#router.snapshot.current.route;
     return this.#runPortableRequest(`refresh:${pluginId}`, async (signal, token) => {
       const draft = await this.#buildPortableDraft(pluginId, true, signal);
@@ -1161,12 +1247,12 @@ export class TuiController {
       : undefined;
     const prepared = await Promise.allSettled((['project', 'user'] as const).map(async (scope) => ({
       scope,
-      evidence: await this.dependencies.captureEvidence({
+      evidence: await this.#trackRead(this.dependencies.captureEvidence({
         kind: 'portableInstall',
         pluginId,
         scope,
         selectedSkills: [],
-      }, signal),
+      }, signal)),
     })));
     const available = prepared.flatMap((entry) =>
       entry.status === 'fulfilled' && entry.value.evidence.portable ? [entry.value] : []);
@@ -1627,6 +1713,7 @@ export class TuiController {
   }
 
   async prepareInstallDependencyPlacement(): Promise<boolean> {
+    this.#assertAcceptingActions();
     const draft = this.#installPlacementDraft;
     if (!draft) throw new TuiOperationBlockedError('installPlacementMissing', '安装位置草稿不存在。');
     this.#cancelInstallPlacementRequest();
@@ -1649,7 +1736,7 @@ export class TuiController {
           throw new DOMException('Dependency placement preview was cancelled.', 'AbortError');
         }
       };
-      const plan = await preview(this.#installPlacementIntent());
+      const plan = await this.#trackRead(preview(this.#installPlacementIntent()));
       throwIfCancelled();
       if (!plan) {
         draft.state = 'ready';
@@ -1871,10 +1958,12 @@ export class TuiController {
   }
 
   recheckCatalogSource(sourceId: string): Promise<void> {
+    this.#assertAcceptingActions();
     return this.#catalogSourcesSession.recheck(sourceId);
   }
 
   fullValidateCatalogSource(sourceId: string): Promise<void> {
+    this.#assertAcceptingActions();
     return this.#catalogSourcesSession.fullValidate(sourceId);
   }
 
@@ -1897,13 +1986,14 @@ export class TuiController {
   }
 
   async reloadCatalog(options: { sourceId: string }): Promise<boolean> {
+    this.#assertAcceptingActions();
     if (this.catalogActivationBlockReason()) return false;
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
     this.#phase = 'loading';
     this.#publish();
     try {
-      const status = await this.dependencies.loadStatus(this.#abort.signal);
+      const status = await this.#trackRead(this.dependencies.loadStatus(this.#abort.signal));
       if (this.#disposed || generation !== this.#generation) return false;
       this.#applyStatus(status);
       this.#phase = 'ready';
@@ -1923,24 +2013,28 @@ export class TuiController {
   }
 
   async inspectSourceRemoval(sourceId: string): Promise<SourceReferenceSummaryViewModel> {
+    this.#assertAcceptingActions();
     if (!this.dependencies.inspectSourceRemoval) {
       throw new TuiOperationBlockedError('stateInventoryFailed', '来源引用清单不可用。');
     }
-    return cloneFrozen(await this.dependencies.inspectSourceRemoval(sourceId, this.#abort.signal));
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.inspectSourceRemoval(sourceId, this.#abort.signal),
+    ));
   }
 
   async getConfigGroups(
     pluginId: string,
     layer: { scope: Scope },
   ): Promise<ConfigGroupViewModel[]> {
+    this.#assertAcceptingActions();
     if (!this.dependencies.getConfigGroups) {
       throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
     }
-    return cloneFrozen(await this.dependencies.getConfigGroups(
+    return cloneFrozen(await this.#trackRead(this.dependencies.getConfigGroups(
       pluginId,
       structuredClone(layer),
       this.#abort.signal,
-    ));
+    )));
   }
 
   async getConfigPage(
@@ -1948,34 +2042,36 @@ export class TuiController {
     layer: { scope: Scope | 'effective' },
     signal?: AbortSignal,
   ): Promise<ConfigPageViewModel> {
+    this.#assertAcceptingActions();
     if (!this.dependencies.getConfigPage) {
       throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
     }
     const combined = signal
       ? AbortSignal.any([this.#abort.signal, signal])
       : this.#abort.signal;
-    return cloneFrozen(await this.dependencies.getConfigPage(
+    return cloneFrozen(await this.#trackRead(this.dependencies.getConfigPage(
       pluginId,
       structuredClone(layer),
       combined,
-    ));
+    )));
   }
 
   async getConfigResetAvailability(
     pluginId: string,
     layer: { scope: Scope },
   ): Promise<ConfigResetAvailability> {
+    this.#assertAcceptingActions();
     if (!this.dependencies.getConfigResetAvailability) {
       throw new TuiOperationBlockedError(
         'configResetVerificationUnavailable',
         '设置层可信读取入口不可用。',
       );
     }
-    return cloneFrozen(await this.dependencies.getConfigResetAvailability(
+    return cloneFrozen(await this.#trackRead(this.dependencies.getConfigResetAvailability(
       pluginId,
       structuredClone(layer),
       this.#abort.signal,
-    ));
+    )));
   }
 
   listUserIssues(): UserIssueViewModel[] {
@@ -1983,9 +2079,12 @@ export class TuiController {
   }
 
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
+    this.#assertAcceptingActions();
     try {
       this.#validateReviewIntent(intent);
-      const evidence = await this.#prepareReviewEvidence(intent, this.#abort.signal);
+      const evidence = await this.#trackRead(
+        this.#prepareReviewEvidence(intent, this.#abort.signal),
+      );
       return this.#storeOperationReview(intent, evidence, 'push', returnRoute);
     } catch (error) {
       const code = issueCode(error);
@@ -2000,6 +2099,7 @@ export class TuiController {
   }
 
   startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
+    this.#assertAcceptingActions();
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
       const blockReason = this.catalogActivationBlockReason();
       if (blockReason) {
@@ -2104,7 +2204,7 @@ export class TuiController {
     const signal = AbortSignal.any([this.#abort.signal, preparation.abort.signal]);
     try {
       this.#validateReviewIntent(intent);
-      const evidence = await this.#prepareReviewEvidence(intent, signal, (stage) => {
+      const evidence = await this.#trackRead(this.#prepareReviewEvidence(intent, signal, (stage) => {
         if (!this.#reviewPreparationIsCurrent(token)) return;
         preparation.snapshot.currentStage = stage;
         const existing = preparation.snapshot.stages.find((entry) => entry.id === stage);
@@ -2121,7 +2221,7 @@ export class TuiController {
           });
         }
         this.#publish();
-      });
+      }));
       if (!this.#reviewPreparationIsCurrent(token)) return;
       preparation.snapshot.stages = preparation.snapshot.stages.map((stage) =>
         stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
@@ -2292,6 +2392,14 @@ export class TuiController {
   }
 
   executeOperation(reviewToken: string): Promise<OperationExecuteResult> {
+    if (this.#retiring || this.#disposed) {
+      return Promise.resolve(cloneFrozen({
+        state: 'blocked',
+        operationId: this.#tickets.get(reviewToken)?.review.operationId ?? 'unknown',
+        code: 'sessionRetiring',
+        message: '会话正在结束，未启动新操作。',
+      }));
+    }
     const inflight = this.#inflightOperations.get(reviewToken);
     if (inflight) return inflight.promise;
     const ticket = this.#tickets.get(reviewToken);
@@ -2311,6 +2419,7 @@ export class TuiController {
     const promise = this.#executeOperationTicket(ticket, operationId).finally(() => {
       if (this.#inflightOperations.get(reviewToken)?.promise === promise) {
         this.#inflightOperations.delete(reviewToken);
+        this.#publish();
       }
     });
     this.#inflightOperations.set(reviewToken, { operationId, promise });

@@ -14,6 +14,18 @@ export interface TuiKeyInput {
   key: Pick<Key, 'ctrl' | 'escape'>;
 }
 
+export type TuiSessionNavigationKeyAction = 'home' | 'reload';
+
+export function resolveTuiSessionNavigationKey(
+  event: TuiKeyInput,
+  options: { characterInput: boolean },
+): TuiSessionNavigationKeyAction | null {
+  if (options.characterInput || event.key.ctrl) return null;
+  if (event.input === 'H') return 'reload';
+  if (event.input === 'h') return 'home';
+  return null;
+}
+
 export function resolveTuiKeyAction(
   event: TuiKeyInput,
   context: TuiKeyContext,

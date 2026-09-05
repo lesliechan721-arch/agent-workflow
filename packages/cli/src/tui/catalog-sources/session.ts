@@ -40,6 +40,7 @@ export class CatalogSourcesSession {
   readonly #running = new Map<string, RunningProbe>();
   readonly #tokens = new Map<string, number>();
   readonly #reusableCandidates = new Map<string, ReusableCandidateEntry>();
+  readonly #pending = new Set<Promise<void>>();
   #disposed = false;
   #drainScheduled = false;
 
@@ -131,7 +132,13 @@ export class CatalogSourcesSession {
     if (this.#disposed || !this.#sources.has(sourceId)) return Promise.resolve();
     this.#removeQueued(sourceId);
     this.#cancel(sourceId);
-    return this.#start(sourceId, false, fullValidation);
+    return this.#startTracked(sourceId, false, fullValidation);
+  }
+
+  async cancelAndWait(): Promise<void> {
+    const pending = [...this.#pending];
+    this.dispose();
+    await Promise.allSettled(pending);
   }
 
   dispose(): void {
@@ -157,7 +164,7 @@ export class CatalogSourcesSession {
     const queuedPrimaryIndex = this.#queue.findIndex((sourceId) => this.#sources.get(sourceId)?.primary);
     if (!primaryRunning && queuedPrimaryIndex >= 0) {
       const [sourceId] = this.#queue.splice(queuedPrimaryIndex, 1);
-      if (sourceId) void this.#start(sourceId, true, false);
+      if (sourceId) void this.#startTracked(sourceId, true, false);
     }
     let secondaryRunning = [...this.#running.values()].filter((probe) =>
       probe.automatic && !probe.primary).length;
@@ -167,8 +174,16 @@ export class CatalogSourcesSession {
       const [sourceId] = this.#queue.splice(index, 1);
       if (!sourceId) break;
       secondaryRunning += 1;
-      void this.#start(sourceId, true, false);
+      void this.#startTracked(sourceId, true, false);
     }
+  }
+
+  #startTracked(sourceId: string, automatic: boolean, fullValidation: boolean): Promise<void> {
+    const promise = this.#start(sourceId, automatic, fullValidation).finally(() => {
+      this.#pending.delete(promise);
+    });
+    this.#pending.add(promise);
+    return promise;
   }
 
   async #start(sourceId: string, automatic: boolean, fullValidation: boolean): Promise<void> {

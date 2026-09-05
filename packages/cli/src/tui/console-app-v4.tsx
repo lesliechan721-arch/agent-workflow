@@ -68,6 +68,7 @@ import {
   userIssueKey,
 } from './controller.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
+import type { SessionNavigation, SessionNavigationResult } from './session-host.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import {
   catalogSourceFreshnessLabel,
@@ -98,6 +99,7 @@ import {
   configValuesEqual,
 } from './model.js';
 import type { PluginInstallFilter, TuiRoute } from './router.js';
+import { resolveTuiSessionNavigationKey } from './keys.js';
 import { tuiTheme } from './theme.js';
 import { contentRowBudget, rowViewport, type RowViewport } from './viewport.js';
 
@@ -118,7 +120,7 @@ export const CONSOLE_V4_SCREEN_IDS = [
 ] as const;
 
 export type ConsoleV4ScreenId = typeof CONSOLE_V4_SCREEN_IDS[number];
-type Overlay = 'help' | 'exit' | 'discard' | undefined;
+type Overlay = 'help' | 'exit' | 'discard' | 'sessionNavigation' | undefined;
 
 interface ActionItem {
   label: string;
@@ -189,6 +191,7 @@ function helpRowsForRoute(
   actionCount: number,
   supportsTechnicalDetails: boolean,
   busy: boolean,
+  sessionNavigation: boolean,
 ): HelpRow[] {
   const rows: HelpRow[] = [];
   if (!busy && actionCount > 1) rows.push(['↑/↓ · j/k', '移动当前唯一焦点']);
@@ -212,6 +215,14 @@ function helpRowsForRoute(
   }
   if (supportsTechnicalDetails) {
     rows.push(['d', route.name === 'progress' ? '打开技术进度' : '打开技术详情']);
+  }
+  if (sessionNavigation && !busy && !isCharacterInputMode(route, false)) {
+    rows.push(['h', '返回首页']);
+    rows.push(['H', '重新读取本地状态']);
+  }
+  if (sessionNavigation && busy) {
+    rows.push(['h / H', '操作成功后返回首页或重新读取']);
+    rows.push(['Esc', '撤销等待中的页面跳转']);
   }
   rows.push(['q / Ctrl-C', busy ? '操作完成后退出' : '退出控制台']);
   rows.push(['?', '关闭帮助']);
@@ -1139,6 +1150,12 @@ export function ConsoleAppV4(props: {
   onExit?: (request: ConsoleExitRequest) => void;
   onScreenChange?: (screen: ConsoleV4ScreenId) => void;
   ownsController?: boolean;
+  pendingSessionNavigation?: SessionNavigation;
+  onSessionNavigation?: (
+    navigation: SessionNavigation,
+    options?: { discardDrafts?: boolean },
+  ) => Promise<SessionNavigationResult>;
+  onCancelPendingSessionNavigation?: () => boolean;
 }): React.JSX.Element {
   const windowSize = useWindowSize();
   const size = props.size ?? windowSize;
@@ -1147,6 +1164,7 @@ export function ConsoleAppV4(props: {
   const [overlay, setOverlay] = useState<Overlay>();
   const [overlayFocus, setOverlayFocus] = useState(0);
   const [discardForExit, setDiscardForExit] = useState(false);
+  const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [focus, setFocus] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [searchFocus, setSearchFocus] = useState(false);
@@ -1168,6 +1186,7 @@ export function ConsoleAppV4(props: {
   const [draftUpdates, setDraftUpdates] = useState<Record<string, PluginConfigValue>>({});
   const [draftRemoves, setDraftRemoves] = useState<string[]>([]);
   const [objectDrafts, setObjectDrafts] = useState<Record<string, PluginConfigObject>>({});
+  const [changedObjectDraftKeys, setChangedObjectDraftKeys] = useState<string[]>([]);
   const [objectError, setObjectError] = useState<string>();
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState<string>();
@@ -1229,9 +1248,11 @@ export function ConsoleAppV4(props: {
     };
   }, [props.controller, props.ownsController]);
   useEffect(() => {
-    props.controller.setExternalDraftState(sourceDraft ? 'sourceDraft' : dirty ? 'configDraft' : undefined);
+    props.controller.setExternalDraftState(
+      sourceDraft ? 'sourceDraft' : dirty || changedObjectDraftKeys.length > 0 ? 'configDraft' : undefined,
+    );
     return () => props.controller.setExternalDraftState(undefined);
-  }, [props.controller, dirty, sourceDraft]);
+  }, [props.controller, changedObjectDraftKeys.length, dirty, sourceDraft]);
 
   useEffect(() => {
     if (!exitAfterBusy || !snapshot.result) return;
@@ -1258,6 +1279,7 @@ export function ConsoleAppV4(props: {
     setDraftUpdates({});
     setDraftRemoves([]);
     setObjectDrafts({});
+    setChangedObjectDraftKeys([]);
     setObjectError(undefined);
     if (snapshot.result.operationKind === 'sourceMutation') setSourceDraft(undefined);
   }, [route.name, snapshot.result]);
@@ -1310,6 +1332,7 @@ export function ConsoleAppV4(props: {
       setDraftUpdates({});
       setDraftRemoves([]);
       setObjectDrafts({});
+      setChangedObjectDraftKeys([]);
       setObjectError(undefined);
       setDirty(false);
       setConfigActionError(undefined);
@@ -1989,6 +2012,10 @@ export function ConsoleAppV4(props: {
   const updateObjectDraft = (value: PluginConfigObject): void => {
     if (!activeObjectKey) return;
     setObjectDrafts((current) => ({ ...current, [activeObjectKey]: value }));
+    const initial = objectValueFromUpdate ?? objectValueFromField ?? {};
+    setChangedObjectDraftKeys((current) => configValuesEqual(initial, value)
+      ? current.filter((key) => key !== activeObjectKey)
+      : [...new Set([...current, activeObjectKey])]);
     setObjectError(undefined);
     setConfigActionError(undefined);
   };
@@ -2003,6 +2030,9 @@ export function ConsoleAppV4(props: {
       return;
     }
     updateDraft(activeField.key, activeObjectDraft);
+    if (activeObjectKey) {
+      setChangedObjectDraftKeys((current) => current.filter((key) => key !== activeObjectKey));
+    }
     back();
   };
   const objectPropertyStage = (
@@ -2292,6 +2322,9 @@ export function ConsoleAppV4(props: {
         status={home.issueCount > 0 || home.unavailableSourceCount > 0 ? 'warning' : 'success'}
         title="当前状态"
       >
+        {snapshot.statusReadAtMs !== undefined
+          ? <StaticRow title="最近成功读取状态" meta={new Date(snapshot.statusReadAtMs).toLocaleString('zh-CN', { hour12: false })} compact />
+          : null}
         <ResultRow title={`${home.installedPlugins} 个插件可用`} status="success" />
         <ResultRow title={`${home.issueCount} 项需要处理`} status={home.issueCount > 0 ? 'warning' : 'muted'} />
         {home.unavailableSourceCount > 0 ? <ResultRow title={`${home.unavailableSourceCount} 个来源不可用`} status="error" /> : null}
@@ -5141,6 +5174,11 @@ export function ConsoleAppV4(props: {
   } else if (canOpenHelp && !help.includes('? 帮助')) {
     help = `? 帮助 · ${help}`;
   }
+  if (props.onSessionNavigation && !isCharacterInputMode(route, searchFocus)) {
+    help = busy
+      ? `h/H 完成后导航 · Esc 撤销等待 · ${help}`
+      : `h 首页 · H 重载 · ${help}`;
+  }
 
   const targetActionSignature = route.name === 'installTargets' && route.view !== 'blocked'
     ? actions.map((action) => String(Boolean(action.disabled))).join(',')
@@ -5183,6 +5221,19 @@ export function ConsoleAppV4(props: {
     }
   };
 
+  const requestSessionNavigation = (
+    navigation: SessionNavigation,
+    discardDrafts = false,
+  ): void => {
+    if (!props.onSessionNavigation) return;
+    void props.onSessionNavigation(navigation, { discardDrafts }).then((result) => {
+      if (result !== 'draftBlocked') return;
+      setDiscardForSessionNavigation(navigation);
+      setOverlayFocus(0);
+      setOverlay('sessionNavigation');
+    }).catch(() => setActionError('操作未完成。请重新检查后重试。'));
+  };
+
   useInput((input, key) => {
     if (!overlay && route.name === 'reviewPreparing' && snapshot.reviewPreparation?.state === 'failed'
       && (key.escape || input.toLowerCase() === 'b')) {
@@ -5190,7 +5241,13 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (preparationRunning) {
-      if (key.escape || input.toLowerCase() === 'b') {
+      const sessionNavigation = resolveTuiSessionNavigationKey(
+        { input, key },
+        { characterInput: false },
+      );
+      if (sessionNavigation) {
+        requestSessionNavigation(sessionNavigation);
+      } else if (key.escape || input.toLowerCase() === 'b') {
         back();
       } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
         setExitAfterPreparation(true);
@@ -5198,12 +5255,20 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (busy) {
+      const sessionNavigation = resolveTuiSessionNavigationKey(
+        { input, key },
+        { characterInput: false },
+      );
       if (overlay === 'help') {
         if (key.escape || key.return || input.toLowerCase() === 'b' || input === '?') {
           setOverlay(undefined);
         } else if (key.ctrl && input.toLowerCase() === 'c') {
           setExitAfterBusy(true);
         }
+      } else if (key.escape && props.pendingSessionNavigation) {
+        props.onCancelPendingSessionNavigation?.();
+      } else if (sessionNavigation) {
+        requestSessionNavigation(sessionNavigation);
       } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
         setExitAfterBusy(true);
       } else if (canOpenHelp && input === '?') {
@@ -5227,19 +5292,28 @@ export function ConsoleAppV4(props: {
       }
       if (key.escape || input.toLowerCase() === 'b' || input === '?') {
         setOverlay(undefined);
+        if (overlay === 'sessionNavigation') setDiscardForSessionNavigation(undefined);
         return;
       }
       if (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) {
-        if (overlay !== 'help') setOverlayFocus((value) => value === 0 ? 1 : 0);
+        const count = overlay === 'help' && props.onSessionNavigation ? 3 : overlay === 'help' ? 1 : 2;
+        const direction = key.leftArrow || key.upArrow ? -1 : 1;
+        setOverlayFocus((value) => moveIndex(count, value, direction));
         return;
       }
       if (key.return) {
-        if (overlay === 'help' || overlayFocus === 0) setOverlay(undefined);
+        if (overlay === 'help') {
+          setOverlay(undefined);
+          if (overlayFocus === 1) requestSessionNavigation('home');
+          else if (overlayFocus === 2) requestSessionNavigation('reload');
+        } else if (overlayFocus === 0) setOverlay(undefined);
         else if (overlay === 'discard') {
           setOverlay(undefined);
           setDirty(false);
           setDraftUpdates({});
           setDraftRemoves([]);
+          setObjectDrafts({});
+          setChangedObjectDraftKeys([]);
           const discardedSourceDraft = sourceDraft;
           setSourceDraft(undefined);
           if (discardForExit) {
@@ -5254,6 +5328,18 @@ export function ConsoleAppV4(props: {
           } else {
             back();
           }
+        } else if (overlay === 'sessionNavigation' && discardForSessionNavigation) {
+          const navigation = discardForSessionNavigation;
+          setOverlay(undefined);
+          setDiscardForSessionNavigation(undefined);
+          setDirty(false);
+          setDraftUpdates({});
+          setDraftRemoves([]);
+          setObjectDrafts({});
+          setChangedObjectDraftKeys([]);
+          setObjectError(undefined);
+          setSourceDraft(undefined);
+          requestSessionNavigation(navigation, true);
         } else requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
       }
       return;
@@ -5485,7 +5571,13 @@ export function ConsoleAppV4(props: {
       || route.name === 'configObjectPropertyEditor')) {
       return;
     }
-    if (canOpenHelp && input === '?') {
+    const sessionNavigation = resolveTuiSessionNavigationKey(
+      { input, key },
+      { characterInput: isCharacterInputMode(route, searchFocus) },
+    );
+    if (sessionNavigation) {
+      requestSessionNavigation(sessionNavigation);
+    } else if (canOpenHelp && input === '?') {
       setOverlayFocus(0);
       setOverlay('help');
     } else if (input.toLowerCase() === 'q') {
@@ -5662,21 +5754,38 @@ export function ConsoleAppV4(props: {
     </ScreenFrame>
   );
   if (!overlay) return base;
-  const helpRows = helpRowsForRoute(route, actions.length, supportsTechnicalDetails, busy);
+  const helpRows = helpRowsForRoute(
+    route,
+    actions.length,
+    supportsTechnicalDetails,
+    busy,
+    props.onSessionNavigation !== undefined,
+  );
   const overlayActions: ActionItem[] = overlay === 'help'
-    ? [{ label: '关闭' }]
+    ? [
+        { label: '关闭' },
+        ...(props.onSessionNavigation ? [
+          { label: '返回首页' },
+          { label: '返回首页并重新加载' },
+        ] : []),
+      ]
     : [
-        { label: overlay === 'discard' ? '继续编辑' : '继续使用' },
-        { label: overlay === 'discard' ? '放弃修改' : '退出', status: 'error' },
+        { label: overlay === 'discard' || overlay === 'sessionNavigation' ? '继续编辑' : '继续使用' },
+        { label: overlay === 'discard' || overlay === 'sessionNavigation' ? '放弃修改' : '退出', status: 'error' },
       ];
   return (
     <Box position="relative" width={size.columns} height={size.rows}>
       <Box>{overlay === 'help' ? null : base}</Box>
       <Box position="absolute" marginTop={5} marginLeft={Math.max(2, Math.floor(size.columns / 5))} width={Math.max(40, Math.floor(size.columns * 0.6))} flexDirection="column">
-        <ReviewCard title={overlay === 'help' ? '当前页快捷键' : overlay === 'discard' ? '放弃未保存修改？' : '退出控制台？'}>
+        <ReviewCard title={overlay === 'help' ? '当前页快捷键'
+          : overlay === 'discard' || overlay === 'sessionNavigation' ? '放弃未保存修改？'
+          : '退出控制台？'}>
         {overlay === 'help'
           ? <>{helpRows.map(([key, value]) => <StaticRow key={key} title={`${key}  ${value}`} compact />)}</>
-          : <StaticRow title={overlay === 'discard' ? '放弃后将返回上一页。' : '进行中的写操作会先完成。'} status="muted" />}
+          : <StaticRow title={overlay === 'discard' ? '放弃后将返回上一页。'
+            : overlay === 'sessionNavigation'
+              ? `放弃后将${discardForSessionNavigation === 'reload' ? '重新读取本地状态' : '返回首页'}。`
+              : '进行中的写操作会先完成。'} status="muted" />}
         <SemanticRows actions={overlayActions} focus={overlayFocus} kind="action" compact />
         </ReviewCard>
       </Box>

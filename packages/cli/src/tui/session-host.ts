@@ -1,0 +1,178 @@
+import type { CommandReporter } from '../commands/runtime.js';
+import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
+import type { OperationExecuteResult, TuiController } from './controller.js';
+
+export type SessionNavigation = 'home' | 'reload';
+
+export interface SessionResultRecord {
+  epoch: number;
+  result: OperationExecuteResult;
+}
+
+export interface SessionHistoryOwner {
+  readonly latestResult?: SessionResultRecord;
+  recordResult(record: SessionResultRecord): void;
+}
+
+export class LatestSessionResultHistory implements SessionHistoryOwner {
+  #latestResult?: SessionResultRecord;
+
+  get latestResult(): SessionResultRecord | undefined {
+    return this.#latestResult ? structuredClone(this.#latestResult) : undefined;
+  }
+
+  recordResult(record: SessionResultRecord): void {
+    this.#latestResult = structuredClone(record);
+  }
+}
+
+export interface SessionHostSnapshot {
+  epoch: number;
+  controller: TuiController;
+  pendingNavigation?: SessionNavigation;
+  reloading: boolean;
+}
+
+export type SessionNavigationResult = 'completed' | 'pending' | 'draftBlocked' | 'busy';
+
+export class SessionHost {
+  readonly #listeners = new Set<(snapshot: SessionHostSnapshot) => void>();
+  readonly #createSession: () => { controller: TuiController; progressFeed: RebuildProgressFeed };
+  readonly history: SessionHistoryOwner;
+  #epoch = 1;
+  #controller: TuiController;
+  #progressFeed: RebuildProgressFeed;
+  #controllerUnsubscribe?: () => void;
+  #pendingNavigation?: SessionNavigation;
+  #reloading = false;
+  #disposed = false;
+
+  constructor(options: {
+    createSession: () => { controller: TuiController; progressFeed: RebuildProgressFeed };
+    history?: SessionHistoryOwner;
+  }) {
+    this.#createSession = options.createSession;
+    this.history = options.history ?? new LatestSessionResultHistory();
+    const session = this.#createSession();
+    this.#controller = session.controller;
+    this.#progressFeed = session.progressFeed;
+    this.#subscribeController();
+  }
+
+  get snapshot(): SessionHostSnapshot {
+    return Object.freeze({
+      epoch: this.#epoch,
+      controller: this.#controller,
+      ...(this.#pendingNavigation ? { pendingNavigation: this.#pendingNavigation } : {}),
+      reloading: this.#reloading,
+    });
+  }
+
+  readonly reporter: CommandReporter = {
+    event: (event) => this.#progressFeed.addEvent(event),
+    notice: (notice) => this.#progressFeed.addNotice(notice),
+  };
+
+  subscribe(listener: (snapshot: SessionHostSnapshot) => void): () => void {
+    this.#listeners.add(listener);
+    listener(this.snapshot);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async requestNavigation(
+    navigation: SessionNavigation,
+    options: { discardDrafts?: boolean } = {},
+  ): Promise<SessionNavigationResult> {
+    if (this.#disposed || this.#reloading) return 'busy';
+    if (this.#controller.hasActiveWrite) {
+      this.#pendingNavigation = navigation;
+      this.#publish();
+      return 'pending';
+    }
+    if (this.#controller.hasSessionDraft && !options.discardDrafts) return 'draftBlocked';
+    if (navigation === 'home') {
+      return this.#controller.goHome(options) ? 'completed' : 'draftBlocked';
+    }
+    return await this.#reload() ? 'completed' : 'busy';
+  }
+
+  cancelPendingNavigation(): boolean {
+    if (!this.#pendingNavigation) return false;
+    this.#pendingNavigation = undefined;
+    this.#publish();
+    return true;
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#controllerUnsubscribe?.();
+    this.#controller.dispose();
+    this.#listeners.clear();
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.#disposed) return;
+    const controller = this.#controller;
+    controller.beginRetirement();
+    this.#reloading = true;
+    this.#publish();
+    await controller.waitForWrites();
+    await controller.cancelAndWaitForReads();
+    this.dispose();
+  }
+
+  async #reload(): Promise<boolean> {
+    if (this.#reloading || this.#controller.hasActiveWrite) return false;
+    this.#reloading = true;
+    const previous = this.#controller;
+    previous.beginRetirement();
+    this.#publish();
+    const ready = await previous.cancelAndWaitForReads();
+    if (!ready || previous.hasActiveWrite || this.#disposed) {
+      this.#reloading = false;
+      this.#publish();
+      return false;
+    }
+    this.#controllerUnsubscribe?.();
+    previous.dispose();
+    const next = this.#createSession();
+    this.#epoch += 1;
+    this.#controller = next.controller;
+    this.#progressFeed = next.progressFeed;
+    this.#pendingNavigation = undefined;
+    this.#reloading = false;
+    this.#subscribeController();
+    this.#publish();
+    return true;
+  }
+
+  #subscribeController(): void {
+    const epoch = this.#epoch;
+    const controller = this.#controller;
+    this.#controllerUnsubscribe = controller.subscribe((snapshot) => {
+      if (this.#disposed || epoch !== this.#epoch || controller !== this.#controller) return;
+      const pending = this.#pendingNavigation;
+      if (!pending || snapshot.router.current.route.name !== 'result' || !snapshot.result) return;
+      if (controller.hasActiveWrite) return;
+      this.#pendingNavigation = undefined;
+      if (snapshot.result.state !== 'succeeded') {
+        this.#publish();
+        return;
+      }
+      this.history.recordResult({ epoch, result: snapshot.result });
+      if (pending === 'home') {
+        controller.goHome({ discardDrafts: true });
+        this.#publish();
+      } else {
+        void this.#reload();
+      }
+    });
+  }
+
+  #publish(): void {
+    if (this.#disposed) return;
+    const snapshot = this.snapshot;
+    for (const listener of this.#listeners) listener(snapshot);
+  }
+}

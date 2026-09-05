@@ -38,6 +38,74 @@ function source(
   };
 }
 
+describe('TuiController session retirement', () => {
+  it('records only successful status read time and keeps it when returning home', async () => {
+    let now = 1_000;
+    const value = new TuiController(dependencies({ now: () => now }));
+    await value.load();
+    expect(value.snapshot.statusReadAtMs).toBe(1_000);
+
+    now = 2_000;
+    value.push({ name: 'pluginList', mode: 'browse' });
+    expect(value.goHome()).toBe(true);
+    expect(value.snapshot.statusReadAtMs).toBe(1_000);
+
+    const failed = new TuiController(dependencies({
+      now: () => 3_000,
+      loadStatus: vi.fn().mockRejectedValue(new Error('failed')),
+    }));
+    await failed.load();
+    expect(failed.snapshot.statusReadAtMs).toBeUndefined();
+  });
+
+  it('aborts and waits for a pending local status read without interrupting a write', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const loadStatus = vi.fn((signal: AbortSignal) => {
+      observedSignal = signal;
+      return new Promise<TuiStatusLoadResult>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('cancelled', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    const value = new TuiController(dependencies({ loadStatus }));
+    const loading = value.load();
+    await Promise.resolve();
+
+    await expect(value.cancelAndWaitForReads()).resolves.toBe(true);
+    await loading;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(value.hasActiveWrite).toBe(false);
+  });
+
+  it('closes new read and write entry points before draining existing reads', async () => {
+    const pending = deferred<TuiStatusLoadResult>();
+    const getConfigPage = vi.fn();
+    const executeIntent = vi.fn();
+    const value = new TuiController(dependencies({
+      loadStatus: vi.fn(() => pending.promise),
+      getConfigPage,
+      executeIntent,
+    }));
+    const loading = value.load();
+    await Promise.resolve();
+    value.beginRetirement();
+
+    await expect(value.getConfigPage('official/demo', { scope: 'user' }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    await expect(value.executeOperation('missing')).resolves.toMatchObject({
+      state: 'blocked', code: 'sessionRetiring',
+    });
+    expect(getConfigPage).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+
+    pending.resolve({ payload: status(), pluginSummaries: summaries(['official', 'demo']) });
+    await loading;
+    await expect(value.cancelAndWaitForReads()).resolves.toBe(true);
+  });
+});
+
 function sourceDetail(
   id: string,
   options: { autoCheck?: boolean; primary?: boolean; explicitRef?: string } = {},
@@ -3037,6 +3105,9 @@ describe('TUI v4 Review safety', () => {
     controller.subscribe(listener);
     const executing = controller.executeOperation(review.reviewToken);
     const callsBeforeDispose = listener.mock.calls.length;
+
+    await expect(controller.cancelAndWaitForReads()).resolves.toBe(false);
+    expect(controller.hasActiveWrite).toBe(true);
 
     controller.dispose();
     write.resolve({ targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }] });

@@ -254,6 +254,8 @@ TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配�
 
 状态刷新后，Controller 必须按实体 ID 校验当前路由和逐层恢复的祖先。插件、来源或问题消失时回对应安全列表；来源筛选失效时回同模式的未筛选列表。所有包含插件或来源实体的 route 都遵守该规则。依赖移除阻断页只说明依赖者和返回路径，不提供绕过依赖保护的强制清理入口。
 
+控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
+
 ### TUI 诊断投影与脱敏边界
 
 TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v7 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active snapshot 正常、缺失和损坏必须使用不同影响与恢复动作。

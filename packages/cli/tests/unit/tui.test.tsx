@@ -19,7 +19,7 @@ import {
   ToggleRow,
 } from '../../src/tui/components.js';
 import { createInkPrompt } from '../../src/tui/prompt.js';
-import { resolveTuiKeyAction } from '../../src/tui/keys.js';
+import { resolveTuiKeyAction, resolveTuiSessionNavigationKey } from '../../src/tui/keys.js';
 import { resolveTuiSizePolicy } from '../../src/tui/layout.js';
 import { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from '../../src/tui/runner.js';
 import { MultiSelectView, SelectView } from '../../src/tui/views.js';
@@ -377,6 +377,14 @@ describe('TUI foundation', () => {
     expect(resolveTuiKeyAction({ input: 'q', key: key() }, { mode: 'menu' })).toBe('exit');
     expect(resolveTuiKeyAction({ input: 'q', key: key() }, { mode: 'text' })).toBeNull();
     expect(resolveTuiKeyAction({ input: 'b', key: key() }, { mode: 'text' })).toBeNull();
+  });
+
+  it('maps exact session navigation keys without consuming character input', () => {
+    const key = (ctrl = false, escape = false) => ({ ctrl, escape });
+    expect(resolveTuiSessionNavigationKey({ input: 'h', key: key() }, { characterInput: false })).toBe('home');
+    expect(resolveTuiSessionNavigationKey({ input: 'H', key: key() }, { characterInput: false })).toBe('reload');
+    expect(resolveTuiSessionNavigationKey({ input: 'H', key: key() }, { characterInput: true })).toBeNull();
+    expect(resolveTuiSessionNavigationKey({ input: 'h', key: key(true) }, { characterInput: false })).toBeNull();
   });
 
   it('returns stable select, confirm, text, and password contracts', async () => {

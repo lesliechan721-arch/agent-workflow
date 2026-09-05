@@ -3521,7 +3521,15 @@ describe('ConsoleAppV4', () => {
       editor: 'object',
       mode: 'choices',
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const onSessionNavigation = vi.fn(async (
+      _navigation: 'home' | 'reload',
+      options?: { discardDrafts?: boolean },
+    ) => value.hasSessionDraft && !options?.discardDrafts ? 'draftBlocked' as const : 'completed' as const);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('服务方案（推荐）');
     expect(instance.lastFrame()).toContain('自定义');
@@ -3533,13 +3541,25 @@ describe('ConsoleAppV4', () => {
     expect(seededFrame).toContain('令牌');
     expect(seededFrame).not.toContain('SECRET-BYTES');
 
-    await input(instance, '\r', '\r', ...Array.from({ length: 5 }, () => '\u007F'), 'bad-name', '\r');
+    await input(instance, '\r', '\r', 'hHqb');
+    expect(instance.lastFrame()).toContain('AlicehHqb');
+    expect(onSessionNavigation).not.toHaveBeenCalled();
+    await input(instance, ...Array.from({ length: 9 }, () => '\u007F'), 'bad-name', '\r');
     expect(instance.lastFrame()).toContain('format');
     expect(instance.lastFrame()).toContain('bad-name');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configObjectPropertyEditor', propertyKey: 'owner', stage: 'custom',
     });
     await input(instance, ...Array.from({ length: 8 }, () => '\u007F'), 'Bob', '\r');
+
+    await input(instance, 'h');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(instance.lastFrame()).toContain('继续编辑');
+    await input(instance, '\r');
+    expect(value.hasSessionDraft).toBe(true);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configFieldEditor', fieldKey: 'settings', editor: 'object',
+    });
 
     await input(instance, ...Array.from({ length: 3 }, () => '\u001B[B'), '\r', '\u001B[B', '\r');
     expect(instance.lastFrame()).not.toContain('legacy');
@@ -4648,6 +4668,33 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
   });
 
+  it('keeps a config draft when h defaults to continue editing', async () => {
+    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const onSessionNavigation = vi.fn(async (
+      _navigation: 'home' | 'reload',
+      options?: { discardDrafts?: boolean },
+    ) => value.hasSessionDraft && !options?.discardDrafts ? 'draftBlocked' as const : 'completed' as const);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await nextTurn(4);
+    await input(instance, '\r', '\r', '\u001B[B', '\r');
+    await nextTurn(2);
+    expect(value.hasSessionDraft).toBe(true);
+    const draftRoute = value.snapshot.router.current.route;
+
+    await input(instance, 'h');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(instance.lastFrame()).toContain('继续编辑');
+    await input(instance, '\r');
+
+    expect(value.hasSessionDraft).toBe(true);
+    expect(value.snapshot.router.current.route).toEqual(draftRoute);
+  });
+
   it('opens a stored field action but sends an unstored field directly to its cursor editor', async () => {
     const page = configPage();
     const level = page.groups[0]!.fields[0]!;
@@ -4869,7 +4916,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).not.toContain('/Users/private');
   });
 
-  it('treats b as text, normalizes no-op drafts, and hides reset for an empty layer', async () => {
+  it('treats h, H, q, and b as config text, normalizes no-op drafts, and hides reset for an empty layer', async () => {
     const page = configPage();
     page.storedCount = 0;
     const value = controller({
@@ -4886,9 +4933,9 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
 
-    await input(instance, 'b', '\r');
+    await input(instance, 'hHqb', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
-    expect(instance.lastFrame()).toContain('b');
+    expect(instance.lastFrame()).toContain('hHqb');
     expect(instance.lastFrame()).toContain('1 项未保存');
 
     await input(instance, 'b', '\u001B[B', '\r');
@@ -5192,6 +5239,24 @@ describe('ConsoleAppV4', () => {
       depth: 1,
       current: { route: { name: 'home' } },
     });
+  });
+
+  it('keeps h, H, q, and b as characters in a source field', async () => {
+    const value = controller();
+    const onSessionNavigation = vi.fn().mockResolvedValue('completed');
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await nextTurn(4);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await input(instance, 'hHqb');
+
+    expect(instance.lastFrame()).toContain('hHqb');
+    expect(onSessionNavigation).not.toHaveBeenCalled();
+    expect(value.hasSessionDraft).toBe(true);
   });
 
   it('discards the complete add-source route segment from S07 and returns to the source list', async () => {
