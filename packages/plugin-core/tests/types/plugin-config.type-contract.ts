@@ -60,9 +60,40 @@ export const topLevelScalarWithDefault: PluginConfigScalarField = {
   default: 'safe',
 }
 
+export const topLevelSensitiveString: PluginConfigScalarField = {
+  type: 'string',
+  sensitive: true,
+}
+
+// @ts-expect-error Sensitive string fields cannot declare defaults.
+export const sensitiveStringWithDefault: PluginConfigScalarField = {
+  type: 'string',
+  sensitive: true,
+  default: 'secret',
+}
+
+// @ts-expect-error Sensitive string fields cannot declare choices or presets.
+export const sensitiveStringWithChoices: PluginConfigScalarField = {
+  type: 'string',
+  sensitive: true,
+  choices: { allowCustom: true, presets: [] },
+}
+
+// @ts-expect-error Number fields cannot be sensitive.
+export const sensitiveNumber: PluginConfigScalarField = {
+  type: 'number',
+  sensitive: true,
+}
+
 export const fixedObjectChildWithRequired: PluginConfigObjectPropertyField = {
   type: 'string',
   required: true,
+}
+
+export const sensitiveFixedObjectChild: PluginConfigObjectPropertyField = {
+  type: 'string',
+  // @ts-expect-error Object children cannot be sensitive.
+  sensitive: true,
 }
 
 export const fixedObject: PluginConfigObjectField = {

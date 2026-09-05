@@ -160,8 +160,10 @@ describe('Claude project native-only config apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(expectedScopes);
-    expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
+    expect(receipt.apply.state).toBe('succeeded');
+    if (receipt.apply.state !== 'succeeded') throw new Error('Expected config apply to succeed.');
+    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(expectedScopes);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
     expect(statusCommandV7).toHaveBeenCalledWith(expect.objectContaining({ nativeCliRunner }));
     expect(reinstallCommandImpl).toHaveBeenCalledTimes(1);
     expect(reinstallCommandImpl).toHaveBeenCalledWith(

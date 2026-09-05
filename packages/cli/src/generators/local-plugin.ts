@@ -765,12 +765,12 @@ async function addDeclaredLspServerFiles(
   return value;
 }
 
-function addPostApplyRuntimeEntry(
+function addPreApplyRuntimeEntry(
   plugin: PluginMeta,
   rootFiles: Set<string>,
   nodeEntries: Set<string>,
 ): void {
-  const entry = plugin.manifest.scripts?.postApply;
+  const entry = plugin.manifest.scripts?.preApply;
   if (!entry) return;
   const filePath = stripDotSlash(entry.path);
   rootFiles.add(filePath);
@@ -883,12 +883,23 @@ async function collectRuntimeClosureFiles(
 async function collectAwRuntimeFiles(plugin: PluginMeta): Promise<string[]> {
   const rootFiles = new Set<string>();
   const nodeEntries = new Set<string>();
-  addPostApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
+  addPreApplyRuntimeEntry(plugin, rootFiles, nodeEntries);
   addHelperRuntimeEntries(plugin, rootFiles, nodeEntries);
   addArtifactRendererRuntimeEntry(plugin, rootFiles, nodeEntries);
 
-  for (const filePath of await collectRuntimeClosureFiles(plugin, [...nodeEntries])) {
+  const closureFiles = await collectRuntimeClosureFiles(plugin, [...nodeEntries]);
+  for (const filePath of closureFiles) {
     rootFiles.add(filePath);
+  }
+
+  const configHelper = plugin.manifest.scripts?.helpers?.config;
+  if (configHelper) {
+    const helperDir = path.posix.dirname(stripDotSlash(configHelper));
+    const re2RuntimeRoot = path.posix.join(helperDir, 're2-wasm');
+    if (closureFiles.includes(path.posix.join(re2RuntimeRoot, 'build/src/re2.js'))) {
+      rootFiles.add(path.posix.join(re2RuntimeRoot, 'build/wasm/re2.wasm'));
+      rootFiles.add(path.posix.join(re2RuntimeRoot, 'LICENSE'));
+    }
   }
 
   return [...rootFiles].sort();

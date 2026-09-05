@@ -568,18 +568,21 @@ describe('multi-source read commands', () => {
     expect(blocked.readStderr()).toContain('legacyStateUnsupported');
   });
 
-  it('keeps source identity when reading a stored-only plugin config', async () => {
+  it('validates stored-only config bindings against the current Catalog source', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('stored-only-config');
     await createCatalogSnapshotFixture(sourceRoot, 'other');
     const source = { id: 'good', type: 'path', primary: true, path: sourceRoot } as const;
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
+    await replaceCatalogSourcesConfigWithoutActive({
       config: { schemaVersion: 2, sources: [source] },
       expectedDigest: initial.digest,
       env: isolation.env,
     });
     const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = String((await fs.readJson(
+      path.join(sourceRoot, '.aw-generated.json'),
+    ) as { workspaceIdentity: string }).workspaceIdentity);
     await writePluginConfigStore({
       sourceId: source.id,
       sourceIdentity,
@@ -588,6 +591,21 @@ describe('multi-source read commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
       values: { mode: 'stored' },
+    });
+    const unavailable = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: unavailable.io,
+      interactive: false,
+    })).toBe(1);
+    expect(unavailable.readStderr()).toContain('catalog source');
+
+    await syncCatalogSourceGeneration({
+      sourceId: source.id,
+      cliVersion: '1.0.0',
+      env: isolation.env,
+      impactConfirmed: true,
     });
     const captured = createCapturedCliIo();
 
@@ -603,6 +621,64 @@ describe('multi-source read commands', () => {
       sourceIdentity,
       fields: [expect.objectContaining({ key: 'mode', effectiveValue: '[redacted]' })],
     });
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      logicalIdentity,
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'project-stored' },
+    });
+    const projectRead = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'project', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: projectRead.io,
+      interactive: false,
+    })).toBe(0);
+    expect(JSON.parse(projectRead.readStdout())).toMatchObject({
+      fields: [expect.objectContaining({ key: 'mode', effectiveValue: '[redacted]' })],
+    });
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity: `sha256:${'f'.repeat(64)}`,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'mismatch' },
+    });
+    const userMismatch = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'user', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: userMismatch.io,
+      interactive: false,
+    })).toBe(1);
+    expect(userMismatch.readStderr()).toContain('identityMismatch');
+
+    await writePluginConfigStore({
+      sourceId: source.id,
+      sourceIdentity,
+      logicalIdentity: 'catalog.example/other',
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 'mismatch' },
+    });
+    const projectMismatch = createCapturedCliIo();
+    expect(await runCli(['config', 'list', 'good/demo', '--scope', 'project', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: projectMismatch.io,
+      interactive: false,
+    })).toBe(1);
+    expect(projectMismatch.readStderr()).toContain('identityMismatch');
   });
 
   it('uses qualified plugin IDs in the multi-source console writes', async () => {
@@ -1051,8 +1127,9 @@ describe('multi-source read commands', () => {
       interactive: false,
     })).toBe(1);
     expect(JSON.parse(config.readStdout())).toMatchObject({
-      receiptSchemaVersion: 6,
+      receiptSchemaVersion: 7,
       command: 'config:set',
+      configWrite: 'notStarted',
       ok: false,
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'configSchemaUnavailable' })],

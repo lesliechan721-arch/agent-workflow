@@ -88,8 +88,8 @@ const adapterFacts: Readonly<Partial<Record<
   config: {
     'config.presentation': { conflicts: 'Schema mutation and sensitive or path values in presets.' },
   },
-  'post-apply': {
-    'scripts.postApply': { requires: 'A Node entry inside the plugin root.' },
+  'pre-apply': {
+    'scripts.preApply': { requires: 'A Node entry inside the plugin root.' },
   },
   artifacts: {
     'scripts.artifacts.render': { requires: 'artifacts.targets.' },

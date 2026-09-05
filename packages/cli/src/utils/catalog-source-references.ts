@@ -852,24 +852,39 @@ function assertNamespacedConfigEnvelope(
   value: unknown,
   sourceId: string,
   pluginName: string,
+  scope: 'user' | 'project',
 ): asserts value is {
-  schemaVersion: 3;
+  schemaVersion: 4;
   sourceId: string;
-  sourceIdentity: string;
   pluginName: string;
+  binding:
+    | { kind: 'source'; sourceIdentity: string }
+    | { kind: 'catalog'; logicalIdentity: string };
   values: Record<string, unknown>;
 } {
   if (!isRecord(value)
-    || value.schemaVersion !== 3
+    || value.schemaVersion !== 4
     || typeof value.sourceId !== 'string'
-    || typeof value.sourceIdentity !== 'string'
-    || !/^sha256:[0-9a-f]{64}$/u.test(value.sourceIdentity)
     || typeof value.pluginName !== 'string'
+    || !isRecord(value.binding)
     || !isRecord(value.values)
     || Object.keys(value).some((key) => ![
-      'schemaVersion', 'sourceId', 'sourceIdentity', 'pluginName', 'values',
+      'schemaVersion', 'sourceId', 'pluginName', 'binding', 'values',
     ].includes(key))) {
-    throw new Error('Namespaced plugin config is not a valid schema 3 envelope.');
+    throw new Error('Namespaced plugin config is not a valid schema 4 envelope.');
+  }
+  const binding = value.binding;
+  const validBinding = scope === 'user'
+    ? binding.kind === 'source'
+      && typeof binding.sourceIdentity === 'string'
+      && /^sha256:[0-9a-f]{64}$/u.test(binding.sourceIdentity)
+      && Object.keys(binding).every((key) => ['kind', 'sourceIdentity'].includes(key))
+    : binding.kind === 'catalog'
+      && typeof binding.logicalIdentity === 'string'
+      && binding.logicalIdentity.trim().length > 0
+      && Object.keys(binding).every((key) => ['kind', 'logicalIdentity'].includes(key));
+  if (!validBinding) {
+    throw new Error(`Namespaced ${scope} plugin config has an invalid binding.`);
   }
   if (value.sourceId !== sourceId || value.pluginName !== pluginName) {
     throw new Error('Namespaced plugin config identity does not match its directory path.');
@@ -1166,7 +1181,12 @@ export async function inventoryCatalogSourceReferences(options: {
         }) as unknown;
         if (value === null) continue;
         try {
-          assertNamespacedConfigEnvelope(value, sourceEntry.name, pluginEntry.name);
+          assertNamespacedConfigEnvelope(
+            value,
+            sourceEntry.name,
+            pluginEntry.name,
+            configInventory.scope,
+          );
         } catch (error) {
           errors.push(inventoryError(
             error,

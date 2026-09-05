@@ -57,6 +57,7 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
 import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from '../../src/utils/codex-native-render-receipt.js';
@@ -2325,13 +2326,13 @@ describe('rebuild adapter integration', () => {
           scope: oppositeScope,
         },
       });
-      const failedAfterCleanup = await executeRebuildOperation({
+      const failedBeforeCleanup = await executeRebuildOperation({
         command: 'install',
         target,
         driver: integration.driver,
       });
-      expect(failedAfterCleanup.status).toBe('failed');
-      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(false);
+      expect(failedBeforeCleanup.status).toBe('failed');
+      await expect(fs.pathExists(oppositeLegacySkillRoot)).resolves.toBe(true);
 
       const userLegacySkillRoot = path.join(userSkillsRoot, 'native-skill');
       const projectLegacySkillRoot = path.join(projectSkillsRoot, 'native-skill');
@@ -2368,6 +2369,150 @@ describe('rebuild adapter integration', () => {
       expect(inspection.desiredOwnedComponents?.some((component) =>
         component.kind === 'skill-directory'
         && component.identity.artifactKey === 'native-skill')).toBe(false);
+    },
+  );
+
+  it.each([
+    { platform: 'claude' as const, delivery: 'direct' as const, leak: 'path' as const },
+    { platform: 'claude' as const, delivery: 'direct' as const, leak: 'content' as const },
+    { platform: 'codex' as const, delivery: 'direct' as const, leak: 'path' as const },
+    { platform: 'codex' as const, delivery: 'direct' as const, leak: 'content' as const },
+  ])(
+    'rejects sensitive config in $platform $delivery dynamic Skill sourceDirs $leak before writing',
+    async ({ platform, delivery, leak }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const name = `sensitive-${platform}-${delivery}-${leak}`;
+      const secret = `${name}-secret`;
+      const sourcePluginRoot = path.join(isolation.layout.rootDir, `${name}-source`);
+      const targetName = `${platform}.skill`;
+      const manifest = {
+        name,
+        version: '1.0.0',
+        description: 'Sensitive final Skill tree fixture.',
+        schemaVersion: 3,
+        marketplace: {
+          category: 'test',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            ...(delivery === 'native' ? { products: ['CODEX'] } : {}),
+          },
+        },
+        config: { fields: { token: { type: 'string', sensitive: true } } },
+        scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+        artifacts: { targets: [{
+          id: 'dynamic-skill',
+          platform,
+          target: targetName,
+          ...(delivery === 'native'
+            ? { delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' } }
+            : platform === 'codex' ? { delivery: { mode: 'aw-extension' } } : {}),
+          scopes: ['user'],
+          states: ['present'],
+          refreshKeys: ['token'],
+          skillKey: 'dynamic-skill',
+          sourceDirs: ['./skills/dynamic-skill'],
+        }] },
+      } as const;
+      await fs.outputJson(path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'), manifest);
+      await fs.outputFile(
+        path.join(sourcePluginRoot, 'skills', 'dynamic-skill', 'SKILL.md'),
+        '---\nname: dynamic-skill\ndescription: Test.\n---\n',
+      );
+      await fs.outputFile(
+        path.join(sourcePluginRoot, 'skills', 'dynamic-skill', 'README.md'),
+        '# Dynamic Skill\n',
+      );
+      await fs.outputFile(
+        path.join(sourcePluginRoot, 'skills', 'dynamic-skill', 'agents', 'openai.yaml'),
+        [
+          'interface:',
+          '  display_name: "Dynamic Skill"',
+          '  short_description: "Test dynamic Skill"',
+          '  default_prompt: "Use $dynamic-skill."',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      );
+      const leakedRelativePath = leak === 'path'
+        ? `references/${secret}.txt`
+        : 'references/leak.txt';
+      await fs.outputFile(
+        path.join(sourcePluginRoot, 'skills', 'dynamic-skill', leakedRelativePath),
+        leak === 'content' ? secret : 'Safe content.',
+      );
+      await fs.outputFile(path.join(sourcePluginRoot, 'scripts', 'render.mjs'), [
+        'console.log(JSON.stringify({ version: 2, artifacts: [{',
+        `  id: 'dynamic-skill', kind: 'skill', platform: ${JSON.stringify(platform)},`,
+        `  target: ${JSON.stringify(targetName)}, state: 'present', skillKey: 'dynamic-skill',`,
+        "  refreshKeys: ['token'], content: { files: {} },",
+        '}] }));',
+      ].join('\n'));
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [sourcePluginRoot],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', name), {
+        mode: 'bundle',
+      });
+      await writePluginConfigStore({
+        sourceId: plugin.sourceId,
+        sourceIdentity: plugin.sourceIdentity,
+        logicalIdentity: plugin.catalogLogicalIdentity,
+        pluginName: name,
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        values: { token: secret },
+      });
+      const nativeCliRunner = vi.fn(async (invocation: NativeCliInvocation) => ({
+        exitCode: 0,
+        stdout: invocation.args.includes('--version')
+          ? 'codex-cli 0.151.0'
+          : invocation.args.includes('--json') ? '{"installed":[],"available":[]}' : '',
+        stderr: '',
+      }));
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+      });
+      const build = () => integration.buildTarget({
+        plugin,
+        platform,
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      });
+
+      let failure: unknown;
+      if (delivery === 'native') {
+        const target = await build();
+        const result = await executeRebuildOperation({
+          command: 'install', target, driver: integration.driver,
+        });
+        expect(result.status).toBe('failed');
+        failure = result.failures[0]?.message;
+      } else {
+        failure = await build().then(() => undefined, (error: unknown) => error);
+      }
+      expect(String(failure)).toContain('artifactRendererSensitiveConfigExposed');
+      expect(String(failure)).not.toContain(secret);
+      expect(String(failure)).not.toContain(leakedRelativePath);
+      const outputRoot = platform === 'claude'
+        ? path.join(isolation.layout.claudeHomeDir, 'skills', 'dynamic-skill')
+        : delivery === 'native'
+          ? path.join(
+              isolation.layout.awHomeDir,
+              'plugins',
+              name,
+              'codex',
+              'skills',
+              'dynamic-skill',
+              leakedRelativePath,
+            )
+          : path.join(isolation.layout.codexHomeDir, 'skills', 'dynamic-skill');
+      await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
     },
   );
 

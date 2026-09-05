@@ -384,7 +384,7 @@ describe('manifest utils', () => {
     const manifest = await readFixturePluginManifest(repoRoot);
     await writeScriptFixture(pluginRoot);
     manifest.scripts = {
-      postApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
+      preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
       helpers: {
         config: './scripts/aw-config.cjs',
       },
@@ -488,7 +488,7 @@ describe('manifest utils', () => {
 
     const plugin = await readPluginManifest(pluginRoot);
     expect(plugin.manifest.scripts).toMatchObject({
-      postApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
+      preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 45_000 },
       helpers: {
         config: './scripts/aw-config.cjs',
       },
@@ -552,7 +552,7 @@ describe('manifest utils', () => {
     expect(platformManifest.config).toBeUndefined();
   });
 
-  it('rejects legacy lifecycle, shell, selector, shorthand, and extra postApply fields', async () => {
+  it('accepts only the preApply lifecycle shape and rejects postApply', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
@@ -562,21 +562,40 @@ describe('manifest utils', () => {
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts must NOT have additional properties');
 
-    manifest.scripts = { postApply: './scripts/lifecycle.mjs' };
+    manifest.scripts = { postApply: { path: './scripts/lifecycle.mjs' } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must be object');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts must NOT have additional properties');
 
-    manifest.scripts = { postApply: { path: './scripts/uninstall.sh' } };
+    manifest.scripts = { preApply: { path: './scripts/uninstall.sh' } };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('Node runnable file extension');
 
-    manifest.scripts = { postApply: { path: './scripts/lifecycle.mjs', runner: 'node' } };
+    manifest.scripts = { preApply: { path: './scripts/lifecycle.mjs', runner: 'node' } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must NOT have additional properties');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/preApply must NOT have additional properties');
 
-    manifest.scripts = { postApply: { path: './scripts/lifecycle.mjs', linux: {} } };
+    manifest.scripts = { preApply: { path: './scripts/lifecycle.mjs', linux: {} } };
     await writeFixturePluginManifest(repoRoot, manifest);
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/postApply must NOT have additional properties');
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('/scripts/preApply must NOT have additional properties');
+  });
+
+  it('enforces preApply timeout bounds', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeScriptFixture(pluginRoot);
+
+    manifest.scripts = { preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 999 } };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must be >= 1000');
+
+    manifest.scripts = { preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 1_800_001 } };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow('must be <= 1800000');
+
+    manifest.scripts = { preApply: { path: './scripts/lifecycle.mjs', timeoutMs: 1_800_000 } };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toBeDefined();
   });
 
   it('rejects unsafe artifact renderer script declarations', async () => {

@@ -72,6 +72,7 @@ export interface NamespacedMarketplaceRootConfig {
   schemaVersion: 2;
   sourceId: string;
   sourceIdentity: string;
+  logicalIdentity?: string;
   marketplaceName: string;
 }
 
@@ -202,6 +203,8 @@ export async function readStrictNamespacedMarketplaceRoot(options: {
     || config.sourceId.length === 0
     || typeof config.sourceIdentity !== 'string'
     || !SOURCE_IDENTITY_PATTERN.test(config.sourceIdentity)
+    || (config.logicalIdentity !== undefined
+      && (typeof config.logicalIdentity !== 'string' || config.logicalIdentity.trim() === ''))
     || typeof config.marketplaceName !== 'string'
     || config.marketplaceName.length === 0
     || config.sourceId !== path.basename(options.rootDir)

@@ -174,6 +174,7 @@ export interface OperationEvidence {
   source?: {
     sourceId: string;
     sourceIdentity: string;
+    logicalIdentity?: string;
     requestedRef?: string;
     resolvedCommit?: string;
     manifestDigest?: string;
@@ -199,6 +200,7 @@ export interface OperationEvidence {
     schemaIdentity?: string;
     storeDigest: string;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
+    shareability?: 'verified' | 'unverified';
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
   };
   resetTarget?: {
@@ -295,10 +297,11 @@ export interface ReviewPreparationStage {
 
 export interface ReviewPreparationSnapshot {
   id: string;
-  intent: OperationIntent;
+  operationKind: OperationIntent['kind'];
+  subject: string;
   state: 'running' | 'failed';
   stages: ReviewPreparationStage[];
-  currentLabel: string;
+  currentStage?: ReviewPreparationStageId;
   code?: 'reviewPreparationFailed';
   message?: string;
 }
@@ -598,28 +601,6 @@ function cloneFrozen<T>(value: T): T {
   return deepFreeze(structuredClone(value));
 }
 
-function publicReviewPreparation(
-  snapshot: ReviewPreparationSnapshot,
-): ReviewPreparationSnapshot {
-  if (snapshot.intent.kind !== 'catalogGeneration' || !snapshot.intent.sourceMutation) return snapshot;
-  const mutation = snapshot.intent.sourceMutation;
-  const sourceMutation = mutation.action === 'add'
-    ? {
-        ...mutation,
-        source: mutation.source.type === 'path'
-          ? { ...mutation.source, path: '<private>' }
-          : { ...mutation.source, url: '<private>' },
-      }
-    : {
-        ...mutation,
-        update: 'url' in mutation.update
-          ? { ...mutation.update, ...(mutation.update.url ? { url: '<private>' } : {}) }
-          : { ...mutation.update, ...('path' in mutation.update && mutation.update.path
-            ? { path: '<private>' } : {}) },
-      };
-  return { ...snapshot, intent: { ...snapshot.intent, sourceMutation } };
-}
-
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
   if (evidence.resetTarget) {
@@ -631,8 +612,14 @@ export function operationEvidenceFingerprint(evidence: OperationEvidence): strin
       .digest('hex');
   }
   const { codexManager: _runtimeSelection, ...staleEvidence } = evidence;
+  const config = staleEvidence.config
+    ? (({ shareability: _shareability, ...identity }) => identity)(staleEvidence.config)
+    : undefined;
   return crypto.createHash('sha256')
-    .update(JSON.stringify(stableValue(staleEvidence)))
+    .update(JSON.stringify(stableValue({
+      ...staleEvidence,
+      ...(config ? { config } : {}),
+    })))
     .digest('hex');
 }
 
@@ -711,6 +698,7 @@ export class TuiController {
   readonly #listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
   readonly #health = new Map<string, SourceHealthViewModel>();
   readonly #tickets = new Map<string, ReviewTicket>();
+  readonly #reviewPreparationIntents = new Map<string, OperationIntent>();
   readonly #inflightOperations = new Map<string, {
     operationId: string;
     promise: Promise<OperationExecuteResult>;
@@ -811,7 +799,7 @@ export class TuiController {
       progressTargets: this.#progressTargets,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
       ...(this.#reviewPreparation
-        ? { reviewPreparation: publicReviewPreparation(this.#reviewPreparation.snapshot) }
+        ? { reviewPreparation: this.#reviewPreparation.snapshot }
         : {}),
       ...(this.#result ? { result: this.#result } : {}),
       ...(this.#loadError ? { loadError: this.#loadError } : {}),
@@ -1305,7 +1293,8 @@ export class TuiController {
       || route.name === 'portableBlocker';
     const portableOperationRoute = (route.name === 'reviewPreparing' || route.name === 'review'
       || route.name === 'progress' || route.name === 'result')
-      && (this.#reviewPreparation?.snapshot.intent.kind === 'portableInstall'
+      && (this.#reviewPreparation !== undefined
+        && this.#reviewPreparationIntents.get(this.#reviewPreparation.snapshot.id)?.kind === 'portableInstall'
         || this.#activeReview?.operationKind === 'portableInstall'
         || this.#result?.operationKind === 'portableInstall');
     if (!portableRoute && !portableOperationRoute) {
@@ -1845,7 +1834,9 @@ export class TuiController {
       ? this.#result.returnRoute
       : current);
     const normalizedReturnRoute = this.#normalizeRoute(resolvedReturnRoute);
-    const key = JSON.stringify(stableValue({ intent, returnRoute: normalizedReturnRoute }));
+    const key = crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({ intent, returnRoute: normalizedReturnRoute })))
+      .digest('hex');
     if (this.#reviewPreparation?.snapshot.state === 'running'
       && this.#reviewPreparation.key === key) {
       return cloneFrozen(this.#reviewPreparation.snapshot);
@@ -1856,14 +1847,16 @@ export class TuiController {
     const token = ++this.#reviewPreparationToken;
     const snapshot: ReviewPreparationSnapshot = {
       id,
-      intent: structuredClone(intent),
+      operationKind: intent.kind,
+      subject: this.#reviewPreparationLabel(intent),
       state: 'running',
       stages: this.dependencies.prepareReviewEvidence ? [] : [
         { id: 'validate', label: '验证当前状态', state: 'running' },
         { id: 'evidence', label: '准备确认信息', state: 'pending' },
       ],
-      currentLabel: this.#reviewPreparationLabel(intent),
+      ...(this.dependencies.prepareReviewEvidence ? {} : { currentStage: 'validate' as const }),
     };
+    this.#reviewPreparationIntents.set(id, structuredClone(intent));
     this.#reviewPreparation = {
       snapshot,
       key,
@@ -1881,7 +1874,9 @@ export class TuiController {
   retryReviewPreparation(): ReviewPreparationSnapshot | undefined {
     const preparation = this.#reviewPreparation;
     if (!preparation || preparation.snapshot.state !== 'failed') return undefined;
-    return this.startReviewPreparation(preparation.snapshot.intent, preparation.returnRoute);
+    const intent = this.#reviewPreparationIntents.get(preparation.snapshot.id);
+    if (!intent) return undefined;
+    return this.startReviewPreparation(structuredClone(intent), preparation.returnRoute);
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
@@ -1916,12 +1911,15 @@ export class TuiController {
   async #runReviewPreparation(token: number): Promise<void> {
     const preparation = this.#reviewPreparation;
     if (!preparation || preparation.token !== token) return;
-    const intent = structuredClone(preparation.snapshot.intent);
+    const storedIntent = this.#reviewPreparationIntents.get(preparation.snapshot.id);
+    if (!storedIntent) return;
+    const intent = structuredClone(storedIntent);
     const signal = AbortSignal.any([this.#abort.signal, preparation.abort.signal]);
     try {
       this.#validateReviewIntent(intent);
       const evidence = await this.#prepareReviewEvidence(intent, signal, (stage) => {
         if (!this.#reviewPreparationIsCurrent(token)) return;
+        preparation.snapshot.currentStage = stage;
         const existing = preparation.snapshot.stages.find((entry) => entry.id === stage);
         preparation.snapshot.stages = preparation.snapshot.stages.map((entry) =>
           entry.state === 'running' ? { ...entry, state: 'completed' } : entry);
@@ -1942,6 +1940,7 @@ export class TuiController {
         stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
       this.#publish();
       const returnRoute = structuredClone(preparation.returnRoute);
+      this.#reviewPreparationIntents.delete(preparation.snapshot.id);
       this.#reviewPreparation = undefined;
       this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
     } catch (error) {
@@ -2010,6 +2009,7 @@ export class TuiController {
     if (!this.#reviewPreparation) return;
     this.#reviewPreparationToken += 1;
     this.#reviewPreparation.abort.abort();
+    this.#reviewPreparationIntents.delete(this.#reviewPreparation.snapshot.id);
     this.#reviewPreparation = undefined;
   }
 
@@ -2256,6 +2256,39 @@ export class TuiController {
           privateConfigOperation: true,
         });
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        const configCommitted = typeof execution === 'object'
+          && execution !== null
+          && (execution as { configWrite?: unknown }).configWrite === 'succeeded';
+        if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+          && configCommitted) {
+          const baseSummary = operationResultSummary(ticket.intent, execution);
+          const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
+          const summary: OperationResultSummary = {
+            ...baseSummary,
+            code: 'operationPartial',
+            message: '设置已保存，但最终状态无法刷新。',
+            elapsedMs,
+            messages: [
+              ...this.#progress.messages,
+              ...(baseSummary.messages ?? []),
+              '状态刷新失败。配置写入已经提交；请稍后刷新状态。',
+            ].slice(-8),
+          };
+          this.#progress = { ...this.#progress, elapsedMs };
+          const result: OperationExecuteResult = {
+            state: 'partial',
+            operationId,
+            summary,
+            operationKind: ticket.intent.kind,
+            pluginId: ticket.intent.pluginId,
+            returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
+          };
+          this.#result = structuredClone(result);
+          this.#activeReview = undefined;
+          this.#router.replace({ name: 'result', operationId });
+          this.#publish();
+          return cloneFrozen(result);
+        }
         return this.#setBlocked(operationId, verificationCode, {
           intent: ticket.intent,
           navigation: 'result',
@@ -2774,9 +2807,13 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     };
   }
   if (intent.kind === 'configSave' || intent.kind === 'configReset') {
-    const rawTargets = typeof execution === 'object' && execution !== null
-      && Array.isArray((execution as { targetResults?: unknown }).targetResults)
-      ? (execution as { targetResults: Array<Record<string, unknown>> }).targetResults
+    const rawApply = typeof execution === 'object' && execution !== null
+      && typeof (execution as { apply?: unknown }).apply === 'object'
+      && (execution as { apply?: unknown }).apply !== null
+      ? (execution as { apply: Record<string, unknown> }).apply
+      : {};
+    const rawTargets = Array.isArray(rawApply.targetResults)
+      ? rawApply.targetResults as Array<Record<string, unknown>>
       : [];
     const targets = rawTargets.flatMap((entry) => {
       const target = typeof entry.target === 'object' && entry.target !== null
@@ -2784,12 +2821,12 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
         : entry;
       if ((target.platform !== 'codex' && target.platform !== 'claude')
         || (target.scope !== 'user' && target.scope !== 'project')
-        || (entry.state !== 'completed' && entry.state !== 'failed')) return [];
+        || (entry.state !== 'completed' && entry.state !== 'failed' && entry.state !== 'skipped')) return [];
       return [{
         ...(typeof target.pluginId === 'string' ? { pluginId: target.pluginId } : {}),
         platform: target.platform as PlatformName,
         scope: target.scope as Scope,
-        state: entry.action === 'skipped' ? 'skipped' as const
+        state: entry.state === 'skipped' || entry.action === 'skipped' ? 'skipped' as const
           : entry.state === 'failed' ? 'failed' as const
             : entry.action === 'keep' ? 'kept' as const
               : entry.state as 'completed' | 'failed',
@@ -2798,17 +2835,33 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     const overallState = typeof execution === 'object' && execution !== null
       ? (execution as { overallState?: unknown }).overallState
       : undefined;
-    const applySkippedReason = typeof execution === 'object' && execution !== null
-      ? (execution as { applySkippedReason?: unknown }).applySkippedReason
-      : undefined;
-    const invalidConfig = applySkippedReason === 'invalidConfig';
+    const applyState = rawApply.state;
+    const applyReason = rawApply.reason;
+    const invalidConfig = applyState === 'unavailable' && applyReason === 'invalidConfig';
     const resetDisposition = typeof execution === 'object' && execution !== null
       ? (execution as { resetDisposition?: unknown }).resetDisposition
       : undefined;
     const quarantineBasename = typeof execution === 'object' && execution !== null
       ? (execution as { quarantineBasename?: unknown }).quarantineBasename
       : undefined;
+    const publicWarnings = typeof execution === 'object' && execution !== null
+      && Array.isArray((execution as { warnings?: unknown }).warnings)
+      ? (execution as { warnings: unknown[] }).warnings.filter((warning): warning is string =>
+          typeof warning === 'string'
+          && warning.startsWith('projectConfigShareabilityUnverified:'))
+      : [];
+    const otherProjectsMayRequireSync = intent.scope === 'user'
+      && typeof execution === 'object' && execution !== null
+      && (execution as { otherProjectsMayRequireSync?: unknown }).otherProjectsMayRequireSync === true;
+    const publicMessages = [
+      ...publicWarnings.map((warning) => `警告：${warning}`),
+      ...(otherProjectsMayRequireSync
+        ? ['提示：其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。']
+        : []),
+    ];
     const partial = overallState === 'partial'
+      || applyState === 'partial'
+      || applyState === 'unavailable'
       || invalidConfig
       || targets.some((target) => target.state === 'failed' || target.state === 'skipped')
       && targets.some((target) => target.state === 'completed' || target.state === 'kept');
@@ -2822,9 +2875,10 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
       pluginId: intent.pluginId,
       configScope: intent.scope,
       configApplyRetryAvailable: intent.kind === 'configSave'
-        && intent.apply && !invalidConfig && (failed || partial),
+        && intent.apply && !invalidConfig && (applyState === 'partial' || applyState === 'unavailable'),
+      ...(publicMessages.length > 0 ? { messages: publicMessages } : {}),
       ...(intent.kind === 'configSave'
-        ? { configApplied: invalidConfig ? false : intent.apply }
+        ? { configApplied: applyState === 'succeeded' || applyState === 'partial' }
         : invalidConfig ? { configApplied: false } : {}),
       ...(invalidConfig ? { configApplySkippedReason: 'invalidConfig' as const } : {}),
       ...(intent.kind === 'configReset'

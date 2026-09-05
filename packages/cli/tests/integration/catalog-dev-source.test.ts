@@ -12,7 +12,11 @@ import {
 import { addCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import { runCli } from '../../src/index.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
-import { setAtomicConfigBeforeRenameHookForTests } from '../../src/utils/plugin-config.js';
+import {
+  setAtomicConfigBeforeRenameHookForTests,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   createEmptyPluginIntentState,
   upsertPluginIntentRoot,
@@ -285,13 +289,16 @@ describe('Catalog Workspace development source', () => {
         { pluginId: `${sourceId}/dev-demo`, platforms: ['codex'] },
       ));
     } else if (fixtureKind === 'plugin config') {
-      await fs.outputJson(path.join(
-        env.AW_HOME!, 'plugin-config', sourceId, 'dev-demo', 'config.json',
-      ), {
-        schemaVersion: 3,
+      const source = (await readCatalogSourcesConfigSnapshot(env)).config.sources
+        .find((entry) => entry.id === sourceId);
+      if (!source) throw new Error(`Missing development source ${sourceId}.`);
+      await writePluginConfigStore({
         sourceId,
-        sourceIdentity: `sha256:${'a'.repeat(64)}`,
+        sourceIdentity: await calculateCatalogSourceIdentity(source),
         pluginName: 'dev-demo',
+        scope: 'user',
+        cwd: workspaceRoot,
+        env,
         values: { enabled: true },
       });
     } else if (fixtureKind === 'installed target') {

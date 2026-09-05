@@ -926,7 +926,7 @@ describe('build smoke', () => {
         },
       },
       scripts: {
-        postApply: {
+        preApply: {
           path: './scripts/runtime.mjs',
         },
         node: {

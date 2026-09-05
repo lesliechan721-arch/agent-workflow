@@ -323,10 +323,25 @@ describe('portable materializer', () => {
     };
     const secret = await pluginFixture(root, secretManifest);
     await writeSkill(secret.rootDir, 'leak', 'plain-secret nested-portable-secret');
-    await expect(materializePortableSkills({
+    const contentFailure = await materializePortableSkills({
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
       env: { ...process.env, AW_HOME: path.join(root, 'home-b') },
-    })).rejects.toThrow('sensitive config');
+    }).then(() => undefined, (error: unknown) => error);
+    expect(String(contentFailure)).toContain('portableSkillSensitiveConfigExposed');
+    expect(String(contentFailure)).not.toContain('plain-secret');
+    expect(String(contentFailure)).not.toContain('nested-portable-secret');
+
+    await writeSkill(secret.rootDir, 'leak', 'Safe content.');
+    await fs.outputFile(
+      path.join(secret.rootDir, 'agent-skills', 'skills', 'leak', 'references', 'plain-secret.txt'),
+      'Safe content.',
+    );
+    const pathFailure = await materializePortableSkills({
+      plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
+      env: { ...process.env, AW_HOME: path.join(root, 'home-b-path') },
+    }).then(() => undefined, (error: unknown) => error);
+    expect(String(pathFailure)).toContain('portableSkillSensitiveConfigExposed');
+    expect(String(pathFailure)).not.toContain('plain-secret');
 
     const invalid = await pluginFixture(root, baseManifest('invalid'));
     await fs.outputFile(path.join(invalid.rootDir, 'agent-skills', 'skills', 'bad', 'SKILL.md'), 'no frontmatter');

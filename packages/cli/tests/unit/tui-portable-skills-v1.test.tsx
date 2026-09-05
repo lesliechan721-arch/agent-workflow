@@ -587,7 +587,11 @@ describe('Portable Skills TUI V1', () => {
       };
     });
     const executeIntent = vi.fn(async (intent: OperationIntent) => intent.kind === 'configSave'
-      ? { configWrite: 'succeeded' }
+      ? {
+          configWrite: 'succeeded',
+          overallState: 'succeeded',
+          apply: { state: 'succeeded', targetResults: [] },
+        }
       : (() => { throw new Error('unexpected intent'); })());
     const { value } = portableController({ captureEvidence, executeIntent });
     await value.load();

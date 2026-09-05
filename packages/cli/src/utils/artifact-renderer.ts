@@ -26,6 +26,7 @@ import {
   resolveEffectivePluginConfig,
 } from './plugin-config.js';
 import {
+  assertNoSensitiveConfigValues,
   buildNodeScriptInvocation,
   buildPluginScriptSpawnEnv,
   calculateFileDigest,
@@ -166,6 +167,7 @@ function selectConfigKeys<Value>(
 export async function resolveArtifactRenderConfig(options: {
   sourceId?: string;
   sourceIdentity?: string;
+  logicalIdentity?: string;
   pluginName?: string;
   manifest: NormalizedPluginManifest;
   scope: Scope;
@@ -178,6 +180,7 @@ export async function resolveArtifactRenderConfig(options: {
     const userStore = await readPluginConfigStore({
       sourceId: options.sourceId,
       sourceIdentity: options.sourceIdentity,
+      logicalIdentity: options.logicalIdentity,
       pluginName,
       scope: 'user',
       cwd: options.cwd,
@@ -188,6 +191,7 @@ export async function resolveArtifactRenderConfig(options: {
       : await readPluginConfigStore({
           sourceId: options.sourceId,
           sourceIdentity: options.sourceIdentity,
+          logicalIdentity: options.logicalIdentity,
           pluginName,
           scope: 'project',
           cwd: options.cwd,
@@ -212,6 +216,7 @@ export async function resolveArtifactRenderConfig(options: {
   const effective = await resolveEffectivePluginConfig({
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
+    logicalIdentity: options.logicalIdentity,
     pluginName,
     manifest: options.manifest,
     targetScope: options.scope,
@@ -269,6 +274,7 @@ export async function resolveArtifactRendererTarget(
 export async function writeArtifactRendererContext(options: {
   sourceId?: string;
   sourceIdentity?: string;
+  logicalIdentity?: string;
   target: ArtifactRendererTarget;
   event: ArtifactRenderEvent;
   platform: PlatformName | DistributionName;
@@ -308,6 +314,7 @@ export async function writeArtifactRendererContext(options: {
   const config = await resolveArtifactRenderConfig({
     sourceId: options.sourceId,
     sourceIdentity: options.sourceIdentity,
+    logicalIdentity: options.logicalIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
     scope: options.configScope ?? options.scope,
@@ -523,6 +530,7 @@ export async function runArtifactRenderer(options: {
   const writtenContext = await writeArtifactRendererContext({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
+    logicalIdentity: options.plugin.catalogLogicalIdentity,
     target,
     event,
     platform: options.platform,
@@ -617,7 +625,7 @@ export async function runArtifactRenderer(options: {
       stdoutSummary,
       stderrSummary,
     });
-    validateArtifactPlan({
+    const validated = validateArtifactPlan({
       manifest: options.plugin.manifest,
       plan,
       platform: options.platform,
@@ -627,6 +635,11 @@ export async function runArtifactRenderer(options: {
       rendererDigest: target.rendererDigest,
       manifestDigest: target.manifestDigest,
     });
+    assertNoSensitiveConfigValues(
+      validated.artifacts,
+      writtenContext.sensitiveValues,
+      'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.',
+    );
 
     return {
       plan,
