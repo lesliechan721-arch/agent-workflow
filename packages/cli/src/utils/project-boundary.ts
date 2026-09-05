@@ -52,36 +52,56 @@ export async function assertCanonicalProjectManagedRoots(options: {
 }
 
 interface GitIgnoreMatch {
-  pattern?: string;
+  pattern: string;
 }
+
+export type ProjectSharedConfigVisibility =
+  | { state: 'visible' }
+  | { state: 'ignored'; pattern: string }
+  | { state: 'unverified' };
+
+export const PROJECT_CONFIG_SHAREABILITY_UNVERIFIED_WARNING =
+  'projectConfigShareabilityUnverified: Git 无法确认 project config path 可共享。配置已写入，但不要将它视为已验证可提交。';
 
 function relativePath(repoRoot: string, targetPath: string): string {
   return path.relative(path.resolve(repoRoot), path.resolve(targetPath)).split(path.sep).join('/');
 }
 
-async function inspectGitIgnore(repoRoot: string, targetRelativePath: string): Promise<GitIgnoreMatch | undefined> {
+async function inspectGitIgnore(
+  repoRoot: string,
+  targetRelativePath: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<GitIgnoreMatch | null | undefined> {
   try {
-    const result = await execFileAsync('git', ['check-ignore', '-v', targetRelativePath], { cwd: repoRoot });
+    const result = await execFileAsync('git', ['check-ignore', '-v', targetRelativePath], {
+      cwd: repoRoot,
+      ...(env ? { env } : {}),
+    });
     const line = result.stdout.split(/\r?\n/u).find((entry) => entry.trim() !== '');
     const match = line ? /^(.*?):(\d+):([^\t]+)\t(.+)$/u.exec(line) : null;
-    return match ? { pattern: match[3] } : {};
+    return match ? { pattern: match[3] } : undefined;
   } catch (error) {
     const code = String((error as NodeJS.ErrnoException & { code?: number | string }).code);
-    if (code === '1' || code === '128' || code === 'ENOENT') return undefined;
-    throw error;
+    if (code === '1') return null;
+    return undefined;
   }
 }
 
 export async function assertProjectSharedConfigPathVisible(options: {
   cwd: string;
   targetPath: string;
-}): Promise<void> {
+  env?: NodeJS.ProcessEnv;
+}): Promise<ProjectSharedConfigVisibility> {
   const repoRoot = resolveAwProjectRoot(options.cwd);
   const targetRelativePath = relativePath(repoRoot, options.targetPath);
-  const match = await inspectGitIgnore(repoRoot, targetRelativePath);
+  const match = await inspectGitIgnore(repoRoot, targetRelativePath, options.env);
   if (match?.pattern) {
-    throw new Error(
-      `Project shared state path ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match.pattern)} 排除。写入前必须修正规则。`,
-    );
+    const error = new Error(
+      `projectConfigIgnored: Project shared state path ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match.pattern)} 排除。写入前必须修正规则。`,
+    ) as Error & { code: string };
+    error.code = 'projectConfigIgnored';
+    throw error;
   }
+  if (match === undefined) return { state: 'unverified' };
+  return { state: 'visible' };
 }

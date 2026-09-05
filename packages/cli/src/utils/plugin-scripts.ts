@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'fs-extra';
 import type { CommandExecutionContext } from '../commands/runtime.js';
-import type { DistributionName, GeneratedArtifact, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
+import type { DistributionName, NormalizedPluginManifest, PlatformName, PluginConfigValue, PluginMeta, Scope } from '../types.js';
 import { redactString } from '../output/redact.js';
 import { observeProcessTree, terminateProcessTree, type ProcessTreeObservation } from './process-tree.js';
 import { resolveAwHome } from './paths.js';
@@ -11,11 +11,10 @@ import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 export { calculateFileDigest } from './bundle-integrity.js';
 
-export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 30_000;
+export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
 export const PLUGIN_SCRIPT_TIMEOUT_MIN_MS = 1_000;
-export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 300_000;
+export const PLUGIN_SCRIPT_TIMEOUT_MAX_MS = 1_800_000;
 const OUTPUT_LIMIT = 64 * 1024;
-const TOKEN_BOUNDARY_LOOKAHEAD = 2;
 
 export interface PluginScriptInvocation { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; stdin?: string }
 export interface PluginProcessResult { exitCode: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean }
@@ -84,25 +83,60 @@ export function collectSensitivePluginConfigValues(manifest: NormalizedPluginMan
     });
   });
 }
+
+export function assertNoSensitiveConfigValues(
+  value: unknown,
+  sensitiveValues: readonly string[],
+  message: string,
+): void {
+  const strings: string[] = [];
+  const visit = (entry: unknown): void => {
+    if (typeof entry === 'string') {
+      strings.push(entry);
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach(visit);
+      return;
+    }
+    if (entry !== null && typeof entry === 'object') {
+      Object.entries(entry).forEach(([key, child]) => {
+        strings.push(key);
+        visit(child);
+      });
+    }
+  };
+  visit(value);
+  for (const sensitiveValue of new Set(sensitiveValues)) {
+    if (sensitiveValue === '') continue;
+    const encoded = JSON.stringify(sensitiveValue).slice(1, -1);
+    if (strings.some((entry) => entry.includes(sensitiveValue)
+      || (encoded !== sensitiveValue && entry.includes(encoded)))) throw new Error(message);
+  }
+}
+
+export function assertNoSensitiveConfigInFiles(
+  files: Readonly<Record<string, Buffer>>,
+  sensitiveValues: readonly string[],
+  message: string,
+): void {
+  assertNoSensitiveConfigValues(
+    Object.entries(files).map(([relativePath, content]) => ({
+      relativePath,
+      content: content.toString('utf8'),
+    })),
+    sensitiveValues,
+    message,
+  );
+}
+
 interface SensitiveTokenMatch { start: number; end: number }
 
 function findSensitiveTokenMatches(value: string, sensitiveValue: string, startLimit: number): SensitiveTokenMatch[] {
   if (sensitiveValue === '') return [];
-  if (sensitiveValue.length >= 8 && !/^(?:true|false|-?\d+(?:\.\d+)?)$/u.test(sensitiveValue)) {
-    const matches: SensitiveTokenMatch[] = [];
-    for (let start = value.indexOf(sensitiveValue); start >= 0 && start < startLimit; start = value.indexOf(sensitiveValue, start + 1)) {
-      matches.push({ start, end: start + sensitiveValue.length });
-    }
-    return matches;
-  }
-  const escaped = sensitiveValue.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  const numeric = /^-?\d+(?:\.\d+)?$/u.test(sensitiveValue);
-  const boundary = numeric ? '\\p{L}\\p{N}_.+-' : '\\p{L}\\p{N}_';
-  const pattern = new RegExp(`(?<![${boundary}])${escaped}(?![${boundary}])`, 'uy');
   const matches: SensitiveTokenMatch[] = [];
   for (let start = value.indexOf(sensitiveValue); start >= 0 && start < startLimit; start = value.indexOf(sensitiveValue, start + 1)) {
-    pattern.lastIndex = start;
-    if (pattern.test(value)) matches.push({ start, end: start + sensitiveValue.length });
+    matches.push({ start, end: start + sensitiveValue.length });
   }
   return matches;
 }
@@ -149,13 +183,58 @@ export function summarizePluginScriptOutput(value: string, sensitiveValues: read
   )).trim();
 }
 
+function summarizePreApplyFailureOutput(
+  value: string,
+  sensitiveValues: readonly string[],
+): string {
+  const summary = summarizePluginScriptOutput(value, sensitiveValues);
+  const lines = summary.split('\n').map((line) => line.trim()).filter(Boolean);
+  const includesRuntimeStack = lines.some((line) =>
+    line.startsWith('file://')
+    || line.startsWith('at ')
+    || /^Node\.js v/u.test(line));
+  if (!includesRuntimeStack) return summary;
+  return lines.find((line) => /^(?:[A-Za-z]*Error|Error):/u.test(line)) ?? '';
+}
+
 function resolveOutputCaptureLimit(sensitiveValues: readonly string[]): number {
   const maxSensitiveTokenLength = sensitiveValues.reduce(
     (maximum, value) => Math.max(maximum, value.length),
     0,
   );
-  // One Unicode code point can require two UTF-16 code units for the trailing token-boundary check.
-  return OUTPUT_LIMIT + maxSensitiveTokenLength + TOKEN_BOUNDARY_LOOKAHEAD;
+  return OUTPUT_LIMIT + maxSensitiveTokenLength;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function replacePrivateRoot(value: string, root: string, replacement: string): string {
+  const normalized = path.resolve(root);
+  const variants = new Set([
+    normalized,
+    normalized.replaceAll('\\', '/'),
+    ...(normalized.startsWith('/var/') ? [`/private${normalized}`] : []),
+    ...(normalized.startsWith('/private/var/') ? [normalized.slice('/private'.length)] : []),
+  ]);
+  let output = value;
+  for (const variant of variants) {
+    output = output.replace(new RegExp(escapeRegExp(variant), 'gu'), replacement);
+  }
+  return output;
+}
+
+function sanitizePreApplyErrorMessage(
+  value: string,
+  roots: ReadonlyArray<{ root: string; replacement: string }>,
+): string {
+  let output = value;
+  for (const { root, replacement } of [...roots]
+    .filter(({ root }) => root.trim() !== '')
+    .sort((left, right) => path.resolve(right.root).length - path.resolve(left.root).length)) {
+    output = replacePrivateRoot(output, root, replacement);
+  }
+  return output;
 }
 
 export const defaultPluginProcessRunner = {
@@ -182,54 +261,94 @@ export const defaultPluginProcessRunner = {
       child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
       child.on('error', (error) => { if (!settled && !terminating) { settled = true; cleanup(); reject(error); } });
-      child.on('close', (exitCode, signal) => { if (!settled && !terminating) { settled = true; cleanup(); resolve({ exitCode, signal, stdout, stderr, timedOut }); } });
+      child.on('close', (exitCode, signal) => {
+        if (settled || terminating) return;
+        if (exitCode !== 0 || signal !== null) {
+          terminate();
+          return;
+        }
+        settled = true; cleanup(); resolve({ exitCode, signal, stdout, stderr, timedOut });
+      });
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();
     });
   },
 } satisfies PluginProcessRunner;
 
-export interface PostApplyContextV1 {
+export interface PreApplyContextV1 {
   schemaVersion: 1;
   plugin: { pluginId: string; name: string; version: string; rootDir: string };
   target: { platform: PlatformName; scope: Scope; projectRoot?: string };
   config: { values: Record<string, PluginConfigValue> };
-  components: Array<{ kind: string; key: string; outcome: 'created' | 'updated' | 'removed' | 'unchanged' }>;
 }
 
-export async function runPostApplyScript(options: {
+export async function runPreApplyScript(options: {
   plugin: PluginMeta; platform: PlatformName; scope: Scope; cwd: string; context: CommandExecutionContext;
-  artifacts: readonly GeneratedArtifact[];
-  components?: PostApplyContextV1['components'];
   scriptTimeoutMs?: number; runner?: PluginProcessRunner;
 }): Promise<void> {
-  const declaration = options.plugin.manifest.scripts?.postApply; if (!declaration) return;
-  const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'postApply script' });
-  const effective = options.plugin.manifest.config?.fields
-    ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env })
-    : { values: {}, issues: [] };
-  if (effective.issues.length > 0) throw new Error(`postApply config is invalid for ${options.plugin.manifest.name}.`);
-  const payload: PostApplyContextV1 = {
-    schemaVersion: 1,
-    plugin: { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId}/${options.plugin.manifest.name}`, name: options.plugin.manifest.name, version: options.plugin.manifest.version, rootDir: options.plugin.rootDir },
-    target: { platform: options.platform, scope: options.scope, ...(options.scope === 'project' ? { projectRoot: options.cwd } : {}) },
-    config: { values: effective.values },
-    components: options.components ?? (options.artifacts.length === 0
-      ? [{ kind: 'target', key: `${options.platform}:${options.scope}`, outcome: 'unchanged' }]
-      : options.artifacts.map((artifact) => ({ kind: artifact.kind, key: artifact.artifactKey ?? artifact.id ?? artifact.path, outcome: artifact.state === 'disabled' ? 'removed' : 'updated' }))),
-  };
-  const tempRoot = assertTestWritablePath(path.join(resolveAwHome(options.context.env), 'tmp'), 'postApply temp root'); await fs.ensureDir(tempRoot);
-  const tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-post-apply-'));
+  const declaration = options.plugin.manifest.scripts?.preApply; if (!declaration) return;
+  const awHome = resolveAwHome(options.context.env);
+  const codexHome = options.context.env.AW_CODEX_HOME || path.join(awHome, 'isolated-codex-home');
+  const claudeHome = options.context.env.AW_CLAUDE_HOME || path.join(awHome, 'isolated-claude-home');
+  let tempDir: string | undefined;
+  const privateRoots = (): Array<{ root: string; replacement: string }> => [
+    ...(tempDir ? [
+      { root: path.join(tempDir, 'home'), replacement: '[temporary-home]' },
+      { root: path.join(tempDir, 'tmp'), replacement: '[temporary]' },
+      { root: tempDir, replacement: '[temporary]' },
+    ] : []),
+    { root: codexHome, replacement: '[codex-home]' },
+    { root: claudeHome, replacement: '[claude-home]' },
+    { root: awHome, replacement: '[aw-home]' },
+    { root: options.plugin.rootDir, replacement: '[plugin-root]' },
+    { root: options.cwd, replacement: '[project-root]' },
+  ];
   try {
+    const entryPath = await resolveBundledPluginFilePath({ bundleRoot: options.plugin.rootDir, pluginRelativePath: declaration.path, fieldName: 'preApply script' });
+    const effective = options.plugin.manifest.config?.fields
+      ? await resolveEffectivePluginConfig({ sourceId: options.plugin.sourceId, sourceIdentity: options.plugin.sourceIdentity, logicalIdentity: options.plugin.catalogLogicalIdentity, pluginName: options.plugin.manifest.name, manifest: options.plugin.manifest, targetScope: options.scope, cwd: options.cwd, env: options.context.env })
+      : { values: {}, issues: [] };
+    if (effective.issues.length > 0) throw new Error(`preApply config is invalid for ${options.plugin.manifest.name}.`);
+    const payload: PreApplyContextV1 = {
+      schemaVersion: 1,
+      plugin: { pluginId: options.plugin.pluginId ?? `${options.plugin.sourceId}/${options.plugin.manifest.name}`, name: options.plugin.manifest.name, version: options.plugin.manifest.version, rootDir: options.plugin.rootDir },
+      target: { platform: options.platform, scope: options.scope, ...(options.scope === 'project' ? { projectRoot: options.cwd } : {}) },
+      config: { values: effective.values },
+    };
+    const tempRoot = assertTestWritablePath(path.join(awHome, 'tmp'), 'preApply temp root'); await fs.ensureDir(tempRoot);
+    tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
     await fs.ensureDir(path.join(tempDir, 'home')); await fs.ensureDir(path.join(tempDir, 'tmp'));
-    const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'postApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
+    const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
     const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
-    const result = options.runner
-      ? await options.runner.run(invocation, runOptions)
-      : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues });
-    const stderr = summarizePluginScriptOutput(result.stderr, sensitiveValues);
-    if (result.timedOut) throw new Error(`postApply timed out. stderr: ${stderr}`);
-    if (result.exitCode !== 0) throw new Error(`postApply failed with exit code ${result.exitCode}. stderr: ${stderr}`);
-  } finally { await fs.remove(tempDir); }
+    let result: PluginProcessResult;
+    try {
+      result = options.runner
+        ? await options.runner.run(invocation, runOptions)
+        : await defaultPluginProcessRunner.run(invocation, { ...runOptions, sensitiveValues });
+    } catch {
+      throw new Error('preApply could not start.');
+    }
+    const stdout = summarizePreApplyFailureOutput(
+      sanitizePreApplyErrorMessage(result.stdout, privateRoots()),
+      sensitiveValues,
+    );
+    const stderr = summarizePreApplyFailureOutput(
+      sanitizePreApplyErrorMessage(result.stderr, privateRoots()),
+      sensitiveValues,
+    );
+    const output = [
+      ...(stdout ? [`stdout: ${stdout}`] : []),
+      ...(stderr ? [`stderr: ${stderr}`] : []),
+    ].join('; ');
+    if (result.timedOut) throw new Error(`preApply timed out.${output ? ` ${output}` : ''}`);
+    if (result.exitCode !== 0) {
+      throw new Error(`preApply failed with exit code ${result.exitCode}.${output ? ` ${output}` : ''}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
+  } finally {
+    if (tempDir) await fs.remove(tempDir);
+  }
 }

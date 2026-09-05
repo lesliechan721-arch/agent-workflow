@@ -17,9 +17,7 @@
     "dist/"
   ],
   "scripts": {
-    "build": "node scripts/generate-aw-config-helper.mjs --check && node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
-    "generate:config-helper": "node scripts/generate-aw-config-helper.mjs",
-    "generate:config-helper:check": "node scripts/generate-aw-config-helper.mjs --check",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "test": "node ../../scripts/test/run-vitest.mjs run",
     "test:unit": "node ../../scripts/test/run-vitest.mjs run tests/unit",
     "test:unit:fast": "node ../../scripts/test/run-vitest.mjs run --config vitest.fast.config.ts",

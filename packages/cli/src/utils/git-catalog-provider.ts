@@ -14,6 +14,7 @@ import {
 } from './catalog-source-identity.js';
 import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { validateCatalogSnapshotTransport } from './catalog-snapshot.js';
+import { readCatalogSnapshotLogicalIdentity } from './catalog-generation-store.js';
 import { resolveCatalogSourceRef } from './catalog-sources.js';
 import { checkAwCapabilitySupport } from './manifest.js';
 import { NativeCliError, runNativeCli } from './native-cli.js';
@@ -570,6 +571,7 @@ async function resolveGitCatalogSourceDirect(
     return {
       sourceId: source.id,
       sourceIdentity,
+      logicalIdentity: await readCatalogSnapshotLogicalIdentity(stagingRoot),
       requestedRef,
       resolvedCommit: commit,
       rootDir: stagingRoot,

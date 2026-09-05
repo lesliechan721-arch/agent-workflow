@@ -22,6 +22,7 @@ export interface SyncCommandOptions {
   interactive?: boolean;
   prompt?: CliPrompt;
   allowManagedCodexInstall?: boolean;
+  scriptTimeoutMs?: number;
   yes?: boolean;
   refresh?: boolean;
   cliVersion?: string;
@@ -280,6 +281,7 @@ export async function syncCommand(
             platform: item.platform,
             ...(options.yes ? { yes: true } : {}),
             ...(options.allowManagedCodexInstall ? { allowManagedCodexInstall: true } : {}),
+            ...(options.scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs: options.scriptTimeoutMs }),
           }, {
             ...runtime,
             env,

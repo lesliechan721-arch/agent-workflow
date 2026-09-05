@@ -5,7 +5,7 @@ export const AW_CAPABILITY_IDS = [
   'aw.plugin-skills.v1',
   'aw.plugin-build-config.v1',
   'aw.plugin-config.v2',
-  'aw.plugin-post-apply.v1',
+  'aw.plugin-pre-apply.v1',
   'aw.dynamic-artifacts.v2',
   'aw.portable-skills.v1',
   'aw.runtime-imports.v1',

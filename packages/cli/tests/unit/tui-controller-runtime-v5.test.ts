@@ -25,6 +25,7 @@ import {
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -500,9 +501,9 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     const storePath = path.join(isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json');
     const envelope = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: evidence.source.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: evidence.source.sourceIdentity },
       pluginName: 'demo',
       values: { mode: 'saved' },
     };
@@ -513,7 +514,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     await fs.outputFile(storePath, `${JSON.stringify({
       values: envelope.values,
       pluginName: envelope.pluginName,
-      sourceIdentity: envelope.sourceIdentity,
+      binding: envelope.binding,
       sourceId: envelope.sourceId,
       schemaVersion: envelope.schemaVersion,
     })}\n`);
@@ -578,7 +579,10 @@ describe('TUI controller runtime scope conflict validation', () => {
     }) => ({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
+      apply: {
+        state: 'succeeded',
+        targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
+      },
     }));
     const createController = async (targets: StatusV7Payload['targets']) => {
       runtimeMocks.statusCommandV7.mockResolvedValue(statusResult(targets));
@@ -628,8 +632,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     runtimeMocks.replayConfigRuntimeWrites.mockResolvedValue({
       configWrite: 'succeeded',
       overallState: 'succeeded',
-      targetResults: [],
-      otherProjectsRequireReinstall: true,
+      apply: { state: 'succeeded', targetResults: [] },
+      otherProjectsMayRequireSync: true,
     });
     const retry = await createController([userTarget, projectTarget]);
     const retryReview = await retry.buildOperationReview({
@@ -732,9 +736,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
     await fs.writeJson(storePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: invalidUserAvailability.sourceIdentity,
+      binding: { kind: 'source', sourceIdentity: invalidUserAvailability.sourceIdentity },
       pluginName: 'demo',
       values: { mode: 'ready' },
     });
@@ -792,7 +796,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
   });
 
-  it('keeps a schema-invalid project field editable with a redacted lower fallback', async () => {
+  it('keeps a schema-invalid project field editable and projects an invalid lower fallback', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-invalid-field-source');
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
@@ -801,7 +805,7 @@ describe('TUI controller runtime scope conflict validation', () => {
           mode: { type: 'string', title: 'Mode', default: 'safe' },
           token: {
             type: 'string', title: 'Token', sensitive: true,
-            validation: { pattern: '^valid$' },
+            validation: { pattern: '^valid$', maxLength: 20 },
           },
         },
       };
@@ -823,19 +827,22 @@ describe('TUI controller runtime scope conflict validation', () => {
     const identity = (await dependencies.getConfigResetAvailability!(
       'team/demo', { scope: 'user' }, new AbortController().signal,
     )).sourceIdentity!;
-    const envelope = (values: Record<string, unknown>) => ({
-      schemaVersion: 3,
+    const logicalIdentity = await readCatalogSnapshotLogicalIdentity(sourceRoot);
+    const envelope = (scope: 'user' | 'project', values: Record<string, unknown>) => ({
+      schemaVersion: 4,
       sourceId: 'team',
-      sourceIdentity: identity,
+      binding: scope === 'user'
+        ? { kind: 'source', sourceIdentity: identity }
+        : { kind: 'catalog', logicalIdentity },
       pluginName: 'demo',
       values,
     });
     await fs.outputJson(path.join(
       isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ token: 'lower-secret' }));
+    ), envelope('user', { token: 'lower-secret' }));
     await fs.outputJson(path.join(
       isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ mode: 42, token: 'project-secret' }));
+    ), envelope('project', { mode: 42, token: 'project-secret' }));
 
     const page = await dependencies.getConfigPage!(
       'team/demo', { scope: 'project' }, new AbortController().signal,
@@ -848,7 +855,8 @@ describe('TUI controller runtime scope conflict validation', () => {
     });
     expect(fields.find((field) => field.key === 'token')).toMatchObject({
       displayValue: '值无效',
-      fallbackDisplayValue: '已设置',
+      fallbackDisplayValue: '值无效；保存可成功，但应用会被阻止',
+      fallbackSourceLabel: '个人默认',
     });
     expect(JSON.stringify(page)).not.toContain('lower-secret');
     expect(JSON.stringify(page)).not.toContain('project-secret');
@@ -858,7 +866,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     ));
     await fs.outputJson(path.join(
       isolation.layout.awHomeDir, 'plugin-config', 'team', 'demo', 'config.json',
-    ), envelope({ mode: 42, token: 'user-secret' }));
+    ), envelope('user', { mode: 42, token: 'user-secret' }));
     const projectPage = await dependencies.getConfigPage!(
       'team/demo', { scope: 'project' }, new AbortController().signal,
     );
@@ -954,7 +962,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
 
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
@@ -1431,7 +1441,9 @@ describe('TUI controller runtime scope conflict validation', () => {
       targetRevisions: [],
     });
     runtimeMocks.resetPluginConfigWithHelper.mockResolvedValue({
-      configWrite: 'succeeded', overallState: 'succeeded', targetResults: [],
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,

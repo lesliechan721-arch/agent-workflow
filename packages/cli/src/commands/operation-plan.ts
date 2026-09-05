@@ -87,7 +87,7 @@ export type OperationAction =
       ownerFingerprint: string;
     }
   | {
-      kind: 'runPostApply';
+      kind: 'runPreApply';
       pluginId: string;
       platform: PlatformName;
       scope: Scope;

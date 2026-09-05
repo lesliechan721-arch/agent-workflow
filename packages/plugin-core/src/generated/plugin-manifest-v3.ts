@@ -88,6 +88,11 @@ capabilitySetDigest: string
 export type ConfigField = (ConfigStringField | ConfigNumberField | ConfigBooleanField | ConfigObjectField)
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configStringField".
+ */
+export type ConfigStringField = (ConfigPlainStringField | ConfigSensitiveStringField)
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configObjectField".
  */
 export type ConfigObjectField = (ConfigFixedObjectField | ConfigKeyValueObjectField)
@@ -351,7 +356,7 @@ export: string
  * via the `definition` "scripts".
  */
 export interface Scripts {
-postApply?: PostApply
+preApply?: PreApply
 helpers?: {
 config: string
 }
@@ -368,9 +373,9 @@ node?: StringArray
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "postApply".
+ * via the `definition` "preApply".
  */
-export interface PostApply {
+export interface PreApply {
 path: PluginPath
 timeoutMs?: number
 }
@@ -403,15 +408,15 @@ advanced?: boolean
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
- * via the `definition` "configStringField".
+ * via the `definition` "configPlainStringField".
  */
-export interface ConfigStringField {
+export interface ConfigPlainStringField {
 type: "string"
 title?: string
 description?: string
 default?: string
 required?: boolean
-sensitive?: boolean
+sensitive?: false
 choices?: ConfigStringChoices
 validation?: ConfigStringValidation
 }
@@ -446,6 +451,18 @@ format?: ("identifier" | "slug" | "semver" | "url" | "hostname" | "email")
 }
 /**
  * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
+ * via the `definition` "configSensitiveStringField".
+ */
+export interface ConfigSensitiveStringField {
+type: "string"
+title?: string
+description?: string
+required?: boolean
+sensitive: true
+validation?: ConfigStringValidation
+}
+/**
+ * This interface was referenced by `PluginManifestSourceV3`'s JSON-Schema
  * via the `definition` "configNumberField".
  */
 export interface ConfigNumberField {
@@ -454,7 +471,7 @@ title?: string
 description?: string
 default?: number
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigNumberChoices
 validation?: ConfigNumberValidation
 }
@@ -497,7 +514,7 @@ title?: string
 description?: string
 default?: boolean
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigBooleanChoices
 }
 /**
@@ -531,7 +548,7 @@ default?: {
 [k: string]: ConfigScalar
 }
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigObjectChoices
 properties: {
 [k: string]: ConfigScalarChildField
@@ -569,7 +586,7 @@ type: "string"
 title?: string
 description?: string
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigStringChoices
 validation?: ConfigStringValidation
 }
@@ -582,7 +599,7 @@ type: "number"
 title?: string
 description?: string
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigNumberChoices
 validation?: ConfigNumberValidation
 }
@@ -595,7 +612,7 @@ type: "boolean"
 title?: string
 description?: string
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigBooleanChoices
 }
 /**
@@ -619,7 +636,7 @@ default?: {
 [k: string]: ConfigScalar
 }
 required?: boolean
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigObjectChoices
 additionalProperties: ConfigScalarDynamicField
 validation?: ConfigObjectValidation
@@ -632,7 +649,7 @@ export interface ConfigStringDynamicField {
 type: "string"
 title?: string
 description?: string
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigStringChoices
 validation?: ConfigStringValidation
 }
@@ -644,7 +661,7 @@ export interface ConfigNumberDynamicField {
 type: "number"
 title?: string
 description?: string
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigNumberChoices
 validation?: ConfigNumberValidation
 }
@@ -656,6 +673,6 @@ export interface ConfigBooleanDynamicField {
 type: "boolean"
 title?: string
 description?: string
-sensitive?: boolean
+sensitive?: never
 choices?: ConfigBooleanChoices
 }

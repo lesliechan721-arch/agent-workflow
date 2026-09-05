@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   visible: new Set<string>(),
   states: new Map<string, 'present' | 'partial' | 'absent' | 'error'>(),
   status: vi.fn(),
+  configVisibility: vi.fn(async () => ({ state: 'visible' as const })),
 }));
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
@@ -19,7 +20,7 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/utils/project-boundary.js')>(),
-  assertProjectSharedConfigPathVisible: vi.fn(async () => undefined),
+  assertProjectSharedConfigPathVisible: mocks.configVisibility,
   ensureProjectPrivateStateIgnore: vi.fn(async () => ({ updated: false })),
 }));
 
@@ -41,6 +42,8 @@ import {
   resolveConfigRead,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
+  setAtomicConfigBeforeRenameHookForTests,
+  setAtomicConfigAfterRenameHookForTests,
   toCliConfigPromptSchema,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
@@ -136,7 +139,7 @@ async function createFixture(
         locations: {
           type: 'object',
           properties: {
-            certificate: { type: 'string', sensitive: true },
+            certificate: { type: 'string' },
             workspace: { type: 'string' },
           },
           additionalProperties: false,
@@ -193,6 +196,8 @@ function createReinstallMock(options: {
 beforeEach(() => {
   mocks.visible.clear();
   mocks.states.clear();
+  mocks.configVisibility.mockReset();
+  mocks.configVisibility.mockResolvedValue({ state: 'visible' });
   mocks.status.mockImplementation(async (options: { scope?: Scope }) => ({
     payload: {
       targets: [...mocks.visible].flatMap((key) => {
@@ -224,6 +229,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  setAtomicConfigBeforeRenameHookForTests(undefined);
+  setAtomicConfigAfterRenameHookForTests(undefined);
   vi.clearAllMocks();
   while (tempDirs.length > 0) await fs.remove(tempDirs.pop()!);
 });
@@ -271,9 +278,9 @@ describe('config write full reinstall apply', () => {
       };
       const filePath = resolvePluginConfigStorePath(storeOptions);
       await fs.outputFile(filePath, `${JSON.stringify({
-        schemaVersion: 3,
+        schemaVersion: 4,
         sourceId: storeOptions.sourceId,
-        sourceIdentity,
+        binding: { kind: 'source', sourceIdentity },
         pluginName: storeOptions.pluginName,
         values: Object.fromEntries([[dangerousKey, 'preserved']]),
       })}\n`);
@@ -315,7 +322,7 @@ describe('config write full reinstall apply', () => {
       expect(receipt).toMatchObject({
         configWrite: 'succeeded',
         overallState: 'partial',
-        applySkippedReason: 'invalidConfig',
+        apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
       });
       const patchedStore = await readPluginConfigStore(storeOptions);
       expect(Object.hasOwn(patchedStore.values, dangerousKey)).toBe(true);
@@ -342,9 +349,9 @@ describe('config write full reinstall apply', () => {
     };
     const filePath = resolvePluginConfigStorePath(storeOptions);
     await fs.outputJson(filePath, {
-      schemaVersion: 3,
+      schemaVersion: 4,
       sourceId: storeOptions.sourceId,
-      sourceIdentity,
+      binding: { kind: 'source', sourceIdentity },
       pluginName: storeOptions.pluginName,
       values: { mode: 42 },
     }, { spaces: 2 });
@@ -362,7 +369,7 @@ describe('config write full reinstall apply', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      applySkippedReason: 'invalidConfig',
+      apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
       updatedKeys: ['token'],
       effective: {
         fieldStates: {
@@ -409,7 +416,7 @@ describe('config write full reinstall apply', () => {
       overallState: 'succeeded',
       updatedKeys: [],
       removedKeys: [],
-      applySkippedReason: 'noConfigChange',
+      apply: { state: 'skipped', reason: 'noConfigChange', targetResults: [] },
     });
     expect(await fs.readFile(filePath)).toEqual(before);
     expect(reinstall).not.toHaveBeenCalled();
@@ -440,7 +447,7 @@ describe('config write full reinstall apply', () => {
       configWrite: 'succeeded',
       overallState: 'partial',
       removedKeys: ['token'],
-      applySkippedReason: 'invalidConfig',
+      apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
       effective: {
         issues: [expect.objectContaining({ type: 'missing-required', key: 'token' })],
       },
@@ -582,6 +589,7 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     }), '{invalid');
+    mocks.configVisibility.mockClear();
 
     await expect(resetPluginConfigWithHelper({
       pluginName: fixture.plugin.manifest.name,
@@ -595,6 +603,7 @@ describe('config write full reinstall apply', () => {
       resetDisposition: 'deletedFile',
     });
     await expect(fs.pathExists(projectPath)).resolves.toBe(false);
+    expect(mocks.configVisibility).not.toHaveBeenCalled();
   });
 
   it('resets an invalid project store after the inherited user store is ready', async () => {
@@ -707,6 +716,19 @@ describe('config write full reinstall apply', () => {
     expect(JSON.stringify(read)).not.toContain(privateDirectory);
     expect(JSON.stringify(read)).not.toContain(privateFile);
     expect(JSON.stringify(read)).not.toContain('private-token');
+
+    const projectRead = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    expect(projectRead.fields).toContainEqual(expect.objectContaining({
+      key: 'token',
+      writable: false,
+      canSet: false,
+    }));
   });
 
   it('keeps submitted strings literal without a filesystem path contract', async () => {
@@ -744,7 +766,7 @@ describe('config write full reinstall apply', () => {
       locations: { certificate: './same-file' },
       genericPath: './not-yet-created',
     });
-    expect(JSON.stringify(receipt)).not.toContain('./same-file');
+    expect(JSON.stringify(receipt)).toContain('./same-file');
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {
@@ -807,6 +829,29 @@ describe('config write full reinstall apply', () => {
     expect((await readPluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
       scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
+  it('rejects a sensitive project update in the writer before creating the project store', async () => {
+    const fixture = await createFixture();
+    const secret = 'project-secret-must-not-be-written';
+
+    const error = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: secret } },
+      apply: false,
+    }).catch((failure: unknown) => failure as Error & { code?: string });
+
+    expect(error.code).toBe('sensitiveProjectConfigUnsupported');
+    expect(error.message).not.toContain(secret);
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
       cwd: fixture.cwd,
       env: fixture.env,
     })).exists).toBe(false);
@@ -943,7 +988,10 @@ describe('config write full reinstall apply', () => {
       ...store,
       plugin: fixture.plugin,
       apply: false,
-    })).resolves.toMatchObject({ deleted: true, applySkippedReason: 'notRequested' });
+    })).resolves.toMatchObject({
+      deleted: true,
+      apply: { state: 'skipped', reason: 'notRequested' },
+    });
   });
 
   it('does not require shared native confirmation when reset removes only unrelated keys', async () => {
@@ -1019,6 +1067,48 @@ describe('config write full reinstall apply', () => {
       expect(reinstall).not.toHaveBeenCalled();
     },
   );
+
+  it('requires shared native confirmation when another replay target has invalid config', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.artifacts = {
+      targets: [{
+        id: 'native-skill',
+        platform: 'codex',
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'native-skill',
+      }],
+    };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    const reinstall = createReinstallMock();
+
+    await expect(replayConfigRuntimeWrites({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }, {
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'claude',
+        scope: 'project',
+      }],
+      reinstallCommandImpl: reinstall,
+    })).rejects.toMatchObject({ code: 'sharedNativeConfigApplyConfirmationRequired' });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
 
   it('allows a confirmed shared native replay', async () => {
     const fixture = await createFixture();
@@ -1116,12 +1206,12 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt.configWrite).toBe('succeeded');
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.targetResults).toHaveLength(4);
+    expect(receipt.apply.targetResults).toHaveLength(4);
     expect(reinstall).toHaveBeenCalledTimes(4);
     expect(reinstall.mock.calls.every((call) => call[1].cwd === fixture.cwd)).toBe(true);
     expect(reinstall.mock.calls.every((call) =>
       !Object.hasOwn(call[1], 'catalogChannel') && !Object.hasOwn(call[1], 'catalogVersion'))).toBe(true);
-    expect(receipt.otherProjectsRequireReinstall).toBe(true);
+    expect(receipt.otherProjectsMayRequireSync).toBe(true);
     expect(receipt.warnings.join('\n')).toContain('其它项目');
   });
 
@@ -1150,10 +1240,15 @@ describe('config write full reinstall apply', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      applySkippedReason: 'invalidConfig',
-      targetResults: [],
+      apply: {
+        state: 'partial',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ state: 'completed', target: expect.objectContaining({ scope: 'user' }) }),
+          expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' }),
+        ]),
+      },
     });
-    expect(reinstall).not.toHaveBeenCalled();
+    expect(reinstall).toHaveBeenCalledOnce();
   });
 
   it('does not let invalid project config block a user write with only a user target', async () => {
@@ -1178,7 +1273,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.applySkippedReason).toBeUndefined();
+    expect(receipt.apply.state).toBe('succeeded');
     expect(reinstall).toHaveBeenCalledOnce();
     expect(reinstall.mock.calls[0]?.[1].scope).toBe('user');
   });
@@ -1215,11 +1310,16 @@ describe('config write full reinstall apply', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      applySkippedReason: 'invalidConfig',
-      targetResults: [],
+      apply: {
+        state: 'partial',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({ state: 'completed', target: expect.objectContaining({ scope: 'user' }) }),
+          expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' }),
+        ]),
+      },
       deleted: true,
     });
-    expect(reinstall).not.toHaveBeenCalled();
+    expect(reinstall).toHaveBeenCalledOnce();
   });
 
   it('expands one Status target into both desired pure-native scopes', async () => {
@@ -1255,7 +1355,7 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'user']);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'user']);
     expect(reinstall).toHaveBeenCalledTimes(2);
   });
 
@@ -1263,25 +1363,42 @@ describe('config write full reinstall apply', () => {
     const fixture = await createFixture('root');
     fixture.plugin.sourceId = 'team';
     fixture.plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    fixture.plugin.catalogLogicalIdentity = 'catalog.example/team';
     fixture.plugin.pluginId = 'team/root';
     fixture.plugin.marketplaceName = 'aw-team';
     const rootTarget: ReceiptTargetIdentity = {
       sourceId: 'team',
       sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
       pluginId: 'team/root',
       pluginName: 'root',
       platform: 'codex',
       scope: 'project',
+      projectKey: fixture.cwd,
     };
     const leafTarget: ReceiptTargetIdentity = {
       ...rootTarget,
       pluginId: 'team/leaf',
       pluginName: 'leaf',
     };
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: fixture.plugin.sourceIdentity,
+      pluginName: 'root',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { token: 'receipt-secret' },
+    });
     const reinstall = vi.fn(async (): Promise<RebuildCommandResult> => ({
       ...rebuildResult(rootTarget, 'failed'),
       targetResults: [
-        { target: leafTarget, action: 'reinstall', state: 'failed', message: 'leaf partial' },
+        {
+          target: leafTarget,
+          action: 'reinstall',
+          state: 'failed',
+          message: `leaf partial at ${fixture.cwd} with receipt-secret`,
+        },
         {
           target: rootTarget,
           action: 'skipped',
@@ -1310,19 +1427,24 @@ describe('config write full reinstall apply', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      targetResults: [
+      apply: { state: 'partial', targetResults: [
         expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/leaf' }), state: 'failed' }),
         expect.objectContaining({
           target: expect.objectContaining({ pluginId: 'team/root' }),
           action: 'skipped',
-          state: 'failed',
+          state: 'skipped',
           errorCode: 'dependencyInstallFailed',
         }),
-      ],
+      ] },
     });
+    const serializedReceipt = JSON.stringify(receipt);
+    expect(serializedReceipt).not.toContain('projectKey');
+    expect(serializedReceipt).not.toContain(fixture.cwd);
+    expect(serializedReceipt).not.toContain('receipt-secret');
     expect((await readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
       pluginName: 'root',
       scope: 'project',
       cwd: fixture.cwd,
@@ -1347,9 +1469,75 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'project']);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'project']);
     expect(reinstall.mock.calls.every((call) => call[1].scope === 'project')).toBe(true);
-    expect(receipt.otherProjectsRequireReinstall).toBe(false);
+    expect(receipt.otherProjectsMayRequireSync).toBe(false);
+  });
+
+  it('writes project config with an unverified shareability warning when Git evidence is unavailable', async () => {
+    const fixture = await createFixture();
+    Object.assign(fixture.plugin, {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'b'.repeat(64)}`,
+      catalogLogicalIdentity: 'catalog.example/official',
+      pluginId: `official/${fixture.plugin.manifest.name}`,
+    });
+    mocks.configVisibility.mockResolvedValue({ state: 'unverified' });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      apply: false,
+    });
+
+    expect(receipt.warnings).toContainEqual(expect.stringContaining(
+      'projectConfigShareabilityUnverified',
+    ));
+    await expect(readPluginConfigStore({
+      sourceId: fixture.plugin.sourceId,
+      sourceIdentity: fixture.plugin.sourceIdentity,
+      logicalIdentity: fixture.plugin.catalogLogicalIdentity,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).resolves.toMatchObject({ state: 'ready', values: { mode: 'fast' } });
+  });
+
+  it('fails before the final write when the project path becomes ignored after the lock-free check', async () => {
+    const fixture = await createFixture();
+    Object.assign(fixture.plugin, {
+      sourceId: 'official',
+      sourceIdentity: `sha256:${'c'.repeat(64)}`,
+      catalogLogicalIdentity: 'catalog.example/official',
+      pluginId: `official/${fixture.plugin.manifest.name}`,
+    });
+    const ignored = Object.assign(new Error('projectConfigIgnored: ignored after Review'), {
+      code: 'projectConfigIgnored',
+    });
+    mocks.configVisibility
+      .mockResolvedValueOnce({ state: 'visible' })
+      .mockRejectedValueOnce(ignored);
+    const filePath = resolvePluginConfigStorePath({
+      sourceId: fixture.plugin.sourceId,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      apply: false,
+    })).rejects.toMatchObject({ code: 'projectConfigIgnored' });
+    await expect(fs.pathExists(filePath)).resolves.toBe(false);
   });
 
   it('does not install an absent target', async () => {
@@ -1366,8 +1554,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.applySkippedReason).toBe('noVisibleTarget');
-    expect(receipt.targetResults).toEqual([]);
+    expect(receipt.apply).toEqual({ state: 'skipped', reason: 'noVisibleTarget', targetResults: [] });
     expect(reinstall).not.toHaveBeenCalled();
   });
 
@@ -1386,7 +1573,7 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.applySkippedReason).toBeUndefined();
+    expect(receipt.apply.state).toBe('succeeded');
     expect(reinstall).toHaveBeenCalledOnce();
     expect(reinstall).toHaveBeenCalledWith(
       ['configurable-plugin'],
@@ -1410,7 +1597,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
   });
 
   it('applies only the desired Codex target for a Codex-only manifest', async () => {
@@ -1428,7 +1615,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['codex']);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.platform)).toEqual(['codex']);
   });
 
   it('applies a user config write to a visible Claude project native-only target', async () => {
@@ -1449,8 +1636,8 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.targetResults).toHaveLength(1);
-    expect(receipt.targetResults[0]?.target).toMatchObject({
+    expect(receipt.apply.targetResults).toHaveLength(1);
+    expect(receipt.apply.targetResults[0]?.target).toMatchObject({
       platform: 'claude',
       scope: 'project',
     });
@@ -1479,8 +1666,8 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.targetResults).toHaveLength(1);
-    expect(receipt.targetResults[0]?.target).toMatchObject({
+    expect(receipt.apply.targetResults).toHaveLength(1);
+    expect(receipt.apply.targetResults[0]?.target).toMatchObject({
       platform: 'claude',
       scope: 'project',
     });
@@ -1506,7 +1693,7 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(mocks.status).toHaveBeenCalledOnce();
-    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['user', 'project']);
+    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(['user', 'project']);
   });
 
   it('does not inspect or render an absent dynamic plugin target', async () => {
@@ -1525,7 +1712,7 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.applySkippedReason).toBe('noVisibleTarget');
+    expect(receipt.apply).toEqual({ state: 'skipped', reason: 'noVisibleTarget', targetResults: [] });
     expect(mocks.status).toHaveBeenCalledOnce();
     expect(reinstall).not.toHaveBeenCalled();
   });
@@ -1566,10 +1753,153 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt.configWrite).toBe('succeeded');
     expect(receipt.overallState).toBe('partial');
-    expect(receipt.targetResults.map((entry) => entry.state).sort()).toEqual(['completed', 'failed']);
+    expect(receipt.apply.targetResults.map((entry) => entry.state).sort()).toEqual(['completed', 'failed']);
+    expect(receipt.otherProjectsMayRequireSync).toBe(true);
     expect(stored.values).toEqual({ mode: 'fast' });
     expect(observedModes).toEqual(['fast', 'fast']);
     expect(reinstall).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the committed store and returns typed partial when the effective reread fails', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.sourceId = 'official';
+    fixture.plugin.sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    fixture.plugin.pluginId = 'official/configurable-plugin';
+    const storePath = resolvePluginConfigStorePath({
+      sourceId: fixture.plugin.sourceId,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    setAtomicConfigAfterRenameHookForTests(async (targetPath) => {
+      if (targetPath !== storePath) return;
+      const envelope = await fs.readJson(storePath) as Record<string, unknown>;
+      envelope.binding = { kind: 'source', sourceIdentity: `sha256:${'b'.repeat(64)}` };
+      await fs.outputJson(storePath, envelope);
+    });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+    });
+
+    expect((await fs.readJson(storePath)).values).toEqual({ mode: 'fast' });
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        state: 'unavailable',
+        reason: 'effectiveConfigUnavailable',
+        targetResults: [],
+        error: {
+          stage: 'effectiveConfig',
+          code: 'effectiveConfigUnavailable',
+        },
+      },
+      otherProjectsMayRequireSync: true,
+    });
+  });
+
+  it('marks an atomic config commit failure as configWrite failed', async () => {
+    const fixture = await createFixture();
+    setAtomicConfigBeforeRenameHookForTests(async () => {
+      throw new Error('injected atomic failure');
+    });
+
+    const error = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+    }).catch((failure: unknown) => failure as Error & { configWrite?: string });
+
+    expect(error.configWrite).toBe('failed');
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
+  it('returns typed partial after commit when target discovery fails without exposing the cause', async () => {
+    const fixture = await createFixture();
+    const secret = 'discovery-secret';
+    mocks.status.mockRejectedValueOnce(new Error(`status failed ${fixture.cwd} ${secret}`));
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        state: 'unavailable',
+        reason: 'targetDiscoveryFailed',
+        error: { stage: 'targetDiscovery', code: 'targetDiscoveryFailed' },
+      },
+      otherProjectsMayRequireSync: true,
+    });
+    expect(JSON.stringify(receipt)).not.toContain(secret);
+    expect(JSON.stringify(receipt)).not.toContain(fixture.cwd);
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({ mode: 'fast' });
+  });
+
+  it('marks every invalid visible target as skipped and makes apply unavailable', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    mocks.visible.add('codex:project');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: 'saved' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.apply).toMatchObject({
+      state: 'unavailable',
+      reason: 'invalidConfig',
+      targetResults: [
+        expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' }),
+        expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' }),
+      ],
+    });
+    expect(receipt.overallState).toBe('partial');
+    expect(receipt.otherProjectsMayRequireSync).toBe(true);
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it('serializes a failed runtime apply and a later successful write for one namespaced store', async () => {
@@ -1671,10 +2001,10 @@ describe('config write full reinstall apply', () => {
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'partial',
-      targetResults: [expect.objectContaining({
-        state: 'failed',
-        message: 'target failed',
-      })],
+      apply: { state: 'partial', targetResults: [expect.objectContaining({
+          state: 'failed',
+          message: 'target failed',
+        })] },
     });
     expect((await readPluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
@@ -1751,6 +2081,90 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     }))).toMatchObject({ exists: false, values: {} });
+  });
+
+  it('keeps reset committed and reports source unavailable when apply cannot resolve the plugin', async () => {
+    const fixture = await createFixture('unknown-plugin');
+    await writePluginConfigStore({
+      pluginName: 'unknown-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { secret: 'must-not-leak' },
+    });
+
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: 'unknown-plugin',
+      plugin: null,
+      pluginError: new Error(`source failed ${fixture.cwd} must-not-leak`),
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      apply: true,
+    });
+
+    expect(receipt).toMatchObject({
+      deleted: true,
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        state: 'unavailable',
+        reason: 'sourceUnavailable',
+        error: { stage: 'source', code: 'sourceUnavailable' },
+      },
+      otherProjectsMayRequireSync: true,
+    });
+    expect(JSON.stringify(receipt)).not.toContain('must-not-leak');
+    expect(await fs.pathExists(resolvePluginConfigStorePath({
+      pluginName: 'unknown-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    }))).toBe(false);
+  });
+
+  it('unsets an existing stale key, preserves other values, and skips apply as unchanged', async () => {
+    const fixture = await createFixture();
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { stale: 'old', mode: 'fast' },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['stale'] },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      staleRemovedKeys: ['stale'],
+      removedKeys: ['stale'],
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [] },
+      otherProjectsMayRequireSync: true,
+    });
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({ mode: 'fast' });
+    expect(reinstall).not.toHaveBeenCalled();
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['absent-stale'] },
+    })).rejects.toThrow('Unknown config key');
   });
 
   it('unlinks a final config symlink without changing its target', async () => {
@@ -1870,29 +2284,29 @@ describe('config write full reinstall apply', () => {
       scope: 'user',
       cwd: fixture.cwd,
       env: fixture.env,
-      request: { updates: { token: 'a' } },
+      request: { updates: { token: 'q' } },
       rebuildRuntime: {
         debugLogger: { log: (value) => { debugEvents.push(value); } },
       },
       reinstallCommandImpl: async (_plugins, _options, runtime) => {
         await runtime.debugLogger?.log({
-          type: 'a',
-          commandName: 'a',
-          key: 'a',
-          message: 'a',
+          type: 'q',
+          commandName: 'q',
+          key: 'q',
+          message: 'q',
         } as never);
-        throw new Error('target rejected a but ordinary data stays intact');
+        throw new Error('target rejected q but ordinary data stays intact');
       },
     });
 
     expect(debugEvents).toEqual([{
-      type: 'a',
-      commandName: 'a',
-      key: 'a',
+      type: 'q',
+      commandName: 'q',
+      key: 'q',
       message: '[REDACTED]',
     }]);
     expect(JSON.stringify(receipt)).toContain('ordinary data stays intact');
-    expect(JSON.stringify(receipt)).not.toContain('rejected a but');
+    expect(JSON.stringify(receipt)).not.toContain('rejected q but');
   });
 
   it.each([
@@ -2083,6 +2497,48 @@ describe('config write full reinstall apply', () => {
       .find((field) => field.key === 'required')).toMatchObject({
       displayValue: '未设置', configured: false, sourceLabel: '未设置',
     });
+  });
+
+  it('projects invalid user fallback when valid project config masks it and a default exists', async () => {
+    const fixture = await createFixture();
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'fast' },
+    });
+    const read = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    const mode = read.fields.find((field) => field.key === 'mode');
+
+    expect(mode?.fallback).toMatchObject({
+      state: 'invalid',
+      sourceLayer: 'user',
+      issues: [expect.objectContaining({ type: 'invalid-config', source: 'user' })],
+    });
+    expect(mode?.fallback).not.toHaveProperty('effectiveValue');
+    const page = buildConfigPage({
+      pluginId: fixture.plugin.manifest.name,
+      schema: fixture.plugin.manifest.config!,
+      read,
+    });
+    expect(page.groups.flatMap((group) => group.fields)
+      .find((field) => field.key === 'mode')?.fallbackDisplayValue)
+      .toContain('应用会被阻止');
+    expect(JSON.stringify(page)).not.toContain('42');
   });
 
   it('rejects an unknown legacy key without changing the store', async () => {
