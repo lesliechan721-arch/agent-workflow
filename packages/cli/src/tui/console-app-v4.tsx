@@ -6110,12 +6110,12 @@ export function ConsoleAppV4(props: {
       label: unavailable === 'plugin' ? '返回插件列表'
         : unavailable === 'issue' ? '返回问题列表'
           : unavailable === 'config' ? '返回设置列表' : '返回首页',
-      run: () => go(unavailable === 'plugin'
-        ? { name: 'pluginList', mode: 'installed' }
-        : unavailable === 'issue' ? { name: 'issueList' }
-          : unavailable === 'config'
-            ? { name: 'configFields', pluginId: configRoute!.pluginId, layer: configRoute!.layer }
-            : { name: 'home' }),
+      run: () => unavailable === 'flow'
+        ? requestSessionNavigation('home')
+        : go(unavailable === 'plugin'
+          ? { name: 'pluginList', mode: 'installed' }
+          : unavailable === 'issue' ? { name: 'issueList' }
+            : { name: 'configFields', pluginId: configRoute!.pluginId, layer: configRoute!.layer }),
     }];
     content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />;
   }

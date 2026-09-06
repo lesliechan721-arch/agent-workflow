@@ -26,6 +26,8 @@ import {
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
+import { SessionHost } from '../../src/tui/session-host.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 
@@ -5389,6 +5391,38 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
     expect(onSessionNavigation.mock.calls.filter(([navigation]) => navigation === 'home')).toHaveLength(3);
     instance.unmount();
+  });
+
+  it('resets an unavailable flow to home after confirming a real source draft', async () => {
+    const value = controller();
+    await value.load();
+    const host = new SessionHost({
+      createSession: () => ({ controller: value, progressFeed: createRebuildProgressFeed() }),
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await input(instance, 'unfinished-source');
+    expect(value.hasSessionDraft).toBe(true);
+
+    value.push({ name: 'result', operationId: 'unavailable-operation' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('这个操作已结束或变化');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.hasSessionDraft).toBe(true);
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' }, context: {} },
+    });
+    await nextTurn(3);
+    expect(value.hasSessionDraft).toBe(false);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    host.dispose();
   });
 
   it('cancels a pending Host navigation when Enter chooses continue editing', async () => {

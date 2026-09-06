@@ -3513,17 +3513,11 @@ export class TuiController {
           && code === 'catalogSourcesConfigRecoveryStale') {
           this.#phase = 'ready';
           this.#loadError = undefined;
-          this.#activeReview = undefined;
-          this.#result = undefined;
-          this.#operationDiagnostics.delete(operationId);
-          this.#router.replace({ name: 'home' });
-          this.#publish();
-          return cloneFrozen({
-            state: 'blocked',
-            operationId,
-            code,
-            message: '来源配置已变化，已重新加载当前状态。',
-            operationKind: ticket.intent.kind,
+          return this.#setBlocked(operationId, code, {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            writeMayHaveCompleted: false,
           });
         }
       } catch (reloadError) {
@@ -3534,6 +3528,14 @@ export class TuiController {
         await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
           privateConfigOperation: true,
         });
+        if (ticket.intent.kind === 'catalogSourcesRecovery'
+          && code === 'catalogSourcesConfigRecoveryStale') {
+          this.#phase = 'error';
+          this.#loadError = {
+            code: issueCode(reloadError),
+            message: '无法安全读取插件状态。请检查诊断后重试或退出。',
+          };
+        }
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
