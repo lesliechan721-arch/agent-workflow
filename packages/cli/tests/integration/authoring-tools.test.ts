@@ -4418,11 +4418,14 @@ describe('authoring tools', () => {
         'const fs = await import("node:fs");',
         'const path = await import("node:path");',
         'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'const homeMarker = path.join(process.env.AW_HOME, "renderer-request-marker");',
+        'if (fs.existsSync(homeMarker)) process.exit(3);',
+        'fs.writeFileSync(homeMarker, context.requestedArtifactIds.join(","));',
         'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-calls.jsonl"), JSON.stringify({',
         '  scope: context.scope, targetScope: context.config.targetScope,',
         '  requestedArtifactIds: context.requestedArtifactIds,',
         '  schemaKeys: Object.keys(context.config.schema), valueKeys: Object.keys(context.config.values),',
-        '  previousArtifacts: context.previousArtifacts',
+        '  previousArtifacts: context.previousArtifacts, awHome: process.env.AW_HOME',
         '}) + "\\n");',
         'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
         'const id = context.requestedArtifactIds[0];',
@@ -4454,16 +4457,20 @@ describe('authoring tools', () => {
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId],
         schemaKeys: ['nativeMode'], valueKeys: ['nativeMode'], previousArtifacts: [],
+        awHome: expect.any(String),
       },
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId],
         schemaKeys: ['extensionMode'], valueKeys: ['extensionMode'], previousArtifacts: [],
+        awHome: expect.any(String),
       },
       {
         scope: 'user', targetScope: 'user', requestedArtifactIds: [roleId],
         schemaKeys: ['secret'], valueKeys: [], previousArtifacts: [],
+        awHome: expect.any(String),
       },
     ]));
+    expect(new Set(calls.map((call) => call.awHome)).size).toBe(3);
 
     await fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
       'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',

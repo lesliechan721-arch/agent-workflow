@@ -891,8 +891,13 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('prepares config review from loaded session evidence without another status or remote stage', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-review-config-source');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+      'export default async () => undefined;\n',
+    );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = { fields: { mode: { type: 'string', title: 'Mode' } } };
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
     });
     const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -1017,12 +1022,17 @@ describe('TUI controller runtime scope conflict validation', () => {
   it('keeps Review, stale fingerprints, and writer reapply targets on one config affected-target rule', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-config-targets-source');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+      'export default async () => undefined;\n',
+    );
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
       manifest.config = { fields: {
         mode: { type: 'string', title: 'Mode' },
         nativeMode: { type: 'string', title: 'Native mode', default: 'safe' },
       } };
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
       manifest.artifacts = { targets: [{
         id: 'native-skill',
         platform: 'codex',
@@ -1097,12 +1107,17 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(userReview.changes).toContainEqual(expect.objectContaining({
       title: 'preApply 脚本超时', description: '18000 ms',
     }));
-    expect(impactTitles(userReview)).toEqual(['重新应用 Claude Code · 当前项目']);
+    expect(impactTitles(userReview)).toEqual([
+      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+    ]);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
       rebuildRuntime: expect.objectContaining({ scriptTimeoutMs: 18_000 }),
-      applyTargets: [expect.objectContaining({ platform: 'claude', scope: 'project' })],
+      applyTargets: [
+        expect.objectContaining({ platform: 'claude', scope: 'project' }),
+        expect.objectContaining({ platform: 'codex', scope: 'user' }),
+      ],
     }));
     both.dispose();
 
@@ -1241,7 +1256,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const stale = await drifting.executeOperation(driftReview.reviewToken);
     expect(stale).toMatchObject({ state: 'stale' });
     if (stale.state === 'stale') {
-      expect(impactTitles(stale.review)).toEqual(['有效设置输入不变；无需重新应用']);
+      expect(impactTitles(stale.review)).toEqual(['重新应用 Codex · 所有项目']);
     }
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenCalledTimes(writesBeforeDrift);
     drifting.dispose();

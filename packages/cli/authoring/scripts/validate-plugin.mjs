@@ -2985,7 +2985,7 @@ function runArtifactRendererFixture(
   const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
   try {
-    for (const request of requests) {
+    for (const [requestIndex, request] of requests.entries()) {
       const {
         kind,
         surface,
@@ -2996,7 +2996,7 @@ function runArtifactRendererFixture(
       const distribution = surface === 'agent-skills' ? surface : undefined;
       const platform = distribution ? undefined : surface;
       const event = distribution ? 'materialize' : 'install';
-      const requestRoot = path.join(tempRoot, `${kind}-${surface}-${scope}`);
+      const requestRoot = path.join(tempRoot, `${requestIndex}-${kind}-${surface}-${scope}`);
       const rendererAwHome = path.join(requestRoot, 'aw-home');
       const rendererCodexHome = path.join(requestRoot, 'codex-home');
       const rendererClaudeHome = path.join(requestRoot, 'claude-home');
