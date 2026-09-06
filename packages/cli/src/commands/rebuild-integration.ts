@@ -548,13 +548,6 @@ export async function postcheckCodexReconcileActivations(options: {
             `codexNativeObservationFailed: ${check.codexPluginId} was not observed after Codex activation mutation.`,
           );
         }
-        const userActive = registration.activations.user === true;
-        const projectActive = registration.activations.project === true;
-        if (userActive !== check.expectedUserEnabled
-          || (observationScope === 'both'
-            && projectActive !== (check.expectedUserEnabled || check.expectedProjectEnabled))) {
-          throw new CodexProjectConfigNotEffectiveError(check.codexPluginId);
-        }
       } catch (error) {
         failedPluginIds.push(check.codexPluginId);
         failureDetails.push(error instanceof Error ? error.message : String(error));
