@@ -1731,7 +1731,7 @@ describe('five namespaced write commands', () => {
         : {
             afterActivationLegacyCleanupQuarantine: async (_component, candidate) => {
               quarantinedPath = candidate;
-              await fs.chmod(skillsRoot, 0o555);
+              throw new Error('injected quarantined removal failure');
             },
           });
       let failed;
@@ -1742,7 +1742,6 @@ describe('five namespaced write commands', () => {
           scope: 'project',
         }, runtime);
       } finally {
-        await fs.chmod(skillsRoot, 0o755).catch(() => undefined);
         setRebuildCommandTestHooksForTests(undefined);
       }
 
