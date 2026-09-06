@@ -2527,6 +2527,54 @@ async function runRebuildCommandInSession(options: {
                     : []),
               }] as const]
             : [])).values()];
+      const intentPlanForPreparedRoots = (
+        plan: ReconcileOperationPlan,
+        preparedKeys: ReadonlySet<string>,
+      ): {
+        plan: ReconcileOperationPlan;
+        selectedRoots: Array<{ pluginId: string; platforms: PlatformName[] }>;
+      } => {
+        const retainedRootKeys = new Set(plan.targets.flatMap((target) =>
+          target.relation === 'requested'
+          && preparedKeys.has(`${target.pluginId}\0${target.platform}`)
+            ? [`${target.pluginId}\0${target.platform}`]
+            : []));
+        const closureKeys = new Set(retainedRootKeys);
+        const pending = [...closureKeys];
+        while (pending.length > 0) {
+          const consumerKey = pending.pop()!;
+          for (const edge of plan.dependencyEdges) {
+            if (`${edge.from}\0${edge.platform}` !== consumerKey) continue;
+            const dependencyKey = `${edge.to}\0${edge.platform}`;
+            if (closureKeys.has(dependencyKey)) continue;
+            closureKeys.add(dependencyKey);
+            pending.push(dependencyKey);
+          }
+        }
+        return {
+          plan: {
+            ...plan,
+            requestedPluginIds: plan.requestedPluginIds.filter((pluginId) =>
+              plan.targets.some((target) => target.pluginId === pluginId
+                && retainedRootKeys.has(`${target.pluginId}\0${target.platform}`))),
+            resolvedPluginIds: plan.resolvedPluginIds.filter((pluginId) =>
+              plan.targets.some((target) => target.pluginId === pluginId
+                && closureKeys.has(`${target.pluginId}\0${target.platform}`))),
+            dependencyEdges: plan.dependencyEdges.filter((edge) =>
+              closureKeys.has(`${edge.from}\0${edge.platform}`)
+              && closureKeys.has(`${edge.to}\0${edge.platform}`)),
+            scopeOverrides: plan.scopeOverrides.filter((override) =>
+              closureKeys.has(`${override.pluginId}\0${override.platform}`)),
+            targets: plan.targets.filter((target) =>
+              closureKeys.has(`${target.pluginId}\0${target.platform}`)),
+          },
+          selectedRoots: selectedRootsForPlan(plan).flatMap((root) => {
+            const platforms = root.platforms.filter((platform) =>
+              retainedRootKeys.has(`${root.pluginId}\0${platform}`));
+            return platforms.length > 0 ? [{ ...root, platforms }] : [];
+          }),
+        };
+      };
       let plannedCodexRegistrations = new Map<
         string,
         CodexPluginRegistrationLiveInspection
@@ -4062,24 +4110,9 @@ async function runRebuildCommandInSession(options: {
         if (options.runtime?.awHomeMutationToken) {
           if (lifecycleCommand) {
             const preparedKeys = new Set(operationPreparations.keys());
-            const intentPlan: ReconcileOperationPlan = {
-              ...lockedPlan,
-              requestedPluginIds: lockedPlan.requestedPluginIds.filter((pluginId) =>
-                lockedPlan.targets.some((target) => target.pluginId === pluginId
-                  && target.relation === 'requested'
-                  && preparedKeys.has(`${target.pluginId}\0${target.platform}`))),
-              resolvedPluginIds: lockedPlan.resolvedPluginIds.filter((pluginId) =>
-                lockedPlan.targets.some((target) => target.pluginId === pluginId
-                  && preparedKeys.has(`${target.pluginId}\0${target.platform}`))),
-              dependencyEdges: lockedPlan.dependencyEdges.filter((edge) =>
-                preparedKeys.has(`${edge.from}\0${edge.platform}`)
-                && preparedKeys.has(`${edge.to}\0${edge.platform}`)),
-              scopeOverrides: lockedPlan.scopeOverrides.filter((override) =>
-                preparedKeys.has(`${override.pluginId}\0${override.platform}`)),
-              targets: lockedPlan.targets.filter((target) =>
-                preparedKeys.has(`${target.pluginId}\0${target.platform}`)),
-            };
-            const selectedRoots = selectedRootsForPlan(intentPlan);
+            const intentSelection = intentPlanForPreparedRoots(lockedPlan, preparedKeys);
+            const intentPlan = intentSelection.plan;
+            const selectedRoots = intentSelection.selectedRoots;
             if (selectedRoots.length > 0) {
               await writeDesiredIntentSuperset({
                 command: options.command,

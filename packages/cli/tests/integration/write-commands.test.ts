@@ -370,7 +370,8 @@ async function runIntentRoundTripCliChild(
   argv: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-): Promise<void> {
+  expectedExitCode = 0,
+): Promise<string> {
   const packageRoot = getSourceTestRepositoryCwd();
   const child = spawn(process.execPath, [
     path.join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs'),
@@ -384,6 +385,7 @@ async function runIntentRoundTripCliChild(
       ...env,
       AW_INTENT_CHILD_ARGV: JSON.stringify(argv),
       AW_INTENT_CHILD_CWD: cwd,
+      AW_INTENT_CHILD_EXIT_CODE: String(expectedExitCode),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -395,6 +397,24 @@ async function runIntentRoundTripCliChild(
     child.on('close', resolve);
   });
   expect(code, `aw ${argv.join(' ')} child failed:\n${output}`).toBe(0);
+  return output;
+}
+
+function parseIntentRoundTripReceipt(output: string): {
+  targetResults: Array<{
+    target: { pluginId?: string; scope: string };
+    state: string;
+  }>;
+} {
+  const start = output.indexOf('{\n  "ok":');
+  const end = output.indexOf('\n}\n', start);
+  if (start < 0 || end < 0) throw new Error(`Child receipt is missing:\n${output}`);
+  return JSON.parse(output.slice(start, end + 2)) as {
+    targetResults: Array<{
+      target: { pluginId?: string; scope: string };
+      state: string;
+    }>;
+  };
 }
 
 async function createNativeDependencyCatalog(
@@ -1757,6 +1777,12 @@ describe('five namespaced write commands', () => {
     ]));
     expect(codexOperationConsumerResolver).toHaveBeenCalledTimes(1);
     expect(runtime.installed).toEqual(new Set(['beta@aw']));
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/beta', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+    });
     for (const name of ['alpha', 'beta']) {
       await expect(fs.readFile(path.join(counterRoot, `render-count-${name}.txt`), 'utf8'))
         .resolves.toBe('1');
@@ -9294,6 +9320,220 @@ describe('five namespaced write commands', () => {
       }),
     ]));
   });
+
+  it('keeps a failed native dependency override for a prepared AW extension root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(
+      isolation.layout.fixtureCwd,
+      'failed-native-manager-intent-source',
+    );
+    const definitions = [
+      {
+        name: 'b',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.skills = './skills';
+          manifest.extensions = undefined;
+        },
+      },
+      {
+        name: 'a',
+        dependencies: ['b'],
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+      {
+        name: 'independent',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+    ];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const nativeSkillRoot = path.join(sourceRoot, 'plugins', 'b', 'skills', 'b-skill');
+    await Promise.all([
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'SKILL.md'),
+        '---\nname: b-skill\ndescription: B skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const listCallsBefore = runtime.nativeCliRunner.mock.calls.length;
+    const failingManagerResolver: NonNullable<
+      RebuildCommandRuntime['codexManagerResolver']
+    > = async (options) => {
+      const listed = await options.runner({
+        command: 'codex',
+        args: ['plugin', 'list', '--marketplace', 'aw', '--json'],
+        agentKind: 'codex',
+        cwd: options.cwd,
+        env: options.env,
+      });
+      expect(listed.exitCode).toBe(0);
+      throw new Error('injected manager resolver failure');
+    };
+
+    const first = await installWriteCommand(['team/a', 'team/independent'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      dependencyScopeOverrides: [{
+        pluginId: 'team/b', platform: 'codex', scope: 'user',
+      }],
+    }, {
+      ...runtime,
+      codexManagerResolver: failingManagerResolver,
+    });
+
+    expect(runtime.nativeCliRunner.mock.calls.slice(listCallsBefore).some(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'list' && args.includes('--json');
+    }), JSON.stringify(first, null, 2)).toBe(true);
+    expect(first.overallState).toBe('partial');
+    expect(first.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'project' }),
+        action: 'skipped', state: 'failed', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'project' }),
+        state: 'completed',
+      }),
+    ]));
+    const receipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('install', first);
+    expect(receipt).toMatchObject({
+      overallState: 'partial',
+      requestedPluginIds: ['team/a', 'team/independent'],
+      resolvedPluginIds: ['team/a', 'team/b', 'team/independent'],
+      dependencyEdges: [{ from: 'team/a', to: 'team/b', platform: 'codex' }],
+    });
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        state: 'completed',
+      }),
+    ]));
+    const intentLocation = {
+      scope: 'project' as const,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    };
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const fakeCodexBin = await writeIntentRoundTripCodexPackage(path.join(
+      isolation.layout.rootDir,
+      'failed-native-manager-intent-codex',
+    ));
+    const syncOutput = await runIntentRoundTripCliChild([
+      'sync',
+      '--all',
+      '--scope',
+      'project',
+      '--platform',
+      'codex',
+      '--json',
+      '--yes',
+    ], isolation.layout.fixtureCwd, {
+      ...isolation.env,
+      PATH: `${fakeCodexBin}${path.delimiter}${isolation.env.PATH ?? ''}`,
+      npm_config_offline: 'true',
+      NPM_CONFIG_OFFLINE: 'true',
+    }, 1);
+    const syncReceipt = parseIntentRoundTripReceipt(syncOutput);
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/b')).toMatchObject({
+      target: { pluginId: 'team/b', scope: 'user' },
+    });
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/independent')).toMatchObject({
+      target: { pluginId: 'team/independent', scope: 'project' },
+      state: 'completed',
+    });
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const overlapping = await installWriteCommand(
+      ['team/a', 'team/b', 'team/independent'],
+      {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      },
+      { ...runtime, codexManagerResolver: failingManagerResolver },
+    );
+    expect(overlapping.overallState).toBe('partial');
+    expect(overlapping.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'user' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'user' }),
+        state: 'completed',
+      }),
+    ]));
+    await expect(readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [],
+    });
+  }, 60_000);
 
   it('round-trips only an explicit dependency override through independent CLI processes', async () => {
     const isolation = getCurrentSourceTestIsolation();
