@@ -16,6 +16,10 @@ import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import { attachSafeOperationError } from './safe-operation-diagnostic.js';
+import {
+  containsBlockedSensitiveToken,
+  resolveSensitiveTokenRepresentations,
+} from './sensitive-content.js';
 export { calculateFileDigest } from './bundle-integrity.js';
 
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
@@ -127,11 +131,8 @@ export function assertNoSensitiveConfigValues(
     }
   };
   visit(value);
-  for (const sensitiveValue of new Set(sensitiveValues)) {
-    if (sensitiveValue === '') continue;
-    const encoded = JSON.stringify(sensitiveValue).slice(1, -1);
-    if (strings.some((entry) => entry.includes(sensitiveValue)
-      || (encoded !== sensitiveValue && entry.includes(encoded)))) throw new Error(message);
+  if (strings.some((entry) => containsBlockedSensitiveToken(entry, sensitiveValues))) {
+    throw new Error(message);
   }
 }
 
@@ -163,8 +164,8 @@ function findSensitiveTokenMatches(value: string, sensitiveValue: string, startL
 
 function collectMergedSensitiveTokenMatches(value: string, sensitiveValues: readonly string[], startLimit: number): SensitiveTokenMatch[] {
   const matches = [...new Set(sensitiveValues)]
-    .filter((sensitiveValue) => sensitiveValue !== '')
-    .flatMap((sensitiveValue) => findSensitiveTokenMatches(value, sensitiveValue, startLimit))
+    .flatMap(resolveSensitiveTokenRepresentations)
+    .flatMap((token) => findSensitiveTokenMatches(value, token, startLimit))
     .sort((left, right) => left.start - right.start || right.end - left.end);
   const merged: SensitiveTokenMatch[] = [];
   for (const match of matches) {
@@ -218,10 +219,12 @@ function summarizePreApplyFailureOutput(
 }
 
 function resolveOutputCaptureLimit(sensitiveValues: readonly string[]): number {
-  const maxSensitiveTokenLength = sensitiveValues.reduce(
-    (maximum, value) => Math.max(maximum, value.length),
-    0,
-  );
+  const maxSensitiveTokenLength = sensitiveValues
+    .flatMap(resolveSensitiveTokenRepresentations)
+    .reduce(
+      (maximum, token) => Math.max(maximum, token.length),
+      0,
+    );
   return OUTPUT_LIMIT + maxSensitiveTokenLength;
 }
 

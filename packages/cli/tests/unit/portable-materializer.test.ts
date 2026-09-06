@@ -19,6 +19,7 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 
 const roots: string[] = [];
 
@@ -312,24 +313,31 @@ describe('portable materializer', () => {
       ...baseManifest('secret'),
       config: {
         fields: {
-          token: { type: 'string', sensitive: true, default: 'plain-secret' },
-          credentials: {
-            type: 'object',
-            properties: { accessKey: { type: 'string', sensitive: true } },
-            default: { accessKey: 'nested-portable-secret' },
-          },
+          token: { type: 'string', sensitive: true },
         },
       },
     };
     const secret = await pluginFixture(root, secretManifest);
-    await writeSkill(secret.rootDir, 'leak', 'plain-secret nested-portable-secret');
+    secret.sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    secret.catalogLogicalIdentity = 'fixture-catalog';
+    await writeSkill(secret.rootDir, 'leak', 'plain-secret');
+    const secretEnv = { ...process.env, AW_HOME: path.join(root, 'home-b') };
+    await writePluginConfigStore({
+      sourceId: secret.sourceId,
+      sourceIdentity: secret.sourceIdentity,
+      logicalIdentity: secret.catalogLogicalIdentity,
+      pluginName: secret.manifest.name,
+      scope: 'user',
+      cwd: root,
+      env: secretEnv,
+      values: { token: 'plain-secret' },
+    });
     const contentFailure = await materializePortableSkills({
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home-b') },
+      env: secretEnv,
     }).then(() => undefined, (error: unknown) => error);
     expect(String(contentFailure)).toContain('portableSkillSensitiveConfigExposed');
     expect(String(contentFailure)).not.toContain('plain-secret');
-    expect(String(contentFailure)).not.toContain('nested-portable-secret');
 
     await writeSkill(secret.rootDir, 'leak', 'Safe content.');
     await fs.outputFile(
@@ -338,10 +346,36 @@ describe('portable materializer', () => {
     );
     const pathFailure = await materializePortableSkills({
       plugins: [secret], pluginId: secret.pluginId!, scope: 'user', cwd: root,
-      env: { ...process.env, AW_HOME: path.join(root, 'home-b-path') },
+      env: secretEnv,
     }).then(() => undefined, (error: unknown) => error);
     expect(String(pathFailure)).toContain('portableSkillSensitiveConfigExposed');
     expect(String(pathFailure)).not.toContain('plain-secret');
+
+    const receiptName = 'receipt-safe-secret';
+    const receiptPlugin = await pluginFixture(root, {
+      ...baseManifest(receiptName),
+      config: { fields: { token: { type: 'string', sensitive: true } } },
+    });
+    receiptPlugin.sourceIdentity = `sha256:${'2'.repeat(64)}`;
+    receiptPlugin.catalogLogicalIdentity = 'fixture-catalog';
+    await writeSkill(receiptPlugin.rootDir, 'receipt-safe', 'Safe content.');
+    const receiptEnv = { ...process.env, AW_HOME: path.join(root, 'home-receipt-safe') };
+    await writePluginConfigStore({
+      sourceId: receiptPlugin.sourceId,
+      sourceIdentity: receiptPlugin.sourceIdentity,
+      logicalIdentity: receiptPlugin.catalogLogicalIdentity,
+      pluginName: receiptPlugin.manifest.name,
+      scope: 'user',
+      cwd: root,
+      env: receiptEnv,
+      values: { token: receiptName },
+    });
+    const receiptMaterialized = await materializePortableSkills({
+      plugins: [receiptPlugin], pluginId: receiptPlugin.pluginId!, scope: 'user', cwd: root,
+      env: receiptEnv,
+    });
+    expect(receiptMaterialized.candidates.map((candidate) => candidate.name)).toEqual(['receipt-safe']);
+    await receiptMaterialized.cleanup();
 
     const invalid = await pluginFixture(root, baseManifest('invalid'));
     await fs.outputFile(path.join(invalid.rootDir, 'agent-skills', 'skills', 'bad', 'SKILL.md'), 'no frontmatter');

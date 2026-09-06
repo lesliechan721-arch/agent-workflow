@@ -1969,33 +1969,6 @@ function defaultConfigValues(manifest) {
   return values;
 }
 
-function collectScalarLeafTokens(value) {
-  if (typeof value === 'string') return value === '' ? [] : [value];
-  if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
-  if (value === null || typeof value !== 'object') return [];
-  return Object.values(value).flatMap(collectScalarLeafTokens);
-}
-
-function collectSensitiveDefaultConfigValues(manifest) {
-  return Object.values(manifest.config?.fields ?? {}).flatMap((field) => {
-    if (!isRecord(field) || !Object.prototype.hasOwnProperty.call(field, 'default')) {
-      return [];
-    }
-    const value = field.default;
-    if (field.sensitive === true) return collectScalarLeafTokens(value);
-    if (field.type !== 'object' || value === null || typeof value !== 'object') {
-      return [];
-    }
-    return Object.entries(value).flatMap(([property, childValue]) => {
-      const child = field.properties?.[property]
-        ?? (field.additionalProperties === false ? undefined : field.additionalProperties);
-      return isRecord(child) && child.sensitive === true
-        ? collectScalarLeafTokens(childValue)
-        : [];
-    });
-  });
-}
-
 function configFieldContainsSensitiveValue(field) {
   if (!isRecord(field)) return false;
   if (field.sensitive === true) return true;
@@ -2212,13 +2185,18 @@ function validateArtifactTargetEntry(entry, index, manifest, pluginDir) {
       error(`${fieldName}.refreshKeys[${refreshIndex}]: unknown config key "${refreshKey}"`);
       continue;
     }
-    if (
-      delivery?.mode === 'codex-native'
-      && configFieldContainsSensitiveValue(manifest.config?.fields?.[refreshKey])
-    ) {
+    const sensitiveRefreshKey = configFieldContainsSensitiveValue(
+      manifest.config?.fields?.[refreshKey],
+    );
+    const skillTarget = artifactTarget === 'codex.skill'
+      || artifactTarget === 'claude.skill'
+      || artifactTarget === 'agent-skills.skill';
+    if (skillTarget && sensitiveRefreshKey) {
+      const native = delivery?.mode === 'codex-native';
       error(
-        `codexNativeRenderSensitiveRefreshKey: ${fieldName}.refreshKeys[${refreshIndex}]: ` +
-          `codex-native renderers cannot read sensitive config field "${refreshKey}"`,
+        `${native ? 'codexNativeRenderSensitiveRefreshKey' : 'skillRenderSensitiveRefreshKey'}: ` +
+          `${fieldName}.refreshKeys[${refreshIndex}]: ` +
+          `${native ? 'codex-native renderers' : 'Skill renderers'} cannot read sensitive config field "${refreshKey}"`,
       );
     }
   }
@@ -2718,14 +2696,10 @@ function validateRenderedSkillTree(options) {
     error(`${fieldName} final file tree must contain a non-empty README.md`);
   }
 
-  const sensitiveValues = collectSensitiveDefaultConfigValues(manifest);
   for (const [relativePath, content] of files) {
     const text = content.toString('utf8');
     if (/\{\{[^{}]+\}\}/u.test(text)) {
       error(`${fieldName} final file tree contains an unresolved template in "${relativePath}"`);
-    }
-    if (sensitiveValues.some((value) => text.includes(value))) {
-      error(`${fieldName} final file tree exposes sensitive config in "${relativePath}"`);
     }
   }
 
@@ -2938,7 +2912,7 @@ function validateRenderedArtifactPlan(plan, declarations, scopeLabel, options) {
   }
 }
 
-function resolveArtifactRendererFixtureRequests(declarations) {
+function resolveArtifactRendererFixtureRequests(declarations, manifest) {
   const awOwned = new Map();
   const codexNative = new Map();
   for (const declaration of declarations) {
@@ -2971,7 +2945,30 @@ function resolveArtifactRendererFixtureRequests(declarations) {
       awOwned.set(key, request);
     }
   }
-  return [...awOwned.values(), ...codexNative.values()];
+  const partitionedAwOwned = [...awOwned.values()].flatMap((request) => {
+    const hasSkill = request.declarations.some((declaration) =>
+      declaration.target === 'codex.skill'
+      || declaration.target === 'claude.skill'
+      || declaration.target === 'agent-skills.skill');
+    const hasSensitiveNonSkill = request.declarations.some((declaration) =>
+      declaration.target !== 'codex.skill'
+      && declaration.target !== 'claude.skill'
+      && declaration.target !== 'agent-skills.skill'
+      && declaration.refreshKeys.some((key) =>
+        configFieldContainsSensitiveValue(manifest.config?.fields?.[key])));
+    if (!hasSkill || !hasSensitiveNonSkill) return [request];
+    const skillDeclarations = request.declarations.filter((declaration) =>
+      declaration.target === 'codex.skill'
+      || declaration.target === 'claude.skill'
+      || declaration.target === 'agent-skills.skill');
+    const nonSkillDeclarations = request.declarations.filter((declaration) =>
+      !skillDeclarations.includes(declaration));
+    return [
+      { ...request, declarations: skillDeclarations },
+      { ...request, declarations: nonSkillDeclarations },
+    ];
+  });
+  return [...partitionedAwOwned, ...codexNative.values()];
 }
 
 function runArtifactRendererFixture(
@@ -2984,7 +2981,7 @@ function runArtifactRendererFixture(
 ) {
   if (!renderEntry || declarations.length === 0) return;
 
-  const requests = resolveArtifactRendererFixtureRequests(declarations);
+  const requests = resolveArtifactRendererFixtureRequests(declarations, manifest);
   const values = defaultConfigValues(manifest);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-artifact-render-'));
   try {

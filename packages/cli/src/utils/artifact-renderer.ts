@@ -32,6 +32,7 @@ import {
   calculateFileDigest,
   collectSensitivePluginConfigValues,
   defaultPluginProcessRunner,
+  redactPluginScriptOutput,
   resolveBundledPluginFilePath,
   resolvePluginScriptTimeoutMs,
   summarizePluginScriptOutput,
@@ -621,25 +622,33 @@ export async function runArtifactRenderer(options: {
       );
     }
 
-    const plan = assertArtifactPlanEnvelope(parsed, {
-      stdoutSummary,
-      stderrSummary,
-    });
-    const validated = validateArtifactPlan({
-      manifest: options.plugin.manifest,
-      plan,
-      platform: options.platform,
-      scope: options.scope,
-      requestedArtifactIds: writtenContext.context.requestedArtifactIds,
-      renderConfig: writtenContext.context.config,
-      rendererDigest: target.rendererDigest,
-      manifestDigest: target.manifestDigest,
-    });
-    assertNoSensitiveConfigValues(
-      validated.artifacts,
-      writtenContext.sensitiveValues,
-      'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.',
-    );
+    let plan: ArtifactPlan;
+    try {
+      assertNoSensitiveConfigValues(
+        parsed,
+        writtenContext.sensitiveValues,
+        'artifactRendererSensitiveConfigExposed: Artifact renderer output contains sensitive config.',
+      );
+      plan = assertArtifactPlanEnvelope(parsed, {
+        stdoutSummary,
+        stderrSummary,
+      });
+      validateArtifactPlan({
+        manifest: options.plugin.manifest,
+        plan,
+        platform: options.platform,
+        scope: options.scope,
+        requestedArtifactIds: writtenContext.context.requestedArtifactIds,
+        renderConfig: writtenContext.context.config,
+        rendererDigest: target.rendererDigest,
+        manifestDigest: target.manifestDigest,
+      });
+    } catch (error) {
+      throw new Error(redactPluginScriptOutput(
+        error instanceof Error ? error.message : String(error),
+        writtenContext.sensitiveValues,
+      ));
+    }
 
     return {
       plan,
