@@ -1,0 +1,7 @@
+interface:
+  display_name: "Audit Agent Skill Evals"
+  short_description: "只读审核 Agent Skill Eval 的 Oracle 准入、现实性与异常结果归因"
+  default_prompt: "使用 $audit-agent-skill-evals 对已验证 EvalSpec 做独立 preflight，或对已验证 EvalResult 做只读 result-triage。"
+
+policy:
+  allow_implicit_invocation: true

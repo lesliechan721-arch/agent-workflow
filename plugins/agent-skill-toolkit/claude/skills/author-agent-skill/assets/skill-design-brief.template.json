@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "mode": "create",
+  "goal": "Describe the user-visible outcome.",
+  "observedFailures": [],
+  "baselineGap": null,
+  "successCriteria": [
+    "State one observable success criterion."
+  ],
+  "scope": [],
+  "outOfScope": [],
+  "invocationIntent": "model",
+  "targetProfiles": [
+    "portable-agent-skills"
+  ],
+  "allowedFiles": [],
+  "evalStrategy": "none",
+  "evalStageOwner": "author-agent-skill"
+}

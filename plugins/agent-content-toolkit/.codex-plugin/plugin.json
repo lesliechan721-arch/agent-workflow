@@ -1,0 +1,13 @@
+{
+  "name": "agent-content-toolkit",
+  "version": "0.1.0-beta.1",
+  "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
+  "interface": {
+    "displayName": "Agent Content Toolkit",
+    "shortDescription": "创建和评审 Agent-facing 文档，控制上下文负担、指针与完成边界",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./codex/skills"
+}
