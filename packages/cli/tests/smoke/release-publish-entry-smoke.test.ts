@@ -78,9 +78,13 @@ async function runCase(
   }
 
   const evalBytes = Buffer.from('eval');
+  const windowsX64Bytes = Buffer.from('windows-x64');
+  const windowsArm64Bytes = Buffer.from('windows-arm64');
   const coreBytes = Buffer.from('core');
   const cliBytes = Buffer.from('cli');
   await Promise.all([
+    fs.writeFile(path.join(artifacts, 'windows-x64.tgz'), windowsX64Bytes),
+    fs.writeFile(path.join(artifacts, 'windows-arm64.tgz'), windowsArm64Bytes),
     fs.writeFile(path.join(artifacts, 'eval.tgz'), evalBytes),
     fs.writeFile(path.join(artifacts, 'core.tgz'), coreBytes),
     fs.writeFile(path.join(artifacts, 'cli.tgz'), cliBytes),
@@ -99,11 +103,15 @@ async function runCase(
     npm: axes.cli ? {
       version: '1.0.0',
       packages: [
+        { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz', contentDigest: digest(windowsX64Bytes) },
+        { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz', contentDigest: digest(windowsArm64Bytes) },
         { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz', contentDigest: digest(evalBytes) },
         { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz', contentDigest: digest(coreBytes) },
         { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz', contentDigest: digest(cliBytes) },
       ],
       treeDigests: {
+        '@lesliechan721/aw-windows-job-win32-x64': 'windows-x64-tree',
+        '@lesliechan721/aw-windows-job-win32-arm64': 'windows-arm64-tree',
         '@lesliechan721/agent-skill-eval': 'eval-tree',
         '@lesliechan721/aw-plugin-core': 'core-tree',
         '@lesliechan721/aw': 'cli-tree',
@@ -153,19 +161,19 @@ async function runCase(
 it('runs official release order and resumes an uncertain Catalog plan through runRelease', async () => {
   await expect(runCase({ cli: true, catalog: true })).resolves.toMatchObject({
     ok: true,
-    events: ['eval', 'core', 'cli', 'tag', 'catalog'],
+    events: ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli', 'tag', 'catalog'],
     catalogJournal: 'published',
     releaseAttempt: { cli: '1.0.0' },
   });
   await expect(runCase({ cli: true, catalog: false })).resolves.toMatchObject({
-    ok: true, events: ['eval', 'core', 'cli', 'tag'],
+    ok: true, events: ['windows-x64', 'windows-arm64', 'eval', 'core', 'cli', 'tag'],
   });
   await expect(runCase({ cli: false, catalog: true })).resolves.toMatchObject({
     ok: true, events: ['catalog'], catalogJournal: 'published', releaseAttempt: null,
   });
   await expect(runCase({ cli: true, catalog: true }, 'eval')).resolves.toMatchObject({
     ok: false,
-    events: ['eval'],
+    events: ['windows-x64', 'windows-arm64', 'eval'],
     error: expect.stringContaining('--cli-bump'),
     catalogJournal: 'prepared',
     releaseAttempt: { cli: '1.0.0' },

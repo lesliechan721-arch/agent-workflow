@@ -29,6 +29,8 @@ async function createRepo(): Promise<string> {
   await fs.mkdir(path.join(repoRoot, 'tools'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'schemas'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'node_modules'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'plugin-core', 'schemas'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli'), { recursive: true });
@@ -36,6 +38,14 @@ async function createRepo(): Promise<string> {
   await fs.writeFile(
     path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
     JSON.stringify({ name: '@lesliechan721/agent-skill-eval', type: 'module', files: ['dist/'] }),
+  );
+  await fs.writeFile(
+    path.join(repoRoot, 'packages', 'aw-windows-job-win32-x64', 'package.json'),
+    JSON.stringify({ name: '@lesliechan721/aw-windows-job-win32-x64', files: ['dist/'] }),
+  );
+  await fs.writeFile(
+    path.join(repoRoot, 'packages', 'aw-windows-job-win32-arm64', 'package.json'),
+    JSON.stringify({ name: '@lesliechan721/aw-windows-job-win32-arm64', files: ['dist/'] }),
   );
   await fs.writeFile(
     path.join(repoRoot, 'packages', 'plugin-core', 'package.json'),
@@ -70,8 +80,6 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
       contents = `{"plugins":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('catalog-manifest.json')) {
       contents = `{"schemaVersion":7,"release":{"state":"development"},"entries":[],"generation":${generation}}\n`;
-    } else if (relativePath.endsWith('native/windows/manifest.json')) {
-      contents = `{"schemaVersion":1,"generation":${generation}}\n`;
     }
     await fs.writeFile(outputPath, contents);
   }));

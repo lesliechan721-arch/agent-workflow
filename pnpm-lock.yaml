@@ -33,6 +33,17 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.12.2)(yaml@2.8.3)
+    optionalDependencies:
+      '@lesliechan721/aw-windows-job-win32-arm64':
+        specifier: workspace:0.1.0
+        version: link:../aw-windows-job-win32-arm64
+      '@lesliechan721/aw-windows-job-win32-x64':
+        specifier: workspace:0.1.0
+        version: link:../aw-windows-job-win32-x64
+
+  packages/aw-windows-job-win32-arm64: {}
+
+  packages/aw-windows-job-win32-x64: {}
 
   packages/cli:
     dependencies:

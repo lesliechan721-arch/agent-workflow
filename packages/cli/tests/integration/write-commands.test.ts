@@ -3250,7 +3250,7 @@ describe('five namespaced write commands', () => {
   it.each([
     ['absent', 'partial', 'codexNativeInstallIncomplete'],
     ['duplicate', 'partial', 'codexNativeObservationFailed'],
-    ['installed-disabled', 'partial', 'codexActivationPostcheckFailed'],
+    ['installed-disabled', 'succeeded', undefined],
     ['exact-installed-neutral-absent', 'partial', 'codexNativeInstallIncomplete'],
   ] as const)('handles Codex install when the official postcheck is %s', async (
     postcheck,
@@ -4104,7 +4104,7 @@ describe('five namespaced write commands', () => {
     expect(installedRuntime.installed.has('demo@aw')).toBe(true);
   }, 30_000);
 
-  it('reports ineffective public activation after preApply when official enabled stays false', async () => {
+  it('repairs public activation and runs preApply when official enabled stays false', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-pre-apply-failure-source');
     const definitions = [{
@@ -4163,22 +4163,21 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd, env: isolation.env,
       platform: 'codex', scope: 'project', interactive: false, yes: true,
     }, { ...installedRuntime, nativeCliRunner: contradictoryOfficialList, reporter });
-    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('failed');
+    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('succeeded');
     expect(synced.targetResults).toEqual([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-        state: 'failed',
-        errorCode: 'codexActivationPostcheckFailed',
+        state: 'completed',
       }),
     ]);
     const receipt = (await import('../../src/output/command-receipt.js'))
       .buildRebuildReceiptJson('sync', synced);
     expect(receipt).toMatchObject({
-      ok: false,
-      overallState: 'failed',
+      ok: true,
+      overallState: 'succeeded',
       targetResults: [{
         target: expect.objectContaining({ pluginId: 'team/demo', platform: 'codex', scope: 'project' }),
-        state: 'failed',
+        state: 'completed',
         actions: expect.any(Array),
       }],
     });
@@ -4188,7 +4187,7 @@ describe('five namespaced write commands', () => {
     expect(preApplyEvents).toEqual(['start', 'success']);
   }, 30_000);
 
-  it('isolates per-plugin official enabled mismatches after public activation repair', async () => {
+  it('ignores per-plugin official enabled mismatches after public activation repair', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-isolation-source');
     const definitions = ['alpha', 'beta'].map((name) => ({
@@ -4266,12 +4265,11 @@ describe('five namespaced write commands', () => {
       platform: 'codex', scope: 'project', interactive: false, yes: true,
     }, { ...installedRuntime, nativeCliRunner: contradictoryOfficialList });
 
-    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('partial');
+    expect(synced.overallState, JSON.stringify(synced, null, 2)).toBe('succeeded');
     expect(synced.targetResults).toEqual(expect.arrayContaining([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/alpha' }),
-        state: 'failed',
-        errorCode: 'codexActivationPostcheckFailed',
+        state: 'completed',
       }),
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/beta' }),

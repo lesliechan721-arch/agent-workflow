@@ -210,6 +210,16 @@ export async function updateReleaseTargets(argv, options = {}) {
   const cliPackages = requested.cli ? await Promise.all([
     readCliPackage(
       repoRoot,
+      'packages/aw-windows-job-win32-x64/package.json',
+      '@lesliechan721/aw-windows-job-win32-x64',
+    ),
+    readCliPackage(
+      repoRoot,
+      'packages/aw-windows-job-win32-arm64/package.json',
+      '@lesliechan721/aw-windows-job-win32-arm64',
+    ),
+    readCliPackage(
+      repoRoot,
       'packages/agent-skill-eval/package.json',
       '@lesliechan721/agent-skill-eval',
     ),
@@ -222,14 +232,13 @@ export async function updateReleaseTargets(argv, options = {}) {
   ]) : [];
   if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
     throw new Error(
-      `CLI release target ${current.cli} must match packages/cli/package.json and ` +
-      'packages/agent-skill-eval/package.json and packages/plugin-core/package.json ' +
+      `CLI release target ${current.cli} must match all five public package manifests ` +
       'before release metadata can update it.',
     );
   }
   if (
     requested.cli
-    && cliPackages[2].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
+    && cliPackages[4].manifest.dependencies?.['@lesliechan721/agent-skill-eval']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
@@ -239,12 +248,32 @@ export async function updateReleaseTargets(argv, options = {}) {
   }
   if (
     requested.cli
-    && cliPackages[2].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
+    && cliPackages[4].manifest.dependencies?.['@lesliechan721/aw-plugin-core']
       !== `workspace:${current.cli}`
   ) {
     throw new Error(
       `packages/cli/package.json must exactly depend on ` +
       `@lesliechan721/aw-plugin-core@workspace:${current.cli}.`,
+    );
+  }
+  if (
+    requested.cli
+    && cliPackages[2].manifest.optionalDependencies?.['@lesliechan721/aw-windows-job-win32-x64']
+      !== `workspace:${current.cli}`
+  ) {
+    throw new Error(
+      `packages/agent-skill-eval/package.json must exactly optionally depend on ` +
+      `@lesliechan721/aw-windows-job-win32-x64@workspace:${current.cli}.`,
+    );
+  }
+  if (
+    requested.cli
+    && cliPackages[2].manifest.optionalDependencies?.['@lesliechan721/aw-windows-job-win32-arm64']
+      !== `workspace:${current.cli}`
+  ) {
+    throw new Error(
+      `packages/agent-skill-eval/package.json must exactly optionally depend on ` +
+      `@lesliechan721/aw-windows-job-win32-arm64@workspace:${current.cli}.`,
     );
   }
   const next = current === null ? null : {
@@ -283,7 +312,17 @@ export async function updateReleaseTargets(argv, options = {}) {
               '@lesliechan721/aw-plugin-core': `workspace:${next.cli}`,
             },
           }
-        : { ...entry.manifest, version: next.cli };
+        : entry.name === '@lesliechan721/agent-skill-eval'
+          ? {
+              ...entry.manifest,
+              version: next.cli,
+              optionalDependencies: {
+                ...entry.manifest.optionalDependencies,
+                '@lesliechan721/aw-windows-job-win32-x64': `workspace:${next.cli}`,
+                '@lesliechan721/aw-windows-job-win32-arm64': `workspace:${next.cli}`,
+              },
+            }
+          : { ...entry.manifest, version: next.cli };
       changes.push({
         path: entry.packagePath,
         contents: `${JSON.stringify(manifest, null, 2)}\n`,
@@ -293,8 +332,8 @@ export async function updateReleaseTargets(argv, options = {}) {
     const lockPath = await assertRegularPathChain(repoRoot, 'pnpm-lock.yaml');
     const lockContents = await fs.readFile(lockPath, 'utf8');
     const currentSpecifier = `specifier: workspace:${current.cli}`;
-    if (lockContents.split(currentSpecifier).length !== 3) {
-      throw new Error(`pnpm-lock.yaml must contain two exact ${currentSpecifier} entries.`);
+    if (lockContents.split(currentSpecifier).length !== 5) {
+      throw new Error(`pnpm-lock.yaml must contain four exact ${currentSpecifier} entries.`);
     }
     changes.push({
       path: lockPath,

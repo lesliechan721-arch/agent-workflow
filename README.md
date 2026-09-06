@@ -285,19 +285,20 @@ make test
 
 日常开发可使用 `pnpm build:dev` 复用按目标划分的弱缓存；`pnpm test:dist:dev` 在该开发 build 后运行与正式 `test:dist` 相同的 dist contract 和 build smoke。正式交付和发布仍使用 `pnpm build`、`pnpm build:ensure` 与 release verification。
 
-本地 CLI 包含一个精确版本的共享 Eval 依赖。打包命令从同一 build snapshot 生成两个
-tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖：
+本地 CLI 包含同版本的共享 Eval 和 Core 依赖。Eval 通过 optional dependency 选择当前
+Windows 架构的 Job helper。打包命令从同一 build snapshot 生成五个 tarball；本地安装
+必须同时提供它们，不能从 registry 补齐依赖：
 
 ```bash
 pnpm release:pack:cli
 pnpm release:install:local
-# 或安装已经生成的两个文件：
-pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz>
+# 或安装已经生成的五个文件：
+pnpm release:install:local -- <cli.tgz> <eval.tgz> <core.tgz> <windows-x64.tgz> <windows-arm64.tgz>
 ```
 
 `pnpm build` 对官方 Catalog source 使用 `--strict-requirements` 语义，并生成 `packages/cli/plugins-dist/` schema 7 本地 snapshot。`release:verify:catalog:core` 通过此官方 build 覆盖 strict 门禁。第三方公开 `aw catalog build` 默认只 advisory。Catalog staging 和本地 release prepared 文件都是生成状态，不手工修改。
 
-Windows Job helper 以 Go 源码和预编译的 x64/arm64 PE 分发。普通 `pnpm build` 只校验 manifest、源码 digest、binary digest 和 PE 架构，不要求 Go。修改 helper 源码或 toolchain 后，维护者运行 `pnpm --filter @lesliechan721/agent-skill-eval windows-job:refresh`；该命令固定交叉编译环境，并在 manifest 记录当前精确 Go 版本。强 release verification 运行 `pnpm windows-job:reproducibility`，要求安装该精确 Go 版本，使用本机 toolchain 重建两个 PE 并逐字节比较；Go 缺失、版本不同或结果不一致时停止。真实 Windows 行为仍用对应架构的 `pnpm qualification:windows-job` 验证。
+Windows Job helper 以 Go 源码和预编译的 x64/arm64 PE 分发。两个 PE 分别进入 `@lesliechan721/aw-windows-job-win32-x64` 和 `@lesliechan721/aw-windows-job-win32-arm64`；Eval 包本身不包含 PE。npm 根据 `os`、`cpu` 和 Eval 的 optional dependency 只安装匹配平台的包。普通 `pnpm build` 只校验 manifest、源码 digest、binary digest 和 PE 架构，不要求 Go。修改 helper 源码或 toolchain 后，维护者运行 `pnpm --filter @lesliechan721/agent-skill-eval windows-job:refresh`；该命令固定交叉编译环境，并在 manifest 记录当前精确 Go 版本。强 release verification 运行 `pnpm windows-job:reproducibility`，要求安装该精确 Go 版本，使用本机 toolchain 重建两个 PE 并逐字节比较；Go 缺失、版本不同或结果不一致时停止。真实 Windows 行为仍用对应架构的 `pnpm qualification:windows-job` 验证。
 
 Codex native qualification 是显式、本机、离线的维护者入口，不进入普通 test、build 或 release。现有 `0.151.0` project activation 行为使用 `pnpm qualification:codex-project-native`。性能和 scoped list 合同分别对本机已有的三个精确 binary 运行；命令不会自动下载：
 
@@ -333,11 +334,11 @@ aw catalog version 0.2.0-beta.1 --workspace-root .
 aw catalog version --bump patch --workspace-root .
 ```
 
-产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
+产品源码必须先提交，且工作树必须干净。命令先选择 Catalog beta，再调用上述公共 version mutation；需要变化时创建一个精确只包含 `plugins/marketplace-source.json` 的 commit。CLI/plugin metadata 使用单独白名单 commit。没有 Catalog version 变化时不创建空 commit。随后运行所选轴的完整验证，在 gitignored 的 `.release/prepared/` 生成本地 artifact 和 plan，并按 `Windows x64 → Windows arm64 → Eval → Core → CLI → cli-v<version> tag → Catalog` 发布启用的轴。Catalog 轴最后调用与普通 Workspace 相同的 publisher；CLI tag 只推送到 `origin`，当前分支不自动推送。
 
 Catalog beta 只比较 source metadata、`catalog-v` tag 和 publication journal。beta 已使用时，命令在同一 stable base 选择下一个未使用的 `beta.N`；stable metadata 进入 beta 渠道时也选择该 base 的 beta。stable 发布可把 beta metadata 提升为同 base stable。Plugin beta 和 stable 使用每个当前 Plugin 在目标 branch 的 first-parent 发布历史中最近的 manifest entry。tip 缺少 Plugin 时，plan 按需回溯；Plugin 移除后重加继续使用删除前的基线。beta 在历史基线缺失或 stable base 提高时为 `beta.1`，同 base 同 contentDigest 复用，同 base 内容变化递增，base 降低拒绝；stable 在 contentDigest 改变但 version 未提高或 version 降低时拒绝。Catalog-only 不查询或发布 npm package，也不创建 CLI tag 或 `.release/attempted.json`。
 
-远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布三个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若三个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 schema v2 `.aw/publish/<version>/journal.json` 和 pending `repository/`。相同 journal plan 可对账或续跑，不同 plan 必须提升 Catalog version。`prepared` 或 `uncertain` 的 journal 或 repo 缺失或损坏时，停止并提升版本，不盲目重建或复用。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先保存 published journal，再尽力删除 repo；清理失败只报告 warning。
+远端 npm 发布失败或结果不确定后，不要直接重试单个 `npm publish`，也不要删除 `.release/attempted.json`。beta CLI 的普通恢复是用相同轴重新运行 `pnpm release`；工具保留稳定 target，自动选择下一个 beta，并重新发布五个包。稳定 CLI 仍需指定 `--cli-bump`。若要补发原候选中确认缺失的包，保留 prepared state 并运行 `pnpm release -- --repair-cli`；命令会核验 source、artifact 和 registry 中已存在的包，只补缺失包，最后核验整组并补 CLI tag。若五个 npm 包已经完整发布而只缺 tag，可运行 `pnpm release -- --repair-cli-tag`。Catalog 使用 schema v2 `.aw/publish/<version>/journal.json` 和 pending `repository/`。相同 journal plan 可对账或续跑，不同 plan 必须提升 Catalog version。`prepared` 或 `uncertain` 的 journal 或 repo 缺失或损坏时，停止并提升版本，不盲目重建或复用。`published` journal 缺失时，远端 immutable tag 仍占用版本。成功时先保存 published journal，再尽力删除 repo；清理失败只报告 warning。
 
 CLI 读取 Catalog Sources Config schema 2 的 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；release 使用 `refs/heads/catalog/latest`，beta 使用 `refs/heads/catalog/beta`。当前 Catalog Workspace 的本地 development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；有影响或 inventory 不完整的 deactivate 需要 `--yes`，并返回 schema 4 的脱敏 `impact`。
 

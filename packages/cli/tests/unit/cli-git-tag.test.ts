@@ -45,6 +45,8 @@ describe('CLI Git tag publisher', () => {
       candidates: { cli: version, catalog: null },
       npm: {
         packages: [
+          { name: '@lesliechan721/aw-windows-job-win32-x64', path: 'artifacts/windows-x64.tgz' },
+          { name: '@lesliechan721/aw-windows-job-win32-arm64', path: 'artifacts/windows-arm64.tgz' },
           { name: '@lesliechan721/agent-skill-eval', path: 'artifacts/eval.tgz' },
           { name: '@lesliechan721/aw-plugin-core', path: 'artifacts/core.tgz' },
           { name: '@lesliechan721/aw', path: 'artifacts/cli.tgz' },
@@ -56,9 +58,25 @@ describe('CLI Git tag publisher', () => {
       assertPublishedPackageMatches,
     });
 
-    expect(assertPublishedPackageMatches).toHaveBeenCalledTimes(3);
+    expect(assertPublishedPackageMatches).toHaveBeenCalledTimes(5);
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
       1,
+      '@lesliechan721/aw-windows-job-win32-x64',
+      version,
+      expect.stringContaining('packages/aw-windows-job-win32-x64/package.json'),
+      '/prepared/artifacts/windows-x64.tgz',
+      expect.any(Object),
+    );
+    expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
+      2,
+      '@lesliechan721/aw-windows-job-win32-arm64',
+      version,
+      expect.stringContaining('packages/aw-windows-job-win32-arm64/package.json'),
+      '/prepared/artifacts/windows-arm64.tgz',
+      expect.any(Object),
+    );
+    expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
+      3,
       '@lesliechan721/agent-skill-eval',
       version,
       expect.stringContaining('packages/agent-skill-eval/package.json'),
@@ -66,7 +84,7 @@ describe('CLI Git tag publisher', () => {
       expect.any(Object),
     );
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
-      2,
+      4,
       '@lesliechan721/aw-plugin-core',
       version,
       expect.stringContaining('packages/plugin-core/package.json'),
@@ -74,7 +92,7 @@ describe('CLI Git tag publisher', () => {
       expect.any(Object),
     );
     expect(assertPublishedPackageMatches).toHaveBeenNthCalledWith(
-      3,
+      5,
       '@lesliechan721/aw',
       version,
       expect.stringContaining('packages/cli/package.json'),

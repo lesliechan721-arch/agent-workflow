@@ -1044,7 +1044,7 @@ describe('TUI v4 real catalog source boundary', () => {
     const frame = instance.lastFrame() ?? '';
     const compactFrame = frame.replace(/\s+/gu, '');
     expect(frame).toContain('重新下载旧版本并精确修复');
-    expect(frame).toContain('使用当前候选替换损坏的 Active');
+    expect(frame).toContain('使用待检查版本替换损坏版本…');
     expect(frame).toContain('编辑来源…');
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
@@ -1163,7 +1163,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
     expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
-    expect(instance.lastFrame()).toContain('使用当前候选替换损坏的 Active');
+    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'combined repair Review');

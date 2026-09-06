@@ -48,13 +48,14 @@ try {
     resolveCandidates: async () => descriptor.candidates,
     readPackageVersions: async () => [],
     assertCliTagAvailable: async () => undefined,
-    computeTarballTreeDigest: async (file) => file.includes('eval')
-      ? 'eval-tree'
-      : file.includes('core') ? 'core-tree' : 'cli-tree',
+    computeTarballTreeDigest: async (file) => {
+      if (file.includes('windows-x64')) return 'windows-x64-tree';
+      if (file.includes('windows-arm64')) return 'windows-arm64-tree';
+      if (file.includes('eval')) return 'eval-tree';
+      return file.includes('core') ? 'core-tree' : 'cli-tree';
+    },
     runNpmCommand: async (_command, args) => {
-      const event = args[1].includes('eval')
-        ? 'eval'
-        : args[1].includes('core') ? 'core' : 'cli';
+      const event = path.basename(args[1], '.tgz');
       events.push(event);
       if (config.fail === event) throw new Error('fake npm failure');
     },

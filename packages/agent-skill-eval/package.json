@@ -23,8 +23,8 @@
     "dist/"
   ],
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs && node scripts/copy-windows-job-helper.mjs",
-    "build:dev": "tsc -p tsconfig.dev.json && node scripts/embed-schemas.mjs && node scripts/copy-windows-job-helper.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs",
+    "build:dev": "tsc -p tsconfig.dev.json && node scripts/embed-schemas.mjs",
     "windows-job:refresh": "node scripts/refresh-windows-job-helper.mjs",
     "windows-job:reproducibility": "node scripts/reproduce-windows-job-helper.mjs",
     "windows-job:verify": "node scripts/verify-windows-job-helper.mjs",
@@ -36,6 +36,10 @@
   "dependencies": {
     "fs-extra": "^11.3.0",
     "toml-eslint-parser": "^1.0.3"
+  },
+  "optionalDependencies": {
+    "@lesliechan721/aw-windows-job-win32-arm64": "workspace:0.1.0",
+    "@lesliechan721/aw-windows-job-win32-x64": "workspace:0.1.0"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",

@@ -564,16 +564,16 @@ describe('performance gate process tree cleanup', () => {
     expect(snapshot.descendants.map((identity) => identity.pid)).toEqual([20]);
   });
 
-  itOnPosix('resolves source and built Windows Job helpers and launches the fixed protocol', async () => {
+  itOnPosix('resolves source and platform-package Windows Job helpers and launches the fixed protocol', async () => {
     const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-windows-job-path-'));
     roots.push(packageRoot);
     const sourceHelper = path.join(
       packageRoot,
       'native/windows/x64/aw-windows-job.exe',
     );
-    const distHelper = path.join(
+    const platformHelper = path.join(
       packageRoot,
-      'dist/native/windows/x64/aw-windows-job.exe',
+      'platform-package/aw-windows-job.exe',
     );
     const configFile = path.join(packageRoot, 'config.json');
     await fs.mkdir(path.dirname(sourceHelper), { recursive: true });
@@ -631,9 +631,18 @@ describe('performance gate process tree cleanup', () => {
       leakedProcessCount: 0,
     });
 
-    await fs.mkdir(path.dirname(distHelper), { recursive: true });
-    await fs.writeFile(distHelper, 'built helper');
-    expect(resolveWindowsJobHelperPath({ packageRoot, arch: 'x64' })).toBe(distHelper);
+    await fs.mkdir(path.dirname(platformHelper), { recursive: true });
+    await fs.writeFile(platformHelper, 'platform helper');
+    expect(resolveWindowsJobHelperPath({
+      packageRoot,
+      arch: 'x64',
+      resolvePackage: (specifier) => {
+        expect(specifier).toBe(
+          '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
+        );
+        return platformHelper;
+      },
+    })).toBe(platformHelper);
   });
 
   it('fails closed for unsupported, missing, and shell-script Windows Job targets', async () => {

@@ -127,6 +127,8 @@ function releaseMetadataPaths(parsed) {
   if (parsed.cliBump) paths.add('release/version-targets.json');
   if (parsed.cliBump) {
     paths.add('packages/cli/package.json');
+    paths.add('packages/aw-windows-job-win32-x64/package.json');
+    paths.add('packages/aw-windows-job-win32-arm64/package.json');
     paths.add('packages/agent-skill-eval/package.json');
     paths.add('packages/plugin-core/package.json');
     paths.add('pnpm-lock.yaml');

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstatSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -12,6 +13,11 @@ const TASKKILL_TIMEOUT_MS = 400;
 const TEST_RUN_ID_ENV = 'AW_TEST_RUN_ID';
 const TEST_TREE_ID_ENV = 'AW_TEST_PROCESS_TREE_ID';
 const WINDOWS_JOB_CONFIG_SCHEMA_VERSION = 1;
+const require = createRequire(import.meta.url);
+const WINDOWS_JOB_PACKAGES = {
+  x64: '@lesliechan721/aw-windows-job-win32-x64/aw-windows-job.exe',
+  arm64: '@lesliechan721/aw-windows-job-win32-arm64/aw-windows-job.exe',
+};
 const WINDOWS_JOB_PACKAGE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../packages/agent-skill-eval',
@@ -39,8 +45,17 @@ export function resolveWindowsJobHelperPath(options = {}) {
     throw new Error(`Windows Job containment is unsupported on architecture ${arch}.`);
   }
   const packageRoot = options.packageRoot ?? WINDOWS_JOB_PACKAGE_ROOT;
+  let platformHelper;
+  const resolvePackage = options.resolvePackage ?? (options.packageRoot ? undefined : require.resolve);
+  if (resolvePackage) {
+    try {
+      platformHelper = resolvePackage(WINDOWS_JOB_PACKAGES[arch]);
+    } catch {
+      // Source checkouts can use the committed artifact before workspace packages are built.
+    }
+  }
   const candidates = [
-    path.join(packageRoot, 'dist', 'native', 'windows', arch, 'aw-windows-job.exe'),
+    ...(platformHelper ? [platformHelper] : []),
     path.join(packageRoot, 'native', 'windows', arch, 'aw-windows-job.exe'),
   ];
   const helperPath = candidates.find(isRegularFile);

@@ -259,22 +259,6 @@ export async function verifyWindowsJobReproducibility(options = {}) {
   return manifest
 }
 
-export async function copyWindowsJobArtifacts() {
-  await verifyWindowsJobArtifacts()
-  const { nativeRoot, manifestPath } = artifactPaths()
-  const outputRoot = path.join(packageRoot, 'dist', 'native', 'windows')
-  await rm(outputRoot, { recursive: true, force: true })
-  await mkdir(outputRoot, { recursive: true })
-  await copyFile(manifestPath, path.join(outputRoot, 'manifest.json'))
-  for (const arch of Object.keys(binaries)) {
-    await mkdir(path.join(outputRoot, arch), { recursive: true })
-    await copyFile(
-      path.join(nativeRoot, arch, 'aw-windows-job.exe'),
-      path.join(outputRoot, arch, 'aw-windows-job.exe'),
-    )
-  }
-}
-
 export const windowsJobArtifactContract = {
   buildFlags,
   cacheMode,

@@ -8,9 +8,13 @@ import {
   evalPackageJsonPath,
   repoRoot as defaultRepoRoot,
   runReleaseGit,
+  windowsArm64PackageJsonPath,
+  windowsX64PackageJsonPath,
 } from './common.mjs';
 
 const CLI_PACKAGES = new Map([
+  ['@lesliechan721/aw-windows-job-win32-x64', windowsX64PackageJsonPath],
+  ['@lesliechan721/aw-windows-job-win32-arm64', windowsArm64PackageJsonPath],
   ['@lesliechan721/agent-skill-eval', evalPackageJsonPath],
   ['@lesliechan721/aw-plugin-core', corePackageJsonPath],
   ['@lesliechan721/aw', cliPackageJsonPath],
