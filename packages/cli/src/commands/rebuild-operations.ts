@@ -10,6 +10,7 @@ import type {
   RebuildCommand,
   Scope,
 } from '../types.js';
+import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import type { OperationAction } from './operation-plan.js';
 import {
   cleanupOwnedComponents,
@@ -65,6 +66,7 @@ export interface RebuildFailure {
   phase: RebuildActionName | 'preflight';
   message: string;
   label?: string;
+  operationDiagnostic?: SafeOperationErrorMetadata;
 }
 
 interface RebuildResultBase {
@@ -88,6 +90,7 @@ export interface RebuildFailedResult extends RebuildResultBase {
   error: {
     phase: RebuildFailure['phase'];
     message: string;
+    operationDiagnostic?: SafeOperationErrorMetadata;
   };
 }
 
@@ -253,16 +256,17 @@ function failed(
   accumulator: ResultAccumulator,
   phase: RebuildFailure['phase'],
   message: string,
+  operationDiagnostic?: SafeOperationErrorMetadata,
 ): RebuildFailedResult {
   if (!accumulator.failures.some((failure) => failure.phase === phase && failure.message === message)) {
-    accumulator.failures.unshift({ phase, message });
+    accumulator.failures.unshift({ phase, message, ...(operationDiagnostic ? { operationDiagnostic } : {}) });
   }
   return {
     status: 'failed',
     command,
     target: target.identity,
     ...accumulator,
-    error: { phase, message },
+    error: { phase, message, ...(operationDiagnostic ? { operationDiagnostic } : {}) },
   };
 }
 
@@ -596,7 +600,7 @@ async function materializeTarget(options: {
         collisionMessage,
       );
     } catch (error) {
-      return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error));
+      return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error), readSafeOperationError(error));
     }
   }
   const collision = collisionMessage(inspection);
@@ -612,7 +616,7 @@ async function materializeTarget(options: {
         plugin: target.preApplySource,
       }), events);
     } catch (error) {
-      return failed(command, target, accumulator, 'preApply', errorMessage(error));
+      return failed(command, target, accumulator, 'preApply', errorMessage(error), readSafeOperationError(error));
     }
   }
 
@@ -637,7 +641,7 @@ async function materializeTarget(options: {
             : undefined),
       );
     } catch (error) {
-      return failed(command, target, accumulator, 'stale.cleanup', errorMessage(error));
+      return failed(command, target, accumulator, 'stale.cleanup', errorMessage(error), readSafeOperationError(error));
     }
     mergeCleanup(accumulator, stale, 'stale.cleanup');
     if (stale.failures.length > 0 || stale.residual.length > 0) {
@@ -683,7 +687,7 @@ async function materializeTarget(options: {
   } catch (error) {
     const primary = errorMessage(error);
     if ((error as { nativeMarketplaceGroupFailure?: unknown }).nativeMarketplaceGroupFailure === true) {
-      return failed(command, target, accumulator, failurePhase, primary);
+      return failed(command, target, accumulator, failurePhase, primary, readSafeOperationError(error));
     }
     if (target.identity.platform === 'codex') {
       const recoveryComponents = target.ownedComponents.filter((component) =>
@@ -700,7 +704,7 @@ async function materializeTarget(options: {
     } else {
       await cleanupTarget(target, driver, accumulator, 'recovery.cleanup', events);
     }
-    return failed(command, target, accumulator, failurePhase, primary);
+    return failed(command, target, accumulator, failurePhase, primary, readSafeOperationError(error));
   }
 }
 
@@ -952,7 +956,14 @@ async function executeRebuildOperationCore(
           plugin: options.target.preApplySource,
         }), events);
       } catch (error) {
-        return failed('reinstall', options.target, accumulator, 'preApply', errorMessage(error));
+        return failed(
+          'reinstall',
+          options.target,
+          accumulator,
+          'preApply',
+          errorMessage(error),
+          readSafeOperationError(error),
+        );
       }
     }
   }
@@ -1068,6 +1079,7 @@ export async function prepareRebuildOperation(options: {
           accumulator,
           'preApply',
           errorMessage(error),
+          readSafeOperationError(error),
         ),
       };
     }

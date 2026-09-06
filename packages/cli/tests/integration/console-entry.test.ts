@@ -4,10 +4,16 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
-import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import type { ConsoleExitRequest } from '../../src/tui/console-app-v4.js';
+import type { SessionHost } from '../../src/tui/session-host.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  return { promise: new Promise<T>((settle) => { resolve = settle; }), resolve };
+}
 
 describe('console entry', () => {
   it('rejects the bare console in a non-interactive runtime with copyable live commands', async () => {
@@ -28,14 +34,14 @@ describe('console entry', () => {
     const launch = vi.fn(async (request: {
       render: (complete: (result: { exitCode: number }) => void) => {
         type: unknown;
-        props: { controller: { snapshot: { phase: string } }; onExit: (request: ConsoleExitRequest) => void };
+        props: { host: { snapshot: { controller: { snapshot: { phase: string } } } }; onExit: (request: ConsoleExitRequest) => void };
       };
     }) => {
       let result: { exitCode: number } | undefined;
       const element = request.render((value) => { result = value; });
-      expect(element.type).toBe(ConsoleAppV4);
-      expect(element.props.controller.snapshot.phase).toBe('idle');
-      mountedController = element.props.controller;
+      expect(element.type).toBe(SessionConsoleApp);
+      expect(element.props.host.snapshot.controller.snapshot.phase).toBe('idle');
+      mountedController = element.props.host.snapshot.controller;
       element.props.onExit({ code: 0, reason: 'user' });
       return result!;
     });
@@ -69,6 +75,36 @@ describe('console entry', () => {
       io: captured.io,
       tuiRunner: { launch } as never,
     })).toBe(1);
+  });
+
+  it.each(['success', 'failure'])('drains an active session read before restoring the reporter on %s exit', async (outcome) => {
+    const captured = createCapturedCliIo();
+    const read = deferred<never>();
+    const launch = vi.fn(async (request: {
+      render: (complete: (result: { exitCode: number }) => void) => {
+        props: { host: SessionHost; onExit: (request: ConsoleExitRequest) => void };
+      };
+    }) => {
+      let result: { exitCode: number } | undefined;
+      const element = request.render((value) => { result = value; });
+      const controller = element.props.host.snapshot.controller;
+      controller.dependencies.loadStatus = vi.fn(() => read.promise);
+      void controller.load();
+      if (outcome === 'failure') throw new Error('terminal session failed');
+      element.props.onExit({ code: 0, reason: 'user' });
+      return result!;
+    });
+    let settled = false;
+    const running = runCli([], {
+      interactive: true,
+      io: captured.io,
+      tuiRunner: { launch } as never,
+    }).finally(() => { settled = true; });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    read.resolve(undefined as never);
+    await expect(running).resolves.toBe(outcome === 'failure' ? 1 : 0);
   });
 
   it('applies bare console verbose and debug options to diagnostics', async () => {

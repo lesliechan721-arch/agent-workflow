@@ -6,7 +6,8 @@ import {
   withCommandReporterSession,
 } from './runtime.js';
 import { createRebuildProgressFeed } from '../output/rebuild-progress.js';
-import { ConsoleAppV4 } from '../tui/console-app-v4.js';
+import { SessionConsoleApp } from '../tui/session-console-app.js';
+import { SessionHost } from '../tui/session-host.js';
 import { createConsoleTuiV4Controller } from '../tui/controller-runtime.js';
 
 export function formatInteractiveConsoleUnavailableMessage(
@@ -28,25 +29,33 @@ export function formatInteractiveConsoleUnavailableMessage(
 }
 
 export async function runConsoleController(context: CliExecutionContext): Promise<number> {
-  const progressFeed = createRebuildProgressFeed();
-  const controller = createConsoleTuiV4Controller(context, progressFeed);
-  const sessionReporter: CommandReporter = {
-    event: (event) => progressFeed.addEvent(event),
-    notice: (notice) => progressFeed.addNotice(notice),
-  };
+  const host = new SessionHost({
+    createSession: () => {
+      const progressFeed = createRebuildProgressFeed();
+      return {
+        progressFeed,
+        controller: createConsoleTuiV4Controller(context, progressFeed),
+      };
+    },
+  });
+  const sessionReporter: CommandReporter = host.reporter;
   try {
-    const result = await withCommandReporterSession(context.reporter, sessionReporter, () =>
-      context.tuiRunner.launch<{ exitCode: number }>({
-        input: context.stdin,
-        output: context.tuiOutput,
-        render: (complete) => createElement(ConsoleAppV4, {
-          controller,
-          ownsController: false,
-          onExit: ({ code } = { code: 0, reason: 'user' }) => complete({ exitCode: code }),
-        }),
-      }));
+    const result = await withCommandReporterSession(context.reporter, sessionReporter, async () => {
+      try {
+        return await context.tuiRunner.launch<{ exitCode: number }>({
+          input: context.stdin,
+          output: context.tuiOutput,
+          render: (complete) => createElement(SessionConsoleApp, {
+            host,
+            onExit: ({ code } = { code: 0, reason: 'user' }) => complete({ exitCode: code }),
+          }),
+        });
+      } finally {
+        await host.shutdown();
+      }
+    });
     return result.exitCode;
   } finally {
-    controller.dispose();
+    host.dispose();
   }
 }

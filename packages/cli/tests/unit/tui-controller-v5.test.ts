@@ -7,9 +7,12 @@ import {
   TuiController,
   operationEvidenceMatches,
   operationEvidenceFingerprint,
+  pluginWriteBatchFailedRequestedPluginIds,
   userIssueKey,
   type OperationEvidence,
   type OperationIntent,
+  type PluginWriteBatchEvidence,
+  type PluginWriteBatchExecutionResult,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -22,6 +25,7 @@ import {
   type PluginListItemViewModel,
 } from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
+import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 
 function source(
   id: string,
@@ -37,6 +41,345 @@ function source(
     ...(options.error ? { error: options.error, errorCode: 'catalogSourceUnavailable' } : {}),
   };
 }
+
+describe('TuiController session retirement', () => {
+  it('records only successful status read time and keeps it when returning home', async () => {
+    let now = 1_000;
+    const value = new TuiController(dependencies({ now: () => now }));
+    await value.load();
+    expect(value.snapshot.statusReadAtMs).toBe(1_000);
+
+    now = 2_000;
+    value.push({ name: 'pluginList', mode: 'browse' });
+    expect(value.goHome()).toBe(true);
+    expect(value.snapshot.statusReadAtMs).toBe(1_000);
+
+    const failed = new TuiController(dependencies({
+      now: () => 3_000,
+      loadStatus: vi.fn().mockRejectedValue(new Error('failed')),
+    }));
+    await failed.load();
+    expect(failed.snapshot.statusReadAtMs).toBeUndefined();
+  });
+
+  it('aborts and waits for a pending local status read without interrupting a write', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const loadStatus = vi.fn((signal: AbortSignal) => {
+      observedSignal = signal;
+      return new Promise<TuiStatusLoadResult>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('cancelled', 'AbortError'));
+        }, { once: true });
+      });
+    });
+    const value = new TuiController(dependencies({ loadStatus }));
+    const loading = value.load();
+    await Promise.resolve();
+
+    await expect(value.cancelAndWaitForReads()).resolves.toBe(true);
+    await loading;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(value.hasActiveWrite).toBe(false);
+  });
+
+  it('closes new read and write entry points before draining existing reads', async () => {
+    const pending = deferred<TuiStatusLoadResult>();
+    const getConfigPage = vi.fn();
+    const executeIntent = vi.fn();
+    const value = new TuiController(dependencies({
+      loadStatus: vi.fn(() => pending.promise),
+      getConfigPage,
+      executeIntent,
+    }));
+    const loading = value.load();
+    await Promise.resolve();
+    value.beginRetirement();
+
+    await expect(value.getConfigPage('official/demo', { scope: 'user' }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    await expect(value.executeOperation('missing')).resolves.toMatchObject({
+      state: 'blocked', code: 'sessionRetiring',
+    });
+    expect(getConfigPage).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+
+    pending.resolve({ payload: status(), pluginSummaries: summaries(['official', 'demo']) });
+    await loading;
+    await expect(value.cancelAndWaitForReads()).resolves.toBe(true);
+  });
+});
+
+describe('TUI plugin write batches', () => {
+  function failedBatchResult(
+    targetResults: Array<Record<string, unknown>>,
+  ): PluginWriteBatchExecutionResult {
+    const result = {
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults,
+      overallState: 'failed', receiptTargets: [],
+    } as unknown as PluginWriteBatchExecutionResult['groupResults'][number]['result'];
+    return {
+      ...result,
+      requestedPluginIds: ['official/root-a', 'official/root-b'],
+      groupResults: [{
+        groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        requestedPluginIds: ['official/root-a', 'official/root-b'], result,
+      }],
+    };
+  }
+
+  it('maps requested and dependency failures back to the affected roots', () => {
+    const execution = failedBatchResult([
+      { target: { pluginId: 'official/root-a', platform: 'codex', scope: 'project' },
+        action: 'sync', state: 'failed', requiredBy: [] },
+      { target: { pluginId: 'official/dependency', platform: 'codex', scope: 'project' },
+        action: 'sync', state: 'failed', requiredBy: ['official/root-b'] },
+    ]);
+    expect(pluginWriteBatchFailedRequestedPluginIds(execution)).toEqual([
+      'official/root-a', 'official/root-b',
+    ]);
+  });
+
+  it('maps a group preflight failure without targets to all group roots', () => {
+    expect(pluginWriteBatchFailedRequestedPluginIds(failedBatchResult([]))).toEqual([
+      'official/root-a', 'official/root-b',
+    ]);
+  });
+
+  it('aggregates all requested roots, dependencies, timeout, and shared confirmation', () => {
+    const dependencyPlan = {
+      requestedPluginIds: ['official/root-a', 'official/root-b'],
+      resolvedPluginIds: ['official/dependency', 'official/root-a', 'official/root-b'],
+      dependencyEdges: [
+        { from: 'official/root-a', to: 'official/dependency', platform: 'codex' },
+        { from: 'official/root-b', to: 'official/dependency', platform: 'codex' },
+      ],
+      scopeOverrides: [],
+      targets: [
+        { pluginId: 'official/root-a', pluginName: 'root-a', platform: 'codex', relation: 'requested',
+          depth: 0, requiredBy: [], resolvedScope: 'project', action: 'install', assignmentSource: 'root' },
+        { pluginId: 'official/root-b', pluginName: 'root-b', platform: 'codex', relation: 'requested',
+          depth: 0, requiredBy: [], resolvedScope: 'project', action: 'install', assignmentSource: 'root' },
+        { pluginId: 'official/dependency', pluginName: 'dependency', platform: 'codex', relation: 'dependency',
+          depth: 1, requiredBy: ['official/root-a', 'official/root-b'], resolvedScope: 'project',
+          action: 'install', assignmentSource: 'default' },
+      ],
+    } as unknown as NonNullable<OperationEvidence['dependencyPlan']>;
+    const preview = {
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+      overallState: 'succeeded', receiptTargets: [], dependencyPlan,
+      operationPlan: { planFingerprint: 'sha256:group-plan' },
+      codexReconcilePlans: [{
+        sharedNativeActions: [],
+        activationActions: { user: [], project: [] },
+        extensionWrites: [], extensionRemovals: [],
+        review: {
+          requiresConfirmation: true,
+          sharedImpact: { pluginIds: ['shared/native'], warning: '会影响其它项目。' },
+        },
+      }],
+      codexManagerPreview: { state: 'requires-install' },
+    } as unknown as PluginWriteBatchEvidence['groups'][number]['preview'];
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/root-a', 'official/root-b'],
+      groups: [{
+        groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        requestedPluginIds: ['official/root-a', 'official/root-b'], preview, executable: true,
+      }],
+    };
+
+    const review = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWriteBatch', action: 'install',
+        selection: { kind: 'selected', pluginIds: evidence.requestedPluginIds },
+        platform: 'codex', scope: 'project', scriptTimeoutMs: 12_000,
+      },
+      evidence,
+    });
+
+    expect(review.requiresConfirmation).toBe(true);
+    expect(review.sharedImpact.pluginIds).toEqual(['shared/native']);
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/root-a', relation: 'requested', sourceId: 'official' }),
+      expect.objectContaining({ pluginId: 'official/root-b', relation: 'requested', sourceId: 'official' }),
+      expect.objectContaining({ pluginId: 'official/dependency', relation: 'direct', sourceId: 'official' }),
+      expect.objectContaining({ title: 'preApply 脚本超时', description: '12000 ms' }),
+      expect.objectContaining({ title: '获取 Codex 运行组件' }),
+    ]));
+  });
+
+  it('owns one batch flow and finishes it at the installed plugin list', () => {
+    const router = new TuiRouter();
+    router.push({ name: 'pluginList', mode: 'browse' }, { query: 'tool', focusIndex: 2 });
+    const flow = router.beginBatchFlow();
+    router.push({ name: 'batchSelection' });
+    router.push({ name: 'batchPlacement' });
+    expect(flow).toMatchObject({
+      kind: 'batchWrite', returnTarget: { name: 'pluginList', mode: 'installed' },
+    });
+    router.finishFlow(undefined, { name: 'result', operationId: 'batch-1' });
+    router.back();
+    expect(router.snapshot.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+  });
+
+  it('keeps one history record and retries failed roots with new evidence', async () => {
+    const preview = failedBatchResult([]).groupResults[0]!.result;
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/root-a', 'official/root-b'],
+      groups: [{
+        groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        requestedPluginIds: ['official/root-a', 'official/root-b'], preview, executable: false,
+      }],
+    };
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const executeIntent = vi.fn().mockResolvedValue(failedBatchResult([]));
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'root-a'], ['official', 'root-b']),
+      }),
+      captureEvidence,
+      executeIntent,
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginList', mode: 'browse' });
+    controller.beginPluginWriteBatch();
+    controller.push({ name: 'batchPlacement' });
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWriteBatch', action: 'sync',
+      selection: { kind: 'selected', pluginIds: ['official/root-b', 'official/root-a'] },
+      platform: 'codex', scope: 'project',
+    });
+    expect(review).toMatchObject({
+      operationKind: 'pluginWriteBatch', batch: { groupCount: 1, executableGroupCount: 0 },
+    });
+    const result = await controller.executeOperation(review.reviewToken);
+    expect(result).toMatchObject({
+      state: 'blocked',
+      summary: { batch: { failedRequestedPluginIds: ['official/root-a', 'official/root-b'] } },
+    });
+    expect(controller.listOperationHistory()).toHaveLength(1);
+    expect(executeIntent).toHaveBeenCalledTimes(1);
+    expect(captureEvidence.mock.calls[0]?.[0]).toMatchObject({
+      selection: { kind: 'selected', pluginIds: ['official/root-a', 'official/root-b'] },
+    });
+
+    const retry = controller.retryFailedPluginWriteBatch();
+    expect(retry?.operationKind).toBe('pluginWriteBatch');
+    await nextTurn(2);
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence.mock.calls[1]?.[0]).toMatchObject({
+      selection: { kind: 'selected', pluginIds: ['official/root-a', 'official/root-b'] },
+    });
+    expect(controller.snapshot.activeReview?.operationId).not.toBe(review.operationId);
+  });
+
+  it('keeps completed group effects when a later stale group becomes a partial result', async () => {
+    const completedTarget = {
+      target: {
+        pluginId: 'official/root-a', pluginName: 'root-a',
+        platform: 'codex', scope: 'project',
+      },
+      action: 'sync', state: 'completed', requiredBy: [],
+    };
+    const staleTarget = {
+      target: {
+        pluginId: 'team/root-b', pluginName: 'root-b',
+        platform: 'codex', scope: 'project',
+      },
+      action: 'sync', state: 'failed', requiredBy: [], errorCode: 'operationReviewStale',
+    };
+    const groupResult = (
+      overallState: 'succeeded' | 'failed',
+      targetResults: Array<Record<string, unknown>>,
+    ): PluginWriteBatchExecutionResult['groupResults'][number]['result'] => ({
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults,
+      overallState, receiptTargets: [],
+    } as unknown as PluginWriteBatchExecutionResult['groupResults'][number]['result']);
+    const completed = groupResult('succeeded', [completedTarget]);
+    const stale = groupResult('failed', [staleTarget]);
+    const execution = {
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [],
+      targetResults: [completedTarget, staleTarget], overallState: 'partial', receiptTargets: [],
+      requestedPluginIds: ['official/root-a', 'team/root-b'],
+      groupResults: [
+        { groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+          requestedPluginIds: ['official/root-a'], result: completed },
+        { groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+          requestedPluginIds: ['team/root-b'], result: stale },
+      ],
+    } as unknown as PluginWriteBatchExecutionResult;
+    const preview = (fingerprint: string) => ({
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+      overallState: 'succeeded', receiptTargets: [],
+      operationPlan: { planFingerprint: fingerprint },
+    } as unknown as PluginWriteBatchEvidence['groups'][number]['preview']);
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/root-a', 'team/root-b'],
+      groups: [
+        { groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+          requestedPluginIds: ['official/root-a'], preview: preview('sha256:official'), executable: true },
+        { groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+          requestedPluginIds: ['team/root-b'], preview: preview('sha256:team'), executable: true },
+      ],
+    };
+    const retryEvidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['team/root-b'],
+      groups: [{ groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+        requestedPluginIds: ['team/root-b'], preview: preview('sha256:team-retry'), executable: true }],
+    };
+    const captureEvidence = vi.fn()
+      .mockResolvedValueOnce(evidence)
+      .mockResolvedValueOnce(retryEvidence);
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'root-a'], ['team', 'root-b']),
+      }),
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue(execution),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginList', mode: 'installed' });
+    controller.beginPluginWriteBatch();
+    controller.push({ name: 'batchPlacement' });
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWriteBatch', action: 'sync',
+      selection: { kind: 'selected', pluginIds: ['official/root-a', 'team/root-b'] },
+      platform: 'codex', scope: 'project',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+    expect(result).toMatchObject({
+      state: 'partial',
+      summary: { batch: { failedRequestedPluginIds: ['team/root-b'] } },
+    });
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(1);
+    expect(controller.getOperationDiagnostic(history[0]!.recordId)?.targets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pluginId: 'official/root-a', state: 'completed',
+          effects: expect.objectContaining({ awWrite: 'completed' }),
+        }),
+        expect.objectContaining({
+          pluginId: 'team/root-b', state: 'failed', errorCode: 'operationReviewStale',
+        }),
+      ]),
+    );
+
+    expect(controller.retryFailedPluginWriteBatch()?.operationKind).toBe('pluginWriteBatch');
+    await nextTurn();
+    expect(captureEvidence.mock.calls[1]?.[0]).toMatchObject({
+      selection: { kind: 'selected', pluginIds: ['team/root-b'] },
+    });
+    expect(controller.snapshot.activeReview?.operationId).not.toBe(review.operationId);
+  });
+});
 
 function sourceDetail(
   id: string,
@@ -160,6 +503,7 @@ function menuPlugin(overrides: Partial<PluginListItemViewModel> = {}): PluginLis
     installedPlacements: [{ platform: 'codex', state: 'notInstalled', supportedScopes: ['user', 'project'] }],
     aggregateStatus: 'available',
     portableSkills: false,
+    savedConfigScopes: [],
     dependencySummary: {
       directCount: 0, transitiveCount: 0, totalCount: 0,
       readyCount: 0, missingCount: 0, issueCount: 0,
@@ -188,6 +532,48 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('includes recognizable saved settings without claiming the plugin is installable', () => {
+    const view = buildTuiViewModel({
+      status: status(),
+      pluginSummaries: [],
+      configStoreInventory: [{
+        pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
+      }],
+    });
+
+    expect(view.plugins).toEqual([expect.objectContaining({
+      pluginId: 'removed/demo',
+      aggregateStatus: 'unavailable',
+      configOnly: true,
+      savedConfigScopes: ['user'],
+      supportedPlatforms: [],
+      installedPlacements: [],
+    })]);
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(), pluginSummaries: [], configStoreInventory: [{
+          pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
+        }],
+      }),
+    }));
+    return controller.load().then(() => {
+      expect(controller.listPlugins({ mode: 'installed' })).toHaveLength(1);
+      expect(controller.listInstallTargets('removed/demo', 'user')).toEqual([]);
+      expect(buildPluginDetailActions(controller.getPluginOverview('removed/demo')!)
+        .map((action) => action.id)).toEqual(['settings', 'sourceProblem', 'about']);
+      controller.push({ name: 'pluginDetail', pluginId: 'removed/demo' });
+      controller.beginSavedConfigRecovery('removed/demo');
+      expect(controller.snapshot.router.current.route).toEqual({
+        name: 'configUnavailable',
+        pluginId: 'removed/demo',
+        storedScopes: ['user'],
+        layer: { scope: 'user' },
+        diagnosticCode: 'catalogSourceUnavailable',
+        diagnosticStage: 'read-config',
+      });
+    });
+  });
+
   it('builds capability actions only for capabilities with live content', () => {
     const empty = menuPlugin();
     expect(buildPluginPreviewActions(empty).map((action) => action.id)).toEqual(['add', 'source']);
@@ -743,9 +1129,7 @@ describe('TUI v4 router and ViewModel', () => {
     preview.resolve(undefined);
 
     await expect(preparation).rejects.toMatchObject({ name: 'AbortError' });
-    expect(controller.snapshot.installPlacementDraft).toMatchObject({
-      state: 'selecting', canContinue: false, targets: [],
-    });
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
   });
 
   it('projects manifest order, presentation groups, choices, and private values safely', () => {
@@ -1208,7 +1592,7 @@ describe('TUI v4 router and ViewModel', () => {
     );
     router.push({ name: 'pluginDetail', pluginId: 'team/review-gate' });
 
-    expect(router.back()).toEqual({
+    expect(router.back()).toMatchObject({
       depth: 2,
       current: {
         route: { name: 'pluginList', mode: 'browse', sourceId: 'team' },
@@ -1222,11 +1606,61 @@ describe('TUI v4 router and ViewModel', () => {
     router.push({ name: 'pluginPreview', pluginId: 'official/root' }, { focusIndex: 1 });
     router.push({ name: 'pluginDependencies', pluginId: 'official/root' });
 
-    expect(router.back()).toEqual({
+    expect(router.back()).toMatchObject({
       depth: 2,
       current: {
         route: { name: 'pluginPreview', pluginId: 'official/root' },
         context: { focusIndex: 1 },
+      },
+    });
+  });
+
+  it('owns transient frames by a stable flow and finishes at the preserved plugin anchor', () => {
+    const router = new TuiRouter();
+    router.push(
+      { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      {
+        focusIndex: 2,
+        scrollOffset: 1,
+        query: 'agent',
+        sourceTabId: 'official',
+        focusedEntityId: 'official/demo',
+      },
+    );
+    router.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    const originFrameId = router.snapshot.currentFrameId;
+    const flow = router.beginPluginFlow('pluginInstall', 'official/demo');
+    router.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    const stepFrameId = router.snapshot.currentFrameId;
+    router.push({ name: 'installTargets', pluginId: 'official/demo' });
+
+    expect(router.snapshot.currentFlowId).toBe(flow.id);
+    expect(flow.originFrameId).toBe(originFrameId);
+    expect(router.back().currentFrameId).toBe(stepFrameId);
+
+    router.push({ name: 'review', operationId: 'operation-1' });
+    router.replace({ name: 'progress', operationId: 'operation-1' });
+    router.finishFlow(
+      { name: 'pluginDetail', pluginId: 'official/demo' },
+      { name: 'result', operationId: 'operation-1' },
+    );
+
+    expect(router.snapshot).toMatchObject({
+      depth: 4,
+      current: { route: { name: 'result', operationId: 'operation-1' } },
+    });
+    expect(router.snapshot.currentFlowId).toBeUndefined();
+    router.back();
+    expect(router.snapshot.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    router.back();
+    expect(router.snapshot.current).toEqual({
+      route: { name: 'pluginList', mode: 'browse', sourceId: 'official' },
+      context: {
+        focusIndex: 2,
+        scrollOffset: 1,
+        query: 'agent',
+        sourceTabId: 'official',
+        focusedEntityId: 'official/demo',
       },
     });
   });
@@ -1492,9 +1926,9 @@ describe('TUI v4 router and ViewModel', () => {
 
     const issue = view.issues[0]!;
     expect(issue).toMatchObject({
-      title: expect.stringContaining('共享 native 待同步'),
+      title: expect.stringContaining('平台共享内容待同步'),
       explanation: expect.stringContaining('个人默认已变化'),
-      impact: [expect.stringContaining('不是 cache 损坏')],
+      impact: [expect.stringContaining('不是缓存损坏')],
       technicalDetails: [{
         code: 'codexSharedNativeRenderDrift',
         message: '状态检查报告了这个安全错误代码。',
@@ -1838,10 +2272,10 @@ describe('TUI v4 router and ViewModel', () => {
         issueId: expect.stringContaining('bundleUnavailable'),
         pluginId: 'official/offline', category: 'sourceUnavailable',
         rootCode: 'bundleUnavailable', mergeEligible: false,
-        title: expect.stringContaining('当前 Catalog 不再包含此插件'),
-        explanation: '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。',
+        title: expect.stringContaining('当前插件目录不再包含此插件'),
+        explanation: '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。',
         actions: expect.arrayContaining([
-          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理 AW-owned 内容' }),
+          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理 AW 管理内容' }),
         ]),
       }),
     ]));
@@ -1959,6 +2393,59 @@ describe('TUI Catalog freshness session overlay', () => {
     await controller.recheckCatalogSource('team');
     expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual(['official', 'team']);
     expect(probeCatalogFreshness.mock.calls.at(-1)?.[1]).toEqual({ fullValidation: false });
+    controller.dispose();
+  });
+
+  it('explicitly checks every source with at most two probes in flight', async () => {
+    const sources = [
+      source('official', { primary: true }),
+      source('team', { primary: false }),
+      source('local', { primary: false }),
+    ];
+    const pending = new Map(sources.map(({ id }) => [id, deferred<{
+      sourceId: string;
+      state: 'current';
+    }>()]));
+    let active = 0;
+    let maximumActive = 0;
+    const probeCatalogFreshness = vi.fn(async (sourceId: string) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      try {
+        return await pending.get(sourceId)!.promise;
+      } finally {
+        active -= 1;
+      }
+    });
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ sources }),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: sources.map(({ id, primary }) => sourceDetail(id, {
+          primary,
+          autoCheck: false,
+        })),
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    const checking = controller.recheckAllCatalogSources();
+    await nextTurn();
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual([
+      'official', 'team',
+    ]);
+    pending.get('official')!.resolve({ sourceId: 'official', state: 'current' });
+    await nextTurn();
+    expect(probeCatalogFreshness.mock.calls.map(([sourceId]) => sourceId)).toEqual([
+      'official', 'team', 'local',
+    ]);
+    pending.get('team')!.resolve({ sourceId: 'team', state: 'current' });
+    pending.get('local')!.resolve({ sourceId: 'local', state: 'current' });
+    await checking;
+
+    expect(maximumActive).toBe(2);
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(3);
     controller.dispose();
   });
 
@@ -2405,6 +2892,129 @@ describe('TUI Catalog freshness session overlay', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  it('finishes nested source recovery at the exact config editor route with the parent draft flow active', async () => {
+    const candidate = {
+      sourceId: 'official',
+      sourceConfigFingerprint: 'sha256:source',
+      sourceIdentity: 'identity:official',
+      logicalIdentity: 'workspace:official',
+      requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit: 'a'.repeat(40),
+      catalogVersion: '1.0.0',
+      channel: 'latest' as const,
+      manifestDigest: `sha256:${'b'.repeat(64)}`,
+      snapshotDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: candidate.snapshotDigest },
+      catalogGeneration: {
+        action: 'repair', candidate, exactRepair: true,
+        activationMode: 'normal', configDigest: 'sha256:config',
+      },
+    };
+    const loadStatus = vi.fn().mockResolvedValue({
+      payload: status(), pluginSummaries: summaries(['official', 'demo']),
+    });
+    const controller = new TuiController(dependencies({
+      loadStatus,
+      prepareReviewEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ status: 'succeeded' }),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    controller.beginConfigFlow('official/demo');
+    const resumeRoute = {
+      name: 'configFieldEditor' as const,
+      pluginId: 'official/demo',
+      layer: { scope: 'user' as const },
+      fieldKey: 'mode',
+      editor: 'string' as const,
+    };
+    controller.replace({
+      name: 'configUnavailable',
+      pluginId: 'official/demo',
+      layer: { scope: 'user' },
+      resumeRoute,
+      resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
+      diagnosticCode: 'catalogSourceUnavailable',
+    }, { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 });
+    controller.setExternalDraftState('configDraft');
+
+    controller.beginConfigSourceRecovery('official');
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'sourceDetail', sourceId: 'official',
+    });
+    const preparation = controller.startReviewPreparation({
+      kind: 'catalogGeneration', action: 'repair', sourceId: 'official',
+    });
+    await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
+    const token = controller.snapshot.activeReview!.reviewToken;
+    expect(preparation.state).toBe('running');
+
+    await expect(controller.executeOperation(token)).resolves.toMatchObject({ state: 'succeeded' });
+    controller.leaveResult();
+
+    expect(controller.snapshot.router.current.route).toEqual(resumeRoute);
+    expect(controller.snapshot.router.current.context).toEqual({
+      configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1,
+    });
+    expect(controller.snapshot.router.currentFlowId).toBeDefined();
+    expect(loadStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens force cleanup Review only from exact exclusive preview evidence', async () => {
+    const forceEvidence: OperationEvidence = {
+      ...baseEvidence,
+      offlineCleanup: {
+        reason: 'bundleUnavailable',
+        pluginId: 'official/demo',
+        pluginName: 'demo',
+        sourceId: 'official',
+        sourceIdentity: 'identity:official',
+        platform: 'codex',
+        scope: 'user',
+        forceExclusive: true,
+        plan: {
+          schemaVersion: 1,
+          pluginId: 'official/demo',
+          sourceIdentity: 'identity:official',
+          platform: 'codex',
+          scope: 'user',
+          actions: [{
+            action: 'removeOwnedOutput',
+            kind: 'skill-directory',
+            target: '/safe/owned-output',
+          }],
+        },
+        planDigest: 'sha256:force',
+        targetFingerprint: 'sha256:force',
+      },
+    };
+    const captureEvidence = vi.fn().mockResolvedValue(forceEvidence);
+    const controller = new TuiController(dependencies({ captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+
+    const candidate = await controller.getForceCleanupCandidate('official/demo', 'codex', 'user');
+    expect(candidate).toEqual({
+      pluginId: 'official/demo', platform: 'codex', scope: 'user', actionCount: 1,
+    });
+    controller.startForceCleanupReview(candidate!);
+    await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
+
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: 'pluginWrite', action: 'cleanup', force: true,
+    });
+
+    const unavailable = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
+    }));
+    await unavailable.load();
+    await expect(unavailable.getForceCleanupCandidate('official/demo', 'codex', 'user'))
+      .resolves.toBeUndefined();
+  });
+
   it('shows refresh fallback in the ordinary Review and uses the refreshed plugin version', async () => {
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn().mockResolvedValue({
@@ -2538,7 +3148,7 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       group: 'sharedCodexNative',
       kind: 'keep',
-      description: '复用已存在的精确 shared native；不建立 ownership ledger',
+      description: '复用完全相同的平台共享内容',
     }));
     expect(JSON.stringify(review.changes)).not.toContain('claim');
   });
@@ -2578,7 +3188,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(review.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        kind: 'remove', title: '移除 AW-owned 输出',
+        kind: 'remove', title: '移除 AW 管理输出',
         description: '/workspace/.codex/owners/demo.json',
       }),
       expect.objectContaining({
@@ -2614,8 +3224,8 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       kind: 'add',
       group: 'runtime',
-      title: '获取 Codex runtime',
-      description: '@openai/codex@0.151.0 · AW-managed 缓存',
+      title: '获取 Codex 运行组件',
+      description: '@openai/codex@0.151.0 · AW 管理缓存',
     }));
     expect(review.equivalentCommand).toContain('--allow-managed-codex-install');
     expect(operationEvidenceFingerprint(evidence)).toBe(operationEvidenceFingerprint({
@@ -2788,7 +3398,7 @@ describe('TUI v4 Review safety', () => {
       },
     });
     expect(review.equivalentCommand).toBe(
-      'aw install official/root --platform codex --scope user --yes',
+      'aw install official/root --platform codex --scope user --script-timeout 300000 --yes',
     );
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
       state: 'blocked',
@@ -2799,10 +3409,8 @@ describe('TUI v4 Review safety', () => {
         expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
       ]) },
     });
-    expect(controller.snapshot.progressTargets).toEqual(expect.arrayContaining([
-      expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept' }),
-      expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
-    ]));
+    expect(controller.snapshot.progressTargets).toEqual([]);
+    expect(controller.snapshot.progress).toEqual({ messages: [] });
   });
 
   it('keeps a failed dependency execution failed when no target completed or was kept', async () => {
@@ -2992,6 +3600,9 @@ describe('TUI v4 Review safety', () => {
     const executing = controller.executeOperation(review.reviewToken);
     const callsBeforeDispose = listener.mock.calls.length;
 
+    await expect(controller.cancelAndWaitForReads()).resolves.toBe(false);
+    expect(controller.hasActiveWrite).toBe(true);
+
     controller.dispose();
     write.resolve({ targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }] });
     await executing;
@@ -3041,7 +3652,9 @@ describe('TUI v4 Review safety', () => {
       returnRoute,
     });
     controller.leaveResult();
-    expect(controller.snapshot.router.current.route).toEqual(returnRoute);
+    expect(controller.snapshot.router.current.route).toEqual(
+      intent.kind === 'sourceMutation' ? { name: 'sourceList' } : returnRoute,
+    );
   });
 
   it.each([
@@ -3081,6 +3694,97 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.router).toMatchObject({ depth: 1, current: { route: { name: 'home' } } });
   });
 
+  it('clears install selection and progress at Result, and clears an abandoned install draft', async () => {
+    const progressFeed = createRebuildProgressFeed();
+    const controller = new TuiController(dependencies(), progressFeed);
+    await controller.load();
+    controller.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    controller.beginInstallFlow('official/demo', 'user');
+    controller.setInstallPlatforms(['codex']);
+    controller.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    progressFeed.setCurrent({ target: 'demo · Codex/当前用户', phase: '写入平台插件' }, '正在写入');
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    await controller.executeOperation(review.reviewToken);
+
+    expect(controller.snapshot.router.current.route.name).toBe('result');
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+    expect(controller.snapshot.progress).toEqual({ messages: [] });
+    expect(controller.snapshot.progressTargets).toEqual([]);
+
+    controller.leaveResult();
+    controller.beginInstallFlow('official/demo', 'project');
+    controller.push({ name: 'installPlacement', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toBeDefined();
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+  });
+
+  it('keeps a blocked install draft private until the user explicitly returns to modify it', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockRejectedValue(new Error('writeRejected')),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    controller.beginInstallFlow('official/demo', 'user');
+    controller.setInstallPlatforms(['codex']);
+    controller.push({ name: 'installTargets', pluginId: 'official/demo' });
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    await controller.executeOperation(review.reviewToken);
+    expect(controller.snapshot.installPlacementDraft).toBeUndefined();
+
+    controller.resumeResultDraft();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'installTargets', pluginId: 'official/demo' });
+    expect(controller.snapshot.installPlacementDraft).toMatchObject({
+      pluginId: 'official/demo', rootScope: 'user', platforms: ['codex'],
+    });
+  });
+
+  it('owns every source-add wizard step from the source list and removes them before Result', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      sourceWrite: {
+        configDigest: 'sha256:before',
+        proposedConfigDigest: 'sha256:after',
+        inventoryDigest: 'sha256:inventory',
+        referenceCount: 0,
+        inventoryComplete: true,
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+    }));
+    await controller.load();
+    controller.push({ name: 'sourceList' });
+    controller.push({ name: 'sourceAdd', step: 'type', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'id', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'location', owner: 'source-draft' });
+    controller.push({ name: 'sourceAdd', step: 'refPolicy', owner: 'source-draft' });
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'team',
+      source: { id: 'team', type: 'path', primary: false, path: '/safe/fixture' },
+    });
+
+    await controller.executeOperation(review.reviewToken);
+
+    expect(controller.snapshot.router).toMatchObject({
+      depth: 3,
+      current: { route: { name: 'result', operationId: review.operationId } },
+    });
+    controller.leaveResult();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceList' });
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
+  });
+
   it.each([
     ['plugin', { name: 'pluginDetail' as const, pluginId: 'official/demo' }],
     ['source', { name: 'sourceList' as const }],
@@ -3100,7 +3804,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(controller.snapshot.result).toBeUndefined();
     expect(controller.snapshot.router.current.route).toEqual(targetRoute);
-    expect(controller.snapshot.router.depth).toBe(2);
+    expect(controller.snapshot.router.depth).toBe(targetRoute.name === 'home' ? 1 : 2);
     controller.back();
     expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
   });
@@ -3630,6 +4334,9 @@ describe('TUI v4 Review safety', () => {
       },
       returnRoute: { name: 'configUnavailable', pluginId: 'official/demo' },
     });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { configCommit: 'completed', finalVerification: 'failed' },
+    });
     expect(controller.snapshot.phase).toBe('ready');
     expect(JSON.stringify(controller.snapshot)).not.toContain('/private/reload');
   });
@@ -3668,7 +4375,7 @@ describe('TUI v4 Review safety', () => {
     });
     controller.leaveResult();
     expect(controller.snapshot.router.current.route).toEqual({
-      name: 'configUnavailable', pluginId: 'official/demo',
+      name: 'pluginDetail', pluginId: 'official/demo',
     });
   });
 
@@ -3704,6 +4411,22 @@ describe('TUI v4 Review safety', () => {
     controller.back();
 
     expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+  });
+
+  it('normalizes missing source ancestors and missing history records after reload', async () => {
+    const loaded = { payload: status(), pluginSummaries: summaries(['official', 'demo']) };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+    }));
+    await controller.load();
+    controller.push({ name: 'sourceTechnical', sourceId: 'removed' });
+    controller.push({ name: 'operationDiagnostic', recordId: 'removed-record' });
+
+    await controller.load();
+
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceList' });
   });
 
   it('normalizes a deleted plugin return route for blocked and stale results', async () => {
@@ -3794,6 +4517,99 @@ describe('TUI v4 Review safety', () => {
     });
     expect(loadStatus).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
+  });
+
+  it('preserves a committed config save as partial and creates a new apply-only Review', async () => {
+    const committedError = Object.assign(new Error('runtime apply failed'), {
+      code: 'configApplyFailed',
+      configWrite: 'succeeded' as const,
+    });
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(committedError)
+      .mockResolvedValueOnce({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'succeeded', targetResults: [] },
+      });
+    const controller = new TuiController(dependencies({ executeIntent }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'strict' },
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'partial',
+      operationKind: 'configSave',
+      summary: {
+        code: 'operationPartial',
+        message: '设置已保存，但后续应用失败。',
+        configScope: 'user',
+        configApplyRetryAvailable: true,
+      },
+    });
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(1);
+    expect(controller.getOperationDiagnostic(history[0]!.recordId)?.summary.effects).toMatchObject({
+      configCommit: 'completed', finalVerification: 'completed',
+    });
+
+    const retry = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      apply: true,
+      retryApply: true,
+    });
+    expect(retry.reviewToken).not.toBe(review.reviewToken);
+    await controller.executeOperation(retry.reviewToken);
+    expect(executeIntent.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      kind: 'configSave', apply: true, retryApply: true,
+    }));
+    expect(executeIntent.mock.calls[1]?.[0]).not.toHaveProperty('updates');
+  });
+
+  it('preserves a committed config reset without inventing a reset disposition', async () => {
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce({ payload: status(), pluginSummaries: summaries(['official', 'demo']) })
+      .mockRejectedValueOnce(new Error('status unavailable'));
+    const controller = new TuiController(dependencies({
+      loadStatus,
+      executeIntent: vi.fn().mockRejectedValue(Object.assign(new Error('apply failed'), {
+        code: 'configApplyFailed',
+        configWrite: 'succeeded' as const,
+      })),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'partial',
+      operationKind: 'configReset',
+      summary: {
+        message: '设置层重置已提交，但后续步骤未完成。',
+        configScope: 'user',
+      },
+    });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { configCommit: 'completed', finalVerification: 'failed' },
+    });
+    expect(result.summary).not.toHaveProperty('configApplyRetryAvailable');
+    expect(result.summary).not.toHaveProperty('resetDisposition');
   });
 
   it('invalidates cancelled, expired, and over-limit Review tickets through public behavior', async () => {
@@ -3968,8 +4784,8 @@ describe('TUI v4 Review safety', () => {
   });
 
   it.each([
-    [false, ['共享 Codex native render 待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
-    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新共享 Codex native 插件会影响所有启用项目。'],
+    [false, ['Codex 平台共享内容待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
+    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新 Codex 平台共享内容会影响所有启用项目。'],
   ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
@@ -4001,7 +4817,7 @@ describe('TUI v4 Review safety', () => {
       .map((change) => change.title)).toEqual(impactTitles);
     expect(review.changes).toContainEqual(expect.objectContaining({ description }));
     expect(review.changes).toContainEqual(expect.objectContaining({
-      title: 'project Agent role 继续按当前项目配置', kind: 'keep',
+      title: '当前项目 Agent role 继续使用当前项目配置', kind: 'keep',
     }));
     expect(review).toMatchObject({
       requiresConfirmation: apply,
@@ -4112,6 +4928,78 @@ describe('TUI v4 Review safety', () => {
       message: '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。',
     }));
     expect(JSON.stringify({ success: succeeded.snapshot, failure: failed.snapshot })).not.toContain(secret);
+  });
+
+  it('keeps typed target diagnostics and preApply effect facts in safe operation history', async () => {
+    const secret = 'stderr: Authorization=private-token';
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        platforms: ['codex'],
+        plugins: ['official/demo'],
+        warnings: [secret, 'obsolete contract at /Users/private/.aw/state.json'],
+        overallState: 'failed',
+        targetResults: [{
+          target: { pluginId: 'official/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'failed', errorCode: 'preApplyFailed', message: secret,
+        }],
+        rebuildResults: [{
+          status: 'failed', command: 'install',
+          target: { pluginId: 'official/demo', pluginName: 'demo', platform: 'codex', scope: 'user' },
+          actions: [{ name: 'preApply', status: 'failed' }],
+          error: {
+            phase: 'preApply', message: secret,
+            operationDiagnostic: {
+              code: 'preApplyExited', stage: 'preApply', exitCode: 7,
+              safeMessage: 'The preApply process exited unsuccessfully.',
+            },
+          },
+        }],
+      }),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+    const recordId = controller.snapshot.result?.operationRecordId;
+    const detail = controller.getOperationDiagnostic(recordId!);
+
+    expect(result).toMatchObject({ state: 'blocked' });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { awWrite: 'notStarted', preApplyExternalEffect: 'possible' },
+    });
+    expect(detail).toMatchObject({
+      diagnostics: [{ code: 'preApplyExited', stage: 'preApply', exitCode: 7 }],
+      targets: [{ state: 'failed', errorCode: 'preApplyFailed' }],
+    });
+    expect(JSON.stringify({ snapshot: controller.snapshot, detail })).not.toContain(secret);
+  });
+
+  it('transfers terminal diagnostics into the twenty-record history without retaining operation-private state', async () => {
+    let token = 0;
+    const controller = new TuiController(dependencies({
+      createToken: () => `token-${++token}`,
+      executeIntent: vi.fn().mockResolvedValue({
+        platforms: ['codex'],
+        plugins: ['official/demo'],
+        overallState: 'succeeded',
+        targetResults: [{
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'completed',
+        }],
+      }),
+    }));
+
+    for (let index = 0; index < 25; index += 1) {
+      const review = await controller.buildOperationReview({
+        kind: 'pluginWrite', action: 'install', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+      });
+      await controller.executeOperation(review.reviewToken);
+      controller.leaveResult();
+    }
+
+    expect(controller.listOperationHistory()).toHaveLength(20);
+    expect(controller.operationDiagnosticRetentionCountForTests()).toBe(0);
   });
 
   it('isolates nested router, status, ticket, progress, and result values from caller mutation', async () => {
@@ -4242,9 +5130,9 @@ describe('TUI v4 Review safety', () => {
       pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
     };
     const first = await value.buildOperationReview(intent);
-    await value.executeOperation(first.reviewToken);
-    expect(value.snapshot.progress.current).toBeDefined();
-    const messages = value.snapshot.progress.messages;
+    const firstResult = await value.executeOperation(first.reviewToken);
+    expect(firstResult).toMatchObject({ summary: { messages: expect.any(Array) } });
+    expect(value.snapshot.progress).toEqual({ messages: [] });
 
     const next = await value.buildOperationReview(intent);
     const executing = value.executeOperation(next.reviewToken);
@@ -4252,7 +5140,6 @@ describe('TUI v4 Review safety', () => {
     expect(value.snapshot.progress.current).toEqual({
       target: 'official/demo', phase: '验证当前状态',
     });
-    expect(messages).not.toEqual([]);
     expect(value.snapshot.progress.messages).toEqual([]);
     second.resolve({ ok: true });
     const secondResult = await executing;
@@ -4317,7 +5204,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(review).toMatchObject({
       title: '保存自动检查设置',
-      description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+      description: '只保存自动检查设置；当前启用版本和本地目录副本保持不变。',
       primaryLabel: '保存设置',
       changes: [expect.objectContaining({
         title: '自动检查更新', description: '开启 → 关闭',
@@ -4418,7 +5305,7 @@ describe('TUI v4 Review safety', () => {
       requiresConfirmation: true,
       changes: expect.arrayContaining([expect.objectContaining({
         title: '切换主来源会影响现有引用',
-        description: '1 项；切换将在 Catalog 启用后执行。',
+        description: '1 项；切换将在插件目录启用后执行。',
       })]),
       sharedImpact: { pluginIds: ['official/demo'] },
     });

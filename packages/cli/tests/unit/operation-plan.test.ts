@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertOperationPlanFingerprint,
+  createBatchIntentCompatiblePlanFingerprint,
   createOperationPlan,
   createOperationPlanConfigDigest,
   type OperationPlanInput,
@@ -73,6 +74,43 @@ describe('operation plan', () => {
 
     expect(() => assertOperationPlanFingerprint(reviewed.planFingerprint, current))
       .toThrow('operationPlanStale');
+  });
+
+  it('ignores only reviewed predecessor intent and target effects for a later batch group', () => {
+    const reviewed = createOperationPlan({
+      ...input(),
+      changes: ['official/demo:codex:project:install'],
+    });
+    const predecessorTarget = new Set(['official/demo\0codex\0project']);
+    const afterPredecessor = createOperationPlan({
+      ...input(),
+      intentChanges: [{ scope: 'project', beforeDigest: 'sha256:advanced', afterDigest: 'sha256:next' }],
+      actions: [],
+      changes: [],
+      evidence: {
+        ...input().evidence,
+        intentDigests: [{ scope: 'project', digest: 'sha256:advanced' }],
+        targetOwnerFingerprints: [{
+          ...input().evidence.targetOwnerFingerprints[0]!,
+          fingerprint: 'sha256:advanced-owner',
+        }],
+      },
+    });
+    const unrelatedOwnerChanged = createOperationPlan({
+      ...afterPredecessor,
+      evidence: {
+        ...afterPredecessor.evidence,
+        targetOwnerFingerprints: [{
+          pluginId: 'team/other', platform: 'codex', scope: 'project',
+          fingerprint: 'sha256:foreign-owner',
+        }],
+      },
+    });
+
+    expect(createBatchIntentCompatiblePlanFingerprint(reviewed, predecessorTarget))
+      .toBe(createBatchIntentCompatiblePlanFingerprint(afterPredecessor, predecessorTarget));
+    expect(createBatchIntentCompatiblePlanFingerprint(unrelatedOwnerChanged, predecessorTarget))
+      .not.toBe(createBatchIntentCompatiblePlanFingerprint(reviewed, predecessorTarget));
   });
 
   it('binds canonical effective config values without exposing them', () => {

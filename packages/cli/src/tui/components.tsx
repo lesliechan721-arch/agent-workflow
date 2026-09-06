@@ -268,10 +268,44 @@ const diagnosticContextLabels = {
   compatibility: '兼容版本',
 } as const;
 
+interface DiagnosticDetailRow {
+  label: string;
+  value: string;
+}
+
+function diagnosticDetailRows(diagnostic: DiagnosticSummaryViewModel): DiagnosticDetailRow[] {
+  const technical = diagnostic.technical;
+  if (!technical) return [];
+
+  const cause = sanitizeDiagnosticCause(technical.sanitizedCause);
+  return [
+    { label: 'code', value: safeDiagnosticCode(technical.code, 'diagnosticUnavailable') },
+    ...(technical.stage ? [{ label: 'stage', value: sanitizeDiagnosticText(technical.stage) }] : []),
+    ...(technical.sourceId ? [{ label: 'sourceId', value: sanitizeDiagnosticText(technical.sourceId) }] : []),
+    ...(technical.requestedRef ? [{ label: 'requested ref', value: sanitizeDiagnosticText(technical.requestedRef) }] : []),
+    ...(technical.resolvedCommit ? [{ label: 'resolved commit', value: sanitizeDiagnosticText(technical.resolvedCommit) }] : []),
+    ...(technical.context ?? []).map((entry) => ({
+      label: diagnosticContextLabels[entry.key],
+      value: sanitizeDiagnosticText(entry.value),
+    })),
+    ...(cause ? [{ label: 'cause', value: cause }] : []),
+    ...(technical.checks ?? []).map((check, index) => ({
+      label: `建议 ${index + 1}`,
+      value: sanitizeDiagnosticText(check),
+    })),
+  ];
+}
+
+export function diagnosticDetailRowCount(diagnostic: DiagnosticSummaryViewModel): number {
+  return diagnosticDetailRows(diagnostic).length;
+}
+
 export function DiagnosticSummary(props: {
   diagnostic: DiagnosticSummaryViewModel;
   technical?: boolean;
   compact?: boolean;
+  offset?: number;
+  limit?: number;
 }): React.JSX.Element {
   const compact = props.compact === true;
   if (!props.technical) {
@@ -319,62 +353,30 @@ export function DiagnosticSummary(props: {
   if (!technical) {
     return <Callout status="muted" title="没有可公开的技术字段" compact />;
   }
-  const cause = sanitizeDiagnosticCause(technical.sanitizedCause);
-  const fields = [
-    { label: 'code', value: safeDiagnosticCode(technical.code, 'diagnosticUnavailable') },
-    ...(technical.stage ? [{ label: 'stage', value: sanitizeDiagnosticText(technical.stage) }] : []),
-    ...(technical.sourceId ? [{ label: 'sourceId', value: sanitizeDiagnosticText(technical.sourceId) }] : []),
-    ...(technical.requestedRef ? [{ label: 'requested ref', value: sanitizeDiagnosticText(technical.requestedRef) }] : []),
-    ...(technical.resolvedCommit ? [{ label: 'resolved commit', value: sanitizeDiagnosticText(technical.resolvedCommit) }] : []),
-    ...(technical.context ?? []).map((entry) => ({
-      label: diagnosticContextLabels[entry.key],
-      value: sanitizeDiagnosticText(entry.value),
-    })),
-    ...(cause ? [{ label: 'cause', value: cause }] : []),
-  ];
-  const extendedChecks = (technical.checks?.length ?? 0) > 3;
-  const visibleFields = fields.slice(0, extendedChecks ? 1 : compact ? 4 : 8);
-  const checks = (technical.checks ?? []).slice(0, extendedChecks ? 5 : compact ? 1 : 3);
-  if (compact) {
-    return <Box flexDirection="column">
-      <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
-      <TechnicalDetails label="脱敏诊断" compact>
-        {visibleFields.map((field) => <StaticRow
-          key={field.label}
-          title={`${field.label}: ${field.value}`}
-          compact
-        />)}
-        {checks.map((check, index) => <StaticRow
-          key={`${index}:${check}`}
-          title={extendedChecks
-            ? `${index + 1}. ${sanitizeDiagnosticText(check)}`
-            : `建议：${sanitizeDiagnosticText(check)}`}
-          status="muted"
-          compact
-        />)}
-      </TechnicalDetails>
-    </Box>;
-  }
+  const rows = diagnosticDetailRows(props.diagnostic);
+  const total = rows.length;
+  const offset = Math.min(
+    total,
+    Math.max(0, Math.floor(Number.isFinite(props.offset) ? props.offset ?? 0 : 0)),
+  );
+  const limit = props.limit === undefined
+    ? total
+    : Math.max(0, Math.floor(Number.isFinite(props.limit) ? props.limit : 0));
+  const visibleRows = rows.slice(offset, offset + limit);
+  const after = total - offset - visibleRows.length;
+
   return <Box flexDirection="column">
     <Text color={tuiTheme.colors.muted}>下面的信息已脱敏，可用于排查或提交 issue。</Text>
     <TechnicalDetails label="脱敏诊断" compact>
-      {visibleFields.map((field) => <StaticRow
-        key={field.label}
+      {offset > 0 ? <StaticRow title={`↑ 前面还有 ${offset} 项`} status="muted" compact /> : null}
+      {visibleRows.map((field, index) => <StaticRow
+        key={`${field.label}:${offset + index}`}
         title={field.label}
         meta={field.value}
         compact
       />)}
-      {fields.length > visibleFields.length
-        ? <StaticRow title={`另有 ${fields.length - visibleFields.length} 个安全字段`} status="muted" compact />
-        : null}
+      {after > 0 ? <StaticRow title={`↓ 后面还有 ${after} 项`} status="muted" compact /> : null}
     </TechnicalDetails>
-    {checks.length > 0 ? <SectionCard title="建议检查" compact>
-      {checks.map((check, index) => <StaticRow
-        key={`${index}:${check}`}
-        title={`${index + 1}. ${sanitizeDiagnosticText(check)}`}
-        compact
-      />)}
-    </SectionCard> : null}
   </Box>;
 }
 
@@ -438,6 +440,7 @@ export interface PluginListRowProps {
   name: ReactNode;
   sourceLabel: ReactNode;
   description: ReactNode;
+  attention?: ReactNode;
   placementSummary: ReactNode;
   statusLabel: ReactNode;
   status: TuiStatus;
@@ -466,6 +469,9 @@ export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
         </Box>
       </Box>
       <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.description}</Text>
+      {props.attention
+        ? <Text color={tuiTheme.statusColors.warning} wrap="truncate-end">  ! {props.attention}</Text>
+        : null}
       <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.placementSummary}</Text>
     </Box>
   );

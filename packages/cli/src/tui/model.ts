@@ -48,6 +48,7 @@ import {
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 import { projectCatalogSourceState } from './catalog-sources/projection.js';
+import { projectLifecycleActionView } from './lifecycle-action-view.js';
 
 export type SourceHealthState = 'ready' | 'unavailable';
 
@@ -130,6 +131,8 @@ export interface PluginListItemViewModel {
   capabilityUnsupported?: boolean;
   capabilityRecovery?: string;
   sourceUnavailable?: boolean;
+  savedConfigScopes: Scope[];
+  configOnly?: true;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
@@ -565,7 +568,7 @@ function dependencyAssignmentExplanation(
 ): string {
   const consumer = requiredBy[0];
   return {
-    root: '根插件位置',
+    root: '当前插件位置',
     default: '推荐使用当前项目',
     existingWiderTarget: '复用健康的所有项目安装',
     userOverride: '你选择的位置',
@@ -802,6 +805,7 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
       ...plugin.installedPlacements.flatMap((placement) => placement.state === 'notInstalled'
         ? []
         : [{ id: 'platform' as const, platform: placement.platform }]),
+      ...(plugin.savedConfigScopes.length > 0 ? [{ id: 'settings' as const }] : []),
       { id: 'sourceProblem' },
       { id: 'about' },
     ];
@@ -914,6 +918,7 @@ function lifecycleIssueActions(
   options: { dependency?: boolean; project?: 'current' | 'other' | null } = {},
 ): UserIssueActionViewModel[] {
   return buildAllowedLifecycleActions(target).flatMap((action): UserIssueActionViewModel[] => {
+    const view = projectLifecycleActionView(action);
     if (options.dependency) {
       if (action.id === 'install') return [{
         id: 'installDependency',
@@ -926,8 +931,8 @@ function lifecycleIssueActions(
       }];
       if (action.id === 'sync' || action.id === 'reinstall') return [{
         id: 'reinstallDependency',
-        label: action.label,
-        description: action.description,
+        label: view.label,
+        description: view.description,
         pluginId: action.pluginId,
         platform: action.platform,
         scope: action.scope,
@@ -946,8 +951,8 @@ function lifecycleIssueActions(
     }[action.id];
     return [{
       ...projection,
-      label: action.label,
-      description: action.description,
+      label: view.label,
+      description: view.description,
       pluginId: action.pluginId,
       platform: action.platform,
       scope: action.scope,
@@ -992,8 +997,8 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
         issueId: `scope:${target.pluginId}:${target.platform}`,
         category: 'scopeConflict',
         title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · 扩展位置冲突`,
-        explanation: 'AW-only 扩展不能同时使用所有项目和当前项目位置。',
-        impact: ['选择一条 root uninstall 路径，然后按该路径同步保留的 scope。'],
+        explanation: 'AW 管理附加能力不能同时使用所有项目和当前项目位置。',
+        impact: ['选择要保留的使用位置。系统将移除另一位置，再同步保留的位置。'],
         entity: { kind: 'plugin', id: target.pluginId },
         pluginId: target.pluginId,
         platform: target.platform,
@@ -1015,7 +1020,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
         ],
         technicalDetails: [{
           code: 'codexExtensionScopeConflict',
-          message: 'mixed 或 AW-only 扩展同时使用两个 scope。',
+          message: '扩展同时使用 user 和 project scope。',
         }],
       });
     }
@@ -1161,7 +1166,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
             : root.category === 'sourceUnavailable'
               ? [
                   ...(root.code === 'bundleUnavailable' ? directLifecycleActions : []),
-                  { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查当前 Catalog 或稍后重试' : '修复来源配置或稍后重试' },
+                  { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查当前插件目录或稍后重试' : '修复来源配置或稍后重试' },
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
               : [...directLifecycleActions,
@@ -1202,13 +1207,13 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeRenderDrift ? '共享 native 待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeRenderDrift ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' ? '安装不完整' : bundleUnavailable ? '当前 Catalog 不再包含此插件' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' ? '安装不完整' : bundleUnavailable ? '当前插件目录不再包含此插件' : '检查失败'}`,
         explanation: root.category === 'artifactCollision'
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
@@ -1216,14 +1221,14 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
             ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
             : '当前依赖检查不能安全通过。'
           : sharedNativeRenderDrift
-          ? '个人默认已变化。共享 Codex native Skill 尚未重新生成。'
+          ? '个人默认已变化。Codex 平台共享 Skill 尚未重新生成。'
           : target.state === 'needsSync'
           ? '必要内容缺失，插件可能不能稳定运行。'
           : bundleUnavailable
-            ? '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。'
+            ? '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : '当前目标不能安全分类为正常安装。',
         impact: [sharedNativeRenderDrift
-          ? '运行同步可恢复；这不是 cache 损坏。'
+          ? '运行同步可恢复；这不是缓存损坏。'
           : root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable
@@ -1626,6 +1631,12 @@ export function buildTuiViewModel(options: {
   catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+  configStoreInventory?: Array<{
+    pluginId: string;
+    sourceId: string;
+    pluginName: string;
+    scope: Scope;
+  }>;
 }): TuiViewModel {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
@@ -1635,11 +1646,24 @@ export function buildTuiViewModel(options: {
   for (const target of options.status.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
-  const pluginIds = new Set([...summaryById.keys(), ...targetsByPlugin.keys()]);
+  const configScopesByPlugin = new Map<string, Set<Scope>>();
+  for (const store of options.configStoreInventory ?? []) {
+    const scopes = configScopesByPlugin.get(store.pluginId) ?? new Set<Scope>();
+    scopes.add(store.scope);
+    configScopesByPlugin.set(store.pluginId, scopes);
+  }
+  const pluginIds = new Set([
+    ...summaryById.keys(),
+    ...targetsByPlugin.keys(),
+    ...configScopesByPlugin.keys(),
+  ]);
   const plugins = [...pluginIds].map((pluginId): PluginListItemViewModel => {
     const summary = summaryById.get(pluginId);
     const targets = targetsByPlugin.get(pluginId) ?? [];
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
+    const savedConfigScopes = [...(configScopesByPlugin.get(pluginId) ?? [])]
+      .sort((left, right) => (left === 'user' ? 0 : 1) - (right === 'user' ? 0 : 1));
+    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0;
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
       return platformTargets.length > 0
@@ -1659,7 +1683,7 @@ export function buildTuiViewModel(options: {
       || capabilityTargets.length > 0;
     const capabilityRecovery = capabilityTargets.flatMap((target) => target.recoveryActions)
       .find((action) => action.command === 'manual')?.description;
-    const unavailable = sourceUnavailable || capabilityUnsupported;
+    const unavailable = sourceUnavailable || capabilityUnsupported || configOnly;
     return {
       pluginId,
       sourceId,
@@ -1688,6 +1712,8 @@ export function buildTuiViewModel(options: {
       ...(capabilityUnsupported ? { capabilityUnsupported: true } : {}),
       ...(capabilityRecovery ? { capabilityRecovery } : {}),
       ...(sourceUnavailable ? { sourceUnavailable: true } : {}),
+      savedConfigScopes,
+      ...(configOnly ? { configOnly: true } : {}),
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }
         : summary && (summary.dependencyTotalCount ?? 0) > 0

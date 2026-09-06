@@ -15,6 +15,7 @@ import {
 import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
+import { attachSafeOperationError } from './safe-operation-diagnostic.js';
 export { calculateFileDigest } from './bundle-integrity.js';
 
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
@@ -442,7 +443,20 @@ export async function runPreApplyScript(options: {
       } else if (interruptSignal) {
         throw new Error(`preApply process cleanup failed after ${interruptSignal}.`);
       } else {
-        throw new Error('preApply could not start.');
+        const causeCode = error && typeof error === 'object' && 'code' in error
+          && typeof error.code === 'string' ? error.code : undefined;
+        const safeCauseCode = causeCode === 'ENOENT' || causeCode === 'EACCES' || causeCode === 'EPERM'
+          ? causeCode : undefined;
+        throw attachSafeOperationError(new Error('preApply could not start.'), {
+          code: safeCauseCode === 'ENOENT' ? 'preApplyExecutableMissing' : 'preApplyStartFailed',
+          stage: 'preApply',
+          safeMessage: causeCode === 'ENOENT'
+            ? 'The preApply executable is not available.'
+            : 'The preApply process could not start.',
+          ...(safeCauseCode ? {
+            cause: { code: safeCauseCode, safeMessage: `Process start failed (${safeCauseCode}).` },
+          } : {}),
+        });
       }
     }
     if (!result) return;
@@ -458,13 +472,33 @@ export async function runPreApplyScript(options: {
       ...(stdout ? [`stdout: ${stdout}`] : []),
       ...(stderr ? [`stderr: ${stderr}`] : []),
     ].join('; ');
-    if (result.timedOut) throw new Error(`preApply timed out.${output ? ` ${output}` : ''}`);
+    if (result.timedOut) throw attachSafeOperationError(
+      new Error(`preApply timed out.${output ? ` ${output}` : ''}`),
+      {
+        code: 'preApplyTimedOut',
+        stage: 'preApply',
+        safeMessage: 'The preApply process timed out.',
+        exitCode: 124,
+      },
+    );
     if (result.exitCode !== 0) {
-      throw new Error(`preApply failed with exit code ${result.exitCode}.${output ? ` ${output}` : ''}`);
+      throw attachSafeOperationError(
+        new Error(`preApply failed with exit code ${result.exitCode}.${output ? ` ${output}` : ''}`),
+        {
+          code: 'preApplyExited',
+          stage: 'preApply',
+          safeMessage: 'The preApply process exited unsuccessfully.',
+          ...(result.exitCode === null ? {} : { exitCode: result.exitCode }),
+        },
+      );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
+    const failure = new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
+    const diagnostic = error && typeof error === 'object' && 'operationDiagnostic' in error
+      ? (error as { operationDiagnostic?: unknown }).operationDiagnostic
+      : undefined;
+    throw diagnostic ? Object.assign(failure, { operationDiagnostic: diagnostic }) : failure;
   } finally {
     let tempCleanupError: unknown;
     try {

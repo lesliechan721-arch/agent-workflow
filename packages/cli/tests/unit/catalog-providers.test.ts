@@ -22,6 +22,37 @@ function fixturePath(name: string): string {
 }
 
 describe('Catalog providers', () => {
+  it('classifies safe Git authorization and executable failures without exposing stderr', () => {
+    const invocation = { command: 'git', args: ['fetch'] };
+    const authorization = catalogGitProviderInternal.classifyDiagnostic(new NativeCliError({
+      invocation,
+      exitCode: 128,
+      stdout: '',
+      stderr: 'fatal: Authentication failed for https://secret@example.invalid/repo.git',
+    }));
+    expect(authorization).toEqual({
+      code: 'catalogGitAuthorizationFailed',
+      stage: 'catalogGit',
+      safeMessage: 'Git could not authenticate to the Catalog source.',
+      exitCode: 128,
+    });
+    expect(JSON.stringify(authorization)).not.toContain('secret');
+
+    const missing = catalogGitProviderInternal.classifyDiagnostic(new NativeCliError({
+      invocation,
+      exitCode: -1,
+      stdout: '',
+      stderr: '',
+      cause: Object.assign(new Error('private executable path'), { code: 'ENOENT' }),
+    }));
+    expect(missing).toMatchObject({
+      code: 'catalogGitExecutableMissing',
+      stage: 'catalogGit',
+      cause: { code: 'ENOENT' },
+    });
+    expect(JSON.stringify(missing)).not.toContain('private executable path');
+  });
+
   it('applies the full-fetch timeout range and the capped ref-probe timeout', () => {
     expect(catalogGitProviderInternal.remoteTimeout({})).toBe(180_000);
     expect(catalogGitProviderInternal.remoteTimeout({ AW_CATALOG_REMOTE_TIMEOUT_MS: '180000' }))

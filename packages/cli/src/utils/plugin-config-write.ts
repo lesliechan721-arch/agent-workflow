@@ -456,6 +456,7 @@ async function reinstallVisibleTargets(options: {
           } : {}),
         },
       );
+      options.rebuildRuntime?.operationDiagnosticSink?.(result.rebuildResults);
       if (result.overallState !== 'succeeded') runtimeFailed = true;
       targetResults.push(...await Promise.all(result.targetResults.map(async (entry) => ({
         ...entry,
@@ -892,23 +893,29 @@ async function applyPluginConfigWriteUnlocked(
       warnings,
     };
   }
-  const apply = changedKeys.length === 0
-    ? skippedApply('noConfigChange')
-    : staleRemovedKeys.length === changedKeys.length
-      ? skippedApply('noEffectiveConfigChange')
-      : options.apply === false
-        ? skippedApply('notRequested')
-        : await applyConfigToVisibleTargets({
-            plugin: schemaPlugin,
-            scope: options.scope,
-            cwd: options.cwd,
-            env: options.env ?? process.env,
-            applyTargets,
-            nativeCliRunner: options.nativeCliRunner,
-            reinstallCommandImpl: options.reinstallCommandImpl,
-            rebuildRuntime: options.rebuildRuntime,
-            noVisibleTargetHasInvalidConfig: effective.issues.length > 0,
-          });
+  let apply: ConfigApplyResult;
+  try {
+    apply = changedKeys.length === 0
+      ? skippedApply('noConfigChange')
+      : staleRemovedKeys.length === changedKeys.length
+        ? skippedApply('noEffectiveConfigChange')
+        : options.apply === false
+          ? skippedApply('notRequested')
+          : await applyConfigToVisibleTargets({
+              plugin: schemaPlugin,
+              scope: options.scope,
+              cwd: options.cwd,
+              env: options.env ?? process.env,
+              applyTargets,
+              nativeCliRunner: options.nativeCliRunner,
+              reinstallCommandImpl: options.reinstallCommandImpl,
+              rebuildRuntime: options.rebuildRuntime,
+              noVisibleTargetHasInvalidConfig: effective.issues.length > 0,
+            });
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    throw Object.assign(failure, { configWrite: 'succeeded' as const });
+  }
   const otherProjectsMayRequireSync = options.scope === 'user' && changedKeys.length > 0;
   if (otherProjectsMayRequireSync) warnings.push(...otherProjectsWarning(options.scope));
 
@@ -1009,11 +1016,18 @@ export async function applyPluginConfigWrite(
         }
         const safeError = new Error(message) as Error & {
           code?: string;
-          configWrite?: 'failed';
+          configWrite?: 'failed' | 'succeeded';
+          operationDiagnostic?: unknown;
         };
         const code = (error as { code?: unknown }).code;
         safeError.code = typeof code === 'string' ? code : 'configApplyFailed';
-        if (configWriteStateForError(error) === 'failed') safeError.configWrite = 'failed';
+        const configWrite = (error as { configWrite?: unknown }).configWrite;
+        if (configWrite === 'succeeded' || configWriteStateForError(error) === 'failed') {
+          safeError.configWrite = configWrite === 'succeeded' ? 'succeeded' : 'failed';
+        }
+        if (error && typeof error === 'object' && 'operationDiagnostic' in error) {
+          safeError.operationDiagnostic = (error as { operationDiagnostic?: unknown }).operationDiagnostic;
+        }
         throw safeError;
       }
     },

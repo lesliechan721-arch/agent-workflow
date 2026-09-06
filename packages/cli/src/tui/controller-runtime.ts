@@ -20,11 +20,18 @@ import {
 } from '../commands/catalog-source.js';
 import {
   cleanupWriteCommand,
+  failedWriteCommandResult,
   installWriteCommand,
+  mergeWriteCommandResults,
   reinstallWriteCommand,
   syncWriteCommand,
   uninstallWriteCommand,
 } from '../commands/write-commands.js';
+import { resolveSyncIntentSelection } from '../commands/sync-command.js';
+import {
+  parseScriptTimeoutMs,
+  SCRIPT_TIMEOUT_DEFAULT_MS,
+} from '../commands/options.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   createCodexNativeObservationSession,
@@ -44,12 +51,14 @@ import {
 import {
   coercePluginConfigUpdates,
   inspectPluginConfigResetTarget,
+  listNamespacedPluginConfigStoreIdentities,
   readPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { assertProjectSharedConfigPathVisible } from '../utils/project-boundary.js';
+import { readPluginIntentState } from '../utils/plugin-intent-state.js';
 import {
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
@@ -57,9 +66,14 @@ import {
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
-import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
+import { createBatchIntentCompatiblePlanFingerprint } from '../commands/operation-plan.js';
+import type {
+  RebuildCommandResult,
+  RebuildReviewPreflightEvidence,
+} from '../commands/rebuild-command.js';
 import {
   offlineCleanupEvidenceFromInventory,
+  offlineCleanupEvidenceMatches,
   type OfflineCleanupTargetEvidence,
 } from '../commands/offline-cleanup-evidence.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
@@ -71,6 +85,9 @@ import {
   TuiOperationBlockedError,
   type OperationEvidence,
   type OperationIntent,
+  type PluginWriteBatchEvidence,
+  type PluginWriteBatchExecutionResult,
+  type PluginWriteBatchGroupEvidence,
   type ReviewPreparationStageId,
   type TuiControllerDependencies,
 } from './controller.js';
@@ -340,13 +357,18 @@ function assertSourceEvidenceMatches(
   }
 }
 
+function writeReviewIsStale(result: {
+  targetResults: Array<{ errorCode?: string }>;
+}): boolean {
+  return result.targetResults.some((target) =>
+    target.errorCode === 'operationReviewStale'
+    || target.errorCode === 'operationPlanStale');
+}
+
 function throwIfWriteReviewStale(result: {
   targetResults: Array<{ errorCode?: string }>;
 }): void {
-  const stale = result.targetResults.find((target) =>
-    target.errorCode === 'operationReviewStale'
-    || target.errorCode === 'operationPlanStale');
-  if (stale) {
+  if (writeReviewIsStale(result)) {
     throw operationReviewStale('确认后实际写入计划发生变化。');
   }
 }
@@ -357,6 +379,122 @@ const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], str
 
 function pluginIntent(intent: OperationIntent): intent is Extract<OperationIntent, { pluginId: string }> {
   return 'pluginId' in intent;
+}
+
+function reviewedScriptTimeoutMs(intent: OperationIntent): number | undefined {
+  if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
+    && (intent.action === 'install' || intent.action === 'refreshAndSync'
+      || intent.action === 'reinstall' || intent.action === 'sync')) {
+    return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  }
+  if (intent.kind === 'configSave' && intent.apply) {
+    return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  }
+  return undefined;
+}
+
+interface PluginWriteBatchGroup {
+  groupId: string;
+  sourceId: string;
+  platform: 'codex' | 'claude' | 'both';
+  requestedPluginIds: string[];
+}
+
+function selectedBatchGroups(intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>): {
+  requestedPluginIds: string[];
+  groups: PluginWriteBatchGroup[];
+} {
+  if (intent.selection.kind !== 'selected') {
+    throw new TuiOperationBlockedError(
+      'syncSelectionRequired',
+      '当前项目全部同步必须从项目 intent roots 解析。',
+    );
+  }
+  const requestedPluginIds = [...new Set(intent.selection.pluginIds.map((pluginId) => {
+    const parsed = parsePluginId(pluginId);
+    if (!parsed.sourceId) {
+      throw new TuiOperationBlockedError('invalidPluginId', '批量操作必须使用 canonical pluginId。');
+    }
+    return formatPluginId({ sourceId: parsed.sourceId, pluginName: parsed.pluginName });
+  }))];
+  if (requestedPluginIds.length === 0) {
+    throw new TuiOperationBlockedError('syncSelectionRequired', '批量操作至少需要一个插件。');
+  }
+  const groups = new Map<string, PluginWriteBatchGroup>();
+  for (const pluginId of requestedPluginIds) {
+    const sourceId = parsePluginId(pluginId).sourceId!;
+    const group = groups.get(sourceId) ?? {
+      groupId: `${sourceId}\0${intent.platform}`,
+      sourceId,
+      platform: intent.platform,
+      requestedPluginIds: [],
+    };
+    group.requestedPluginIds.push(pluginId);
+    groups.set(sourceId, group);
+  }
+  return { requestedPluginIds, groups: [...groups.values()] };
+}
+
+async function resolveBatchGroups(
+  intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  frozenRequestedPluginIds?: readonly string[],
+): Promise<{ requestedPluginIds: string[]; groups: PluginWriteBatchGroup[] }> {
+  if (intent.selection.kind === 'selected') return selectedBatchGroups(intent);
+  if (intent.action !== 'sync' || intent.scope !== 'project') {
+    throw new TuiOperationBlockedError(
+      'syncSelectionRequired',
+      '当前项目全部操作只支持 project scope sync。',
+    );
+  }
+  const state = await readPluginIntentState({ scope: 'project', cwd, env });
+  const selection = resolveSyncIntentSelection({
+    roots: state.roots,
+    selectors: frozenRequestedPluginIds ?? [],
+    all: frozenRequestedPluginIds === undefined,
+    platform: intent.platform,
+  });
+  if (selection.requestedPluginIds.length === 0) {
+    throw new TuiOperationBlockedError('syncSelectionRequired', '当前项目没有可同步的 intent roots。');
+  }
+  return {
+    requestedPluginIds: selection.requestedPluginIds,
+    groups: selection.groups.map((group) => ({
+      groupId: `${group.sourceId}\0${group.platform}`,
+      sourceId: group.sourceId,
+      platform: group.platform,
+      requestedPluginIds: group.pluginIds,
+    })),
+  };
+}
+
+async function runBatchWriteGroup(options: {
+  intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>;
+  group: PluginWriteBatchGroup;
+  cwd: string;
+  runtime: Parameters<typeof installWriteCommand>[2];
+}): Promise<RebuildCommandResult> {
+  const commandOptions = {
+    cwd: options.cwd,
+    platform: options.group.platform,
+    scope: options.intent.scope,
+    ...(reviewedScriptTimeoutMs(options.intent) === undefined
+      ? {}
+      : { scriptTimeoutMs: reviewedScriptTimeoutMs(options.intent) }),
+  };
+  switch (options.intent.action) {
+    case 'install':
+      return installWriteCommand(options.group.requestedPluginIds, commandOptions, options.runtime);
+    case 'sync':
+      return syncWriteCommand(options.group.requestedPluginIds, commandOptions, options.runtime);
+    case 'reinstall':
+      return reinstallWriteCommand(options.group.requestedPluginIds, commandOptions, options.runtime);
+    case 'uninstall':
+      return uninstallWriteCommand(options.group.requestedPluginIds, commandOptions, options.runtime);
+    case 'cleanup':
+      return cleanupWriteCommand(options.group.requestedPluginIds, commandOptions, options.runtime);
+  }
 }
 
 interface DependencyCatalogNode {
@@ -775,14 +913,37 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       const catalogGenerations = await loadCatalogGenerations();
       signal.throwIfAborted();
+      const configStoreInventory = (await Promise.all((['user', 'project'] as const).map(async (scope) => {
+        try {
+          return (await listNamespacedPluginConfigStoreIdentities({
+            cwd: context.cwd,
+            env: context.env,
+            scope,
+          })).map(({ pluginId, sourceId, pluginName }) => ({
+            pluginId, sourceId, pluginName, scope,
+          }));
+        } catch {
+          await context.debugLogger.log({
+            type: 'tui:config-inventory-error',
+            level: 'debug',
+            target: 'debugLog',
+            message: 'TUI saved config inventory could not be read.',
+            data: { scope },
+          });
+          return [];
+        }
+      }))).flat();
+      signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+        configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
         targetRevisions: result.targetRevisions,
         dependencyOverviews,
         portablePluginIds,
+        configStoreInventory,
         catalogGenerations,
         sessionGenerationKeys: Object.fromEntries(
           (catalogOperationContext?.generationSet.sources ?? [])
@@ -833,7 +994,9 @@ export function createTuiControllerDependencies(
     freshCatalog = false,
     reusableCandidate?: CatalogSessionReusableCandidate,
     codexObservationSession?: CodexNativeObservationSession,
+    frozenBatchEvidence?: PluginWriteBatchEvidence,
   ): Promise<OperationEvidence> => {
+    reviewedScriptTimeoutMs(intent);
     if (intent.kind === 'configReset') {
       const parsed = parsePluginId(intent.pluginId);
       if (!parsed.sourceId || !parsed.pluginName) {
@@ -1211,10 +1374,100 @@ export function createTuiControllerDependencies(
       }
       return evidence;
     }
-    if (!pluginIntent(intent)) {
+    if (!pluginIntent(intent) && intent.kind !== 'pluginWriteBatch') {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
     }
     signal?.throwIfAborted();
+    if (intent.kind === 'pluginWriteBatch') {
+      await preparation?.reporter.emit('status');
+      const selection = await resolveBatchGroups(
+        intent,
+        context.env,
+        context.cwd,
+        frozenBatchEvidence?.requestedPluginIds,
+      );
+      signal?.throwIfAborted();
+      const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
+      const groups: PluginWriteBatchGroupEvidence[] = [];
+      const ownsObservationSession = !codexObservationSession
+        && selection.groups.some((group) => {
+          const reviewed = frozenBatchEvidence?.groups.find((candidate) =>
+            candidate.groupId === group.groupId);
+          return reviewed?.executable !== false
+            && (group.platform === 'codex' || group.platform === 'both');
+        });
+      const observationSession = codexObservationSession ?? (ownsObservationSession
+        ? await createCodexNativeObservationSession({
+            exactCwd: context.cwd,
+            env: context.env,
+            runner: context.nativeCliRunner,
+          })
+        : undefined);
+      try {
+        await preparation?.reporter.emit('catalog');
+        for (const group of selection.groups) {
+          signal?.throwIfAborted();
+          const reviewed = frozenBatchEvidence?.groups.find((candidate) =>
+            candidate.groupId === group.groupId);
+          if (reviewed?.executable === false) {
+            groups.push({ ...group, preview: reviewed.preview, executable: false });
+            continue;
+          }
+          let catalogOperation: CatalogOperationContext | undefined;
+          try {
+            catalogOperation = !freshCatalog && sessionCatalogOperationContext
+              ? selectCatalogOperationContext(sessionCatalogOperationContext, [group.sourceId])
+              : await resolveCatalogOperationContext({
+                  sourceIds: [group.sourceId],
+                  env: context.env,
+                  ...(!freshCatalog ? { validatedStoreEntries, validatingStoreEntries } : {}),
+                  ...(signal ? { signal } : {}),
+                });
+          } catch {
+            catalogOperation = undefined;
+          }
+          const preview = await runBatchWriteGroup({
+            intent,
+            group,
+            cwd: context.cwd,
+            runtime: {
+              ...context,
+              inventoryCatalogSourceReferences: operationInventory,
+              expectedCatalogConfigDigest: configSnapshot.digest,
+              ...(catalogOperation ? {
+                catalogOperationContext: catalogOperation,
+                expectedGenerationSetDigest: catalogOperation.generationSetDigest,
+              } : {}),
+              previewOperationPlan: true,
+              ...(observationSession ? { codexObservationSession: observationSession } : {}),
+              ...(preparation ? {
+                onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+                  stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+              } : {}),
+            },
+          });
+          groups.push({ ...group, preview, executable: preview.operationPlan !== undefined });
+        }
+      } finally {
+        if (ownsObservationSession) await observationSession?.dispose();
+      }
+      await preparation?.reporter.emit('evidence');
+      signal?.throwIfAborted();
+      const merged = mergeWriteCommandResults(groups.map((group) => group.preview));
+      const evidence: PluginWriteBatchEvidence = {
+        catalog: {
+          configDigest: configSnapshot.digest,
+          compositeDigest: sessionStatusResult?.payload.catalog.compositeDigest
+            ?? digest(groups.map((group) => [group.groupId, group.preview.operationPlan?.planFingerprint])),
+        },
+        requestedPluginIds: selection.requestedPluginIds,
+        groups,
+        ...(merged.dependencyPlan ? { dependencyPlan: merged.dependencyPlan } : {}),
+        ...(merged.codexReconcilePlans ? { codexReconcilePlans: merged.codexReconcilePlans } : {}),
+        ...(merged.operationPlan ? { operationPlan: merged.operationPlan } : {}),
+      };
+      return evidence;
+    }
     const packageInfo = await readCliPackageInfo();
     const offlineCleanupReason: OfflineCleanupTargetEvidence['reason'] | undefined =
       intent.kind === 'pluginWrite'
@@ -1405,6 +1658,7 @@ export function createTuiControllerDependencies(
     let dependencyPlan: ReconcileOperationPlan | undefined;
     let codexReconcilePlans: OperationEvidence['codexReconcilePlans'];
     let operationPlan: OperationEvidence['operationPlan'];
+    let forceCleanupEvidence: OfflineCleanupTargetEvidence | undefined;
     await preparation?.reporter.emit('catalog');
     const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
       ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
@@ -1502,6 +1756,9 @@ export function createTuiControllerDependencies(
         cwd: context.cwd,
         platform: intent.platform,
         scope: intent.scope,
+        ...(reviewedScriptTimeoutMs(intent) === undefined
+          ? {}
+          : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
         ...(intent.action === 'install' && intent.dependencyScopeOverrides
           ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
           : {}),
@@ -1524,6 +1781,21 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       codexReconcilePlans = preview?.codexReconcilePlans;
       operationPlan = preview?.operationPlan;
+      if (intent.action === 'cleanup' && intent.force === true) {
+        const candidates = preview?.offlineCleanupPlans?.filter((candidate) =>
+          candidate.forceExclusive === true
+          && candidate.pluginId === intent.pluginId
+          && candidate.platform === intent.platform
+          && candidate.scope === intent.scope
+          && candidate.plan.actions.length > 0) ?? [];
+        if (candidates.length !== 1) {
+          throw new TuiOperationBlockedError(
+            'forceCleanupPathUnavailable',
+            '没有唯一且可验证的精确清理目标。',
+          );
+        }
+        [forceCleanupEvidence] = candidates;
+      }
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'refreshAndSync'
@@ -1585,6 +1857,7 @@ export function createTuiControllerDependencies(
       },
       source: selected.source,
       ...(offlineCleanup ? { offlineCleanup } : {}),
+      ...(forceCleanupEvidence ? { offlineCleanup: forceCleanupEvidence } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(operationPlan ? { operationPlan } : {}),
@@ -2229,6 +2502,7 @@ export function createTuiControllerDependencies(
         throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
       }
       const codexObservationSession = intent.kind === 'pluginWrite'
+        || intent.kind === 'pluginWriteBatch'
         ? await createCodexNativeObservationSession({
             exactCwd: context.cwd,
             env: context.env,
@@ -2249,7 +2523,162 @@ export function createTuiControllerDependencies(
             true,
             undefined,
             codexObservationSession,
+            intent.kind === 'pluginWriteBatch'
+              ? expectedEvidence as PluginWriteBatchEvidence
+              : undefined,
           );
+          if (intent.kind === 'pluginWriteBatch') {
+            const expectedBatch = expectedEvidence as PluginWriteBatchEvidence;
+            const currentBatch = currentEvidence as PluginWriteBatchEvidence;
+            const reviewedGroups = expectedBatch.groups.map((group) => ({
+              groupId: group.groupId,
+              sourceId: group.sourceId,
+              platform: group.platform,
+              requestedPluginIds: group.requestedPluginIds,
+              executable: group.executable,
+              planFingerprint: group.preview.operationPlan
+                ? createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
+                : undefined,
+            }));
+            const currentGroups = currentBatch.groups.map((group) => ({
+              groupId: group.groupId,
+              sourceId: group.sourceId,
+              platform: group.platform,
+              requestedPluginIds: group.requestedPluginIds,
+              executable: expectedBatch.groups.find((reviewed) => reviewed.groupId === group.groupId)
+                ?.executable === false ? false : group.executable,
+              planFingerprint: expectedBatch.groups.find((reviewed) => reviewed.groupId === group.groupId)
+                ?.executable === false
+                ? undefined
+                : group.preview.operationPlan
+                  ? createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
+                  : undefined,
+            }));
+            if (expectedBatch.catalog.configDigest !== currentBatch.catalog.configDigest
+              || JSON.stringify(expectedBatch.requestedPluginIds)
+                !== JSON.stringify(currentBatch.requestedPluginIds)
+              || JSON.stringify(reviewedGroups) !== JSON.stringify(currentGroups)) {
+              throw operationReviewStale('确认后批量目标或写入计划发生变化。');
+            }
+            await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
+            const groupResults = [];
+            const completedTargetKeys = new Set<string>();
+            let executedGroupCount = 0;
+            const appendStoppedGroups = (startIndex: number, staleMessage: string): void => {
+              for (const [offset, stopped] of expectedBatch.groups.slice(startIndex).entries()) {
+                groupResults.push({
+                  groupId: stopped.groupId,
+                  sourceId: stopped.sourceId,
+                  platform: stopped.platform,
+                  requestedPluginIds: stopped.requestedPluginIds,
+                  result: !stopped.executable ? stopped.preview : failedWriteCommandResult(
+                    intent.action,
+                    stopped.requestedPluginIds,
+                    { cwd: context.cwd, platform: stopped.platform, scope: intent.scope },
+                    offset === 0
+                      ? new TuiOperationBlockedError('operationReviewStale', staleMessage)
+                      : new TuiOperationBlockedError(
+                          'batchNotStarted',
+                          '前一个批量组的写入计划已变化，因此这个组没有开始。',
+                        ),
+                  ),
+                });
+              }
+            };
+            for (const [groupIndex, reviewed] of expectedBatch.groups.entries()) {
+              const current = currentBatch.groups.find((group) => group.groupId === reviewed.groupId)!;
+              if (!reviewed.executable) {
+                groupResults.push({
+                  groupId: reviewed.groupId,
+                  sourceId: reviewed.sourceId,
+                  platform: reviewed.platform,
+                  requestedPluginIds: reviewed.requestedPluginIds,
+                  result: reviewed.preview,
+                });
+                continue;
+              }
+              const groupInventory = groupResults.length === 0
+                ? operationInventory
+                : createOperationInventoryReader();
+              let executionPreview = current.preview;
+              if (completedTargetKeys.size > 0) {
+                executionPreview = await runBatchWriteGroup({
+                  intent,
+                  group: current,
+                  cwd: context.cwd,
+                  runtime: {
+                    ...context,
+                    awHomeMutationToken,
+                    inventoryCatalogSourceReferences: groupInventory,
+                    expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                    previewOperationPlan: true,
+                    ...(codexObservationSession ? { codexObservationSession } : {}),
+                  },
+                });
+                if (!reviewed.preview.operationPlan || !executionPreview.operationPlan
+                  || createBatchIntentCompatiblePlanFingerprint(
+                    reviewed.preview.operationPlan,
+                    completedTargetKeys,
+                  ) !== createBatchIntentCompatiblePlanFingerprint(
+                    executionPreview.operationPlan,
+                    completedTargetKeys,
+                  )) {
+                  appendStoppedGroups(
+                    groupIndex,
+                    '前序批量结果改变了这个组的实际写入计划。',
+                  );
+                  break;
+                }
+              }
+              const requiresManagedCodex = reviewed.preview.codexManagerPreview?.state === 'requires-install';
+              const result = await runBatchWriteGroup({
+                intent,
+                group: current,
+                cwd: context.cwd,
+                runtime: {
+                  ...context,
+                  awHomeMutationToken,
+                  inventoryCatalogSourceReferences: groupInventory,
+                  expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                  ...(executionPreview.operationPlan ? {
+                    expectedPlanFingerprint: executionPreview.operationPlan.planFingerprint,
+                  } : {}),
+                  ...(requiresManagedCodex ? {
+                    managedCodexAuthorizer: async () => true,
+                  } : {}),
+                  ...(codexObservationSession ? { codexObservationSession } : {}),
+                },
+              });
+              if (writeReviewIsStale(result)) {
+                if (executedGroupCount === 0) throwIfWriteReviewStale(result);
+                appendStoppedGroups(groupIndex, '这个组的实际写入计划发生变化。');
+                break;
+              }
+              executedGroupCount += 1;
+              for (const target of result.targetResults) {
+                if (target.state === 'completed') {
+                  completedTargetKeys.add([
+                    target.target.pluginId,
+                    target.target.platform,
+                    target.target.scope,
+                  ].join('\0'));
+                }
+              }
+              groupResults.push({
+                groupId: reviewed.groupId,
+                sourceId: reviewed.sourceId,
+                platform: reviewed.platform,
+                requestedPluginIds: reviewed.requestedPluginIds,
+                result,
+              });
+            }
+            const merged = mergeWriteCommandResults(groupResults.map((group) => group.result));
+            return {
+              ...merged,
+              requestedPluginIds: expectedBatch.requestedPluginIds,
+              groupResults,
+            } satisfies PluginWriteBatchExecutionResult;
+          }
           if (intent.kind !== 'pluginWrite'
             && !operationEvidenceMatches(expectedEvidence, currentEvidence)) {
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
@@ -2265,6 +2694,9 @@ export function createTuiControllerDependencies(
               cwd: context.cwd,
               platform: intent.platform,
               scope: intent.scope,
+              ...(reviewedScriptTimeoutMs(intent) === undefined
+                ? {}
+                : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
               ...(intent.action === 'install' && intent.dependencyScopeOverrides
                 ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
                 : {}),
@@ -2283,6 +2715,16 @@ export function createTuiControllerDependencies(
             }[intent.action];
             const currentSource = currentEvidence.source;
             const offlineCleanup = currentEvidence.offlineCleanup;
+            const reviewedOfflineCleanup = expectedEvidence.offlineCleanup;
+            if ((offlineCleanup || reviewedOfflineCleanup)
+              && (!offlineCleanup
+                || !reviewedOfflineCleanup
+                || !offlineCleanupEvidenceMatches(reviewedOfflineCleanup, offlineCleanup))) {
+              throw new TuiOperationBlockedError(
+                'operationReviewStale',
+                '确认后离线清理证据发生变化。',
+              );
+            }
             if (!offlineCleanup && (!expectedEvidence.source || !currentSource)) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
             }
@@ -2302,8 +2744,8 @@ export function createTuiControllerDependencies(
               ...(expectedEvidence.codexManager?.state === 'requires-install'
                 ? { managedCodexAuthorizer: async () => true }
                 : {}),
-              ...(offlineCleanup
-                ? { expectedOfflineCleanupEvidence: offlineCleanup }
+              ...(reviewedOfflineCleanup
+                ? { expectedOfflineCleanupEvidence: reviewedOfflineCleanup }
                 : { reviewPreflight: (actual: RebuildReviewPreflightEvidence) =>
                     assertSourceEvidenceMatches(currentSource!, actual) }),
             });
@@ -2311,6 +2753,12 @@ export function createTuiControllerDependencies(
             return result;
           }
           if (intent.kind === 'configSave' || intent.kind === 'configReset') {
+            const operationRebuildResults: import('../commands/rebuild-operations.js').RebuildResult[] = [];
+            const operationDiagnosticSink = (
+              results: readonly import('../commands/rebuild-operations.js').RebuildResult[],
+            ): void => {
+              operationRebuildResults.push(...structuredClone(results));
+            };
             const currentSource = currentEvidence.source;
             if (intent.kind === 'configReset') {
               const parsed = parsePluginId(intent.pluginId);
@@ -2361,6 +2809,10 @@ export function createTuiControllerDependencies(
                         rebuildRuntime: {
                           ...context,
                           awHomeMutationToken,
+                          operationDiagnosticSink,
+                          ...(reviewedScriptTimeoutMs(intent) === undefined
+                            ? {}
+                            : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
                           ...(catalogOperation ? {
                             catalogOperationContext: catalogOperation,
                             expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
@@ -2380,6 +2832,10 @@ export function createTuiControllerDependencies(
                       rebuildRuntime: {
                         ...context,
                         awHomeMutationToken,
+                        operationDiagnosticSink,
+                        ...(reviewedScriptTimeoutMs(intent) === undefined
+                          ? {}
+                          : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
                         ...(catalogOperation ? {
                           catalogOperationContext: catalogOperation,
                           expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
@@ -2390,7 +2846,7 @@ export function createTuiControllerDependencies(
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
                       sharedNativeApplyConfirmed: true,
                       });
-                return result;
+                return { ...result, operationRebuildResults };
               },
             });
           }

@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   executeRebuildOperation,
   executeRebuildTargets,
+  prepareRebuildOperation,
   type DesiredTarget,
   type RebuildTargetDriver,
 } from '../../src/commands/rebuild-operations.js';
 import type { PluginMeta } from '../../src/types.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 
 function createPlugin(name = 'demo'): PluginMeta {
   return {
@@ -99,6 +101,51 @@ describe('rebuild preApply boundary', () => {
     expect(fixture.calls).toEqual(['preflight', 'preApply:demo']);
     expect(result.cleanupAttempted).toBe(false);
   });
+
+  it.each(['install', 'reinstall'] as const)(
+    'preserves typed preApply metadata through the production %s preparation path',
+    async (command) => {
+      const fixture = createFixture();
+      fixture.driver.runPreApply = async () => {
+        throw attachSafeOperationError(new Error('private raw output'), {
+          code: 'preApplyExited',
+          stage: 'preApply',
+          safeMessage: 'The preApply process exited unsuccessfully.',
+          exitCode: 7,
+          cause: { code: 'EACCES', safeMessage: 'The preApply executable was not accessible.' },
+        });
+      };
+
+      const prepared = await prepareRebuildOperation({
+        command,
+        target: fixture.target,
+        driver: fixture.driver,
+      });
+
+      expect(prepared).toMatchObject({
+        status: 'failed',
+        result: {
+          error: {
+            phase: 'preApply',
+            operationDiagnostic: {
+              code: 'preApplyExited', stage: 'preApply', exitCode: 7,
+              cause: { code: 'EACCES' },
+            },
+          },
+        },
+      });
+      if (command === 'reinstall') {
+        await expect(executeRebuildOperation({
+          command,
+          target: fixture.target,
+          driver: fixture.driver,
+        })).resolves.toMatchObject({
+          status: 'failed',
+          error: { operationDiagnostic: { code: 'preApplyExited', exitCode: 7 } },
+        });
+      }
+    },
+  );
 
   it('does not run preApply when core preflight is blocked', async () => {
     const fixture = createFixture({ preflightFailure: true });

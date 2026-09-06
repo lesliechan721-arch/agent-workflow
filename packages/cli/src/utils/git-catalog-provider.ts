@@ -24,6 +24,7 @@ import {
   ensureRegularDirectoryPath,
   resolveAwHome,
 } from './state-paths.js';
+import { attachSafeOperationError, type SafeOperationErrorMetadata } from './safe-operation-diagnostic.js';
 
 const COMMIT_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DEFAULT_REMOTE_TIMEOUT_MS = 180_000;
@@ -220,7 +221,41 @@ function createPublicGitError(
 ): Error {
   const cause = sanitizeErrorTree(error, transports);
   const message = `Cannot resolve catalog Git source "${sourceId}": ${cause.message}`;
-  return new Error(message, { cause });
+  const diagnostic = classifyGitDiagnostic(error);
+  const failure = new Error(message, { cause });
+  return diagnostic ? attachSafeOperationError(failure, diagnostic) : failure;
+}
+
+function classifyGitDiagnostic(error: unknown, depth = 0): SafeOperationErrorMetadata | undefined {
+  if (depth > 6 || !error || typeof error !== 'object') return undefined;
+  if (error instanceof CatalogGitDeadlineError
+    || error instanceof NativeCliError && error.reason === 'timeout') {
+    return {
+      code: 'catalogGitTimedOut', stage: 'catalogGit',
+      safeMessage: 'The Catalog Git operation timed out.',
+      ...(error instanceof NativeCliError ? { exitCode: error.exitCode } : {}),
+    };
+  }
+  if (error instanceof NativeCliError) {
+    const causeCode = error.cause && typeof error.cause === 'object' && 'code' in error.cause
+      ? (error.cause as { code?: unknown }).code : undefined;
+    if (causeCode === 'ENOENT') return {
+      code: 'catalogGitExecutableMissing', stage: 'catalogGit',
+      safeMessage: 'Git is not installed or cannot be found.',
+      cause: { code: 'ENOENT', safeMessage: 'The Git executable was not found.' },
+    };
+    if (/(?:authentication failed|permission denied \(publickey\)|could not read username|terminal prompts disabled)/iu
+      .test(`${error.stderr}\n${error.stdout}`)) {
+      return {
+        code: 'catalogGitAuthorizationFailed', stage: 'catalogGit',
+        safeMessage: 'Git could not authenticate to the Catalog source.',
+        exitCode: error.exitCode,
+      };
+    }
+  }
+  return 'cause' in error
+    ? classifyGitDiagnostic((error as { cause?: unknown }).cause, depth + 1)
+    : undefined;
 }
 
 async function resolveEffectiveGitUrl(options: {
@@ -491,6 +526,7 @@ async function probeGitCatalogSourceRef(
 export const catalogGitProviderInternal = {
   resolve: resolveGitCatalogSource,
   probeRef: probeGitCatalogSourceRef,
+  classifyDiagnostic: classifyGitDiagnostic,
   gitEnvironment,
   remoteTimeout: readRemoteTimeout,
   refProbeTimeout: readRefProbeTimeout,

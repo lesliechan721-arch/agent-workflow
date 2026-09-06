@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveAwHome } from './state-paths.js';
+import { attachSafeOperationError, readSafeOperationError } from './safe-operation-diagnostic.js';
 
 const DEFAULT_ERROR_CODE = 'catalogSourceResolutionFailed';
 
@@ -123,5 +124,7 @@ export function sanitizeCatalogSourceError(
       sanitizedCapabilities[field] = [...value];
     }
   }
+  const operationDiagnostic = readSafeOperationError(original);
+  if (operationDiagnostic) attachSafeOperationError(sanitized, operationDiagnostic);
   return sanitized;
 }

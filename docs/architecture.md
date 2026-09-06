@@ -149,6 +149,8 @@ TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。普通 `
 
 TUI 初始 load 不访问网络，也不等待 freshness 检查。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。自动检查和“重新检查”使用轻量模式：健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 标记为 fixed 且不联网；ref 变化时才 fetch 并执行完整 transport validation。来源详情的“完整验证”强制完整 resolve。没有 Active、Active 损坏、repair、replaceDamaged 或 state recovery 也始终完整验证。Path source 在本地完整验证候选。检查结果只进入 session-private overlay，不修改 Status v7、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；来源详情的检查只处理目标 source。退出会取消所有 probe，session、token 和 source fingerprint 共同拒绝迟到结果。
 
+用户从 `configUnavailable` 明确进入嵌套 source recovery 时，config 草稿保持只读，只允许该恢复流程建立新的来源 Review；其它 Active 切换和 reload 仍受草稿门禁阻止。
+
 TUI generation 使用 generation status v2 的 Active compatibility 投影。健康但 unsupported 的 Active 显示为 `incompatible`，技术详情显示 required 和 missing capability ID；不显示 available capability 全集，也不把该状态显示为损坏或提供重新下载修复动作。
 
 候选 snapshot digest 相同时状态为 current；commit 变化只作为 provenance。Git 候选版本更高时提示更新；相同版本但 digest 不同为 version conflict，较低版本为 rollback，logical identity 变化或能力不兼容也阻止普通更新。能力诊断只从 typed compatibility error 投影 required 和 missing capability IDs；主视图只显示缺失数量，技术详情显示 missing IDs，不显示当前 AW 的 available 集合。候选不兼容时旧 Active 保持可用，普通 update 不出现，轻量检查和完整验证都保留相同结构诊断。版本比较复用 strict SemVer。Path digest 变化显示本地内容变化。TUI 只提示候选，绝不自动切换 Active。用户可从来源详情显式获取并启用、重新下载并精确修复、验证并切换，或使用当前候选替换无法修复的损坏 Active。更新成功只表示 Active Catalog 已切换；已安装插件不会自动升级，TUI 重新计算可用的插件升级。背景检查取得的完整 candidate 和 Manifest 只可在当前 TUI session 内复用于普通 activate/update Review preparation；复用绑定当前 session/token、source config fingerprint、明确为 null 或具体 key 的 Active store key，并要求完整 evidence。source mutation、repair、replaceDamaged、state recovery 或任一 binding 变化都回退到重新 probe。该 overlay 不持久 Candidate，不写 store 或临时 snapshot，也不改变 Status 或 Active。Execute 始终重新解析 candidate 并逐字段比较 Review evidence；变化时返回 `catalogGenerationReviewStale`。add/update 的主路径先按 Review config digest 保存配置，再启用确认的候选；配置成功但启用失败时保留新配置，并在 TUI 提供重试。generation state 无效时，TUI 可经独立 Review 原子重建只含目标 Active 的有效 state；它不修改 source config 或删除 store，且不信任无效 state 中的其它指针。Active store 损坏时，精确 repair 始终以强 Active state 为目标，并保持 Active 的 source fingerprint 和 provenance 不变。只有 metadata 和 snapshot 完整匹配时，弱 store entry 才能提供可信旧版本；任一不完整时不得声明 version conflict 或 rollback。旧版本不可用时，普通恢复或 update 在写 state 前阻止，并保留当前 Active；用户必须进入独立 replace Review。未保存的 config/source/Portable 草稿、ReviewPreparing、active Review 或写入进度阻止开始 Active 切换或 reload；freshness probe 可以完成并保留 session 结果。
@@ -173,7 +175,7 @@ TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 ma
 
 selected source/plugin 的 namespaced config inventory 损坏不阻止该目标的 cleanup 或 uninstall；命令保留坏 config，并提示之后使用 `config reset`。其它 plugin、ownership、foreign/shared/global、source、Catalog 和 state inventory 错误继续 fail closed。
 
-TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为 offline cleanup。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内重新读取 owner marker/header、shared owner 和 native registration；evidence 漂移时在写入前返回 stale Review。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件，且普通 TUI 不启用 force。
+TUI 把 `sourceMissing` 和 `bundleUnavailable` 统一投影为普通 offline cleanup。Review 不解析缺失的 bundle，而是绑定包含来源身份、目标位置和 live ownership fingerprint 的 typed evidence。Execute 在同一个 `AW_HOME` mutation lock 内重新读取 owner marker/header、shared owner 和 native registration；evidence 漂移时在写入前返回 stale Review。synthetic cleanup target 只使用这些 live evidence 发现的 matching-owner 组件。TUI 的受限高级维护入口只在当前命令 preview 返回唯一的 exact shallow `forceExclusive` 候选时显示；它不能把普通 offline evidence 转为 force，也不能从依赖阻断入口启动。确认与执行都重新取得 evidence，锁内漂移时停止。force 完成后 reinstall 是新的操作和新的 Review。
 
 每条失败链必须可用 `cleanup`、`cleanup --force`、`reinstall`、来源刷新或新版本发布恢复。无法证明 ownership 时宁可保留内容，也不能删除用户或共享内容。
 
@@ -183,7 +185,7 @@ Manifest v3 只允许 `scripts.preApply: { path: string, timeoutMs?: number }`�
 
 AW 固定使用 bundle 内的 Node entry，以 plugin root 为 cwd，继承 `PATH`，并为脚本创建临时隔离 `HOME`。stdin 是 `PreApplyContextV1`：`{ schemaVersion: 1, plugin: { pluginId, name, version, rootDir }, target: { platform, scope, projectRoot? }, config: { values } }`。context 不包含 component outcome、平台 home、store path、artifact 内容或私有运行状态。stdout 和 stderr 按 effective sensitive config 脱敏。非零退出、spawn 失败或超时会终止进程树。
 
-每个 target 每次命令最多运行一次，脚本必须幂等。`install`、`sync`、`reinstall` 和 `config ... --apply` 运行它；`cleanup`、`uninstall`、`status` 和 Review preparation 不运行。默认 timeout 是 300 秒，Manifest 和 CLI override 的有效范围都是 1 秒至 30 分钟。`--script-timeout` 只由会运行 preApply 的命令公开和消费。
+每个 target 每次命令最多运行一次，脚本必须幂等。`install`、`sync`、`reinstall` 和 `config ... --apply` 运行它；`cleanup`、`uninstall`、`status` 和 Review preparation 不运行。默认 timeout 是 300 秒，Manifest 和 CLI override 的有效范围都是 1 秒至 30 分钟。`--script-timeout` 只由会运行 preApply 的命令公开和消费。TUI 高级选项复用相同校验范围；Review 显示票据绑定的实际值，preview 和确认后的执行只使用该冻结值。只保存配置、`cleanup` 和 `uninstall` 不传递该选项。
 
 preApply 只能在 TUI Review 明确确认或直接 CLI `--yes` 后开始，JSON 或 noninteractive 模式不能绕过该门禁。target 的 schema、config、artifact 和 ownership 只读 preflight 必须先成功。preApply 成功后才可为该 target 执行 stale cleanup、native/artifact write、postcheck 和 receipt。`reinstall` 也先运行 preApply，再 cleanup，并复用同一 target preflight。
 
@@ -220,7 +222,7 @@ Status v7 对已检查的直接依赖继续在 `components` 中公开 `ready | a
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
-TUI 插件清单继续组合当前 Catalog summary 和 status target。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。TUI 只提供普通 `cleanup`：Review 说明仅清理所选目标中 AW-owned 的 live activation 和 extension，保留 plugin config、依赖 placement、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。成功后是否从清单消失只由重新读取的 Catalog 和 live ownership 状态决定。
+TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明仅清理所选目标中 AW-owned 的 live activation 和 extension，保留 plugin config、依赖 placement、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Catalog、live ownership 和可识别设置存储决定。
 
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。
 
@@ -238,7 +240,7 @@ Config Mutation Receipt v7 以 atomic patch 成功，或 reset 已删除或确�
 
 user scope 变更命中 `codex-native` target 的 `refreshKeys`，且 `--apply` 将更新可见 Codex placement 时，公开 CLI 必须在写 config 或 materialize 前要求 `--yes`；不带 `--apply` 仍只保存 user config。
 
-TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分开处理。结构损坏页只显示 layer、脱敏 target 摘要和稳定 code，并只允许整层 reset 或返回；qualified plugin ID 和 scope 可直接建立 reset Review，不要求 Catalog 或 schema 可用。Catalog/schema 不可用时不打开字段编辑器；可确定设置层目标时仍可整层 reset。字段覆盖无效时继续提供字段修改、unset 和整层 reset，并只把低层脱敏值显示为“删除后恢复”的解释，不把它投影为可运行 effective。配置已提交但 apply 失败的结果页明确保留设置，并可通过新的 Review 重新采集 evidence 后调用现有 runtime replay；`invalidConfig` 结果只返回设置修复，不提供直接 retry apply。reset 结果页显示四种 receipt disposition，quarantine 仍只显示 basename。
+TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分开处理。结构损坏页只显示 layer、脱敏 target 摘要和稳定 code，并只允许整层 reset 或返回；qualified plugin ID 和 scope 可直接建立 reset Review，不要求 Catalog 或 schema 可用。Catalog/schema 不可用时不打开字段编辑器；可确定设置层目标时仍可整层 reset。用户可从该页进入嵌套来源恢复；完成后返回原 plugin、layer、group 和 field 锚点，重新读取 schema 并重新校验父草稿。消失或变为无效的字段必须显式显示并阻止保存，直到用户放弃该项草稿；旧 Review ticket、evidence 和确认不能复用，也不能自动提交。字段覆盖无效时继续提供字段修改、unset 和整层 reset，并只把低层脱敏值显示为“删除后恢复”的解释，不把它投影为可运行 effective。配置已提交但 apply 失败的结果页明确保留设置，并可通过新的 Review 重新采集 evidence 后调用现有 runtime replay；`invalidConfig` 结果只返回设置修复，不提供直接 retry apply。reset 结果页显示四种 receipt disposition，quarantine 仍只显示 basename。
 
 控制台的插件设置入口先显示合并后的实际配置和值来源。用户选择修改后，再选择 user 或 project 写入层。编辑器以单个插件和单个写入层拥有草稿，并在字段旁显示当前有效值。对象字段支持逐个编辑子属性，但保存时写入完整对象。配置持久化、Review 和执行只作用于所选写入层。
 
@@ -246,11 +248,35 @@ TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分�
 
 Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
 
+### TUI 批量插件写入
+
+TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action、scope 和 platform 选择，并建立一张 Review ticket。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
+
+普通批次按 source 分组，同一 source 的所有根插件通过一次 typed write 解析依赖和构建目标，因此共享依赖和 native projection 只处理一次。不同 source 独立执行；一个分组失败不回滚或阻止其它分组。当前项目的 sync-all 在准备 Review 时读取 Intent roots，并冻结规范化的 requested plugin IDs 和 source/platform 分组。确认后，executor 在现有单一 `AW_HOME` mutation lock 内重新读取 Intent，并用已冻结 ID 作为 selectors、`all:false` 重新解析；完整根集合或分组变化时返回 typed stale，不能把后来新增的 root 自动加入本次写入。
+
+每个可执行分组分别绑定其 `operationPlan.planFingerprint`。锁内首次复核按去除全局 Intent digest 的分组计划语义比较；前序分组完成后，后续分组重新预览，只忽略已完成 target 和对应 Intent digest 的预期变化，再把当前完整 fingerprint 交给 typed writer。没有 operation plan 的预览失败分组也进入同一 Review，但标记为不可执行；确认固定保留已审核的失败结果。即使该来源在确认后恢复，也不能重新求值后开始写入，且不能阻止其它已审核分组继续。部分失败后的 retry 只从失败 requested target、失败 dependency 的 `requiredBy` 根，或无法细分的失败分组计算新的 selected roots；它必须重新读取 status、Intent、Catalog 和依赖，建立新的 preparation、evidence、fingerprint 和 Review ticket，不能复用旧计划。
+
+来源列表的“检查全部”是显式只读 freshness 检查，包含关闭自动检查的来源，同时最多检查两个来源。它不下载、启用或切换 Active Catalog。
+
+### TUI 导航流程
+
+普通消费任务、恢复入口和明确保留的 CLI 范围由 [CLI/TUI 能力覆盖](tui-capability-coverage.md) 记录。新增能力必须同步入口或缺口理由；作者工作流与机器接口分别说明，不以“高级排障”代替覆盖决定。
+
+TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配置、来源恢复和 Portable 安装流程记录自己的 flow ID、父 flow、稳定起点帧和返回目标。Flow 只管理导航归属和内存草稿引用；它不保存执行计划，不替代 Review ticket，也不是持久状态。
+
+操作进入结果页前，Controller 必须删除该 flow 的选择、输入、准备、Review 和 Progress 帧。插件安装把原预览锚点更新为插件详情，再追加只读 Result。因此关闭 Result 后先到插件详情，再返回保留 query、来源、焦点实体和滚动位置的原列表。回首页必须把历史重置为唯一根帧。确认前返回会撤销旧 Review ticket，并保留所属 flow 的草稿；再次确认必须重新准备证据。执行后的重试也必须建立新 attempt 并重新读取证据。
+
+状态刷新后，Controller 必须按实体 ID 校验当前路由和逐层恢复的祖先。插件、来源或问题消失时回对应安全列表；来源筛选失效时回同模式的未筛选列表。所有包含插件或来源实体的 route 都遵守该规则。依赖移除阻断页只说明依赖者和返回路径，不提供绕过依赖保护的强制清理入口。
+
+控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
+
 ### TUI 诊断投影与脱敏边界
 
 TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、config 和 Portable blocker 状态投影为统一诊断。该投影只存在于当前进程，不新增诊断数据库、持久状态或 Status v7 字段。产品层必须说明发生的情况、受阻或降级的能力、保留的安装或设置，以及下一步恢复动作；Active snapshot 正常、缺失和损坏必须使用不同影响与恢复动作。
 
 技术层只接受白名单结构字段：安全错误 code、可选 stage、sourceId、requestedRef、resolvedCommit、lastSync 证据，以及有限的 platform、scope、plugin、dependency、field、freshness 或 compatibility context。技术层在显示前再次执行通用凭据脱敏、URL userinfo 和敏感 query 清理、已知 home、cwd、临时目录和来源路径替换，并截断文本。任意 native stderr、未知 `Error.cause`、内部绝对路径、digest、credential 或未证明安全的 status message 不进入诊断 ViewModel；不能证明 cause 安全时省略 cause，只保留 code、stage 和白名单 context。
+
+操作结果诊断在 CLI/runtime 服务边界抽取可信 code、stage、target、exitCode 和已知 cause，再进入 TUI 私有投影；未知异常正文、任意 stderr 和未知 cause 不进入公共 snapshot。结果分别记录配置提交、AW 写入、preApply 外部影响和最终复核，配置提交后的 apply/status 失败仍显示已保存；preApply 开始后失败时，本目标 AW 写入尚未开始，但外部影响只能标为可能存在。SessionHost 持有最多 20 条安全内存记录并跨会话重载复用，记录 ID 绑定 session epoch 和 operation ID；公共 snapshot 只包含小摘要和记录 ID。单次诊断正文最多 256 KiB 或 1000 行，截断必须明确标记。安全报告先预览，再由用户显式保存到本地唯一文件；不自动上传，也不建立持久诊断状态或改变 Receipt、Status JSON schema。
 
 ## Platform Boundaries
 

@@ -5,6 +5,8 @@ import type { PortableReview, PortableInstallReceipt } from '../../src/portable/
 import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
+import { SessionHost } from '../../src/tui/session-host.js';
 import {
   extractPortableError,
   TuiController,
@@ -113,6 +115,206 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('Portable Skills TUI V1', () => {
+  it('uses h in place and H to remount a fresh controller session', async () => {
+    const first = portableController();
+    const second = portableController();
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(4);
+    expect(instance.lastFrame()).toContain('最近成功读取状态');
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+
+    await send(instance, 'h');
+    expect(host.snapshot.epoch).toBe(1);
+    expect(first.value.snapshot.router.current.route).toEqual({ name: 'home' });
+
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+    await send(instance, 'H');
+    expect(host.snapshot.epoch).toBe(2);
+    expect(host.snapshot.controller).toBe(second.value);
+    expect(first.value.snapshot.phase).toBe('disposed');
+    await tick(4);
+    expect(second.value.snapshot.phase).toBe('ready');
+    host.dispose();
+  });
+
+  it('unmounts the old interactive UI while H drains a read', async () => {
+    const pending = deferred<TuiStatusLoadResult>();
+    const first = portableController({ loadStatus: vi.fn(() => pending.promise) });
+    const second = portableController();
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(2);
+
+    await send(instance, 'H', '\r');
+    expect(instance.lastFrame()).toContain('正在安全结束当前会话');
+    expect(host.snapshot.epoch).toBe(1);
+
+    pending.resolve(status());
+    await tick(4);
+    expect(host.snapshot.epoch).toBe(2);
+    expect(host.snapshot.controller).toBe(second.value);
+    host.dispose();
+  });
+
+  it('offers the same home and reload actions from the help menu', async () => {
+    const first = portableController({ now: () => 1_000 });
+    const second = portableController({ now: () => 2_000 });
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(4);
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+
+    await send(instance, '?');
+    expect(instance.lastFrame()).toContain('返回首页并重新加载');
+    await send(instance, '\u001B[B', '\r');
+    expect(first.value.snapshot.router.current.route).toEqual({ name: 'home' });
+    expect(first.value.snapshot.statusReadAtMs).toBe(1_000);
+
+    first.value.push({ name: 'pluginList', mode: 'browse' });
+    await send(instance, '?', '\u001B[B', '\u001B[B', '\r');
+    await tick(4);
+    expect(host.snapshot.epoch).toBe(2);
+    expect(second.value.snapshot.statusReadAtMs).toBe(2_000);
+    host.dispose();
+  });
+
+  it('keeps h, H, q, and b as characters in Portable agent input', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentInput', pluginId: 'official/toolkit' });
+    const onSessionNavigation = vi.fn().mockResolvedValue('completed');
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await tick();
+
+    await send(instance, 'h', 'H', 'q', 'b');
+
+    expect(instance.lastFrame()).toContain('hHqb');
+    expect(onSessionNavigation).not.toHaveBeenCalled();
+  });
+
+  it('clears Portable agent input with Ctrl-U without leaving the draft', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentInput', pluginId: 'official/toolkit' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    await send(instance, 'temporary-agent');
+    expect(instance.lastFrame()).toContain('temporary-agent');
+    expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
+    await send(instance, '\u0015');
+
+    expect(instance.lastFrame()).not.toContain('temporary-agent');
+    expect(value.snapshot.router.current.route.name).toBe('portableAgentInput');
+    expect(value.snapshot.portableDraft).toBeDefined();
+  });
+
+  it('keeps the Portable draft under read-only operation history routes', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
+    const selectedCount = value.snapshot.portableDraft?.selectedCount;
+    const recordId = value.recordSafeUiFailure('testFailure', 'test');
+
+    value.push({ name: 'operationHistory' });
+    value.push({ name: 'operationDiagnostic', recordId });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+    value.back();
+    value.push({ name: 'operationReportPreview', recordId });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+    value.back();
+    value.back();
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'portableAgentMode', pluginId: 'official/toolkit',
+    });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+
+    value.push({ name: 'home' });
+    expect(value.snapshot.portableDraft).toBeUndefined();
+  });
+
+  it('returns from help history to the same Portable selection without losing the draft', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.togglePortableSkill('review-skill');
+    value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
+    value.recordSafeUiFailure('testFailure', 'test');
+    const selected = value.snapshot.portableDraft?.candidates
+      .filter((candidate) => candidate.selected).map((candidate) => candidate.name);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await tick(2);
+
+    await send(instance, '?', 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    await send(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'portableAgentMode', pluginId: 'official/toolkit',
+    });
+    expect(value.snapshot.portableDraft?.candidates
+      .filter((candidate) => candidate.selected).map((candidate) => candidate.name)).toEqual(selected);
+    expect(instance.lastFrame()).toContain('安装到哪些 Agent？');
+  });
+
+  it.each(['portable', 'dependency'] as const)(
+    'keeps the %s draft when h opens the default continue-editing guard',
+    async (owner) => {
+      const { value } = portableController();
+      await value.load();
+      if (owner === 'portable') await value.preparePortableInstall('official/toolkit');
+      else value.beginInstallFlow('official/toolkit', 'project');
+      const onSessionNavigation = vi.fn(async (
+        _navigation: 'home' | 'reload',
+        options?: { discardDrafts?: boolean },
+      ) => value.hasSessionDraft && !options?.discardDrafts ? 'draftBlocked' as const : 'completed' as const);
+      const instance = render(<ConsoleAppV4
+        controller={value}
+        size={{ columns: 80, rows: 24 }}
+        onSessionNavigation={onSessionNavigation}
+      />);
+      await tick();
+
+      await send(instance, 'h');
+      expect(instance.lastFrame()).toContain('放弃未保存修改？');
+      expect(instance.lastFrame()).toContain('继续编辑');
+      await send(instance, '\r');
+
+      expect(value.hasSessionDraft).toBe(true);
+      expect(onSessionNavigation).toHaveBeenCalledTimes(1);
+    },
+  );
   it('returns a completed detail-origin flow to detail without exposing old Portable pages', async () => {
     const { value } = portableController();
     await value.load();
@@ -334,6 +536,25 @@ describe('Portable Skills TUI V1', () => {
       expect(frame.split('\n').length).toBeLessThanOrEqual(18);
       await send(instance, '\u001B[B');
     }
+  });
+
+  it('resets a Portable result home action to one root frame without a retained flow', async () => {
+    const { value } = portableController();
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/toolkit' });
+    await value.preparePortableInstall('official/toolkit');
+    const operation = await value.buildPortableInstallReview();
+    await value.executeOperation(operation.reviewToken);
+
+    value.leaveResult({ name: 'home' });
+
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' } },
+    });
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
+    expect(value.snapshot.portableDraft).toBeUndefined();
+    expect(value.snapshot.result).toBeUndefined();
   });
 
   it('uses typed portable blocker codes before a message prefix fallback', () => {
@@ -707,7 +928,7 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toContain('安装已选择的 3 个 Skills');
     expect(frame).toContain('验证结果');
     expect(frame).toContain('Toolkit · 1 个直接依赖');
-    expect(frame).toContain('2 个 provider 提供 3 个 Skills');
+    expect(frame).toContain('2 个来源或依赖插件提供 3 个 Skills');
     expect(frame).toContain('正在生成');
     expect(frame.match(/未开始/gu)).toHaveLength(2);
     expect(frame.match(/[✓●○×] /gu)).toHaveLength(4);
@@ -819,6 +1040,11 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toContain('d 技术详情');
     expect(frame).toContain('? 帮助');
     expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+
+    for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[6~');
+    expect(instance.lastFrame()).toContain('result-skill-8');
+    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[5~');
 
     for (const label of ['重试', '返回插件预览']) {
       await send(instance, '\u001B[B');
@@ -1002,9 +1228,14 @@ describe('Portable Skills TUI V1', () => {
     for (const [index, label] of [value.snapshot.activeReview!.primaryLabel, '返回修改'].entries()) {
       if (index > 0) await send(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain('同名覆盖');
-      expect(frame).toContain('安装目标 · ~ Agent');
-      expect(frame).toContain('安装目标 · ~ 范围');
+      let allPages = frame;
+      for (let page = 0; page < 15; page += 1) {
+        await send(instance, '\u001B[6~');
+        allPages += instance.lastFrame() ?? '';
+      }
+      expect(allPages).toContain('同名覆盖');
+      expect(allPages).toContain('安装目标 · ~ Agent');
+      expect(allPages).toContain('安装目标 · ~ 范围');
       expect(frame).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
@@ -1012,6 +1243,7 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toContain('? 帮助');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+      for (let page = 0; page < 15; page += 1) await send(instance, '\u001B[5~');
     }
   });
 
@@ -1146,7 +1378,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
     expect(reviewInstance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`);
     expect(reviewInstance.lastFrame()?.match(/›/gu)).toHaveLength(1);
-    expect(reviewInstance.lastFrame()).toContain('覆盖冲突');
+    expect(reviewInstance.lastFrame()).toContain('同名覆');
   });
 
   it.each([

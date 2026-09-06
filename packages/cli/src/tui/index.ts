@@ -42,7 +42,44 @@ export {
   type DiagnosticSummaryViewModel,
   type DiagnosticTechnicalViewModel,
 } from './diagnostics.js';
-export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
+export {
+  OperationHistoryStore,
+  type OperationDiagnosticDetail,
+  type OperationEffectFacts,
+  type OperationEffectState,
+  type OperationHistorySummary,
+  type OperationHistoryTarget,
+  type OperationReportPreview,
+  type SafeOperationDiagnostic,
+  type SaveOperationReportResult,
+} from './operation-history.js';
+export {
+  TUI_GLOBAL_ACTIONS,
+  resolveTuiGlobalKeyAction,
+  resolveTuiKeyAction,
+  resolveTuiSessionNavigationKey,
+  type TuiGlobalKeyAction,
+  type TuiInputMode,
+  type TuiKeyContext,
+  type TuiSessionNavigationKeyAction,
+} from './keys.js';
+export {
+  TUI_ROUTE_DEFINITIONS,
+  TUI_SCREEN_IDS,
+  normalizeTuiRoute,
+  resolveRouteScreenId,
+  routeDefinition,
+  routeSupportsCharacterInput,
+  unreachableTuiRoute,
+  type RouteEntityState,
+  type RouteScreenContext,
+  type ScreenDefinition,
+  type TuiRendererFamily,
+  type TuiRouteEntity,
+  type TuiRouteKeymap,
+  type TuiRouteName,
+  type TuiScreenId,
+} from './screen-registry.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export {
   loadCatalogGenerationViewModels,
@@ -80,6 +117,15 @@ export {
   resolveConsoleV4ScreenId,
   type ConsoleV4ScreenId,
 } from './console-app-v4.js';
+export {
+  LatestSessionResultHistory,
+  SessionHost,
+  type SessionHistoryOwner,
+  type SessionHostSnapshot,
+  type SessionNavigation,
+  type SessionNavigationResult,
+  type SessionResultRecord,
+} from './session-host.js';
 export {
   buildConfigGroups,
   buildTuiViewModel,
