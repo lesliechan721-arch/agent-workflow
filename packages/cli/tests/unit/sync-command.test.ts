@@ -19,7 +19,10 @@ vi.mock('../../src/commands/write-commands.js', () => ({
   })),
 }));
 
-import { syncCommand } from '../../src/commands/sync-command.js';
+import {
+  resolveSyncIntentSelection,
+  syncCommand,
+} from '../../src/commands/sync-command.js';
 import { syncWriteCommand } from '../../src/commands/write-commands.js';
 import { buildRebuildReceiptJson } from '../../src/output/command-receipt.js';
 import {
@@ -37,6 +40,31 @@ describe('public Codex sync command', () => {
     mockedReconcile.mockClear();
     catalogMocks.refresh.mockReset();
     catalogMocks.refresh.mockResolvedValue({});
+  });
+
+  it('freezes intent roots and groups shared source roots once per actual platform', () => {
+    const selection = resolveSyncIntentSelection({
+      roots: [
+        { pluginId: 'first/codex-only', platforms: ['codex'] },
+        { pluginId: 'first/dual', platforms: ['codex', 'claude'] },
+        { pluginId: 'second/other', platforms: ['claude'] },
+      ],
+      selectors: [],
+      all: true,
+      platform: 'both',
+    });
+
+    expect(selection).toEqual({
+      requestedPluginIds: ['first/codex-only', 'first/dual', 'second/other'],
+      groups: [
+        {
+          sourceId: 'first', platform: 'codex',
+          pluginIds: ['first/codex-only', 'first/dual'],
+        },
+        { sourceId: 'first', platform: 'claude', pluginIds: ['first/dual'] },
+        { sourceId: 'second', platform: 'claude', pluginIds: ['second/other'] },
+      ],
+    });
   });
 
   it('rejects selectors with --all and non-interactive missing selection', async () => {

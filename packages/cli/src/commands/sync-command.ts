@@ -119,32 +119,58 @@ function mergeSyncResults(results: RebuildCommandResult[]): RebuildCommandResult
   };
 }
 
-function selectedIntentRoots(options: {
+export interface SyncIntentSelectionGroup {
+  sourceId: string;
+  platform: 'codex' | 'claude';
+  pluginIds: string[];
+}
+
+export interface SyncIntentSelection {
+  requestedPluginIds: string[];
+  groups: SyncIntentSelectionGroup[];
+}
+
+export function resolveSyncIntentSelection(options: {
   roots: Awaited<ReturnType<typeof readPluginIntentState>>['roots'];
-  selectors: string[];
+  selectors: readonly string[];
   all: boolean;
   platform: PlatformSelection;
-}): string[] {
+}): SyncIntentSelection {
   const eligible = options.roots.filter((root) => options.platform === 'both'
     || root.platforms.includes(options.platform));
-  if (options.all) return eligible.map((root) => root.pluginId);
-  return options.selectors.map((selector) => {
-    const parsed = parsePluginId(selector);
-    const matches = eligible.filter((root) => {
-      const rootParsed = parsePluginId(root.pluginId);
-      return rootParsed.pluginName === parsed.pluginName
-        && (parsed.sourceId === undefined || rootParsed.sourceId === parsed.sourceId);
+  const requestedPluginIds = options.all ? eligible.map((root) => root.pluginId)
+    : options.selectors.map((selector) => {
+      const parsed = parsePluginId(selector);
+      const matches = eligible.filter((root) => {
+        const rootParsed = parsePluginId(root.pluginId);
+        return rootParsed.pluginName === parsed.pluginName
+          && (parsed.sourceId === undefined || rootParsed.sourceId === parsed.sourceId);
+      });
+      if (matches.length !== 1) {
+        throw new SyncCommandError(
+          'syncPluginNotDesired',
+          matches.length === 0
+            ? `${selector} is not a desired ${options.platform} root in this scope.`
+            : `${selector} is ambiguous across desired Catalog sources.`,
+        );
+      }
+      return matches[0]!.pluginId;
     });
-    if (matches.length !== 1) {
-      throw new SyncCommandError(
-        'syncPluginNotDesired',
-        matches.length === 0
-          ? `${selector} is not a desired ${options.platform} root in this scope.`
-          : `${selector} is ambiguous across desired Catalog sources.`,
-      );
+  const uniquePluginIds = [...new Set(requestedPluginIds)];
+  const groups = new Map<string, SyncIntentSelectionGroup>();
+  for (const pluginId of uniquePluginIds) {
+    const sourceId = parsePluginId(pluginId).sourceId!;
+    const root = eligible.find((candidate) => candidate.pluginId === pluginId)!;
+    for (const platform of (options.platform === 'both'
+      ? root.platforms
+      : [options.platform])) {
+      const key = `${sourceId}\0${platform}`;
+      const group = groups.get(key) ?? { sourceId, platform, pluginIds: [] };
+      group.pluginIds.push(pluginId);
+      groups.set(key, group);
     }
-    return matches[0]!.pluginId;
-    });
+  }
+  return { requestedPluginIds: uniquePluginIds, groups: [...groups.values()] };
 }
 
 async function selectInteractively(options: {
@@ -204,18 +230,24 @@ export async function syncCommand(
     cwd: options.cwd,
     env,
   });
-  const requested = selectors.length > 0 || options.all
-    ? selectedIntentRoots({
+  const selection = selectors.length > 0 || options.all
+    ? resolveSyncIntentSelection({
         roots: initialIntent.roots,
         selectors,
         all: options.all === true,
         platform: options.platform,
       })
-    : await selectInteractively({
+    : resolveSyncIntentSelection({
         roots: initialIntent.roots,
+        selectors: await selectInteractively({
+          roots: initialIntent.roots,
+          platform: options.platform,
+          prompt: options.prompt,
+        }),
+        all: false,
         platform: options.platform,
-        prompt: options.prompt,
       });
+  const requested = selection.requestedPluginIds;
   if (requested.length === 0) {
     throw new SyncCommandError(
       'syncSelectionRequired',
@@ -250,32 +282,19 @@ export async function syncCommand(
         cwd: options.cwd,
         env,
       });
-      const currentRequested = selectedIntentRoots({
+      const currentSelection = resolveSyncIntentSelection({
         roots: intent.roots,
         selectors: requested,
         all: false,
         platform: options.platform,
       });
-      if (JSON.stringify(currentRequested) !== JSON.stringify(requested)) {
+      if (JSON.stringify(currentSelection) !== JSON.stringify(selection)) {
         throw new SyncCommandError('syncPluginNotDesired', 'Desired plugin intent changed during Catalog refresh.');
       }
-      const work = new Map<string, { platform: 'codex' | 'claude'; selectors: string[] }>();
-      for (const selector of requested) {
-        const sourceId = parsePluginId(selector).sourceId!;
-        const root = intent.roots.find((candidate) => candidate.pluginId === selector)!;
-        for (const platform of (options.platform === 'both'
-          ? root.platforms
-          : [options.platform])) {
-          const key = `${sourceId}\0${platform}`;
-          const current = work.get(key) ?? { platform, selectors: [] };
-          current.selectors.push(selector);
-          work.set(key, current);
-        }
-      }
       const sourceResults: RebuildCommandResult[] = [];
-      for (const item of work.values()) {
+      for (const item of currentSelection.groups) {
         try {
-          sourceResults.push(await syncWriteCommand(item.selectors, {
+          sourceResults.push(await syncWriteCommand(item.pluginIds, {
             cwd: options.cwd,
             scope: options.scope,
             platform: item.platform,
@@ -290,7 +309,7 @@ export async function syncCommand(
           }));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const targets = item.selectors.map((selector) => ({
+          const targets = item.pluginIds.map((selector) => ({
             pluginName: parsePluginId(selector).pluginName,
             pluginId: selector,
             sourceId: parsePluginId(selector).sourceId!,

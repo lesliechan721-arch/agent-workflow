@@ -20,6 +20,7 @@ import {
   userIssueKey,
   type OperationEvidence,
   type OperationIntent,
+  type PluginWriteBatchExecutionResult,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -841,9 +842,9 @@ async function chooseSourceSave(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the complete 112-state design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(112);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 112);
+  it('keeps the complete 114-state design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(114);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 114);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -859,6 +860,7 @@ describe('ConsoleAppV4', () => {
       'D18', 'D19', 'D20',
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
       'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07',
+      'B01', 'B02',
     ]);
   });
 
@@ -1360,6 +1362,294 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).toContain('artifactCollision');
     expect(instance.lastFrame()).toContain('AW 不会覆盖或删除');
+    instance.unmount();
+  });
+
+  it('retries only failed batch roots through a new Review and returns to the stable installed list', async () => {
+    const root = 'team-tools/review-gate';
+    const rebuild = (state: 'failed' | 'succeeded') => ({
+      platforms: ['codex'],
+      plugins: [root],
+      warnings: [],
+      rebuildResults: [],
+      receiptTargets: [],
+      overallState: state,
+      targetResults: [{
+        target: {
+          pluginName: 'review-gate', pluginId: root, sourceId: 'team-tools',
+          platform: 'codex' as const, scope: 'project' as const,
+        },
+        state: state === 'failed' ? 'failed' as const : 'completed' as const,
+        ...(state === 'failed' ? { errorCode: 'preApplyExited' } : {}),
+      }],
+    });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteBatch'
+      ? {
+          ...evidence,
+          requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
+          groups: [{
+            groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
+            preview: rebuild('failed'), executable: false,
+          }],
+        }
+      : evidence);
+    const failedGroup = rebuild('failed');
+    const executeIntent = vi.fn().mockResolvedValue({
+      ...failedGroup,
+      requestedPluginIds: [root],
+      groupResults: [{
+        groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        requestedPluginIds: [root], result: failedGroup,
+      }],
+    } satisfies PluginWriteBatchExecutionResult);
+    const value = controller({ captureEvidence, executeIntent });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '/', 'review', '\u001B[B', 'm', '\u001B[B', '\u001B[B', '\r', '\r', 'c');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchPlacement' });
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    await input(instance, '\r');
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({
+      state: 'blocked',
+      summary: { batch: { requestedPluginIds: [root], failedRequestedPluginIds: [root] } },
+    });
+    expect(instance.lastFrame()).toContain('仅重试失败插件');
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(['reviewPreparing', 'review']).toContain(value.snapshot.router.current.route.name);
+    expect(captureEvidence).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'pluginWriteBatch',
+        selection: { kind: 'selected', pluginIds: [root] },
+      }),
+      expect.any(AbortSignal),
+    );
+
+    if (value.snapshot.router.current.route.name === 'reviewPreparing') await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(value.snapshot.router.current.context.query).toBe('review');
+    expect(value.snapshot.result).toBeUndefined();
+    instance.unmount();
+  });
+
+  it('guards batch selection for h navigation and keeps 100 narrow-screen candidates reachable', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = Array.from({ length: 100 }, (_, index): StatusV7PluginSummary => ({
+      pluginName: `plugin-${String(index).padStart(3, '0')}`,
+      pluginId: `official/plugin-${String(index).padStart(3, '0')}`,
+      displayName: `Plugin ${String(index).padStart(3, '0')}`,
+      description: `批量候选 ${index}`,
+      version: '1.0.0',
+      supportedTargets: { codex: ['project'], claude: [] },
+      configFieldCount: 0,
+    }));
+    loaded.payload.targets = loaded.pluginSummaries.map((summary) => target({
+      pluginName: summary.pluginName,
+      platform: 'codex',
+      scope: 'project',
+      state: 'present',
+    }));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const navigate = vi.fn().mockResolvedValue('draftBlocked');
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 60, rows: 18 }}
+      onSessionNavigation={navigate}
+    />);
+    await nextTurn(2);
+
+    await input(instance, 'm', '\u001B[B', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('Plugin 000');
+    await input(instance, ...Array.from({ length: 99 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('Plugin 099');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+
+    await input(instance, 'h');
+    expect(navigate).toHaveBeenCalledWith('home', { discardDrafts: false });
+    expect(instance.lastFrame()).toContain('放弃未保存修改');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    await input(instance, 'b', 'H');
+    expect(navigate).toHaveBeenLastCalledWith('reload', { discardDrafts: false });
+    expect(instance.lastFrame()).toContain('放弃未保存修改');
+    instance.unmount();
+  });
+
+  it('canonicalizes reverse-order batch choices before starting Review', async () => {
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'pluginWriteBatch') return evidence;
+      const pluginIds = intent.selection.kind === 'selected' ? intent.selection.pluginIds : [];
+      const preview = {
+        platforms: ['codex'], plugins: pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
+        operationPlan: {
+          schemaVersion: 1 as const,
+          kind: 'aw-operation-plan' as const,
+          operation: 'sync' as const,
+          planFingerprint: 'sha256:batch',
+          target: { pluginId: pluginIds[0]!, platform: 'codex' as const, scope: 'project' as const },
+          changes: [],
+        },
+      };
+      return {
+        ...evidence,
+        requestedPluginIds: pluginIds,
+        groups: [{
+          groupId: 'official:codex', sourceId: 'official', platform: 'codex' as const,
+          requestedPluginIds: pluginIds, preview, executable: true,
+        }],
+      };
+    });
+    const loaded = loadResult();
+    const secondRoot = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/review-gate'
+      && entry.platform === 'codex'
+      && entry.scope === 'project');
+    expect(secondRoot).toBeDefined();
+    secondRoot!.state = 'ready';
+    secondRoot!.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    const executeIntent = vi.fn().mockResolvedValue({
+      platforms: ['codex'], plugins: ['official/review-gate', 'team-tools/review-gate'],
+      warnings: [], rebuildResults: [], targetResults: [], receiptTargets: [],
+      overallState: 'succeeded',
+      requestedPluginIds: ['official/review-gate', 'team-tools/review-gate'],
+      groupResults: [],
+    });
+    const value = controller({
+      captureEvidence,
+      executeIntent,
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+    });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r', '\u001B[A', '\r', 'c');
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(4);
+
+    const batchIntent = captureEvidence.mock.calls.at(-1)?.[0];
+    expect(batchIntent).toMatchObject({
+      kind: 'pluginWriteBatch',
+      selection: {
+        kind: 'selected',
+        pluginIds: ['official/review-gate', 'team-tools/review-gate'],
+      },
+    });
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    const oldReviewToken = value.snapshot.activeReview!.reviewToken;
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('scriptTimeout');
+    await input(instance, '\u0015', '4500', '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      scriptTimeoutMs: 4_500,
+    });
+    expect(value.snapshot.activeReview!.reviewToken).not.toBe(oldReviewToken);
+    await expect(value.executeOperation(oldReviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(executeIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'pluginWriteBatch', action: 'sync', scriptTimeoutMs: 4_500,
+      }),
+      expect.objectContaining({ requestedPluginIds: ['official/review-gate', 'team-tools/review-gate'] }),
+    );
+    instance.unmount();
+  });
+
+  it('runs the explicit all-source check without leaving the source list', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'sourceList' });
+    const checkAll = vi.spyOn(value, 'recheckAllCatalogSources').mockResolvedValue();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    expect(checkAll).toHaveBeenCalledTimes(1);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceList' });
+    instance.unmount();
+  });
+
+  it('scrolls a 100-target batch Result to both ends and Esc restores installed list context', async () => {
+    const root = 'team-tools/review-gate';
+    const targetResults = Array.from({ length: 100 }, (_, index) => ({
+      target: {
+        pluginName: `target-${String(index).padStart(3, '0')}`,
+        pluginId: index === 0 ? root : `team-tools/target-${String(index).padStart(3, '0')}`,
+        sourceId: 'team-tools', platform: 'codex' as const, scope: 'project' as const,
+      },
+      state: 'completed' as const,
+      relation: index === 0 ? 'requested' as const : 'transitive' as const,
+      ...(index === 0 ? {} : { requiredBy: [root] }),
+    }));
+    const rebuild = {
+      platforms: ['codex'], plugins: [root], warnings: [], rebuildResults: [], receiptTargets: [],
+      overallState: 'succeeded' as const, targetResults,
+    };
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteBatch'
+      ? {
+          ...evidence,
+          requestedPluginIds: [root],
+          groups: [{
+            groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            requestedPluginIds: [root], preview: rebuild, executable: false,
+          }],
+        }
+      : evidence);
+    const execution: PluginWriteBatchExecutionResult = {
+      ...rebuild,
+      requestedPluginIds: [root],
+      groupResults: [{
+        groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        requestedPluginIds: [root], result: rebuild,
+      }],
+    };
+    const value = controller({ captureEvidence, executeIntent: vi.fn().mockResolvedValue(execution) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    value.updatePageContext({ query: 'review', focusIndex: 0, scrollOffset: 0 });
+    value.beginPluginWriteBatch();
+    await value.buildOperationReview({
+      kind: 'pluginWriteBatch', action: 'sync',
+      selection: { kind: 'selected', pluginIds: [root] },
+      platform: 'codex', scope: 'project',
+    }, { name: 'batchPlacement' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).toContain('Review Gate');
+    expect(instance.lastFrame()).toContain('↓ 后面还有');
+    await input(instance, ...Array.from({ length: 25 }, () => '\u001B[6~'));
+    expect(instance.lastFrame()).toContain('target-099');
+    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(value.snapshot.router.current.context).toMatchObject({ query: 'review', focusIndex: 0 });
+    expect(value.snapshot.result).toBeUndefined();
     instance.unmount();
   });
 

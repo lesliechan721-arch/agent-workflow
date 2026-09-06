@@ -25,6 +25,7 @@ import type {
   StatusTargetRevision,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
+import type { RebuildCommandResult } from '../commands/rebuild-command.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import type { CodexReconcilePlan } from '../utils/codex-reconciler.js';
 import type { OperationPlan } from '../commands/operation-plan.js';
@@ -88,6 +89,54 @@ import {
 } from './catalog-sources/review.js';
 
 export type PluginWriteOperation = 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
+export const PLUGIN_WRITE_BATCH_ACTIONS = [
+  'install',
+  'sync',
+  'reinstall',
+  'uninstall',
+  'cleanup',
+] as const;
+export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
+export type PluginWriteBatchSelection =
+  | { kind: 'selected'; pluginIds: string[] }
+  | { kind: 'currentProjectIntentRoots' };
+
+export interface PluginWriteBatchIntent {
+  kind: 'pluginWriteBatch';
+  action: BatchPluginWriteAction;
+  selection: PluginWriteBatchSelection;
+  platform: PlatformName | 'both';
+  scope: Scope;
+  scriptTimeoutMs?: number;
+}
+
+export interface PluginWriteBatchGroupEvidence {
+  groupId: string;
+  sourceId: string;
+  platform: PlatformName | 'both';
+  requestedPluginIds: string[];
+  preview: RebuildCommandResult;
+  executable: boolean;
+}
+
+export interface PluginWriteBatchEvidence extends OperationEvidence {
+  requestedPluginIds: string[];
+  groups: PluginWriteBatchGroupEvidence[];
+}
+
+export interface PluginWriteBatchGroupResult {
+  groupId: string;
+  sourceId: string;
+  platform: PlatformName | 'both';
+  requestedPluginIds: string[];
+  result: RebuildCommandResult;
+}
+
+export interface PluginWriteBatchExecutionResult extends RebuildCommandResult {
+  requestedPluginIds: string[];
+  groupResults: PluginWriteBatchGroupResult[];
+}
+
 export type OperationKind = OperationIntent['kind'];
 
 export interface IssueOrigin {
@@ -119,6 +168,7 @@ export type OperationIntent =
       scriptTimeoutMs?: number;
       originIssue?: IssueOrigin;
     }
+  | PluginWriteBatchIntent
   | {
       kind: 'portableInstall';
       pluginId: string;
@@ -266,6 +316,8 @@ export interface OperationReviewChange {
     | 'runtime' | 'portableTarget' | 'portableInputs' | 'portableWarnings'
     | 'configChanges' | 'configImpact' | 'preserved';
   pluginId?: string;
+  batchGroupId?: string;
+  sourceId?: string;
   relation?: 'requested' | 'direct' | 'transitive';
   title: string;
   description?: string;
@@ -301,6 +353,11 @@ export interface OperationReviewModel {
     sourceId: string;
     catalogVersion: string;
     generationDigestShort: string;
+  };
+  batch?: {
+    requestedPluginIds: string[];
+    groupCount: number;
+    executableGroupCount: number;
   };
 }
 
@@ -416,6 +473,11 @@ export interface OperationResultSummary {
   planFingerprint?: string;
   diagnosticIds?: string[];
   effects?: OperationEffectFacts;
+  batch?: {
+    requestedPluginIds: string[];
+    failedRequestedPluginIds: string[];
+    groupCount: number;
+  };
   portable?: {
     selectedSkills: string[];
     agentMode: 'automatic' | 'explicit';
@@ -639,6 +701,84 @@ function stableValue(value: unknown): unknown {
     .map(([key, entry]) => [key, stableValue(entry)]));
 }
 
+function canonicalPluginIds(pluginIds: readonly string[]): string[] {
+  return [...new Set(pluginIds)].sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
+  if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'selected') return intent;
+  return {
+    ...intent,
+    selection: {
+      kind: 'selected',
+      pluginIds: canonicalPluginIds(intent.selection.pluginIds),
+    },
+  };
+}
+
+function assertPluginWriteBatchEvidence(
+  evidence: OperationEvidence,
+): asserts evidence is PluginWriteBatchEvidence {
+  const candidate = evidence as Partial<PluginWriteBatchEvidence>;
+  if (!Array.isArray(candidate.requestedPluginIds) || !Array.isArray(candidate.groups)) {
+    throw new TuiOperationBlockedError('batchEvidenceInvalid', '批量确认信息不完整。');
+  }
+  const requestedPluginIds = canonicalPluginIds(candidate.requestedPluginIds);
+  if (requestedPluginIds.length === 0
+    || JSON.stringify(requestedPluginIds) !== JSON.stringify(candidate.requestedPluginIds)) {
+    throw new TuiOperationBlockedError('batchEvidenceInvalid', '批量根插件集合无效。');
+  }
+  const requested = new Set(requestedPluginIds);
+  const groupIds = new Set<string>();
+  const groupedRoots = new Set<string>();
+  for (const group of candidate.groups) {
+    if (!group || typeof group.groupId !== 'string' || group.groupId.length === 0
+      || typeof group.sourceId !== 'string' || group.sourceId.length === 0
+      || groupIds.has(group.groupId)
+      || !Array.isArray(group.requestedPluginIds)
+      || group.requestedPluginIds.length === 0
+      || JSON.stringify(canonicalPluginIds(group.requestedPluginIds))
+        !== JSON.stringify(group.requestedPluginIds)
+      || group.requestedPluginIds.some((pluginId) => !requested.has(pluginId))
+      || group.executable !== Boolean(group.preview?.operationPlan)) {
+      throw new TuiOperationBlockedError('batchEvidenceInvalid', '批量分组确认信息无效。');
+    }
+    groupIds.add(group.groupId);
+    group.requestedPluginIds.forEach((pluginId) => groupedRoots.add(pluginId));
+  }
+  if (requestedPluginIds.some((pluginId) => !groupedRoots.has(pluginId))) {
+    throw new TuiOperationBlockedError('batchEvidenceInvalid', '批量分组缺少请求根插件。');
+  }
+}
+
+export function pluginWriteBatchFailedRequestedPluginIds(
+  execution: PluginWriteBatchExecutionResult,
+): string[] {
+  const failed = new Set<string>();
+  for (const group of execution.groupResults) {
+    const roots = new Set(group.requestedPluginIds);
+    const unsuccessful = group.result.targetResults.filter((target) =>
+      target.state === 'failed' || target.action === 'skipped');
+    let mapped = false;
+    for (const target of unsuccessful) {
+      const pluginId = target.target.pluginId;
+      if (pluginId && roots.has(pluginId)) {
+        failed.add(pluginId);
+        mapped = true;
+      }
+      for (const requiredBy of target.requiredBy ?? []) {
+        if (!roots.has(requiredBy)) continue;
+        failed.add(requiredBy);
+        mapped = true;
+      }
+    }
+    if (group.result.overallState !== 'succeeded' && (!mapped || unsuccessful.length === 0)) {
+      group.requestedPluginIds.forEach((pluginId) => failed.add(pluginId));
+    }
+  }
+  return canonicalPluginIds([...failed]);
+}
+
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
   if (intent.kind !== 'configSave') return [];
   const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
@@ -687,6 +827,32 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if ('groups' in evidence && 'requestedPluginIds' in evidence) {
+    const batch = evidence as PluginWriteBatchEvidence;
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        requestedPluginIds: batch.requestedPluginIds,
+        groups: batch.groups.map((group) => ({
+          groupId: group.groupId,
+          sourceId: group.sourceId,
+          platform: group.platform,
+          requestedPluginIds: group.requestedPluginIds,
+          executable: group.executable,
+          planFingerprint: group.preview.operationPlan?.planFingerprint,
+          overallState: group.preview.overallState,
+          targetResults: group.preview.targetResults.map((target) => ({
+            pluginId: target.target.pluginId,
+            platform: target.target.platform,
+            scope: target.target.scope,
+            state: target.state,
+            action: target.action,
+            errorCode: target.errorCode,
+            requiredBy: target.requiredBy,
+          })),
+        })),
+      })))
+      .digest('hex');
+  }
   if (evidence.operationPlan) return evidence.operationPlan.planFingerprint;
   if (evidence.resetTarget) {
     return crypto.createHash('sha256')
@@ -822,7 +988,8 @@ export class TuiController {
   #generation = 0;
   #disposed = false;
   #retiring = false;
-  #externalDraft?: 'configDraft' | 'sourceDraft';
+  #externalDraft?: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  #batchRetryIntent?: PluginWriteBatchIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
   #lastRecordedResultId?: string;
@@ -1061,6 +1228,7 @@ export class TuiController {
     this.#recoverablePortableDraft = undefined;
     this.#installPlacementDraft = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
+    this.#batchRetryIntent = undefined;
     this.#externalDraft = undefined;
     this.#result = undefined;
     this.#resultAnchor = undefined;
@@ -1264,6 +1432,11 @@ export class TuiController {
 
   #ensureOperationFlow(intent: OperationIntent): void {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWriteBatch') {
+      if (active?.kind === 'batchWrite') return;
+      this.#router.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' });
+      return;
+    }
     if (intent.kind === 'pluginWrite') {
       const kind = intent.action === 'install' ? 'pluginInstall' : 'pluginMaintenance';
       if (active?.kind === kind) return;
@@ -1317,6 +1490,7 @@ export class TuiController {
       if (intent.originIssue && result.state === 'succeeded') return { name: 'issueList' };
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
+    if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
@@ -1353,6 +1527,18 @@ export class TuiController {
         .map((candidate) => candidate.name)
       : undefined;
     this.#portableDraft = undefined;
+    this.#batchRetryIntent = intent.kind === 'pluginWriteBatch'
+      && 'summary' in result
+      && result.summary?.batch
+      && result.summary.batch.failedRequestedPluginIds.length > 0
+      ? {
+          ...structuredClone(intent),
+          selection: {
+            kind: 'selected',
+            pluginIds: [...result.summary.batch.failedRequestedPluginIds],
+          },
+        }
+      : undefined;
     if (!this.#router.finishFlow(target, terminal)) this.#router.replace(terminal);
   }
 
@@ -2303,13 +2489,46 @@ export class TuiController {
     return this.#catalogSourcesSession.recheck(sourceId);
   }
 
+  async recheckAllCatalogSources(): Promise<void> {
+    this.#assertAcceptingActions();
+    const sourceIds = [...this.listSources()]
+      .sort((left, right) => Number(Boolean(right.primary)) - Number(Boolean(left.primary)))
+      .map((source) => source.id);
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < sourceIds.length) {
+        const sourceId = sourceIds[next++];
+        if (sourceId) await this.#catalogSourcesSession.recheck(sourceId);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, sourceIds.length) }, () => worker()));
+  }
+
   fullValidateCatalogSource(sourceId: string): Promise<void> {
     this.#assertAcceptingActions();
     return this.#catalogSourcesSession.fullValidate(sourceId);
   }
 
-  setExternalDraftState(state?: 'configDraft' | 'sourceDraft'): void {
+  setExternalDraftState(state?: 'configDraft' | 'sourceDraft' | 'batchDraft'): void {
     this.#externalDraft = state;
+  }
+
+  beginPluginWriteBatch(): void {
+    this.#assertAcceptingActions();
+    this.#router.beginBatchFlow();
+    this.#router.push({ name: 'batchSelection' });
+    this.#publish();
+  }
+
+  startPluginWriteBatchReview(intent: PluginWriteBatchIntent): ReviewPreparationSnapshot {
+    return this.startReviewPreparation(intent, { name: 'batchPlacement' });
+  }
+
+  retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {
+    if (!this.#batchRetryIntent) return undefined;
+    const intent = structuredClone(this.#batchRetryIntent);
+    this.#batchRetryIntent = undefined;
+    return this.startReviewPreparation(intent, { name: 'pluginList', mode: 'installed' });
   }
 
   catalogActivationBlockReason(): CatalogActivationBlockReason | undefined {
@@ -2435,6 +2654,7 @@ export class TuiController {
 
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     this.#assertAcceptingActions();
+    intent = normalizeOperationIntent(intent);
     try {
       this.#validateReviewIntent(intent);
       const evidence = await this.#trackRead(
@@ -2455,6 +2675,7 @@ export class TuiController {
 
   startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
     this.#assertAcceptingActions();
+    intent = normalizeOperationIntent(intent);
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
       const blockReason = this.catalogSourceRecoveryBlockReason();
       if (blockReason) {
@@ -2522,6 +2743,22 @@ export class TuiController {
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
+    if (intent.kind === 'pluginWriteBatch') {
+      if (intent.selection.kind === 'currentProjectIntentRoots'
+        && (intent.action !== 'sync' || intent.scope !== 'project')) {
+        throw new TuiOperationBlockedError(
+          'batchSelectionInvalid',
+          '当前项目全部同步只支持 project scope sync。',
+        );
+      }
+      if (intent.selection.kind === 'selected') {
+        const canonical = canonicalPluginIds(intent.selection.pluginIds);
+        if (canonical.length === 0) {
+          throw new TuiOperationBlockedError('batchSelectionInvalid', '批量插件选择无效。');
+        }
+        canonical.forEach(sourceIdFromPluginId);
+      }
+    }
     const primaryGeneration = intent.kind === 'sourceMutation' && intent.action === 'setPrimary'
       ? this.#catalogGenerations.get(intent.sourceId) : undefined;
     if (primaryGeneration && !primaryGeneration.active && primaryGeneration.state !== 'ready') {
@@ -2534,6 +2771,11 @@ export class TuiController {
 
   #reviewPreparationLabel(intent: OperationIntent): string {
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
+    if (intent.kind === 'pluginWriteBatch') {
+      return intent.selection.kind === 'selected'
+        ? `${intent.selection.pluginIds.length} 个插件`
+        : '当前项目全部插件';
+    }
     if ('pluginId' in intent) {
       return this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
         ?? pluginNameFromId(intent.pluginId);
@@ -2709,6 +2951,7 @@ export class TuiController {
     returnRoute: TuiRoute = this.#router.snapshot.current.route,
   ): OperationReviewModel {
     this.#ensureOperationFlow(intent);
+    if (intent.kind === 'pluginWriteBatch') assertPluginWriteBatchEvidence(evidence);
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
     const projection = buildOperationReviewProjection({
       intent,
@@ -2724,7 +2967,10 @@ export class TuiController {
     const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
     const pluginId = 'pluginId' in intent ? intent.pluginId
-      : 'sourceId' in intent ? intent.sourceId : 'Catalog 来源配置';
+      : 'sourceId' in intent ? intent.sourceId
+        : intent.kind === 'pluginWriteBatch'
+          ? `${(evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent
       ? evidence.source?.pluginVersion
@@ -2739,6 +2985,7 @@ export class TuiController {
         : intent.kind === 'catalogGeneration' && intent.sourceMutation
           ? { sourceAction: intent.sourceMutation.action } : {}),
       ...(intent.kind === 'pluginWrite' ? { pluginAction: intent.action } : {}),
+      ...(intent.kind === 'pluginWriteBatch' ? { pluginAction: intent.action } : {}),
       ...(intent.kind === 'pluginWrite' && intent.originIssue
         ? { originIssue: intent.originIssue }
         : {}),
@@ -2751,6 +2998,14 @@ export class TuiController {
         ...('pluginId' in intent ? { sourceLabel: sourceIdFromPluginId(intent.pluginId) } : {}),
         ...(pluginVersion ? { version: pluginVersion } : {}),
       },
+      ...(intent.kind === 'pluginWriteBatch' ? {
+        batch: {
+          requestedPluginIds: [...(evidence as PluginWriteBatchEvidence).requestedPluginIds],
+          groupCount: (evidence as PluginWriteBatchEvidence).groups.length,
+          executableGroupCount: (evidence as PluginWriteBatchEvidence).groups
+            .filter((group) => group.executable).length,
+        },
+      } : {}),
       ...(evidence.source && 'catalogVersion' in evidence.source
         && typeof evidence.source.catalogVersion === 'string'
         && evidence.source.snapshotDigest
@@ -2816,8 +3071,11 @@ export class TuiController {
     let generation = this.#generation;
     const startedAtMs = this.dependencies.now?.() ?? Date.now();
     this.#progressFeed?.clearCurrent?.();
-    const dependencyPlan = ticket.evidence.dependencyPlan;
-    this.#progressTargets = dependencyPlan?.targets.map((target) => ({
+    const dependencyTargets = ticket.intent.kind === 'pluginWriteBatch'
+      ? (ticket.evidence as PluginWriteBatchEvidence).groups.flatMap((group) =>
+          group.preview.dependencyPlan?.targets ?? [])
+      : ticket.evidence.dependencyPlan?.targets ?? [];
+    this.#progressTargets = dependencyTargets.map((target) => ({
       pluginId: target.pluginId,
       platform: target.platform,
       scope: target.resolvedScope,
@@ -2826,13 +3084,15 @@ export class TuiController {
         : target.depth === 1 ? 'direct' : 'transitive',
       requiredBy: target.requiredBy,
       state: target.action === 'keep' ? 'kept' as const : 'pending' as const,
-    })) ?? [];
+    }));
     this.#progress = {
       messages: [],
       startedAtMs,
       elapsedMs: 0,
       current: {
-        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId
+        target: ticket.intent.kind === 'pluginWriteBatch'
+          ? `${(ticket.evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : 'pluginId' in ticket.intent ? ticket.intent.pluginId
           : 'sourceId' in ticket.intent ? ticket.intent.sourceId : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
@@ -2840,7 +3100,7 @@ export class TuiController {
     this.#router.replace({ name: 'progress', operationId });
     this.#publish();
     try {
-      if (ticket.intent.kind !== 'pluginWrite') {
+      if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch') {
         await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
       }
     } catch (error) {
@@ -2864,7 +3124,8 @@ export class TuiController {
       });
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
-    if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'catalogGeneration') {
+    if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch'
+      && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
         current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
@@ -3010,6 +3271,7 @@ export class TuiController {
         this.#loadError = undefined;
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
+        || ticket.intent.kind === 'pluginWriteBatch'
         ? operationResultSummary(ticket.intent, execution)
         : undefined;
       const hasFailedDependencyTarget = pluginSummary?.targets?.some((target) =>
@@ -3054,8 +3316,10 @@ export class TuiController {
           intent: ticket.intent,
           navigation: 'result',
           returnRoute: ticket.returnRoute,
-          ...(dependencyFailure || dependencyStillRequired ? { summary: pluginSummary } : {}),
-          ...(!dependencyFailure && !dependencyStillRequired && ['started', 'partial', 'completed', 'failed', 'unknown'].includes(
+          ...(ticket.intent.kind === 'pluginWriteBatch' || dependencyFailure || dependencyStillRequired
+            ? { summary: pluginSummary } : {}),
+          ...(ticket.intent.kind !== 'pluginWriteBatch'
+            && !dependencyFailure && !dependencyStillRequired && ['started', 'partial', 'completed', 'failed', 'unknown'].includes(
             this.#operationDiagnostics.get(operationId)?.effects.awWrite ?? 'unknown',
           ) ? { writeMayHaveCompleted: true } : {}),
         });
@@ -3473,11 +3737,15 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       },
     };
   }
-  if (intent.kind === 'pluginWrite') {
+  if (intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch') {
     const command = intent.action === 'refreshAndSync' ? 'sync' : intent.action;
     const rawExecution = typeof execution === 'object' && execution !== null
       ? execution as Record<string, unknown>
       : {};
+    const requestedPluginIds = intent.kind === 'pluginWriteBatch'
+      ? canonicalPluginIds((execution as PluginWriteBatchExecutionResult).requestedPluginIds ?? [])
+      : [intent.pluginId];
+    const fallbackPluginId = requestedPluginIds[0] ?? 'unknown/plugin';
     const normalizedTargetResults = Array.isArray(rawExecution.targetResults)
       ? rawExecution.targetResults.map((candidate) => {
           if (typeof candidate !== 'object' || candidate === null) return candidate;
@@ -3493,7 +3761,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
               ...rawTarget,
               ...(pluginId ? { pluginId } : {}),
               pluginName: typeof rawTarget.pluginName === 'string'
-                ? rawTarget.pluginName : pluginNameFromId(pluginId ?? intent.pluginId),
+                ? rawTarget.pluginName : pluginNameFromId(pluginId ?? fallbackPluginId),
             },
             action: typeof entry.action === 'string'
               ? entry.action : requestedIntentAction(command),
@@ -3506,18 +3774,21 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         ...rawExecution,
         ...(normalizedTargetResults ? { targetResults: normalizedTargetResults } : {}),
         platforms: Array.isArray(rawExecution.platforms) ? rawExecution.platforms as string[] : [],
-        plugins: Array.isArray(rawExecution.plugins) ? rawExecution.plugins as string[] : [intent.pluginId],
+        plugins: Array.isArray(rawExecution.plugins) ? rawExecution.plugins as string[] : requestedPluginIds,
         warnings: Array.isArray(rawExecution.warnings) ? rawExecution.warnings as string[] : [],
       } as Parameters<typeof buildRebuildReceiptJson>[1],
     );
     const result = buildOperationResultModel(receipt);
-    const requestedIds = new Set(receipt.requestedPluginIds ?? [intent.pluginId]);
+    const requestedIds = new Set(receipt.requestedPluginIds ?? requestedPluginIds);
+    const failedRequestedPluginIds = intent.kind === 'pluginWriteBatch'
+      ? pluginWriteBatchFailedRequestedPluginIds(execution as PluginWriteBatchExecutionResult)
+      : [];
     return {
       code: result.state === 'succeeded' ? 'operationSucceeded'
         : result.state === 'partial' ? 'operationPartial' : 'operationFailed',
       message: result.state === 'succeeded' ? '操作已完成。'
         : result.state === 'partial' ? '操作只完成了一部分。' : '操作结果无法确认。',
-      pluginId: intent.pluginId,
+      ...(intent.kind === 'pluginWrite' ? { pluginId: intent.pluginId } : {}),
       action: intent.action,
       changes: result.changes,
       warnings: result.warnings,
@@ -3526,10 +3797,17 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       messages: [
         ...result.warnings.map((warning) => `警告：${warning}`),
         ...result.recoveryActions.map((action) => `恢复：${action}`),
-        ...(intent.recoveryDescription
+        ...(intent.kind === 'pluginWrite' && intent.recoveryDescription
           ? [intent.recoveryDescription, `后续：${intent.scope === 'user' ? '当前项目' : '所有项目'} sync`]
           : []),
       ],
+      ...(intent.kind === 'pluginWriteBatch' ? {
+        batch: {
+          requestedPluginIds,
+          failedRequestedPluginIds,
+          groupCount: (execution as PluginWriteBatchExecutionResult).groupResults.length,
+        },
+      } : {}),
       targets: result.targetResults.map((entry) => ({
         pluginId: entry.target.pluginId,
         platform: entry.target.platform,

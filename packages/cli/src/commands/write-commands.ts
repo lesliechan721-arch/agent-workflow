@@ -21,8 +21,62 @@ import {
   type RebuildCommandResult,
   type RebuildCommandRuntime,
 } from './rebuild-command.js';
+import { createOperationPlan } from './operation-plan.js';
+import type { ReconcileOperationPlan } from './reconcile-operation-plan.js';
 
 type WriteCommand = 'install' | 'sync' | 'reinstall' | 'uninstall' | 'cleanup';
+
+export function mergeWriteCommandResults(
+  results: readonly RebuildCommandResult[],
+): RebuildCommandResult {
+  const operationPlans = results.flatMap((result) => result.operationPlan ? [result.operationPlan] : []);
+  const dependencyPlans = results.flatMap((result) => result.dependencyPlan ? [result.dependencyPlan] : []);
+  const dependencyPlan: ReconcileOperationPlan | undefined = dependencyPlans.length > 0
+    ? {
+        requestedPluginIds: [...new Set(dependencyPlans.flatMap((plan) =>
+          plan.requestedPluginIds))].sort(),
+        resolvedPluginIds: [...new Set(dependencyPlans.flatMap((plan) =>
+          plan.resolvedPluginIds))].sort(),
+        dependencyEdges: dependencyPlans.flatMap((plan) => plan.dependencyEdges),
+        scopeOverrides: dependencyPlans.flatMap((plan) => plan.scopeOverrides),
+        targets: dependencyPlans.flatMap((plan) => plan.targets),
+      }
+    : undefined;
+  return {
+    platforms: [...new Set(results.flatMap((result) => result.platforms))],
+    plugins: [...new Set(results.flatMap((result) => result.plugins))],
+    warnings: results.flatMap((result) => result.warnings),
+    rebuildResults: results.flatMap((result) => result.rebuildResults),
+    targetResults: results.flatMap((result) => result.targetResults),
+    overallState: results.every((result) => result.overallState === 'succeeded')
+      ? 'succeeded'
+      : results.some((result) => result.overallState === 'succeeded'
+        || result.overallState === 'partial') ? 'partial' : 'failed',
+    receiptTargets: results.flatMap((result) => result.receiptTargets),
+    ...(dependencyPlan ? { dependencyPlan } : {}),
+    ...(results.some((result) => result.codexReconcilePlans !== undefined)
+      ? { codexReconcilePlans: results.flatMap((result) => result.codexReconcilePlans ?? []) }
+      : {}),
+    ...(operationPlans.length > 0 ? {
+      operationPlan: createOperationPlan({
+        intentChanges: operationPlans.flatMap((plan) => plan.intentChanges),
+        actions: operationPlans.flatMap((plan) => plan.actions),
+        changes: operationPlans.flatMap((plan) => plan.changes),
+        warnings: operationPlans.flatMap((plan) => plan.warnings),
+        evidence: {
+          catalogDigests: operationPlans.flatMap((plan) => plan.evidence.catalogDigests),
+          intentDigests: operationPlans.flatMap((plan) => plan.evidence.intentDigests),
+          configDigests: operationPlans.flatMap((plan) => plan.evidence.configDigests),
+          targetOwnerFingerprints: operationPlans.flatMap((plan) =>
+            plan.evidence.targetOwnerFingerprints),
+        },
+      }),
+    } : {}),
+    ...(results.some((result) => result.offlineCleanupPlans !== undefined)
+      ? { offlineCleanupPlans: results.flatMap((result) => result.offlineCleanupPlans ?? []) }
+      : {}),
+  };
+}
 
 function writeErrorCode(message: string): string {
   for (const code of [
@@ -50,7 +104,7 @@ function writeErrorCode(message: string): string {
   return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'writeFailed';
 }
 
-function failedWriteCommandResult(
+export function failedWriteCommandResult(
   command: WriteCommand,
   pluginNames: string[],
   options: InstallCommandOptions,
@@ -244,7 +298,7 @@ export async function reinstallWriteCommand(
   rawOptions: RawReinstallCommandOptions,
   runtime: RebuildCommandRuntime = {},
 ): Promise<RebuildCommandResult> {
-  requirePluginNames('reinstall', pluginNames, true);
+  requirePluginNames('reinstall', pluginNames);
   const commandOptions = normalizeReinstallCommandOptions(rawOptions);
   return runPublicWriteCommand({ command: 'reinstall', pluginNames, commandOptions, runtime });
 }
@@ -264,7 +318,7 @@ export async function cleanupWriteCommand(
   rawOptions: RawCleanupCommandOptions,
   runtime: RebuildCommandRuntime = {},
 ): Promise<RebuildCommandResult> {
-  requirePluginNames('cleanup', pluginNames, true);
   const commandOptions = normalizeCleanupCommandOptions(rawOptions);
+  requirePluginNames('cleanup', pluginNames, commandOptions.force);
   return runPublicWriteCommand({ command: 'cleanup', pluginNames, commandOptions, runtime });
 }

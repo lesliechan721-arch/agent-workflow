@@ -164,6 +164,36 @@ export function createOperationPlan(input: OperationPlanInput): OperationPlan {
   return { ...canonicalInput, planFingerprint: `sha256:${digest}` };
 }
 
+export function createBatchIntentCompatiblePlanFingerprint(
+  plan: OperationPlan,
+  ignoredTargetKeys: ReadonlySet<string> = new Set(),
+): string {
+  const targetKey = (target: { pluginId: string; platform: PlatformName; scope: Scope }): string =>
+    `${target.pluginId}\0${target.platform}\0${target.scope}`;
+  return createOperationPlan({
+    intentChanges: plan.intentChanges.map(({ scope }) => ({
+      scope,
+      beforeDigest: 'batch-intent',
+      afterDigest: 'batch-intent',
+    })),
+    actions: plan.actions.filter((action) => !ignoredTargetKeys.has(targetKey(action))),
+    changes: plan.changes.filter((change) => ![...ignoredTargetKeys].some((key) => {
+      const [pluginId, platform, scope] = key.split('\0');
+      return change.startsWith(`${pluginId}:${platform}:${scope}:`);
+    })),
+    warnings: plan.warnings,
+    evidence: {
+      ...plan.evidence,
+      intentDigests: plan.evidence.intentDigests.map(({ scope }) => ({
+        scope,
+        digest: 'batch-intent',
+      })),
+      targetOwnerFingerprints: plan.evidence.targetOwnerFingerprints.filter((target) =>
+        !ignoredTargetKeys.has(targetKey(target))),
+    },
+  }).planFingerprint;
+}
+
 export function assertOperationPlanFingerprint(
   expectedFingerprint: string,
   currentPlan: OperationPlan,

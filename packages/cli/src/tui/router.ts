@@ -11,6 +11,7 @@ export type PluginInstallFilter = 'all' | 'uninstalled';
 export type CatalogActivationBlockReason =
   | 'configDraft'
   | 'sourceDraft'
+  | 'batchDraft'
   | 'portableDraft'
   | 'activeReview'
   | 'reviewPreparation'
@@ -53,6 +54,8 @@ export type ConfigResumeRoute =
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
+  | { name: 'batchSelection' }
+  | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
   | { name: 'portableSkillSelect'; pluginId: string }
   | { name: 'portableDependencies'; pluginId: string }
@@ -183,7 +186,7 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall';
+  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite';
 
 export interface TuiFlowScope {
   id: string;
@@ -290,6 +293,14 @@ export class TuiRouter {
       }
     }
     return this.beginFlow(kind, { name: 'pluginDetail', pluginId }, origin.id);
+  }
+
+  beginBatchFlow(): TuiFlowScope {
+    const origin = this.#stack.at(-1)!;
+    if (origin.route.name !== 'pluginList') {
+      throw new Error('Batch flow must start from a plugin list.');
+    }
+    return this.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' }, origin.id);
   }
 
   activeFlow(): TuiFlowScope | undefined {

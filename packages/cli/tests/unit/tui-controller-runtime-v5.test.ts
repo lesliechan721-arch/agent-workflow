@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV7Payload } from '../../src/commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
+import type { RebuildCommandResult } from '../../src/commands/rebuild-command.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
   configAffectedStatusTargets,
@@ -33,6 +35,11 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import {
+  createEmptyPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -69,7 +76,8 @@ vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   statusCommandV7: runtimeMocks.statusCommandV7,
 }));
 
-vi.mock('../../src/commands/write-commands.js', () => ({
+vi.mock('../../src/commands/write-commands.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
   cleanupWriteCommand: runtimeMocks.cleanupWriteCommand,
   installWriteCommand: runtimeMocks.installWriteCommand,
   syncWriteCommand: runtimeMocks.installWriteCommand,
@@ -299,6 +307,328 @@ describe('TUI config affected targets', () => {
     ]);
     expect(configAffectedStatusTargets([collapsed], 'official/demo', 'project')
       .map(({ platform, scope }) => `${platform}:${scope}`)).toEqual(['codex:project']);
+  });
+});
+
+describe('TUI batch write runtime', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('previews same-source selected roots in one typed command call', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-shared-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'first' },
+      { name: 'second' },
+    ]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      platforms: ['codex'], plugins: ['first', 'second'], warnings: [], rebuildResults: [],
+      targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      operationPlan: createOperationPlan({
+        intentChanges: [], actions: [], changes: ['two roots'], warnings: [],
+        evidence: {
+          catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+          intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+        },
+      }),
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+
+    await dependencies.captureEvidence({
+      kind: 'pluginWriteBatch', action: 'install',
+      selection: { kind: 'selected', pluginIds: ['team/first', 'team/second'] },
+      platform: 'both', scope: 'user', scriptTimeoutMs: 33_000,
+    }, new AbortController().signal);
+
+    expect(runtimeMocks.installWriteCommand).toHaveBeenCalledOnce();
+    expect(runtimeMocks.installWriteCommand).toHaveBeenCalledWith(
+      ['team/first', 'team/second'],
+      expect.objectContaining({ platform: 'both', scope: 'user', scriptTimeoutMs: 33_000 }),
+      expect.objectContaining({ previewOperationPlan: true }),
+    );
+  });
+
+  it('freezes project intent roots, isolates sources, and skips an unreviewable group', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = path.join(isolation.layout.fixtureCwd, 'batch-first-source');
+    const secondRoot = path.join(isolation.layout.fixtureCwd, 'batch-second-source');
+    await Promise.all([
+      createCatalogSnapshotFixture(firstRoot, 'alpha', [], 'alpha\n'),
+      createCatalogSnapshotFixture(secondRoot, 'beta', [], 'beta\n'),
+    ]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          { id: 'first', type: 'path', primary: true, path: firstRoot },
+          { id: 'second', type: 'path', primary: false, path: secondRoot },
+        ],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    let intentState = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'first/alpha', platforms: ['codex'],
+    });
+    intentState = upsertPluginIntentRoot(intentState, {
+      pluginId: 'second/beta', platforms: ['codex'],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, intentState);
+    let secondSourceRecovered = false;
+    runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
+      const pluginId = pluginIds[0]!;
+      const sourceId = pluginId.split('/')[0]!;
+      const target = {
+        pluginName: pluginId.split('/')[1]!, pluginId, sourceId,
+        platform: options.platform === 'both' ? 'codex' as const : options.platform,
+        scope: options.scope,
+      };
+      const failed = sourceId === 'second' && !secondSourceRecovered;
+      return {
+        platforms: [target.platform],
+        plugins: failed ? [] : pluginIds,
+        warnings: [], rebuildResults: [],
+        targetResults: [{
+          target, action: 'sync', state: failed ? 'failed' as const : 'completed' as const,
+          ...(failed ? { errorCode: 'catalogSourceUnavailable' } : {}),
+        }],
+        overallState: failed ? 'failed' as const : 'succeeded' as const,
+        receiptTargets: [target],
+        ...(!failed ? {
+          operationPlan: createOperationPlan({
+            intentChanges: [], actions: [], changes: [pluginId], warnings: [],
+            evidence: {
+              catalogDigests: [{ sourceId, digest: `sha256:${sourceId}` }],
+              intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+            },
+          }),
+        } : {}),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action: 'sync' as const,
+      selection: { kind: 'currentProjectIntentRoots' as const },
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      scriptTimeoutMs: 41_000,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence).toMatchObject({
+      requestedPluginIds: ['first/alpha', 'second/beta'],
+      groups: [
+        expect.objectContaining({
+          sourceId: 'first', requestedPluginIds: ['first/alpha'], executable: true,
+        }),
+        expect.objectContaining({
+          sourceId: 'second', requestedPluginIds: ['second/beta'], executable: false,
+        }),
+      ],
+    });
+
+    secondSourceRecovered = true;
+    intentState = upsertPluginIntentRoot(intentState, {
+      pluginId: 'first/later', platforms: ['codex'],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, intentState);
+
+    const result = await dependencies.executeIntent(intent, evidence) as {
+      overallState: string;
+      requestedPluginIds: string[];
+      targetResults: Array<{ target: { pluginId: string }; state: string }>;
+      groupResults: Array<{ sourceId: string; result: { overallState: string } }>;
+    };
+    expect(result).toMatchObject({
+      overallState: 'partial',
+      requestedPluginIds: ['first/alpha', 'second/beta'],
+      groupResults: [
+        { sourceId: 'first', result: { overallState: 'succeeded' } },
+        { sourceId: 'second', result: { overallState: 'failed' } },
+      ],
+    });
+    expect(result.targetResults).toEqual([
+      expect.objectContaining({ target: expect.objectContaining({ pluginId: 'first/alpha' }), state: 'completed' }),
+      expect.objectContaining({ target: expect.objectContaining({ pluginId: 'second/beta' }), state: 'failed' }),
+    ]);
+    expect(runtimeMocks.installWriteCommand.mock.calls).toHaveLength(4);
+    expect(runtimeMocks.installWriteCommand.mock.calls.filter((call) =>
+      call[0][0] === 'first/alpha')).toHaveLength(3);
+    expect(runtimeMocks.installWriteCommand.mock.calls.filter((call) =>
+      call[0][0] === 'second/beta')).toHaveLength(1);
+    expect(runtimeMocks.installWriteCommand.mock.calls.filter((call) =>
+      call[0][0] === 'second/beta').every((call) => call[2]?.previewOperationPlan === true)).toBe(true);
+    expect(runtimeMocks.installWriteCommand.mock.calls.every((call) =>
+      call[1].scriptTimeoutMs === 41_000)).toBe(true);
+    expect(runtimeMocks.installWriteCommand.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+      expectedPlanFingerprint: expect.any(String),
+      awHomeMutationToken: expect.any(Object),
+    }));
+  });
+
+  it('returns partial facts when a later group becomes stale after an earlier write', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = path.join(isolation.layout.fixtureCwd, 'batch-stale-first');
+    const secondRoot = path.join(isolation.layout.fixtureCwd, 'batch-stale-second');
+    await Promise.all([
+      createCatalogSnapshotFixture(firstRoot, 'alpha', [], 'alpha\n'),
+      createCatalogSnapshotFixture(secondRoot, 'beta', [], 'beta\n'),
+    ]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          { id: 'first', type: 'path', primary: true, path: firstRoot },
+          { id: 'second', type: 'path', primary: false, path: secondRoot },
+        ],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    let firstExecuted = false;
+    let firstExecutionFails = false;
+    runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options, runtime) => {
+      const pluginId = pluginIds[0]!;
+      const [sourceId, pluginName] = pluginId.split('/') as [string, string];
+      if (sourceId === 'first' && runtime?.previewOperationPlan !== true) firstExecuted = true;
+      const target = { pluginName, pluginId, sourceId, platform: 'codex' as const, scope: options.scope };
+      const preApplyFailed = sourceId === 'first'
+        && firstExecutionFails
+        && runtime?.previewOperationPlan !== true;
+      const operationPlanStale = sourceId === 'second'
+        && firstExecutionFails
+        && runtime?.previewOperationPlan !== true;
+      return {
+        platforms: ['codex'], plugins: preApplyFailed || operationPlanStale ? [] : pluginIds,
+        warnings: [],
+        rebuildResults: preApplyFailed ? [{
+          status: 'failed' as const,
+          command: 'install' as const,
+          target: {
+            ...target,
+            sourceIdentity: 'sha256:first',
+            pluginVersion: '1.0.0',
+            cwd: options.cwd,
+          },
+          actions: [{ name: 'preApply', status: 'failed' as const }],
+          cleanupAttempted: false,
+          removed: [], absent: [], residual: [], quarantined: [],
+          failures: [{ phase: 'preApply' as const, message: 'preApply failed after launch' }],
+          error: { phase: 'preApply' as const, message: 'preApply failed after launch' },
+        }] : [],
+        targetResults: [{
+          target,
+          action: 'install',
+          state: preApplyFailed || operationPlanStale ? 'failed' as const : 'completed' as const,
+          ...(preApplyFailed
+            ? { errorCode: 'preApplyFailed', message: 'preApply failed after launch' }
+            : operationPlanStale
+              ? { errorCode: 'operationPlanStale', message: 'locked plan changed' }
+              : {}),
+        }],
+        overallState: preApplyFailed || operationPlanStale ? 'failed' as const : 'succeeded' as const,
+        receiptTargets: [target],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [`${pluginId}:codex:${options.scope}:install`],
+          warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId, digest: `sha256:${sourceId}` }],
+            intentDigests: [], configDigests: [],
+            targetOwnerFingerprints: [{
+              pluginId, platform: 'codex', scope: options.scope,
+              fingerprint: sourceId === 'second' && firstExecuted
+                ? 'sha256:external-change'
+                : 'sha256:absent',
+            }],
+          },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const, action: 'install' as const,
+      selection: { kind: 'selected' as const, pluginIds: ['first/alpha', 'second/beta'] },
+      platform: 'codex' as const, scope: 'project' as const,
+    };
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+
+    const result = await dependencies.executeIntent(intent, evidence) as {
+      overallState: string;
+      groupResults: Array<{ sourceId: string; result: RebuildCommandResult }>;
+    };
+
+    expect(result.overallState).toBe('partial');
+    expect(result.groupResults).toMatchObject([
+      { sourceId: 'first', result: { overallState: 'succeeded' } },
+      {
+        sourceId: 'second',
+        result: {
+          overallState: 'failed',
+          targetResults: [expect.objectContaining({ errorCode: 'operationReviewStale' })],
+        },
+      },
+    ]);
+    expect(runtimeMocks.installWriteCommand.mock.calls.filter((call) =>
+      call[0][0] === 'second/beta').every((call) => call[2]?.previewOperationPlan === true)).toBe(true);
+
+    firstExecuted = false;
+    firstExecutionFails = true;
+    runtimeMocks.installWriteCommand.mockClear();
+    const failedEvidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    const failedResult = await dependencies.executeIntent(intent, failedEvidence) as {
+      overallState: string;
+      rebuildResults: RebuildCommandResult['rebuildResults'];
+      groupResults: Array<{ sourceId: string; result: RebuildCommandResult }>;
+    };
+    expect(failedResult.overallState).toBe('failed');
+    expect(failedResult.groupResults).toMatchObject([
+      {
+        sourceId: 'first',
+        result: {
+          overallState: 'failed',
+          targetResults: [expect.objectContaining({ errorCode: 'preApplyFailed' })],
+        },
+      },
+      {
+        sourceId: 'second',
+        result: {
+          overallState: 'failed',
+          targetResults: [expect.objectContaining({ errorCode: 'operationReviewStale' })],
+        },
+      },
+    ]);
+    expect(failedResult.rebuildResults).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        actions: [expect.objectContaining({ name: 'preApply', status: 'failed' })],
+      }),
+      expect.objectContaining({ status: 'failed' }),
+    ]);
   });
 });
 

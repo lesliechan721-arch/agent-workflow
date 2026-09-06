@@ -11095,6 +11095,122 @@ describe('five namespaced write commands', () => {
     expect(result.rebuildResults).toHaveLength(1);
   });
 
+  it('reinstalls and ordinarily cleans multiple roots while force cleanup remains single-target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'multi-lifecycle-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'first' },
+      { name: 'second' },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+    const pluginIds = ['team/first', 'team/second'];
+    const installed = await installWriteCommand(pluginIds, {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.targetResults)).toBe('succeeded');
+
+    const reinstalled = await reinstallWriteCommand(pluginIds, {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(reinstalled.overallState, JSON.stringify(reinstalled.targetResults)).toBe('succeeded');
+    expect(reinstalled.receiptTargets.map((target) => target.pluginId).sort()).toEqual(pluginIds);
+
+    const cleaned = await cleanupWriteCommand(pluginIds, {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(cleaned.overallState, JSON.stringify(cleaned.targetResults)).toBe('succeeded');
+    expect(cleaned.targetResults.map((target) => target.target.pluginId).sort()).toEqual(pluginIds);
+
+    await expect(cleanupWriteCommand(pluginIds, {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
+    }, runtime)).rejects.toThrow('cleanup 命令需要且只接受一个插件名');
+  });
+
+  it('executes later source groups after one reviewed batch intent update', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = path.join(isolation.layout.fixtureCwd, 'batch-first-source');
+    const secondRoot = path.join(isolation.layout.fixtureCwd, 'batch-second-source');
+    await Promise.all([
+      createDependencyCatalogSnapshotFixture(firstRoot, [
+        { name: 'leaf' },
+        { name: 'alpha', dependencies: ['leaf'] },
+        { name: 'omega', dependencies: ['leaf'] },
+      ]),
+      createDependencyCatalogSnapshotFixture(secondRoot, [{ name: 'beta' }]),
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [
+          { id: 'first', type: 'path', primary: true, path: firstRoot },
+          { id: 'second', type: 'path', primary: false, path: secondRoot },
+        ],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action: 'install' as const,
+      selection: {
+        kind: 'selected' as const,
+        pluginIds: ['first/alpha', 'first/omega', 'second/beta'],
+      },
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    const result = await dependencies.executeIntent(intent, evidence) as {
+      overallState: string;
+      groupResults: Array<{
+        sourceId: string;
+        result: Awaited<ReturnType<typeof installWriteCommand>>;
+      }>;
+    };
+
+    expect(result.overallState).toBe('succeeded');
+    expect(result.groupResults.map((group) => [group.sourceId, group.result.overallState])).toEqual([
+      ['first', 'succeeded'],
+      ['second', 'succeeded'],
+    ]);
+    const firstGroup = result.groupResults[0]!.result;
+    expect(firstGroup.receiptTargets.filter((target) => target.pluginId === 'first/leaf'))
+      .toHaveLength(1);
+
+    const syncIntent = { ...intent, action: 'sync' as const };
+    const syncEvidence = await dependencies.captureEvidence(
+      syncIntent,
+      new AbortController().signal,
+    );
+    const syncResult = await dependencies.executeIntent(syncIntent, syncEvidence) as {
+      overallState: string;
+      groupResults: Array<{ sourceId: string; result: { overallState: string } }>;
+    };
+    expect(syncResult.overallState).toBe('succeeded');
+    expect(syncResult.groupResults.map((group) => [group.sourceId, group.result.overallState]))
+      .toEqual([['first', 'succeeded'], ['second', 'succeeded']]);
+  });
+
   it('rejects sync --all when no intent roots exist', async () => {
     const isolation = await configureCatalog();
     await expect(syncCommand([], {

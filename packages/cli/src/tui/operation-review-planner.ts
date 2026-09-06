@@ -4,6 +4,8 @@ import type {
   OperationEvidence,
   OperationIntent,
   OperationReviewChange,
+  PluginWriteBatchEvidence,
+  PluginWriteBatchGroupEvidence,
   PluginWriteOperation,
 } from './controller.js';
 import type { PluginDependencyOverviewViewModel } from './model.js';
@@ -14,6 +16,7 @@ import {
   parseScriptTimeoutMs,
   SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../commands/options.js';
+import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -26,7 +29,7 @@ function pluginNameFromId(pluginId: string): string {
 
 function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] {
   let configuredTimeoutMs: number | undefined;
-  if (intent.kind === 'pluginWrite'
+  if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
@@ -118,6 +121,23 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       description: '只安装已选择的 Skills；不会修改原生插件安装。',
       primaryLabel: `开始安装 ${intent.selectedSkills.length} 个 Skills`,
       destructive: false,
+    };
+  }
+  if (intent.kind === 'pluginWriteBatch') {
+    const labels = {
+      install: ['批量添加插件', '添加所选插件及其必需依赖。'],
+      sync: ['批量同步插件', '按已保存的设置同步所选插件。'],
+      reinstall: ['批量重新安装插件', '清理 AW 管理的内容后完整重建所选插件。'],
+      uninstall: ['批量移除插件', '移除所选插件的 AW 管理安装内容。配置保持不变。'],
+      cleanup: ['批量清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。'],
+    } as const;
+    const [title, description] = labels[intent.action];
+    return {
+      title,
+      description,
+      primaryLabel: title,
+      destructive: intent.action === 'reinstall' || intent.action === 'uninstall'
+        || intent.action === 'cleanup',
     };
   }
   if (intent.kind === 'pluginWrite' && intent.dependencyPlacementAdjustment) {
@@ -647,6 +667,89 @@ function reviewChanges(
   ];
 }
 
+function batchGroupEvidence(
+  evidence: PluginWriteBatchEvidence,
+  group: PluginWriteBatchGroupEvidence,
+): OperationEvidence {
+  const manager = group.preview.codexManagerPreview;
+  return {
+    catalog: evidence.catalog,
+    ...(group.preview.dependencyPlan ? { dependencyPlan: group.preview.dependencyPlan } : {}),
+    ...(group.preview.codexReconcilePlans ? { codexReconcilePlans: group.preview.codexReconcilePlans } : {}),
+    ...(group.preview.operationPlan ? { operationPlan: group.preview.operationPlan } : {}),
+    ...(manager && manager.state !== 'blocked' ? {
+      codexManager: {
+        state: manager.state,
+        packageName: '@openai/codex',
+        version: manager.state === 'requires-install'
+          ? MANAGED_CODEX_VERSION
+          : manager.manager.version,
+      },
+    } : {}),
+  };
+}
+
+function batchReviewChanges(
+  intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>,
+  evidence: PluginWriteBatchEvidence,
+): OperationReviewChange[] {
+  const changes = evidence.groups.flatMap((group): OperationReviewChange[] => {
+    const representative = group.requestedPluginIds[0]!;
+    const groupEvidence = batchGroupEvidence(evidence, group);
+    const projected = reviewChanges({
+      kind: 'pluginWrite',
+      action: intent.action,
+      pluginId: representative,
+      platform: group.platform,
+      scope: intent.scope,
+      ...(intent.scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs: intent.scriptTimeoutMs }),
+    }, groupEvidence);
+    const targetChanges = group.preview.targetResults.map((target): OperationReviewChange => {
+      const pluginId = target.target.pluginId ?? `${group.sourceId}/${target.target.pluginName}`;
+      const requested = group.requestedPluginIds.includes(pluginId);
+      return {
+        kind: intent.action === 'uninstall' || intent.action === 'cleanup' ? 'remove'
+          : intent.action === 'install' ? 'add' : 'change',
+        group: requested ? 'requested' : 'dependencies',
+        pluginId,
+        relation: requested ? 'requested'
+          : (target.requiredBy ?? []).some((plugin) => group.requestedPluginIds.includes(plugin))
+            ? 'direct' : 'transitive',
+        title: pluginNameFromId(pluginId),
+        description: `${group.sourceId} · ${target.target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.target.scope === 'user' ? '所有项目' : '当前项目'}${target.state === 'failed' || target.action === 'skipped' ? ` · 无法执行${target.errorCode ? ` (${target.errorCode})` : ''}` : ''}`,
+      };
+    });
+    const effective = group.preview.dependencyPlan
+      ? projected
+      : [
+          ...targetChanges,
+          ...projected.filter((change) => change.group !== 'requested'
+            && change.group !== 'dependencies'),
+        ];
+    return [
+      ...effective.filter((change) => change.title !== 'preApply 脚本超时')
+        .map((change) => ({
+          ...change,
+          batchGroupId: group.groupId,
+          sourceId: group.sourceId,
+        })),
+      ...(!group.executable ? [{
+        kind: 'warning' as const,
+        group: 'portableWarnings' as const,
+        batchGroupId: group.groupId,
+        sourceId: group.sourceId,
+        title: `${group.sourceId} 组无法执行`,
+        description: '确认后保留本次预览失败；不会重新求值或开始写入。',
+      }] : []),
+    ];
+  });
+  return [
+    ...scriptTimeoutChanges(intent),
+    ...changes,
+    { kind: 'keep', group: 'preserved', title: '插件设置保持不变' },
+  ];
+}
+
 function technicalDetails(evidence: OperationEvidence): string[] {
   const short = (value: string): string => {
     const normalized = value.startsWith('sha256:') ? value.slice(7) : value;
@@ -656,6 +759,15 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     `Catalog 配置：${short(evidence.catalog.configDigest)}`,
     `Catalog 组合：${short(evidence.catalog.compositeDigest)}`,
   ];
+  if ('groups' in evidence && Array.isArray(evidence.groups)) {
+    const batch = evidence as PluginWriteBatchEvidence;
+    details.push(`批量根插件：${batch.requestedPluginIds.length} 个`);
+    for (const group of batch.groups) {
+      details.push(
+        `批量分组：${group.sourceId} · ${group.platform} · ${group.requestedPluginIds.length} 个根插件 · ${group.executable ? `计划 ${short(group.preview.operationPlan!.planFingerprint)}` : '预览失败'}`,
+      );
+    }
+  }
   if (evidence.catalog.generationSetDigest) {
     details.push(`Catalog generation：${short(evidence.catalog.generationSetDigest)}`);
   }
@@ -717,12 +829,17 @@ export function buildOperationReviewProjection(options: {
   dependencyOverview?: PluginDependencyOverviewViewModel;
 }): OperationReviewProjection {
   const { intent, evidence } = options;
+  const batchEvidence = intent.kind === 'pluginWriteBatch'
+    ? evidence as PluginWriteBatchEvidence
+    : undefined;
   const labels = operationLabels(intent, evidence);
   const sharedNativeConfigApply = intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
     && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
   const requiresConfirmation = sharedNativeConfigApply
+    || Boolean(batchEvidence?.groups.some((group) =>
+      (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
@@ -733,7 +850,9 @@ export function buildOperationReviewProjection(options: {
       && (!evidence.catalogGeneration.primaryImpact.inventoryComplete
         || evidence.catalogGeneration.primaryImpact.affectedReferences.length > 0));
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
-    plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
+    plan.review.sharedImpact.warning)?.review.sharedImpact.warning
+    ?? batchEvidence?.groups.flatMap((group) => group.preview.codexReconcilePlans ?? [])
+      .find((plan) => plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
     kind: 'warning',
     group: 'portableWarnings',
@@ -745,13 +864,17 @@ export function buildOperationReviewProjection(options: {
     description: labels.description,
     changes: [
       ...preparationWarnings,
-      ...reviewChanges(intent, evidence, options.dependencyOverview),
+      ...(intent.kind === 'pluginWriteBatch'
+        ? batchReviewChanges(intent, batchEvidence!)
+        : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
     technicalDetails: technicalDetails(evidence),
     ...(intent.kind === 'pluginWrite'
       ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation ? ' --yes' : ''}` }
       : {}),
-    primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
+    primaryLabel: intent.kind === 'pluginWriteBatch'
+      ? `${labels.primaryLabel} ${batchEvidence!.requestedPluginIds.length} 个插件`
+      : intent.kind === 'pluginWrite' && evidence.dependencyPlan
       ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
       : labels.primaryLabel,
     ...(labels.destructive ? { destructive: true as const } : {}),
@@ -760,6 +883,9 @@ export function buildOperationReviewProjection(options: {
       pluginIds: [...new Set([
         ...(evidence.codexReconcilePlans ?? []).flatMap((plan) =>
           plan.review.sharedImpact.pluginIds),
+        ...(batchEvidence?.groups.flatMap((group) =>
+          (group.preview.codexReconcilePlans ?? []).flatMap((plan) =>
+            plan.review.sharedImpact.pluginIds)) ?? []),
         ...(evidence.sourceWrite?.impact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),
         ...(evidence.catalogGeneration?.impact?.affectedReferences ?? []).flatMap((reference) =>
