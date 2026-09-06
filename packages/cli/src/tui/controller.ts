@@ -997,6 +997,8 @@ export function userIssueKey(issue: Pick<UserIssueViewModel,
 
 
 function issueCode(error: unknown): string {
+  const safeOperationError = readSafeOperationError(error);
+  if (safeOperationError) return safeDiagnosticCode(safeOperationError.code, 'operationBlocked');
   if (error instanceof TuiOperationBlockedError) return error.code;
   if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
@@ -1228,8 +1230,8 @@ export class TuiController {
     return this.#operationDiagnostics.size;
   }
 
-  recordSafeUiFailure(code: string, stage: string): string {
-    const recordId = this.#recordStandaloneFailure(code, stage);
+  recordUiFailure(error: unknown, context: { code: string; stage: string }): string {
+    const recordId = this.#recordStandaloneFailure(context.code, context.stage, error);
     this.#publish();
     return recordId;
   }
@@ -3220,6 +3222,7 @@ export class TuiController {
         execution,
         `${this.#sessionEpoch}:${operationId}`,
         collectOperationSensitiveValues(ticket.intent),
+        ticket.intent.kind,
       );
       this.#operationDiagnostics.set(operationId, {
         ...executionProjection,
@@ -3795,14 +3798,14 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
           : intent.action === 'replaceDamaged' ? '损坏的 Active Catalog 已由当前候选替换。'
-          : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
+          : intent.action === 'recoverState' ? '目录版本状态已恢复，目标来源已启用。'
             : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
               : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'
               : 'Catalog 已验证并启用。',
       messages: result.status === 'partial'
         ? [result.partialReason === 'primary'
-            ? `新的 Active 可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
-            : `旧 Active 保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
+            ? `新的已启用版本可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
+            : `旧的已启用版本保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
         : updateActivated
           ? ['已安装插件不会自动升级。', '已重新计算可用的插件升级。']
           : intent.action === 'update'

@@ -27,6 +27,7 @@ import {
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 
 afterEach(() => cleanup());
 
@@ -2193,6 +2194,53 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 1, reason: 'initialError' });
     instance.unmount();
     expect(value.snapshot.phase).toBe('error');
+  });
+
+  it('records a safe rejected action through the real menu action and ignores sync and async aborts', async () => {
+    const secret = 'Authorization=private-token';
+    const value = controller();
+    await value.load();
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const recheck = vi.spyOn(value, 'fullValidateCatalogSource').mockRejectedValueOnce(
+      attachSafeOperationError(new Error(`raw ${secret}`), {
+        code: 'catalogGitAuthorizationFailed',
+        stage: 'catalog.fetch',
+        safeMessage: 'Catalog authorization is required.',
+        exitCode: 17,
+        cause: { code: 'EACCES', safeMessage: 'The service denied access.' },
+      }),
+    );
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('operationDiagnostic');
+    const detail = value.getOperationDiagnostic(
+      (value.snapshot.router.current.route as { recordId: string }).recordId,
+    );
+    expect(detail?.diagnostics).toEqual([expect.objectContaining({
+      code: 'catalogGitAuthorizationFailed', stage: 'catalog.fetch', exitCode: 17,
+      causes: [{ code: 'EACCES', safeMessage: 'The service denied access.' }],
+    })]);
+    expect(JSON.stringify({ snapshot: value.snapshot, detail })).not.toContain(secret);
+    expect(JSON.stringify({ snapshot: value.snapshot, detail })).not.toContain('raw');
+
+    const recordCount = value.listOperationHistory().length;
+    value.replace({ name: 'sourceDetail', sourceId: 'team-tools' });
+    recheck.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
+    await nextTurn(2);
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(2);
+    expect(value.listOperationHistory()).toHaveLength(recordCount);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+
+    recheck.mockImplementationOnce(() => { throw new DOMException('cancelled', 'AbortError'); });
+    await input(instance, '\r');
+    await nextTurn(2);
+    expect(value.listOperationHistory()).toHaveLength(recordCount);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+    instance.unmount();
   });
 
   it('handles Ctrl-C before search input and exits without changing the query', async () => {
@@ -5277,7 +5325,7 @@ describe('ConsoleAppV4', () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
     });
-    const recordId = value.recordSafeUiFailure('fixtureFailure', 'fixture-stage');
+    const recordId = value.recordUiFailure(undefined, { code: 'fixtureFailure', stage: 'fixture-stage' });
     value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
@@ -5296,6 +5344,22 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual(draftRoute);
     expect(value.hasSessionDraft).toBe(true);
     expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
+  it('shows an unavailable page when an open diagnostic record was evicted', async () => {
+    const value = controller();
+    const removed = value.recordUiFailure(undefined, { code: 'oldFailure', stage: 'old-stage' });
+    for (let index = 0; index < 20; index += 1) {
+      value.recordUiFailure(undefined, { code: `newFailure${index}`, stage: 'new-stage' });
+    }
+    value.push({ name: 'operationDiagnostic', recordId: removed });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationDiagnostic', recordId: removed });
+    expect(instance.lastFrame()).toContain('操作记录已不可用');
+    expect(instance.lastFrame()).toContain('记录已不可用');
     instance.unmount();
   });
 

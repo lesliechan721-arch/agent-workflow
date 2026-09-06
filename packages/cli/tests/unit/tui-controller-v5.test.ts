@@ -4446,7 +4446,7 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
   });
 
-  it('normalizes missing source ancestors and missing history records after reload', async () => {
+  it('normalizes missing source ancestors and keeps an evicted history detail explicit after reload', async () => {
     const loaded = { payload: status(), pluginSummaries: summaries(['official', 'demo']) };
     const controller = new TuiController(dependencies({
       loadStatus: vi.fn().mockResolvedValue(loaded),
@@ -4457,7 +4457,9 @@ describe('TUI v4 Review safety', () => {
 
     await controller.load();
 
-    expect(controller.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'operationDiagnostic', recordId: 'removed-record',
+    });
     controller.back();
     expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceList' });
   });

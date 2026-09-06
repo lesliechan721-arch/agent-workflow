@@ -1062,6 +1062,12 @@ function isCatalogSourcesBootstrapFlow(snapshot: TuiControllerSnapshot): boolean
     && snapshot.result.operationKind === 'catalogSourcesRecovery';
 }
 
+function isOperationHistoryRoute(route: TuiRoute): boolean {
+  return route.name === 'operationHistory'
+    || route.name === 'operationDiagnostic'
+    || route.name === 'operationReportPreview';
+}
+
 function operationTargetStateLabel(
   state: 'completed' | 'kept' | 'failed' | 'skipped',
 ): { label: string; status: ActionItem['status'] } {
@@ -1092,7 +1098,8 @@ export function resolveConsoleV4ScreenId(
   if (tooSmall) return 'G05';
   if (overlay === 'help') return 'G03';
   if (overlay === 'discard') return 'G04';
-  if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) return 'G01';
+  if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(snapshot.router.current.route)) return 'G01';
   return resolveRouteScreenId(snapshot.router.current.route, {
     snapshot,
     controller,
@@ -1227,8 +1234,9 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     const unsubscribe = props.controller.subscribe(setSnapshot);
     if (props.controller.snapshot.phase === 'idle') {
-      void props.controller.load().catch(() => {
-        props.controller.recordSafeUiFailure('tuiLoadFailed', 'ui-load');
+      void props.controller.load().catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        props.controller.recordUiFailure(error, { code: 'tuiLoadFailed', stage: 'ui-load' });
       });
     }
     return () => {
@@ -1833,8 +1841,9 @@ export function ConsoleAppV4(props: {
     restorePageContext();
     setActionError(undefined);
   };
-  const showSafeUiFailure = (code: string, stage: string): void => {
-    const recordId = props.controller.recordSafeUiFailure(code, stage);
+  const showSafeUiFailure = (error: unknown, code: string, stage: string): void => {
+    if (error instanceof Error && error.name === 'AbortError') return;
+    const recordId = props.controller.recordUiFailure(error, { code, stage });
     go({ name: 'operationDiagnostic', recordId });
   };
   const leaveResult = (target?: TuiRoute): void => {
@@ -2013,8 +2022,8 @@ export function ConsoleAppV4(props: {
       setFocus(0);
       setScrollOffset(0);
       setActionError(undefined);
-    } catch {
-      showSafeUiFailure('tuiForceCleanupReviewFailed', 'force-cleanup-review');
+    } catch (error) {
+      showSafeUiFailure(error, 'tuiForceCleanupReviewFailed', 'force-cleanup-review');
     }
   };
   const beginAddSource = (): void => {
@@ -2523,8 +2532,8 @@ export function ConsoleAppV4(props: {
         changes: configChanges(),
       });
       setConfigActionError(undefined);
-    } catch {
-      props.controller.recordSafeUiFailure('tuiConfigReviewFailed', 'config-review');
+    } catch (error) {
+      props.controller.recordUiFailure(error, { code: 'tuiConfigReviewFailed', stage: 'config-review' });
       setConfigActionError('设置值未通过验证。请重新检查修改。');
     }
   };
@@ -2569,7 +2578,8 @@ export function ConsoleAppV4(props: {
     setPendingPresetId(undefined);
   }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
 
-  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)) {
+  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(route)) {
     const sourcesConfigInvalid = snapshot.loadError?.code === 'catalogSourcesConfigInvalid';
     breadcrumb = sourcesConfigInvalid ? 'Catalog 来源恢复' : '启动失败';
     title = sourcesConfigInvalid ? 'Catalog 来源配置损坏' : '无法读取插件状态';
@@ -2581,7 +2591,7 @@ export function ConsoleAppV4(props: {
       : 'd 技术详情 · q 退出 · Ctrl-C 退出';
     actions = sourcesConfigInvalid ? [{
       label: '备份并恢复官方默认来源',
-      description: '先进入 Review；不会删除 Catalog state 或 store',
+      description: '先进入确认页；不会删除目录版本状态或本地缓存',
       run: () => beginReview({ kind: 'catalogSourcesRecovery' }),
     }] : [];
     content = <Box flexDirection="column">
@@ -2589,7 +2599,8 @@ export function ConsoleAppV4(props: {
       {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}
       {showTechnical ? <TechnicalDetails><StaticRow title="安全诊断" meta={snapshot.loadError?.code ?? 'statusLoadFailed'} compact /></TechnicalDetails> : null}
     </Box>;
-  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) {
+  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(route)) {
     breadcrumb = '启动';
     title = '正在检查插件状态';
     description = '单个来源失败不会阻止其他来源继续加载。';
@@ -6156,10 +6167,10 @@ export function ConsoleAppV4(props: {
       const pending = action.run?.();
       if (pending) void pending.catch((error: unknown) => {
         if (error instanceof Error && error.name === 'AbortError') return;
-        showSafeUiFailure('tuiActionFailed', 'ui-action');
+        showSafeUiFailure(error, 'tuiActionFailed', 'ui-action');
       });
-    } catch {
-      showSafeUiFailure('tuiActionFailed', 'ui-action');
+    } catch (error) {
+      showSafeUiFailure(error, 'tuiActionFailed', 'ui-action');
     }
   };
 
@@ -6197,7 +6208,7 @@ export function ConsoleAppV4(props: {
         if (discardDrafts) clearExternalDraftValues();
         setDiscardDraftConfirmation(undefined);
       }
-    }).catch(() => showSafeUiFailure('tuiSessionNavigationFailed', 'session-navigation'));
+    }).catch((error: unknown) => showSafeUiFailure(error, 'tuiSessionNavigationFailed', 'session-navigation'));
   }
 
   function clearExternalDraftValues(): void {

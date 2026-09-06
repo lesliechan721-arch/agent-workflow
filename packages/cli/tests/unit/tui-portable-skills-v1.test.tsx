@@ -7,6 +7,7 @@ import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js'
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 import {
   extractPortableError,
   TuiController,
@@ -200,6 +201,61 @@ describe('Portable Skills TUI V1', () => {
     host.dispose();
   });
 
+  it('keeps initial and H-reload failure diagnostics reachable through the real SessionHost', async () => {
+    const failedSession = (code: string, safeMessage: string) => portableController({
+      loadStatus: vi.fn().mockRejectedValue(attachSafeOperationError(
+        new Error('Authorization=private-token /Users/private/status.json'),
+        { code, stage: 'status.load', safeMessage },
+      )),
+    });
+    const first = failedSession('initialStatusFailed', 'The initial status could not be read.');
+    const second = failedSession('reloadStatusFailed', 'The reloaded status could not be read.');
+    const sessions = [first, second];
+    const host = new SessionHost({
+      createSession: () => {
+        const next = sessions.shift();
+        if (!next) throw new Error('unexpected session');
+        return { controller: next.value, progressFeed: next.progress };
+      },
+    });
+    const save = vi.spyOn(second.value, 'saveOperationReport').mockResolvedValue({ path: '/private/report.md' });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await tick(4);
+
+    expect(first.value.snapshot.phase).toBe('error');
+    expect(instance.lastFrame()).toContain('无法读取插件状态');
+    expect(instance.lastFrame()).not.toContain('添加插件');
+    await send(instance, 'H');
+    await tick(4);
+    expect(host.snapshot).toMatchObject({ epoch: 2, controller: second.value });
+    expect(second.value.snapshot.phase).toBe('error');
+
+    await send(instance, '?', 'o');
+    expect(second.value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    expect(instance.lastFrame()).toContain('最近操作');
+    await send(instance, '\r');
+    expect(second.value.snapshot.router.current.route.name).toBe('operationDiagnostic');
+    expect(instance.lastFrame()).toContain('reloadStatusFailed');
+    await send(instance, '\r', '\u001B[B', '\r');
+    await tick(2);
+    expect(save).toHaveBeenCalledOnce();
+    expect(instance.lastFrame()).toContain('报告已保存到临时目录');
+
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await tick(2);
+    expect(second.value.snapshot.router.current.route.name).toBe('operationDiagnostic');
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await tick(2);
+    expect(second.value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    expect(second.value.snapshot.phase).toBe('error');
+    expect(second.value.snapshot.loadError?.code).toBe('reloadStatusFailed');
+    expect(JSON.stringify({ snapshot: second.value.snapshot, history: host.history.list() }))
+      .not.toContain('private-token');
+    host.dispose();
+  });
+
   it('keeps h, H, q, and b as characters in Portable agent input', async () => {
     const { value } = portableController();
     await value.load();
@@ -243,7 +299,7 @@ describe('Portable Skills TUI V1', () => {
     await value.preparePortableInstall('official/toolkit');
     value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
     const selectedCount = value.snapshot.portableDraft?.selectedCount;
-    const recordId = value.recordSafeUiFailure('testFailure', 'test');
+    const recordId = value.recordUiFailure(undefined, { code: 'testFailure', stage: 'test' });
 
     value.push({ name: 'operationHistory' });
     value.push({ name: 'operationDiagnostic', recordId });
@@ -269,7 +325,7 @@ describe('Portable Skills TUI V1', () => {
     await value.preparePortableInstall('official/toolkit');
     value.togglePortableSkill('review-skill');
     value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
-    value.recordSafeUiFailure('testFailure', 'test');
+    value.recordUiFailure(undefined, { code: 'testFailure', stage: 'test' });
     const selected = value.snapshot.portableDraft?.candidates
       .filter((candidate) => candidate.selected).map((candidate) => candidate.name);
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);

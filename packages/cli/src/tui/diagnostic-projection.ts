@@ -1,6 +1,7 @@
 import type { PlatformName, Scope } from '../types.js';
 import { readSafeOperationError, type SafeOperationErrorMetadata } from '../utils/safe-operation-diagnostic.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
+import type { OperationKind } from './controller.js';
 import type { OperationEffectFacts, SafeOperationDiagnostic } from './operation-history.js';
 
 type Target = { pluginId?: string; platform: PlatformName; scope: Scope };
@@ -164,6 +165,7 @@ export function projectExecutionDiagnostics(
   execution: unknown,
   idPrefix: string,
   sensitiveValues: readonly string[] = [],
+  operationKind?: OperationKind,
 ): {
   diagnostics: SafeOperationDiagnostic[];
   effects: OperationEffectFacts;
@@ -172,6 +174,164 @@ export function projectExecutionDiagnostics(
   const raw = execution && typeof execution === 'object' ? execution as Record<string, unknown> : {};
   const diagnostics: SafeOperationDiagnostic[] = [];
   const targetEffects = new Map<string, OperationEffectFacts>();
+  if (operationKind === 'sourceMutation') {
+    const errors = Array.isArray(raw.errors) ? raw.errors : [];
+    for (const [index, candidate] of errors.entries()) {
+      if (!candidate || typeof candidate !== 'object') {
+        diagnostics.push(projectThrownOperationDiagnostic({
+          error: candidate,
+          id: `${idPrefix}:source:${index}`,
+          stage: 'sourceConfig',
+          fallbackCode: 'sourceMutationFailed',
+          sensitiveValues,
+        }));
+        continue;
+      }
+      const error = candidate as Record<string, unknown>;
+      diagnostics.push({
+        id: `${idPrefix}:source:${index}`,
+        code: safeDiagnosticCode(error.code, 'sourceMutationFailed'),
+        stage: 'sourceConfig',
+        safeMessage: typeof error.message === 'string'
+          ? sanitizeDiagnosticText(error.message, [], sensitiveValues)
+          : 'The Catalog source configuration reported an incomplete result.',
+        causes: [],
+        detailLines: [],
+        omitted: { reason: 'privacy' },
+      });
+    }
+    return {
+      diagnostics,
+      effects: {
+        configCommit: raw.changed === true ? 'completed' : raw.ok === false ? 'failed' : 'notStarted',
+        awWrite: 'notApplicable',
+        preApplyExternalEffect: 'notApplicable',
+        finalVerification: raw.ok === false ? 'failed' : 'completed',
+      },
+      targetEffects,
+    };
+  }
+  if (operationKind === 'catalogSourcesRecovery') {
+    return {
+      diagnostics,
+      effects: {
+        configCommit: 'completed', awWrite: 'notApplicable',
+        preApplyExternalEffect: 'notApplicable', finalVerification: 'completed',
+      },
+      targetEffects,
+    };
+  }
+  if (operationKind === 'catalogGeneration') {
+    const partialReason = raw.partialReason === 'primary' ? 'primary'
+      : raw.partialReason === 'activation' ? 'activation' : undefined;
+    if (raw.status === 'partial') {
+      diagnostics.push({
+        id: `${idPrefix}:catalog-generation`,
+        code: safeDiagnosticCode(raw.errorCode,
+          partialReason === 'primary' ? 'catalogSourcePrimaryFailed' : 'catalogGenerationRefreshFailed'),
+        stage: partialReason ?? 'catalogGeneration',
+        safeMessage: partialReason === 'primary'
+          ? 'The Catalog was activated, but the primary source was not changed.'
+          : 'The Catalog source configuration was saved, but activation did not complete.',
+        causes: [], detailLines: [],
+        ...(partialReason ? {} : { omitted: { reason: 'unsupportedFormat' as const } }),
+      });
+    }
+    return {
+      diagnostics,
+      effects: {
+        configCommit: partialReason === 'primary'
+          ? raw.configSaved === true ? 'partial' : 'failed'
+          : raw.configSaved === true || raw.primaryChanged === true ? 'completed' : 'notApplicable',
+        awWrite: partialReason === 'primary' ? 'completed'
+          : partialReason === 'activation' ? 'partial'
+            : raw.generation && typeof raw.generation === 'object' ? 'completed' : 'notStarted',
+        preApplyExternalEffect: 'notApplicable',
+        finalVerification: partialReason === 'primary' ? 'completed'
+          : raw.status === 'partial' ? 'failed' : 'completed',
+      },
+      targetEffects,
+    };
+  }
+  if (operationKind === 'portableInstall') {
+    const failures = Array.isArray(raw.failures) ? raw.failures : [];
+    let verificationUnknown = false;
+    for (const [index, candidate] of failures.entries()) {
+      if (!candidate || typeof candidate !== 'object') {
+        diagnostics.push(projectThrownOperationDiagnostic({
+          error: candidate,
+          id: `${idPrefix}:portable-failure:${index}`,
+          stage: 'portable.execute',
+          fallbackCode: 'portableInstallFailed',
+          sensitiveValues,
+        }));
+        continue;
+      }
+      const failure = candidate as Record<string, unknown>;
+      const code = safeDiagnosticCode(failure.code, 'portableInstallFailed');
+      const verify = code === 'portableSkillsCliVerificationFailed';
+      verificationUnknown ||= verify;
+      diagnostics.push({
+        id: `${idPrefix}:portable-failure:${index}`,
+        code,
+        stage: verify ? 'portable.verify' : 'portable.add',
+        safeMessage: typeof failure.message === 'string'
+          ? sanitizeDiagnosticText(failure.message, [], sensitiveValues)
+          : verify
+            ? 'The Portable Skill installation could not be verified.'
+            : 'The Portable Skill installation did not complete.',
+        causes: [],
+        detailLines: typeof failure.recovery === 'string'
+          ? [`Recovery: ${sanitizeDiagnosticText(failure.recovery, [], sensitiveValues)}`] : [],
+        ...(typeof failure.message === 'string' && typeof failure.recovery === 'string'
+          ? {} : { omitted: { reason: 'unsupportedFormat' as const } }),
+      });
+    }
+    const verification = raw.verification && typeof raw.verification === 'object'
+      ? raw.verification as Record<string, unknown> : undefined;
+    const missing = verification && Array.isArray(verification.missing) ? verification.missing : [];
+    for (const [index, candidate] of missing.entries()) {
+      if (!candidate || typeof candidate !== 'object') {
+        diagnostics.push(projectThrownOperationDiagnostic({
+          error: candidate,
+          id: `${idPrefix}:portable-missing:${index}`,
+          stage: 'portable.verify',
+          fallbackCode: 'portableVerificationMissing',
+          sensitiveValues,
+        }));
+        continue;
+      }
+      const entry = candidate as Record<string, unknown>;
+      const detailLines = [
+        ...(typeof entry.skill === 'string'
+          ? [`Skill: ${sanitizeDiagnosticText(entry.skill, [], sensitiveValues)}`] : []),
+        ...(typeof entry.agent === 'string'
+          ? [`Agent: ${sanitizeDiagnosticText(entry.agent, [], sensitiveValues)}`] : []),
+      ];
+      diagnostics.push({
+        id: `${idPrefix}:portable-missing:${index}`,
+        code: 'portableVerificationMissing',
+        stage: 'portable.verify',
+        safeMessage: 'A selected Portable Skill was missing after installation.',
+        causes: [], detailLines,
+        ...(typeof entry.skill === 'string' ? {} : { omitted: { reason: 'unsupportedFormat' as const } }),
+      });
+    }
+    return {
+      diagnostics,
+      effects: {
+        configCommit: 'notApplicable',
+        awWrite: raw.status === 'succeeded' ? 'completed'
+          : raw.status === 'partial' ? 'partial' : raw.status === 'failed' ? 'unknown' : 'notStarted',
+        preApplyExternalEffect: 'notApplicable',
+        finalVerification: verificationUnknown ? 'unknown'
+          : missing.length > 0 ? 'failed'
+            : raw.status === 'failed' ? 'unknown'
+              : verification ? 'completed' : 'unknown',
+      },
+      targetEffects,
+    };
+  }
   const rebuildResults = [
     ...(Array.isArray(raw.rebuildResults) ? raw.rebuildResults : []),
     ...(Array.isArray(raw.operationRebuildResults) ? raw.operationRebuildResults : []),
@@ -234,7 +394,8 @@ export function projectExecutionDiagnostics(
         });
   }
 
-  const apply = raw.apply && typeof raw.apply === 'object' ? raw.apply as Record<string, unknown> : undefined;
+  const apply = (operationKind === 'configSave' || operationKind === 'configReset')
+    && raw.apply && typeof raw.apply === 'object' ? raw.apply as Record<string, unknown> : undefined;
   if (apply) {
     const errors = [
       ...(apply.error && typeof apply.error === 'object' ? [apply.error] : []),
