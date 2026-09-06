@@ -706,6 +706,7 @@ async function runSingleSourceRebuildCommand(options: {
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
     codexObservationSession: options.runtime?.codexObservationSession,
+    preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -2543,6 +2544,7 @@ async function runRebuildCommandInSession(options: {
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
         codexObservationScopeByMarketplace,
+        preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,

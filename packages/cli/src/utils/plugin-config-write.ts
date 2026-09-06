@@ -386,6 +386,7 @@ async function reinstallVisibleTargets(options: {
     ));
   };
 
+  const preApplyExecutionCache = new Map<string, Promise<void>>();
   for (const target of discovered.targets) {
     try {
       const effective = await resolveEffectivePluginConfig({
@@ -446,6 +447,7 @@ async function reinstallVisibleTargets(options: {
           env: options.env,
           nativeCliRunner,
           preApplyConfirmed: options.preApplyConfirmed === true,
+          preApplyExecutionCache,
           ...(debugLogger ? {
             debugLogger: {
               ...debugLogger,

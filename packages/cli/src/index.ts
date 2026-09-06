@@ -1051,7 +1051,7 @@ async function executeWriteCommand(
   const runtime = {
     ...context,
     directCli,
-    preApplyConfirmed: directCli ? rawOptions.yes === true : true,
+    preApplyConfirmed: rawOptions.yes === true,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
