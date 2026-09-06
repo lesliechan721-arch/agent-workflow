@@ -2877,7 +2877,7 @@ describe('TUI Catalog freshness session overlay', () => {
     }));
     await controller.load();
     await nextTurn();
-    controller.setExternalDraftState('sourceDraft');
+    controller.setExternalDraftState([{ kind: 'sourceDraft', owner: 'source', revision: 1 }]);
 
     expect(() => controller.startReviewPreparation({
       kind: 'catalogGeneration', action: 'update', sourceId: 'official',
@@ -2938,7 +2938,7 @@ describe('TUI v4 Review safety', () => {
       resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
       diagnosticCode: 'catalogSourceUnavailable',
     }, { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 });
-    controller.setExternalDraftState('configDraft');
+    controller.setExternalDraftState([{ kind: 'configDraft', owner: 'config', revision: 1 }]);
 
     controller.beginConfigSourceRecovery('official');
     expect(controller.snapshot.router.current.route).toEqual({

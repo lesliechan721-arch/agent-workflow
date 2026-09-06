@@ -92,6 +92,13 @@ type CatalogActivationBlockReason =
   | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
   | 'activeReview' | 'reviewPreparation' | 'writeProgress';
 
+export interface ExternalDraftState {
+  kind: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  owner: string;
+  flowId?: string;
+  revision: number;
+}
+
 export type PluginWriteOperation = 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
 export const PLUGIN_WRITE_BATCH_ACTIONS = [
   'install',
@@ -992,7 +999,7 @@ export class TuiController {
   #generation = 0;
   #disposed = false;
   #retiring = false;
-  #externalDraft?: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  #externalDrafts: ExternalDraftState[] = [];
   #batchRetryIntent?: PluginWriteBatchIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
@@ -1113,9 +1120,13 @@ export class TuiController {
   }
 
   get hasSessionDraft(): boolean {
-    return this.#externalDraft !== undefined
+    return this.#externalDrafts.length > 0
       || this.#portableDraft !== undefined
       || this.#installPlacementDraft !== undefined;
+  }
+
+  get externalDrafts(): ExternalDraftState[] {
+    return structuredClone(this.#externalDrafts);
   }
 
   attachOperationHistory(history: OperationHistoryStore, epoch: number): void {
@@ -1233,7 +1244,7 @@ export class TuiController {
     this.#installPlacementDraft = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#batchRetryIntent = undefined;
-    this.#externalDraft = undefined;
+    this.#externalDrafts = [];
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
@@ -2481,8 +2492,11 @@ export class TuiController {
     return this.#catalogSourcesSession.fullValidate(sourceId);
   }
 
-  setExternalDraftState(state?: 'configDraft' | 'sourceDraft' | 'batchDraft'): void {
-    this.#externalDraft = state;
+  setExternalDraftState(states: ExternalDraftState[] = []): void {
+    const priority = { sourceDraft: 0, batchDraft: 1, configDraft: 2 } as const;
+    this.#externalDrafts = structuredClone(states).sort((left, right) =>
+      priority[left.kind] - priority[right.kind] || left.owner.localeCompare(right.owner, 'en'));
+    this.#publish();
   }
 
   beginPluginWriteBatch(): void {
@@ -2504,7 +2518,7 @@ export class TuiController {
   }
 
   catalogActivationBlockReason(): CatalogActivationBlockReason | undefined {
-    if (this.#externalDraft) return this.#externalDraft;
+    if (this.#externalDrafts[0]) return this.#externalDrafts[0].kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
     if (this.#activeReview) return 'activeReview';
@@ -2515,10 +2529,11 @@ export class TuiController {
 
   catalogSourceRecoveryBlockReason(): CatalogActivationBlockReason | undefined {
     const activeFlow = this.#router.activeFlow();
-    if (this.#externalDraft
-      && !(this.#externalDraft === 'configDraft'
+    const blockingExternalDraft = this.#externalDrafts.find((draft) =>
+      !(draft.kind === 'configDraft'
         && activeFlow?.kind === 'sourceRecovery'
-        && activeFlow.parentFlowId !== undefined)) return this.#externalDraft;
+        && activeFlow.parentFlowId !== undefined));
+    if (blockingExternalDraft) return blockingExternalDraft.kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
     if (this.#activeReview) return 'activeReview';

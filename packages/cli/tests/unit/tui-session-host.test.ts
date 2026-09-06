@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
-import type { OperationExecuteResult, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
+import type { ExternalDraftState, OperationExecuteResult, TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
 import { LatestSessionResultHistory, SessionHost } from '../../src/tui/session-host.js';
 import type { OperationHistoryStore } from '../../src/tui/operation-history.js';
 
@@ -36,12 +36,14 @@ function result(state: OperationExecuteResult['state']): OperationExecuteResult 
 function fakeController(options: {
   write?: boolean;
   draft?: boolean;
+  drafts?: ExternalDraftState[];
   wait?: Promise<void>;
 } = {}): TuiController & {
   emitResult(value: OperationExecuteResult): void;
   emitLateResult(value: OperationExecuteResult): void;
   setWrite(value: boolean): void;
   setDraft(value: boolean): void;
+  reportDrafts(value: ExternalDraftState[]): void;
   dispose: ReturnType<typeof vi.fn>;
   goHome: ReturnType<typeof vi.fn>;
   beginRetirement: ReturnType<typeof vi.fn>;
@@ -58,12 +60,19 @@ function fakeController(options: {
   } as TuiControllerSnapshot;
   let activeWrite = options.write ?? false;
   let sessionDraft = options.draft ?? false;
+  let drafts = structuredClone(options.drafts ?? []);
+  let latestSnapshot = base;
   const controller = {
     snapshot: base,
     get hasActiveWrite() { return activeWrite; },
-    get hasSessionDraft() { return sessionDraft; },
+    get hasSessionDraft() { return sessionDraft || drafts.length > 0; },
+    get externalDrafts() { return structuredClone(drafts); },
     setWrite(value: boolean) { activeWrite = value; },
     setDraft(value: boolean) { sessionDraft = value; },
+    reportDrafts(value: ExternalDraftState[]) {
+      drafts = structuredClone(value);
+      listener?.(latestSnapshot);
+    },
     subscribe: vi.fn((next: (snapshot: TuiControllerSnapshot) => void) => {
       listener = next;
       subscribedListener = next;
@@ -80,14 +89,15 @@ function fakeController(options: {
     goHome: vi.fn(() => true),
     dispose: vi.fn(),
     emitResult(value: OperationExecuteResult) {
-      listener?.({
+      latestSnapshot = {
         ...base,
         router: {
           current: { route: { name: 'result', operationId: value.operationId }, context: {} },
           currentFrameId: 'frame-2', depth: 1,
         },
         result: value,
-      });
+      };
+      listener?.(latestSnapshot);
     },
     emitLateResult(value: OperationExecuteResult) {
       subscribedListener?.({
@@ -183,6 +193,46 @@ describe('TUI session host', () => {
     expect(host.cancelPendingNavigation()).toBe(true);
     expect(host.snapshot.pendingNavigation).toBeUndefined();
     expect(draft.dispose).not.toHaveBeenCalled();
+  });
+
+  it('waits for consumed draft cleanup and guards a remaining parent draft', async () => {
+    const parent = { kind: 'configDraft', owner: 'plugin\0user', flowId: 'flow-1', revision: 3 } as const;
+    const child = { kind: 'sourceDraft', owner: 'source-repair', flowId: 'flow-2', revision: 1 } as const;
+    const first = fakeController({ write: true, drafts: [parent, child] });
+    const host = new SessionHost({ createSession: () => session(first) });
+
+    await expect(host.requestNavigation('home')).resolves.toBe('pending');
+    first.setWrite(false);
+    first.emitResult({ ...result('succeeded'), operationKind: 'catalogGeneration' });
+    expect(first.goHome).not.toHaveBeenCalled();
+
+    first.reportDrafts([parent]);
+    expect(host.snapshot).toMatchObject({
+      pendingNavigation: 'home',
+      pendingNavigationDrafts: [parent],
+    });
+    expect(first.goHome).not.toHaveBeenCalled();
+
+    await expect(host.requestNavigation('home', {
+      discardDrafts: true,
+      draftConfirmation: [parent],
+    })).resolves.toBe('completed');
+    expect(first.goHome).toHaveBeenCalledWith(expect.objectContaining({ discardDrafts: true }));
+  });
+
+  it('rejects a discard confirmation after its owner revision changes', async () => {
+    const firstDraft = { kind: 'configDraft', owner: 'plugin\0user', flowId: 'flow-1', revision: 1 } as const;
+    const changedDraft = { ...firstDraft, revision: 2 };
+    const controller = fakeController({ drafts: [firstDraft] });
+    const host = new SessionHost({ createSession: () => session(controller) });
+
+    await expect(host.requestNavigation('reload')).resolves.toBe('draftBlocked');
+    controller.reportDrafts([changedDraft]);
+    await expect(host.requestNavigation('reload', {
+      discardDrafts: true,
+      draftConfirmation: [firstDraft],
+    })).resolves.toBe('draftBlocked');
+    expect(controller.beginRetirement).not.toHaveBeenCalled();
   });
 
   it('waits for writes and read cleanup before normal shutdown disposes ownership', async () => {
