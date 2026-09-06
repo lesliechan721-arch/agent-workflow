@@ -377,7 +377,7 @@ describe('local prepared release', () => {
     },
   );
 
-  it('keeps published and non-matching Catalog attempts occupied', async () => {
+  it('keeps published Catalog attempts occupied and advances beta after publication identity changes', async () => {
     const root = await temporaryRoot();
     await fs.mkdir(path.join(root, 'plugins'), { recursive: true });
     await fs.mkdir(path.join(root, '.aw', 'publish', '2.3.0'), { recursive: true });
@@ -393,14 +393,23 @@ describe('local prepared release', () => {
         }),
       },
     })).resolves.toBeNull();
-    await expect(readReusableCatalogAttempt('stable', '2.3.0', {
+    await fs.mkdir(path.join(root, '.aw', 'publish', '2.3.0-beta.2'), { recursive: true });
+    await fs.writeFile(path.join(root, '.aw', 'publish', '2.3.0-beta.2', 'journal.json'), '{}');
+    await fs.writeFile(path.join(root, 'plugins', 'marketplace-source.json'), JSON.stringify({
+      catalog: { version: '2.3.0-beta.2' },
+    }));
+    await expect(resolvePreparedCandidates('beta', targets, {
+      axes: { cli: false, catalog: true },
       repoRoot: root,
+      readCatalogVersions: async () => [],
       catalogPublicationService: {
         prepareCatalogPublicationPlan: async () => {
-          throw new Error('Catalog publication identity changed. Increase the Catalog version.');
+          throw new Error(
+            'Catalog publication identity changed. Increase the Catalog version and create a new plan.',
+          );
         },
       },
-    })).rejects.toThrow('Increase the Catalog version');
+    })).resolves.toEqual({ cli: null, catalog: '2.3.0-beta.3' });
 
     await expect(resolvePreparedCandidates('stable', targets, {
       axes: { cli: false, catalog: true },

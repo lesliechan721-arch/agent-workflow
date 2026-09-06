@@ -170,7 +170,16 @@ export async function readReusableCatalogAttempt(channel, currentVersion, option
     if (error?.code === 'ENOENT') return null;
     throw error;
   }
-  const plan = await prepareCatalogRelease(mode, options);
+  let plan;
+  try {
+    plan = await prepareCatalogRelease(mode, options);
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message === 'Catalog publication identity changed. Increase the Catalog version and create a new plan.'
+    ) return null;
+    throw error;
+  }
   if (plan.catalogVersion !== currentVersion) {
     throw new Error('Catalog publication plan does not match the current exact version.');
   }
