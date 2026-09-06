@@ -43,6 +43,7 @@ import {
 } from '../utils/codex-reconciler.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
+  executeRebuildComponentCleanup,
   executeRebuildOperation,
   prepareRebuildOperation,
   type DesiredTarget,
@@ -96,7 +97,6 @@ import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import {
-  cleanupOwnedComponents,
   inspectOwnedComponents,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
@@ -271,6 +271,11 @@ export interface RebuildCommandTestHooks {
     command: RebuildCommand;
     identity: RebuildTargetIdentity;
   }) => Promise<void>;
+  beforeActivationLegacyCleanupMutation?: (component: OwnedComponent) => Promise<void>;
+  afterActivationLegacyCleanupQuarantine?: (
+    component: OwnedComponent,
+    quarantinePath: string,
+  ) => Promise<void>;
 }
 
 let rebuildCommandTestHooks: RebuildCommandTestHooks | undefined;
@@ -4470,8 +4475,8 @@ async function runRebuildCommandInSession(options: {
           }
           const actions = operationPreparations.get(`${entry.pluginId}\0${platform}`)?.actions
             ?? [];
-          const warnings: string[] = [];
           const preparedTarget = preparedTargets.get(`${entry.pluginId}\0${platform}`)?.target;
+          let result: RebuildResult | undefined;
           if (preparedTarget) {
             const nativeSkillKeys = new Set((entry.plugin.manifest.artifacts?.targets ?? [])
               .filter((target) => target.platform === 'codex'
@@ -4484,30 +4489,43 @@ async function runRebuildCommandInSession(options: {
               && nativeSkillKeys.has(component.identity.artifactKey)
               && (!marketplaceRoot || path.relative(marketplaceRoot, component.path).startsWith('..')));
             if (legacyNativeSkills.length > 0) {
-              const cleanup = await cleanupOwnedComponents({
+              result = await executeRebuildComponentCleanup({
+                command: options.command,
+                target: preparedTarget,
+                driver: lockedPreparation.integration.driver,
                 components: legacyNativeSkills,
-                executor: lockedPreparation.integration.driver.ownership,
+                actions,
+                onActionEvent: (event) => emitRebuildActionEvent(executionContext, event),
+                ...(rebuildCommandTestHooks?.beforeActivationLegacyCleanupMutation ? {
+                  beforeMutation: rebuildCommandTestHooks.beforeActivationLegacyCleanupMutation,
+                } : {}),
+                ...(rebuildCommandTestHooks?.afterActivationLegacyCleanupQuarantine ? {
+                  afterQuarantine: rebuildCommandTestHooks.afterActivationLegacyCleanupQuarantine,
+                } : {}),
               });
-              for (const failure of cleanup.failures) {
-                warnings.push(failure.message);
-              }
             }
           }
-          const result: RebuildResult = {
+          result ??= {
             status: 'succeeded', command: options.command, target: identity,
             actions,
             cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
           };
           results.push({
-            platforms: [platform], plugins: [identity.pluginName], warnings, rebuildResults: [result],
-            targetResults: [{ target: identity, action: planned.action, state: 'completed' }],
-            overallState: 'succeeded',
+            platforms: [platform],
+            plugins: result.status === 'succeeded' ? [identity.pluginName] : [],
+            warnings: result.failures.map((failure) => failure.message),
+            rebuildResults: [result],
+            targetResults: [{ ...toTargetResult(result), action: planned.action }],
+            overallState: result.status === 'succeeded' ? 'succeeded' : 'failed',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
             }],
           });
-          dependencyStates.set(`${entry.pluginId}\0${platform}`, 'completed');
+          dependencyStates.set(
+            `${entry.pluginId}\0${platform}`,
+            result.status === 'succeeded' ? 'completed' : 'failed',
+          );
           continue;
         }
         if (platform === 'codex'
