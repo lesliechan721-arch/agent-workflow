@@ -1807,6 +1807,86 @@ describe('five namespaced write commands', () => {
     ), 'utf8')).resolves.toContain('name: dynamic-skill');
   }, 30_000);
 
+  it('keeps an immediate preApply failure with large context isolated from another target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'large-pre-apply-input-source');
+    const largeConfigFields = Object.fromEntries(Array.from({ length: 32 }, (_, index) => [
+      `value${index}`,
+      { type: 'string' as const, default: 'x'.repeat(4_096), validation: { maxLength: 4_096 } },
+    ]));
+    const definitions = ['immediate-failure', 'independent'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: `${name} policy.` }],
+        };
+        manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+        if (name === 'immediate-failure') manifest.config = { fields: largeConfigFields };
+      },
+    }));
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const independentMarker = path.join(isolation.env.AW_HOME!, 'independent-pre-apply.txt');
+    await Promise.all([
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'immediate-failure', 'scripts', 'preApply.mjs'),
+        'process.exit(7);\n',
+      ),
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'independent', 'scripts', 'preApply.mjs'),
+        [
+          'let input = "";',
+          'for await (const chunk of process.stdin) input += chunk;',
+          'const context = JSON.parse(input);',
+          `await import("node:fs/promises").then(({ writeFile }) => writeFile(${JSON.stringify(independentMarker)}, context.plugin.name));`,
+        ].join('\n'),
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const result = await installWriteCommand([
+      'team/immediate-failure',
+      'team/independent',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      yes: true,
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async () => ({
+        exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+      }),
+    });
+
+    expect(result.overallState, JSON.stringify(result, null, 2)).toBe('partial');
+    expect(result.rebuildResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/immediate-failure' }),
+        status: 'failed',
+        error: expect.objectContaining({
+          phase: 'preApply',
+          operationDiagnostic: expect.objectContaining({ code: 'preApplyExited', exitCode: 7 }),
+        }),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        status: 'succeeded',
+      }),
+    ]));
+    expect(JSON.stringify(result)).not.toContain('preApplyStartFailed');
+    await expect(fs.readFile(independentMarker, 'utf8')).resolves.toBe('independent');
+  }, 30_000);
+
   it('stops before preApply and manager resolution when native render preflight fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-render-preflight-failure-source');
