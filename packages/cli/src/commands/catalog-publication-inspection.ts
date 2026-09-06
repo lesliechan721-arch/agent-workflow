@@ -130,6 +130,51 @@ export interface CatalogPublicationFailure {
   message: string;
 }
 
+function sanitizeCatalogPublicationMessage(
+  message: string,
+  env?: NodeJS.ProcessEnv,
+  sensitiveRoots?: readonly string[],
+  sensitiveValues: readonly string[] = [],
+): string {
+  const normalized = redactString(message.replace(/[\p{Cc}\p{Cf}]+/gu, ' '));
+  const withoutSensitiveValues = [...sensitiveValues]
+    .filter((value) => value.length >= 4)
+    .sort((left, right) => right.length - left.length)
+    .reduce((output, value) => output.replaceAll(value, '[remote]'), normalized);
+  const withoutRemotes = withoutSensitiveValues
+    .replace(/[a-z][a-z\d+.-]*:\/\/[^\s"'<>]+/giu, '[remote]')
+    .replace(/[^\s"'<>@]+@[^\s"'<>:/]+[:/][^\s"'<>]+/gu, '[remote]');
+  const withoutKnownRoots = sanitizeCatalogSourceErrorMessage(
+    withoutRemotes,
+    env,
+    sensitiveRoots,
+  );
+  return redactString(withoutKnownRoots).replace(
+    /(?<![A-Za-z0-9._-])(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'<>:]+[\\/])*[^\s"'<>:]*/gu,
+    '[private-path]',
+  );
+}
+
+function remoteSensitiveValues(value: string): string[] {
+  const values = new Set([value]);
+  if (/^[a-z][a-z\d+.-]*:\/\//iu.test(value)) {
+    try {
+      const url = new URL(value);
+      for (const part of [url.username, url.password, url.hostname, url.pathname, url.pathname.slice(1)]) {
+        if (part.length >= 4) values.add(part);
+      }
+    } catch {
+      // The remote value is validated separately.
+    }
+  } else {
+    const match = /^(?:([^@:/]+)@)?([^:/]+)[:/](.+)$/u.exec(value);
+    for (const part of match?.slice(1) ?? []) {
+      if (part && part.length >= 4) values.add(part);
+    }
+  }
+  return [...values];
+}
+
 export function catalogPublicationFailure(options: {
   error: unknown;
   env?: NodeJS.ProcessEnv;
@@ -138,17 +183,10 @@ export function catalogPublicationFailure(options: {
   const original = options.error instanceof Error
     ? options.error.message
     : String(options.error);
-  const withoutRemotes = original
-    .replace(/[a-z][a-z\d+.-]*:\/\/[^\s"'<>]+/giu, '[remote]')
-    .replace(/[^\s"'<>@]+@[^\s"'<>:/]+[:/][^\s"'<>]+/gu, '[remote]');
-  const withoutKnownRoots = sanitizeCatalogSourceErrorMessage(
-    withoutRemotes,
+  const message = sanitizeCatalogPublicationMessage(
+    original,
     options.env,
     options.sensitiveRoots,
-  );
-  const message = redactString(withoutKnownRoots).replace(
-    /(?<![A-Za-z0-9._-])(?:[A-Za-z]:[\\/]|\/)(?:[^\s"'<>:]+[\\/])*[^\s"'<>:]*/gu,
-    '[private-path]',
   );
   return {
     ok: false,
@@ -192,6 +230,7 @@ export async function publicationGit(
   env: NodeJS.ProcessEnv,
   code: string,
   label: string,
+  sensitiveValues: readonly string[] = [],
 ): Promise<string> {
   try {
     const result = await execFileAsync('git', ['-c', `core.hooksPath=${os.devNull}`, ...args], {
@@ -202,7 +241,25 @@ export async function publicationGit(
     });
     return result.stdout.trim();
   } catch (error) {
-    throw new CatalogPublicationInspectionError(code, label, { cause: error });
+    const failure = error as { code?: unknown; message?: unknown; stderr?: unknown };
+    const status = typeof failure.code === 'number' && Number.isSafeInteger(failure.code)
+      ? `exited with code ${failure.code}`
+      : typeof failure.code === 'string' && /^[A-Z0-9_]+$/u.test(failure.code)
+        ? `failed with code ${failure.code}`
+        : 'failed';
+    const rawDetails = typeof failure.stderr === 'string' && failure.stderr.trim() !== ''
+      ? failure.stderr
+      : typeof failure.message === 'string'
+        ? failure.message
+        : '';
+    const details = sanitizeCatalogPublicationMessage(rawDetails, env, [cwd], sensitiveValues)
+      .replace(/\s+/gu, ' ')
+      .trim();
+    throw new CatalogPublicationInspectionError(
+      code,
+      `${label} Git ${status}${details ? `: ${details.slice(0, 2_000)}` : '.'}`,
+      { cause: error },
+    );
   }
 }
 
@@ -1008,13 +1065,14 @@ export async function listCatalogPublicationVersions(options: {
   env: NodeJS.ProcessEnv;
 }): Promise<string[]> {
   const resolved = await resolveRemoteUrlForInspection(options);
+  const sensitiveValues = remoteSensitiveValues(resolved.remoteUrl);
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-remote-read-'));
   try {
     await publicationGit(temporaryRoot, ['init', '--quiet'], resolved.env, 'temporaryRepositoryFailed', 'Could not create the Catalog inspection repository.');
     await publicationGit(temporaryRoot, ['remote', 'add', 'publish', resolved.remoteUrl], resolved.env, 'temporaryRepositoryFailed', 'Could not configure the Catalog inspection remote.');
     const refs = parseRemoteRefs(await publicationGit(temporaryRoot, [
       'ls-remote', '--refs', 'publish', 'refs/tags/catalog-v*',
-    ], resolved.env, 'remoteReadFailed', 'Could not inspect Catalog publication versions.'));
+    ], resolved.env, 'remoteReadFailed', 'Could not inspect Catalog publication versions.', sensitiveValues));
     return [...refs.keys()]
       .filter((ref) => ref.startsWith('refs/tags/catalog-v'))
       .map((ref) => ref.slice('refs/tags/catalog-v'.length));
