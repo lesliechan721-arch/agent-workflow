@@ -1805,7 +1805,6 @@ describe('TUI controller runtime scope conflict validation', () => {
     const adjustedIntent = {
       ...intent,
       dependencyScopeOverrides: projectPlan.scopeOverrides,
-      dependencyPlacementAdjustment: true as const,
     };
 
     const adjustedEvidence = await dependencies.captureEvidence(

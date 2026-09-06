@@ -43,6 +43,16 @@ describe('operation planner', () => {
     })]);
   });
 
+  it('does not turn manual migration guidance into a root cleanup action', () => {
+    expect(buildAllowedLifecycleActions({
+      pluginId: 'official/root', platform: 'codex', scope: 'project', state: 'needsSync',
+      recoveryActions: [{ command: 'manual', description: 'remove the consumer first' }],
+    })).toEqual([{
+      id: 'uninstall', pluginId: 'official/root', platform: 'codex', scope: 'project',
+      reason: 'removeManagedContent',
+    }]);
+  });
+
   it('offers save and save-and-apply only for a changed config draft', () => {
     expect(buildAllowedConfigActions(false)).toEqual([]);
     expect(buildAllowedConfigActions(true)).toEqual([

@@ -7136,105 +7136,18 @@ describe('ConsoleAppV4', () => {
   );
 
   it.each([[60, 18], [80, 24]] as const)(
-    'mounts a user-to-project adjustment as one normal install plan without automatic cleanup at %ix%i',
+    'does not offer dependency placement adjustment for an installed plugin at %ix%i',
     async (columns, rows) => {
     const loaded = dependencyLoadResult({ rootState: 'present' });
-    for (const entry of loaded.payload.targets.filter((target) =>
-      target.pluginId === 'official/agent-lab')) {
-      entry.state = entry.platform === 'codex' && entry.scope === 'project' ? 'present' : 'absent';
-    }
-    for (const entry of loaded.payload.targets.filter((target) =>
-      target.pluginId === 'official/skill-toolkit' && target.platform === 'codex')) {
-      entry.state = 'present';
-      entry.desired = { enabled: true, scopes: ['user'], relation: 'dependency' };
-      entry.actual = { state: 'ready' };
-      entry.sharedNative = { pluginId: 'skill-toolkit@aw-official', state: 'present', shared: true };
-      entry.activation = { user: true, project: true, effective: true, evidence: 'observed' };
-    }
-    const planFor = (intent: Extract<OperationIntent, { kind: 'pluginWrite' }>): DependencyOperationPlan => {
-      const selected = intent.dependencyScopeOverrides?.find((entry) =>
-        entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex')?.scope;
-      const resolvedScope = selected ?? 'user';
-      return {
-        dependencyPlanSchemaVersion: 2,
-        dependencyPlanDigest: `sha256:adjust-${resolvedScope}`,
-        requestedPluginIds: ['official/agent-lab'],
-        resolvedPluginIds: ['official/skill-toolkit', 'official/agent-lab'],
-        dependencyEdges: [{
-          from: 'official/agent-lab', to: 'official/skill-toolkit', platform: 'codex',
-        }],
-        scopeOverrides: intent.dependencyScopeOverrides ?? [],
-        claimRoots: [],
-        targets: [
-          {
-            pluginId: 'official/skill-toolkit', pluginName: 'Agent Skill Toolkit',
-            platform: 'codex', relation: 'dependency', depth: 1,
-            requiredBy: ['official/agent-lab'], rootScope: 'project', minimumScope: 'project',
-            resolvedScope, allowedScopes: ['project', 'user'],
-            assignmentSource: selected ? 'userOverride' : 'existingWiderTarget',
-            locked: selected !== undefined,
-            ...(selected ? { lockReason: 'dependencyScopeOverride' } : {}),
-            affectsOtherProjects: resolvedScope === 'user', state: 'present',
-            action: 'keep', order: 0,
-          },
-          {
-            pluginId: 'official/agent-lab', pluginName: 'Agent Lab', platform: 'codex',
-            relation: 'requested', depth: 0, requiredBy: [], rootScope: 'project',
-            minimumScope: 'project', resolvedScope: 'project', allowedScopes: ['project'],
-            assignmentSource: 'root', locked: true, affectsOtherProjects: false,
-            state: 'present', action: 'keep', order: 1,
-          },
-        ],
-      };
-    };
-    const executeIntent = vi.fn().mockResolvedValue({ desiredPlacementUpdated: true });
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(loaded),
-      previewDependencyPlacement: vi.fn(async (intent) => planFor(intent)),
-      captureEvidence: vi.fn(async (intent) => ({
-        ...evidence,
-        dependencyPlan: planFor(intent as Extract<OperationIntent, { kind: 'pluginWrite' }>),
-      })),
-      executeIntent,
     });
     await value.load();
     value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('› 调整依赖位置…');
-
-    await input(instance, '\r');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route.name).toBe('dependencyPlacement');
-    expect(instance.lastFrame()).toContain('复用健康的所有项目安装');
-
-    await input(instance, '\r', '\r');
-    await nextTurn(3);
-    expect(value.snapshot.installPlacementDraft?.dependencyScopeOverrides).toContainEqual({
-      pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project',
-    });
-    await input(instance, '\u001B[B', '\r');
-    await nextTurn(3);
-
-    expect(value.snapshot.router.current.route.name).toBe('review');
-    expect(value.snapshot.activeReview).toMatchObject({
-      title: '调整依赖位置',
-      requiresConfirmation: false,
-    });
-    expect(instance.lastFrame()).toContain('根插件和插件设置保持不变');
-    expect(instance.lastFrame()).not.toContain('自动 cleanup');
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
-
-    await input(instance, '\r');
-    await nextTurn(4);
-    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'install',
-      dependencyPlacementAdjustment: true,
-    }), expect.any(Object));
-    expect(executeIntent.mock.calls[0]?.[0]).not.toHaveProperty('dependencyPlacementOnly');
-    expect(executeIntent).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'cleanup' }), expect.anything());
-    expect(value.snapshot.router.current.route.name).toBe('result');
-    expect(instance.lastFrame()).toContain('操作已完成');
+    expect(instance.lastFrame()).toContain('› 技术详情');
+    expect(instance.lastFrame()).not.toContain('调整依赖位置');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
   });
 
@@ -8298,7 +8211,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('必需依赖 · Agent Skill Toolkit');
     expect(frame).toContain('被依赖 · Agent Content Toolkit');
     expect(frame).not.toContain('Agent Skill Toolkit             所有项目 · 已可用');
-    expect(frame).toContain('› 调整依赖位置…');
+    expect(frame).toContain('› 技术详情');
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
@@ -8475,7 +8388,7 @@ describe('ConsoleAppV4', () => {
 
     const initial = instance.lastFrame() ?? '';
     expect(screens).toContain(expectedScreen);
-    const focusedAction = expectedScreen === 'D10' ? '› 调整依赖位置…' : '› 技术详情';
+    const focusedAction = '› 技术详情';
     expect(initial).toContain(focusedAction);
     expect(initial).toContain('阻塞 · 高优先级阻塞');
     expect(initial).toContain('必需依赖 · 高数量依赖 5');

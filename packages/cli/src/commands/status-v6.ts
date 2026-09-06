@@ -877,13 +877,14 @@ function statusRecovery(options: {
     ];
   }
   if (options.dependencyMoves?.length) {
-    const cleanupCommands = options.dependencyMoves.map((move) =>
+    const rootScope = options.desired.scopes[0] ?? 'project';
+    const removeDependencies = options.dependencyMoves.map((move) =>
       `aw cleanup ${move.pluginId} --platform ${options.platform} --scope ${move.fromScope}`);
-    const targetScope = options.dependencyMoves[0]!.toScope;
+    const dependencyScopes = options.dependencyMoves.map((move) =>
+      `--dependency-scope ${move.pluginId}#${options.platform}=${move.toScope}`);
     return [{
-      command: 'cleanup',
-      scope: options.dependencyMoves[0]!.fromScope,
-      description: `运行 ${cleanupCommands.join('，再运行 ')}，再运行 aw sync --all --platform ${options.platform} --scope ${targetScope}。`,
+      command: 'manual',
+      description: `先按依赖保护提示依次移除 ${options.dependencyMoves.map((move) => move.pluginId).join('、')} 的所有直接和间接依赖者；若命令报告 dependencyStillRequired，继续处理提示的其他依赖者。再运行 ${removeDependencies.join('，再运行 ')} 移除依赖旧位置。最后逐个按原平台和 scope 重新添加全部已移除 root，并在安装时选择新的依赖 scope；当前 root 的示例命令是 aw install ${options.pluginId} --platform ${options.platform} --scope ${rootScope} ${dependencyScopes.join(' ')}。`,
     }];
   }
   return [{
@@ -2553,7 +2554,7 @@ async function statusCommandV7InSession(options: {
       }
       const parsed = parsePluginId(override.pluginId);
       const hasPreservedUserActual = ownerInventory.references.some((reference) =>
-        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        reference.kind === 'namespacedOwner'
         && reference.sourceId === parsed.sourceId
         && reference.pluginName === parsed.pluginName
         && reference.platform === target.platform

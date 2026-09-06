@@ -141,14 +141,6 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
         || intent.action === 'cleanup',
     };
   }
-  if (intent.kind === 'pluginWrite' && intent.dependencyPlacementAdjustment) {
-    return {
-      title: '调整依赖位置',
-      description: '保存最终的依赖使用位置，并应用非破坏性变更。',
-      primaryLabel: '应用依赖位置',
-      destructive: false,
-    };
-  }
   if (intent.kind === 'pluginWrite') {
     if (intent.originIssue) {
       if (intent.action === 'cleanup') {
@@ -385,12 +377,8 @@ function reviewChanges(
       changes.push({
         kind: 'keep',
         group: 'preserved',
-        title: intent.dependencyPlacementAdjustment
-          ? '根插件和插件设置保持不变'
-          : '插件设置和已有依赖保持不变',
-        description: intent.dependencyPlacementAdjustment
-          ? '这里只调整所列依赖使用位置。'
-          : '移除根插件时不会自动清理依赖。',
+        title: '插件设置和已有依赖保持不变',
+        description: '移除根插件时不会自动清理依赖。',
       });
       return [...changes, ...codexChanges, ...runtimeChanges];
     }

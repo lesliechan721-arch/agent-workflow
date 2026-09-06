@@ -166,7 +166,6 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
-      dependencyPlacementAdjustment?: true;
       recoveryDescription?: string;
       force?: boolean;
       scriptTimeoutMs?: number;
@@ -657,7 +656,6 @@ export interface TuiControllerSnapshot {
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
   plan?: ReconcileOperationPlan;
-  adjustingExisting: boolean;
 }
 
 interface ReviewTicket {
@@ -2126,7 +2124,6 @@ export class TuiController {
   beginInstallFlow(
     pluginId: string,
     rootScope: Scope,
-    options: { adjustingExisting?: boolean } = {},
   ): void {
     this.#cancelInstallPlacementRequest();
     const active = this.#router.activeFlow();
@@ -2139,7 +2136,6 @@ export class TuiController {
       state: 'selecting',
       targets: [],
       canContinue: false,
-      adjustingExisting: options.adjustingExisting === true,
     };
     this.#publish();
   }
@@ -2202,7 +2198,6 @@ export class TuiController {
       ...(draft.dependencyScopeOverrides.length > 0
         ? { dependencyScopeOverrides: draft.dependencyScopeOverrides }
         : {}),
-      ...(draft.adjustingExisting ? { dependencyPlacementAdjustment: true } : {}),
     };
   }
 

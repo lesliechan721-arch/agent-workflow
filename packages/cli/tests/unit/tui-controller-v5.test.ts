@@ -3461,7 +3461,7 @@ describe('TUI v4 Review safety', () => {
   it.each([
     ['user'],
     ['project'],
-  ] as const)('reviews an existing dependency move to %s with the safe adjustment contract', async (
+  ] as const)('reviews an install with an explicit dependency scope at %s', async (
     resolvedScope,
   ) => {
     const plan = (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): DependencyOperationPlan => ({
@@ -3528,7 +3528,7 @@ describe('TUI v4 Review safety', () => {
       executeIntent,
     }));
     await controller.load();
-    controller.beginInstallFlow('official/demo', 'project', { adjustingExisting: true });
+    controller.beginInstallFlow('official/demo', 'project');
     controller.setInstallPlatforms(['codex']);
     await controller.prepareInstallDependencyPlacement();
     await controller.setDependencyScope('official/toolkit', 'codex', resolvedScope);
@@ -3536,12 +3536,10 @@ describe('TUI v4 Review safety', () => {
 
     expect(intent).toMatchObject({
       action: 'install',
-      dependencyPlacementAdjustment: true,
     });
-    expect(intent).not.toHaveProperty('dependencyPlacementOnly');
+    expect(intent).not.toHaveProperty('dependencyPlacementAdjustment');
     const review = await controller.buildOperationReview(intent);
-    expect(review.title).toBe('调整依赖位置');
-    expect(review.description).toContain('非破坏性变更');
+    expect(review.title).toBe('添加插件');
 
     const result = await controller.executeOperation(review.reviewToken);
     expect(executeIntent).toHaveBeenCalledTimes(1);

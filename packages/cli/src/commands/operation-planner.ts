@@ -108,13 +108,24 @@ export function buildAllowedLifecycleActions(
   if (target.state === 'blocked') {
     return recovery.filter((action) => action.id === 'cleanup' || action.id === 'uninstall');
   }
-  if (target.state === 'needsSync') return recovery.length > 0 ? recovery : [{
-    id: target.platform === 'codex' ? 'sync' : 'reinstall',
-    pluginId: target.pluginId,
-    platform: target.platform,
-    scope: target.scope,
-    reason: 'savedSettingsNotApplied',
-  }];
+  if (target.state === 'needsSync') {
+    if (target.recoveryActions.some((action) => action.command === 'manual')) {
+      return target.uninstallable === false ? [] : [{
+        id: 'uninstall',
+        pluginId: target.pluginId,
+        platform: target.platform,
+        scope: target.scope,
+        reason: 'removeManagedContent',
+      }];
+    }
+    return recovery.length > 0 ? recovery : [{
+      id: target.platform === 'codex' ? 'sync' : 'reinstall',
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: target.scope,
+      reason: 'savedSettingsNotApplied',
+    }];
+  }
   const actions: AllowedLifecycleAction[] = [];
   if (target.revision?.state === 'upgradeAvailable') {
     actions.push({
