@@ -1047,6 +1047,70 @@ export interface NamespacedPluginConfigStoreInventoryEntry {
   values: Record<string, PluginConfigValue>;
 }
 
+export interface NamespacedPluginConfigStoreIdentity {
+  sourceId: string;
+  pluginName: string;
+  pluginId: string;
+}
+
+export async function listNamespacedPluginConfigStoreIdentities(options: {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  scope: Scope;
+}): Promise<NamespacedPluginConfigStoreIdentity[]> {
+  const boundaryRoot = options.scope === 'user'
+    ? resolveAwHome(options.env)
+    : resolveAwProjectRoot(options.cwd);
+  if (options.scope === 'user') {
+    await canonicalizePathThroughExistingAncestor(boundaryRoot);
+  } else {
+    await fs.realpath(boundaryRoot);
+  }
+  const storeRoot = path.join(
+    boundaryRoot,
+    ...(options.scope === 'project' ? ['.agent-workflows'] : []),
+    CONFIG_DIR,
+  );
+  if (!await inspectConfigInventoryStoreRoot(boundaryRoot, storeRoot)) return [];
+  const output: NamespacedPluginConfigStoreIdentity[] = [];
+  for (const sourceEntry of await fs.readdir(storeRoot, { withFileTypes: true })) {
+    if (!sourceEntry.isDirectory() || sourceEntry.isSymbolicLink()) continue;
+    let sourceId: string;
+    try {
+      sourceId = assertSafePluginConfigSegment(sourceEntry.name);
+    } catch {
+      continue;
+    }
+    const sourceRoot = path.join(storeRoot, sourceId);
+    let pluginEntries: fs.Dirent[];
+    try {
+      await assertNoConfigSymlink(boundaryRoot, sourceRoot);
+      pluginEntries = await fs.readdir(sourceRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const pluginEntry of pluginEntries) {
+      if (!pluginEntry.isDirectory() || pluginEntry.isSymbolicLink()) continue;
+      let pluginName: string;
+      try {
+        pluginName = assertSafePluginConfigSegment(pluginEntry.name);
+        await assertNoConfigSymlink(boundaryRoot, path.join(sourceRoot, pluginName));
+      } catch {
+        continue;
+      }
+      let target: fs.Stats | null;
+      try {
+        target = await lstatIfExists(path.join(sourceRoot, pluginName, CONFIG_FILE));
+      } catch {
+        continue;
+      }
+      if (!target) continue;
+      output.push({ sourceId, pluginName, pluginId: `${sourceId}/${pluginName}` });
+    }
+  }
+  return output.sort((left, right) => left.pluginId.localeCompare(right.pluginId));
+}
+
 export async function listNamespacedPluginConfigStores(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;

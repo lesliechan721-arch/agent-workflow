@@ -44,6 +44,7 @@ import {
 import {
   coercePluginConfigUpdates,
   inspectPluginConfigResetTarget,
+  listNamespacedPluginConfigStoreIdentities,
   readPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
@@ -60,6 +61,7 @@ import type { ReconcileOperationPlan } from '../commands/reconcile-operation-pla
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
 import {
   offlineCleanupEvidenceFromInventory,
+  offlineCleanupEvidenceMatches,
   type OfflineCleanupTargetEvidence,
 } from '../commands/offline-cleanup-evidence.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
@@ -775,6 +777,27 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       const catalogGenerations = await loadCatalogGenerations();
       signal.throwIfAborted();
+      const configStoreInventory = (await Promise.all((['user', 'project'] as const).map(async (scope) => {
+        try {
+          return (await listNamespacedPluginConfigStoreIdentities({
+            cwd: context.cwd,
+            env: context.env,
+            scope,
+          })).map(({ pluginId, sourceId, pluginName }) => ({
+            pluginId, sourceId, pluginName, scope,
+          }));
+        } catch {
+          await context.debugLogger.log({
+            type: 'tui:config-inventory-error',
+            level: 'debug',
+            target: 'debugLog',
+            message: 'TUI saved config inventory could not be read.',
+            data: { scope },
+          });
+          return [];
+        }
+      }))).flat();
+      signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
@@ -783,6 +806,7 @@ export function createTuiControllerDependencies(
         targetRevisions: result.targetRevisions,
         dependencyOverviews,
         portablePluginIds,
+        configStoreInventory,
         catalogGenerations,
         sessionGenerationKeys: Object.fromEntries(
           (catalogOperationContext?.generationSet.sources ?? [])
@@ -1405,6 +1429,7 @@ export function createTuiControllerDependencies(
     let dependencyPlan: ReconcileOperationPlan | undefined;
     let codexReconcilePlans: OperationEvidence['codexReconcilePlans'];
     let operationPlan: OperationEvidence['operationPlan'];
+    let forceCleanupEvidence: OfflineCleanupTargetEvidence | undefined;
     await preparation?.reporter.emit('catalog');
     const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
       ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
@@ -1524,6 +1549,21 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       codexReconcilePlans = preview?.codexReconcilePlans;
       operationPlan = preview?.operationPlan;
+      if (intent.action === 'cleanup' && intent.force === true) {
+        const candidates = preview?.offlineCleanupPlans?.filter((candidate) =>
+          candidate.forceExclusive === true
+          && candidate.pluginId === intent.pluginId
+          && candidate.platform === intent.platform
+          && candidate.scope === intent.scope
+          && candidate.plan.actions.length > 0) ?? [];
+        if (candidates.length !== 1) {
+          throw new TuiOperationBlockedError(
+            'forceCleanupPathUnavailable',
+            '没有唯一且可验证的精确清理目标。',
+          );
+        }
+        [forceCleanupEvidence] = candidates;
+      }
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'refreshAndSync'
@@ -1585,6 +1625,7 @@ export function createTuiControllerDependencies(
       },
       source: selected.source,
       ...(offlineCleanup ? { offlineCleanup } : {}),
+      ...(forceCleanupEvidence ? { offlineCleanup: forceCleanupEvidence } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(operationPlan ? { operationPlan } : {}),
@@ -2283,6 +2324,16 @@ export function createTuiControllerDependencies(
             }[intent.action];
             const currentSource = currentEvidence.source;
             const offlineCleanup = currentEvidence.offlineCleanup;
+            const reviewedOfflineCleanup = expectedEvidence.offlineCleanup;
+            if ((offlineCleanup || reviewedOfflineCleanup)
+              && (!offlineCleanup
+                || !reviewedOfflineCleanup
+                || !offlineCleanupEvidenceMatches(reviewedOfflineCleanup, offlineCleanup))) {
+              throw new TuiOperationBlockedError(
+                'operationReviewStale',
+                '确认后离线清理证据发生变化。',
+              );
+            }
             if (!offlineCleanup && (!expectedEvidence.source || !currentSource)) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
             }
@@ -2302,8 +2353,8 @@ export function createTuiControllerDependencies(
               ...(expectedEvidence.codexManager?.state === 'requires-install'
                 ? { managedCodexAuthorizer: async () => true }
                 : {}),
-              ...(offlineCleanup
-                ? { expectedOfflineCleanupEvidence: offlineCleanup }
+              ...(reviewedOfflineCleanup
+                ? { expectedOfflineCleanupEvidence: reviewedOfflineCleanup }
                 : { reviewPreflight: (actual: RebuildReviewPreflightEvidence) =>
                     assertSourceEvidenceMatches(currentSource!, actual) }),
             });

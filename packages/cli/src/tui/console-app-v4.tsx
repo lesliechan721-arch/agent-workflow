@@ -148,6 +148,11 @@ interface DynamicMenuFocus {
   focusedActionId?: string;
 }
 
+interface ConfigDraftIssue {
+  key: string;
+  source: 'update' | 'remove' | 'object';
+}
+
 function pluginMenuActionId(action: PluginMenuAction): string {
   return action.id === 'platform' || action.id === 'scopeConflict'
     ? `${action.id}:${action.platform}`
@@ -270,6 +275,7 @@ function scopeLabel(scope: Scope): string {
 }
 
 function statusText(plugin: PluginListItemViewModel): string {
+  if (plugin.configOnly) return '已保存设置';
   return {
     available: '未添加',
     installed: '可用',
@@ -281,6 +287,11 @@ function statusText(plugin: PluginListItemViewModel): string {
 }
 
 function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
+  if (plugin.configOnly) {
+    return plugin.savedConfigScopes.length > 0
+      ? `已保存${plugin.savedConfigScopes.map(scopeLabel).join('、')}设置`
+      : '已保存设置';
+  }
   return plugin.supportedPlatforms.map((platform) => {
     const label = platformLabel(platform);
     const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
@@ -315,6 +326,7 @@ function issueGroupLabel(group: UserIssueViewModel['group']): string {
 }
 
 function pluginRowStatus(plugin: PluginListItemViewModel): PluginListRowViewModel['status'] {
+  if (plugin.configOnly) return 'warning';
   if (plugin.aggregateStatus === 'needsAttention') return 'warning';
   if (plugin.aggregateStatus === 'installed') return 'success';
   if (plugin.aggregateStatus === 'unavailable') return 'error';
@@ -499,6 +511,23 @@ function portableBlockerDiagnostic(
   };
 }
 
+function configUnavailableCanRecoverSource(
+  route: Extract<TuiRoute, { name: 'configUnavailable' }>,
+): boolean {
+  if (route.storedScopes?.length) return false;
+  return new Set([
+    'catalogSourceUnavailable',
+    'bundleUnavailable',
+    'sourceMissing',
+    'catalogGenerationUnavailable',
+    'catalogGenerationStateInvalid',
+    'catalogGenerationStoreInvalid',
+    'catalogStateInvalid',
+    'catalogStoreInvalid',
+    'configReadFailed',
+  ]).has(route.diagnosticCode ?? '');
+}
+
 function configUnavailableDiagnostic(
   route: Extract<TuiRoute, { name: 'configUnavailable' }>,
 ): DiagnosticSummaryViewModel {
@@ -521,7 +550,9 @@ function configUnavailableDiagnostic(
     ],
     nextStep: invalidLayer
       ? '确认后重置整个目标设置层；不会创建备份。'
-      : '重新检查来源，然后再次打开设置。',
+      : configUnavailableCanRecoverSource(route)
+        ? '重新检查来源，然后再次打开设置。'
+        : '查看技术详情，确认字段定义不可用的原因。',
     technical: {
       code: safeDiagnosticCode(route.diagnosticCode, 'configUnavailable'),
       stage: safeDiagnosticCode(route.diagnosticStage, 'read-config'),
@@ -1291,12 +1322,15 @@ export function ConsoleAppV4(props: {
       || !snapshot.result
       || (snapshot.result.state !== 'succeeded' && snapshot.result.state !== 'partial')
       || !snapshot.result.operationKind) return;
-    setDirty(false);
-    setDraftUpdates({});
-    setDraftRemoves([]);
-    setObjectDrafts({});
-    setChangedObjectDraftKeys([]);
-    setObjectError(undefined);
+    if (snapshot.result.operationKind === 'configSave'
+      || snapshot.result.operationKind === 'configReset') {
+      setDirty(false);
+      setDraftUpdates({});
+      setDraftRemoves([]);
+      setObjectDrafts({});
+      setChangedObjectDraftKeys([]);
+      setObjectError(undefined);
+    }
     if (snapshot.result.operationKind === 'sourceMutation') setSourceDraft(undefined);
   }, [route.name, snapshot.result]);
   useEffect(() => {
@@ -1326,6 +1360,36 @@ export function ConsoleAppV4(props: {
     ? route
     : undefined;
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
+  const configDraftIssues = (() => {
+    if (!configRoute || !currentConfigPage) return [];
+    const fields = new Map(currentConfigPage.groups.flatMap((group) => group.fields)
+      .map((field) => [field.key, field]));
+    const issues: ConfigDraftIssue[] = [];
+    for (const [key, value] of Object.entries(draftUpdates)) {
+      const field = fields.get(key);
+      if (!field || !configFieldCanSet(field)
+        || validatePluginConfigValue(field.definition, value, key).length > 0) {
+        issues.push({ key, source: 'update' });
+      }
+    }
+    for (const key of draftRemoves) {
+      const field = fields.get(key);
+      if (!field || !configFieldCanUnset(field)) issues.push({ key, source: 'remove' });
+    }
+    const owner = `${configOwnerKey(configRoute)}\0`;
+    for (const objectKey of changedObjectDraftKeys) {
+      if (!objectKey.startsWith(owner)) continue;
+      const key = objectKey.slice(owner.length);
+      if (issues.some((issue) => issue.key === key)) continue;
+      const field = fields.get(key);
+      const value = objectDrafts[objectKey];
+      if (!field || !configFieldCanSet(field) || field.definition.type !== 'object' || !value
+        || validatePluginConfigValue(field.definition, value, key).length > 0) {
+        issues.push({ key, source: 'object' });
+      }
+    }
+    return issues;
+  })();
   useEffect(() => {
     if (route.name !== 'configLayer') return;
     const abort = new AbortController();
@@ -1389,6 +1453,15 @@ export function ConsoleAppV4(props: {
             diagnosticStage: 'read-config',
             ...(invalidStores ? { invalidStores } : {}),
             ...(layer ? { layer } : {}),
+            ...(configRoute ? { resumeRoute: structuredClone(configRoute) } : {}),
+            ...(configRoute ? { resumeContext: {
+              ...(snapshot.router.current.context.configGroupId !== undefined
+                ? { configGroupId: snapshot.router.current.context.configGroupId } : {}),
+              ...(snapshot.router.current.context.focusIndex !== undefined
+                ? { focusIndex: snapshot.router.current.context.focusIndex } : {}),
+              ...(snapshot.router.current.context.scrollOffset !== undefined
+                ? { scrollOffset: snapshot.router.current.context.scrollOffset } : {}),
+            } } : {}),
           });
         }
       });
@@ -1397,13 +1470,14 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     if (route.name !== 'configUnavailable'
-      || (!route.invalidStores?.length && !route.layer)) {
+      || (!route.invalidStores?.length && !route.storedScopes?.length && !route.layer)) {
       setConfigResetAvailability({});
       return;
     }
     const abort = new AbortController();
     setConfigResetAvailability({});
     const scopes = route.invalidStores?.map(({ scope }) => scope)
+      ?? route.storedScopes
       ?? (route.layer ? [route.layer.scope] : []);
     void Promise.all(scopes.map(async (scope) => {
       try {
@@ -1429,6 +1503,7 @@ export function ConsoleAppV4(props: {
     route.name === 'configUnavailable'
       ? route.invalidStores?.map((store) => `${store.scope}:${store.code}`).join('|') ?? ''
       : '',
+    route.name === 'configUnavailable' ? route.storedScopes?.join('|') ?? '' : '',
     route.name === 'configUnavailable' ? route.layer?.scope ?? '' : '',
   ]);
 
@@ -1851,6 +1926,29 @@ export function ConsoleAppV4(props: {
       recoveryDescription: action.description,
     });
   };
+  const beginRestrictedForceCleanup = async (
+    pluginId: string,
+    platform: PlatformName,
+    selectedScope: Scope,
+  ): Promise<void> => {
+    const candidate = await props.controller.getForceCleanupCandidate(
+      pluginId,
+      platform,
+      selectedScope,
+    );
+    if (!candidate) {
+      setActionError('当前没有可安全确认的受限清理目标。共享、外来、符号链接和原生内容会保持不变。');
+      return;
+    }
+    try {
+      props.controller.startForceCleanupReview(candidate);
+      setFocus(0);
+      setScrollOffset(0);
+      setActionError(undefined);
+    } catch {
+      showSafeUiFailure('tuiForceCleanupReviewFailed', 'force-cleanup-review');
+    }
+  };
   const beginAddSource = (): void => {
     const owner = `source-add:${Date.now()}`;
     setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '', autoCheck: true });
@@ -2246,8 +2344,31 @@ export function ConsoleAppV4(props: {
         };
       });
   };
+  const discardInvalidConfigDraftChanges = (): void => {
+    if (!configRoute || configDraftIssues.length === 0) return;
+    const invalidKeys = new Set(configDraftIssues.map((issue) => issue.key));
+    const nextUpdates = Object.fromEntries(Object.entries(draftUpdates)
+      .filter(([key]) => !invalidKeys.has(key)));
+    const nextRemoves = draftRemoves.filter((key) => !invalidKeys.has(key));
+    const owner = `${configOwnerKey(configRoute)}\0`;
+    const nextChangedObjectKeys = changedObjectDraftKeys.filter((key) => !key.startsWith(owner)
+      || !invalidKeys.has(key.slice(owner.length)));
+    setDraftUpdates(nextUpdates);
+    setDraftRemoves(nextRemoves);
+    setObjectDrafts((current) => Object.fromEntries(Object.entries(current)
+      .filter(([key]) => !key.startsWith(owner)
+        || !invalidKeys.has(key.slice(owner.length)))));
+    setChangedObjectDraftKeys(nextChangedObjectKeys);
+    setDirty(Object.keys(nextUpdates).length + nextRemoves.length + nextChangedObjectKeys.length > 0);
+    setObjectError(undefined);
+    setConfigActionError(undefined);
+  };
   const beginConfigSave = async (apply: boolean): Promise<void> => {
     if (!configRoute || configRoute.layer.scope === 'effective' || !currentConfigPage || !dirty) return;
+    if (configDraftIssues.length > 0) {
+      setConfigActionError('字段已变化。请先放弃失效草稿，或返回继续检查来源。');
+      return;
+    }
     const fields = currentConfigPage.groups.flatMap((group) => group.fields);
     try {
       await beginReview({
@@ -2401,7 +2522,9 @@ export function ConsoleAppV4(props: {
       pluginId: item.pluginId,
       name: item.displayName,
       sourceLabel: item.sourceLabel,
-      description: item.primaryAttention
+      description: item.configOnly
+        ? '来源当前没有这个插件；可以查看已保存设置或定点重置设置层。'
+        : item.primaryAttention
         ? `${item.primaryAttention.code} · ${item.primaryAttention.message}`
         : item.description,
       placementSummary: pluginPlacementSummary(item),
@@ -3173,7 +3296,28 @@ export function ConsoleAppV4(props: {
     description = plugin.description;
     const dependencySummary = plugin.dependencySummary;
     const detailMenu = dynamicMenu!;
-    actions = detailMenu.map((action): ActionItem => {
+    actions = plugin.configOnly ? detailMenu.map((action): ActionItem => {
+      if (action.id === 'settings') return {
+        label: '查看已保存设置',
+        description: '来源恢复前可检查问题，并只对记录中的设置层执行重置。',
+        run: () => {
+          props.controller.beginSavedConfigRecovery(plugin.pluginId);
+          setFocus(0);
+          setScrollOffset(0);
+        },
+      };
+      if (action.id === 'sourceProblem') return {
+        label: '查看来源问题',
+        description: '恢复来源后可重新读取字段定义；不会把此记录当作可安装插件。',
+        status: 'warning',
+        run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }),
+      };
+      return {
+        label: '关于与技术详情',
+        description: '查看保存设置和来源的安全摘要',
+        run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
+      };
+    }) : detailMenu.map((action): ActionItem => {
       if (action.id === 'resolveScopeConflict') return {
         label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
         description: action.description,
@@ -3310,6 +3454,44 @@ export function ConsoleAppV4(props: {
         : { label: placement?.state === 'installed' && placement.health === 'error' ? '查看安全技术详情' : placement?.state === 'installed' && placement.health === 'incomplete' ? '查看影响' : '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) };
       return { label: '返回插件', run: back };
     };
+    const offlineCleanupAction = typedIssue?.actions.find((action) => action.id === 'cleanup');
+    const offlineCleanup = typedIssue !== undefined
+      && placement?.state === 'installed'
+      && placement.blockingReason === undefined
+      && (placement.actualState === 'orphaned' || placement.actualState === 'blocked')
+      && offlineCleanupAction !== undefined
+      && !platformMenu.some((action) => action.id === 'cleanup')
+      && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
+      ? {
+          label: `清理${scopeLabel(placement.scope)}中的遗留内容…`,
+          description: '离线时也只清理这个插件目标中可证明属于 AW 的内容；完成后如需恢复，请单独确认重新安装。',
+          status: 'error' as const,
+          run: () => {
+            const intent = issueWriteIntent(typedIssue, offlineCleanupAction);
+            if (intent) beginReview(intent);
+          },
+        }
+      : undefined;
+    const restrictedForceCleanup = placement?.state === 'installed'
+      && placement.blockingReason === undefined
+      && (placement.actualState === 'orphaned' || placement.actualState === 'blocked')
+      && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
+      ? {
+          label: '检查受限清理…',
+          description: '只在当前单一目标有精确、专属的 AW-owned 恢复证据时进入新的确认；不会清理共享或外来内容。',
+          status: 'warning' as const,
+          run: () => beginRestrictedForceCleanup(
+            plugin.pluginId,
+            route.platform,
+            placement.scope,
+          ),
+        }
+      : undefined;
+    const platformActions = (): ActionItem[] => [
+      ...platformMenu.map(platformAction),
+      ...(offlineCleanup ? [offlineCleanup] : []),
+      ...(restrictedForceCleanup ? [restrictedForceCleanup] : []),
+    ];
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
     const installedPlacementRows = placement?.state === 'installed' ? <>
       <StaticRow title="Desired placement" meta={placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope)} compact />
@@ -3331,14 +3513,14 @@ export function ConsoleAppV4(props: {
         ? `需要升级 AW CLI 才能管理 ${platformLabel(route.platform)}`
         : `暂时无法管理 ${platformLabel(route.platform)}`;
       description = '';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <Box flexDirection="column">{diagnostic
         ? <DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} />
         : null}<SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (!placement || placement.state === 'notInstalled') {
       title = `尚未添加到 ${platformLabel(route.platform)}`;
       description = '此插件支持所列使用位置。';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <Box flexDirection="column"><StatusCard status="muted" title="未添加" description="插件设置保持不变" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.state === 'blocked'
       || placement.state === 'installed' && placement.blockingReason === 'artifactCollision') {
@@ -3346,12 +3528,12 @@ export function ConsoleAppV4(props: {
       description = placement.state === 'installed'
         ? '受管内容仍可安全移除；输出位置同时存在冲突内容。'
         : '输出位置已有不属于当前插件的内容。';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <Box flexDirection="column"><StatusCard status="error" title="输出冲突" description="AW 不会覆盖或删除占用内容" /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.state === 'scopeConflict') {
       title = '安装位置冲突';
       description = '正常状态只能保留一个位置。';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} />;
     } else if (placement.health === 'error') {
       const diagnostic = typedIssue?.diagnostic ?? {
@@ -3375,12 +3557,12 @@ export function ConsoleAppV4(props: {
       };
       title = `${platformLabel(route.platform)} 暂时不可管理`;
       description = '';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} compact={policy.mode === 'compact'} /><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else if (placement.health === 'incomplete') {
       title = `${platformLabel(route.platform)} ${placement.health === 'incomplete' ? '安装不完整' : '暂时不可用'}`;
       description = '缺少一项必要内容，插件可能无法稳定启动。';
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       const actualTitle = placement.actualState === 'needsSync' ? '需要同步'
         : placement.actualState === 'blocked' ? '当前有安全阻断' : '需要处理';
       content = <Box flexDirection="column"><StatusCard status={placement.actualState === 'blocked' ? 'error' : 'warning'} title={actualTitle} description={`${scopeLabel(placement.scope)} · ${plugin.sourceLabel}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
@@ -3388,7 +3570,7 @@ export function ConsoleAppV4(props: {
       title = `已安装到${scopeLabel(placement.scope)}`;
       const installedVersion = placement.revision.installedVersion;
       description = `当前检查正常${installedVersion ? `；已安装版本 ${installedVersion}` : ''}。`;
-      actions = platformMenu.map(platformAction);
+      actions = platformActions();
       content = <Box flexDirection="column"><StatusCard status="success" title="状态正常" description={`${scopeLabel(placement.scope)}${installedVersion ? ` · 已安装版本 ${installedVersion}` : ''}`}>{installedPlacementRows}</StatusCard><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     }
   } else if (route.name === 'configLayer' && plugin) {
@@ -3439,6 +3621,9 @@ export function ConsoleAppV4(props: {
       }
       if (projectSharedNativeFields.some(configFieldCanUnset)) {
         description += ' 发现不再支持的 project override；实际使用 user/default；请删除旧值。';
+      }
+      if (!readonly && configDraftIssues.length > 0) {
+        description += ' 字段已变化；失效草稿不会保存。';
       }
       const mutableLayer = {
         scope: route.layer.scope as Scope,
@@ -3492,7 +3677,13 @@ export function ConsoleAppV4(props: {
                 }),
           }));
       const operationActions: ActionItem[] = readonly ? [] : [
-        ...buildAllowedConfigActions(dirty).map((action): ActionItem => ({
+        ...(configDraftIssues.length > 0 ? [{
+          label: '放弃已变化字段的草稿',
+          description: `${configDraftIssues.length} 项草稿的字段不存在、不可编辑或不再可删除；不会修改已保存设置。`,
+          status: 'warning' as const,
+          run: discardInvalidConfigDraftChanges,
+        }] : []),
+        ...buildAllowedConfigActions(dirty && configDraftIssues.length === 0).map((action): ActionItem => ({
           label: action.label,
           description: route.layer.scope === 'user'
             && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
@@ -3549,12 +3740,17 @@ export function ConsoleAppV4(props: {
       const operationRows = operationActions.reduce((rows, action) =>
         rows + (policy.mode === 'compact' || !action.description ? 1 : 2), 0);
       const viewport = actionViewport(tabActions, policy.mode === 'compact', fieldFocus, scrollOffset,
-        pageActionBudget(1 + operationRows + 3));
+        pageActionBudget(1 + operationRows + 3 + (configDraftIssues.length > 0 ? 3 : 0)));
       const totalFields = currentConfigPage.groups.reduce((count, group) => count + group.fields.length, 0);
       const countLabel = `${totalFields} 项${currentConfigPage.presets.length > 0 ? ` · ${currentConfigPage.presets.length} 个方案` : ''}`;
       context = readonly ? countLabel
         : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : countLabel;
       content = <Box flexDirection="column">
+        {!readonly && configDraftIssues.length > 0 ? <Callout
+          status="warning"
+          title="字段已变化"
+          description="来源恢复后字段定义已更新；字段可能不存在、不可编辑或不再可删除。请显式放弃失效草稿，或返回继续检查来源；不会自动保存或复用旧确认。"
+        /> : null}
         {activeTab ? <ConfigGroupTabs
           tabs={visibleConfigTabs}
           current={activeTab.id}
@@ -3869,9 +4065,11 @@ export function ConsoleAppV4(props: {
     context = '暂时不可编辑';
     const diagnostic = configUnavailableDiagnostic(route);
     const invalidLayer = (route.invalidStores?.length ?? 0) > 0;
+    const canRecoverSource = configUnavailableCanRecoverSource(route);
     title = diagnostic.title;
     description = '';
     const resetScopes = route.invalidStores?.map(({ scope }) => scope)
+      ?? route.storedScopes
       ?? (route.layer ? [route.layer.scope] : []);
     actions = [
       ...resetScopes.flatMap((scope) => {
@@ -3890,8 +4088,14 @@ export function ConsoleAppV4(props: {
             }]
           : [];
       }),
+      ...(!invalidLayer && canRecoverSource ? [
+        {
+          label: '修复插件来源',
+          description: `检查并恢复 ${unavailableSourceId}；完成后返回当前设置位置。`,
+          run: () => props.controller.beginConfigSourceRecovery(unavailableSourceId),
+        },
+      ] : []),
       ...(!invalidLayer ? [
-        { label: `在终端运行 aw catalog source sync ${unavailableSourceId}`, description: '同步成功后重新加载 TUI', run: back },
         { label: showTechnical ? '返回问题摘要' : '技术详情', description: '查看脱敏错误代码和阶段', run: () => setShowTechnical((value) => !value) },
       ] : []),
       { label: '返回', run: back },
@@ -3968,7 +4172,7 @@ export function ConsoleAppV4(props: {
     const combinedRepairAndMismatch = generationState === 'repairRequired'
       && generation?.configMismatch === true;
     const logicalIdentityChanged = generation?.errorCode === 'catalogLogicalIdentityChanged';
-    const activationBlocked = props.controller.catalogActivationBlockReason();
+    const activationBlocked = props.controller.catalogSourceRecoveryBlockReason();
     breadcrumb = `插件来源 / ${route.sourceId}`;
     context = detail?.type === 'path' ? '本地目录' : 'Git';
     title = route.sourceId;
@@ -5152,7 +5356,7 @@ export function ConsoleAppV4(props: {
             { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
           ]
       : sourceOperation
-      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult({ name: 'sourceList' }) }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
+      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult() }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
       : configOperation && partial
       ? [
           ...(configRetryAvailable ? [{
@@ -5862,11 +6066,11 @@ export function ConsoleAppV4(props: {
       setFocus(0);
       setScrollOffset(0);
     } else if (input.toLowerCase() === 'r' && route.name === 'sourceDetail') {
-      void props.controller.reloadCatalog({ sourceId: route.sourceId });
+      void props.controller.recheckCatalogSource(route.sourceId);
     } else if (input.toLowerCase() === 'r' && route.name === 'sourceList') {
       const source = props.controller.listSources()[focus];
       if (source) {
-        void props.controller.reloadCatalog({ sourceId: source.id });
+        void props.controller.recheckCatalogSource(source.id);
       }
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
       const tabs = ['all', ...props.controller.listSources().map((source) => source.id)];

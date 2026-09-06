@@ -228,6 +228,7 @@ function menuPlugin(overrides: Partial<PluginListItemViewModel> = {}): PluginLis
     installedPlacements: [{ platform: 'codex', state: 'notInstalled', supportedScopes: ['user', 'project'] }],
     aggregateStatus: 'available',
     portableSkills: false,
+    savedConfigScopes: [],
     dependencySummary: {
       directCount: 0, transitiveCount: 0, totalCount: 0,
       readyCount: 0, missingCount: 0, issueCount: 0,
@@ -256,6 +257,48 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('includes recognizable saved settings without claiming the plugin is installable', () => {
+    const view = buildTuiViewModel({
+      status: status(),
+      pluginSummaries: [],
+      configStoreInventory: [{
+        pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
+      }],
+    });
+
+    expect(view.plugins).toEqual([expect.objectContaining({
+      pluginId: 'removed/demo',
+      aggregateStatus: 'unavailable',
+      configOnly: true,
+      savedConfigScopes: ['user'],
+      supportedPlatforms: [],
+      installedPlacements: [],
+    })]);
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(), pluginSummaries: [], configStoreInventory: [{
+          pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user',
+        }],
+      }),
+    }));
+    return controller.load().then(() => {
+      expect(controller.listPlugins({ mode: 'installed' })).toHaveLength(1);
+      expect(controller.listInstallTargets('removed/demo', 'user')).toEqual([]);
+      expect(buildPluginDetailActions(controller.getPluginOverview('removed/demo')!)
+        .map((action) => action.id)).toEqual(['settings', 'sourceProblem', 'about']);
+      controller.push({ name: 'pluginDetail', pluginId: 'removed/demo' });
+      controller.beginSavedConfigRecovery('removed/demo');
+      expect(controller.snapshot.router.current.route).toEqual({
+        name: 'configUnavailable',
+        pluginId: 'removed/demo',
+        storedScopes: ['user'],
+        layer: { scope: 'user' },
+        diagnosticCode: 'catalogSourceUnavailable',
+        diagnosticStage: 'read-config',
+      });
+    });
+  });
+
   it('builds capability actions only for capabilities with live content', () => {
     const empty = menuPlugin();
     expect(buildPluginPreviewActions(empty).map((action) => action.id)).toEqual(['add', 'source']);
@@ -2521,6 +2564,129 @@ describe('TUI Catalog freshness session overlay', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  it('finishes nested source recovery at the exact config editor route with the parent draft flow active', async () => {
+    const candidate = {
+      sourceId: 'official',
+      sourceConfigFingerprint: 'sha256:source',
+      sourceIdentity: 'identity:official',
+      logicalIdentity: 'workspace:official',
+      requestedRef: 'refs/heads/catalog/latest',
+      resolvedCommit: 'a'.repeat(40),
+      catalogVersion: '1.0.0',
+      channel: 'latest' as const,
+      manifestDigest: `sha256:${'b'.repeat(64)}`,
+      snapshotDigest: `sha256:${'c'.repeat(64)}`,
+    };
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: candidate.snapshotDigest },
+      catalogGeneration: {
+        action: 'repair', candidate, exactRepair: true,
+        activationMode: 'normal', configDigest: 'sha256:config',
+      },
+    };
+    const loadStatus = vi.fn().mockResolvedValue({
+      payload: status(), pluginSummaries: summaries(['official', 'demo']),
+    });
+    const controller = new TuiController(dependencies({
+      loadStatus,
+      prepareReviewEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ status: 'succeeded' }),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+    controller.beginConfigFlow('official/demo');
+    const resumeRoute = {
+      name: 'configFieldEditor' as const,
+      pluginId: 'official/demo',
+      layer: { scope: 'user' as const },
+      fieldKey: 'mode',
+      editor: 'string' as const,
+    };
+    controller.replace({
+      name: 'configUnavailable',
+      pluginId: 'official/demo',
+      layer: { scope: 'user' },
+      resumeRoute,
+      resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
+      diagnosticCode: 'catalogSourceUnavailable',
+    }, { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 });
+    controller.setExternalDraftState('configDraft');
+
+    controller.beginConfigSourceRecovery('official');
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'sourceDetail', sourceId: 'official',
+    });
+    const preparation = controller.startReviewPreparation({
+      kind: 'catalogGeneration', action: 'repair', sourceId: 'official',
+    });
+    await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
+    const token = controller.snapshot.activeReview!.reviewToken;
+    expect(preparation.state).toBe('running');
+
+    await expect(controller.executeOperation(token)).resolves.toMatchObject({ state: 'succeeded' });
+    controller.leaveResult();
+
+    expect(controller.snapshot.router.current.route).toEqual(resumeRoute);
+    expect(controller.snapshot.router.current.context).toEqual({
+      configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1,
+    });
+    expect(controller.snapshot.router.currentFlowId).toBeDefined();
+    expect(loadStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens force cleanup Review only from exact exclusive preview evidence', async () => {
+    const forceEvidence: OperationEvidence = {
+      ...baseEvidence,
+      offlineCleanup: {
+        reason: 'bundleUnavailable',
+        pluginId: 'official/demo',
+        pluginName: 'demo',
+        sourceId: 'official',
+        sourceIdentity: 'identity:official',
+        platform: 'codex',
+        scope: 'user',
+        forceExclusive: true,
+        plan: {
+          schemaVersion: 1,
+          pluginId: 'official/demo',
+          sourceIdentity: 'identity:official',
+          platform: 'codex',
+          scope: 'user',
+          actions: [{
+            action: 'removeOwnedOutput',
+            kind: 'skill-directory',
+            target: '/safe/owned-output',
+          }],
+        },
+        planDigest: 'sha256:force',
+        targetFingerprint: 'sha256:force',
+      },
+    };
+    const captureEvidence = vi.fn().mockResolvedValue(forceEvidence);
+    const controller = new TuiController(dependencies({ captureEvidence }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+
+    const candidate = await controller.getForceCleanupCandidate('official/demo', 'codex', 'user');
+    expect(candidate).toEqual({
+      pluginId: 'official/demo', platform: 'codex', scope: 'user', actionCount: 1,
+    });
+    controller.startForceCleanupReview(candidate!);
+    await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
+
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: 'pluginWrite', action: 'cleanup', force: true,
+    });
+
+    const unavailable = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
+    }));
+    await unavailable.load();
+    await expect(unavailable.getForceCleanupCandidate('official/demo', 'codex', 'user'))
+      .resolves.toBeUndefined();
+  });
+
   it('shows refresh fallback in the ordinary Review and uses the refreshed plugin version', async () => {
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn().mockResolvedValue({

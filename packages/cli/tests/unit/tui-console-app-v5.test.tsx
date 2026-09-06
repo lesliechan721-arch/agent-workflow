@@ -405,6 +405,24 @@ function orphanLoadResult(): TuiStatusLoadResult {
   return loaded;
 }
 
+function forceCleanupLoadResult(): TuiStatusLoadResult {
+  const loaded = loadResult();
+  const offlineTarget = loaded.payload.targets.find((entry) =>
+    entry.pluginId === 'team-tools/review-gate'
+    && entry.platform === 'codex' && entry.scope === 'user')!;
+  offlineTarget.state = 'blocked';
+  offlineTarget.reasons = [{
+    code: 'bundleUnavailable',
+    message: 'Catalog no longer contains this plugin.',
+    severity: 'blocking',
+  }];
+  offlineTarget.recoveryActions = [{
+    command: 'cleanup',
+    description: 'Clean only AW-owned content for this exact target.',
+  }];
+  return loaded;
+}
+
 function dependencyPlan(): DependencyOperationPlan {
   return {
     dependencyPlanSchemaVersion: 1,
@@ -2500,6 +2518,25 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
   });
 
+  it('uses the light source check for r and keeps full validation separate', async () => {
+    const value = controller();
+    await value.load();
+    const recheck = vi.spyOn(value, 'recheckCatalogSource').mockResolvedValue(undefined);
+    const fullValidate = vi.spyOn(value, 'fullValidateCatalogSource');
+    const reload = vi.spyOn(value, 'reloadCatalog');
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('重新检查');
+    expect(instance.lastFrame()).toContain('完整验证');
+    await input(instance, 'r');
+
+    expect(recheck).toHaveBeenCalledWith('team-tools');
+    expect(fullValidate).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it.each([
     [80, 24],
     [60, 18],
@@ -2696,7 +2733,8 @@ describe('ConsoleAppV4', () => {
     const productFrame = instance.lastFrame() ?? '';
     expect(productFrame).toContain('当前无法取得可信的字段定义');
     expect(productFrame).toContain('已保存的设置保持不变');
-    expect(productFrame).toContain('在终端运行 aw catalog source sync team-tools');
+    expect(productFrame).toContain('修复插件来源');
+    expect(productFrame).not.toContain('aw catalog source sync team-tools');
     expect(productFrame).not.toContain('configReadFailed');
     expect(productFrame).not.toContain('config-secret');
     await input(instance, '\u001B[B');
@@ -4368,19 +4406,23 @@ describe('ConsoleAppV4', () => {
 
     const unavailableScreens = new Set<ConsoleV4ScreenId>();
     const unavailable = controller({
-      getConfigPage: vi.fn().mockRejectedValue(new Error('private manifest error /Users/private')),
+      getConfigPage: vi.fn().mockRejectedValue(new Error('catalogSourceUnavailable: private manifest error /Users/private')),
     });
-    unavailable.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    await unavailable.load();
+    unavailable.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    unavailable.beginConfigFlow('team-tools/review-gate');
+    unavailable.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
     const unavailableInstance = render(<ConsoleAppV4 controller={unavailable} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => unavailableScreens.add(screen)} />);
     await nextTurn(5);
     expect(unavailableScreens).toContain('C17');
     expect(unavailableInstance.lastFrame()).toContain('Manifest 或来源不可用');
-    expect(unavailableInstance.lastFrame()).toContain('在终端运行 aw catalog source sync team-tools');
+    expect(unavailableInstance.lastFrame()).toContain('修复插件来源');
+    expect(unavailableInstance.lastFrame()).not.toContain('aw catalog source sync team-tools');
     expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
     expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
     await input(unavailableInstance, '\r');
     await nextTurn(4);
-    expect(unavailable.snapshot.router.current.route).not.toMatchObject({ name: 'configUnavailable' });
+    expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
 
     const longPage = configPage();
     longPage.presets = [];
@@ -4414,6 +4456,54 @@ describe('ConsoleAppV4', () => {
     expect(effectiveInstance.lastFrame()).toContain('字段 9');
     expect(effectiveInstance.lastFrame()).toContain('› 字段 9');
     expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('opens source-missing saved settings only for their recorded reset scope', async () => {
+    const loaded = loadResult();
+    loaded.configStoreInventory = [{
+      pluginId: 'team-tools/retired-settings',
+      sourceId: 'team-tools',
+      pluginName: 'retired-settings',
+      scope: 'project',
+    }];
+    const getConfigResetAvailability = vi.fn().mockResolvedValue({
+      exists: true,
+      state: 'invalid',
+      sourceIdentityPresent: false,
+      targetKind: 'regularFile',
+      resettable: true,
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      getConfigResetAvailability,
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/retired-settings' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('查看已保存设置');
+    expect(instance.lastFrame()).toContain('查看来源问题');
+    expect(instance.lastFrame()).not.toContain('添加到');
+    await input(instance, '\r');
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configUnavailable',
+      pluginId: 'team-tools/retired-settings',
+      storedScopes: ['project'],
+      layer: { scope: 'project' },
+      diagnosticCode: 'catalogSourceUnavailable',
+      diagnosticStage: 'read-config',
+    });
+    expect(getConfigResetAvailability).toHaveBeenCalledWith(
+      'team-tools/retired-settings',
+      { scope: 'project' },
+      expect.any(AbortSignal),
+    );
+    expect(instance.lastFrame()).toContain('重置当前项目设置层');
+    expect(instance.lastFrame()).not.toContain('重置个人默认设置层');
+    expect(instance.lastFrame()).not.toContain('修复插件来源');
   });
 
   it.each([
@@ -4657,6 +4747,35 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('过期个人字段');
   });
 
+  it('keeps the config group and field viewport when config loading enters source recovery', async () => {
+    const value = controller({
+      getConfigPage: vi.fn().mockRejectedValue(Object.assign(
+        new Error('catalogSourceUnavailable'),
+        { code: 'catalogSourceUnavailable' },
+      )),
+    });
+    value.push({
+      name: 'configFieldAction',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' },
+      fieldKey: 'model',
+    }, { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'configUnavailable',
+      resumeRoute: {
+        name: 'configFieldAction',
+        pluginId: 'team-tools/review-gate',
+        layer: { scope: 'user' },
+        fieldKey: 'model',
+      },
+      resumeContext: { configGroupId: 'advanced', focusIndex: 2, scrollOffset: 1 },
+    });
+    expect(instance.lastFrame()).toContain('修复插件来源');
+  });
+
   it('uses G04 when leaving a dirty config layer and can discard its draft', async () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
@@ -4695,6 +4814,143 @@ describe('ConsoleAppV4', () => {
 
     expect(value.hasSessionDraft).toBe(true);
     expect(value.snapshot.router.current.route).toEqual(draftRoute);
+  });
+
+  it('keeps a recovered source draft visible and blocks a field removed by the new schema', async () => {
+    const initialPage = configPage();
+    const refreshedPage = configPage();
+    refreshedPage.groups[0]!.fields = refreshedPage.groups[0]!.fields
+      .filter((field) => field.key !== 'level');
+    const getConfigPage = vi.fn()
+      .mockResolvedValueOnce(initialPage)
+      .mockResolvedValueOnce(refreshedPage);
+    const value = controller({ getConfigPage });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    value.beginConfigFlow('team-tools/review-gate');
+    value.replace({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\r', '\r', '\u001B[B', '\r');
+    expect(value.hasSessionDraft).toBe(true);
+
+    const resumeRoute = {
+      name: 'configFields' as const,
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' as const, projectLayer: 'shared' as const },
+    };
+    value.replace({
+      name: 'configUnavailable',
+      pluginId: 'team-tools/review-gate',
+      diagnosticCode: 'catalogSourceUnavailable',
+      diagnosticStage: 'read-config',
+      resumeRoute,
+    });
+    await nextTurn(2);
+    value.replace(resumeRoute);
+    await nextTurn(4);
+
+    expect(instance.lastFrame()).toContain('字段已变化');
+    expect(instance.lastFrame()).toContain('放弃已变化字段的草稿');
+    expect(instance.lastFrame()).not.toContain('保存并应用');
+    expect(value.hasSessionDraft).toBe(true);
+  });
+
+  it('returns a dirty source recovery to its field and blocks a now-unwritable draft', async () => {
+    const loaded = loadResult();
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools'
+        ? { ...generation, state: 'repairRequired' as const }
+        : generation);
+    const initialPage = configPage();
+    const refreshedPage = configPage();
+    const refreshedLevel = refreshedPage.groups[0]!.fields.find((field) => field.key === 'level')!;
+    refreshedLevel.writable = false;
+    refreshedLevel.canSet = false;
+    refreshedLevel.canUnset = false;
+    const getConfigPage = vi.fn()
+      .mockResolvedValueOnce(initialPage)
+      .mockResolvedValueOnce(refreshedPage);
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      const prepared = evidenceForIntent(intent);
+      return intent.kind === 'catalogGeneration' && prepared.catalogGeneration
+        ? {
+            ...prepared,
+            catalogGeneration: {
+              ...prepared.catalogGeneration,
+              exactRepair: intent.action === 'repair',
+              activationMode: 'normal' as const,
+            },
+          }
+        : prepared;
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      getConfigPage,
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue({ status: 'succeeded' }),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    value.beginConfigFlow('team-tools/review-gate');
+    value.replace({
+      name: 'configFields',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    }, { configGroupId: 'basic', focusIndex: 0, scrollOffset: 0 });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\r', '\r', '\r');
+    await nextTurn(2);
+    expect(value.hasSessionDraft).toBe(true);
+
+    const resumeRoute = {
+      name: 'configFieldAction' as const,
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' as const },
+      fieldKey: 'level',
+    };
+    value.replace({
+      name: 'configUnavailable',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user' },
+      diagnosticCode: 'catalogSourceUnavailable',
+      diagnosticStage: 'read-config',
+      resumeRoute,
+      resumeContext: { configGroupId: 'basic', focusIndex: 0, scrollOffset: 0 },
+    }, { configGroupId: 'basic', focusIndex: 0, scrollOffset: 0 });
+    await nextTurn(2);
+
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'catalogGeneration', action: 'repair', sourceId: 'team-tools',
+    }), expect.any(AbortSignal));
+    await confirmReview(instance, value);
+    await nextTurn(6);
+    expect(value.snapshot.router.current.route.name).toBe('result');
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    expect(value.snapshot.router.current.route).toEqual(resumeRoute);
+    expect(value.snapshot.router.current.context).toMatchObject({
+      configGroupId: 'basic', focusIndex: 0, scrollOffset: 0,
+    });
+    expect(value.hasSessionDraft).toBe(true);
+
+    await input(instance, 'b');
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('字段已变化');
+    expect(instance.lastFrame()).toContain('放弃已变化字段的草稿');
+    expect(instance.lastFrame()).toContain('字段不存在、不可编辑或不再可删除');
+    expect(instance.lastFrame()).not.toContain('保存并应用');
   });
 
   it('opens a stored field action but sends an unstored field directly to its cursor editor', async () => {
@@ -7274,6 +7530,71 @@ describe('ConsoleAppV4', () => {
     expect(technicalFrame).toContain('↑↓ 移动');
     expect(technicalFrame.match(/›/gu)).toHaveLength(1);
     expect(technicalFrame.split('\n').length).toBeLessThanOrEqual(18);
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('keeps a restricted cleanup outside Review when no exact candidate exists', async () => {
+    const getForceCleanupCandidate = vi.fn().mockResolvedValue(undefined);
+    const startForceCleanupReview = vi.fn();
+    const executeIntent = vi.fn();
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(forceCleanupLoadResult()),
+      executeIntent,
+    });
+    await value.load();
+    vi.spyOn(value, 'getForceCleanupCandidate').mockImplementation(getForceCleanupCandidate);
+    vi.spyOn(value, 'startForceCleanupReview').mockImplementation(startForceCleanupReview);
+    value.push({ name: 'platform', pluginId: 'team-tools/review-gate', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('检查受限清理…');
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(getForceCleanupCandidate).toHaveBeenCalledWith('team-tools/review-gate', 'codex', 'user');
+    expect(startForceCleanupReview).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'platform', pluginId: 'team-tools/review-gate', platform: 'codex',
+    });
+    expect(instance.lastFrame()).toContain('当前没有可安全确认的受限清理目标');
+  });
+
+  it('uses the core exact candidate to prepare restricted cleanup Review without reinstalling', async () => {
+    const candidate = {
+      pluginId: 'team-tools/review-gate',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+      actionCount: 1,
+    };
+    const executeIntent = vi.fn();
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(forceCleanupLoadResult()),
+      executeIntent,
+    });
+    await value.load();
+    const getForceCleanupCandidate = vi.spyOn(value, 'getForceCleanupCandidate')
+      .mockResolvedValue(candidate);
+    const startForceCleanupReview = vi.spyOn(value, 'startForceCleanupReview')
+      .mockImplementation((exact) => value.startReviewPreparation({
+        kind: 'pluginWrite',
+        action: 'cleanup',
+        pluginId: exact.pluginId,
+        platform: exact.platform,
+        scope: exact.scope,
+        force: true,
+      }));
+    value.push({ name: 'platform', pluginId: 'team-tools/review-gate', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(getForceCleanupCandidate).toHaveBeenCalledWith('team-tools/review-gate', 'codex', 'user');
+    expect(startForceCleanupReview).toHaveBeenCalledWith(candidate);
+    expect(['reviewPreparing', 'review']).toContain(value.snapshot.router.current.route.name);
+    expect(value.snapshot.activeReview?.pluginAction).not.toBe('reinstall');
     expect(executeIntent).not.toHaveBeenCalled();
   });
 

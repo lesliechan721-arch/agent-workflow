@@ -69,6 +69,7 @@ import {
   TuiRouter,
   type CatalogActivationBlockReason,
   type ConfigInvalidStoreEvidence,
+  type ConfigResumeRoute,
   type PluginInstallFilter,
   type PortableBlockerCode,
   type TuiPageContext,
@@ -455,6 +456,12 @@ export interface TuiStatusLoadResult {
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+  configStoreInventory?: Array<{
+    pluginId: string;
+    sourceId: string;
+    pluginName: string;
+    scope: Scope;
+  }>;
   catalogGenerations?: CatalogSourceGenerationViewModel[];
   sessionGenerationKeys?: Record<string, string>;
 }
@@ -544,6 +551,13 @@ export interface ConfigResetAvailability {
   sourceIdentityPresent: boolean;
   sourceIdentity?: string;
   storeDigest?: string;
+}
+
+export interface ForceCleanupCandidate {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+  actionCount: number;
 }
 
 export interface TuiControllerSnapshot {
@@ -1178,6 +1192,7 @@ export class TuiController {
       catalogGenerations: this.#catalogGenerations,
       dependencyOverviews: this.#status.dependencyOverviews,
       portablePluginIds: this.#status.portablePluginIds,
+      configStoreInventory: this.#status.configStoreInventory,
     });
   }
 
@@ -1271,6 +1286,10 @@ export class TuiController {
       return;
     }
     const kind = intent.kind === 'catalogSourcesRecovery' ? 'sourceRecovery' : 'sourceEdit';
+    if (active?.kind === 'sourceRecovery'
+      && (intent.kind === 'catalogSourcesRecovery'
+        || intent.kind === 'catalogGeneration'
+        || intent.kind === 'sourceMutation')) return;
     if (active?.kind === kind) return;
     this.#router.beginFlow(
       kind,
@@ -1643,6 +1662,89 @@ export class TuiController {
       layer: { scope: 'effective' },
     });
     this.#publish();
+  }
+
+  beginSavedConfigRecovery(pluginId: string): void {
+    this.#assertAcceptingActions();
+    const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
+    if (!plugin?.configOnly || plugin.savedConfigScopes.length === 0) {
+      throw new TuiOperationBlockedError('savedConfigUnavailable', '没有可识别的已保存设置。');
+    }
+    this.#router.beginConfigFlow(pluginId);
+    this.#router.push({
+      name: 'configUnavailable',
+      pluginId,
+      storedScopes: plugin.savedConfigScopes,
+      ...(plugin.savedConfigScopes.length === 1
+        ? { layer: { scope: plugin.savedConfigScopes[0]! } }
+        : {}),
+      diagnosticCode: 'catalogSourceUnavailable',
+      diagnosticStage: 'read-config',
+    });
+    this.#publish();
+  }
+
+  beginConfigSourceRecovery(sourceId: string): void {
+    this.#assertAcceptingActions();
+    const route = this.#router.snapshot.current.route;
+    const active = this.#router.activeFlow();
+    if (route.name !== 'configUnavailable'
+      || active?.kind !== 'configEdit'
+      || route.storedScopes !== undefined
+      || sourceIdFromPluginId(route.pluginId) !== sourceId
+      || !this.#viewModel?.sourceTabs.some((source) => source.id === sourceId)) {
+      throw new TuiOperationBlockedError(
+        'configSourceRecoveryUnavailable',
+        '来源恢复只能从不可用的设置流程开始。',
+      );
+    }
+    const layer = route.layer?.scope ?? route.resumeRoute?.layer.scope ?? 'effective';
+    const returnTarget: ConfigResumeRoute = route.resumeRoute ?? {
+      name: 'configFields',
+      pluginId: route.pluginId,
+      layer: { scope: layer },
+    };
+    this.#router.beginFlow('sourceRecovery', returnTarget, undefined, route.resumeContext);
+    this.#router.push({ name: 'sourceDetail', sourceId });
+    this.#publish();
+  }
+
+  async getForceCleanupCandidate(
+    pluginId: string,
+    platform: PlatformName,
+    scope: Scope,
+  ): Promise<ForceCleanupCandidate | undefined> {
+    this.#assertAcceptingActions();
+    const intent: Extract<OperationIntent, { kind: 'pluginWrite' }> = {
+      kind: 'pluginWrite', action: 'cleanup', pluginId, platform, scope, force: true,
+    };
+    try {
+      const evidence = await this.#trackRead(this.dependencies.captureEvidence(intent, this.#abort.signal));
+      const candidate = evidence.offlineCleanup;
+      if (candidate?.forceExclusive !== true
+        || candidate.pluginId !== pluginId
+        || candidate.platform !== platform
+        || candidate.scope !== scope
+        || candidate.plan.actions.length === 0) return undefined;
+      return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
+    } catch (error) {
+      await this.#logOperationError(error, issueCode(error), intent);
+      return undefined;
+    }
+  }
+
+  startForceCleanupReview(candidate: ForceCleanupCandidate): ReviewPreparationSnapshot {
+    if (candidate.actionCount <= 0) {
+      throw new TuiOperationBlockedError('forceCleanupPathUnavailable', '没有可验证的精确清理目标。');
+    }
+    return this.startReviewPreparation({
+      kind: 'pluginWrite',
+      action: 'cleanup',
+      pluginId: candidate.pluginId,
+      platform: candidate.platform,
+      scope: candidate.scope,
+      force: true,
+    });
   }
 
   configOrigin(pluginId: string): TuiRoute | undefined {
@@ -2044,7 +2146,7 @@ export class TuiController {
     const query = options.query?.trim().toLocaleLowerCase('en');
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
-      && (options.mode === 'browse' || hasInstalledPlacement(plugin))
+      && (options.mode === 'browse' || hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
@@ -2211,6 +2313,20 @@ export class TuiController {
     return undefined;
   }
 
+  catalogSourceRecoveryBlockReason(): CatalogActivationBlockReason | undefined {
+    const activeFlow = this.#router.activeFlow();
+    if (this.#externalDraft
+      && !(this.#externalDraft === 'configDraft'
+        && activeFlow?.kind === 'sourceRecovery'
+        && activeFlow.parentFlowId !== undefined)) return this.#externalDraft;
+    if (this.#portableDraft) return 'portableDraft';
+    if (this.#reviewPreparation) return 'reviewPreparation';
+    if (this.#activeReview) return 'activeReview';
+    if (this.#router.snapshot.current.route.name === 'progress'
+      || this.#inflightOperations.size > 0) return 'writeProgress';
+    return undefined;
+  }
+
   getSessionCatalogVersion(sourceId: string): string | undefined {
     return this.#status?.payload.catalog.sources.find((source) => source.id === sourceId)?.catalogVersion;
   }
@@ -2331,7 +2447,7 @@ export class TuiController {
   startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
     this.#assertAcceptingActions();
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
-      const blockReason = this.catalogActivationBlockReason();
+      const blockReason = this.catalogSourceRecoveryBlockReason();
       if (blockReason) {
         throw new TuiOperationBlockedError(
           'catalogActivationBlocked',

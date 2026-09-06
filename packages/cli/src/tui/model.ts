@@ -130,6 +130,8 @@ export interface PluginListItemViewModel {
   capabilityUnsupported?: boolean;
   capabilityRecovery?: string;
   sourceUnavailable?: boolean;
+  savedConfigScopes: Scope[];
+  configOnly?: true;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
@@ -802,6 +804,7 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
       ...plugin.installedPlacements.flatMap((placement) => placement.state === 'notInstalled'
         ? []
         : [{ id: 'platform' as const, platform: placement.platform }]),
+      ...(plugin.savedConfigScopes.length > 0 ? [{ id: 'settings' as const }] : []),
       { id: 'sourceProblem' },
       { id: 'about' },
     ];
@@ -1626,6 +1629,12 @@ export function buildTuiViewModel(options: {
   catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
+  configStoreInventory?: Array<{
+    pluginId: string;
+    sourceId: string;
+    pluginName: string;
+    scope: Scope;
+  }>;
 }): TuiViewModel {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
@@ -1635,11 +1644,24 @@ export function buildTuiViewModel(options: {
   for (const target of options.status.targets) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
-  const pluginIds = new Set([...summaryById.keys(), ...targetsByPlugin.keys()]);
+  const configScopesByPlugin = new Map<string, Set<Scope>>();
+  for (const store of options.configStoreInventory ?? []) {
+    const scopes = configScopesByPlugin.get(store.pluginId) ?? new Set<Scope>();
+    scopes.add(store.scope);
+    configScopesByPlugin.set(store.pluginId, scopes);
+  }
+  const pluginIds = new Set([
+    ...summaryById.keys(),
+    ...targetsByPlugin.keys(),
+    ...configScopesByPlugin.keys(),
+  ]);
   const plugins = [...pluginIds].map((pluginId): PluginListItemViewModel => {
     const summary = summaryById.get(pluginId);
     const targets = targetsByPlugin.get(pluginId) ?? [];
     const sourceId = targets[0]?.sourceId ?? pluginId.slice(0, pluginId.indexOf('/'));
+    const savedConfigScopes = [...(configScopesByPlugin.get(pluginId) ?? [])]
+      .sort((left, right) => (left === 'user' ? 0 : 1) - (right === 'user' ? 0 : 1));
+    const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0;
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
       return platformTargets.length > 0
@@ -1659,7 +1681,7 @@ export function buildTuiViewModel(options: {
       || capabilityTargets.length > 0;
     const capabilityRecovery = capabilityTargets.flatMap((target) => target.recoveryActions)
       .find((action) => action.command === 'manual')?.description;
-    const unavailable = sourceUnavailable || capabilityUnsupported;
+    const unavailable = sourceUnavailable || capabilityUnsupported || configOnly;
     return {
       pluginId,
       sourceId,
@@ -1688,6 +1710,8 @@ export function buildTuiViewModel(options: {
       ...(capabilityUnsupported ? { capabilityUnsupported: true } : {}),
       ...(capabilityRecovery ? { capabilityRecovery } : {}),
       ...(sourceUnavailable ? { sourceUnavailable: true } : {}),
+      savedConfigScopes,
+      ...(configOnly ? { configOnly: true } : {}),
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }
         : summary && (summary.dependencyTotalCount ?? 0) > 0

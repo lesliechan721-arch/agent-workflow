@@ -24,6 +24,32 @@ export interface ConfigInvalidStoreEvidence {
   pathSummary: string;
 }
 
+export type ConfigResumeRoute =
+  | { name: 'configFields'; pluginId: string; layer: { scope: Scope | 'effective' } }
+  | {
+      name: 'configFieldEditor';
+      pluginId: string;
+      layer: { scope: Scope };
+      fieldKey: string;
+      editor: 'boolean' | 'number' | 'string' | 'object';
+      mode?: 'choices' | 'custom';
+    }
+  | {
+      name: 'configObjectPropertyEditor';
+      pluginId: string;
+      layer: { scope: Scope };
+      fieldKey: string;
+      propertyKey?: string;
+      dynamic: boolean;
+      stage: 'key' | 'action' | 'choices' | 'custom';
+    }
+  | {
+      name: 'configFieldAction';
+      pluginId: string;
+      layer: { scope: Scope };
+      fieldKey: string;
+    };
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
@@ -100,6 +126,9 @@ export type TuiRoute =
       invalidStores?: ConfigInvalidStoreEvidence[];
       diagnosticCode?: string;
       diagnosticStage?: string;
+      resumeRoute?: ConfigResumeRoute;
+      resumeContext?: Pick<TuiPageContext, 'configGroupId' | 'focusIndex' | 'scrollOffset'>;
+      storedScopes?: Scope[];
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
@@ -159,6 +188,7 @@ export interface TuiFlowScope {
   parentFlowId?: string;
   originFrameId: string;
   returnTarget: TuiRoute;
+  returnContext?: TuiPageContext;
 }
 
 interface NavigationFrame extends TuiRouteFrame {
@@ -226,6 +256,7 @@ export class TuiRouter {
     kind: TuiFlowKind,
     returnTarget: TuiRoute = this.#stack.at(-1)!.route,
     originFrameId?: string,
+    returnContext?: TuiPageContext,
   ): TuiFlowScope {
     const origin = originFrameId
       ? this.#stack.find((frame) => frame.id === originFrameId) ?? this.#stack.at(-1)!
@@ -238,6 +269,7 @@ export class TuiRouter {
       ...(parentFlowId ? { parentFlowId } : {}),
       originFrameId: origin.id,
       returnTarget: structuredClone(returnTarget),
+      ...(returnContext ? { returnContext: structuredClone(returnContext) } : {}),
     };
     this.#flows.set(id, flow);
     this.#activeFlowId = id;
@@ -289,7 +321,7 @@ export class TuiRouter {
     this.#stack[origin] = {
       id: originFrame.id,
       route: nextRoute,
-      context: originFrame.context,
+      context: structuredClone(flow.returnContext ?? originFrame.context),
       ...(flow.parentFlowId ? { flowId: flow.parentFlowId } : {}),
     };
     for (const flowId of descendants) this.#flows.delete(flowId);

@@ -6720,13 +6720,8 @@ describe('five namespaced write commands', () => {
       kind: 'pluginWrite', action: 'cleanup', pluginId: 'team/leaf',
       platform: 'codex', scope: 'project', force: true,
     } as const;
-    const evidence = await dependencies.captureEvidence(intent);
-
-    const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof cleanupWriteCommand>>;
-
-    expect(result).toMatchObject({
-      overallState: 'failed',
-      targetResults: [expect.objectContaining({ errorCode: 'forceCleanupPathUnavailable' })],
+    await expect(dependencies.captureEvidence(intent)).rejects.toMatchObject({
+      code: 'forceCleanupPathUnavailable',
     });
     await expect(statusCommandV7({
       plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,

@@ -27,6 +27,10 @@ import {
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import {
+  resolvePluginConfigStorePath,
+  writePluginConfigStore,
+} from '../../src/utils/plugin-config.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
 
@@ -212,6 +216,49 @@ describe('TUI config affected targets', () => {
 });
 
 describe('TUI controller runtime scope conflict validation', () => {
+  it('loads recognizable saved settings without a current Catalog plugin', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await writePluginConfigStore({
+      sourceId: 'removed',
+      sourceIdentity: 'identity:removed',
+      logicalIdentity: 'workspace:removed',
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { enabled: true },
+    });
+    const brokenPath = resolvePluginConfigStorePath({
+      sourceId: 'removed', pluginName: 'broken', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await fs.ensureDir(path.dirname(brokenPath));
+    await fs.writeFile(brokenPath, '{broken');
+    const catalogConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        schemaVersion: 7,
+        catalog: {
+          primarySourceId: 'official', configDigest: catalogConfig.digest,
+          compositeDigest: 'sha256:composite', sources: [],
+        },
+        filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd },
+        targets: [], errors: [],
+      },
+      pluginSummaries: [], targetRevisions: [],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+
+    await expect(dependencies.loadStatus(new AbortController().signal)).resolves.toMatchObject({
+      configStoreInventory: [
+        { pluginId: 'removed/broken', sourceId: 'removed', pluginName: 'broken', scope: 'user' },
+        { pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user' },
+      ],
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1938,5 +1985,100 @@ describe('TUI controller runtime scope conflict validation', () => {
     await expect(runtime.managedCodexAuthorizer()).resolves.toBe(true);
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
+  });
+
+  it('binds reviewed force cleanup to one exact shallow exclusive candidate', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-force-review-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        schemaVersion: 7,
+        catalog: {
+          primarySourceId: 'team', configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+          sources: [{
+            id: 'team', identity: 'identity:team', type: 'path', primary: true,
+            requestedRef: 'path', freshness: 'active',
+          }],
+        },
+        filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd },
+        targets: [{ ...target('user', 'error'), pluginId: 'team/demo', sourceId: 'team' }],
+        errors: [],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
+        dependencyDirectCount: 0, dependencyTotalCount: 0,
+      }],
+      targetRevisions: [],
+    });
+    const forceEvidence = {
+      reason: 'bundleUnavailable' as const,
+      pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
+      sourceIdentity: 'identity:team', platform: 'codex' as const, scope: 'user' as const,
+      forceExclusive: true as const,
+      plan: {
+        schemaVersion: 1 as const, pluginId: 'team/demo', sourceIdentity: 'identity:team',
+        platform: 'codex' as const, scope: 'user' as const,
+        actions: [{
+          action: 'removeOwnedOutput' as const, kind: 'skill-directory' as const,
+          target: '/owned/demo',
+        }],
+      },
+      planDigest: 'sha256:force', targetFingerprint: 'sha256:force',
+    };
+    runtimeMocks.cleanupWriteCommand.mockResolvedValue({
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+      overallState: 'succeeded', receiptTargets: [], offlineCleanupPlans: [forceEvidence],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const, action: 'cleanup' as const,
+      pluginId: 'team/demo', platform: 'codex' as const, scope: 'user' as const, force: true,
+    };
+
+    const reviewedEvidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(reviewedEvidence).toMatchObject({ offlineCleanup: forceEvidence });
+
+    const changedPlan = {
+      ...forceEvidence.plan,
+      actions: [{
+        action: 'removeOwnedOutput' as const,
+        kind: 'skill-directory' as const,
+        target: '/owned/changed-demo',
+      }],
+    };
+    runtimeMocks.cleanupWriteCommand.mockResolvedValueOnce({
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+      overallState: 'succeeded', receiptTargets: [],
+      offlineCleanupPlans: [{
+        ...forceEvidence,
+        plan: changedPlan,
+        planDigest: 'sha256:changed-force',
+        targetFingerprint: 'sha256:changed-force',
+      }],
+    });
+    await expect(dependencies.executeIntent(intent, reviewedEvidence))
+      .rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledTimes(2);
+
+    runtimeMocks.cleanupWriteCommand.mockResolvedValueOnce({
+      platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+      overallState: 'failed', receiptTargets: [], offlineCleanupPlans: [],
+    });
+    await expect(dependencies.captureEvidence(intent, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'forceCleanupPathUnavailable' });
   });
 });
