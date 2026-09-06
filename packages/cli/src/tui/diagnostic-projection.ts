@@ -30,7 +30,7 @@ const SAFE_ERROR_CODES = new Set([
   'catalogGitAuthorizationFailed', 'catalogGitExecutableMissing', 'catalogGitTimedOut',
   'managedCodexAuthorizationRequired', 'managedCodexUnavailable',
   'nativeCliExecutableMissing', 'nativeCliFailed', 'nativeCliTimedOut',
-  'preApplyExecutableMissing', 'preApplyExited', 'preApplyStartFailed', 'preApplyTimedOut',
+  'preApplyExecutableMissing', 'preApplyExited', 'preApplyInputFailed', 'preApplyStartFailed', 'preApplyTimedOut',
   'tuiStateReloadFailed', 'issueVerificationFailed',
 ]);
 
