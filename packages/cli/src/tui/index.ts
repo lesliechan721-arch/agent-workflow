@@ -54,12 +54,32 @@ export {
   type SaveOperationReportResult,
 } from './operation-history.js';
 export {
+  TUI_GLOBAL_ACTIONS,
+  resolveTuiGlobalKeyAction,
   resolveTuiKeyAction,
   resolveTuiSessionNavigationKey,
+  type TuiGlobalKeyAction,
   type TuiInputMode,
   type TuiKeyContext,
   type TuiSessionNavigationKeyAction,
 } from './keys.js';
+export {
+  TUI_ROUTE_DEFINITIONS,
+  TUI_SCREEN_IDS,
+  normalizeTuiRoute,
+  resolveRouteScreenId,
+  routeDefinition,
+  routeSupportsCharacterInput,
+  unreachableTuiRoute,
+  type RouteEntityState,
+  type RouteScreenContext,
+  type ScreenDefinition,
+  type TuiRendererFamily,
+  type TuiRouteEntity,
+  type TuiRouteKeymap,
+  type TuiRouteName,
+  type TuiScreenId,
+} from './screen-registry.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export {
   loadCatalogGenerationViewModels,

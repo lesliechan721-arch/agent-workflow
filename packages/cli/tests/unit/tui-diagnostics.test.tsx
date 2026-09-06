@@ -3,7 +3,7 @@ import os from 'node:os';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { DiagnosticSummary } from '../../src/tui/components.js';
+import { DiagnosticSummary, diagnosticDetailRowCount } from '../../src/tui/components.js';
 import {
   safeDiagnosticCode,
   sanitizeDiagnosticCause,
@@ -48,7 +48,7 @@ describe('TUI diagnostic projection', () => {
     };
 
     const product = render(<DiagnosticSummary diagnostic={diagnostic} />).lastFrame() ?? '';
-    const technical = render(<DiagnosticSummary diagnostic={diagnostic} technical />).lastFrame() ?? '';
+    const technical = render(<DiagnosticSummary diagnostic={diagnostic} technical compact offset={0} limit={6} />).lastFrame() ?? '';
     const output = `${product}\n${technical}`;
 
     expect(technical).toContain('catalogSourceUnavailable');
@@ -76,5 +76,43 @@ describe('TUI diagnostic projection', () => {
     expect(sanitizeDiagnosticCause('git fetch returned an error')).toBeUndefined();
     expect(sanitizeDiagnosticCause('token=cause-secret')).toBeUndefined();
     expect(sanitizeDiagnosticCause('已验证缓存不可用')).toBe('已验证缓存不可用');
+  });
+
+  it('paginates all safe diagnostic fields and checks in real Ink output', () => {
+    const diagnostic: DiagnosticSummaryViewModel = {
+      severity: 'error',
+      title: '来源不可用',
+      userMessage: '无法读取来源。',
+      impact: [],
+      nextStep: '检查来源。',
+      technical: {
+        code: 'catalogSourceUnavailable',
+        stage: 'resolve-source',
+        sourceId: 'team-tools',
+        requestedRef: 'refs/heads/release-v5',
+        resolvedCommit: '0123456789abcdef0123456789abcdef01234567',
+        context: [
+          { key: 'platform', value: 'codex' },
+          { key: 'scope', value: 'project' },
+        ],
+        sanitizedCause: '已验证缓存不可用',
+        checks: ['检查网络连接。', '重新检查来源。', '升级 AW 后重试。'],
+      },
+    };
+
+    const total = diagnosticDetailRowCount(diagnostic);
+    const first = render(<DiagnosticSummary diagnostic={diagnostic} technical offset={0} limit={3} />).lastFrame() ?? '';
+    const last = render(<DiagnosticSummary diagnostic={diagnostic} technical offset={total - 2} limit={3} />).lastFrame() ?? '';
+
+    expect(total).toBe(11);
+    expect(first).toContain('code');
+    expect(first).toContain('stage');
+    expect(first).toContain('sourceId');
+    expect(first).toContain('↓ 后面还有 8 项');
+    expect(first).not.toContain('建议 3');
+    expect(last).toContain('↑ 前面还有 9 项');
+    expect(last).toContain('建议 2');
+    expect(last).toContain('建议 3');
+    expect(last).not.toContain('↓ 后面还有');
   });
 });

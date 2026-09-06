@@ -205,7 +205,7 @@ describe('TUI plugin write batches', () => {
       expect.objectContaining({ pluginId: 'official/root-b', relation: 'requested', sourceId: 'official' }),
       expect.objectContaining({ pluginId: 'official/dependency', relation: 'direct', sourceId: 'official' }),
       expect.objectContaining({ title: 'preApply 脚本超时', description: '12000 ms' }),
-      expect.objectContaining({ title: '获取 Codex runtime' }),
+      expect.objectContaining({ title: '获取 Codex 运行组件' }),
     ]));
   });
 
@@ -1926,9 +1926,9 @@ describe('TUI v4 router and ViewModel', () => {
 
     const issue = view.issues[0]!;
     expect(issue).toMatchObject({
-      title: expect.stringContaining('共享 native 待同步'),
+      title: expect.stringContaining('平台共享内容待同步'),
       explanation: expect.stringContaining('个人默认已变化'),
-      impact: [expect.stringContaining('不是 cache 损坏')],
+      impact: [expect.stringContaining('不是缓存损坏')],
       technicalDetails: [{
         code: 'codexSharedNativeRenderDrift',
         message: '状态检查报告了这个安全错误代码。',
@@ -2272,10 +2272,10 @@ describe('TUI v4 router and ViewModel', () => {
         issueId: expect.stringContaining('bundleUnavailable'),
         pluginId: 'official/offline', category: 'sourceUnavailable',
         rootCode: 'bundleUnavailable', mergeEligible: false,
-        title: expect.stringContaining('当前 Catalog 不再包含此插件'),
-        explanation: '当前 Catalog 不再包含此插件，但仍发现 AW 管理的已安装内容。',
+        title: expect.stringContaining('当前插件目录不再包含此插件'),
+        explanation: '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。',
         actions: expect.arrayContaining([
-          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理 AW-owned 内容' }),
+          expect.objectContaining({ id: 'cleanup', writeAction: 'cleanup', label: '清理 AW 管理内容' }),
         ]),
       }),
     ]));
@@ -3148,7 +3148,7 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       group: 'sharedCodexNative',
       kind: 'keep',
-      description: '复用已存在的精确 shared native；不建立 ownership ledger',
+      description: '复用完全相同的平台共享内容',
     }));
     expect(JSON.stringify(review.changes)).not.toContain('claim');
   });
@@ -3188,7 +3188,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(review.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        kind: 'remove', title: '移除 AW-owned 输出',
+        kind: 'remove', title: '移除 AW 管理输出',
         description: '/workspace/.codex/owners/demo.json',
       }),
       expect.objectContaining({
@@ -3224,8 +3224,8 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       kind: 'add',
       group: 'runtime',
-      title: '获取 Codex runtime',
-      description: '@openai/codex@0.151.0 · AW-managed 缓存',
+      title: '获取 Codex 运行组件',
+      description: '@openai/codex@0.151.0 · AW 管理缓存',
     }));
     expect(review.equivalentCommand).toContain('--allow-managed-codex-install');
     expect(operationEvidenceFingerprint(evidence)).toBe(operationEvidenceFingerprint({
@@ -4413,6 +4413,22 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
   });
 
+  it('normalizes missing source ancestors and missing history records after reload', async () => {
+    const loaded = { payload: status(), pluginSummaries: summaries(['official', 'demo']) };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+    }));
+    await controller.load();
+    controller.push({ name: 'sourceTechnical', sourceId: 'removed' });
+    controller.push({ name: 'operationDiagnostic', recordId: 'removed-record' });
+
+    await controller.load();
+
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    controller.back();
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceList' });
+  });
+
   it('normalizes a deleted plugin return route for blocked and stale results', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:changed' };
     const controller = new TuiController(dependencies({
@@ -4675,8 +4691,8 @@ describe('TUI v4 Review safety', () => {
   });
 
   it.each([
-    [false, ['共享 Codex native render 待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
-    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新共享 Codex native 插件会影响所有启用项目。'],
+    [false, ['Codex 平台共享内容待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
+    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新 Codex 平台共享内容会影响所有启用项目。'],
   ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,
@@ -4708,7 +4724,7 @@ describe('TUI v4 Review safety', () => {
       .map((change) => change.title)).toEqual(impactTitles);
     expect(review.changes).toContainEqual(expect.objectContaining({ description }));
     expect(review.changes).toContainEqual(expect.objectContaining({
-      title: 'project Agent role 继续按当前项目配置', kind: 'keep',
+      title: '当前项目 Agent role 继续使用当前项目配置', kind: 'keep',
     }));
     expect(review).toMatchObject({
       requiresConfirmation: apply,
@@ -5095,7 +5111,7 @@ describe('TUI v4 Review safety', () => {
 
     expect(review).toMatchObject({
       title: '保存自动检查设置',
-      description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+      description: '只保存自动检查设置；当前启用版本和本地目录副本保持不变。',
       primaryLabel: '保存设置',
       changes: [expect.objectContaining({
         title: '自动检查更新', description: '开启 → 关闭',
@@ -5196,7 +5212,7 @@ describe('TUI v4 Review safety', () => {
       requiresConfirmation: true,
       changes: expect.arrayContaining([expect.objectContaining({
         title: '切换主来源会影响现有引用',
-        description: '1 项；切换将在 Catalog 启用后执行。',
+        description: '1 项；切换将在插件目录启用后执行。',
       })]),
       sharedImpact: { pluginIds: ['official/demo'] },
     });

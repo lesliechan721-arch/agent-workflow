@@ -16,8 +16,11 @@ describe('operation planner', () => {
     });
 
     expect(actions).toContainEqual(expect.objectContaining({
-      id: 'refreshAndSync', availableVersion: '2.0.0', refreshBeforeReview: true,
+      id: 'refreshAndSync', reason: 'newActiveVersion',
+      availableVersion: '2.0.0', refreshBeforeReview: true,
     }));
+    expect(actions[0]).not.toHaveProperty('label');
+    expect(actions[0]).not.toHaveProperty('description');
     expect(actions.map((action) => action.id)).not.toContain('upgrade');
   });
 
@@ -27,6 +30,7 @@ describe('operation planner', () => {
       recoveryActions: [{ command: 'cleanup', scope: 'user', description: 'cleanup leaf' }],
     })).toEqual([expect.objectContaining({
       id: 'cleanup', pluginId: 'official/leaf', platform: 'codex', scope: 'user',
+      reason: 'statusRecovery',
     })]);
   });
 
@@ -34,7 +38,9 @@ describe('operation planner', () => {
     expect(buildAllowedLifecycleActions({
       pluginId: 'official/leaf', platform: 'codex', scope: 'project', state: 'needsSync',
       recoveryActions: [{ command: 'reinstall', scope: 'user', description: 'repair user target' }],
-    })).toEqual([expect.objectContaining({ id: 'reinstall', scope: 'user' })]);
+    })).toEqual([expect.objectContaining({
+      id: 'reinstall', scope: 'user', reason: 'statusRecovery',
+    })]);
   });
 
   it('offers save and save-and-apply only for a changed config draft', () => {

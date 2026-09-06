@@ -8,17 +8,6 @@ export type PortableBlockerCode =
   | 'portableValidationFailed';
 
 export type PluginInstallFilter = 'all' | 'uninstalled';
-export type CatalogActivationBlockReason =
-  | 'configDraft'
-  | 'sourceDraft'
-  | 'batchDraft'
-  | 'portableDraft'
-  | 'activeReview'
-  | 'reviewPreparation'
-  | 'writeProgress'
-  | 'sourceMutationProgress'
-  | 'refreshProgress';
-
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
@@ -142,17 +131,6 @@ export type TuiRoute =
   | { name: 'configSave'; pluginId: string; layer: { scope: Scope } }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
-  | { name: 'catalogCandidate'; sourceId: string }
-  | { name: 'catalogRefreshPolicy'; sourceId: string }
-  | { name: 'catalogRefresh'; sourceId: string }
-  | { name: 'catalogImmutableViolation'; sourceId: string }
-  | {
-      name: 'catalogActivationBlocked';
-      sourceId: string;
-      reason: CatalogActivationBlockReason;
-      operation?: 'reload';
-      preservedLabel?: string;
-    }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'operationHistory' }
@@ -249,6 +227,30 @@ export class TuiRouter {
   updateContext(update: Partial<TuiPageContext>): TuiRouterSnapshot {
     const current = this.#stack.at(-1)!;
     current.context = { ...current.context, ...update };
+    return this.snapshot;
+  }
+
+  normalizeRoutes(normalize: (route: TuiRoute) => TuiRoute): TuiRouterSnapshot {
+    const normalizedFrames: Array<{ frame: NavigationFrame; changed: boolean }> = [];
+    const remappedFrameIds = new Map<string, string>();
+    for (const frame of this.#stack) {
+      const normalizedRoute = normalize(frame.route);
+      const changed = JSON.stringify(normalizedRoute) !== JSON.stringify(frame.route);
+      const normalizedFrame = structuredClone({ ...frame, route: normalizedRoute });
+      const previous = normalizedFrames.at(-1);
+      if (previous && (previous.changed || changed)
+        && JSON.stringify(previous.frame.route) === JSON.stringify(normalizedRoute)) {
+        remappedFrameIds.set(frame.id, previous.frame.id);
+        previous.changed = true;
+        continue;
+      }
+      normalizedFrames.push({ frame: normalizedFrame, changed });
+    }
+    this.#stack.splice(0, this.#stack.length, ...normalizedFrames.map(({ frame }) => frame));
+    for (const flow of this.#flows.values()) {
+      flow.originFrameId = remappedFrameIds.get(flow.originFrameId) ?? flow.originFrameId;
+      flow.returnTarget = structuredClone(normalize(flow.returnTarget));
+    }
     return this.snapshot;
   }
 

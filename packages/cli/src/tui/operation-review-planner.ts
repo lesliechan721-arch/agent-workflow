@@ -17,6 +17,7 @@ import {
   SCRIPT_TIMEOUT_DEFAULT_MS,
 } from '../commands/options.js';
 import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
+import { platformLabel, scopeLabel } from './glossary.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -63,7 +64,7 @@ function sourceMutationReviewChanges(
           : `固定 ref · ${source.refPolicy.ref}`,
       }, {
         kind: 'add' as const,
-        title: 'Catalog 子目录',
+        title: '插件目录子目录',
         description: source.subdir ?? '根目录',
       }] : []),
       {
@@ -90,7 +91,7 @@ function sourceMutationReviewChanges(
   });
   if ('subdir' in update && update.subdir !== undefined) changes.push({
     kind: 'change',
-    title: 'Catalog 子目录',
+    title: '插件目录子目录',
     description: update.subdir ?? '根目录',
   });
   if ('autoCheck' in update && update.autoCheck !== undefined) changes.push({
@@ -109,7 +110,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
 } {
   if (intent.kind === 'catalogSourcesRecovery') {
     return {
-      title: '恢复 Catalog 来源配置',
+      title: '恢复插件目录来源配置',
       description: '备份损坏配置，并恢复唯一的主来源 official。',
       primaryLabel: '备份并恢复官方默认来源',
       destructive: false,
@@ -143,7 +144,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   if (intent.kind === 'pluginWrite' && intent.dependencyPlacementAdjustment) {
     return {
       title: '调整依赖位置',
-      description: '按最终依赖位置更新 desired intent，并应用非破坏性变更。',
+      description: '保存最终的依赖使用位置，并应用非破坏性变更。',
       primaryLabel: '应用依赖位置',
       destructive: false,
     };
@@ -175,11 +176,11 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     }
     const labels: Record<PluginWriteOperation, [string, string, boolean]> = {
       install: ['添加插件', '添加所选平台和使用位置。', false],
-      refreshAndSync: ['刷新并同步', '刷新相关来源后，使用新的 Active 内容同步所选安装。', false],
+      refreshAndSync: ['刷新并同步', '刷新相关来源后，使用新的当前启用版本同步所选安装。', false],
       reinstall: ['重新安装插件', '清理 AW 管理的内容后完整重建。', true],
       uninstall: ['移除插件', '移除 AW 管理的安装内容。配置保持不变。', true],
       cleanup: ['清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。', true],
-      sync: ['同步插件', '按已保存的 desired intent 修复当前现场。', false],
+      sync: ['同步插件', '按已保存使用设置修复当前使用位置。', false],
     };
     const [title, description, destructive] = labels[intent.action];
     return { title, description, primaryLabel: title, destructive };
@@ -216,7 +217,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     if (autoCheck !== undefined) {
       return {
         title: '保存自动检查设置',
-        description: '只保存自动检查设置；Active Catalog 和 Catalog store 保持不变。',
+        description: '只保存自动检查设置；当前启用版本和本地目录副本保持不变。',
         primaryLabel: '保存设置',
         destructive: false,
       };
@@ -233,18 +234,18 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   if (intent.kind === 'catalogGeneration') {
     if (intent.action === 'update' && evidence?.catalogGeneration?.exactRepair) {
       return {
-        title: '验证并精确修复 Catalog',
-        description: '候选与当前 Active store key 相同。精确替换损坏条目，并保留 Active 身份。',
+        title: '验证并精确修复插件目录',
+        description: '待检查版本与当前启用版本的技术标识相同。精确替换损坏内容，并保留当前启用版本。',
         primaryLabel: '验证并精确修复',
         destructive: false,
       };
     }
     const labels = {
-      activate: ['获取并启用 Catalog', '验证候选后启用。不会升级已安装 Plugin，也不会修改其他来源。', '获取并启用'],
-      update: ['验证并切换 Catalog', '验证候选后切换 Active。失败时保留旧 Active。', '验证并切换'],
-      repair: ['重新下载并修复 Catalog', '只修复这个来源的 Active 条目，不删除其他 digest。', '重新下载并修复'],
-      replaceDamaged: ['替换损坏的 Active Catalog', '使用当前候选替换无法精确修复的 Active。失败时保留旧 Active。', '确认并替换'],
-      recoverState: ['恢复 Catalog 状态并启用', '重建无效 generation state，并只激活已确认的目标来源。来源配置和 Catalog store 保持不变。', '恢复状态并启用'],
+      activate: ['获取并启用插件目录', '检查待检查版本后启用。不会升级已安装插件，也不会修改其他来源。', '获取并启用'],
+      update: ['检查并切换插件目录', '检查待检查版本后切换当前启用版本。失败时保留原当前启用版本。', '检查并切换'],
+      repair: ['重新下载并修复插件目录', '只修复这个来源的当前启用版本，不删除其他目录版本副本。', '重新下载并修复'],
+      replaceDamaged: ['替换损坏的当前启用版本', '使用待检查版本替换无法精确修复的当前启用版本。失败时保留原版本。', '确认并替换'],
+      recoverState: ['恢复插件目录状态并启用', '重建无效的目录版本状态，并只启用已确认的目标来源。来源配置和本地目录副本保持不变。', '恢复状态并启用'],
     } as const;
     const [title, description, primaryLabel] = labels[intent.action];
     return { title, description, primaryLabel, destructive: false };
@@ -316,13 +317,13 @@ function reviewChanges(
           kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
           group: 'runtime',
           title: evidence.codexManager.state === 'requires-install'
-            ? '获取 Codex runtime'
-            : 'Codex runtime',
+            ? '获取 Codex 运行组件'
+            : 'Codex 运行组件',
           description: evidence.codexManager.state === 'requires-install'
-            ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · AW-managed 缓存`
+            ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · AW 管理缓存`
             : evidence.codexManager.state === 'cached'
-              ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW-managed 缓存`
-              : `使用兼容的 system Codex ${evidence.codexManager.version}`,
+              ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW 管理缓存`
+              : `使用兼容的系统 Codex ${evidence.codexManager.version}`,
         } satisfies OperationReviewChange]
       : []),
     ];
@@ -334,22 +335,29 @@ function reviewChanges(
         pluginId: action.pluginId,
         title: action.codexPluginId,
         description: action.action === 'reuse'
-          ? '复用已存在的精确 shared native；不建立 ownership ledger'
-          : `${action.action} · shared${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
+          ? '复用完全相同的平台共享内容'
+          : `${({
+              install: '添加',
+              update: '更新',
+              repair: '修复',
+              replace: '替换',
+              remove: '移除',
+              none: '保持不变',
+            } as const)[action.action]}平台共享内容${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
       })),
       ...codexPlan.activationActions.user.map((action): OperationReviewChange => ({
         kind: action.action === 'none' ? 'keep' : action.desired ? 'change' : 'remove',
         group: 'userActivation',
         pluginId: action.pluginId,
         title: action.codexPluginId,
-        description: `desired=${String(action.desired)} · ${action.action}`,
+        description: `${action.desired ? '启用' : '停用'}所有项目位置 · ${action.action === 'none' ? '保持不变' : '将更新'}`,
       })),
       ...codexPlan.activationActions.project.map((action): OperationReviewChange => ({
         kind: action.action === 'none' ? 'keep' : action.desired ? 'change' : 'remove',
         group: 'projectActivation',
         pluginId: action.pluginId,
         title: action.codexPluginId,
-        description: `desired=${String(action.desired)} · ${action.action}`,
+        description: `${action.desired ? '启用' : '停用'}当前项目位置 · ${action.action === 'none' ? '保持不变' : '将更新'}`,
       })),
       ...[...codexPlan.extensionWrites, ...codexPlan.extensionRemovals]
         .map((action): OperationReviewChange => ({
@@ -357,7 +365,7 @@ function reviewChanges(
           group: 'awExtensions',
           pluginId: action.pluginId,
           title: action.componentKey,
-          description: `${action.scope} · ${action.action}`,
+          description: `${scopeLabel(action.scope)} · ${action.action === 'write' ? '写入' : '移除'}`,
         })),
     ]);
     const plan = evidence?.dependencyPlan;
@@ -371,7 +379,7 @@ function reviewChanges(
           pluginId: target.pluginId,
           relation,
           title: pluginNameFromId(target.pluginId),
-          description: `${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.resolvedScope === 'user' ? '所有项目' : '当前项目'}${target.action === 'keep' ? ' · 已可用' : ''}${target.assignmentSource === 'existingWiderTarget' ? ' · 复用健康的所有项目安装' : target.assignmentSource === 'consumerPromotion' ? ' · 随上游依赖一并调整' : ''}`,
+          description: `${platformLabel(target.platform)} · ${scopeLabel(target.resolvedScope)}${target.action === 'keep' ? ' · 已可用' : ''}${target.assignmentSource === 'existingWiderTarget' ? ' · 复用健康的所有项目安装' : target.assignmentSource === 'consumerPromotion' ? ' · 根据依赖自动扩大范围' : ''}`,
         };
       });
       changes.push({
@@ -381,7 +389,7 @@ function reviewChanges(
           ? '根插件和插件设置保持不变'
           : '插件设置和已有依赖保持不变',
         description: intent.dependencyPlacementAdjustment
-          ? '这里只调整所列 dependency placement。'
+          ? '这里只调整所列依赖使用位置。'
           : '移除根插件时不会自动清理依赖。',
       });
       return [...changes, ...codexChanges, ...runtimeChanges];
@@ -394,14 +402,14 @@ function reviewChanges(
       group: 'requested',
       pluginId: intent.pluginId,
       relation: 'requested',
-      title: `${platform === 'codex' ? 'Codex' : 'Claude Code'} · ${intent.scope === 'user' ? '所有项目' : '当前项目'}`,
+      title: `${platformLabel(platform)} · ${scopeLabel(intent.scope)}`,
       description: intent.action === 'uninstall' || intent.action === 'cleanup'
         ? '插件设置不会删除。'
         : '执行前会再次检查当前安装状态。',
     }));
     if (intent.action === 'cleanup' && evidence?.offlineCleanup) {
       const actionLabels: Record<OfflineCleanupTargetEvidence['plan']['actions'][number]['action'], string> = {
-        removeOwnedOutput: '移除 AW-owned 输出',
+        removeOwnedOutput: '移除 AW 管理输出',
         removeNativeRegistration: '移除原生插件注册',
       };
       changes.push(...evidence.offlineCleanup.plan.actions.map((action): OperationReviewChange => ({
@@ -440,8 +448,8 @@ function reviewChanges(
       changes.push({
         kind: 'warning',
         group: 'preserved',
-        title: `后续：${intent.scope === 'user' ? '当前项目' : '所有项目'} sync`,
-        description: intent.recoveryDescription,
+        title: `后续：同步${intent.scope === 'user' ? '当前项目' : '所有项目'}位置`,
+        description: '完成此操作后，同步要保留的使用位置。',
       });
     }
     return [...changes, ...codexChanges, ...runtimeChanges];
@@ -500,74 +508,74 @@ function reviewChanges(
   if (intent.kind === 'catalogGeneration') {
     const generation = evidence?.catalogGeneration;
     if (!generation) {
-      throw plannerError('catalogGenerationUnavailable', '缺少 Catalog 候选证据。');
+      throw plannerError('catalogGenerationUnavailable', '缺少插件目录待检查版本证据。');
     }
     return [
       ...(generation.previousActive ? [{
         kind: 'keep' as const,
         title: generation.previousActiveVersion
-          ? `当前 Active Catalog ${generation.previousActiveVersion}` : '当前 Active',
+          ? `当前启用版本 ${generation.previousActiveVersion}` : '当前启用版本',
         description: `${generation.previousActive.resolvedCommit.slice(0, 8)} · ${generation.previousActive.snapshotDigest.slice(0, 15)}`,
       }] : []),
       {
         kind: intent.action === 'activate' ? 'add' as const : 'change' as const,
         title: generation.exactRepair
-          ? `精确修复候选 Catalog ${generation.candidate.catalogVersion}`
-          : `候选 Catalog ${generation.candidate.catalogVersion}`,
+          ? `精确修复待检查版本 ${generation.candidate.catalogVersion}`
+          : `待检查版本 ${generation.candidate.catalogVersion}`,
         description: `${generation.candidate.resolvedCommit.slice(0, 8)} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
       },
       ...(generation.exactRepair ? [{
         kind: 'change' as const,
-        title: '精确替换损坏的 Active 条目',
-        description: 'logical identity、snapshot digest、manifest digest 和 commit 保持不变。',
+        title: '精确替换损坏的当前启用版本',
+        description: '版本和内容的技术标识保持不变。',
       }] : []),
       ...(intent.action === 'replaceDamaged' ? [{
         kind: 'warning' as const,
-        title: '使用当前候选替换损坏的 Active',
-        description: '旧版本无法安全比较；确认后只切换到本次绑定的当前候选。',
+        title: '使用待检查版本替换损坏的当前启用版本',
+        description: '旧版本无法安全比较；确认后只切换到本次已检查的版本。',
       }] : []),
       ...(generation.sourceMutation ? sourceMutationReviewChanges(generation.sourceMutation) : []),
       ...(generation.explicitSourceChange && generation.candidateRelation === 'rollbackDetected' ? [{
         kind: 'warning' as const,
-        title: '显式来源切换将降低 Catalog 版本',
+        title: '来源切换将降低插件目录版本',
         description: `${generation.previousActiveVersion ?? '当前版本'} → ${generation.candidate.catalogVersion}`,
       }] : generation.explicitSourceChange && generation.candidateRelation === 'versionConflict' ? [{
         kind: 'warning' as const,
-        title: '显式来源切换包含同版本不同内容',
+        title: '来源切换包含同版本不同内容',
         description: `${generation.candidate.catalogVersion} · ${generation.candidate.snapshotDigest.slice(0, 15)}`,
       }] : generation.explicitSourceChange && generation.candidateRelation === 'incompatible' ? [{
         kind: 'warning' as const,
-        title: '显式来源切换将改变 Catalog logical identity',
-        description: '确认前请核对新来源身份和候选摘要。',
+        title: '来源切换将改变插件目录身份',
+        description: '确认前请核对新来源身份和待检查版本摘要。',
       }] : []),
       ...((generation.impact?.affectedReferences ?? []).length > 0 ? [{
         kind: 'warning' as const,
-        title: '现有引用受候选变化影响',
+        title: '现有引用受待检查版本影响',
         description: `${generation.impact!.affectedReferences.length} 项；已安装插件不会自动修改。`,
       }] : []),
       ...(generation.impact && !generation.impact.inventoryComplete ? [{
         kind: 'warning' as const,
-        title: '候选影响未知',
-        description: '部分状态或旧 Manifest 无法读取；不能把影响视为零。',
+        title: '待检查版本的影响未知',
+        description: '部分状态或旧插件定义无法读取；不能把影响视为零。',
       }] : []),
       ...((generation.primaryImpact?.affectedReferences ?? []).length > 0 ? [{
         kind: 'warning' as const,
         title: '切换主来源会影响现有引用',
-        description: `${generation.primaryImpact!.affectedReferences.length} 项；切换将在 Catalog 启用后执行。`,
+        description: `${generation.primaryImpact!.affectedReferences.length} 项；切换将在插件目录启用后执行。`,
       }] : []),
       ...(generation.primaryImpact && !generation.primaryImpact.inventoryComplete ? [{
         kind: 'warning' as const,
         title: '主来源切换影响未知',
         description: '部分状态无法读取；不能把影响视为零。',
       }] : []),
-      { kind: 'keep', title: '不会升级已安装 Plugin' },
+      { kind: 'keep', title: '不会升级已安装插件' },
       { kind: 'keep', title: intent.action === 'recoverState'
-        ? '不会修改其他来源配置或 store' : '不会修改其他来源' },
-      { kind: 'keep', title: '失败时保留旧 Active' },
+        ? '不会修改其他来源配置或本地目录副本' : '不会修改其他来源' },
+      { kind: 'keep', title: '失败时保留原当前启用版本' },
       ...(intent.action === 'recoverState' ? [{
         kind: 'warning' as const,
-        title: '无效 state 中的其他 Active 指针不会被信任或保留',
-        description: '其他来源配置和 store 内容不会删除；可分别重新启用。',
+        title: '无效状态中的其他当前启用版本记录不会保留',
+        description: '其他来源配置和本地目录副本不会删除；可分别重新启用。',
       }] : []),
     ];
   }
@@ -603,19 +611,19 @@ function reviewChanges(
             {
               kind: 'change', group: 'configImpact',
               title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} 动态 Skill`,
-              description: '配置来源为个人默认；更新共享 Codex native 插件会影响所有启用项目。',
+              description: '配置来源为个人默认；更新 Codex 平台共享内容会影响所有启用项目。',
             },
-            { kind: 'keep', group: 'preserved', title: '保留当前 user/project activation' },
-            { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
+            { kind: 'keep', group: 'preserved', title: '保留所有项目和当前项目的启用位置' },
+            { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
           ]
         : [
             {
               kind: 'warning', group: 'configImpact',
-              title: '共享 Codex native render 待同步',
+              title: 'Codex 平台共享内容待同步',
               description: '个人默认已保存；动态 Skill 尚未重新生成。',
             },
-            { kind: 'keep', group: 'preserved', title: '当前 native 插件和 activation 保持不变' },
-            { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
+            { kind: 'keep', group: 'preserved', title: '当前平台共享内容和启用位置保持不变' },
+            { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
           ];
     return [
       ...scriptTimeoutChanges(intent),

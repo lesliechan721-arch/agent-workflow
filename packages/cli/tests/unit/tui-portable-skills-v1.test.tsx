@@ -219,6 +219,57 @@ describe('Portable Skills TUI V1', () => {
     expect(onSessionNavigation).not.toHaveBeenCalled();
   });
 
+  it('keeps the Portable draft under read-only operation history routes', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
+    const selectedCount = value.snapshot.portableDraft?.selectedCount;
+    const recordId = value.recordSafeUiFailure('testFailure', 'test');
+
+    value.push({ name: 'operationHistory' });
+    value.push({ name: 'operationDiagnostic', recordId });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+    value.back();
+    value.push({ name: 'operationReportPreview', recordId });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+    value.back();
+    value.back();
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'portableAgentMode', pluginId: 'official/toolkit',
+    });
+    expect(value.snapshot.portableDraft?.selectedCount).toBe(selectedCount);
+
+    value.push({ name: 'home' });
+    expect(value.snapshot.portableDraft).toBeUndefined();
+  });
+
+  it('returns from help history to the same Portable selection without losing the draft', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.togglePortableSkill('review-skill');
+    value.push({ name: 'portableAgentMode', pluginId: 'official/toolkit' });
+    value.recordSafeUiFailure('testFailure', 'test');
+    const selected = value.snapshot.portableDraft?.candidates
+      .filter((candidate) => candidate.selected).map((candidate) => candidate.name);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await tick(2);
+
+    await send(instance, '?', 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    await send(instance, '\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'portableAgentMode', pluginId: 'official/toolkit',
+    });
+    expect(value.snapshot.portableDraft?.candidates
+      .filter((candidate) => candidate.selected).map((candidate) => candidate.name)).toEqual(selected);
+    expect(instance.lastFrame()).toContain('安装到哪些 Agent？');
+  });
+
   it.each(['portable', 'dependency'] as const)(
     'keeps the %s draft when h opens the default continue-editing guard',
     async (owner) => {
@@ -859,7 +910,7 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toContain('安装已选择的 3 个 Skills');
     expect(frame).toContain('验证结果');
     expect(frame).toContain('Toolkit · 1 个直接依赖');
-    expect(frame).toContain('2 个 provider 提供 3 个 Skills');
+    expect(frame).toContain('2 个来源或依赖插件提供 3 个 Skills');
     expect(frame).toContain('正在生成');
     expect(frame.match(/未开始/gu)).toHaveLength(2);
     expect(frame.match(/[✓●○×] /gu)).toHaveLength(4);
@@ -971,6 +1022,11 @@ describe('Portable Skills TUI V1', () => {
     expect(frame).toContain('d 技术详情');
     expect(frame).toContain('? 帮助');
     expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+
+    for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[6~');
+    expect(instance.lastFrame()).toContain('result-skill-8');
+    expect(instance.lastFrame()).toContain('↑ 前面还有');
+    for (let page = 0; page < 12; page += 1) await send(instance, '\u001B[5~');
 
     for (const label of ['重试', '返回插件预览']) {
       await send(instance, '\u001B[B');
@@ -1154,9 +1210,14 @@ describe('Portable Skills TUI V1', () => {
     for (const [index, label] of [value.snapshot.activeReview!.primaryLabel, '返回修改'].entries()) {
       if (index > 0) await send(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
-      expect(frame).toContain('同名覆盖');
-      expect(frame).toContain('安装目标 · ~ Agent');
-      expect(frame).toContain('安装目标 · ~ 范围');
+      let allPages = frame;
+      for (let page = 0; page < 15; page += 1) {
+        await send(instance, '\u001B[6~');
+        allPages += instance.lastFrame() ?? '';
+      }
+      expect(allPages).toContain('同名覆盖');
+      expect(allPages).toContain('安装目标 · ~ Agent');
+      expect(allPages).toContain('安装目标 · ~ 范围');
       expect(frame).toContain('Catalog 配置：config');
       expect(frame).toMatch(/另有 \d+ 项/u);
       expect(frame).toContain(`› ${label}`);
@@ -1164,6 +1225,7 @@ describe('Portable Skills TUI V1', () => {
       expect(frame).toContain('? 帮助');
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+      for (let page = 0; page < 15; page += 1) await send(instance, '\u001B[5~');
     }
   });
 
@@ -1298,7 +1360,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
     expect(reviewInstance.lastFrame()).toContain(`› ${value.snapshot.activeReview!.primaryLabel}`);
     expect(reviewInstance.lastFrame()?.match(/›/gu)).toHaveLength(1);
-    expect(reviewInstance.lastFrame()).toContain('覆盖冲突');
+    expect(reviewInstance.lastFrame()).toContain('同名覆');
   });
 
   it.each([

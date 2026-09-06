@@ -68,7 +68,6 @@ import {
 import { targetHasArtifactCollision } from '../utils/target-eligibility.js';
 import {
   TuiRouter,
-  type CatalogActivationBlockReason,
   type ConfigInvalidStoreEvidence,
   type ConfigResumeRoute,
   type PluginInstallFilter,
@@ -77,6 +76,7 @@ import {
   type TuiRoute,
   type TuiRouterSnapshot,
 } from './router.js';
+import { normalizeTuiRoute, type RouteEntityState } from './screen-registry.js';
 import {
   type CatalogSourceGenerationViewModel,
 } from './catalog-generation.js';
@@ -87,6 +87,10 @@ import {
   catalogSourceAutoCheckOnlyValue,
   projectCatalogSourceMutationWarnings,
 } from './catalog-sources/review.js';
+
+type CatalogActivationBlockReason =
+  | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
+  | 'activeReview' | 'reviewPreparation' | 'writeProgress';
 
 export type PluginWriteOperation = 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
 export const PLUGIN_WRITE_BATCH_ACTIONS = [
@@ -1368,66 +1372,30 @@ export class TuiController {
   }
 
   #normalizeRoute(route: TuiRoute): TuiRoute {
-    if (route.name === 'pluginList' && route.sourceId
-      && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
-      return { name: 'pluginList', mode: route.mode };
-    }
-    const pluginRoute = route.name === 'pluginPreview'
-      || route.name === 'portableSkillSelect'
-      || route.name === 'portableDependencies'
-      || route.name === 'portableAgentMode'
-      || route.name === 'portableAgentInput'
-      || route.name === 'portableScope'
-      || route.name === 'portableBlocker'
-      || route.name === 'pluginDependencies'
-      || route.name === 'installPlacement'
-      || route.name === 'installTargets'
-      || route.name === 'dependencyPlacement'
-      || route.name === 'dependencyPlacementEditor'
-      || route.name === 'pluginDetail'
-      || route.name === 'platform'
-      || route.name === 'pluginAbout'
-      || route.name === 'pluginTechnical'
-      || route.name === 'configLayer'
-      || route.name === 'configFields'
-      || route.name === 'configFieldEditor'
-      || route.name === 'configObjectPropertyEditor'
-      || route.name === 'configFieldAction'
-      || route.name === 'configSave'
-      || route.name === 'configUnavailable';
-    if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
-      return {
-        name: 'pluginList',
-        mode: route.name === 'pluginPreview' || route.name === 'pluginDependencies'
-          || route.name === 'installPlacement' || route.name === 'installTargets'
-          || route.name === 'dependencyPlacement' || route.name === 'dependencyPlacementEditor'
-          ? 'browse'
-          : 'installed',
-      };
-    }
-    if (route.name === 'issueDetail'
-      && !this.#viewModel?.issues.some((issue) => issue.issueId === route.issueId)) {
-      return { name: 'issueList' };
-    }
-    if ((route.name === 'sourceDetail'
-      || route.name === 'sourceTechnical'
-      || route.name === 'sourceEdit'
-      || route.name === 'sourceRemoveBlocked'
-      || route.name === 'catalogCandidate'
-      || route.name === 'catalogRefreshPolicy'
-      || route.name === 'catalogRefresh'
-      || route.name === 'catalogImmutableViolation'
-      || route.name === 'catalogActivationBlocked')
-      && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
-      return { name: 'sourceList' };
-    }
-    return route;
+    return normalizeTuiRoute(route, this.#routeEntityState());
+  }
+
+  #routeEntityState(): RouteEntityState {
+    return {
+      hasPlugin: (pluginId) => this.#viewModel?.plugins.some((plugin) => plugin.pluginId === pluginId) ?? false,
+      hasSource: (sourceId) => this.#viewModel?.sourceTabs.some((source) => source.id === sourceId) ?? false,
+      hasIssue: (issueId) => this.#viewModel?.issues.some((issue) => issue.issueId === issueId) ?? false,
+      hasHistoryRecord: (recordId) => this.#operationHistory.get(recordId) !== undefined,
+      hasActiveOperation: (candidate) => candidate.name === 'reviewPreparing'
+        ? this.#reviewPreparation?.snapshot.id === candidate.preparationId
+        : candidate.name === 'result'
+          ? this.#result?.operationId === candidate.operationId
+          : this.#activeReview?.operationId === candidate.operationId,
+    };
   }
 
   #normalizeCurrentRoute(): void {
-    const route = this.#router.snapshot.current.route;
-    const normalized = this.#normalizeRoute(route);
-    if (normalized !== route) this.#router.replace(normalized);
+    this.#router.normalizeRoutes((route) => this.#normalizeRoute(route));
+    if (this.#resultAnchor) this.#resultAnchor = this.#normalizeRoute(this.#resultAnchor);
+    for (const ticket of this.#tickets.values()) ticket.returnRoute = this.#normalizeRoute(ticket.returnRoute);
+    if (this.#reviewPreparation) {
+      this.#reviewPreparation.returnRoute = this.#normalizeRoute(this.#reviewPreparation.returnRoute);
+    }
   }
 
   #ensureOperationFlow(intent: OperationIntent): void {
@@ -2070,6 +2038,10 @@ export class TuiController {
   }
 
   #discardPortableDraftForRoute(route: TuiRoute): void {
+    const readOnlyHistoryRoute = route.name === 'operationHistory'
+      || route.name === 'operationDiagnostic'
+      || route.name === 'operationReportPreview';
+    if (readOnlyHistoryRoute && this.#router.activeFlow()?.kind === 'portableInstall') return;
     const portableRoute = route.name === 'portableSkillSelect'
       || route.name === 'portableDependencies'
       || route.name === 'portableAgentMode'

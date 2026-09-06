@@ -214,7 +214,7 @@ describe('TUI config affected targets', () => {
       expect.arrayContaining([
         ['Git URL', '将更新'],
         ['Git ref policy', '固定 ref · catalog/beta'],
-        ['Catalog 子目录', '根目录'],
+        ['插件目录子目录', '根目录'],
         ['自动检查', '关闭'],
       ]),
     );

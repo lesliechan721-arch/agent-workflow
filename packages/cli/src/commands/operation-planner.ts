@@ -14,13 +14,21 @@ export type LifecycleActionId =
   | 'uninstall'
   | 'cleanup';
 
+export type LifecycleActionReason =
+  | 'targetAbsent'
+  | 'statusRecovery'
+  | 'orphanedManagedContent'
+  | 'savedSettingsNotApplied'
+  | 'newActiveVersion'
+  | 'rebuildManagedContent'
+  | 'removeManagedContent';
+
 export interface AllowedLifecycleAction {
   id: LifecycleActionId;
   pluginId: string;
   platform: PlatformName;
   scope: Scope;
-  label: string;
-  description: string;
+  reason: LifecycleActionReason;
   availableVersion?: string;
   refreshBeforeReview?: true;
 }
@@ -45,19 +53,19 @@ function recoveryAction(options: {
     pluginId: options.target.pluginId,
     platform: options.target.platform,
     scope,
-    description: options.recovery.description,
+    reason: 'statusRecovery' as const,
   };
   if (options.recovery.command === 'sync') {
-    return { ...common, id: 'sync', label: '同步 desired intent' };
+    return { ...common, id: 'sync' };
   }
   if (options.recovery.command === 'reinstall') {
-    return { ...common, id: 'reinstall', label: '重新安装' };
+    return { ...common, id: 'reinstall' };
   }
   if (options.recovery.command === 'cleanup') {
-    return { ...common, id: 'cleanup', label: '清理 AW-owned 内容' };
+    return { ...common, id: 'cleanup' };
   }
   if (options.recovery.command === 'uninstall') {
-    return { ...common, id: 'uninstall', label: '移除插件' };
+    return { ...common, id: 'uninstall' };
   }
   return undefined;
 }
@@ -81,8 +89,7 @@ export function buildAllowedLifecycleActions(
       pluginId: target.pluginId,
       platform: target.platform,
       scope: target.scope,
-      label: '添加插件',
-      description: '添加所选平台和使用位置。',
+      reason: 'targetAbsent',
     }];
   }
   if (target.state === 'orphaned') {
@@ -93,8 +100,7 @@ export function buildAllowedLifecycleActions(
           pluginId: target.pluginId,
           platform: target.platform,
           scope: target.scope,
-          label: '清理 AW-owned 内容',
-          description: '只清理这个插件目标的 AW-owned 内容。',
+          reason: 'orphanedManagedContent',
         }];
   }
   const recovery = uniqueActions(target.recoveryActions.flatMap((action) =>
@@ -107,10 +113,7 @@ export function buildAllowedLifecycleActions(
     pluginId: target.pluginId,
     platform: target.platform,
     scope: target.scope,
-    label: target.platform === 'codex' ? '同步 desired intent' : '重新安装',
-    description: target.platform === 'codex'
-      ? '按已保存的 desired intent 修复当前现场。'
-      : '保留设置并重新生成 AW-owned 内容。',
+    reason: 'savedSettingsNotApplied',
   }];
   const actions: AllowedLifecycleAction[] = [];
   if (target.revision?.state === 'upgradeAvailable') {
@@ -119,8 +122,7 @@ export function buildAllowedLifecycleActions(
       pluginId: target.pluginId,
       platform: target.platform,
       scope: target.scope,
-      label: '刷新并同步',
-      description: '刷新相关来源后，使用新的 Active 内容同步。',
+      reason: 'newActiveVersion',
       availableVersion: target.revision.availableVersion,
       refreshBeforeReview: true,
     });
@@ -130,8 +132,7 @@ export function buildAllowedLifecycleActions(
     pluginId: target.pluginId,
     platform: target.platform,
     scope: target.scope,
-    label: '重新安装',
-    description: '保留设置并重新生成 AW-owned 内容。',
+    reason: 'rebuildManagedContent',
   });
   if (target.uninstallable !== false) {
     actions.push({
@@ -139,8 +140,7 @@ export function buildAllowedLifecycleActions(
       pluginId: target.pluginId,
       platform: target.platform,
       scope: target.scope,
-      label: '移除插件',
-      description: '移除安装内容并保留设置。',
+      reason: 'removeManagedContent',
     });
   }
   return actions;

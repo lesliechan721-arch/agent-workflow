@@ -19,7 +19,11 @@ import {
   ToggleRow,
 } from '../../src/tui/components.js';
 import { createInkPrompt } from '../../src/tui/prompt.js';
-import { resolveTuiKeyAction, resolveTuiSessionNavigationKey } from '../../src/tui/keys.js';
+import {
+  resolveTuiGlobalKeyAction,
+  resolveTuiKeyAction,
+  resolveTuiSessionNavigationKey,
+} from '../../src/tui/keys.js';
 import { resolveTuiSizePolicy } from '../../src/tui/layout.js';
 import { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from '../../src/tui/runner.js';
 import { MultiSelectView, SelectView } from '../../src/tui/views.js';
@@ -385,6 +389,18 @@ describe('TUI foundation', () => {
     expect(resolveTuiSessionNavigationKey({ input: 'H', key: key() }, { characterInput: false })).toBe('reload');
     expect(resolveTuiSessionNavigationKey({ input: 'H', key: key() }, { characterInput: true })).toBeNull();
     expect(resolveTuiSessionNavigationKey({ input: 'h', key: key(true) }, { characterInput: false })).toBeNull();
+  });
+
+  it('shares menu actions without taking character input', () => {
+    const key = (ctrl = false, escape = false) => ({ ctrl, escape });
+    expect(resolveTuiGlobalKeyAction({ input: '?', key: key() }, { mode: 'menu' })).toBe('help');
+    expect(resolveTuiGlobalKeyAction({ input: 'h', key: key() }, { mode: 'menu' })).toBe('home');
+    expect(resolveTuiGlobalKeyAction({ input: 'H', key: key() }, { mode: 'menu' })).toBe('reload');
+    expect(resolveTuiGlobalKeyAction({ input: 'b', key: key() }, { mode: 'menu', allowBack: true })).toBe('back');
+    expect(resolveTuiGlobalKeyAction({ input: '', key: key(false, true) }, { mode: 'menu', allowBack: true })).toBe('back');
+    for (const input of ['?', 'h', 'H', 'b', 'q']) {
+      expect(resolveTuiGlobalKeyAction({ input, key: key() }, { mode: 'text', allowBack: true })).toBeNull();
+    }
   });
 
   it('returns stable select, confirm, text, and password contracts', async () => {
