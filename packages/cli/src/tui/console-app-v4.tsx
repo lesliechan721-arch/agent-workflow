@@ -5647,7 +5647,9 @@ export function ConsoleAppV4(props: {
       ? blocked
         ? '批量写入被阻止。已完成和未完成目标按实际结果保留。'
         : partial
-          ? `${resultSummary?.batch?.failedRequestedPluginIds.length ?? 0} 个根插件失败。成功目标不会重放。`
+          ? (resultSummary?.batch?.retryTargets?.length ?? 0) > 0
+            ? `${resultSummary?.batch?.retryTargets?.length ?? 0} 个根目标失败。成功目标不会重放。`
+            : '失败目标无法精确定位。请查看本次记录后重新操作。'
           : `${resultSummary?.batch?.requestedPluginIds.length ?? 0} 个根插件已完成。`
       : portableOperation
       ? blocked
@@ -5755,9 +5757,9 @@ export function ConsoleAppV4(props: {
       : undefined;
     actions = batchOperation
       ? [
-          ...((partial || blocked) && (resultSummary?.batch?.failedRequestedPluginIds.length ?? 0) > 0 ? [{
-            label: '仅重试失败插件…',
-            description: '重新读取失败根插件及其依赖，并进入新的确认页',
+          ...((partial || blocked) && (resultSummary?.batch?.retryTargets?.length ?? 0) > 0 ? [{
+            label: '仅重试失败目标…',
+            description: '重新读取失败根目标及其依赖，并进入新的确认页',
             run: () => {
               props.controller.retryFailedPluginWriteBatch();
               setFocus(0);

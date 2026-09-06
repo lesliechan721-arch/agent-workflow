@@ -110,7 +110,14 @@ export const PLUGIN_WRITE_BATCH_ACTIONS = [
 export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
+  | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
   | { kind: 'currentProjectIntentRoots' };
+
+export interface PluginWriteBatchTarget {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+}
 
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
@@ -125,6 +132,7 @@ export interface PluginWriteBatchGroupEvidence {
   groupId: string;
   sourceId: string;
   platform: PlatformName | 'both';
+  scope: Scope;
   requestedPluginIds: string[];
   preview: RebuildCommandResult;
   executable: boolean;
@@ -139,6 +147,7 @@ export interface PluginWriteBatchGroupResult {
   groupId: string;
   sourceId: string;
   platform: PlatformName | 'both';
+  scope: Scope;
   requestedPluginIds: string[];
   result: RebuildCommandResult;
 }
@@ -487,6 +496,7 @@ export interface OperationResultSummary {
   batch?: {
     requestedPluginIds: string[];
     failedRequestedPluginIds: string[];
+    retryTargets?: PluginWriteBatchTarget[];
     groupCount: number;
   };
   portable?: {
@@ -716,8 +726,25 @@ function canonicalPluginIds(pluginIds: readonly string[]): string[] {
   return [...new Set(pluginIds)].sort((left, right) => left.localeCompare(right, 'en'));
 }
 
+function canonicalBatchTargets(targets: readonly PluginWriteBatchTarget[]): PluginWriteBatchTarget[] {
+  const byKey = new Map<string, PluginWriteBatchTarget>();
+  for (const target of targets) {
+    byKey.set([target.pluginId, target.platform, target.scope].join('\0'), target);
+  }
+  return [...byKey.values()].sort((left, right) =>
+    [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
+}
+
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
-  if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'selected') return intent;
+  if (intent.kind !== 'pluginWriteBatch') return intent;
+  if (intent.selection.kind === 'targets') {
+    return {
+      ...intent,
+      selection: { kind: 'targets', targets: canonicalBatchTargets(intent.selection.targets) },
+    };
+  }
+  if (intent.selection.kind !== 'selected') return intent;
   return {
     ...intent,
     selection: {
@@ -762,32 +789,78 @@ function assertPluginWriteBatchEvidence(
   }
 }
 
+export function pluginWriteBatchFailedRequestedTargets(
+  execution: PluginWriteBatchExecutionResult,
+): PluginWriteBatchTarget[] {
+  const failed: PluginWriteBatchTarget[] = [];
+  for (const group of execution.groupResults) {
+    const roots = new Set(group.requestedPluginIds);
+    const targetsByPlugin = new Map<string, typeof group.result.targetResults>();
+    for (const target of group.result.targetResults) {
+      const pluginId = target.target.pluginId;
+      if (!pluginId) continue;
+      const entries = targetsByPlugin.get(pluginId) ?? [];
+      entries.push(target);
+      targetsByPlugin.set(pluginId, entries);
+    }
+    const successfulRootKeys = new Set(group.result.targetResults.flatMap((target) => {
+      const pluginId = target.target.pluginId;
+      return pluginId && roots.has(pluginId)
+        && target.state !== 'failed' && target.action !== 'skipped'
+        ? [[pluginId, target.target.platform, target.target.scope].join('\0')]
+        : [];
+    }));
+    const unsuccessful = group.result.targetResults.filter((target) =>
+      target.state === 'failed' || target.action === 'skipped');
+    for (const target of unsuccessful) {
+      const pending = target.target.pluginId
+        ? [{ pluginId: target.target.pluginId, platform: target.target.platform }]
+        : [];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const current = pending.shift()!;
+        const visitKey = [current.pluginId, current.platform].join('\0');
+        if (visited.has(visitKey)) continue;
+        visited.add(visitKey);
+        const candidates = (targetsByPlugin.get(current.pluginId) ?? [])
+          .filter((candidate) => candidate.target.platform === current.platform);
+        if (roots.has(current.pluginId)) {
+          if (candidates.length === 0) {
+            const retryTarget = {
+              pluginId: current.pluginId,
+              platform: current.platform,
+              scope: group.scope,
+            };
+            const key = [retryTarget.pluginId, retryTarget.platform, retryTarget.scope].join('\0');
+            if (!successfulRootKeys.has(key)) failed.push(retryTarget);
+          }
+          for (const candidate of candidates) {
+            const retryTarget = {
+              pluginId: current.pluginId,
+              platform: candidate.target.platform,
+              scope: candidate.target.scope,
+            };
+            const key = [current.pluginId, retryTarget.platform, retryTarget.scope].join('\0');
+            if (!successfulRootKeys.has(key)) failed.push(retryTarget);
+          }
+          continue;
+        }
+        for (const candidate of candidates) {
+          pending.push(...(candidate.requiredBy ?? []).map((pluginId) => ({
+            pluginId, platform: current.platform,
+          })));
+        }
+      }
+    }
+  }
+  return canonicalBatchTargets(failed);
+}
+
 export function pluginWriteBatchFailedRequestedPluginIds(
   execution: PluginWriteBatchExecutionResult,
 ): string[] {
-  const failed = new Set<string>();
-  for (const group of execution.groupResults) {
-    const roots = new Set(group.requestedPluginIds);
-    const unsuccessful = group.result.targetResults.filter((target) =>
-      target.state === 'failed' || target.action === 'skipped');
-    let mapped = false;
-    for (const target of unsuccessful) {
-      const pluginId = target.target.pluginId;
-      if (pluginId && roots.has(pluginId)) {
-        failed.add(pluginId);
-        mapped = true;
-      }
-      for (const requiredBy of target.requiredBy ?? []) {
-        if (!roots.has(requiredBy)) continue;
-        failed.add(requiredBy);
-        mapped = true;
-      }
-    }
-    if (group.result.overallState !== 'succeeded' && (!mapped || unsuccessful.length === 0)) {
-      group.requestedPluginIds.forEach((pluginId) => failed.add(pluginId));
-    }
-  }
-  return canonicalPluginIds([...failed]);
+  return canonicalPluginIds(pluginWriteBatchFailedRequestedTargets(execution)
+    .map((target) => target.pluginId));
 }
 
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
@@ -1509,12 +1582,12 @@ export class TuiController {
     this.#batchRetryIntent = intent.kind === 'pluginWriteBatch'
       && 'summary' in result
       && result.summary?.batch
-      && result.summary.batch.failedRequestedPluginIds.length > 0
+      && (result.summary.batch.retryTargets?.length ?? 0) > 0
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: 'selected',
-            pluginIds: [...result.summary.batch.failedRequestedPluginIds],
+            kind: 'targets',
+            targets: structuredClone(result.summary.batch.retryTargets!),
           },
         }
       : undefined;
@@ -3811,9 +3884,10 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     );
     const result = buildOperationResultModel(receipt);
     const requestedIds = new Set(receipt.requestedPluginIds ?? requestedPluginIds);
-    const failedRequestedPluginIds = intent.kind === 'pluginWriteBatch'
-      ? pluginWriteBatchFailedRequestedPluginIds(execution as PluginWriteBatchExecutionResult)
+    const retryTargets = intent.kind === 'pluginWriteBatch'
+      ? pluginWriteBatchFailedRequestedTargets(execution as PluginWriteBatchExecutionResult)
       : [];
+    const failedRequestedPluginIds = canonicalPluginIds(retryTargets.map((target) => target.pluginId));
     return {
       code: result.state === 'succeeded' ? 'operationSucceeded'
         : result.state === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -3836,6 +3910,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         batch: {
           requestedPluginIds,
           failedRequestedPluginIds,
+          retryTargets,
           groupCount: (execution as PluginWriteBatchExecutionResult).groupResults.length,
         },
       } : {}),

@@ -8,6 +8,7 @@ import {
   operationEvidenceMatches,
   operationEvidenceFingerprint,
   pluginWriteBatchFailedRequestedPluginIds,
+  pluginWriteBatchFailedRequestedTargets,
   userIssueKey,
   type OperationEvidence,
   type OperationIntent,
@@ -123,6 +124,7 @@ describe('TUI plugin write batches', () => {
       requestedPluginIds: ['official/root-a', 'official/root-b'],
       groupResults: [{
         groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: ['official/root-a', 'official/root-b'], result,
       }],
     };
@@ -140,9 +142,34 @@ describe('TUI plugin write batches', () => {
     ]);
   });
 
-  it('maps a group preflight failure without targets to all group roots', () => {
-    expect(pluginWriteBatchFailedRequestedPluginIds(failedBatchResult([]))).toEqual([
-      'official/root-a', 'official/root-b',
+  it('does not claim a precise retry when a failed group has no target evidence', () => {
+    expect(pluginWriteBatchFailedRequestedPluginIds(failedBatchResult([]))).toEqual([]);
+    expect(pluginWriteBatchFailedRequestedTargets(failedBatchResult([]))).toEqual([]);
+  });
+
+  it('keeps platform-specific failed roots and excludes successful root targets', () => {
+    const codex = failedBatchResult([
+      { target: { pluginId: 'official/root-a', platform: 'codex', scope: 'project' },
+        action: 'sync', state: 'completed', requiredBy: [] },
+      { target: { pluginId: 'official/root-b', platform: 'codex', scope: 'project' },
+        action: 'sync', state: 'failed', requiredBy: [] },
+    ]).groupResults[0]!;
+    const claude = failedBatchResult([
+      { target: { pluginId: 'official/root-a', platform: 'claude', scope: 'project' },
+        action: 'sync', state: 'failed', requiredBy: [] },
+      { target: { pluginId: 'official/root-b', platform: 'claude', scope: 'project' },
+        action: 'sync', state: 'completed', requiredBy: [] },
+    ]).groupResults[0]!;
+    const execution = {
+      ...failedBatchResult([]),
+      groupResults: [
+        { ...codex, groupId: 'official\0codex', platform: 'codex' as const },
+        { ...claude, groupId: 'official\0claude', platform: 'claude' as const },
+      ],
+    };
+    expect(pluginWriteBatchFailedRequestedTargets(execution)).toEqual([
+      { pluginId: 'official/root-a', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/root-b', platform: 'codex', scope: 'project' },
     ]);
   });
 
@@ -185,6 +212,7 @@ describe('TUI plugin write batches', () => {
       requestedPluginIds: ['official/root-a', 'official/root-b'],
       groups: [{
         groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: ['official/root-a', 'official/root-b'], preview, executable: true,
       }],
     };
@@ -223,13 +251,14 @@ describe('TUI plugin write batches', () => {
     expect(router.snapshot.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
   });
 
-  it('keeps one history record and retries failed roots with new evidence', async () => {
+  it('keeps one history record without offering an imprecise group retry', async () => {
     const preview = failedBatchResult([]).groupResults[0]!.result;
     const evidence: PluginWriteBatchEvidence = {
       ...baseEvidence,
       requestedPluginIds: ['official/root-a', 'official/root-b'],
       groups: [{
         groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: ['official/root-a', 'official/root-b'], preview, executable: false,
       }],
     };
@@ -258,7 +287,7 @@ describe('TUI plugin write batches', () => {
     const result = await controller.executeOperation(review.reviewToken);
     expect(result).toMatchObject({
       state: 'blocked',
-      summary: { batch: { failedRequestedPluginIds: ['official/root-a', 'official/root-b'] } },
+      summary: { batch: { failedRequestedPluginIds: [], retryTargets: [] } },
     });
     expect(controller.listOperationHistory()).toHaveLength(1);
     expect(executeIntent).toHaveBeenCalledTimes(1);
@@ -267,13 +296,9 @@ describe('TUI plugin write batches', () => {
     });
 
     const retry = controller.retryFailedPluginWriteBatch();
-    expect(retry?.operationKind).toBe('pluginWriteBatch');
+    expect(retry).toBeUndefined();
     await nextTurn(2);
-    expect(captureEvidence).toHaveBeenCalledTimes(2);
-    expect(captureEvidence.mock.calls[1]?.[0]).toMatchObject({
-      selection: { kind: 'selected', pluginIds: ['official/root-a', 'official/root-b'] },
-    });
-    expect(controller.snapshot.activeReview?.operationId).not.toBe(review.operationId);
+    expect(captureEvidence).toHaveBeenCalledTimes(1);
   });
 
   it('keeps completed group effects when a later stale group becomes a partial result', async () => {
@@ -306,8 +331,10 @@ describe('TUI plugin write batches', () => {
       requestedPluginIds: ['official/root-a', 'team/root-b'],
       groupResults: [
         { groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+          scope: 'project',
           requestedPluginIds: ['official/root-a'], result: completed },
         { groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+          scope: 'project',
           requestedPluginIds: ['team/root-b'], result: stale },
       ],
     } as unknown as PluginWriteBatchExecutionResult;
@@ -321,8 +348,10 @@ describe('TUI plugin write batches', () => {
       requestedPluginIds: ['official/root-a', 'team/root-b'],
       groups: [
         { groupId: 'official\0codex', sourceId: 'official', platform: 'codex',
+          scope: 'project',
           requestedPluginIds: ['official/root-a'], preview: preview('sha256:official'), executable: true },
         { groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+          scope: 'project',
           requestedPluginIds: ['team/root-b'], preview: preview('sha256:team'), executable: true },
       ],
     };
@@ -330,6 +359,7 @@ describe('TUI plugin write batches', () => {
       ...baseEvidence,
       requestedPluginIds: ['team/root-b'],
       groups: [{ groupId: 'team\0codex', sourceId: 'team', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: ['team/root-b'], preview: preview('sha256:team-retry'), executable: true }],
     };
     const captureEvidence = vi.fn()
@@ -375,7 +405,10 @@ describe('TUI plugin write batches', () => {
     expect(controller.retryFailedPluginWriteBatch()?.operationKind).toBe('pluginWriteBatch');
     await nextTurn();
     expect(captureEvidence.mock.calls[1]?.[0]).toMatchObject({
-      selection: { kind: 'selected', pluginIds: ['team/root-b'] },
+      selection: {
+        kind: 'targets',
+        targets: [{ pluginId: 'team/root-b', platform: 'codex', scope: 'project' }],
+      },
     });
     expect(controller.snapshot.activeReview?.operationId).not.toBe(review.operationId);
   });

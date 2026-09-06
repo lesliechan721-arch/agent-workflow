@@ -1424,6 +1424,7 @@ describe('ConsoleAppV4', () => {
           requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
           groups: [{
             groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            scope: 'project' as const,
             requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
             preview: rebuild('failed'), executable: false,
           }],
@@ -1435,6 +1436,7 @@ describe('ConsoleAppV4', () => {
       requestedPluginIds: [root],
       groupResults: [{
         groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: [root], result: failedGroup,
       }],
     } satisfies PluginWriteBatchExecutionResult);
@@ -1456,14 +1458,17 @@ describe('ConsoleAppV4', () => {
       state: 'blocked',
       summary: { batch: { requestedPluginIds: [root], failedRequestedPluginIds: [root] } },
     });
-    expect(instance.lastFrame()).toContain('仅重试失败插件');
+    expect(instance.lastFrame()).toContain('仅重试失败目标');
     await input(instance, '\r');
     await nextTurn(4);
     expect(['reviewPreparing', 'review']).toContain(value.snapshot.router.current.route.name);
     expect(captureEvidence).toHaveBeenLastCalledWith(
       expect.objectContaining({
         kind: 'pluginWriteBatch',
-        selection: { kind: 'selected', pluginIds: [root] },
+        selection: {
+          kind: 'targets',
+          targets: [{ pluginId: root, platform: 'codex', scope: 'project' }],
+        },
       }),
       expect.any(AbortSignal),
     );
@@ -1542,6 +1547,7 @@ describe('ConsoleAppV4', () => {
         requestedPluginIds: pluginIds,
         groups: [{
           groupId: 'official:codex', sourceId: 'official', platform: 'codex' as const,
+          scope: 'project' as const,
           requestedPluginIds: pluginIds, preview, executable: true,
         }],
       };
@@ -1648,6 +1654,7 @@ describe('ConsoleAppV4', () => {
           requestedPluginIds: [root],
           groups: [{
             groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            scope: 'project' as const,
             requestedPluginIds: [root], preview: rebuild, executable: false,
           }],
         }
@@ -1657,6 +1664,7 @@ describe('ConsoleAppV4', () => {
       requestedPluginIds: [root],
       groupResults: [{
         groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: [root], result: rebuild,
       }],
     };
