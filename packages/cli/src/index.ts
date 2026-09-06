@@ -1051,6 +1051,7 @@ async function executeWriteCommand(
   const runtime = {
     ...context,
     directCli,
+    preApplyConfirmed: directCli ? rawOptions.yes === true : true,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
@@ -3471,6 +3472,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
           sharedNativeApplyConfirmed: rawOptions.yes === true,
+          preApplyConfirmed: rawOptions.yes === true,
         });
         return buildConfigMutationReceipt('config:set', {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3566,6 +3568,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
           sharedNativeApplyConfirmed: confirmed,
+          preApplyConfirmed: rawOptions.yes === true,
         });
         return buildConfigMutationReceipt('config:unset', {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3648,7 +3651,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'confirm destructive reset', false)
+    .option('-y, --yes', 'confirm destructive reset and preApply/shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3703,6 +3706,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               apply: rawOptions.apply === true,
               rebuildRuntime: scriptTimeoutMs === undefined ? undefined : { scriptTimeoutMs },
               sharedNativeApplyConfirmed: confirmed,
+              preApplyConfirmed: rawOptions.yes === true,
             });
             return buildConfigMutationReceipt('config:reset', {
               ok: resetReceipt.overallState === 'succeeded',

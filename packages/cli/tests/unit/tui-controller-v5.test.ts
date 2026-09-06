@@ -168,7 +168,13 @@ describe('TUI plugin write batches', () => {
     const preview = {
       platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
       overallState: 'succeeded', receiptTargets: [], dependencyPlan,
-      operationPlan: { planFingerprint: 'sha256:group-plan' },
+      operationPlan: {
+        planFingerprint: 'sha256:group-plan',
+        actions: [{
+          kind: 'runPreApply', pluginId: 'official/dependency', platform: 'codex',
+          scope: 'project', script: 'scripts/preApply.mjs',
+        }],
+      },
       codexReconcilePlans: [{
         sharedNativeActions: [],
         activationActions: { user: [], project: [] },
@@ -205,8 +211,38 @@ describe('TUI plugin write batches', () => {
       expect.objectContaining({ pluginId: 'official/root-b', relation: 'requested', sourceId: 'official' }),
       expect.objectContaining({ pluginId: 'official/dependency', relation: 'direct', sourceId: 'official' }),
       expect.objectContaining({ title: 'preApply 脚本超时', description: '12000 ms' }),
+      expect.objectContaining({
+        title: '运行 official/dependency preApply',
+        pluginId: 'official/dependency',
+        relation: 'direct',
+      }),
       expect.objectContaining({ title: '获取 Codex 运行组件' }),
     ]));
+  });
+
+  it('shows the preApply plugin identity in a normal write Review', () => {
+    const review = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWrite', action: 'sync', pluginId: 'official/root',
+        platform: 'codex', scope: 'project',
+      },
+      evidence: {
+        ...baseEvidence,
+        operationPlan: {
+          planFingerprint: 'sha256:normal-plan',
+          actions: [{
+            kind: 'runPreApply', pluginId: 'official/dependency', platform: 'codex',
+            scope: 'project', script: 'scripts/preApply.mjs',
+          }],
+        } as unknown as NonNullable<OperationEvidence['operationPlan']>,
+      },
+    });
+
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      title: '运行 official/dependency preApply',
+      pluginId: 'official/dependency',
+    }));
+    expect(review.equivalentCommand).toContain('--yes');
   });
 
   it('owns one batch flow and finishes it at the installed plugin list', () => {

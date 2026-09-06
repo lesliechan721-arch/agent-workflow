@@ -1,6 +1,9 @@
 import { stablePluginConfigStringify } from '@lesliechan721/aw-plugin-core/manifest';
 
-import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
+import type {
+  PreApplyAuthorizationTarget,
+  RebuildCommandRuntime,
+} from '../commands/rebuild-command.js';
 import {
   statusCommandV7,
   statusTargetIntent,
@@ -289,6 +292,7 @@ async function reinstallVisibleTargets(options: {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
   discovered?: Awaited<ReturnType<typeof discoverVisibleTargets>>;
+  preApplyConfirmed?: boolean;
 }): Promise<InternalConfigApplyResult> {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
   const discovered = options.discovered ?? (options.applyTargets === undefined
@@ -433,7 +437,6 @@ async function reinstallVisibleTargets(options: {
           cwd: options.cwd,
           platform: target.platform,
           scope: target.scope,
-          yes: true,
           ...(options.rebuildRuntime?.scriptTimeoutMs === undefined
             ? {}
             : { scriptTimeoutMs: options.rebuildRuntime.scriptTimeoutMs }),
@@ -442,6 +445,7 @@ async function reinstallVisibleTargets(options: {
           ...options.rebuildRuntime,
           env: options.env,
           nativeCliRunner,
+          preApplyConfirmed: options.preApplyConfirmed === true,
           ...(debugLogger ? {
             debugLogger: {
               ...debugLogger,
@@ -565,12 +569,18 @@ async function applyConfigToVisibleTargets(options: {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
   noVisibleTargetHasInvalidConfig?: boolean;
+  preApplyConfirmed?: boolean;
+  discovered?: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
 }): Promise<InternalConfigApplyResult> {
   let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>>;
-  try {
-    discovered = await resolveConfigApplyTargets(options);
-  } catch {
-    return unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
+  if (options.discovered) {
+    discovered = options.discovered;
+  } else {
+    try {
+      discovered = await resolveConfigApplyTargets(options);
+    } catch {
+      return unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
+    }
   }
   if (discovered.targets.length === 0
     && discovered.failures.length === 0
@@ -578,6 +588,132 @@ async function applyConfigToVisibleTargets(options: {
     return unavailableApply('invalidConfig', 'targetValidation');
   }
   return reinstallVisibleTargets({ ...options, discovered });
+}
+
+export async function resolveConfigPreApplyAuthorization(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  applyTargets: ReceiptTargetIdentity[];
+  nativeCliRunner?: NativeCliRunner;
+  rebuildRuntime?: RebuildCommandRuntime;
+  reinstallCommandImpl?: ReinstallCommand;
+}): Promise<{
+  targets: PreApplyAuthorizationTarget[];
+  availableApplyTargets: ReceiptTargetIdentity[];
+  unavailableTargetResults: ReceiptTargetResult[];
+}> {
+  const applyTargets = dedupeTargets(options.applyTargets);
+  if (applyTargets.length === 0 || !pluginMayRunPreApply(options.plugin)) {
+    return { targets: [], availableApplyTargets: applyTargets, unavailableTargetResults: [] };
+  }
+  if (options.plugin.sourceId && !options.plugin.pluginId) {
+    return {
+      targets: [],
+      availableApplyTargets: [],
+      unavailableTargetResults: applyTargets.map((target) => ({
+        target,
+        action: 'reinstall',
+        state: 'failed',
+        errorCode: 'sourceUnavailable',
+        message: 'The preApply authorization scope cannot be resolved for this target.',
+      })),
+    };
+  }
+  const selector = options.plugin.sourceId
+    ? options.plugin.pluginId!
+    : options.plugin.manifest.name;
+  const groups = new Map<Scope, ReceiptTargetIdentity[]>();
+  for (const target of applyTargets) {
+    const targets = groups.get(target.scope) ?? [];
+    targets.push(target);
+    groups.set(target.scope, targets);
+  }
+  const authorization: PreApplyAuthorizationTarget[] = [];
+  const availableApplyTargets: ReceiptTargetIdentity[] = [];
+  const unavailableTargetResults: ReceiptTargetResult[] = [];
+  const resolveGroup = async (targets: ReceiptTargetIdentity[]): Promise<boolean> => {
+    const platforms = new Set(targets.map((target) => target.platform));
+    const platform = platforms.size === 2 ? 'both' as const : [...platforms][0]!;
+    try {
+      const preview = await (options.reinstallCommandImpl ?? syncWriteCommand)([selector], {
+        cwd: options.cwd,
+        platform,
+        scope: targets[0]!.scope,
+      }, {
+        ...options.rebuildRuntime,
+        env: options.env ?? process.env,
+        nativeCliRunner: options.nativeCliRunner,
+        resolvePreApplyAuthorization: true,
+      });
+      if (preview.overallState !== 'succeeded' || !preview.preApplyAuthorization) return false;
+      authorization.push(...preview.preApplyAuthorization);
+      availableApplyTargets.push(...targets);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const targets of groups.values()) {
+    if (await resolveGroup(targets)) continue;
+    for (const target of targets) {
+      if (targets.length > 1 && await resolveGroup([target])) continue;
+      unavailableTargetResults.push({
+        target,
+        action: 'reinstall',
+        state: 'failed',
+        errorCode: 'sourceUnavailable',
+        message: 'The preApply authorization scope cannot be resolved for this target.',
+      });
+    }
+  }
+  return {
+    targets: [...new Map(authorization.map((target) => [[
+      target.pluginId,
+      target.platform,
+      target.scope,
+    ].join('\0'), target] as const)).values()],
+    availableApplyTargets: dedupeTargets(availableApplyTargets),
+    unavailableTargetResults,
+  };
+}
+
+function pluginMayRunPreApply(plugin: PluginMeta): boolean {
+  return plugin.manifest.scripts?.preApply !== undefined
+    || (plugin.manifest.dependencies?.length ?? 0) > 0;
+}
+
+function throwPreApplyAuthorizationRequired(
+  targets: readonly PreApplyAuthorizationTarget[],
+): never {
+  const plugins = [...new Set(targets.map((target) => target.pluginId))].join(', ');
+  const error = new Error(
+    `preApplyAuthorizationRequired: Applying this config runs plugin preApply for ${plugins}. Re-run with --yes.`,
+  ) as Error & { code: string };
+  error.code = 'preApplyAuthorizationRequired';
+  throw error;
+}
+
+function preApplyAuthorizationIsConfirmed(options: {
+  required: readonly PreApplyAuthorizationTarget[];
+  confirmed?: boolean;
+  authorizedTargets?: readonly PreApplyAuthorizationTarget[];
+}): boolean {
+  if (options.confirmed !== true) return false;
+  if (options.authorizedTargets === undefined) return true;
+  const authorized = new Set(options.authorizedTargets.map((target) => [
+    target.pluginId,
+    target.sourceIdentity,
+    target.platform,
+    target.scope,
+  ].join('\0')));
+  return options.required.every((target) => authorized.has([
+    target.pluginId,
+    target.sourceIdentity,
+    target.platform,
+    target.scope,
+  ].join('\0')));
 }
 
 function otherProjectsWarning(scope: Scope): string[] {
@@ -618,6 +754,8 @@ export async function replayConfigRuntimeWrites(options: {
   rebuildRuntime?: RebuildCommandRuntime;
   awHomeMutationToken?: AwHomeMutationToken;
   sharedNativeApplyConfirmed?: boolean;
+  preApplyConfirmed?: boolean;
+  preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
 }): Promise<ConfigRuntimeReplayReceipt> {
   return withAwHomeMutationLock({
     env: options.env,
@@ -637,10 +775,66 @@ export async function replayConfigRuntimeWrites(options: {
           rebuildRuntime,
         });
       } catch {
+        const apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
         return {
           configWrite: 'succeeded',
           overallState: 'partial',
-          apply: publicConfigApplyResult(unavailableApply('targetDiscoveryFailed', 'targetDiscovery')),
+          apply: publicConfigApplyResult(apply),
+          otherProjectsMayRequireSync: false,
+        };
+      }
+      const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
+        plugin: options.plugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env,
+        applyTargets: discovered.targets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime,
+        reinstallCommandImpl: options.reinstallCommandImpl,
+      });
+      if (preApplyAuthorization.targets.length > 0 && !preApplyAuthorizationIsConfirmed({
+        required: preApplyAuthorization.targets,
+        confirmed: options.preApplyConfirmed,
+        authorizedTargets: options.preApplyAuthorizedTargets,
+      })) {
+        const apply: InternalConfigApplyResult = {
+          state: 'partial',
+          targetResults: preApplyAuthorization.targets.map((target) => ({
+            target: {
+              pluginName: target.pluginName,
+              pluginId: target.pluginId,
+              platform: target.platform,
+              scope: target.scope,
+            },
+            action: 'reinstall',
+            state: 'failed',
+            errorCode: 'preApplyAuthorizationRequired',
+            message: 'Running plugin preApply requires explicit authorization.',
+          })),
+        };
+        return {
+          configWrite: 'succeeded',
+          overallState: 'partial',
+          apply: publicConfigApplyResult(apply),
+          otherProjectsMayRequireSync: false,
+        };
+      }
+      discovered = {
+        targets: preApplyAuthorization.availableApplyTargets,
+        failures: [...discovered.failures, ...preApplyAuthorization.unavailableTargetResults],
+      };
+      if (discovered.targets.length === 0
+        && preApplyAuthorization.unavailableTargetResults.length > 0) {
+        const apply = unavailableApply(
+          'sourceUnavailable',
+          'source',
+          preApplyAuthorization.unavailableTargetResults,
+        );
+        return {
+          configWrite: 'succeeded',
+          overallState: 'partial',
+          apply: publicConfigApplyResult(apply),
           otherProjectsMayRequireSync: false,
         };
       }
@@ -667,6 +861,7 @@ export async function replayConfigRuntimeWrites(options: {
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime,
         discovered,
+        preApplyConfirmed: options.preApplyConfirmed,
       });
       return {
         configWrite: 'succeeded',
@@ -693,6 +888,8 @@ type ApplyPluginConfigWriteOptions = {
   request: PluginConfigWriteRequest;
   apply?: boolean;
   sharedNativeApplyConfirmed?: boolean;
+  preApplyConfirmed?: boolean;
+  preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
   reviewPreflight?: () => Promise<void> | void;
 };
 
@@ -812,6 +1009,56 @@ async function applyPluginConfigWriteUnlocked(
     .map(([key]) => key);
   const changedKeys = [...updatedKeys, ...removedKeys];
   let applyTargets = options.applyTargets;
+  let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>> | undefined;
+  let preApplyUnavailableReason: 'sourceUnavailable' | 'targetDiscoveryFailed' | undefined;
+  let preApplyUnavailableTargetResults: ReceiptTargetResult[] = [];
+  const shouldApply = options.apply !== false
+    && changedKeys.length > 0
+    && staleRemovedKeys.length !== changedKeys.length;
+  if (shouldApply && pluginMayRunPreApply(schemaPlugin)) {
+    try {
+      discovered = await resolveConfigApplyTargets({
+        plugin: schemaPlugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        applyTargets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime: options.rebuildRuntime,
+      });
+    } catch {
+      preApplyUnavailableReason = 'targetDiscoveryFailed';
+    }
+    if (discovered) {
+      const currentDiscovered = discovered;
+      const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
+        plugin: schemaPlugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+        applyTargets: discovered.targets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime: options.rebuildRuntime,
+        reinstallCommandImpl: options.reinstallCommandImpl,
+      });
+      if (preApplyAuthorization.targets.length > 0 && !preApplyAuthorizationIsConfirmed({
+        required: preApplyAuthorization.targets,
+        confirmed: options.preApplyConfirmed,
+        authorizedTargets: options.preApplyAuthorizedTargets,
+      })) {
+        throwPreApplyAuthorizationRequired(preApplyAuthorization.targets);
+      }
+      preApplyUnavailableTargetResults = preApplyAuthorization.unavailableTargetResults;
+      discovered = {
+        targets: preApplyAuthorization.availableApplyTargets,
+        failures: [...currentDiscovered.failures, ...preApplyUnavailableTargetResults],
+      };
+      applyTargets = preApplyAuthorization.availableApplyTargets;
+      if (applyTargets.length === 0 && preApplyUnavailableTargetResults.length > 0) {
+        preApplyUnavailableReason = 'sourceUnavailable';
+      }
+    }
+  }
   const sharedNativeAffected = changedKeysAffectSharedNativeTarget({
     plugin: schemaPlugin,
     changedKeys,
@@ -822,30 +1069,24 @@ async function applyPluginConfigWriteUnlocked(
     && options.sharedNativeApplyConfirmed !== true
     && sharedNativeAffected
   ) {
-    applyTargets ??= (await discoverVisibleTargets({
-      plugin: schemaPlugin,
-      pluginName,
-      scope: options.scope,
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
-      rebuildRuntime: options.rebuildRuntime,
-    })).targets;
-    if (applyTargets.some((target) => target.platform === 'codex')) {
+    if (applyTargets === undefined && preApplyUnavailableReason !== 'targetDiscoveryFailed') {
+      try {
+        applyTargets = (await discoverVisibleTargets({
+          plugin: schemaPlugin,
+          pluginName,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
+          rebuildRuntime: options.rebuildRuntime,
+        })).targets;
+      } catch {
+        preApplyUnavailableReason = 'targetDiscoveryFailed';
+      }
+    }
+    if (applyTargets?.some((target) => target.platform === 'codex')) {
       throwSharedNativeApplyConfirmationRequired();
     }
-  }
-  if (
-    options.apply !== false
-    && options.sharedNativeApplyConfirmed !== true
-    && changedKeys.length > 0
-    && schemaPlugin.manifest.scripts?.preApply
-  ) {
-    const error = new Error(
-      'preApplyAuthorizationRequired: Applying this config runs plugin preApply. Re-run with --yes.',
-    ) as Error & { code: string };
-    error.code = 'preApplyAuthorizationRequired';
-    throw error;
   }
   if (changedKeys.length > 0) {
     try {
@@ -901,6 +1142,12 @@ async function applyPluginConfigWriteUnlocked(
         ? skippedApply('noEffectiveConfigChange')
         : options.apply === false
           ? skippedApply('notRequested')
+          : preApplyUnavailableReason
+            ? unavailableApply(
+                preApplyUnavailableReason,
+                preApplyUnavailableReason === 'sourceUnavailable' ? 'source' : 'targetDiscovery',
+                preApplyUnavailableTargetResults,
+              )
           : await applyConfigToVisibleTargets({
               plugin: schemaPlugin,
               scope: options.scope,
@@ -911,6 +1158,8 @@ async function applyPluginConfigWriteUnlocked(
               reinstallCommandImpl: options.reinstallCommandImpl,
               rebuildRuntime: options.rebuildRuntime,
               noVisibleTargetHasInvalidConfig: effective.issues.length > 0,
+              preApplyConfirmed: options.preApplyConfirmed,
+              discovered,
             });
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
@@ -1052,6 +1301,8 @@ type ResetPluginConfigWriteOptions = {
   reviewPreflight?: () => Promise<void> | void;
   apply?: boolean;
   sharedNativeApplyConfirmed?: boolean;
+  preApplyConfirmed?: boolean;
+  preApplyAuthorizedTargets?: readonly PreApplyAuthorizationTarget[];
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -1109,6 +1360,59 @@ async function resetPluginConfigWithHelperUnlocked(
   }
   const warnings: string[] = [];
 
+  let applyTargets = options.applyTargets;
+  let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>> | undefined;
+  let preApplyUnavailableReason: 'sourceUnavailable' | 'targetDiscoveryFailed' | undefined;
+  let preApplyUnavailableTargetResults: ReceiptTargetResult[] = [];
+  const resetCanApply = options.plugin
+    && options.plugin.manifest.config?.fields
+    && options.apply !== false
+    && (removedKeysKnown ? removedKeys.length > 0 : true);
+  if (resetCanApply && pluginMayRunPreApply(options.plugin!)) {
+    try {
+      discovered = await resolveConfigApplyTargets({
+        plugin: options.plugin!,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        applyTargets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime: options.rebuildRuntime,
+      });
+    } catch {
+      preApplyUnavailableReason = 'targetDiscoveryFailed';
+    }
+    if (discovered) {
+      const currentDiscovered = discovered;
+      const preApplyAuthorization = await resolveConfigPreApplyAuthorization({
+        plugin: options.plugin!,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+        applyTargets: discovered.targets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime: options.rebuildRuntime,
+        reinstallCommandImpl: options.reinstallCommandImpl,
+      });
+      if (preApplyAuthorization.targets.length > 0 && !preApplyAuthorizationIsConfirmed({
+        required: preApplyAuthorization.targets,
+        confirmed: options.preApplyConfirmed,
+        authorizedTargets: options.preApplyAuthorizedTargets,
+      })) {
+        throwPreApplyAuthorizationRequired(preApplyAuthorization.targets);
+      }
+      preApplyUnavailableTargetResults = preApplyAuthorization.unavailableTargetResults;
+      discovered = {
+        targets: preApplyAuthorization.availableApplyTargets,
+        failures: [...currentDiscovered.failures, ...preApplyUnavailableTargetResults],
+      };
+      applyTargets = preApplyAuthorization.availableApplyTargets;
+      if (applyTargets.length === 0 && preApplyUnavailableTargetResults.length > 0) {
+        preApplyUnavailableReason = 'sourceUnavailable';
+      }
+    }
+  }
+
   const sharedNativeAffected = options.plugin
     && (removedKeysKnown
       ? changedKeysAffectSharedNativeTarget({
@@ -1123,16 +1427,23 @@ async function resetPluginConfigWithHelperUnlocked(
     && options.sharedNativeApplyConfirmed !== true
     && sharedNativeAffected
   ) {
-    const discovered = await resolveConfigApplyTargets({
-      plugin: options.plugin,
-      scope: options.scope,
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      applyTargets: options.applyTargets,
-      nativeCliRunner: options.nativeCliRunner,
-      rebuildRuntime: options.rebuildRuntime,
-    });
-    if (discovered.targets.some((target) => target.platform === 'codex')) {
+    if (!discovered && preApplyUnavailableReason !== 'targetDiscoveryFailed') {
+      try {
+        discovered = await resolveConfigApplyTargets({
+          plugin: options.plugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          rebuildRuntime: options.rebuildRuntime,
+        });
+        applyTargets = discovered.targets;
+      } catch {
+        preApplyUnavailableReason = 'targetDiscoveryFailed';
+      }
+    }
+    if (discovered?.targets.some((target) => target.platform === 'codex')) {
       throwSharedNativeApplyConfirmationRequired();
     }
   }
@@ -1184,17 +1495,25 @@ async function resetPluginConfigWithHelperUnlocked(
         }
       }
       if (reset.deleted && options.apply !== false && apply.state === 'skipped') {
-        apply = await applyConfigToVisibleTargets({
-          plugin: schemaPlugin,
-          scope: options.scope,
-          cwd: options.cwd,
-          env: options.env ?? process.env,
-          applyTargets: options.applyTargets,
-          nativeCliRunner: options.nativeCliRunner,
-          reinstallCommandImpl: options.reinstallCommandImpl,
-          rebuildRuntime: options.rebuildRuntime,
-          noVisibleTargetHasInvalidConfig: (effective?.issues.length ?? 0) > 0,
-        });
+        apply = preApplyUnavailableReason
+          ? unavailableApply(
+              preApplyUnavailableReason,
+              preApplyUnavailableReason === 'sourceUnavailable' ? 'source' : 'targetDiscovery',
+              preApplyUnavailableTargetResults,
+            )
+          : await applyConfigToVisibleTargets({
+              plugin: schemaPlugin,
+              scope: options.scope,
+              cwd: options.cwd,
+              env: options.env ?? process.env,
+              applyTargets,
+              nativeCliRunner: options.nativeCliRunner,
+              reinstallCommandImpl: options.reinstallCommandImpl,
+              rebuildRuntime: options.rebuildRuntime,
+              noVisibleTargetHasInvalidConfig: (effective?.issues.length ?? 0) > 0,
+              preApplyConfirmed: options.preApplyConfirmed,
+              discovered,
+            });
       }
     } else if (reset.deleted && options.apply !== false && apply.state === 'skipped') {
       apply = unavailableApply('schemaUnavailable', 'schema');
