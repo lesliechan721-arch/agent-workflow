@@ -797,33 +797,31 @@ describe('pack smoke', () => {
       source: { action: 'added', primary: true },
     });
     const developmentSourceId = developmentSourceReceipt.source.id as string;
-    const untrustedInstallFailure = await execFileAsync(awBin, [
+    const projectInstallBeforeTrust = await execFileAsync(awBin, [
       'install', `${developmentSourceId}/packed-build`, '-p', 'codex', '--scope', 'project', '--json',
     ], {
       cwd: standaloneWorkspace,
       env: externalAuthoringEnv,
       maxBuffer: 10 * 1024 * 1024,
-    }).then(
-      () => null,
-      (error: unknown) => error as { stdout?: string },
-    );
-    expect(untrustedInstallFailure).not.toBeNull();
-    expect(JSON.parse(untrustedInstallFailure?.stdout ?? '{}')).toMatchObject({
-      ok: false,
-      overallState: 'partial',
+    });
+    expect(JSON.parse(projectInstallBeforeTrust.stdout)).toMatchObject({
+      ok: true,
+      command: 'install',
+      overallState: 'succeeded',
       targetResults: expect.arrayContaining([expect.objectContaining({
         target: expect.objectContaining({
           pluginId: `${developmentSourceId}/packed-build`,
           platform: 'codex',
           scope: 'project',
         }),
-        errorCode: 'codexActivationPostcheckFailed',
-        failures: expect.arrayContaining([expect.objectContaining({
-          phase: 'postcheck.inspect',
-          message: expect.stringContaining('codexProjectConfigNotEffective'),
-        })]),
       })]),
     });
+    const projectConfigBeforeTrust = await fs.readFile(
+      path.join(standaloneWorkspace, '.codex', 'config.toml'),
+      'utf8',
+    );
+    expect(projectConfigBeforeTrust).toContain('[plugins."packed-build@aw"]');
+    expect(projectConfigBeforeTrust).toContain('enabled = true');
     await fs.appendFile(path.join(externalAuthoringEnv.AW_CODEX_HOME, 'config.toml'), [
       '',
       `[projects.${JSON.stringify(await fs.realpath(standaloneWorkspace))}]`,
