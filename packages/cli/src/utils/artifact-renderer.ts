@@ -356,74 +356,79 @@ export async function writeArtifactRendererContext(options: {
   );
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-artifact-render-'));
-  const context: ArtifactRendererContext = {
-    event,
-    surface: distribution
-      ? { kind: 'distribution', name: distribution }
-      : { kind: 'platform', name: platform! },
-    platform,
-    distribution,
-    scope: options.scope,
-    plugin: {
-      name: options.target.sourceManifest.name,
-      version: options.target.sourceManifest.version,
-      rootDir: options.target.bundleRoot,
-    },
-    config: rendererConfig,
-    changedConfigKeys: (options.changedConfigKeys ?? [])
-      .filter((key) => requestedConfigKeys.has(key)),
-    requestedArtifactIds: request.requestedArtifactIds,
-    previousArtifacts: options.previousArtifacts ?? [],
-    artifactSources,
-    runtimeImports: request.declarations
-      .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
-        if (!runtimeImport.resolved) {
-          throw new Error(`Artifact runtime import "${target.id}/${runtimeImport.name}" is not resolved in the bundle.`);
-        }
-        return {
-          artifactId: target.id,
-          name: runtimeImport.name,
-          providerPluginId: runtimeImport.resolved.providerPluginId,
-          exportName: runtimeImport.export,
-          path: path.join(options.target.bundleRoot!, runtimeImport.resolved.path.replace(/^\.\//u, '')),
-          digest: runtimeImport.resolved.digest,
-        };
-      })),
-    paths: {
-      awHome: path.join(tempDir, 'aw-home'),
-      codexHome: path.join(tempDir, 'codex-home'),
-      claudeHome: path.join(tempDir, 'claude-home'),
-      manifestPath: options.target.manifestPath,
-    },
-    renderer: {
-      runner: options.target.entry.runner,
-      path: options.target.entryPath,
-      args: options.target.entry.args ?? [],
-      manifestDigest: options.target.manifestDigest,
-      rendererDigest: options.target.rendererDigest,
-    },
-  };
-
-  const contextPath = path.join(tempDir, 'context.json');
-  await fs.writeJson(contextPath, context, { spaces: 2 });
   try {
-    await fs.chmod(contextPath, 0o600);
-  } catch {
-    // Best effort on non-POSIX filesystems.
-  }
+    const context: ArtifactRendererContext = {
+      event,
+      surface: distribution
+        ? { kind: 'distribution', name: distribution }
+        : { kind: 'platform', name: platform! },
+      platform,
+      distribution,
+      scope: options.scope,
+      plugin: {
+        name: options.target.sourceManifest.name,
+        version: options.target.sourceManifest.version,
+        rootDir: options.target.bundleRoot,
+      },
+      config: rendererConfig,
+      changedConfigKeys: (options.changedConfigKeys ?? [])
+        .filter((key) => requestedConfigKeys.has(key)),
+      requestedArtifactIds: request.requestedArtifactIds,
+      previousArtifacts: options.previousArtifacts ?? [],
+      artifactSources,
+      runtimeImports: request.declarations
+        .flatMap((target) => (target.runtimeImports ?? []).map((runtimeImport) => {
+          if (!runtimeImport.resolved) {
+            throw new Error(`Artifact runtime import "${target.id}/${runtimeImport.name}" is not resolved in the bundle.`);
+          }
+          return {
+            artifactId: target.id,
+            name: runtimeImport.name,
+            providerPluginId: runtimeImport.resolved.providerPluginId,
+            exportName: runtimeImport.export,
+            path: path.join(options.target.bundleRoot!, runtimeImport.resolved.path.replace(/^\.\//u, '')),
+            digest: runtimeImport.resolved.digest,
+          };
+        })),
+      paths: {
+        awHome: path.join(tempDir, 'aw-home'),
+        codexHome: path.join(tempDir, 'codex-home'),
+        claudeHome: path.join(tempDir, 'claude-home'),
+        manifestPath: options.target.manifestPath,
+      },
+      renderer: {
+        runner: options.target.entry.runner,
+        path: options.target.entryPath,
+        args: options.target.entry.args ?? [],
+        manifestDigest: options.target.manifestDigest,
+        rendererDigest: options.target.rendererDigest,
+      },
+    };
 
-  return {
-    context,
-    contextPath,
-    tempDir,
-    sensitiveValues: collectSensitivePluginConfigValues(
-      options.target.sourceManifest,
-      config.values,
-    ),
-    cleanup: async () => {
-      await fs.remove(tempDir);
-    },
-  };
+    const contextPath = path.join(tempDir, 'context.json');
+    await fs.writeJson(contextPath, context, { spaces: 2 });
+    try {
+      await fs.chmod(contextPath, 0o600);
+    } catch {
+      // Best effort on non-POSIX filesystems.
+    }
+
+    return {
+      context,
+      contextPath,
+      tempDir,
+      sensitiveValues: collectSensitivePluginConfigValues(
+        options.target.sourceManifest,
+        config.values,
+      ),
+      cleanup: async () => {
+        await fs.remove(tempDir);
+      },
+    };
+  } catch (error) {
+    await fs.remove(tempDir).catch(() => undefined);
+    throw error;
+  }
 }
 
 function summarizeRenderOutput(value: string, sensitiveValues: readonly string[]): string {

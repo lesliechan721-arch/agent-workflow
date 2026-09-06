@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
@@ -247,6 +247,57 @@ afterEach(async () => {
 });
 
 describe('artifact renderer runtime', () => {
+  it('removes its context directory when a runtime import is unresolved', async () => {
+    const root = await makeTempRoot('aw-artifact-context-import-');
+    const plugin = await writePlugin(root);
+    const target = await resolveArtifactRendererTarget(plugin);
+    target.sourceManifest!.artifacts!.targets = [{
+      id: 'portable-skill',
+      distribution: 'agent-skills',
+      target: 'agent-skills.skill',
+      scopes: ['user'],
+      states: ['present'],
+      refreshKeys: [],
+      skillKey: 'portable-skill',
+      runtimeImports: [{ name: 'helper', plugin: 'provider', export: 'helper' }],
+    }];
+    const createdDirectories = vi.spyOn(fs, 'mkdtemp');
+    try {
+      await expect(writeArtifactRendererContext({
+        target, event: 'install', platform: 'agent-skills', scope: 'user',
+        cwd: root, commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      })).rejects.toThrow('portable-skill/helper" is not resolved');
+      expect(createdDirectories).toHaveBeenCalledOnce();
+      const tempDir = await createdDirectories.mock.results[0]!.value;
+      tempDirs.push(tempDir);
+      await expect(fs.pathExists(tempDir)).resolves.toBe(false);
+    } finally {
+      createdDirectories.mockRestore();
+    }
+  });
+
+  it('removes its context directory and preserves a context write failure', async () => {
+    const root = await makeTempRoot('aw-artifact-context-write-');
+    const plugin = await writePlugin(root);
+    const target = await resolveArtifactRendererTarget(plugin);
+    const failure = Object.assign(new Error('context write denied'), { code: 'EACCES' });
+    const createdDirectories = vi.spyOn(fs, 'mkdtemp');
+    const writeContext = vi.spyOn(fs, 'writeJson').mockRejectedValueOnce(failure);
+    try {
+      await expect(writeArtifactRendererContext({
+        target, event: 'install', platform: 'codex', scope: 'user',
+        cwd: root, commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      })).rejects.toBe(failure);
+      expect(createdDirectories).toHaveBeenCalledOnce();
+      const tempDir = await createdDirectories.mock.results[0]!.value;
+      tempDirs.push(tempDir);
+      await expect(fs.pathExists(tempDir)).resolves.toBe(false);
+    } finally {
+      writeContext.mockRestore();
+      createdDirectories.mockRestore();
+    }
+  });
+
   it.runIf(process.platform !== 'win32')('terminates an inherited-pipe descendant and preserves the abort reason', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-abort-');
     const cwd = path.join(root, 'repo');
