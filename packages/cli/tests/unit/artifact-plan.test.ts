@@ -224,6 +224,13 @@ const renderConfig = {
     modelReasoningEffort: 'medium',
     unrelated: 'ignored',
   },
+  sources: {
+    enableLightweightInstruction: 'default' as const,
+    explorerModel: 'user' as const,
+    modelReasoningEffort: 'default' as const,
+    unrelated: 'user' as const,
+  },
+  issues: [],
 };
 
 afterEach(async () => {
@@ -719,7 +726,7 @@ describe('artifact plan validation', () => {
     })).toThrow('duplicate artifact id + target');
   });
 
-  it('limits configDigest changes to refresh keys, digest salt, target, and id', () => {
+  it('limits configDigest changes to refresh inputs, digest salt, target, and id', () => {
     const baseDigest = createArtifactConfigDigest({
       artifact: {
         id: 'lightweight-instruction',
@@ -727,7 +734,7 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: renderConfig.values,
+      renderConfig,
       digestSalt: 'sha256:renderer-a',
     });
     const unrelatedDigest = createArtifactConfigDigest({
@@ -737,9 +744,9 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: {
-        ...renderConfig.values,
-        unrelated: 'changed',
+      renderConfig: {
+        ...renderConfig,
+        values: { ...renderConfig.values, unrelated: 'changed' },
       },
       digestSalt: 'sha256:renderer-a',
     });
@@ -750,9 +757,58 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: {
-        ...renderConfig.values,
-        explorerModel: 'gpt-5.5',
+      renderConfig: {
+        ...renderConfig,
+        values: { ...renderConfig.values, explorerModel: 'gpt-5.5' },
+      },
+      digestSalt: 'sha256:renderer-a',
+    });
+    const sourceDigest = createArtifactConfigDigest({
+      artifact: {
+        id: 'lightweight-instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      },
+      renderConfig: {
+        ...renderConfig,
+        sources: { ...renderConfig.sources, explorerModel: 'project' },
+      },
+      digestSalt: 'sha256:renderer-a',
+    });
+    const issueDigest = createArtifactConfigDigest({
+      artifact: {
+        id: 'lightweight-instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      },
+      renderConfig: {
+        ...renderConfig,
+        issues: [{
+          type: 'invalid-config',
+          key: 'explorerModel',
+          source: 'user',
+          message: 'invalid model',
+        }],
+      },
+      digestSalt: 'sha256:renderer-a',
+    });
+    const unrelatedIssueDigest = createArtifactConfigDigest({
+      artifact: {
+        id: 'lightweight-instruction',
+        platform: 'codex',
+        target: 'codex.developerInstructionsBlock',
+        refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
+      },
+      renderConfig: {
+        ...renderConfig,
+        issues: [{
+          type: 'invalid-config',
+          key: 'unrelated',
+          source: 'user',
+          message: 'unrelated issue',
+        }],
       },
       digestSalt: 'sha256:renderer-a',
     });
@@ -763,7 +819,7 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: renderConfig.values,
+      renderConfig,
       digestSalt: 'sha256:renderer-b',
     });
     const otherIdDigest = createArtifactConfigDigest({
@@ -773,7 +829,7 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: renderConfig.values,
+      renderConfig,
       digestSalt: 'sha256:renderer-a',
     });
     const otherTargetDigest = createArtifactConfigDigest({
@@ -783,7 +839,7 @@ describe('artifact plan validation', () => {
         target: 'codex.agentRole',
         refreshKeys: ['enableLightweightInstruction', 'explorerModel', 'modelReasoningEffort'],
       },
-      configValues: renderConfig.values,
+      renderConfig,
       digestSalt: 'sha256:renderer-a',
     });
     const objectChildDigest = createArtifactConfigDigest({
@@ -793,7 +849,11 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['credentials'],
       },
-      configValues: { credentials: { region: 'us', token: 'two' } },
+      renderConfig: {
+        values: { credentials: { region: 'us', token: 'two' } },
+        sources: { credentials: 'user' },
+        issues: [],
+      },
       digestSalt: 'sha256:renderer-a',
     });
     const objectBaseDigest = createArtifactConfigDigest({
@@ -803,12 +863,19 @@ describe('artifact plan validation', () => {
         target: 'codex.developerInstructionsBlock',
         refreshKeys: ['credentials'],
       },
-      configValues: { credentials: { region: 'us', token: 'one' } },
+      renderConfig: {
+        values: { credentials: { region: 'us', token: 'one' } },
+        sources: { credentials: 'user' },
+        issues: [],
+      },
       digestSalt: 'sha256:renderer-a',
     });
 
     expect(unrelatedDigest).toBe(baseDigest);
     expect(relevantDigest).not.toBe(baseDigest);
+    expect(sourceDigest).not.toBe(baseDigest);
+    expect(issueDigest).not.toBe(baseDigest);
+    expect(unrelatedIssueDigest).toBe(baseDigest);
     expect(otherSaltDigest).not.toBe(baseDigest);
     expect(otherIdDigest).not.toBe(baseDigest);
     expect(otherTargetDigest).not.toBe(baseDigest);

@@ -4859,6 +4859,83 @@ describe('TUI v4 Review safety', () => {
     },
   );
 
+  it('describes an effective config no-op without claiming that no installation exists', async () => {
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...baseEvidence,
+        config: {
+          scope: 'project',
+          schemaIdentity: 'sha256:schema',
+          storeDigest: 'sha256:store',
+          impactState: 'known',
+          noEffectiveChange: true,
+          affectedTargets: [],
+        },
+      }),
+    }));
+
+    const review = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'project',
+      projectLayer: 'shared', apply: true, removeKeys: ['exploreWait'],
+      changes: [{ key: 'exploreWait', title: '等待窗口', before: '15', after: '15' }],
+    });
+
+    expect(review.changes.filter((change) => change.group === 'configImpact')).toEqual([{
+      kind: 'keep', group: 'configImpact', title: '有效设置输入不变；无需重新应用',
+    }]);
+    expect(JSON.stringify(review.changes)).not.toContain('当前没有可见安装');
+    expect(JSON.stringify(review.changes)).not.toContain('动态 Skill');
+    expect(review.requiresConfirmation).toBe(false);
+  });
+
+  it('reports unknown reset impact without claiming that installations stay unchanged', async () => {
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...baseEvidence,
+        config: {
+          scope: 'user',
+          storeDigest: 'sha256:invalid-store',
+          impactState: 'unknown',
+          affectedTargets: [],
+        },
+        resetTarget: {
+          sourceId: 'official', pluginName: 'enhance', scope: 'user',
+          kind: 'regularFile', fingerprint: 'sha256:reset-target',
+        },
+      }),
+    }));
+
+    const review = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'official/enhance', scope: 'user',
+      projectLayer: 'shared',
+    });
+
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      kind: 'warning', group: 'configImpact', title: '设置重置后的应用影响未知',
+    }));
+    expect(JSON.stringify(review.changes)).not.toContain('当前安装保持不变');
+  });
+
+  it('keeps visible placement stale protection for an unknown reset impact', () => {
+    const expected: OperationEvidence = {
+      ...baseEvidence,
+      targetFingerprint: 'sha256:visible-before',
+      config: {
+        scope: 'user', storeDigest: 'sha256:invalid-store',
+        impactState: 'unknown', affectedTargets: [],
+      },
+      resetTarget: {
+        sourceId: 'official', pluginName: 'enhance', scope: 'user',
+        kind: 'regularFile', fingerprint: 'sha256:reset-target',
+      },
+    };
+
+    expect(operationEvidenceMatches(expected, {
+      ...expected,
+      targetFingerprint: 'sha256:visible-after',
+    })).toBe(false);
+  });
+
   it('passes the canonical plugin identity to the write executor', async () => {
     const executeIntent = vi.fn().mockResolvedValue({ ok: true });
     const controller = new TuiController(dependencies({ executeIntent }));

@@ -64,6 +64,7 @@ import {
   replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
+import { analyzePluginConfigMutationImpact } from '../utils/plugin-config-impact.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import { createBatchIntentCompatiblePlanFingerprint } from '../commands/operation-plan.js';
@@ -272,21 +273,28 @@ export function configAffectedStatusTargets(
       .localeCompare(`${right.platform}\0${right.scope}`, 'en'));
 }
 
-function configSharedNativeRenderTargets(
+function configRetrySharedNativeRenderTargets(
   plugin: PluginMeta,
-  changedKeys?: readonly string[],
 ): Array<{ id: string; skillKey: string; refreshKeys: string[] }> {
-  const changed = changedKeys ? new Set(changedKeys) : undefined;
   return (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
     target.platform === 'codex'
       && target.target === 'codex.skill'
       && target.delivery.mode === 'codex-native'
       && target.skillKey
-      && (changed
-        ? target.refreshKeys.some((key) => changed.has(key))
-        : target.refreshKeys.length > 0)
+      && target.refreshKeys.length > 0
       ? [{ id: target.id, skillKey: target.skillKey, refreshKeys: [...target.refreshKeys] }]
       : []);
+}
+
+function configImpactVisibleTargets(
+  pluginName: string,
+  targets: readonly StatusV7Target[],
+) {
+  return targets.map((target) => ({
+    pluginName,
+    platform: target.platform,
+    scope: target.scope,
+  }));
 }
 
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
@@ -1017,24 +1025,6 @@ export function createTuiControllerDependencies(
           '设置目标是特殊文件系统节点，不能自动重置。请手动移动后重试。',
         );
       }
-      let source: OperationEvidence['source'];
-      try {
-        const packageInfo = await readCliPackageInfo();
-        source = await withResolvedCatalogPlugin({
-          selector: intent.pluginId,
-          cliVersion: packageInfo.version,
-          env: context.env,
-          ...(preparation && sessionContextForPlugin(intent.pluginId)
-            ? { operationContext: sessionContextForPlugin(intent.pluginId)! }
-            : {}),
-          ...(signal ? { signal } : {}),
-          consume: async ({ plugin, source: resolvedSource }) =>
-            sourceEvidenceForPlugin(resolvedSource, plugin.manifest.name),
-        });
-      } catch {
-        source = undefined;
-      }
-      signal?.throwIfAborted();
       const relevantTargets = sessionStatusResult
         ? configAffectedStatusTargets(
             sessionStatusResult.payload.targets,
@@ -1042,6 +1032,40 @@ export function createTuiControllerDependencies(
             intent.scope,
           )
         : [];
+      const relevantRevisions = (sessionStatusResult?.targetRevisions ?? []).filter((revision) =>
+        relevantTargets.some((statusTarget) => statusTarget.platform === revision.platform
+          && statusTarget.scope === revision.scope
+          && statusTarget.pluginId === revision.pluginId));
+      let selected: {
+        source: OperationSourceEvidence;
+        impact: Awaited<ReturnType<typeof analyzePluginConfigMutationImpact>>;
+      } | undefined;
+      try {
+        const packageInfo = await readCliPackageInfo();
+        selected = await withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: packageInfo.version,
+          env: context.env,
+          ...(preparation && sessionContextForPlugin(intent.pluginId)
+            ? { operationContext: sessionContextForPlugin(intent.pluginId)! }
+            : {}),
+          ...(signal ? { signal } : {}),
+          consume: async ({ plugin, source: resolvedSource }) => ({
+            source: sourceEvidenceForPlugin(resolvedSource, plugin.manifest.name),
+            impact: await analyzePluginConfigMutationImpact({
+              plugin,
+              scope: intent.scope,
+              cwd: context.cwd,
+              env: context.env,
+              visibleTargets: configImpactVisibleTargets(plugin.manifest.name, relevantTargets),
+              mutation: { kind: 'reset' },
+            }),
+          }),
+        });
+      } catch {
+        selected = undefined;
+      }
+      signal?.throwIfAborted();
       await preparation?.reporter.emit('evidence');
       return {
         catalog: sessionStatusResult ? {
@@ -1051,11 +1075,20 @@ export function createTuiControllerDependencies(
           configDigest: 'config-reset-offline',
           compositeDigest: 'config-reset-target',
         },
-        ...(source ? { source } : {}),
+        ...(selected ? { source: selected.source } : {}),
+        ...(sessionStatusResult ? {
+          targetFingerprint: statusTargetFingerprint(relevantTargets, relevantRevisions),
+        } : {}),
         config: {
           scope: intent.scope,
-          storeDigest: target.fingerprint,
-          affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+          storeDigest: selected?.impact.storeDigest ?? target.fingerprint,
+          impactState: selected?.impact.impactState ?? 'unknown',
+          ...(selected?.impact.noEffectiveChange ? { noEffectiveChange: true as const } : {}),
+          affectedTargets: (selected?.impact.affectedTargets
+            ?? relevantTargets).map(({ platform, scope }) => ({ platform, scope })),
+          ...((selected?.impact.sharedNativeRenderTargets.length ?? 0) > 0
+            ? { sharedNativeRenderTargets: selected!.impact.sharedNativeRenderTargets }
+            : {}),
         },
         resetTarget: {
           sourceId: parsed.sourceId,
@@ -1539,6 +1572,11 @@ export function createTuiControllerDependencies(
       if (configSnapshot.digest !== sessionStatusResult.payload.catalog.configDigest) {
         throw operationReviewStale('准备设置确认期间来源配置发生变化。');
       }
+      const relevantTargets = configAffectedStatusTargets(
+        sessionStatusResult.payload.targets,
+        intent.pluginId,
+        intent.scope,
+      );
       const selected = await withResolvedCatalogPlugin({
         selector: intent.pluginId,
         cliVersion: packageInfo.version,
@@ -1562,39 +1600,38 @@ export function createTuiControllerDependencies(
               }
             }
           }
+          const impact = intent.retryApply ? undefined : await analyzePluginConfigMutationImpact({
+            plugin,
+            scope: intent.scope,
+            cwd: context.cwd,
+            env: context.env,
+            visibleTargets: configImpactVisibleTargets(plugin.manifest.name, relevantTargets),
+            mutation: {
+              kind: 'patch',
+              updates: intent.updates,
+              removeKeys: intent.removeKeys,
+            },
+          });
           return {
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
-            sharedNativeRenderTargets: intent.kind === 'configSave'
-              ? configSharedNativeRenderTargets(plugin, intent.retryApply
-                  ? undefined
-                  : [
-                      ...Object.keys(intent.updates ?? {}),
-                      ...(intent.removeKeys ?? []),
-                    ])
-              : [],
+            impact,
+            sharedNativeRenderTargets: intent.retryApply
+              ? configRetrySharedNativeRenderTargets(plugin)
+              : impact!.sharedNativeRenderTargets,
           };
         },
       });
-      const store = await readPluginConfigStore({
-        sourceId: selected.source?.sourceId ?? parsePluginId(intent.pluginId).sourceId,
-        ...(selected.source?.sourceIdentity
-          ? { sourceIdentity: selected.source.sourceIdentity }
-          : {}),
-        ...(selected.source?.logicalIdentity
-          ? { logicalIdentity: selected.source.logicalIdentity }
-          : {}),
+      const retryStore = intent.retryApply ? await readPluginConfigStore({
+        sourceId: selected.source.sourceId,
+        sourceIdentity: selected.source.sourceIdentity,
+        logicalIdentity: selected.source.logicalIdentity,
         pluginName: selected.pluginName,
         scope: intent.scope,
         cwd: context.cwd,
         env: context.env,
-      });
+      }) : undefined;
       signal?.throwIfAborted();
-      const relevantTargets = configAffectedStatusTargets(
-        sessionStatusResult.payload.targets,
-        intent.pluginId,
-        intent.scope,
-      );
       const relevantRevisions = (sessionStatusResult.targetRevisions ?? []).filter((revision) =>
         relevantTargets.some((target) => target.platform === revision.platform
           && target.scope === revision.scope
@@ -1611,8 +1648,12 @@ export function createTuiControllerDependencies(
         config: {
           scope: intent.scope,
           ...(selected.source?.manifestDigest ? { schemaIdentity: selected.source.manifestDigest } : {}),
-          storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
-          affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+          storeDigest: selected.impact?.storeDigest
+            ?? digest({ exists: retryStore?.exists, rawDigest: retryStore?.rawDigest }),
+          impactState: selected.impact?.impactState ?? 'known',
+          ...(selected.impact?.noEffectiveChange ? { noEffectiveChange: true as const } : {}),
+          affectedTargets: (selected.impact?.affectedTargets
+            ?? relevantTargets).map(({ platform, scope }) => ({ platform, scope })),
           ...(selected.sharedNativeRenderTargets.length > 0
             ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
             : {}),
@@ -1691,6 +1732,9 @@ export function createTuiControllerDependencies(
         throw operationReviewStale('离线清理现场证据已消失或无法验证。');
       }
     }
+    const configVisibleTargets = intent.kind === 'configSave'
+      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
+      : [];
     const selected = offlineCleanupTarget
       ? {
           pluginName: offlineCleanupTarget.pluginName,
@@ -1725,16 +1769,31 @@ export function createTuiControllerDependencies(
                 }
               }
             }
+            const impact = intent.kind === 'configSave' && !intent.retryApply
+              ? await analyzePluginConfigMutationImpact({
+                  plugin,
+                  scope: intent.scope,
+                  cwd: context.cwd,
+                  env: context.env,
+                  visibleTargets: configImpactVisibleTargets(
+                    plugin.manifest.name,
+                    configVisibleTargets,
+                  ),
+                  mutation: {
+                    kind: 'patch',
+                    updates: intent.updates,
+                    removeKeys: intent.removeKeys,
+                  },
+                })
+              : undefined;
             return {
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+              impact,
               sharedNativeRenderTargets: intent.kind === 'configSave'
-                ? configSharedNativeRenderTargets(plugin, intent.retryApply
-                    ? undefined
-                    : [
-                        ...Object.keys(intent.updates ?? {}),
-                        ...(intent.removeKeys ?? []),
-                      ])
+                ? intent.retryApply
+                  ? configRetrySharedNativeRenderTargets(plugin)
+                  : impact!.sharedNativeRenderTargets
                 : [],
             };
           },
@@ -1839,7 +1898,7 @@ export function createTuiControllerDependencies(
     await preparation?.reporter.emit('evidence');
     signal?.throwIfAborted();
     const evidenceTargets = intent.kind === 'configSave'
-      ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
+      ? configVisibleTargets
       : status.payload.targets;
     const evidenceRevisions = intent.kind === 'configSave'
       ? (status.targetRevisions ?? []).filter((revision) =>
@@ -1868,7 +1927,8 @@ export function createTuiControllerDependencies(
       ),
     };
     if (intent.kind === 'configSave') {
-      const store = await readPluginConfigStore({
+      const impact = 'impact' in selected ? selected.impact : undefined;
+      const retryStore = intent.retryApply ? await readPluginConfigStore({
         sourceId: selected.source.sourceId,
         sourceIdentity: selected.source.sourceIdentity,
         ...('logicalIdentity' in selected.source
@@ -1878,15 +1938,19 @@ export function createTuiControllerDependencies(
         scope: intent.scope,
         cwd: context.cwd,
         env: context.env,
-      });
+      }) : undefined;
       signal?.throwIfAborted();
       evidence.config = {
         scope: intent.scope,
         ...('manifestDigest' in selected.source
           ? { schemaIdentity: selected.source.manifestDigest }
           : {}),
-        storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
-        affectedTargets: evidenceTargets.map(({ platform, scope }) => ({ platform, scope })),
+        storeDigest: impact?.storeDigest
+          ?? digest({ exists: retryStore?.exists, rawDigest: retryStore?.rawDigest }),
+        impactState: impact?.impactState ?? 'known',
+        ...(impact?.noEffectiveChange ? { noEffectiveChange: true } : {}),
+        affectedTargets: (impact?.affectedTargets
+          ?? evidenceTargets).map(({ platform, scope }) => ({ platform, scope })),
         ...(intent.scope === 'project' ? {
           shareability: await inspectConfigShareability({
             sourceId: selected.source.sourceId,
@@ -2792,7 +2856,7 @@ export function createTuiControllerDependencies(
                   currentSource,
                   sourceEvidenceForPlugin(source, plugin.manifest.name),
                 );
-                const applyTargets = intent.apply
+                const applyTargets = intent.retryApply || intent.apply
                   ? currentEvidence.config?.affectedTargets.map((target) => ({
                       pluginName: plugin.manifest.name,
                       platform: target.platform,

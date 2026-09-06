@@ -2663,7 +2663,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
           target: 'codex.skill',
           refreshKeys: target.refreshKeys,
         },
-        configValues: config.values,
+        renderConfig: config,
         digestSalt: renderer.rendererDigest!,
       }),
       artifactDigest: receiptTargets.get(target.id)!.artifactDigest,

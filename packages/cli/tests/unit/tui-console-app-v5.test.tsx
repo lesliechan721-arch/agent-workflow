@@ -7364,6 +7364,40 @@ describe('ConsoleAppV4', () => {
     expect(executeIntent).toHaveBeenCalledOnce();
   });
 
+  it('executes an effective config no-op without shared confirmation', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded', targetResults: [],
+    });
+    const value = controller({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        config: {
+          scope: 'project',
+          schemaIdentity: 'sha256:schema',
+          storeDigest: 'sha256:store',
+          impactState: 'known',
+          noEffectiveChange: true,
+          affectedTargets: [],
+        },
+      }),
+      executeIntent,
+    });
+    await value.buildOperationReview({
+      kind: 'configSave', pluginId: 'official/enhance', scope: 'project',
+      apply: true, removeKeys: ['exploreWait'],
+      changes: [{ key: 'exploreWait', title: '等待窗口', before: '15', after: '15' }],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('有效设置输入不变');
+    expect(instance.lastFrame()).not.toContain('请先确认共享影响');
+    expect(instance.lastFrame()).not.toContain('动态 Skill');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
   it('enters the existing Review chain from a mounted needsSync platform action', async () => {
     const loaded = loadResult();
     loaded.payload.targets = loaded.payload.targets.filter((entry) =>

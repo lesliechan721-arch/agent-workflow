@@ -267,6 +267,8 @@ export interface OperationEvidence {
     scope: Scope;
     schemaIdentity?: string;
     storeDigest: string;
+    impactState?: 'known' | 'unknown';
+    noEffectiveChange?: true;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
     shareability?: 'verified' | 'unverified';
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
@@ -708,6 +710,9 @@ function canonicalPluginIds(pluginIds: readonly string[]): string[] {
 }
 
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
+  if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
+    return { ...intent, apply: true };
+  }
   if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'selected') return intent;
   return {
     ...intent,
@@ -885,10 +890,21 @@ export function operationEvidenceMatches(
       !== JSON.stringify(stableValue(current.resetTarget))) {
       return false;
     }
-    if (!expected.source) return true;
-    return current.source !== undefined
-      && JSON.stringify(stableValue(expected.source))
-        === JSON.stringify(stableValue(current.source));
+    if (expected.source && (current.source === undefined
+      || JSON.stringify(stableValue(expected.source))
+        !== JSON.stringify(stableValue(current.source)))) {
+      return false;
+    }
+    if (expected.targetFingerprint !== undefined
+      && expected.targetFingerprint !== current.targetFingerprint) {
+      return false;
+    }
+    if (expected.config?.impactState !== 'known') return true;
+    return JSON.stringify(stableValue({
+      config: expected.config,
+    })) === JSON.stringify(stableValue({
+      config: current.config,
+    }));
   }
   return operationEvidenceFingerprint(expected) === operationEvidenceFingerprint(current);
 }

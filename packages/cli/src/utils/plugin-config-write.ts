@@ -1,5 +1,3 @@
-import { stablePluginConfigStringify } from '@lesliechan721/aw-plugin-core/manifest';
-
 import type { RebuildCommandRuntime } from '../commands/rebuild-command.js';
 import {
   statusCommandV7,
@@ -39,6 +37,7 @@ import {
   summarizeEffectivePluginConfig,
   type PluginConfigValue,
 } from './plugin-config.js';
+import { analyzePluginConfigMutationImpact } from './plugin-config-impact.js';
 import {
   collectSensitivePluginConfigValues,
   redactPluginScriptOutput,
@@ -696,18 +695,6 @@ type ApplyPluginConfigWriteOptions = {
   reviewPreflight?: () => Promise<void> | void;
 };
 
-function changedKeysAffectSharedNativeTarget(options: {
-  plugin: PluginMeta;
-  changedKeys: readonly string[];
-}): boolean {
-  const changedKeys = new Set(options.changedKeys);
-  return (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
-    target.platform === 'codex'
-    && target.target === 'codex.skill'
-    && target.delivery?.mode === 'codex-native'
-    && target.refreshKeys.some((key) => changedKeys.has(key)));
-}
-
 function pluginHasSharedNativeRefreshKeys(plugin: PluginMeta): boolean {
   return (plugin.manifest.artifacts?.targets ?? []).some((target) =>
     target.platform === 'codex'
@@ -788,57 +775,51 @@ async function applyPluginConfigWriteUnlocked(
     }
   }
 
-  const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
-  const store = await readPluginConfigStore({
-    ...configIdentity,
-    pluginName,
+  let discovered: Awaited<ReturnType<typeof resolveConfigApplyTargets>> | undefined;
+  let targetDiscoveryFailed = false;
+  if (options.apply !== false) {
+    try {
+      discovered = await resolveConfigApplyTargets({
+        plugin: schemaPlugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        applyTargets: options.applyTargets,
+        nativeCliRunner: options.nativeCliRunner,
+        rebuildRuntime: options.rebuildRuntime,
+      });
+    } catch {
+      targetDiscoveryFailed = true;
+    }
+  }
+  const impact = await analyzePluginConfigMutationImpact({
+    plugin: schemaPlugin,
     scope: options.scope,
     cwd: options.cwd,
     env: options.env,
-    schema,
+    visibleTargets: discovered?.targets ?? [],
+    mutation: {
+      kind: 'patch',
+      updates: requestedUpdates,
+      removeKeys: requestedRemoveKeys,
+    },
   });
-  assertReadyPluginConfigStore(store);
-  for (const key of requestedRemoveKeys) {
-    if (!schema[key] && !Object.hasOwn(store.values, key)) {
-      throw new Error(`Unknown config key "${key}".`);
-    }
-  }
+  const updates = await coercePluginConfigUpdates({ schema, updates: requestedUpdates, cwd: options.cwd });
   const warnings: string[] = [];
-  const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
-  const staleRemovedKeys = removedKeys.filter((key) => !schema[key]);
-  const updatedKeys = Object.entries(updates)
-    .filter(([key, value]) => !Object.hasOwn(store.values, key)
-      || stablePluginConfigStringify(store.values[key]!) !== stablePluginConfigStringify(value))
-    .map(([key]) => key);
-  const changedKeys = [...updatedKeys, ...removedKeys];
-  let applyTargets = options.applyTargets;
-  const sharedNativeAffected = changedKeysAffectSharedNativeTarget({
-    plugin: schemaPlugin,
-    changedKeys,
-  });
+  const { updatedKeys, removedKeys, staleRemovedKeys } = impact;
   if (
     options.apply !== false
     && options.scope === 'user'
     && options.sharedNativeApplyConfirmed !== true
-    && sharedNativeAffected
+    && impact.sharedNativeRenderTargets.length > 0
+    && impact.affectedTargets.some((target) => target.platform === 'codex')
   ) {
-    applyTargets ??= (await discoverVisibleTargets({
-      plugin: schemaPlugin,
-      pluginName,
-      scope: options.scope,
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      nativeCliRunner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
-      rebuildRuntime: options.rebuildRuntime,
-    })).targets;
-    if (applyTargets.some((target) => target.platform === 'codex')) {
-      throwSharedNativeApplyConfirmationRequired();
-    }
+    throwSharedNativeApplyConfirmationRequired();
   }
   if (
     options.apply !== false
     && options.sharedNativeApplyConfirmed !== true
-    && changedKeys.length > 0
+    && impact.affectedTargets.length > 0
     && schemaPlugin.manifest.scripts?.preApply
   ) {
     const error = new Error(
@@ -847,7 +828,7 @@ async function applyPluginConfigWriteUnlocked(
     error.code = 'preApplyAuthorizationRequired';
     throw error;
   }
-  if (changedKeys.length > 0) {
+  if (impact.storeChanged) {
     try {
       const write = await patchPluginConfigStore({
         ...configIdentity,
@@ -877,7 +858,7 @@ async function applyPluginConfigWriteUnlocked(
     }));
   } catch {
     const apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig');
-    const otherProjectsMayRequireSync = options.scope === 'user' && changedKeys.length > 0;
+    const otherProjectsMayRequireSync = options.scope === 'user' && impact.storeChanged;
     if (otherProjectsMayRequireSync) warnings.push(...otherProjectsWarning(options.scope));
     return {
       plugin: pluginName,
@@ -895,28 +876,33 @@ async function applyPluginConfigWriteUnlocked(
   }
   let apply: ConfigApplyResult;
   try {
-    apply = changedKeys.length === 0
+    apply = !impact.storeChanged
       ? skippedApply('noConfigChange')
-      : staleRemovedKeys.length === changedKeys.length
-        ? skippedApply('noEffectiveConfigChange')
-        : options.apply === false
-          ? skippedApply('notRequested')
+      : options.apply === false
+        ? skippedApply('notRequested')
+        : targetDiscoveryFailed
+          ? unavailableApply('targetDiscoveryFailed', 'targetDiscovery')
+          : impact.noEffectiveChange
+            && ((discovered?.targets.length ?? 0) > 0
+              || staleRemovedKeys.length === impact.changedKeys.length)
+            ? skippedApply('noEffectiveConfigChange')
           : await applyConfigToVisibleTargets({
               plugin: schemaPlugin,
               scope: options.scope,
               cwd: options.cwd,
               env: options.env ?? process.env,
-              applyTargets,
+              applyTargets: impact.affectedTargets,
               nativeCliRunner: options.nativeCliRunner,
               reinstallCommandImpl: options.reinstallCommandImpl,
               rebuildRuntime: options.rebuildRuntime,
-              noVisibleTargetHasInvalidConfig: effective.issues.length > 0,
+              noVisibleTargetHasInvalidConfig: (discovered?.targets.length ?? 0) > 0
+                && effective.issues.length > 0,
             });
   } catch (error) {
     const failure = error instanceof Error ? error : new Error(String(error));
     throw Object.assign(failure, { configWrite: 'succeeded' as const });
   }
-  const otherProjectsMayRequireSync = options.scope === 'user' && changedKeys.length > 0;
+  const otherProjectsMayRequireSync = options.scope === 'user' && impact.storeChanged;
   if (otherProjectsMayRequireSync) warnings.push(...otherProjectsWarning(options.scope));
 
   return {
@@ -1093,7 +1079,6 @@ async function resetPluginConfigWithHelperUnlocked(
     }
   }
   let removedKeys: string[] = [];
-  let removedKeysKnown = false;
   try {
     const store = await readPluginConfigStore({
       ...configIdentity,
@@ -1103,38 +1088,55 @@ async function resetPluginConfigWithHelperUnlocked(
       env: options.env,
     });
     removedKeys = collectRemovedConfigKeys(store.values);
-    removedKeysKnown = store.state !== 'invalid';
   } catch {
     // Reset is the final recovery boundary and does not require a readable store.
   }
   const warnings: string[] = [];
-
-  const sharedNativeAffected = options.plugin
-    && (removedKeysKnown
-      ? changedKeysAffectSharedNativeTarget({
+  let impact: Awaited<ReturnType<typeof analyzePluginConfigMutationImpact>> | undefined;
+  let targetDiscoveryFailed = false;
+  let visibleTargets: ReceiptTargetIdentity[] = [];
+  if (options.plugin) {
+    if (options.apply !== false) {
+      try {
+        visibleTargets = (await resolveConfigApplyTargets({
           plugin: options.plugin,
-          changedKeys: removedKeys,
-        })
-      : pluginHasSharedNativeRefreshKeys(options.plugin));
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          rebuildRuntime: options.rebuildRuntime,
+        })).targets;
+      } catch {
+        targetDiscoveryFailed = true;
+      }
+    }
+    try {
+      impact = await analyzePluginConfigMutationImpact({
+        plugin: options.plugin,
+        scope: options.scope,
+        cwd: options.cwd,
+        env: options.env,
+        visibleTargets,
+        mutation: { kind: 'reset' },
+      });
+      removedKeys = impact.removedKeys;
+    } catch {
+      // Reset remains available when its before state cannot be read.
+    }
+  }
   if (
     options.plugin
     && options.apply !== false
     && options.scope === 'user'
     && options.sharedNativeApplyConfirmed !== true
-    && sharedNativeAffected
+    && (impact
+      ? impact.sharedNativeRenderTargets.length > 0
+        && impact.affectedTargets.some((target) => target.platform === 'codex')
+      : pluginHasSharedNativeRefreshKeys(options.plugin))
+    && visibleTargets.some((target) => target.platform === 'codex')
   ) {
-    const discovered = await resolveConfigApplyTargets({
-      plugin: options.plugin,
-      scope: options.scope,
-      cwd: options.cwd,
-      env: options.env ?? process.env,
-      applyTargets: options.applyTargets,
-      nativeCliRunner: options.nativeCliRunner,
-      rebuildRuntime: options.rebuildRuntime,
-    });
-    if (discovered.targets.some((target) => target.platform === 'codex')) {
-      throwSharedNativeApplyConfirmationRequired();
-    }
+    throwSharedNativeApplyConfirmationRequired();
   }
 
   let reset: Awaited<ReturnType<typeof resetPluginConfigStore>>;
@@ -1183,17 +1185,29 @@ async function resetPluginConfigWithHelperUnlocked(
           apply = unavailableApply('effectiveConfigUnavailable', 'effectiveConfig');
         }
       }
-      if (reset.deleted && options.apply !== false && apply.state === 'skipped') {
+      if (reset.deleted
+        && options.apply !== false
+        && apply.state === 'skipped'
+        && impact?.noEffectiveChange
+        && visibleTargets.length > 0) {
+        apply = skippedApply('noEffectiveConfigChange');
+      } else if (reset.deleted
+        && options.apply !== false
+        && apply.state === 'skipped'
+        && targetDiscoveryFailed) {
+        apply = unavailableApply('targetDiscoveryFailed', 'targetDiscovery');
+      } else if (reset.deleted && options.apply !== false && apply.state === 'skipped') {
         apply = await applyConfigToVisibleTargets({
           plugin: schemaPlugin,
           scope: options.scope,
           cwd: options.cwd,
           env: options.env ?? process.env,
-          applyTargets: options.applyTargets,
+          applyTargets: impact?.affectedTargets ?? options.applyTargets,
           nativeCliRunner: options.nativeCliRunner,
           reinstallCommandImpl: options.reinstallCommandImpl,
           rebuildRuntime: options.rebuildRuntime,
-          noVisibleTargetHasInvalidConfig: (effective?.issues.length ?? 0) > 0,
+          noVisibleTargetHasInvalidConfig: visibleTargets.length > 0
+            && (effective?.issues.length ?? 0) > 0,
         });
       }
     } else if (reset.deleted && options.apply !== false && apply.state === 'skipped') {

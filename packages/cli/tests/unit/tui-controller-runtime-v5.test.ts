@@ -997,6 +997,21 @@ describe('TUI controller runtime scope conflict validation', () => {
       kind: 'configSave', pluginId: 'team/demo', scope: 'user', updates: { mode: 'strict' },
     }, signal, () => undefined);
     expect(afterReorder.config?.storeDigest).not.toBe(beforeReorder.config?.storeDigest);
+
+    const controller = new TuiController(dependencies);
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', apply: true,
+      updates: { mode: 'strict' },
+      changes: [{ key: 'mode', title: 'Mode', before: 'saved', after: 'strict' }],
+    });
+    const writesBeforeRawChange = runtimeMocks.applyPluginConfigWrite.mock.calls.length;
+    await fs.outputJson(storePath, envelope, { spaces: 2 });
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'stale',
+    });
+    expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenCalledTimes(writesBeforeRawChange);
+    controller.dispose();
   });
 
   it('keeps Review, stale fingerprints, and writer reapply targets on one config affected-target rule', async () => {
@@ -1006,7 +1021,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
       manifest.config = { fields: {
         mode: { type: 'string', title: 'Mode' },
-        nativeMode: { type: 'string', title: 'Native mode' },
+        nativeMode: { type: 'string', title: 'Native mode', default: 'safe' },
       } };
       manifest.artifacts = { targets: [{
         id: 'native-skill',
@@ -1082,19 +1097,52 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(userReview.changes).toContainEqual(expect.objectContaining({
       title: 'preApply 脚本超时', description: '18000 ms',
     }));
-    expect(impactTitles(userReview)).toEqual([
-      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
-    ]);
+    expect(impactTitles(userReview)).toEqual(['重新应用 Claude Code · 当前项目']);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
       rebuildRuntime: expect.objectContaining({ scriptTimeoutMs: 18_000 }),
-      applyTargets: [
-        expect.objectContaining({ platform: 'claude', scope: 'project' }),
-        expect.objectContaining({ platform: 'codex', scope: 'user' }),
-      ],
+      applyTargets: [expect.objectContaining({ platform: 'claude', scope: 'project' })],
     }));
     both.dispose();
+
+    const sourceOnly = await createController([userTarget]);
+    const sourceOnlyReview = await sourceOnly.buildOperationReview({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared',
+      apply: true, updates: { nativeMode: 'safe' },
+      changes: [{ key: 'nativeMode', title: 'Native mode', before: 'safe', after: 'safe' }],
+    });
+    expect(impactTitles(sourceOnlyReview)).toEqual(['重新生成 native-skill 动态 Skill']);
+    expect(sourceOnlyReview).toMatchObject({
+      requiresConfirmation: true,
+      sharedImpact: { pluginIds: ['team/demo'] },
+    });
+    sourceOnly.dispose();
+
+    await writePluginConfigStore({
+      sourceId: 'team',
+      logicalIdentity: await readCatalogSnapshotLogicalIdentity(sourceRoot),
+      pluginName: 'demo',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { nativeMode: 'legacy-project-value' },
+    });
+    const legacyProjectOverride = await createController([userTarget, projectTarget]);
+    const legacyProjectReview = await legacyProjectOverride.buildOperationReview({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'project', projectLayer: 'shared',
+      apply: true, removeKeys: ['nativeMode'],
+      changes: [{
+        key: 'nativeMode', title: 'Native mode',
+        before: 'legacy-project-value', after: 'safe',
+      }],
+    });
+    expect(impactTitles(legacyProjectReview)).toEqual([
+      '有效设置输入不变；无需重新应用',
+    ]);
+    expect(legacyProjectReview.requiresConfirmation).toBe(false);
+    expect(JSON.stringify(legacyProjectReview.changes)).not.toContain('动态 Skill');
+    legacyProjectOverride.dispose();
 
     const saveOnly = await createController([userTarget]);
     const saveOnlyReview = await saveOnly.buildOperationReview({
@@ -1158,6 +1206,31 @@ describe('TUI controller runtime scope conflict validation', () => {
     }));
     retry.dispose();
 
+    const retryWithoutApplyFlag = await createController([userTarget, projectTarget]);
+    const retryWithoutApplyReview = await retryWithoutApplyFlag.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      apply: false,
+      retryApply: true,
+    });
+    expect(impactTitles(retryWithoutApplyReview)).toEqual([
+      '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
+    ]);
+    expect(retryWithoutApplyReview).toMatchObject({
+      requiresConfirmation: true,
+      sharedImpact: { pluginIds: ['team/demo'] },
+    });
+    await expect(retryWithoutApplyFlag.executeOperation(retryWithoutApplyReview.reviewToken))
+      .resolves.toMatchObject({ state: 'succeeded' });
+    expect(runtimeMocks.replayConfigRuntimeWrites).toHaveBeenLastCalledWith(expect.objectContaining({
+      applyTargets: [
+        expect.objectContaining({ platform: 'claude', scope: 'project' }),
+        expect.objectContaining({ platform: 'codex', scope: 'user' }),
+      ],
+    }));
+    retryWithoutApplyFlag.dispose();
+
     const drifting = await createController([userTarget, projectTarget]);
     const driftReview = await drifting.buildOperationReview({
       kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared', apply: true, updates: { mode: 'stale' },
@@ -1168,7 +1241,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     const stale = await drifting.executeOperation(driftReview.reviewToken);
     expect(stale).toMatchObject({ state: 'stale' });
     if (stale.state === 'stale') {
-      expect(impactTitles(stale.review)).toEqual(['重新应用 Codex · 所有项目']);
+      expect(impactTitles(stale.review)).toEqual(['有效设置输入不变；无需重新应用']);
     }
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenCalledTimes(writesBeforeDrift);
     drifting.dispose();
@@ -1232,6 +1305,28 @@ describe('TUI controller runtime scope conflict validation', () => {
       sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       storeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
     });
+    const resetIntent = {
+      kind: 'configReset' as const,
+      pluginId: 'team/demo',
+      scope: 'user' as const,
+      projectLayer: 'shared' as const,
+    };
+    const resetEvidence = await dependencies.prepareReviewEvidence!(
+      resetIntent,
+      new AbortController().signal,
+      () => undefined,
+    );
+    expect(resetEvidence.config).toMatchObject({ impactState: 'unknown' });
+    expect(resetEvidence.config).not.toHaveProperty('noEffectiveChange');
+    const resetProjection = buildOperationReviewProjection({
+      intent: resetIntent,
+      evidence: resetEvidence,
+    });
+    expect(resetProjection.changes).toContainEqual(expect.objectContaining({
+      kind: 'warning',
+      title: '设置重置后的应用影响未知',
+    }));
+    expect(JSON.stringify(resetProjection.changes)).not.toContain('当前安装保持不变');
     await fs.writeJson(storePath, {
       schemaVersion: 4,
       sourceId: 'team',

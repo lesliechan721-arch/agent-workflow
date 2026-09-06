@@ -11785,7 +11785,14 @@ describe('five namespaced write commands', () => {
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.config = {
         fields: {
-          mode: { type: 'string', default: 'safe' },
+          mode: {
+            type: 'string',
+            default: 'safe',
+            choices: {
+              allowCustom: true,
+              presets: [{ id: 'safe', title: 'Safe', value: 'safe' }],
+            },
+          },
           labels: {
             type: 'object',
             additionalProperties: { type: 'string' },
@@ -11853,6 +11860,27 @@ describe('five namespaced write commands', () => {
       'install', 'team/demo', '--platform', 'codex', '--scope', 'project',
     ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+
+    const sourceOnlyPreset = await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--scope', 'project', '--apply',
+    ]);
+    expect(sourceOnlyPreset).toMatchObject({
+      exitCode: 0,
+      payload: {
+        updatedKeys: ['mode'],
+        apply: { state: 'succeeded' },
+      },
+    });
+    const equivalentPreset = await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--preset', 'safe', '--scope', 'project', '--apply',
+    ]);
+    expect(equivalentPreset).toMatchObject({
+      exitCode: 0,
+      payload: {
+        updatedKeys: [],
+        apply: { state: 'skipped', reason: 'noConfigChange' },
+      },
+    });
 
     await fs.remove(configPath);
     await expect(statusCommandV7({
@@ -12016,14 +12044,19 @@ describe('five namespaced write commands', () => {
     ]);
     expect(repaired).toMatchObject({
       exitCode: 0,
-      payload: { configWrite: 'succeeded', overallState: 'succeeded' },
+      payload: {
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+      },
     });
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
       mode: 'fast',
     });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
+    await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--scope', 'project', '--apply']);
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
     const failed = await runPublic([
       'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project', '--apply',
@@ -12424,7 +12457,7 @@ describe('five namespaced write commands', () => {
       '  state: mode === "off" ? "disabled" : "present",',
       '  skillKey: "native-config", refreshKeys: ["mode"],',
       '  ...(mode === "off" ? { disabledReason: "disabled by user config" } : { content: { files: {',
-      '    "SKILL.md": `mode=${context.config.values.mode}\\nrequestScope=${context.scope}\\nconfigScope=${context.config.targetScope}\\n`,',
+      '    "SKILL.md": `mode=${context.config.values.mode}\\nrequestScope=${context.scope}\\nconfigScope=${context.config.targetScope}\\nsource=${context.config.sources.mode}\\n`,',
       '    "README.md": "native readme",',
       '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
       '  } } })',
@@ -12796,6 +12829,27 @@ describe('five namespaced write commands', () => {
     expect(finalReceipt.configDigest).not.toBe(refreshedReceipt.configDigest);
     await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
       .resolves.toContain('mode=safe\nrequestScope=user\nconfigScope=user\n');
+
+    const renderCountBeforeSourceOnlySet = (await fs.readFile(rendererMarker, 'utf8'))
+      .trim().split('\n').length;
+    const sourceOnlySet = await runPublic([
+      'config', 'set', 'team/native-config', 'mode', '--value-json', '"safe"',
+      '--scope', 'user', '--apply', '--yes',
+    ]);
+    expect(sourceOnlySet, JSON.stringify(sourceOnlySet, null, 2)).toMatchObject({
+      exitCode: 0,
+      payload: {
+        configWrite: 'succeeded',
+        updatedKeys: ['mode'],
+        apply: { state: 'succeeded' },
+      },
+    });
+    expect((await fs.readFile(rendererMarker, 'utf8')).trim().split('\n'))
+      .toHaveLength(renderCountBeforeSourceOnlySet + 1);
+    await expect(fs.readFile(path.join(cacheSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('source=user\n');
+    await expect(fs.readFile(path.join(marketplaceSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toContain('source=user\n');
 
     const disabled = await runPublic([
       'config', 'set', 'team/native-config', 'mode', '--value-json', '"off"',
