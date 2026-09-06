@@ -14,7 +14,9 @@ import {
 import {
   TuiConfigInvalidStoreError,
   TuiController,
+  type OperationEvidence,
 } from '../../src/tui/controller.js';
+import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import {
   createCatalogSnapshotFixture,
@@ -166,6 +168,91 @@ function bundleUnavailableStatus(
 }
 
 describe('TUI config affected targets', () => {
+  it('reviews every field in a combined source update and the bound script timeout', () => {
+    const sourceMutation = {
+      action: 'update' as const,
+      update: {
+        url: 'https://example.test/catalog.git',
+        refPolicy: { type: 'explicit' as const, ref: 'catalog/beta' },
+        subdir: null,
+        autoCheck: false,
+      },
+    };
+    const evidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:after' },
+      catalogGeneration: {
+        action: 'activate',
+        candidate: {
+          sourceConfigFingerprint: 'sha256:source-config',
+          sourceIdentity: 'sha256:source',
+          logicalIdentity: 'workspace',
+          requestedRef: 'catalog/beta',
+          resolvedCommit: 'a'.repeat(40),
+          catalogVersion: '1.0.0',
+          channel: 'beta',
+          manifestDigest: 'sha256:manifest',
+          snapshotDigest: 'sha256:snapshot',
+        },
+        configDigest: 'sha256:before',
+        proposedConfigDigest: 'sha256:after',
+        sourceMutation,
+      },
+    };
+    const sourceReview = buildOperationReviewProjection({
+      intent: { kind: 'catalogGeneration', action: 'activate', sourceId: 'team', sourceMutation },
+      evidence,
+    });
+    expect(sourceReview.changes.map((change) => [change.title, change.description])).toEqual(
+      expect.arrayContaining([
+        ['Git URL', '将更新'],
+        ['Git ref policy', '固定 ref · catalog/beta'],
+        ['Catalog 子目录', '根目录'],
+        ['自动检查', '关闭'],
+      ]),
+    );
+    const addReview = buildOperationReviewProjection({
+      intent: {
+        kind: 'catalogGeneration', action: 'activate', sourceId: 'local',
+        sourceMutation: {
+          action: 'add',
+          source: {
+            id: 'local', type: 'path', path: '/private/catalog', primary: false, autoCheck: false,
+          },
+        },
+      },
+      evidence: {
+        ...evidence,
+        catalogGeneration: {
+          ...evidence.catalogGeneration!,
+          sourceMutation: {
+            action: 'add',
+            source: {
+              id: 'local', type: 'path', path: '/private/catalog', primary: false, autoCheck: false,
+            },
+          },
+        },
+      },
+    });
+    expect(addReview.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: '保存来源配置' }),
+      expect.objectContaining({ title: '本地目录', description: '已设置' }),
+      expect.objectContaining({ title: '自动检查', description: '关闭' }),
+    ]));
+    expect(JSON.stringify(addReview)).not.toContain('/private/catalog');
+
+    const timeoutReview = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWrite', action: 'sync', pluginId: 'team/demo',
+        platform: 'codex', scope: 'project', scriptTimeoutMs: 12_000,
+      },
+      evidence: { catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:catalog' } },
+    });
+    expect(timeoutReview.changes).toContainEqual(expect.objectContaining({
+      title: 'preApply 脚本超时', description: '12000 ms',
+    }));
+    expect(timeoutReview.equivalentCommand).toContain('--script-timeout 12000');
+  });
+
   it('expands user scope conflicts and keeps project layers project-only', () => {
     const targets = [
       target('user', 'present'),
@@ -252,6 +339,7 @@ describe('TUI controller runtime scope conflict validation', () => {
     }));
 
     await expect(dependencies.loadStatus(new AbortController().signal)).resolves.toMatchObject({
+      configuredSources: [expect.objectContaining({ id: 'official', type: 'git' })],
       configStoreInventory: [
         { pluginId: 'removed/broken', sourceId: 'removed', pluginName: 'broken', scope: 'user' },
         { pluginId: 'removed/demo', sourceId: 'removed', pluginName: 'demo', scope: 'user' },
@@ -657,21 +745,43 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     const both = await createController([userTarget, projectTarget]);
     const userReview = await both.buildOperationReview({
-      kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared', apply: true, updates: { mode: 'user' },
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared',
+      apply: true, scriptTimeoutMs: 18_000, updates: { mode: 'user' },
       changes: [{ key: 'mode', title: 'Mode', before: 'old', after: 'user' }],
     });
+    expect(userReview.changes).toContainEqual(expect.objectContaining({
+      title: 'preApply 脚本超时', description: '18000 ms',
+    }));
     expect(impactTitles(userReview)).toEqual([
       '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
     ]);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
+      rebuildRuntime: expect.objectContaining({ scriptTimeoutMs: 18_000 }),
       applyTargets: [
         expect.objectContaining({ platform: 'claude', scope: 'project' }),
         expect.objectContaining({ platform: 'codex', scope: 'user' }),
       ],
     }));
     both.dispose();
+
+    const saveOnly = await createController([userTarget]);
+    const saveOnlyReview = await saveOnly.buildOperationReview({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared',
+      apply: false, scriptTimeoutMs: 19_000, updates: { mode: 'saved' },
+      changes: [{ key: 'mode', title: 'Mode', before: 'old', after: 'saved' }],
+    });
+    expect(saveOnlyReview.changes).not.toContainEqual(expect.objectContaining({
+      title: 'preApply 脚本超时',
+    }));
+    await expect(saveOnly.executeOperation(saveOnlyReview.reviewToken))
+      .resolves.toMatchObject({ state: 'succeeded' });
+    expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
+      rebuildRuntime: expect.not.objectContaining({ scriptTimeoutMs: expect.anything() }),
+      applyTargets: [],
+    }));
+    saveOnly.dispose();
 
     const projectOnly = await createController([userTarget, projectTarget]);
     const projectReview = await projectOnly.buildOperationReview({
@@ -1312,6 +1422,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       dependencyScopeOverrides: [{
         pluginId: 'team/dependency', platform: 'codex' as const, scope: 'user' as const,
       }],
+      scriptTimeoutMs: 12_000,
     };
 
     const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
@@ -1321,6 +1432,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       expect.objectContaining({
         platform: 'codex', scope: 'project',
         dependencyScopeOverrides: intent.dependencyScopeOverrides,
+        scriptTimeoutMs: 12_000,
       }),
       expect.objectContaining({ previewOperationPlan: true }),
     );
@@ -1333,6 +1445,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       expect.objectContaining({
         platform: 'codex', scope: 'project',
         dependencyScopeOverrides: intent.dependencyScopeOverrides,
+        scriptTimeoutMs: 12_000,
       }),
       expect.not.objectContaining({
         expectedPlanFingerprint: expect.anything(),
@@ -1434,12 +1547,13 @@ describe('TUI controller runtime scope conflict validation', () => {
       pluginId: 'team/demo',
       platform: 'codex' as const,
       scope: 'project' as const,
+      scriptTimeoutMs: 24_000,
     };
 
     const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
     expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
       ['team/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ platform: 'codex', scope: 'project', scriptTimeoutMs: 24_000 }),
       expect.objectContaining({ previewOperationPlan: true }),
     );
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
@@ -1448,9 +1562,26 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.installWriteCommand).toHaveBeenCalledTimes(3);
     expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
       ['team/demo'],
-      expect.objectContaining({ platform: 'codex', scope: 'project' }),
+      expect.objectContaining({ platform: 'codex', scope: 'project', scriptTimeoutMs: 24_000 }),
       expect.not.objectContaining({ reconcileIntentOnly: expect.anything() }),
     );
+
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      targetResults: [],
+      overallState: 'succeeded',
+    });
+    const controller = new TuiController(dependencies);
+    const mutableIntent = { ...intent, scriptTimeoutMs: 25_000 };
+    const review = await controller.buildOperationReview(mutableIntent);
+    mutableIntent.scriptTimeoutMs = 26_000;
+    await expect(controller.executeOperation(review.reviewToken))
+      .resolves.toMatchObject({ state: 'succeeded' });
+    expect(runtimeMocks.installWriteCommand).toHaveBeenLastCalledWith(
+      ['team/demo'],
+      expect.objectContaining({ scriptTimeoutMs: 25_000 }),
+      expect.anything(),
+    );
+    controller.dispose();
 
     runtimeMocks.installWriteCommand.mockResolvedValue({
       targetResults: [{ errorCode: 'operationPlanStale', state: 'failed' }],
@@ -1937,6 +2068,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       pluginId: 'official/demo',
       platform: 'codex' as const,
       scope: 'user' as const,
+      scriptTimeoutMs: 20_000,
       originIssue: {
         issueId: 'target:official/demo:codex:user:error',
         issueKey: 'sourceUnavailable\0official/demo\0\0\0\0\0official\0identity:official\0codex\0user',
@@ -1981,6 +2113,8 @@ describe('TUI controller runtime scope conflict validation', () => {
         managedCodexAuthorizer: expect.any(Function),
       }),
     );
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[1])
+      .not.toHaveProperty('scriptTimeoutMs');
     const runtime = runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2];
     await expect(runtime.managedCodexAuthorizer()).resolves.toBe(true);
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();

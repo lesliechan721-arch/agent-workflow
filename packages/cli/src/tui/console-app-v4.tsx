@@ -25,9 +25,14 @@ import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
 import { canonicalizeCatalogGitUrl } from '../utils/catalog-source-identity.js';
 import { normalizePortableAgents } from '../portable/commands.js';
 import {
-  buildAllowedConfigActions,
   selectLifecycleRetryAction,
 } from '../commands/operation-planner.js';
+import {
+  parseScriptTimeoutMs,
+  SCRIPT_TIMEOUT_DEFAULT_MS,
+  SCRIPT_TIMEOUT_MAX_MS,
+  SCRIPT_TIMEOUT_MIN_MS,
+} from '../commands/options.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   ActionRow,
@@ -186,7 +191,6 @@ interface SourceDraft {
   ref: string;
   subdir: string;
   autoCheck: boolean;
-  editField?: 'location' | 'refPolicy' | 'subdir';
 }
 
 function isCharacterInputMode(route: TuiRoute, searchMode: boolean): boolean {
@@ -197,7 +201,8 @@ function isCharacterInputMode(route: TuiRoute, searchMode: boolean): boolean {
       && route.mode !== 'choices'
     || route.name === 'configObjectPropertyEditor'
       && (route.stage === 'key' || route.stage === 'custom')
-    || route.name === 'sourceAdd' && route.step !== 'type' && route.step !== 'refPolicy';
+    || route.name === 'sourceAdd' && route.step !== 'type' && route.step !== 'refPolicy'
+    || route.name === 'scriptTimeout';
 }
 
 function helpRowsForRoute(
@@ -221,7 +226,7 @@ function helpRowsForRoute(
     rows.push(['a', '全选 Skills']);
   }
   if (route.name === 'configFields' && route.layer.scope !== 'effective') {
-    rows.push(['s', '保存设置']);
+    rows.push(['s', '查看保存汇总']);
     rows.push(['u', '恢复当前字段继承']);
   }
   if (route.name === 'sourceList' || route.name === 'sourceDetail') {
@@ -244,14 +249,14 @@ function helpRowsForRoute(
 }
 
 function configOwnerKey(route: Extract<TuiRoute, {
-  name: 'configFields' | 'configFieldEditor' | 'configObjectPropertyEditor' | 'configFieldAction';
+  name: 'configFields' | 'configFieldEditor' | 'configObjectPropertyEditor' | 'configFieldAction' | 'configSave';
 }>): string {
   return `${route.pluginId}\0${route.layer.scope}`;
 }
 
 function configPageMatches(
   page: ConfigPageViewModel | undefined,
-  route: Extract<TuiRoute, { name: 'configFields' | 'configFieldEditor' | 'configObjectPropertyEditor' | 'configFieldAction' }> | undefined,
+  route: Extract<TuiRoute, { name: 'configFields' | 'configFieldEditor' | 'configObjectPropertyEditor' | 'configFieldAction' | 'configSave' }> | undefined,
 ): page is ConfigPageViewModel {
   return Boolean(page && route
     && page.pluginId === route.pluginId
@@ -1139,6 +1144,7 @@ export function resolveConsoleV4ScreenId(
   if (route.name === 'configLayer') return 'C01';
   if (route.name === 'configFields') return route.layer.scope === 'effective' ? 'C02' : 'C03';
   if (route.name === 'configFieldAction') return 'C04';
+  if (route.name === 'configSave') return 'C12';
   if (route.name === 'configFieldEditor') return route.mode === 'choices' ? 'C05' : {
     boolean: 'C06', number: 'C07', string: 'C08', object: 'C09',
   }[route.editor] as ConsoleV4ScreenId;
@@ -1151,6 +1157,8 @@ export function resolveConsoleV4ScreenId(
     type: 'S04', id: 'S05', location: 'S06', refPolicy: 'S07', ref: 'S08', subdir: 'S09',
   } as const)[route.step];
   if (route.name === 'sourceEdit') return 'S14';
+  if (route.name === 'sourceSave') return 'S15';
+  if (route.name === 'scriptTimeout') return 'P07';
   if (route.name === 'sourceRemoveBlocked') return 'S17';
   if (route.name === 'issueList') {
     const issues = controller.listUserIssues();
@@ -1242,6 +1250,10 @@ export function ConsoleAppV4(props: {
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
   const [sourceInput, setSourceInput] = useState('');
   const [sourceInputError, setSourceInputError] = useState<string>();
+  const [pendingReviewIntent, setPendingReviewIntent] = useState<OperationIntent>();
+  const pendingReviewIntentRef = useRef<OperationIntent | undefined>(undefined);
+  const [scriptTimeoutInput, setScriptTimeoutInput] = useState(String(SCRIPT_TIMEOUT_DEFAULT_MS));
+  const [scriptTimeoutError, setScriptTimeoutError] = useState<string>();
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
@@ -1331,7 +1343,11 @@ export function ConsoleAppV4(props: {
       setChangedObjectDraftKeys([]);
       setObjectError(undefined);
     }
-    if (snapshot.result.operationKind === 'sourceMutation') setSourceDraft(undefined);
+    if ((snapshot.result.operationKind === 'sourceMutation'
+      || snapshot.result.operationKind === 'catalogGeneration') && sourceDraft) {
+      setSourceDraft(undefined);
+      setDirty(Object.keys(draftUpdates).length + draftRemoves.length + changedObjectDraftKeys.length > 0);
+    }
   }, [route.name, snapshot.result]);
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
@@ -1357,6 +1373,7 @@ export function ConsoleAppV4(props: {
     || route.name === 'configFieldEditor'
     || route.name === 'configObjectPropertyEditor'
     || route.name === 'configFieldAction'
+    || route.name === 'configSave'
     ? route
     : undefined;
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
@@ -1453,7 +1470,9 @@ export function ConsoleAppV4(props: {
             diagnosticStage: 'read-config',
             ...(invalidStores ? { invalidStores } : {}),
             ...(layer ? { layer } : {}),
-            ...(configRoute ? { resumeRoute: structuredClone(configRoute) } : {}),
+            ...(configRoute ? { resumeRoute: structuredClone(configRoute.name === 'configSave'
+              ? { name: 'configFields' as const, pluginId: configRoute.pluginId, layer: configRoute.layer }
+              : configRoute) } : {}),
             ...(configRoute ? { resumeContext: {
               ...(snapshot.router.current.context.configGroupId !== undefined
                 ? { configGroupId: snapshot.router.current.context.configGroupId } : {}),
@@ -1558,7 +1577,11 @@ export function ConsoleAppV4(props: {
     ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
     : undefined;
   useEffect(() => {
-    if (!configRoute || configRoute.name === 'configFields' || !currentConfigPage || activeField) return;
+    if (!configRoute
+      || configRoute.name === 'configFields'
+      || configRoute.name === 'configSave'
+      || !currentConfigPage
+      || activeField) return;
     props.controller.replace({
       name: 'configFields',
       pluginId: configRoute.pluginId,
@@ -1627,6 +1650,13 @@ export function ConsoleAppV4(props: {
           : route.step === 'subdir' ? draft?.subdir ?? '' : '');
     setSourceInputError(undefined);
   }, [route.name, route.name === 'sourceAdd' ? `${route.owner}:${route.step}` : '', sourceDraft?.owner]);
+  useEffect(() => {
+    if (route.name !== 'scriptTimeout') return;
+    setScriptTimeoutInput(String(pendingReviewIntent && 'scriptTimeoutMs' in pendingReviewIntent
+      ? pendingReviewIntent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS
+      : SCRIPT_TIMEOUT_DEFAULT_MS));
+    setScriptTimeoutError(undefined);
+  }, [route.name, route.name === 'scriptTimeout' ? route.owner : '']);
   useEffect(() => {
     if (route.name !== 'sourceRemoveBlocked') return;
     const abort = new AbortController();
@@ -1791,8 +1821,22 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const back = (): void => {
+    if (route.name === 'sourceEdit'
+      && sourceDraft
+      && sourceDraft.owner === route.owner
+      && sourceDraftChanges(sourceDraft).length === 0) setSourceDraft(undefined);
+    if (route.name === 'sourceAdd'
+      && route.returnToDraft
+      && sourceDraft
+      && sourceDraft.owner === route.owner
+      && sourceDraftChanges(sourceDraft).length === 0) setSourceDraft(undefined);
     if (route.name === 'result') props.controller.leaveResult();
     else props.controller.back();
+    restorePageContext();
+    setActionError(undefined);
+  };
+  const acceptSourceFieldAndBack = (): void => {
+    props.controller.back();
     restorePageContext();
     setActionError(undefined);
   };
@@ -1807,6 +1851,13 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const beginReview = (intent: OperationIntent): void => {
+    const supportsScriptTimeout = intent.kind === 'pluginWrite'
+      && (intent.action === 'install' || intent.action === 'sync'
+        || intent.action === 'refreshAndSync' || intent.action === 'reinstall')
+      || intent.kind === 'configSave' && intent.apply;
+    const pendingIntent = supportsScriptTimeout ? intent : undefined;
+    pendingReviewIntentRef.current = pendingIntent;
+    setPendingReviewIntent(pendingIntent);
     const underlyingResultRoute = route.name === 'result' && snapshot.result && 'returnRoute' in snapshot.result
       ? snapshot.result.returnRoute
       : undefined;
@@ -2031,33 +2082,104 @@ export function ConsoleAppV4(props: {
         path: draft.location,
         ...(draft.autoCheck ? {} : { autoCheck: false }),
       };
-  const beginSourceAddReviewWith = async (draft: SourceDraft): Promise<void> => {
-    const source = sourceFromDraft(draft);
-    setDirty(false);
-    await beginReview({
-      kind: 'catalogGeneration',
-      action: 'activate',
-      sourceId: source.id,
-      sourceMutation: { action: 'add', source },
-    });
+  const sourceDraftFromSource = (source: CatalogSource, owner: string): SourceDraft => source.type === 'git'
+    ? {
+        owner,
+        mode: 'update',
+        sourceId: source.id,
+        type: 'git',
+        location: source.url,
+        refPolicy: source.refPolicy.type,
+        ref: source.refPolicy.type === 'explicit' ? source.refPolicy.ref : '',
+        subdir: source.subdir ?? '',
+        autoCheck: source.autoCheck !== false,
+      }
+    : {
+        owner,
+        mode: 'update',
+        sourceId: source.id,
+        type: 'path',
+        location: source.path,
+        refPolicy: 'cliChannel',
+        ref: '',
+        subdir: '',
+        autoCheck: source.autoCheck !== false,
+      };
+  const sourceUpdateFromDraft = (
+    draft: SourceDraft,
+  ): NonNullable<Extract<OperationIntent, { kind: 'sourceMutation' }>['update']> => draft.type === 'git'
+    ? {
+        type: 'git',
+        url: draft.location,
+        refPolicy: draft.refPolicy === 'cliChannel'
+          ? { type: 'cliChannel' }
+          : { type: 'explicit', ref: draft.ref },
+        subdir: draft.subdir || null,
+        autoCheck: draft.autoCheck,
+      }
+    : { type: 'path', path: draft.location, autoCheck: draft.autoCheck };
+  const sourceDraftChanges = (draft: SourceDraft): Array<{ title: string; before?: string; after: string }> => {
+    const current = draft.mode === 'update' ? props.controller.getConfiguredSource(draft.sourceId) : undefined;
+    const location = (source: CatalogSource | undefined): string | undefined => source
+      ? projectCatalogSourceLocation(source.type === 'git' ? source.url : source.path) : undefined;
+    const rawLocation = (source: CatalogSource | undefined): string | undefined => source
+      ? source.type === 'git' ? source.url : source.path : undefined;
+    const ref = (source: CatalogSource | undefined): string | undefined => source?.type === 'git'
+      ? source.refPolicy.type === 'cliChannel' ? '跟随 AW CLI' : source.refPolicy.ref
+      : undefined;
+    const candidates = [
+      {
+        title: draft.type === 'git' ? 'Git 仓库地址' : '本地目录',
+        before: location(current),
+        after: location(sourceFromDraft(draft))!,
+        changed: rawLocation(current) !== draft.location,
+      },
+      ...(draft.type === 'git' ? [
+        { title: '版本引用', before: ref(current), after: draft.refPolicy === 'cliChannel' ? '跟随 AW CLI' : draft.ref, changed: ref(current) !== (draft.refPolicy === 'cliChannel' ? '跟随 AW CLI' : draft.ref) },
+        { title: 'Catalog 子目录', before: current?.type === 'git' ? current.subdir ?? '未设置' : undefined, after: draft.subdir || '未设置', changed: current?.type !== 'git' || (current.subdir ?? '') !== draft.subdir },
+      ] : []),
+      { title: '自动检查更新', before: current ? current.autoCheck !== false ? '开启' : '关闭' : undefined, after: draft.autoCheck ? '开启' : '关闭', changed: !current || (current.autoCheck !== false) !== draft.autoCheck },
+    ];
+    return candidates.filter((change) => change.changed)
+      .map(({ changed: _changed, ...change }) => change);
   };
-  const beginSourceUpdateReview = async (draft: SourceDraft): Promise<void> => {
-    const detail = props.controller.getSourceOverview(draft.sourceId).detail;
-    if (!detail || !draft.editField) return;
-    const update = draft.type === 'path'
-      ? { type: 'path' as const, path: draft.location }
-      : draft.editField === 'location'
-        ? { type: 'git' as const, url: draft.location }
-        : draft.editField === 'refPolicy'
-          ? { type: 'git' as const, refPolicy: draft.refPolicy === 'cliChannel' ? { type: 'cliChannel' as const } : { type: 'explicit' as const, ref: draft.ref } }
-          : { type: 'git' as const, subdir: draft.subdir || null };
-    setDirty(false);
-    await beginReview({
-      kind: 'catalogGeneration',
+  const beginSourceReview = (draft: SourceDraft, activate: boolean): void => {
+    const mutation = draft.mode === 'add'
+      ? { action: 'add' as const, source: sourceFromDraft(draft) }
+      : { action: 'update' as const, update: sourceUpdateFromDraft(draft) };
+    if (activate) {
+      beginReview({
+        kind: 'catalogGeneration',
+        action: 'activate',
+        sourceId: draft.sourceId,
+        sourceMutation: mutation,
+      });
+      return;
+    }
+    beginReview(draft.mode === 'add' ? {
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: draft.sourceId,
+      source: mutation.action === 'add' ? mutation.source : undefined,
+      changes: sourceDraftChanges(draft),
+    } : {
+      kind: 'sourceMutation',
       action: 'update',
       sourceId: draft.sourceId,
-      sourceMutation: { action: 'update', update },
+      update: mutation.action === 'update' ? mutation.update : undefined,
+      changes: sourceDraftChanges(draft),
     });
+  };
+  const openSourceEdit = (sourceId: string): void => {
+    const source = props.controller.getConfiguredSource(sourceId);
+    if (!source) {
+      setActionError('无法读取完整来源配置。请重新加载后重试。');
+      return;
+    }
+    const owner = `source-update:${sourceId}:${Date.now()}`;
+    setSourceDraft(sourceDraftFromSource(source, owner));
+    setDirty(false);
+    go({ name: 'sourceEdit', sourceId, owner });
   };
   const configLayerLabel = (layer: { scope: Scope | 'effective' }): string =>
     layer.scope === 'effective' ? '有效设置'
@@ -3683,18 +3805,15 @@ export function ConsoleAppV4(props: {
           status: 'warning' as const,
           run: discardInvalidConfigDraftChanges,
         }] : []),
-        ...buildAllowedConfigActions(dirty && configDraftIssues.length === 0).map((action): ActionItem => ({
-          label: action.label,
-          description: route.layer.scope === 'user'
-            && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
-              currentConfigPage.groups.flatMap((group) => group.fields)
-                .some((field) => field.key === key && field.sharedNativeRender))
-            ? action.apply
-              ? '保存并重新生成共享 Codex native Skill；影响所有启用项目'
-              : '只保存个人默认；共享 Codex native render 将待同步'
-            : action.apply ? '保存后同步当前可见安装' : '只保存所选设置层，不应用当前安装',
-          run: () => beginConfigSave(action.apply),
-        })),
+        ...(dirty && configDraftIssues.length === 0 ? [{
+          label: '查看保存汇总',
+          description: '确认变化，再选择只保存或保存并应用',
+          status: 'success' as const,
+          run: () => {
+            setFocus(0);
+            go({ name: 'configSave', pluginId: route.pluginId, layer: route.layer as { scope: Scope } });
+          },
+        }] : []),
         ...(currentConfigPage.storedCount > 0 ? [{
           label: route.layer.scope === 'user'
             ? '清空个人默认…'
@@ -3731,8 +3850,8 @@ export function ConsoleAppV4(props: {
               || focusedConfigField.invalidOverrideOwnedByLayer === true)
           : false;
         help = canUnsetFocused
-          ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · u 恢复继承 · Esc 返回'
-          : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 保存 · Esc 返回';
+          ? '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 查看汇总 · u 恢复继承 · Esc 返回'
+          : '↑↓ 移动 · Enter 修改 · ←→ 分组 · s 查看汇总 · Esc 返回';
       }
       const fieldFocus = tabActions.length > 0
         ? effectiveConfigFocus < tabActions.length ? effectiveConfigFocus : Math.min(scrollOffset, tabActions.length - 1)
@@ -3781,6 +3900,32 @@ export function ConsoleAppV4(props: {
           : null}
       </Box>;
     }
+  } else if (route.name === 'configSave' && plugin && currentConfigPage) {
+    const changes = configChanges();
+    const sharedNative = route.layer.scope === 'user'
+      && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
+        currentConfigPage.groups.flatMap((group) => group.fields)
+          .some((field) => field.key === key && field.sharedNativeRender));
+    breadcrumb = `${plugin.displayName} / 设置 / 保存汇总`;
+    context = `${changes.length} 项未保存`;
+    title = `保存 ${changes.length} 项设置修改？`;
+    description = '保存后可选择是否立即应用到当前可见安装。';
+    actions = [
+      { label: '保存并应用', description: sharedNative ? '保存并重新生成共享 Codex native Skill；影响所有启用项目' : '保存设置并同步当前可见安装', status: 'success', run: () => beginConfigSave(true) },
+      { label: '只保存', description: sharedNative ? '只保存个人默认；共享 Codex native render 将待同步' : '只保存所选设置层，不应用当前安装', run: () => beginConfigSave(false) },
+      { label: '返回修改', run: back },
+    ];
+    content = <Box flexDirection="column"><SectionCard title="设置变更" compact={policy.mode === 'compact'}>
+      {changes.map((change) => <ReviewChangeRow
+        key={change.key}
+        title={`~ ${draftRemoves.includes(change.key) ? `删除 ${change.title} 中的值` : change.title}`}
+        description={`${change.before} → ${change.after}`}
+        compact={policy.mode === 'compact'}
+      />)}
+    </SectionCard><SectionCard title="应用影响" compact={policy.mode === 'compact'}>
+      <StaticRow title="保存并应用只处理当前可见安装；其他项目不会被自动扫描" compact />
+      <StaticRow title="其他设置层保持不变" status="success" compact />
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'configFieldAction' && plugin && activeField) {
     const layer = configLayerLabel(route.layer);
     breadcrumb = `${plugin.displayName} / 设置 / ${layer} / ${activeField.title}`;
@@ -3961,7 +4106,7 @@ export function ConsoleAppV4(props: {
       </Box>;
     } else {
       title = activeField.sensitive ? '输入敏感值' : `输入${activeField.title}`;
-      help = '输入 · Enter 使用 · Ctrl-U 删除本层值 · Esc 取消';
+      help = '输入 · Enter 使用 · Ctrl-U 清空输入 · Esc 取消';
       description = route.editor === 'number'
         ? `允许范围：${activeField.min ?? '不限'}–${activeField.max ?? '不限'}${activeField.unit ? ` ${activeField.unit}` : ''}。`
         : activeField.sensitive ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
@@ -4264,7 +4409,7 @@ export function ConsoleAppV4(props: {
               }];
     actions = [
       ...generationAction,
-      { label: '编辑来源…', description: '修改前先 Review；默认保存并启用', run: () => go({ name: 'sourceEdit' as const, sourceId: route.sourceId }) },
+      { label: '编辑来源…', description: '集中修改地址、引用、子目录和自动检查', run: () => openSourceEdit(route.sourceId) },
       ...(generationState === 'incompatible'
         || (freshness?.state === 'incompatible' && generationState !== 'ready') ? [] : [{
         label: generationState === 'ready' ? '设为主来源…' : '启用并设为主来源…',
@@ -4346,6 +4491,7 @@ export function ConsoleAppV4(props: {
       title = '选择来源类型'; description = '来源类型创建后不能修改。';
       const selectType = (type: SourceDraft['type'], autoCheck: boolean): void => {
         setSourceDraft({ ...sourceDraft, type, autoCheck });
+        setDirty(true);
         go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner });
       };
       actions = [
@@ -4359,14 +4505,18 @@ export function ConsoleAppV4(props: {
       const useRefPreset = async (refPolicy: SourceDraft['refPolicy'], ref: string): Promise<void> => {
         const next = { ...sourceDraft, refPolicy, ref };
         setSourceDraft(next);
-        if (next.mode === 'update') await beginSourceUpdateReview(next);
+        setDirty(true);
+        if (route.returnToDraft) acceptSourceFieldAndBack();
         else go({ name: 'sourceAdd', step: 'subdir', owner: route.owner });
       };
       actions = [
         { label: '跟随 AW CLI', description: `当前 CLI ${snapshot.cliChannel === 'beta' ? 'beta' : 'release'} → catalog/${snapshot.cliChannel === 'beta' ? 'beta' : 'latest'}`, selected: sourceDraft.refPolicy === 'cliChannel', run: () => { const policy = catalogRefPolicyForPreset('followCli')!; return useRefPreset(policy.type, ''); } },
         { label: 'Release', description: '固定读取 catalog/latest', selected: sourceDraft.refPolicy === 'explicit' && sourceDraft.ref === CATALOG_LATEST_REF, run: () => { const policy = catalogRefPolicyForPreset('release')!; return useRefPreset(policy.type, policy.type === 'explicit' ? policy.ref : ''); } },
         { label: 'Beta', description: '固定读取 catalog/beta', selected: sourceDraft.refPolicy === 'explicit' && sourceDraft.ref === CATALOG_BETA_REF, run: () => { const policy = catalogRefPolicyForPreset('beta')!; return useRefPreset(policy.type, policy.type === 'explicit' ? policy.ref : ''); } },
-        { label: '指定 Git ref…', description: 'branch、tag、完整 ref 或 commit', selected: sourceDraft.refPolicy === 'explicit' && sourceDraft.ref !== CATALOG_LATEST_REF && sourceDraft.ref !== CATALOG_BETA_REF, run: () => { setSourceDraft({ ...sourceDraft, refPolicy: 'explicit' }); go({ name: 'sourceAdd', step: 'ref', owner: route.owner }); } },
+        { label: '指定 Git ref…', description: 'branch、tag、完整 ref 或 commit', selected: sourceDraft.refPolicy === 'explicit' && sourceDraft.ref !== CATALOG_LATEST_REF && sourceDraft.ref !== CATALOG_BETA_REF, run: () => {
+          if (route.returnToDraft) props.controller.replace({ name: 'sourceAdd', step: 'ref', owner: route.owner, returnToDraft: true });
+          else go({ name: 'sourceAdd', step: 'ref', owner: route.owner });
+        } },
       ]; content = <Box flexDirection="column">
         <Text color={tuiTheme.colors.muted}>跟随含义：当前 CLI {snapshot.cliChannel === 'beta' ? 'beta → catalog/beta' : 'release → catalog/latest'}</Text>
         <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
@@ -4383,53 +4533,100 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'sourceEdit') {
     const detail = props.controller.getSourceOverview(route.sourceId).detail;
-    breadcrumb = `插件来源 / ${route.sourceId} / 编辑`;
-    title = '选择要修改的内容'; description = '来源 ID 和类型只读。';
-    const startEdit = (field: SourceDraft['editField']): void => {
-      if (!detail) return;
-      const owner = `source-update:${route.sourceId}:${field}:${Date.now()}`;
-      setSourceDraft({ owner, mode: 'update', sourceId: route.sourceId, type: detail.type, location: '', refPolicy: detail.refPolicy ?? 'cliChannel', ref: detail.explicitRef ?? '', subdir: detail.subdir ?? '', autoCheck: detail.autoCheck, editField: field });
-      setDirty(true);
-      go({ name: 'sourceAdd', step: field === 'location' ? 'location' : field === 'subdir' ? 'subdir' : 'refPolicy', owner });
+    const activeDraft = route.owner && sourceDraft?.owner === route.owner ? sourceDraft : undefined;
+    const startDraftField = (step: 'location' | 'refPolicy' | 'subdir'): void => {
+      let draft = activeDraft;
+      if (!draft) {
+        const source = props.controller.getConfiguredSource(route.sourceId);
+        if (!source) return;
+        const owner = `source-update:${route.sourceId}:${Date.now()}`;
+        draft = sourceDraftFromSource(source, owner);
+        setSourceDraft(draft);
+        props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner });
+      }
+      go({ name: 'sourceAdd', step, owner: draft.owner, returnToDraft: true });
     };
-    const switchOfficialTransport = (location: string): void => {
-      if (!detail || detail.type !== 'git'
-        || detail.locationSummary === projectCatalogSourceLocation(location)) return;
-      const owner = `source-update:${route.sourceId}:location:${Date.now()}`;
-      const next: SourceDraft = {
-        owner,
-        mode: 'update',
-        sourceId: route.sourceId,
-        type: 'git',
-        location,
-        refPolicy: detail.refPolicy ?? 'cliChannel',
-        ref: detail.explicitRef ?? '',
-        subdir: detail.subdir ?? '',
-        autoCheck: detail.autoCheck,
-        editField: 'location',
-      };
+    const draft = activeDraft;
+    breadcrumb = `插件来源 / ${route.sourceId} / 编辑`;
+    title = draft?.mode === 'add' ? `检查新来源 ${draft.sourceId}` : `编辑 ${route.sourceId}`;
+    description = '地址、引用、子目录和自动检查组成一个草稿；保存前统一 Review。';
+    const locationSummary = draft
+      ? projectCatalogSourceLocation(draft.location)
+      : detail?.locationSummary ?? '不可用';
+    const setOfficialLocation = (location: string): void => {
+      const current = draft ?? (() => {
+        const source = props.controller.getConfiguredSource(route.sourceId);
+        if (!source) return undefined;
+        return sourceDraftFromSource(source, `source-update:${route.sourceId}:${Date.now()}`);
+      })();
+      if (!current || current.type !== 'git' || current.location === location) return;
+      const next = { ...current, location };
       setSourceDraft(next);
       setDirty(true);
-      void beginSourceUpdateReview(next);
+      props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner: next.owner });
     };
-    actions = detail?.type === 'git' ? [
-      ...(route.sourceId === 'official' ? [
-        { label: 'HTTPS', description: '使用系统 Git credential helper', selected: detail.locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_URL), run: () => switchOfficialTransport(OFFICIAL_CATALOG_SOURCE_URL) },
-        { label: 'SSH', description: '使用本机 SSH key；Git 连接使用 BatchMode', selected: detail.locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL), run: () => switchOfficialTransport(OFFICIAL_CATALOG_SOURCE_SSH_URL) },
-      ] : [{ label: 'Git URL', description: detail.locationSummary, run: () => startEdit('location') }]),
-      { label: '版本引用', description: detail.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startEdit('refPolicy') },
-      { label: 'Catalog 子目录', description: detail.subdir ?? '未设置', run: () => startEdit('subdir') },
-      { label: '自动检查更新', description: detail.autoCheck ? '已开启' : '已关闭', selected: detail.autoCheck, run: () => beginReview({ kind: 'sourceMutation', action: 'update', sourceId: route.sourceId, update: { autoCheck: !detail.autoCheck }, changes: [{ title: '自动检查更新', before: detail.autoCheck ? '开启' : '关闭', after: detail.autoCheck ? '关闭' : '开启' }] }) },
-    ] : [
-      { label: '本地目录', description: '已选择本地目录', run: () => startEdit('location') },
-      { label: '自动检查更新', description: detail?.autoCheck ? '已开启' : '已关闭', selected: detail?.autoCheck, run: () => detail && beginReview({ kind: 'sourceMutation', action: 'update', sourceId: route.sourceId, update: { autoCheck: !detail.autoCheck }, changes: [{ title: '自动检查更新', before: detail.autoCheck ? '开启' : '关闭', after: detail.autoCheck ? '关闭' : '开启' }] }) },
+    actions = [
+      ...(route.sourceId === 'official' && (draft?.type === 'git' || !draft && detail?.type === 'git') ? [
+        { label: 'HTTPS', description: '使用系统 Git credential helper', selected: locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_URL), run: () => setOfficialLocation(OFFICIAL_CATALOG_SOURCE_URL) },
+        { label: 'SSH', description: '使用本机 SSH key；Git 连接使用 BatchMode', selected: locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL), run: () => setOfficialLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL) },
+      ] : [{ label: draft?.type === 'path' || detail?.type === 'path' ? '本地目录' : 'Git 仓库地址', description: locationSummary, run: () => startDraftField('location') }]),
+      ...(draft?.type === 'git' || !draft && detail?.type === 'git' ? [
+        { label: '版本引用', description: draft ? draft.refPolicy === 'explicit' ? `固定：${draft.ref}` : '跟随 AW 版本通道' : detail?.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startDraftField('refPolicy') },
+        { label: 'Catalog 子目录', description: draft?.subdir || detail?.subdir || '未设置', run: () => startDraftField('subdir') },
+      ] : []),
+      { label: '自动检查更新', description: (draft?.autoCheck ?? detail?.autoCheck) ? '已开启' : '已关闭', selected: draft?.autoCheck ?? detail?.autoCheck, run: () => {
+        if (!draft) {
+          const source = props.controller.getConfiguredSource(route.sourceId);
+          if (!source) return;
+          const owner = `source-update:${route.sourceId}:${Date.now()}`;
+          const next = sourceDraftFromSource(source, owner);
+          next.autoCheck = !next.autoCheck;
+          setSourceDraft(next);
+          setDirty(true);
+          props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner });
+          return;
+        }
+        setSourceDraft({ ...draft, autoCheck: !draft.autoCheck });
+        setDirty(true);
+      } },
+      { label: '查看修改汇总', description: draft && sourceDraftChanges(draft).length > 0 ? `${sourceDraftChanges(draft).length} 项未保存` : '尚无修改', disabled: draft && sourceDraftChanges(draft).length > 0 ? undefined : '请先修改来源设置', status: 'success', run: () => {
+        if (!draft) return;
+        setFocus(0);
+        go({ name: 'sourceSave', owner: draft.owner });
+      } },
     ];
-    content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
+    content = <Box flexDirection="column"><SectionCard title="来源草稿" compact={policy.mode === 'compact'}>
+      <StaticRow title="来源 ID" meta={draft?.sourceId ?? route.sourceId} compact />
+      <StaticRow title="类型" meta={(draft?.type ?? detail?.type) === 'git' ? 'Git 仓库' : '本地目录'} compact />
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
       {route.sourceId === 'official' && detail?.type === 'git' ? <SectionCard title="来源身份">
         <StaticRow title="逻辑 Catalog" meta="lesliechan721-arch/agent-workflow" />
         <StaticRow title="source identity" meta="HTTPS / SSH 保持一致" />
         <StaticRow title="明文 HTTP" meta="不支持" status="warning" />
       </SectionCard> : null}
+    </Box>;
+  } else if (route.name === 'sourceSave' && sourceDraft?.owner === route.owner) {
+    const changes = sourceDraftChanges(sourceDraft);
+    breadcrumb = `插件来源 / ${sourceDraft.sourceId} / 修改汇总`;
+    context = `${changes.length} 项未保存`;
+    title = sourceDraft.mode === 'add' ? `保存新来源 ${sourceDraft.sourceId}？` : `保存 ${sourceDraft.sourceId} 的修改？`;
+    description = '选择是否在保存后验证候选并启用。保存成功与启用成功会分别报告。';
+    actions = [
+      { label: '保存并启用', description: '原子保存来源配置，再验证候选并切换 Active Catalog', status: 'success', run: () => beginSourceReview(sourceDraft, true) },
+      { label: '只保存', description: '只原子保存来源配置；当前 Active Catalog 保持不变', run: () => beginSourceReview(sourceDraft, false) },
+      { label: '返回修改', run: back },
+    ];
+    content = <Box flexDirection="column"><SectionCard title="来源变化" compact={policy.mode === 'compact'}>
+      {changes.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} description={`${change.before ?? '未设置'} → ${change.after}`} compact />)}
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+  } else if (route.name === 'scriptTimeout' && pendingReviewIntent) {
+    breadcrumb = '高级选项 / 安装前检查脚本';
+    context = '毫秒';
+    title = '设置脚本超时';
+    description = `输入 ${SCRIPT_TIMEOUT_MIN_MS}–${SCRIPT_TIMEOUT_MAX_MS} 毫秒。默认 ${SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒。`;
+    help = '输入 · Enter 应用并重新准备 Review · Ctrl-U 清空 · Esc 取消';
+    content = <Box flexDirection="column">
+      <InputCard focused title={<InputDisplay value={scriptTimeoutInput} columns={Math.max(8, size.columns - 8)} />} description={scriptTimeoutError ?? '此值将绑定本次 Review。'} status={scriptTimeoutError ? 'error' : undefined} />
     </Box>;
   } else if (route.name === 'sourceRemoveBlocked') {
     breadcrumb = `插件来源 / ${route.sourceId} / 移除`;
@@ -4854,6 +5051,15 @@ export function ConsoleAppV4(props: {
           operationBusy.current = false;
         });
       } },
+      ...(sharedImpactConfirmed && (pendingReviewIntent?.kind === 'pluginWrite'
+        || pendingReviewIntent?.kind === 'configSave' && pendingReviewIntent.apply) ? [{
+        label: '高级选项：脚本超时',
+        description: `${pendingReviewIntent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒`,
+        run: () => {
+          back();
+          go({ name: 'scriptTimeout', owner: review.reviewToken });
+        },
+      }] : []),
       { label: '返回修改', run: review.operationKind === 'portableInstall' && snapshot.portableDraft
         ? async () => {
             if (await refreshPortableDraft(snapshot.portableDraft!.pluginId)) back();
@@ -4871,7 +5077,7 @@ export function ConsoleAppV4(props: {
       userActivation: 'User activation',
       projectActivation: 'Project activation',
       awExtensions: 'AW extensions',
-      runtime: 'Codex runtime',
+      runtime: '执行设置',
       portableTarget: '安装目标',
       portableInputs: '准备内容',
       portableWarnings: '覆盖冲突',
@@ -4974,7 +5180,7 @@ export function ConsoleAppV4(props: {
         compact
       />;
     });
-    const showEquivalentCommand = Boolean(review.equivalentCommand && showTechnical);
+    const showEquivalentCommand = Boolean(review.equivalentCommand && showTechnical && !review.requiresConfirmation);
     content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! Shared impact 需要显式确认" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
@@ -5797,14 +6003,38 @@ export function ConsoleAppV4(props: {
       setInputError(undefined);
       return;
     }
+    if (route.name === 'scriptTimeout') {
+      if (key.escape) {
+        const intent = pendingReviewIntentRef.current;
+        back();
+        if (intent) beginReview(intent);
+        return;
+      }
+      const pendingIntent = pendingReviewIntentRef.current;
+      if (key.return && pendingIntent) {
+        try {
+          const scriptTimeoutMs = parseScriptTimeoutMs(scriptTimeoutInput);
+          const intent = { ...pendingIntent, scriptTimeoutMs } as OperationIntent;
+          setScriptTimeoutError(undefined);
+          back();
+          beginReview(intent);
+        } catch (error) {
+          setScriptTimeoutError(error instanceof Error ? error.message : '脚本超时无效。');
+        }
+        return;
+      }
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setScriptTimeoutInput('');
+      else if (key.backspace || key.delete) setScriptTimeoutInput(removeLastGrapheme);
+      else if (input && !key.ctrl && !key.meta && input >= ' ') setScriptTimeoutInput((value) => value + input);
+      setScriptTimeoutError(undefined);
+      return;
+    }
     if (route.name === 'sourceAdd'
       && route.step !== 'type'
       && route.step !== 'refPolicy'
       && sourceDraft?.owner === route.owner) {
       if (key.escape) {
-        setOverlayFocus(0);
-        setDiscardForExit(false);
-        setOverlay('discard');
+        back();
         return;
       }
       if (key.return) {
@@ -5834,23 +6064,26 @@ export function ConsoleAppV4(props: {
         const next = { ...sourceDraft };
         if (route.step === 'id') next.sourceId = sourceInput;
         else if (route.step === 'location') next.location = sourceInput;
-        else if (route.step === 'ref') next.ref = sourceInput;
+        else if (route.step === 'ref') {
+          next.refPolicy = 'explicit';
+          next.ref = sourceInput;
+        }
         else next.subdir = sourceInput === '' ? '' : path.posix.normalize(sourceInput).replace(/^\.\//u, '').replace(/\/$/u, '');
         setSourceDraft(next);
+        setDirty(true);
         setSourceInputError(undefined);
-        if (route.step === 'id') go({ name: 'sourceAdd', step: 'location', owner: route.owner });
+        if (route.returnToDraft) acceptSourceFieldAndBack();
+        else if (route.step === 'id') go({ name: 'sourceAdd', step: 'location', owner: route.owner });
         else if (route.step === 'location') {
-          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
-          else if (next.type === 'git') go({ name: 'sourceAdd', step: 'refPolicy', owner: route.owner });
-          else void beginSourceAddReviewWith(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
+          if (next.type === 'git') go({ name: 'sourceAdd', step: 'refPolicy', owner: route.owner });
+          else go({ name: 'sourceEdit', sourceId: next.sourceId, owner: route.owner });
         } else if (route.step === 'ref') {
-          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
-          else go({ name: 'sourceAdd', step: 'subdir', owner: route.owner });
-        } else if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
-        else void beginSourceAddReviewWith(next).catch(() => showSafeUiFailure('tuiSourceReviewFailed', 'source-review'));
+          go({ name: 'sourceAdd', step: 'subdir', owner: route.owner });
+        } else go({ name: 'sourceEdit', sourceId: next.sourceId, owner: route.owner });
         return;
       }
-      if (key.backspace || key.delete) setSourceInput(removeLastGrapheme);
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setSourceInput('');
+      else if (key.backspace || key.delete) setSourceInput(removeLastGrapheme);
       else if (input && !key.ctrl && !key.meta && input >= ' ') setSourceInput((value) => value + input);
       setSourceInputError(undefined);
       return;
@@ -5863,8 +6096,8 @@ export function ConsoleAppV4(props: {
         return;
       }
       if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) {
-        removeDraft(route.fieldKey);
-        back();
+        setInputValue('');
+        setInputError(undefined);
         return;
       }
       if (key.return && activeField) {
@@ -5885,7 +6118,8 @@ export function ConsoleAppV4(props: {
         back();
         return;
       }
-      if (key.backspace || key.delete) setInputValue(removeLastGrapheme);
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setInputValue('');
+      else if (key.backspace || key.delete) setInputValue(removeLastGrapheme);
       else if (input && !key.ctrl && !key.meta && input >= ' ') setInputValue((value) => value + input);
       setInputError(undefined);
       return;
@@ -5986,7 +6220,8 @@ export function ConsoleAppV4(props: {
         setScrollOffset(0);
         return;
       }
-      if (key.backspace || key.delete) setQuery(removeLastGrapheme);
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setQuery('');
+      else if (key.backspace || key.delete) setQuery(removeLastGrapheme);
       else if (input && !key.ctrl && !key.meta && input >= ' ') setQuery((value) => value + input);
       setFocus(0);
       setScrollOffset(0);
@@ -6004,6 +6239,8 @@ export function ConsoleAppV4(props: {
     );
     if (sessionNavigation) {
       requestSessionNavigation(sessionNavigation);
+    } else if (route.name === 'sourceAdd' && key.escape && route.step !== 'type') {
+      back();
     } else if (input.toLowerCase() === 'o'
       && (route.name === 'home'
         || route.name === 'issueList'
@@ -6025,7 +6262,7 @@ export function ConsoleAppV4(props: {
         || route.name === 'configFieldAction')) {
       back();
     } else if (key.escape || input.toLowerCase() === 'b') {
-      if (dirty) {
+      if (dirty && route.name !== 'review') {
         setOverlayFocus(0);
         setDiscardForExit(false);
         setOverlay('discard');
@@ -6049,7 +6286,10 @@ export function ConsoleAppV4(props: {
       setFocus(retained >= 0 ? retained : 0);
       setScrollOffset(0);
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 's') {
-      if (dirty) void beginConfigSave(false);
+      if (dirty && configDraftIssues.length === 0) {
+        setFocus(0);
+        go({ name: 'configSave', pluginId: route.pluginId, layer: { scope: route.layer.scope as Scope } });
+      }
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
       const field = currentConfigPage?.groups.flatMap((group) => group.fields)

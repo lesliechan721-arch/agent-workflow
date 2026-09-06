@@ -133,8 +133,11 @@ export type TuiRoute =
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
   | { name: 'sourceTechnical'; sourceId: string }
-  | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string }
-  | { name: 'sourceEdit'; sourceId: string }
+  | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
+  | { name: 'sourceEdit'; sourceId: string; owner?: string }
+  | { name: 'sourceSave'; owner: string }
+  | { name: 'configSave'; pluginId: string; layer: { scope: Scope } }
+  | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'catalogCandidate'; sourceId: string }
   | { name: 'catalogRefreshPolicy'; sourceId: string }
@@ -433,7 +436,8 @@ export class TuiRouter {
 
   discardSourceFlow(owner: string, returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>): TuiRouterSnapshot {
     const start = this.#stack.findIndex((frame) =>
-      frame.route.name === 'sourceAdd' && frame.route.owner === owner);
+      (frame.route.name === 'sourceAdd' || frame.route.name === 'sourceEdit')
+      && frame.route.owner === owner);
     if (start >= 0) this.#stack.splice(start);
     const current = this.#stack.at(-1)!.route;
     if (current.name === 'sourceEdit'

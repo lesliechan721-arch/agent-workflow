@@ -25,6 +25,10 @@ import {
   syncWriteCommand,
   uninstallWriteCommand,
 } from '../commands/write-commands.js';
+import {
+  parseScriptTimeoutMs,
+  SCRIPT_TIMEOUT_DEFAULT_MS,
+} from '../commands/options.js';
 import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   createCodexNativeObservationSession,
@@ -359,6 +363,18 @@ const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], str
 
 function pluginIntent(intent: OperationIntent): intent is Extract<OperationIntent, { pluginId: string }> {
   return 'pluginId' in intent;
+}
+
+function reviewedScriptTimeoutMs(intent: OperationIntent): number | undefined {
+  if (intent.kind === 'pluginWrite'
+    && (intent.action === 'install' || intent.action === 'refreshAndSync'
+      || intent.action === 'reinstall' || intent.action === 'sync')) {
+    return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  }
+  if (intent.kind === 'configSave' && intent.apply) {
+    return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  }
+  return undefined;
 }
 
 interface DependencyCatalogNode {
@@ -801,6 +817,7 @@ export function createTuiControllerDependencies(
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         cliChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+        configuredSources: structuredClone(configured.sources),
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
         targetRevisions: result.targetRevisions,
@@ -858,6 +875,7 @@ export function createTuiControllerDependencies(
     reusableCandidate?: CatalogSessionReusableCandidate,
     codexObservationSession?: CodexNativeObservationSession,
   ): Promise<OperationEvidence> => {
+    reviewedScriptTimeoutMs(intent);
     if (intent.kind === 'configReset') {
       const parsed = parsePluginId(intent.pluginId);
       if (!parsed.sourceId || !parsed.pluginName) {
@@ -1527,6 +1545,9 @@ export function createTuiControllerDependencies(
         cwd: context.cwd,
         platform: intent.platform,
         scope: intent.scope,
+        ...(reviewedScriptTimeoutMs(intent) === undefined
+          ? {}
+          : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
         ...(intent.action === 'install' && intent.dependencyScopeOverrides
           ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
           : {}),
@@ -2306,6 +2327,9 @@ export function createTuiControllerDependencies(
               cwd: context.cwd,
               platform: intent.platform,
               scope: intent.scope,
+              ...(reviewedScriptTimeoutMs(intent) === undefined
+                ? {}
+                : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
               ...(intent.action === 'install' && intent.dependencyScopeOverrides
                 ? { dependencyScopeOverrides: intent.dependencyScopeOverrides }
                 : {}),
@@ -2419,6 +2443,9 @@ export function createTuiControllerDependencies(
                           ...context,
                           awHomeMutationToken,
                           operationDiagnosticSink,
+                          ...(reviewedScriptTimeoutMs(intent) === undefined
+                            ? {}
+                            : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
                           ...(catalogOperation ? {
                             catalogOperationContext: catalogOperation,
                             expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,
@@ -2439,6 +2466,9 @@ export function createTuiControllerDependencies(
                         ...context,
                         awHomeMutationToken,
                         operationDiagnosticSink,
+                        ...(reviewedScriptTimeoutMs(intent) === undefined
+                          ? {}
+                          : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
                         ...(catalogOperation ? {
                           catalogOperationContext: catalogOperation,
                           expectedGenerationSetDigest: expectedEvidence.catalog.generationSetDigest,

@@ -325,6 +325,11 @@ function loadResult(): TuiStatusLoadResult {
   return {
     payload,
     pluginSummaries: summaries,
+    configuredSources: [
+      { id: 'official', type: 'path', primary: true, path: '/catalog/official', autoCheck: true },
+      { id: 'team-tools', type: 'git', primary: false, url: 'https://example.test/team.git', refPolicy: { type: 'explicit', ref: 'catalog/stable' }, subdir: 'catalog', autoCheck: true },
+      { id: 'research', type: 'path', primary: false, path: '/catalog/research', autoCheck: true },
+    ],
     catalogGenerations: [
       {
         sourceId: 'official',
@@ -804,6 +809,37 @@ async function confirmReview(
   await input(instance, '\r');
 }
 
+async function chooseConfigSave(
+  instance: ReturnType<typeof render>,
+  value: TuiController,
+  action: 'only' | 'apply',
+): Promise<void> {
+  expect(value.snapshot.router.current.route.name).toBe('configSave');
+  await input(instance, ...(action === 'only' ? ['\u001B[B'] : []), '\r');
+  await nextTurn(3);
+  expect(value.snapshot.router.current.route.name).toBe('review');
+}
+
+async function openConfigSave(
+  instance: ReturnType<typeof render>,
+  value: TuiController,
+): Promise<void> {
+  expect(value.snapshot.router.current.route.name).toBe('configFields');
+  await input(instance, 's');
+  expect(value.snapshot.router.current.route.name).toBe('configSave');
+}
+
+async function chooseSourceSave(
+  instance: ReturnType<typeof render>,
+  value: TuiController,
+  action: 'only' | 'enable',
+): Promise<void> {
+  expect(value.snapshot.router.current.route.name).toBe('sourceSave');
+  await input(instance, ...(action === 'only' ? ['\u001B[B'] : []), '\r');
+  await nextTurn(3);
+  expect(value.snapshot.router.current.route.name).toBe('review');
+}
+
 describe('ConsoleAppV4', () => {
   it('keeps the complete 112-state design map free of duplicate route identities', () => {
     expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(112);
@@ -968,7 +1004,7 @@ describe('ConsoleAppV4', () => {
       overallState: 'succeeded',
       targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
     });
-    await nextTurn(4);
+    await nextTurn(10);
     progressInstance.unmount();
     const resultInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
     await nextTurn(2);
@@ -1410,7 +1446,7 @@ describe('ConsoleAppV4', () => {
     });
     await nextTurn(3);
     await input(instance, '?');
-    expect(instance.lastFrame()).toContain('s  保存设置');
+    expect(instance.lastFrame()).toContain('s  查看保存汇总');
     expect(instance.lastFrame()).toContain('u  恢复当前字段继承');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
     await input(instance, '?');
@@ -1546,6 +1582,32 @@ describe('ConsoleAppV4', () => {
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWrite', action: 'install', platform: 'codex', scope: 'user',
     }), expect.any(AbortSignal));
+  });
+
+  it('invalidates the old Review and binds a first script-timeout value to a new Review', async () => {
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const executeIntent = vi.fn();
+    const value = controller({ captureEvidence, executeIntent });
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    await input(instance, '\r', '\r', '\r', '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    const oldToken = value.snapshot.activeReview?.reviewToken;
+    expect(oldToken).toBeDefined();
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('scriptTimeout');
+    expect(value.snapshot.activeReview).toBeUndefined();
+    await input(instance, '\u0015', '12000', '\r');
+    await nextTurn(12);
+
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(value.snapshot.activeReview?.reviewToken).not.toBe(oldToken);
+    expect(captureEvidence).toHaveBeenCalledTimes(2);
+    expect(captureEvidence).toHaveBeenLastCalledWith(expect.objectContaining({ scriptTimeoutMs: 12_000 }), expect.any(AbortSignal));
+    await expect(value.executeOperation(oldToken!)).resolves.toMatchObject({ state: 'blocked', code: 'reviewTicketInvalid' });
+    expect(executeIntent).not.toHaveBeenCalled();
   });
 
   it('mounts ReviewPreparing before deferred validation and lets Esc cancel without creating Review', async () => {
@@ -2192,7 +2254,7 @@ describe('ConsoleAppV4', () => {
       platform: 'claude',
     });
     await input(instance, 'b');
-    expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
+    expect(value.snapshot.router.current.route.name).not.toBe('sourceEdit');
     expect(value.snapshot.result).toBeUndefined();
   });
 
@@ -3500,8 +3562,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('仅开启（推荐）');
     expect(instance.lastFrame()).not.toContain('○ 关闭');
-    await input(instance, '\r', 's');
-    await nextTurn(4);
+    await input(instance, '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     await confirmReview(instance, value);
     await nextTurn(4);
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
@@ -3607,8 +3670,9 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('new_key');
     expect(instance.lastFrame()).not.toContain('SECRET-BYTES');
 
-    await input(instance, ...Array.from({ length: 2 }, () => '\u001B[B'), '\r', 's');
-    await nextTurn(4);
+    await input(instance, ...Array.from({ length: 2 }, () => '\u001B[B'), '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         title: '个人默认 · 服务设置',
@@ -3681,8 +3745,9 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     expect(instance.lastFrame()).not.toContain('preset-secret');
-    await input(instance, '\r', 's');
-    await nextTurn(4);
+    await input(instance, '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('3 个子项变化');
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('owner: Alice → Service');
     expect(instance.lastFrame()).toContain('已设置 · 3 项');
@@ -3741,8 +3806,9 @@ describe('ConsoleAppV4', () => {
     expect(editorFrame).not.toContain('● 服务方案');
     expect(editorFrame).not.toContain('preset-secret');
 
-    await input(instance, '\u001B[B', '\r', 's');
-    await nextTurn(4);
+    await input(instance, '\u001B[B', '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     expect(value.snapshot.activeReview?.changes[0]?.description).toContain('token: 已设置 → 将更新');
     expect(value.snapshot.activeReview?.changes[0]?.description).not.toContain('服务方案');
     expect(JSON.stringify(value.snapshot.activeReview)).not.toContain('preset-secret');
@@ -3869,8 +3935,8 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'configFields', pluginId: page.pluginId,
     });
-    await input(instance, 's');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'review' });
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -4047,8 +4113,9 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    await input(instance, 'u', 's');
-    await nextTurn(4);
+    await input(instance, 'u');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
 
     expect(value.snapshot.activeReview?.operationKind).toBe('configSave');
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
@@ -4172,9 +4239,10 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, ...openSettings);
     await nextTurn(3);
-    await input(instance, '\r', '\r', '\u001B[B', '\r', 's');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route.name).toBe('review');
+    await input(instance, '\r', '\r', '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
     await input(instance, '\r');
     await nextTurn(5);
     expect(screens).toContain('C14');
@@ -4283,13 +4351,11 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('恢复继承');
 
     await input(instance, ...Array.from({ length: 7 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('› 保存');
-    expect(instance.lastFrame()).toContain('保存并应用');
+    expect(instance.lastFrame()).toContain('› 查看保存汇总');
     await input(instance, 'u');
     expect(instance.lastFrame()).toContain('2 项未保存');
-    await input(instance, 's');
-    await nextTurn(3);
-    expect(value.snapshot.router.current.route.name).toBe('review');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
   });
 
   it('does not apply a preset after leaving its mutable layer while the page is loading', async () => {
@@ -4374,11 +4440,15 @@ describe('ConsoleAppV4', () => {
         },
       }),
     });
-    partial.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    await partial.load();
+    partial.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    partial.beginConfigFlow('team-tools/review-gate');
+    partial.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
     const partialInstance = render(<ConsoleAppV4 controller={partial} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => partialScreens.add(screen)} />);
     await nextTurn(4);
-    await input(partialInstance, '\u001B[B', '\r', '\u001B[B', '\r', 's');
-    await nextTurn(3);
+    await input(partialInstance, '\u001B[B', '\r', '\u001B[B', '\r');
+    await openConfigSave(partialInstance, partial);
+    await chooseConfigSave(partialInstance, partial, 'apply');
     await confirmReview(partialInstance, partial);
     await nextTurn(4);
     expect(partialScreens).toContain('C15');
@@ -5020,8 +5090,9 @@ describe('ConsoleAppV4', () => {
     });
     expect(instance.lastFrame()).not.toContain('修改值');
     expect(instance.lastFrame()).toContain('删除当前项目中的值');
-    await input(instance, '\r', 's');
-    await nextTurn(4);
+    await input(instance, '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'only');
 
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSave',
@@ -5138,8 +5209,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'b');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     expect(instance.lastFrame()).toContain('1 项未保存');
-    await input(instance, 's');
-    await nextTurn(3);
+    await openConfigSave(instance, value);
     expect(instance.lastFrame()).toContain('设置变更');
     expect(instance.lastFrame()).toContain('恢复继承（平衡 · 个人默认）');
     expect(instance.lastFrame()).toContain('应用影响');
@@ -5164,8 +5234,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
 
-    await input(instance, '\u001B[B', '\r', 's');
-    await nextTurn(4);
+    await input(instance, '\u001B[B', '\r');
+    await openConfigSave(instance, value);
 
     const frame = instance.lastFrame()!;
     expect(frame).toContain(`删除 ${fieldKey} 中的值`);
@@ -5190,6 +5260,7 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
+    expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
 
     await input(instance, 'hHqb', '\r');
     expect(value.snapshot.router.current.route.name).toBe('configFields');
@@ -5218,7 +5289,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     await input(instance, '\u0015', ...Array.from({ length: 8 }, () => '\u001B[B'));
     expect(value.snapshot.activeReview).toBeUndefined();
-    await input(instance, 's');
+    await input(instance, 's', '\r');
     expect(value.snapshot.activeReview).toBeUndefined();
     expect(instance.lastFrame()).not.toContain('清空个人默认');
   });
@@ -5260,7 +5331,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('普通 token 字段');
     expect(instance.lastFrame()).not.toContain('LEAK-VALUE');
-    await input(instance, 's');
+    await input(instance, 's', '\r');
     expect(value.snapshot.activeReview).toBeUndefined();
   });
 
@@ -5290,8 +5361,9 @@ describe('ConsoleAppV4', () => {
     });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
-    await input(instance, 'DRAFT-KEEP', '\r', ...Array.from({ length: 8 }, () => '\u001B[B'), '\r');
-    await nextTurn(3);
+    await input(instance, 'DRAFT-KEEP', '\r');
+    await openConfigSave(instance, value);
+    await chooseConfigSave(instance, value, 'apply');
     await confirmReview(instance, value);
     await nextTurn(4);
 
@@ -5300,12 +5372,13 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('设置已保存，但插件内容重新应用失败或部分失败');
     expect(instance.lastFrame()).toContain('已完成');
     expect(instance.lastFrame()).toContain('失败');
-    expect(instance.lastFrame()).toContain('重试应用');
+    expect(instance.lastFrame()).toContain('返回修改');
     expect(instance.lastFrame()).toContain('cleanup');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     expect(screens).toContain('C15');
     await input(instance, '\r');
     await nextTurn(4);
+    expect(value.snapshot.router.current.route.name).toBe('review');
     expect(instance.lastFrame()).toContain('重试应用插件设置');
   });
 
@@ -5465,6 +5538,11 @@ describe('ConsoleAppV4', () => {
     expect(screens).toContain('S08');
     await input(instance, 'catalog/stable', '\r', 'catalog', '\r');
     await nextTurn(3);
+    expect(screens).toContain('S14');
+    await input(instance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    expect(screens).toContain('S15');
+    await input(instance, '\r');
+    await nextTurn(3);
     expect(screens).toContain('S10');
     expect(instance.lastFrame()).toContain('team-b2');
     expect(instance.lastFrame()).not.toContain('Catalog 版本');
@@ -5537,7 +5615,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
   });
 
-  it('discards an add-source draft from S10 but q confirmation still exits', async () => {
+  it('discards an add-source draft from its unified parent but q confirmation still exits', async () => {
     const exit = vi.fn();
     const value = controller();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
@@ -5546,29 +5624,81 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
     await input(instance, 'review-draft', '\r', 'https://example.test/catalog.git', '\r', '\r', '\r');
     await nextTurn(3);
-    expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S10');
+    expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S14');
 
     await input(instance, 'q', '\u001B[B', '\r');
 
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('backs from an edit-source Review to the submitted source draft', async () => {
+  it('backs from an edit-source Review to the source save summary', async () => {
     const value = controller();
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
-    await input(instance, '\r', 'https://example.test/team-v2.git', '\r');
-    await nextTurn(3);
+    await input(instance, '\r');
+    await nextTurn(4);
+    await input(instance, ...Array.from({ length: 'https://example.test/team.git'.length }, () => '\u007F'), 'https://example.test/team-v2.git');
+    expect(instance.lastFrame()).toContain('team-v2.git');
+    await input(instance, '\r');
+    await input(instance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    await chooseSourceSave(instance, value, 'enable');
     expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S15');
 
     await input(instance, 'b');
 
     expect(value.snapshot.router).toMatchObject({
-      current: { route: { name: 'sourceAdd' } },
+      current: { route: { name: 'sourceSave' } },
     });
     expect(value.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('saves a changed path source when the private path display has the same basename', async () => {
+    const loaded = loadResult();
+    const official = loaded.configuredSources.find((source) => source.id === 'official');
+    if (!official || official.type !== 'path') throw new Error('expected path source fixture');
+    official.path = '/a/catalog';
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence,
+    });
+    await value.load();
+    value.push({ name: 'sourceEdit', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\r');
+    await nextTurn(4);
+    await input(instance, ...Array.from({ length: '/a/catalog'.length }, () => '\u007F'), '/b/catalog');
+    expect(instance.lastFrame()).toContain('已选择 / … / catalog');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('sourceEdit');
+    expect(instance.lastFrame()).toContain('1 项未保存');
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('sourceSave');
+    await chooseSourceSave(instance, value, 'only');
+
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'sourceMutation',
+      action: 'update',
+      sourceId: 'official',
+      update: expect.objectContaining({ type: 'path', path: '/b/catalog' }),
+    }), expect.any(AbortSignal));
+  });
+
+  it('drops an unchanged edit-source draft before returning home', async () => {
+    const value = controller();
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, '\r', '\u001B', 'h');
+
+    expect(value.snapshot.router.current.route.name).not.toBe('sourceEdit');
+    expect(value.hasSessionDraft).toBe(false);
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
   });
 
   it('reviews an official HTTPS to SSH transport switch before any source write', async () => {
@@ -5581,6 +5711,14 @@ describe('ConsoleAppV4', () => {
       requestedRef: 'refs/heads/catalog/latest',
       resolvedCommit: 'abc123',
       freshness: 'active',
+    };
+    loaded.configuredSources![0] = {
+      id: 'official',
+      type: 'git',
+      primary: true,
+      url: 'https://github.com/lesliechan721-arch/agent-workflow.git',
+      refPolicy: { type: 'cliChannel' },
+      autoCheck: true,
     };
     loaded.sourceDetails![0] = {
       id: 'official',
@@ -5604,12 +5742,34 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('HTTPS');
     expect(instance.lastFrame()).toContain('SSH');
     expect(instance.lastFrame()).toContain('BatchMode');
-    await input(instance, '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('review');
     expect(executeIntent).not.toHaveBeenCalled();
     expect(instance.lastFrame()).toContain('Git URL');
     expect(instance.lastFrame()).not.toContain('http://');
+  });
+
+  it('cancels a fixed-ref field without changing its parent source draft', async () => {
+    const loaded = loadResult();
+    loaded.configuredSources![1] = {
+      id: 'team-tools', type: 'git', primary: false,
+      url: 'https://example.test/team.git',
+      refPolicy: { type: 'cliChannel' }, autoCheck: true,
+    };
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+
+    await input(instance, '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'ref' });
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route.name).toBe('sourceEdit');
+    expect(value.hasSessionDraft).toBe(false);
   });
 
   it('renders safe source detail and technical data without raw path, credentials, or failure text', async () => {
@@ -5883,8 +6043,13 @@ describe('ConsoleAppV4', () => {
     const editScreens = new Set<ConsoleV4ScreenId>();
     const editView = render(<ConsoleAppV4 controller={edit} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => editScreens.add(screen)} />);
     await nextTurn(5);
-    await input(editView, '\r', 'https://example.test/team-v2.git', '\r');
-    await nextTurn(3);
+    await input(editView, '\r');
+    await nextTurn(4);
+    await input(editView, ...Array.from({ length: 'https://example.test/team.git'.length }, () => '\u007F'), 'https://example.test/team-v2.git');
+    expect(editView.lastFrame()).toContain('team-v2.git');
+    await input(editView, '\r');
+    await input(editView, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    await chooseSourceSave(editView, edit, 'enable');
     expect(editScreens).toContain('S14');
     expect(editScreens).toContain('S15');
     cleanup();

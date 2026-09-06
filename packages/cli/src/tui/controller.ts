@@ -116,6 +116,7 @@ export type OperationIntent =
       dependencyPlacementAdjustment?: true;
       recoveryDescription?: string;
       force?: boolean;
+      scriptTimeoutMs?: number;
       originIssue?: IssueOrigin;
     }
   | {
@@ -130,6 +131,7 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       apply: boolean;
+      scriptTimeoutMs?: number;
       retryApply?: true;
       updates?: Record<string, unknown>;
       removeKeys?: string[];
@@ -454,6 +456,7 @@ export interface TuiStatusLoadResult {
   pluginSummaries: StatusV7PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
+  configuredSources?: CatalogSource[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
   portablePluginIds?: string[];
   configStoreInventory?: Array<{
@@ -1222,6 +1225,7 @@ export class TuiController {
       || route.name === 'configFieldEditor'
       || route.name === 'configObjectPropertyEditor'
       || route.name === 'configFieldAction'
+      || route.name === 'configSave'
       || route.name === 'configUnavailable';
     if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
       return {
@@ -1442,7 +1446,7 @@ export class TuiController {
     this.#cancelPortableRequest();
     this.#cancelInstallPlacementRequest();
     this.#discardPortableDraftForRoute(route);
-    if ((route.name === 'sourceAdd' || route.name === 'sourceEdit')
+    if ((route.name === 'sourceAdd' || route.name === 'sourceEdit' || route.name === 'sourceSave')
       && this.#router.activeFlow()?.kind !== 'sourceEdit') {
       this.#router.beginFlow('sourceEdit', this.#router.snapshot.current.route);
     }
@@ -2277,6 +2281,11 @@ export class TuiController {
       detail: this.#viewModel?.sourceDetails.find((source) => source.id === sourceId),
       health: this.#health.get(sourceId),
     });
+  }
+
+  getConfiguredSource(sourceId: string): CatalogSource | undefined {
+    const source = this.#status?.configuredSources?.find((candidate) => candidate.id === sourceId);
+    return source ? cloneFrozen(source) : undefined;
   }
 
   getCatalogGeneration(sourceId: string): CatalogSourceGenerationViewModel | undefined {

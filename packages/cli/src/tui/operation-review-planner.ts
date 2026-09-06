@@ -10,6 +10,10 @@ import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { OfflineCleanupTargetEvidence } from '../commands/offline-cleanup-evidence.js';
 import { catalogSourceAutoCheckOnlyValue } from './catalog-sources/review.js';
+import {
+  parseScriptTimeoutMs,
+  SCRIPT_TIMEOUT_DEFAULT_MS,
+} from '../commands/options.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -18,6 +22,80 @@ function plannerError(code: string, message: string): Error {
 function pluginNameFromId(pluginId: string): string {
   const separator = pluginId.indexOf('/');
   return separator < 0 ? pluginId : pluginId.slice(separator + 1);
+}
+
+function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] {
+  let configuredTimeoutMs: number | undefined;
+  if (intent.kind === 'pluginWrite'
+    && (intent.action === 'install' || intent.action === 'refreshAndSync'
+      || intent.action === 'reinstall' || intent.action === 'sync')) {
+    configuredTimeoutMs = intent.scriptTimeoutMs;
+  } else if (intent.kind === 'configSave' && intent.apply) {
+    configuredTimeoutMs = intent.scriptTimeoutMs;
+  } else {
+    return [];
+  }
+  const timeoutMs = parseScriptTimeoutMs(configuredTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  return [{
+    kind: 'keep',
+    group: 'runtime',
+    title: 'preApply 脚本超时',
+    description: `${timeoutMs} ms`,
+  }];
+}
+
+function sourceMutationReviewChanges(
+  mutation: NonNullable<Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation']>,
+): OperationReviewChange[] {
+  if (mutation.action === 'add') {
+    const source = mutation.source;
+    return [
+      { kind: 'add', title: '保存来源配置' },
+      { kind: 'add', title: source.type === 'git' ? 'Git URL' : '本地目录', description: '已设置' },
+      ...(source.type === 'git' ? [{
+        kind: 'add' as const,
+        title: 'Git ref policy',
+        description: source.refPolicy.type === 'cliChannel'
+          ? '跟随 CLI channel'
+          : `固定 ref · ${source.refPolicy.ref}`,
+      }, {
+        kind: 'add' as const,
+        title: 'Catalog 子目录',
+        description: source.subdir ?? '根目录',
+      }] : []),
+      {
+        kind: 'add',
+        title: '自动检查',
+        description: source.autoCheck === false ? '关闭' : '开启',
+      },
+    ];
+  }
+  const update = mutation.update;
+  const changes: OperationReviewChange[] = [];
+  if ('url' in update && update.url !== undefined) {
+    changes.push({ kind: 'change', title: 'Git URL', description: '将更新' });
+  }
+  if ('path' in update && update.path !== undefined) {
+    changes.push({ kind: 'change', title: '本地目录', description: '将更新' });
+  }
+  if ('refPolicy' in update && update.refPolicy) changes.push({
+    kind: 'change',
+    title: 'Git ref policy',
+    description: update.refPolicy.type === 'cliChannel'
+      ? '跟随 CLI channel'
+      : `固定 ref · ${update.refPolicy.ref}`,
+  });
+  if ('subdir' in update && update.subdir !== undefined) changes.push({
+    kind: 'change',
+    title: 'Catalog 子目录',
+    description: update.subdir ?? '根目录',
+  });
+  if ('autoCheck' in update && update.autoCheck !== undefined) changes.push({
+    kind: 'change',
+    title: '自动检查',
+    description: update.autoCheck ? '开启' : '关闭',
+  });
+  return changes.length > 0 ? changes : [{ kind: 'change', title: '更新来源配置' }];
 }
 
 function operationLabels(intent: OperationIntent, evidence?: OperationEvidence): {
@@ -211,7 +289,9 @@ function reviewChanges(
     const desiredIntentKind = requestedIntentAction(
       intent.action === 'refreshAndSync' ? 'sync' : intent.action,
     );
-    const runtimeChanges: OperationReviewChange[] = evidence?.codexManager
+    const runtimeChanges: OperationReviewChange[] = [
+      ...scriptTimeoutChanges(intent),
+      ...(evidence?.codexManager
       ? [{
           kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
           group: 'runtime',
@@ -223,8 +303,9 @@ function reviewChanges(
             : evidence.codexManager.state === 'cached'
               ? `${evidence.codexManager.packageName}@${evidence.codexManager.version} · 复用 AW-managed 缓存`
               : `使用兼容的 system Codex ${evidence.codexManager.version}`,
-        }]
-      : [];
+        } satisfies OperationReviewChange]
+      : []),
+    ];
     const codexChanges = (evidence?.codexReconcilePlans ?? []).flatMap((codexPlan) => [
       ...codexPlan.sharedNativeActions.map((action): OperationReviewChange => ({
         kind: action.action === 'reuse' || action.action === 'none' ? 'keep'
@@ -425,18 +506,7 @@ function reviewChanges(
         title: '使用当前候选替换损坏的 Active',
         description: '旧版本无法安全比较；确认后只切换到本次绑定的当前候选。',
       }] : []),
-      ...(generation.sourceMutation ? [{
-        kind: generation.sourceMutation.action === 'add' ? 'add' as const : 'change' as const,
-        title: generation.sourceMutation.action === 'add' ? '保存来源配置'
-          : 'url' in generation.sourceMutation.update ? 'Git URL'
-            : 'path' in generation.sourceMutation.update ? '本地目录'
-              : 'refPolicy' in generation.sourceMutation.update
-                && generation.sourceMutation.update.refPolicy ? 'Git ref policy'
-                : 'subdir' in generation.sourceMutation.update
-                  && generation.sourceMutation.update.subdir !== undefined ? 'Catalog 子目录'
-                  : '更新来源配置',
-        description: `${generation.configDigest.slice(0, 8)} → ${generation.proposedConfigDigest?.slice(0, 8) ?? '未知'}`,
-      }] : []),
+      ...(generation.sourceMutation ? sourceMutationReviewChanges(generation.sourceMutation) : []),
       ...(generation.explicitSourceChange && generation.candidateRelation === 'rollbackDetected' ? [{
         kind: 'warning' as const,
         title: '显式来源切换将降低 Catalog 版本',
@@ -489,6 +559,7 @@ function reviewChanges(
   const layerLabel = intent.scope === 'user' ? '个人默认' : '当前项目';
   if (intent.retryApply) {
     return [
+      ...scriptTimeoutChanges(intent),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
         group: 'configImpact',
@@ -527,6 +598,7 @@ function reviewChanges(
             { kind: 'keep', group: 'preserved', title: 'project Agent role 继续按当前项目配置' },
           ];
     return [
+      ...scriptTimeoutChanges(intent),
       ...(evidence?.config?.shareability === 'unverified' ? [{
         kind: 'warning' as const,
         group: 'configImpact' as const,
@@ -561,6 +633,7 @@ function reviewChanges(
   }
   const updateKeys = Object.keys(intent.updates ?? {});
   return [
+    ...scriptTimeoutChanges(intent),
     ...updateKeys.map((key): OperationReviewChange => ({
       kind: 'change',
       title: key,
@@ -676,7 +749,7 @@ export function buildOperationReviewProjection(options: {
     ],
     technicalDetails: technicalDetails(evidence),
     ...(intent.kind === 'pluginWrite'
-      ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation ? ' --yes' : ''}` }
+      ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation ? ' --yes' : ''}` }
       : {}),
     primaryLabel: intent.kind === 'pluginWrite' && evidence.dependencyPlan
       ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
