@@ -4388,6 +4388,8 @@ describe('five namespaced write commands', () => {
   it('requires --yes and reports a preApply failure without platform writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'claude-pre-apply-warning-source');
+    const secret = 'private "pre-apply"\ntoken\\7f3e9c';
+    const escapedSecret = JSON.stringify(secret).slice(1, -1);
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
@@ -4400,7 +4402,7 @@ describe('five namespaced write commands', () => {
         'for await (const chunk of process.stdin) input += chunk;',
         'const context = JSON.parse(input);',
         'throw new Error([',
-        '  `prefix${context.config.values.token}Suffix ordinary preApply failed`,',
+        '  `prefix${JSON.stringify(context.config.values.token).slice(1, -1)}Suffix ordinary preApply failed`,',
         '  context.plugin.rootDir, context.target.projectRoot,',
         '  process.env.AW_HOME, process.env.HOME, process.env.TMPDIR,',
         '].filter(Boolean).join(" | "));',
@@ -4430,7 +4432,7 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      values: { token: 'private-pre-apply-token-7f3e9c' },
+      values: { token: secret },
     });
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
@@ -4508,8 +4510,10 @@ describe('five namespaced write commands', () => {
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
         error.code === 'ENOENT' ? null : Promise.reject(error))));
     const output = createCapturedCliIo();
+    const debugLogPath = path.join(isolation.layout.debugLogsDir, 'pre-apply-redaction.log');
     const exitCode = await runCli([
       'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes', '--json',
+      '--debug', '--log-file', debugLogPath,
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -4545,12 +4549,32 @@ describe('five namespaced write commands', () => {
     const serializedReceipt = JSON.stringify(receipt);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
     for (const privateValue of [
-      'private-pre-apply-token-7f3e9c',
+      secret,
+      escapedSecret,
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
     ]) {
       expect(serializedReceipt).not.toContain(privateValue);
     }
+    const debugLog = await fs.readFile(debugLogPath, 'utf8');
+    expect(debugLog).not.toContain(secret);
+    expect(debugLog).not.toContain(escapedSecret);
+
+    const humanOutput = createCapturedCliIo();
+    const humanExitCode = await runCli([
+      'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: humanOutput.io,
+      interactive: false,
+      nativeCliRunner,
+    });
+    expect(humanExitCode).toBe(1);
+    const humanText = `${humanOutput.readStdout()}\n${humanOutput.readStderr()}`;
+    expect(humanText).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
+    expect(humanText).not.toContain(secret);
+    expect(humanText).not.toContain(escapedSecret);
     expect(marketplaceRoots.size).toBe(0);
     await expect(snapshotRegularTree(isolation.env.AW_CLAUDE_HOME!))
       .resolves.toEqual(platformBefore);

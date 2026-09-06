@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { redactString } from '../output/redact.js';
+import { collectSensitiveTokenRepresentations } from '../utils/sensitive-content.js';
 
 export type DiagnosticImpactState = 'blocked' | 'preserved' | 'degraded';
 
@@ -74,7 +75,11 @@ export function sanitizeDiagnosticText(
   sensitiveRoots: readonly string[] = [],
   sensitiveValues: readonly string[] = [],
 ): string {
-  let output = value
+  let output = value;
+  for (const representation of collectSensitiveTokenRepresentations(sensitiveValues)) {
+    output = output.replace(new RegExp(escapeRegExp(representation), 'gu'), '[REDACTED]');
+  }
+  output = output
     .replace(ANSI_ESCAPE, '')
     .replace(NON_WHITESPACE_CONTROL, '')
     .replace(RAW_OUTPUT_LINE, '[diagnostic-omitted]')
@@ -96,11 +101,6 @@ export function sanitizeDiagnosticText(
     ...sensitiveRoots,
   ].filter((entry): entry is string => Boolean(entry?.trim())));
   for (const root of roots) output = replaceRoot(output, root);
-  for (const sensitiveValue of sensitiveValues) {
-    if (sensitiveValue.length > 0) {
-      output = output.replace(new RegExp(escapeRegExp(sensitiveValue), 'gu'), '[REDACTED]');
-    }
-  }
   output = output
     .replace(/(^|[\s("'=])\/(?:[^/\s]+\/)+[^\s,;)]*/gu, '$1[private-path]')
     .replace(/(^|[\s("'=])[A-Za-z]:\\(?:[^\\\s]+\\)+[^\s,;)]*/gu, '$1[private-path]')

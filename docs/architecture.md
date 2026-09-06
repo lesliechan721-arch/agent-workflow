@@ -34,7 +34,7 @@
 ### Module Invariants
 
 - renderer context 使用规范化的非空 `requestedArtifactIds` 精确限定本次请求；`config.schema/values/sources/issues` 和 `changedConfigKeys` 只包含这些 target 的 `refreshKeys` 并集。context 不公开 config store 路径，且 context 中的 home 与 renderer 进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都指向本次请求的临时目录。renderer 只返回与请求集合精确相等的 `ArtifactPlan`，不直接写平台文件。AW direct writer 不请求 `codex-native` target。标准 config helper 只读取 CLI 已校验的 `AW_PLUGIN_CONTEXT` effective config，不读取 config store，也不重复 schema 或 value validation；缺少 context 或请求 user/project scope 时 fail closed。
-- renderer 输出在 JSON 解析和 `ArtifactPlan` 结构验证后、任何 staging 或平台写入前，统一拒绝包含 effective sensitive config 明文或其 JSON 序列化形态的普通及 Portable dynamic artifact。错误只公开稳定 code，不回显 sensitive 值。
+- renderer 输出在 JSON 解析和 `ArtifactPlan` 结构验证后、任何 staging 或平台写入前，统一拒绝包含 effective sensitive config 明文或其 JSON 序列化形态的普通及 Portable dynamic artifact。preApply 和 renderer 在插件执行边界清理错误与输出摘要中的这两种表示，再交给 debug、文本输出或 Receipt。错误只公开稳定 code，不回显 sensitive 值。
 - build-generated Skill reference 必须由 `buildConfig.generatedSkillRuntimeFiles` 精确声明。源码 validation 不把声明目标误报为缺失；最终 bundle 必须生成目标并通过完整 runtime closure。
 - 写入前验证 scope、路径边界、目标身份和最终 Skill tree。
 - Dynamic `codex.skill` 必须显式选择 `aw-extension` 或唯一受支持的 native delivery `{mode:"codex-native",identity:"shared",renderProfile:"user"}`。native delivery 是 Codex-owned dynamic Skill，scope 和名字来自 target；其 refresh key 只能在 user scope 写入，不能引用 sensitive 顶层字段或含 sensitive fixed/KV child 的 object 字段，project scope 的 set 必须拒绝，且不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须声明完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用 target scopes，slash command 不属于该集合。config 只作为 surface 输入，不计入 Codex output owner 或冲突。
