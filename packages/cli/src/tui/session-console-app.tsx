@@ -22,6 +22,7 @@ export function SessionConsoleApp(props: {
       controller={session.controller}
       ownsController={false}
       pendingSessionNavigation={session.pendingNavigation}
+      pendingSessionNavigationDrafts={session.pendingNavigationDrafts}
       onCancelPendingSessionNavigation={() => props.host.cancelPendingNavigation()}
       onSessionNavigation={(navigation, options) => props.host.requestNavigation(navigation, options)}
       onExit={props.onExit}

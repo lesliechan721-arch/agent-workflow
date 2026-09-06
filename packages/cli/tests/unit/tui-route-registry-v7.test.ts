@@ -65,8 +65,8 @@ describe('TUI route registry', () => {
         platform: 'codex' }, { name: 'pluginList', mode: 'browse' }],
       [{ name: 'sourceTechnical', sourceId: 'gone' }, { name: 'sourceList' }],
       [{ name: 'issueDetail', issueId: 'gone' }, { name: 'issueList' }],
-      [{ name: 'operationDiagnostic', recordId: 'gone' }, { name: 'operationHistory' }],
-      [{ name: 'operationReportPreview', recordId: 'gone' }, { name: 'operationHistory' }],
+      [{ name: 'operationDiagnostic', recordId: 'gone' }, { name: 'operationDiagnostic', recordId: 'gone' }],
+      [{ name: 'operationReportPreview', recordId: 'gone' }, { name: 'operationReportPreview', recordId: 'gone' }],
       [{ name: 'review', operationId: 'gone' }, { name: 'operationHistory' }],
       [{ name: 'result', operationId: 'gone' }, { name: 'operationHistory' }],
     ];
@@ -130,9 +130,6 @@ describe('TUI route registry', () => {
     [{ name: 'issueList' } as const,
       { name: 'issueDetail', issueId: 'removed' } as const,
       entities({ hasIssue: () => false })],
-    [{ name: 'operationHistory' } as const,
-      { name: 'operationDiagnostic', recordId: 'removed' } as const,
-      entities({ hasHistoryRecord: () => false })],
   ])('removes a normalized duplicate %j ancestor without an empty Back step', (list, detail, state) => {
     const router = new TuiRouter();
     router.push(list, { focusIndex: 4, scrollOffset: 2 });

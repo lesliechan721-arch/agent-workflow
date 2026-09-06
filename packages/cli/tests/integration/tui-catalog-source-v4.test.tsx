@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4, type ConsoleV4ScreenId } from '../../src/tui/console-app-v4.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
+import { SessionHost } from '../../src/tui/session-host.js';
 import {
   createTuiControllerDependencies,
   setTuiControllerRuntimeTestHooksForTests,
@@ -27,6 +29,7 @@ import {
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { CatalogGenerationError } from '../../src/utils/catalog-generation-error.js';
 import {
   createCatalogStoreKey,
   resolveCatalogStoreLocation,
@@ -432,7 +435,14 @@ describe('TUI v4 real catalog source boundary', () => {
       });
 
       expect(controller.snapshot.phase).toBe('ready');
-      expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'result' });
+      expect(controller.snapshot.result).toMatchObject({
+        state: 'blocked',
+        code: 'catalogSourcesConfigRecoveryStale',
+        operationKind: 'catalogSourcesRecovery',
+        returnRoute: { name: 'home' },
+      });
+      expect(controller.snapshot.result).not.toHaveProperty('writeMayHaveCompleted');
       expect((await fs.readdir(isolation.env.AW_HOME!))
         .filter((name) => name.startsWith('catalog-sources.json.broken-'))).toEqual([]);
       if (currentState === 'valid') {
@@ -441,6 +451,97 @@ describe('TUI v4 real catalog source boundary', () => {
         expect((await readCatalogSourcesConfigSnapshot(isolation.env)).materialized).toBe(false);
       }
       controller.dispose();
+    },
+  );
+
+  it.each([
+    { navigationKey: 'h' as const, reloadState: 'ready' as const },
+    { navigationKey: 'H' as const, reloadState: 'error' as const },
+  ])(
+    'clears deferred $navigationKey navigation after a real stale recovery Result with reload $reloadState',
+    async ({ navigationKey, reloadState }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const configPath = path.join(isolation.env.AW_HOME!, 'catalog-sources.json');
+      const currentRoot = path.join(isolation.layout.fixtureCwd, `stale-host-${navigationKey}`);
+      await Promise.all([
+        fs.outputFile(configPath, '{broken'),
+        createCatalogSnapshotFixture(currentRoot, 'current'),
+      ]);
+      let rejectExecution!: (error: unknown) => void;
+      const execution = new Promise<never>((_resolve, reject) => { rejectExecution = reject; });
+      const context = createCliExecutionContext({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        interactive: false,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        debugLogger: { log: async () => undefined },
+      });
+      const runtimeDependencies = createTuiControllerDependencies(context);
+      const executeIntent = vi.fn()
+        .mockImplementationOnce(async () => execution)
+        .mockResolvedValueOnce({});
+      const controller = trackController(new TuiController({
+        ...runtimeDependencies,
+        executeIntent,
+      }));
+      const host = new SessionHost({
+        createSession: () => ({ controller, progressFeed: createRebuildProgressFeed() }),
+      });
+      const instance = render(<SessionConsoleApp host={host} />);
+      await waitFor(() => controller.snapshot.phase === 'error', 'invalid sources bootstrap');
+      const review = await controller.buildOperationReview({ kind: 'catalogSourcesRecovery' });
+      const pendingExecution = controller.executeOperation(review.reviewToken);
+      await waitFor(() => controller.hasActiveWrite, 'recovery write');
+      await input(instance, navigationKey);
+      expect(host.snapshot.pendingNavigation).toBe(navigationKey === 'h' ? 'home' : 'reload');
+
+      if (reloadState === 'ready') {
+        await fs.writeJson(configPath, {
+          schemaVersion: 2,
+          sources: [{ id: 'current', type: 'path', primary: true, path: currentRoot }],
+        });
+      }
+      rejectExecution(new CatalogGenerationError({
+        code: 'catalogSourcesConfigRecoveryStale',
+        message: 'Catalog sources config recovery became stale.',
+      }));
+      await expect(pendingExecution).resolves.toMatchObject({
+        state: 'blocked', code: 'catalogSourcesConfigRecoveryStale',
+      });
+      await nextTurn(3);
+
+      expect(host.snapshot).toMatchObject({ epoch: 1, controller });
+      expect(host.snapshot.pendingNavigation).toBeUndefined();
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'result' });
+      expect(controller.snapshot.phase).toBe(reloadState);
+      expect(instance.lastFrame()).toContain('来源操作未完成');
+      const record = controller.listOperationHistory()[0]!;
+      expect(controller.getOperationDiagnostic(record.recordId)?.diagnostics).toHaveLength(1);
+      expect(controller.previewOperationReport(record.recordId)?.content)
+        .toContain('catalogSourcesConfigRecoveryStale');
+
+      if (reloadState === 'error') {
+        await fs.writeJson(configPath, {
+          schemaVersion: 2,
+          sources: [{ id: 'current', type: 'path', primary: true, path: currentRoot }],
+        });
+        await controller.load();
+      }
+      const nextReview = await controller.buildOperationReview({
+        kind: 'sourceMutation',
+        action: 'update',
+        sourceId: 'current',
+        update: { type: 'path', path: currentRoot },
+      });
+      await expect(controller.executeOperation(nextReview.reviewToken)).resolves.toMatchObject({
+        state: 'succeeded', operationKind: 'sourceMutation',
+      });
+      await nextTurn(3);
+      expect(executeIntent).toHaveBeenCalledTimes(2);
+      expect(host.snapshot).toMatchObject({ epoch: 1 });
+      expect(host.snapshot.pendingNavigation).toBeUndefined();
+      expect(controller.snapshot.router.current.route).toMatchObject({ name: 'result' });
+      host.dispose();
     },
   );
 

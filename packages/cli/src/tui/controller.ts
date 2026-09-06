@@ -92,6 +92,13 @@ type CatalogActivationBlockReason =
   | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
   | 'activeReview' | 'reviewPreparation' | 'writeProgress';
 
+export interface ExternalDraftState {
+  kind: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  owner: string;
+  flowId?: string;
+  revision: number;
+}
+
 export type PluginWriteOperation = 'install' | 'refreshAndSync' | 'reinstall' | 'uninstall' | 'cleanup' | 'sync';
 export const PLUGIN_WRITE_BATCH_ACTIONS = [
   'install',
@@ -103,7 +110,14 @@ export const PLUGIN_WRITE_BATCH_ACTIONS = [
 export type BatchPluginWriteAction = typeof PLUGIN_WRITE_BATCH_ACTIONS[number];
 export type PluginWriteBatchSelection =
   | { kind: 'selected'; pluginIds: string[] }
+  | { kind: 'targets'; targets: PluginWriteBatchTarget[] }
   | { kind: 'currentProjectIntentRoots' };
+
+export interface PluginWriteBatchTarget {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+}
 
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
@@ -118,6 +132,7 @@ export interface PluginWriteBatchGroupEvidence {
   groupId: string;
   sourceId: string;
   platform: PlatformName | 'both';
+  scope: Scope;
   requestedPluginIds: string[];
   preview: RebuildCommandResult;
   executable: boolean;
@@ -132,6 +147,7 @@ export interface PluginWriteBatchGroupResult {
   groupId: string;
   sourceId: string;
   platform: PlatformName | 'both';
+  scope: Scope;
   requestedPluginIds: string[];
   result: RebuildCommandResult;
 }
@@ -480,6 +496,7 @@ export interface OperationResultSummary {
   batch?: {
     requestedPluginIds: string[];
     failedRequestedPluginIds: string[];
+    retryTargets?: PluginWriteBatchTarget[];
     groupCount: number;
   };
   portable?: {
@@ -709,8 +726,25 @@ function canonicalPluginIds(pluginIds: readonly string[]): string[] {
   return [...new Set(pluginIds)].sort((left, right) => left.localeCompare(right, 'en'));
 }
 
+function canonicalBatchTargets(targets: readonly PluginWriteBatchTarget[]): PluginWriteBatchTarget[] {
+  const byKey = new Map<string, PluginWriteBatchTarget>();
+  for (const target of targets) {
+    byKey.set([target.pluginId, target.platform, target.scope].join('\0'), target);
+  }
+  return [...byKey.values()].sort((left, right) =>
+    [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
+}
+
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
-  if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'selected') return intent;
+  if (intent.kind !== 'pluginWriteBatch') return intent;
+  if (intent.selection.kind === 'targets') {
+    return {
+      ...intent,
+      selection: { kind: 'targets', targets: canonicalBatchTargets(intent.selection.targets) },
+    };
+  }
+  if (intent.selection.kind !== 'selected') return intent;
   return {
     ...intent,
     selection: {
@@ -755,32 +789,78 @@ function assertPluginWriteBatchEvidence(
   }
 }
 
+export function pluginWriteBatchFailedRequestedTargets(
+  execution: PluginWriteBatchExecutionResult,
+): PluginWriteBatchTarget[] {
+  const failed: PluginWriteBatchTarget[] = [];
+  for (const group of execution.groupResults) {
+    const roots = new Set(group.requestedPluginIds);
+    const targetsByPlugin = new Map<string, typeof group.result.targetResults>();
+    for (const target of group.result.targetResults) {
+      const pluginId = target.target.pluginId;
+      if (!pluginId) continue;
+      const entries = targetsByPlugin.get(pluginId) ?? [];
+      entries.push(target);
+      targetsByPlugin.set(pluginId, entries);
+    }
+    const successfulRootKeys = new Set(group.result.targetResults.flatMap((target) => {
+      const pluginId = target.target.pluginId;
+      return pluginId && roots.has(pluginId)
+        && target.state !== 'failed' && target.action !== 'skipped'
+        ? [[pluginId, target.target.platform, target.target.scope].join('\0')]
+        : [];
+    }));
+    const unsuccessful = group.result.targetResults.filter((target) =>
+      target.state === 'failed' || target.action === 'skipped');
+    for (const target of unsuccessful) {
+      const pending = target.target.pluginId
+        ? [{ pluginId: target.target.pluginId, platform: target.target.platform }]
+        : [];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const current = pending.shift()!;
+        const visitKey = [current.pluginId, current.platform].join('\0');
+        if (visited.has(visitKey)) continue;
+        visited.add(visitKey);
+        const candidates = (targetsByPlugin.get(current.pluginId) ?? [])
+          .filter((candidate) => candidate.target.platform === current.platform);
+        if (roots.has(current.pluginId)) {
+          if (candidates.length === 0) {
+            const retryTarget = {
+              pluginId: current.pluginId,
+              platform: current.platform,
+              scope: group.scope,
+            };
+            const key = [retryTarget.pluginId, retryTarget.platform, retryTarget.scope].join('\0');
+            if (!successfulRootKeys.has(key)) failed.push(retryTarget);
+          }
+          for (const candidate of candidates) {
+            const retryTarget = {
+              pluginId: current.pluginId,
+              platform: candidate.target.platform,
+              scope: candidate.target.scope,
+            };
+            const key = [current.pluginId, retryTarget.platform, retryTarget.scope].join('\0');
+            if (!successfulRootKeys.has(key)) failed.push(retryTarget);
+          }
+          continue;
+        }
+        for (const candidate of candidates) {
+          pending.push(...(candidate.requiredBy ?? []).map((pluginId) => ({
+            pluginId, platform: current.platform,
+          })));
+        }
+      }
+    }
+  }
+  return canonicalBatchTargets(failed);
+}
+
 export function pluginWriteBatchFailedRequestedPluginIds(
   execution: PluginWriteBatchExecutionResult,
 ): string[] {
-  const failed = new Set<string>();
-  for (const group of execution.groupResults) {
-    const roots = new Set(group.requestedPluginIds);
-    const unsuccessful = group.result.targetResults.filter((target) =>
-      target.state === 'failed' || target.action === 'skipped');
-    let mapped = false;
-    for (const target of unsuccessful) {
-      const pluginId = target.target.pluginId;
-      if (pluginId && roots.has(pluginId)) {
-        failed.add(pluginId);
-        mapped = true;
-      }
-      for (const requiredBy of target.requiredBy ?? []) {
-        if (!roots.has(requiredBy)) continue;
-        failed.add(requiredBy);
-        mapped = true;
-      }
-    }
-    if (group.result.overallState !== 'succeeded' && (!mapped || unsuccessful.length === 0)) {
-      group.requestedPluginIds.forEach((pluginId) => failed.add(pluginId));
-    }
-  }
-  return canonicalPluginIds([...failed]);
+  return canonicalPluginIds(pluginWriteBatchFailedRequestedTargets(execution)
+    .map((target) => target.pluginId));
 }
 
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
@@ -917,6 +997,8 @@ export function userIssueKey(issue: Pick<UserIssueViewModel,
 
 
 function issueCode(error: unknown): string {
+  const safeOperationError = readSafeOperationError(error);
+  if (safeOperationError) return safeDiagnosticCode(safeOperationError.code, 'operationBlocked');
   if (error instanceof TuiOperationBlockedError) return error.code;
   if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
@@ -992,7 +1074,7 @@ export class TuiController {
   #generation = 0;
   #disposed = false;
   #retiring = false;
-  #externalDraft?: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  #externalDrafts: ExternalDraftState[] = [];
   #batchRetryIntent?: PluginWriteBatchIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
@@ -1113,9 +1195,13 @@ export class TuiController {
   }
 
   get hasSessionDraft(): boolean {
-    return this.#externalDraft !== undefined
+    return this.#externalDrafts.length > 0
       || this.#portableDraft !== undefined
       || this.#installPlacementDraft !== undefined;
+  }
+
+  get externalDrafts(): ExternalDraftState[] {
+    return structuredClone(this.#externalDrafts);
   }
 
   attachOperationHistory(history: OperationHistoryStore, epoch: number): void {
@@ -1144,8 +1230,8 @@ export class TuiController {
     return this.#operationDiagnostics.size;
   }
 
-  recordSafeUiFailure(code: string, stage: string): string {
-    const recordId = this.#recordStandaloneFailure(code, stage);
+  recordUiFailure(error: unknown, context: { code: string; stage: string }): string {
+    const recordId = this.#recordStandaloneFailure(context.code, context.stage, error);
     this.#publish();
     return recordId;
   }
@@ -1233,7 +1319,7 @@ export class TuiController {
     this.#installPlacementDraft = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#batchRetryIntent = undefined;
-    this.#externalDraft = undefined;
+    this.#externalDrafts = [];
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
@@ -1498,12 +1584,12 @@ export class TuiController {
     this.#batchRetryIntent = intent.kind === 'pluginWriteBatch'
       && 'summary' in result
       && result.summary?.batch
-      && result.summary.batch.failedRequestedPluginIds.length > 0
+      && (result.summary.batch.retryTargets?.length ?? 0) > 0
       ? {
           ...structuredClone(intent),
           selection: {
-            kind: 'selected',
-            pluginIds: [...result.summary.batch.failedRequestedPluginIds],
+            kind: 'targets',
+            targets: structuredClone(result.summary.batch.retryTargets!),
           },
         }
       : undefined;
@@ -2481,8 +2567,11 @@ export class TuiController {
     return this.#catalogSourcesSession.fullValidate(sourceId);
   }
 
-  setExternalDraftState(state?: 'configDraft' | 'sourceDraft' | 'batchDraft'): void {
-    this.#externalDraft = state;
+  setExternalDraftState(states: ExternalDraftState[] = []): void {
+    const priority = { sourceDraft: 0, batchDraft: 1, configDraft: 2 } as const;
+    this.#externalDrafts = structuredClone(states).sort((left, right) =>
+      priority[left.kind] - priority[right.kind] || left.owner.localeCompare(right.owner, 'en'));
+    this.#publish();
   }
 
   beginPluginWriteBatch(): void {
@@ -2504,7 +2593,7 @@ export class TuiController {
   }
 
   catalogActivationBlockReason(): CatalogActivationBlockReason | undefined {
-    if (this.#externalDraft) return this.#externalDraft;
+    if (this.#externalDrafts[0]) return this.#externalDrafts[0].kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
     if (this.#activeReview) return 'activeReview';
@@ -2515,10 +2604,11 @@ export class TuiController {
 
   catalogSourceRecoveryBlockReason(): CatalogActivationBlockReason | undefined {
     const activeFlow = this.#router.activeFlow();
-    if (this.#externalDraft
-      && !(this.#externalDraft === 'configDraft'
+    const blockingExternalDraft = this.#externalDrafts.find((draft) =>
+      !(draft.kind === 'configDraft'
         && activeFlow?.kind === 'sourceRecovery'
-        && activeFlow.parentFlowId !== undefined)) return this.#externalDraft;
+        && activeFlow.parentFlowId !== undefined));
+    if (blockingExternalDraft) return blockingExternalDraft.kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
     if (this.#activeReview) return 'activeReview';
@@ -3132,6 +3222,7 @@ export class TuiController {
         execution,
         `${this.#sessionEpoch}:${operationId}`,
         collectOperationSensitiveValues(ticket.intent),
+        ticket.intent.kind,
       );
       this.#operationDiagnostics.set(operationId, {
         ...executionProjection,
@@ -3422,17 +3513,11 @@ export class TuiController {
           && code === 'catalogSourcesConfigRecoveryStale') {
           this.#phase = 'ready';
           this.#loadError = undefined;
-          this.#activeReview = undefined;
-          this.#result = undefined;
-          this.#operationDiagnostics.delete(operationId);
-          this.#router.replace({ name: 'home' });
-          this.#publish();
-          return cloneFrozen({
-            state: 'blocked',
-            operationId,
-            code,
-            message: '来源配置已变化，已重新加载当前状态。',
-            operationKind: ticket.intent.kind,
+          return this.#setBlocked(operationId, code, {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            writeMayHaveCompleted: false,
           });
         }
       } catch (reloadError) {
@@ -3443,6 +3528,14 @@ export class TuiController {
         await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
           privateConfigOperation: true,
         });
+        if (ticket.intent.kind === 'catalogSourcesRecovery'
+          && code === 'catalogSourcesConfigRecoveryStale') {
+          this.#phase = 'error';
+          this.#loadError = {
+            code: issueCode(reloadError),
+            message: '无法安全读取插件状态。请检查诊断后重试或退出。',
+          };
+        }
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
@@ -3707,14 +3800,14 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
           : '来源配置已保存，但 Catalog 尚未启用。可在 TUI 中立即重试。'
         : intent.action === 'repair' ? 'Catalog 已重新下载并修复。'
           : intent.action === 'replaceDamaged' ? '损坏的 Active Catalog 已由当前候选替换。'
-          : intent.action === 'recoverState' ? 'Catalog generation state 已恢复，目标来源已启用。'
+          : intent.action === 'recoverState' ? '目录版本状态已恢复，目标来源已启用。'
             : updateActivated ? `Catalog 已更新到 ${generation.resolution.catalogVersion}。`
               : intent.action === 'update' ? 'Catalog 已验证，Active 未变化。'
               : 'Catalog 已验证并启用。',
       messages: result.status === 'partial'
         ? [result.partialReason === 'primary'
-            ? `新的 Active 可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
-            : `旧 Active 保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
+            ? `新的已启用版本可用；主来源保持不变。错误：${result.errorCode ?? 'catalogSourcePrimaryFailed'}`
+            : `旧的已启用版本保持不变。错误：${result.errorCode ?? 'catalogGenerationRefreshFailed'}`]
         : updateActivated
           ? ['已安装插件不会自动升级。', '已重新计算可用的插件升级。']
           : intent.action === 'update'
@@ -3796,9 +3889,10 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
     );
     const result = buildOperationResultModel(receipt);
     const requestedIds = new Set(receipt.requestedPluginIds ?? requestedPluginIds);
-    const failedRequestedPluginIds = intent.kind === 'pluginWriteBatch'
-      ? pluginWriteBatchFailedRequestedPluginIds(execution as PluginWriteBatchExecutionResult)
+    const retryTargets = intent.kind === 'pluginWriteBatch'
+      ? pluginWriteBatchFailedRequestedTargets(execution as PluginWriteBatchExecutionResult)
       : [];
+    const failedRequestedPluginIds = canonicalPluginIds(retryTargets.map((target) => target.pluginId));
     return {
       code: result.state === 'succeeded' ? 'operationSucceeded'
         : result.state === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -3821,6 +3915,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         batch: {
           requestedPluginIds,
           failedRequestedPluginIds,
+          retryTargets,
           groupCount: (execution as PluginWriteBatchExecutionResult).groupResults.length,
         },
       } : {}),

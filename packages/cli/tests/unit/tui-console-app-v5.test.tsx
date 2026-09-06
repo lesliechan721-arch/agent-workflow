@@ -26,7 +26,10 @@ import {
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 import { OperationHistoryStore } from '../../src/tui/operation-history.js';
+import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
+import { SessionHost } from '../../src/tui/session-host.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
+import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
 
 afterEach(() => cleanup());
 
@@ -1424,6 +1427,7 @@ describe('ConsoleAppV4', () => {
           requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
           groups: [{
             groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            scope: 'project' as const,
             requestedPluginIds: intent.selection.kind === 'selected' ? [...intent.selection.pluginIds] : [root],
             preview: rebuild('failed'), executable: false,
           }],
@@ -1435,6 +1439,7 @@ describe('ConsoleAppV4', () => {
       requestedPluginIds: [root],
       groupResults: [{
         groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: [root], result: failedGroup,
       }],
     } satisfies PluginWriteBatchExecutionResult);
@@ -1456,14 +1461,17 @@ describe('ConsoleAppV4', () => {
       state: 'blocked',
       summary: { batch: { requestedPluginIds: [root], failedRequestedPluginIds: [root] } },
     });
-    expect(instance.lastFrame()).toContain('仅重试失败插件');
+    expect(instance.lastFrame()).toContain('仅重试失败目标');
     await input(instance, '\r');
     await nextTurn(4);
     expect(['reviewPreparing', 'review']).toContain(value.snapshot.router.current.route.name);
     expect(captureEvidence).toHaveBeenLastCalledWith(
       expect.objectContaining({
         kind: 'pluginWriteBatch',
-        selection: { kind: 'selected', pluginIds: [root] },
+        selection: {
+          kind: 'targets',
+          targets: [{ pluginId: root, platform: 'codex', scope: 'project' }],
+        },
       }),
       expect.any(AbortSignal),
     );
@@ -1542,6 +1550,7 @@ describe('ConsoleAppV4', () => {
         requestedPluginIds: pluginIds,
         groups: [{
           groupId: 'official:codex', sourceId: 'official', platform: 'codex' as const,
+          scope: 'project' as const,
           requestedPluginIds: pluginIds, preview, executable: true,
         }],
       };
@@ -1648,6 +1657,7 @@ describe('ConsoleAppV4', () => {
           requestedPluginIds: [root],
           groups: [{
             groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex' as const,
+            scope: 'project' as const,
             requestedPluginIds: [root], preview: rebuild, executable: false,
           }],
         }
@@ -1657,6 +1667,7 @@ describe('ConsoleAppV4', () => {
       requestedPluginIds: [root],
       groupResults: [{
         groupId: 'team-tools:codex', sourceId: 'team-tools', platform: 'codex',
+        scope: 'project',
         requestedPluginIds: [root], result: rebuild,
       }],
     };
@@ -2185,6 +2196,53 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 1, reason: 'initialError' });
     instance.unmount();
     expect(value.snapshot.phase).toBe('error');
+  });
+
+  it('records a safe rejected action through the real menu action and ignores sync and async aborts', async () => {
+    const secret = 'Authorization=private-token';
+    const value = controller();
+    await value.load();
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const recheck = vi.spyOn(value, 'fullValidateCatalogSource').mockRejectedValueOnce(
+      attachSafeOperationError(new Error(`raw ${secret}`), {
+        code: 'catalogGitAuthorizationFailed',
+        stage: 'catalog.fetch',
+        safeMessage: 'Catalog authorization is required.',
+        exitCode: 17,
+        cause: { code: 'EACCES', safeMessage: 'The service denied access.' },
+      }),
+    );
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('operationDiagnostic');
+    const detail = value.getOperationDiagnostic(
+      (value.snapshot.router.current.route as { recordId: string }).recordId,
+    );
+    expect(detail?.diagnostics).toEqual([expect.objectContaining({
+      code: 'catalogGitAuthorizationFailed', stage: 'catalog.fetch', exitCode: 17,
+      causes: [{ code: 'EACCES', safeMessage: 'The service denied access.' }],
+    })]);
+    expect(JSON.stringify({ snapshot: value.snapshot, detail })).not.toContain(secret);
+    expect(JSON.stringify({ snapshot: value.snapshot, detail })).not.toContain('raw');
+
+    const recordCount = value.listOperationHistory().length;
+    value.replace({ name: 'sourceDetail', sourceId: 'team-tools' });
+    recheck.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
+    await nextTurn(2);
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await nextTurn(2);
+    expect(value.listOperationHistory()).toHaveLength(recordCount);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+
+    recheck.mockImplementationOnce(() => { throw new DOMException('cancelled', 'AbortError'); });
+    await input(instance, '\r');
+    await nextTurn(2);
+    expect(value.listOperationHistory()).toHaveLength(recordCount);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+    instance.unmount();
   });
 
   it('handles Ctrl-C before search input and exits without changing the query', async () => {
@@ -5265,6 +5323,179 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route).toEqual(draftRoute);
   });
 
+  it('returns from read-only history without discarding or confirming the parent config draft', async () => {
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+    });
+    const recordId = value.recordUiFailure(undefined, { code: 'fixtureFailure', stage: 'fixture-stage' });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\r', '\r', '\u001B[B', '\r');
+    expect(value.hasSessionDraft).toBe(true);
+    const draftRoute = value.snapshot.router.current.route;
+
+    await input(instance, '?', 'o');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationHistory' });
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationDiagnostic', recordId });
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationReportPreview', recordId });
+    await input(instance, 'b', 'b', 'b');
+
+    expect(value.snapshot.router.current.route).toEqual(draftRoute);
+    expect(value.hasSessionDraft).toBe(true);
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
+  it('shows an unavailable page when an open diagnostic record was evicted', async () => {
+    const value = controller();
+    const removed = value.recordUiFailure(undefined, { code: 'oldFailure', stage: 'old-stage' });
+    for (let index = 0; index < 20; index += 1) {
+      value.recordUiFailure(undefined, { code: `newFailure${index}`, stage: 'new-stage' });
+    }
+    value.push({ name: 'operationDiagnostic', recordId: removed });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(value.snapshot.router.current.route).toEqual({ name: 'operationDiagnostic', recordId: removed });
+    expect(instance.lastFrame()).toContain('操作记录已不可用');
+    expect(instance.lastFrame()).toContain('记录已不可用');
+    instance.unmount();
+  });
+
+  it('resets home focus and list context after global home navigation', async () => {
+    const value = controller();
+    await value.load();
+    const onSessionNavigation = vi.fn(async (navigation: 'home' | 'reload') => {
+      if (navigation === 'home') value.goHome();
+      return 'completed' as const;
+    });
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={onSessionNavigation}
+    />);
+    await nextTurn(3);
+
+    await input(instance, '\u001B[B', '\u001B[B', 'h');
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' }, context: {} },
+    });
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+
+    await input(instance, 'h', '\u001B[B', '\u001B[B', '?', '\u001B[B', '\r', '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    expect(onSessionNavigation.mock.calls.filter(([navigation]) => navigation === 'home')).toHaveLength(3);
+    instance.unmount();
+  });
+
+  it('resets an unavailable flow to home after confirming a real source draft', async () => {
+    const value = controller();
+    await value.load();
+    const host = new SessionHost({
+      createSession: () => ({ controller: value, progressFeed: createRebuildProgressFeed() }),
+    });
+    const instance = render(<SessionConsoleApp host={host} />);
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await input(instance, 'unfinished-source');
+    expect(value.hasSessionDraft).toBe(true);
+
+    value.push({ name: 'result', operationId: 'unavailable-operation' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('这个操作已结束或变化');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.hasSessionDraft).toBe(true);
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router).toMatchObject({
+      depth: 1,
+      current: { route: { name: 'home' }, context: {} },
+    });
+    await nextTurn(3);
+    expect(value.hasSessionDraft).toBe(false);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+    host.dispose();
+  });
+
+  it('cancels a pending Host navigation when Enter chooses continue editing', async () => {
+    const value = controller();
+    const draft = { kind: 'configDraft' as const, owner: 'plugin\0user', flowId: 'flow-1', revision: 1 };
+    const cancelPending = vi.fn(() => true);
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      pendingSessionNavigation="home"
+      pendingSessionNavigationDrafts={[draft]}
+      onCancelPendingSessionNavigation={cancelPending}
+      onSessionNavigation={vi.fn().mockResolvedValue('draftBlocked')}
+    />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+
+    await input(instance, '\r');
+    expect(cancelPending).toHaveBeenCalledOnce();
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
+  it('keeps an object draft through read-only history and guards the real config-flow exit', async () => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    value.push({
+      name: 'configFieldEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      fieldKey: 'settings', editor: 'object', mode: 'choices',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\r');
+    const draftRoute = value.snapshot.router.current.route;
+    expect(value.externalDrafts).toEqual([
+      expect.objectContaining({ kind: 'configDraft', owner: `${page.pluginId}\0user` }),
+    ]);
+
+    value.push({ name: 'operationHistory' });
+    await nextTurn(2);
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual(draftRoute);
+    expect(value.hasSessionDraft).toBe(true);
+    await input(instance, 'b');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
+  it('keeps a source draft through read-only history and guards the real source-flow exit', async () => {
+    const value = controller();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'type' });
+    const sourceRoute = value.snapshot.router.current.route;
+    expect(value.externalDrafts).toEqual([
+      expect.objectContaining({ kind: 'sourceDraft', owner: expect.any(String) }),
+    ]);
+
+    value.push({ name: 'operationHistory' });
+    await nextTurn(2);
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual(sourceRoute);
+    expect(value.hasSessionDraft).toBe(true);
+    await input(instance, 'b');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
   it('keeps a recovered source draft visible and blocks a field removed by the new schema', async () => {
     const initialPage = configPage();
     const refreshedPage = configPage();
@@ -5386,7 +5617,11 @@ describe('ConsoleAppV4', () => {
     await nextTurn(6);
     expect(value.snapshot.router.current.route.name).toBe('result');
 
-    await input(instance, '\r');
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.hasSessionDraft).toBe(true);
+    await input(instance, '\r', '\u001B[A', '\r');
     await nextTurn(4);
     expect(value.snapshot.router.current.route).toEqual(resumeRoute);
     expect(value.snapshot.router.current.context).toMatchObject({
