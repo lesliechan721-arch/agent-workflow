@@ -219,6 +219,24 @@ describe('Portable Skills TUI V1', () => {
     expect(onSessionNavigation).not.toHaveBeenCalled();
   });
 
+  it('clears Portable agent input with Ctrl-U without leaving the draft', async () => {
+    const { value } = portableController();
+    await value.load();
+    await value.preparePortableInstall('official/toolkit');
+    value.push({ name: 'portableAgentInput', pluginId: 'official/toolkit' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await tick();
+
+    await send(instance, 'temporary-agent');
+    expect(instance.lastFrame()).toContain('temporary-agent');
+    expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
+    await send(instance, '\u0015');
+
+    expect(instance.lastFrame()).not.toContain('temporary-agent');
+    expect(value.snapshot.router.current.route.name).toBe('portableAgentInput');
+    expect(value.snapshot.portableDraft).toBeDefined();
+  });
+
   it('keeps the Portable draft under read-only operation history routes', async () => {
     const { value } = portableController();
     await value.load();

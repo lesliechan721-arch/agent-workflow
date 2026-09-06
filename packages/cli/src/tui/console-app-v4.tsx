@@ -3078,7 +3078,7 @@ export function ConsoleAppV4(props: {
     context = '指定';
     title = '输入 Agent ID';
     description = '多个 Agent 可使用逗号或空格分隔。';
-    help = '输入 Agent ID · Enter 保存 · Esc 返回';
+    help = '输入 Agent ID · Enter 保存 · Ctrl-U 清空输入 · Esc 返回';
     content = <Box flexDirection="column"><InputCard focused title={<InputDisplay value={portableAgentInput} columns={Math.max(8, size.columns - 8)} />} description={inputError ?? 'Enter 保存并继续 · Esc 返回；q 和 b 会作为输入。'} status={inputError ? 'error' : undefined} /><StaticRow title="示例" meta="cursor, claude-code, codex" status="muted" compact /></Box>;
   } else if (route.name === 'portableScope' && plugin && snapshot.portableDraft) {
     breadcrumb = `${plugin.displayName} / 通用 Skills / 范围`;
@@ -4240,7 +4240,7 @@ export function ConsoleAppV4(props: {
     if (route.stage === 'key') {
       title = '输入新键名';
       description = inputError ?? '键名和属性数量会按插件规则检查。';
-      help = '输入 · Enter 继续 · Esc 取消';
+      help = '输入 · Enter 继续 · Ctrl-U 清空输入 · Esc 取消';
       content = <InputCard focused title={<InputDisplay value={inputValue} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
     } else if (property !== undefined && definition && route.stage === 'action') {
       title = propertyTitle;
@@ -4319,7 +4319,7 @@ export function ConsoleAppV4(props: {
     } else if (property !== undefined && definition) {
       title = activePropertySensitive ? '输入敏感值' : `输入${propertyTitle}`;
       description = inputError ?? (activePropertySensitive ? '输入已隐藏。' : definition.description ?? '按 Enter 使用输入值。');
-      help = '输入 · Enter 使用 · Esc 取消';
+      help = '输入 · Enter 使用 · Ctrl-U 清空输入 · Esc 取消';
       content = <InputCard focused title={<InputDisplay value={inputValue} sensitive={activePropertySensitive} columns={Math.max(8, size.columns - 8)} />} description={description} status={inputError ? 'error' : undefined} />;
     }
   } else if (route.name === 'configUnavailable') {
@@ -5055,7 +5055,7 @@ export function ConsoleAppV4(props: {
         ? '保存前请确认报告内容。不会自动上传或发送。'
         : '这项会话报告已经不再可用。';
     if (reportSaveMode && preview) {
-      help = 'Enter 保存 · Esc 返回报告预览';
+      help = 'Enter 保存 · Ctrl-U 清空输入 · Esc 返回报告预览';
       content = <Box flexDirection="column">
         <InputCard title="本地文件路径" focused compact={policy.mode === 'compact'}>
           <InputDisplay
@@ -5194,6 +5194,10 @@ export function ConsoleAppV4(props: {
         });
       } },
       ...(sharedImpactConfirmed && (pendingReviewIntent?.kind === 'pluginWrite'
+        && (pendingReviewIntent.action === 'install'
+          || pendingReviewIntent.action === 'refreshAndSync'
+          || pendingReviewIntent.action === 'reinstall'
+          || pendingReviewIntent.action === 'sync')
         || pendingReviewIntent?.kind === 'pluginWriteBatch'
           && (pendingReviewIntent.action === 'install'
             || pendingReviewIntent.action === 'sync'
@@ -6260,6 +6264,11 @@ export function ConsoleAppV4(props: {
         });
         return;
       }
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) {
+        setReportSavePath('');
+        setReportSaveError(undefined);
+        return;
+      }
       if (key.backspace || key.delete) setReportSavePath(removeLastGrapheme);
       else if (input && !key.ctrl && !key.meta && input >= ' ') setReportSavePath((value) => value + input);
       setReportSaveError(undefined);
@@ -6387,6 +6396,11 @@ export function ConsoleAppV4(props: {
         } catch (error) {
           setInputError(error instanceof Error ? error.message.replace(/^portableInvalidAgentSelection:\s*/u, '') : 'Agent ID 无效。');
         }
+        return;
+      }
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) {
+        setPortableAgentInput('');
+        setInputError(undefined);
         return;
       }
       if (key.backspace || key.delete) setPortableAgentInput(removeLastGrapheme);
@@ -6521,6 +6535,11 @@ export function ConsoleAppV4(props: {
       && activeObjectDraft) {
       if (key.escape) {
         back();
+        return;
+      }
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) {
+        setInputValue('');
+        setInputError(undefined);
         return;
       }
       if (key.return && route.stage === 'key') {

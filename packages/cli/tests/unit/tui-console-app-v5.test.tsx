@@ -4374,6 +4374,31 @@ describe('ConsoleAppV4', () => {
     expect(childInstance.lastFrame()).not.toContain('SECRET-BYTES');
   });
 
+  it.each(['key', 'custom'] as const)('clears object property %s input with Ctrl-U without deleting the property', async (stage) => {
+    const page = objectConfigPage();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'user' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    value.push({
+      name: 'configObjectPropertyEditor', pluginId: page.pluginId, layer: { scope: 'user' },
+      fieldKey: 'settings', ...(stage === 'custom' ? { propertyKey: 'owner' } : {}),
+      dynamic: stage === 'key', stage,
+    });
+    await nextTurn(2);
+
+    await input(instance, ...'temporary-value');
+    expect(instance.lastFrame()).toContain('emporary-value');
+    expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
+    await input(instance, '\u0015');
+
+    expect(instance.lastFrame()).not.toContain('emporary-value');
+    expect(value.snapshot.router.current.route.name).toBe('configObjectPropertyEditor');
+    expect(instance.lastFrame()).not.toContain('删除动态键');
+  });
+
   it('does not project sensitive boolean or preset values as the current child choice', async () => {
     const page = objectConfigPage();
     const field = page.groups[0]!.fields[0]!;
@@ -5865,6 +5890,19 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain(`› ${review.primaryLabel}`);
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
+  });
+
+  it.each(['cleanup', 'uninstall'] as const)('does not offer script timeout for %s Review', async (action) => {
+    const value = controller();
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action, pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).not.toContain('高级选项：脚本超时');
+    expect(instance.lastFrame()).toContain(value.snapshot.activeReview?.primaryLabel);
   });
 
   it('reaches S01-S13 through the real Git wizard and treats b as input text', async () => {
@@ -8715,7 +8753,12 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('official/target-0');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('State: partial');
-    await input(instance, '\r', '/tmp/operation-report.md', '\r');
+    await input(instance, '\r', 'temporary-report-path');
+    expect(instance.lastFrame()).toContain('temporary-report-path');
+    expect(instance.lastFrame()).toContain('Ctrl-U 清空输入');
+    await input(instance, '\u0015');
+    expect(instance.lastFrame()).not.toContain('temporary-report-path');
+    await input(instance, '/tmp/operation-report.md', '\r');
     expect(saveReport).toHaveBeenCalledWith('1:operation-1', '/tmp/operation-report.md');
     expect(instance.lastFrame()).toContain('报告未保存');
     expect(instance.lastFrame()).not.toContain('private write error');

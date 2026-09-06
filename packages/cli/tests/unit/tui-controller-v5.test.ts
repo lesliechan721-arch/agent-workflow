@@ -4519,6 +4519,99 @@ describe('TUI v4 Review safety', () => {
     expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
   });
 
+  it('preserves a committed config save as partial and creates a new apply-only Review', async () => {
+    const committedError = Object.assign(new Error('runtime apply failed'), {
+      code: 'configApplyFailed',
+      configWrite: 'succeeded' as const,
+    });
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(committedError)
+      .mockResolvedValueOnce({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'succeeded', targetResults: [] },
+      });
+    const controller = new TuiController(dependencies({ executeIntent }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'strict' },
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'partial',
+      operationKind: 'configSave',
+      summary: {
+        code: 'operationPartial',
+        message: '设置已保存，但后续应用失败。',
+        configScope: 'user',
+        configApplyRetryAvailable: true,
+      },
+    });
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(1);
+    expect(controller.getOperationDiagnostic(history[0]!.recordId)?.summary.effects).toMatchObject({
+      configCommit: 'completed', finalVerification: 'completed',
+    });
+
+    const retry = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      apply: true,
+      retryApply: true,
+    });
+    expect(retry.reviewToken).not.toBe(review.reviewToken);
+    await controller.executeOperation(retry.reviewToken);
+    expect(executeIntent.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      kind: 'configSave', apply: true, retryApply: true,
+    }));
+    expect(executeIntent.mock.calls[1]?.[0]).not.toHaveProperty('updates');
+  });
+
+  it('preserves a committed config reset without inventing a reset disposition', async () => {
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce({ payload: status(), pluginSummaries: summaries(['official', 'demo']) })
+      .mockRejectedValueOnce(new Error('status unavailable'));
+    const controller = new TuiController(dependencies({
+      loadStatus,
+      executeIntent: vi.fn().mockRejectedValue(Object.assign(new Error('apply failed'), {
+        code: 'configApplyFailed',
+        configWrite: 'succeeded' as const,
+      })),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'official/demo', scope: 'user', projectLayer: 'shared',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'partial',
+      operationKind: 'configReset',
+      summary: {
+        message: '设置层重置已提交，但后续步骤未完成。',
+        configScope: 'user',
+      },
+    });
+    expect(controller.snapshot.result).toMatchObject({
+      effects: { configCommit: 'completed', finalVerification: 'failed' },
+    });
+    expect(result.summary).not.toHaveProperty('configApplyRetryAvailable');
+    expect(result.summary).not.toHaveProperty('resetDisposition');
+  });
+
   it('invalidates cancelled, expired, and over-limit Review tickets through public behavior', async () => {
     let token = 0;
     let now = 1_000;

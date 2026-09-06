@@ -117,19 +117,25 @@ function rebuildEffects(result: Record<string, unknown>): OperationEffectFacts {
   const actions = Array.isArray(result.actions) ? result.actions : [];
   const preflight = actionState(actions, 'preflight.inspect');
   const preApply = actionState(actions, 'preApply');
-  const writes = ['stale.cleanup', 'native.write', 'artifacts.write', 'cleanup.owned']
+  const writes = ['stale.cleanup', 'native.write', 'artifacts.write', 'cleanup.owned', 'recovery.cleanup']
     .map((name) => actionState(actions, name)).filter(Boolean);
+  const observedMutation = ['removed', 'quarantined'].some((field) =>
+    Array.isArray(result[field]) && result[field].length > 0);
+  const cleanup = actionState(actions, 'cleanup.owned');
   const postcheck = actionState(actions, 'postcheck.inspect');
   return {
     configCommit: 'notApplicable',
     awWrite: writes.length === 0
-      ? preflight === 'failed' || preApply !== undefined ? 'notStarted'
+      ? observedMutation ? result.status === 'failed' ? 'partial' : 'completed'
+        : preflight === 'failed' || preApply !== undefined ? 'notStarted'
         : result.status === 'failed' ? 'unknown' : 'notStarted'
-      : writes.includes('failed') ? writes.includes('succeeded') ? 'partial' : 'failed'
-        : result.status === 'succeeded' || postcheck === 'failed' ? 'completed' : 'started',
+      : writes.includes('failed')
+        ? observedMutation || writes.includes('succeeded') ? 'partial' : 'failed'
+        : 'completed',
     preApplyExternalEffect: preApply ? 'possible' : 'notApplicable',
     finalVerification: postcheck === 'succeeded' ? 'completed'
-      : postcheck === 'failed' ? 'failed' : 'notStarted',
+      : postcheck === 'failed' || cleanup === 'succeeded' && result.status === 'failed'
+        ? 'failed' : 'notStarted',
   };
 }
 

@@ -182,4 +182,52 @@ describe('TUI operation diagnostic projection', () => {
 
     expect(projected.effects.awWrite).toBe('notStarted');
   });
+
+  it('keeps observed partial cleanup mutations when a later component fails', () => {
+    const projected = projectExecutionDiagnostics({
+      rebuildResults: [{
+        status: 'failed',
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        actions: [{ name: 'cleanup.owned', status: 'failed' }],
+        removed: ['owned-a'],
+        quarantined: [],
+        error: { phase: 'cleanup.owned', message: 'private failure' },
+      }],
+    }, '4:operation');
+
+    expect(projected.effects).toMatchObject({ awWrite: 'partial', finalVerification: 'notStarted' });
+  });
+
+  it('treats successful cleanup followed by finalization failure as a completed AW write', () => {
+    const projected = projectExecutionDiagnostics({
+      rebuildResults: [{
+        status: 'failed',
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        actions: [{ name: 'cleanup.owned', status: 'succeeded' }],
+        removed: ['owned-a'],
+        quarantined: [],
+        error: { phase: 'cleanup.owned', message: 'private finalization failure' },
+      }],
+    }, '5:operation');
+
+    expect(projected.effects).toMatchObject({ awWrite: 'completed', finalVerification: 'failed' });
+  });
+
+  it('counts recovery cleanup as a write and preserves partial mutation evidence', () => {
+    const projected = projectExecutionDiagnostics({
+      rebuildResults: [{
+        status: 'failed',
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        actions: [
+          { name: 'artifacts.write', status: 'failed' },
+          { name: 'recovery.cleanup', status: 'succeeded' },
+        ],
+        removed: [],
+        quarantined: ['owned-b'],
+        error: { phase: 'artifacts.write', message: 'private failure' },
+      }],
+    }, '6:operation');
+
+    expect(projected.effects).toMatchObject({ awWrite: 'partial', finalVerification: 'notStarted' });
+  });
 });

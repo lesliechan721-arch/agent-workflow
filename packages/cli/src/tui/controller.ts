@@ -3411,10 +3411,13 @@ export class TuiController {
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
       generation = ++this.#generation;
+      let finalVerification: OperationEffectFacts['finalVerification'] = 'completed';
       try {
         const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         this.#applyStatus(refreshed);
+        const projection = this.#operationDiagnostics.get(operationId);
+        if (projection) projection.effects.finalVerification = 'completed';
         if (ticket.intent.kind === 'catalogSourcesRecovery'
           && code === 'catalogSourcesConfigRecoveryStale') {
           this.#phase = 'ready';
@@ -3434,11 +3437,52 @@ export class TuiController {
         }
       } catch (reloadError) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        finalVerification = 'failed';
+        const projection = this.#operationDiagnostics.get(operationId);
+        if (projection) projection.effects.finalVerification = 'failed';
         await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
           privateConfigOperation: true,
         });
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      if ((ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset')
+        && configWrite === 'succeeded') {
+        const elapsedMs = Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs);
+        const summary: OperationResultSummary = {
+          code: 'operationPartial',
+          message: ticket.intent.kind === 'configReset'
+            ? '设置层重置已提交，但后续步骤未完成。'
+            : finalVerification === 'failed'
+              ? ticket.intent.apply
+                ? '设置已保存，但后续应用或状态复核失败。'
+                : '设置已保存，但状态复核失败。'
+              : ticket.intent.apply
+                ? '设置已保存，但后续应用失败。'
+                : '设置已保存，但后续步骤未完成。',
+          pluginId: ticket.intent.pluginId,
+          configScope: ticket.intent.scope,
+          ...(ticket.intent.kind === 'configSave' && ticket.intent.apply
+            ? { configApplyRetryAvailable: true } : {}),
+          elapsedMs,
+          messages: [ticket.intent.kind === 'configReset'
+            ? '设置层重置已经提交；失败的后续步骤没有恢复旧设置。'
+            : '配置写入已经提交；失败的后续步骤没有回滚设置。'],
+        };
+        this.#progress = { ...this.#progress, elapsedMs };
+        const result: OperationExecuteResult = {
+          state: 'partial',
+          operationId,
+          summary,
+          operationKind: ticket.intent.kind,
+          pluginId: ticket.intent.pluginId,
+          returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
+        };
+        this.#result = structuredClone(result);
+        this.#activeReview = undefined;
+        this.#showResult(result, ticket.intent);
+        this.#publish();
+        return cloneFrozen(result);
+      }
       return this.#setBlocked(operationId, code, {
         intent: ticket.intent,
         navigation: 'result',

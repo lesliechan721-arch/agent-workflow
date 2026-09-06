@@ -157,7 +157,7 @@ describe('TUI Active Catalog session', () => {
     controller.push({ name: 'sourceDetail', sourceId: 'official' });
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(instance.lastFrame()).toContain('当前使用 1.0.0；候选版本 2.0.0 可更新');
+    expect(instance.lastFrame()).toContain('当前使用 1.0.0；待检查版本 2.0.0 可更新');
     expect(instance.lastFrame()).toContain('更新到 2.0.0');
     expect(controller.getCatalogGeneration('official')?.active?.catalogVersion).toBe('1.0.0');
     controller.dispose();
