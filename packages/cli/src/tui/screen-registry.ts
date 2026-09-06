@@ -70,10 +70,6 @@ const source = (route: SourceRoute, state: RouteEntityState): TuiRoute =>
   state.hasSource(route.sourceId) ? route : { name: 'sourceList' };
 const issue = (route: NamedRoute<'issueDetail'>, state: RouteEntityState): TuiRoute =>
   state.hasIssue(route.issueId) ? route : { name: 'issueList' };
-const historyRecord = (
-  route: NamedRoute<'operationDiagnostic' | 'operationReportPreview'>,
-  state: RouteEntityState,
-): TuiRoute => state.hasHistoryRecord(route.recordId) ? route : { name: 'operationHistory' };
 const activeOperation = <Name extends 'reviewPreparing' | 'review' | 'progress' | 'result'>(
   route: NamedRoute<Name>,
   state: RouteEntityState,
@@ -212,8 +208,8 @@ export const TUI_ROUTE_DEFINITIONS = {
       dependencyStillRequired: 'D12', dependencyGraphInvalid: 'D17', legacyState: 'I09', diagnostic: 'I09' } as const)[category] ?? 'I09';
   } },
   operationHistory: { entity: 'none', rendererFamily: 'history', keymap: 'menu', normalize: keep, screenId: fixed('D18') },
-  operationDiagnostic: { entity: 'historyRecord', rendererFamily: 'history', keymap: 'menu', normalize: historyRecord, screenId: fixed('D19') },
-  operationReportPreview: { entity: 'historyRecord', rendererFamily: 'history', keymap: 'menu', normalize: historyRecord, screenId: fixed('D20') },
+  operationDiagnostic: { entity: 'historyRecord', rendererFamily: 'history', keymap: 'menu', normalize: keep, screenId: fixed('D19') },
+  operationReportPreview: { entity: 'historyRecord', rendererFamily: 'history', keymap: 'menu', normalize: keep, screenId: fixed('D20') },
   reviewPreparing: { entity: 'activeOperation', rendererFamily: 'operation', keymap: 'menu', normalize: activeOperation, screenId: fixed('P07') },
   review: { entity: 'activeOperation', rendererFamily: 'operation', keymap: 'menu', normalize: activeOperation, screenId: (_route, context) => reviewScreen(context) },
   progress: { entity: 'activeOperation', rendererFamily: 'operation', keymap: 'menu', normalize: activeOperation, screenId: (_route, context) => progressScreen(context) },

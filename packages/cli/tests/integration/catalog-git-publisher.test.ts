@@ -15,7 +15,9 @@ import {
   type CatalogPublishPlanReceipt,
 } from '../../src/commands/catalog-publish.js';
 import {
+  CatalogPublicationInspectionError,
   disposeCatalogPublicationInspection,
+  listCatalogPublicationVersions,
   prepareCatalogPublicationInspection,
 } from '../../src/commands/catalog-publication-inspection.js';
 import { runCli } from '../../src/index.js';
@@ -149,6 +151,56 @@ async function pushPreparedRef(
 }
 
 describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () => {
+  it('shows bounded safe Git details for release Catalog version inspection', async () => {
+    const root = await temporaryRoot('aw-catalog-version-inspection-');
+    const sshFailure = path.join(root, 'ssh-failure.mjs');
+    const remoteUrl = 'token@private-release.example:private/repository.git';
+    const longDetail = 'x'.repeat(2_500);
+    await fs.writeFile(sshFailure, [
+      `process.stderr.write('\\u001b[31mCould not resolve hostname private-release.example\\u001b[0m\\u0007\\n');`,
+      `process.stderr.write('token=remote-token-secret password\\u0007=control-secret private/repository.git ${longDetail}\\nsecond line\\n');`,
+      'process.exit(42);',
+    ].join('\n'));
+
+    let failure: unknown;
+    try {
+      await listCatalogPublicationVersions({
+        workspaceRoot: root,
+        remoteUrl,
+        env: {
+          ...process.env,
+          GIT_SSH_COMMAND: `"${process.execPath}" "${sshFailure}"`,
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(CatalogPublicationInspectionError);
+    const error = failure as CatalogPublicationInspectionError;
+    expect(error.code).toBe('remoteReadFailed');
+    expect(error.message).toMatch(
+      /^Could not inspect Catalog publication versions\. Git exited with code \d+: /u,
+    );
+    expect(error.message).toContain('[remote]');
+    expect(error.message).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+    expect(error.message.length).toBeLessThanOrEqual(
+      'Could not inspect Catalog publication versions. Git exited with code 128: '.length + 2_000,
+    );
+    for (const sensitive of [
+      root,
+      sshFailure,
+      remoteUrl,
+      'remote-token-secret',
+      'control-secret',
+      'token@private-release.example',
+      'private-release.example',
+      'private/repository.git',
+    ]) {
+      expect(error.message).not.toContain(sensitive);
+    }
+  });
+
   it('returns one typed and sanitized JSON failure from the real publish plan CLI', async () => {
     const { root } = await createWorkspace();
     const credential = 'plan-remote-password';
@@ -169,16 +221,20 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
     });
 
     expect(exitCode).toBe(1);
-    expect(JSON.parse(output.stdout())).toEqual({
+    const failure = JSON.parse(output.stdout()) as { ok: boolean; code: string; message: string };
+    expect(failure).toMatchObject({
       ok: false,
       code: 'remoteReadFailed',
-      message: 'Could not inspect the Catalog publication remote.',
     });
+    expect(failure.message).toMatch(
+      /^Could not inspect the Catalog publication remote\. Git exited with code \d+: /u,
+    );
+    expect(failure.message).toContain('[remote]');
     const combined = `${output.stdout()}\n${output.stderr()}`;
     for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
       expect(combined).not.toContain(sensitive);
     }
-    expect(output.stderr()).toBe('Could not inspect the Catalog publication remote.\n');
+    expect(output.stderr()).toBe(`${failure.message}\n`);
 
     const human = captureIo();
     expect(await runCli([
@@ -190,6 +246,9 @@ describe('version-scoped Catalog publication journal', { timeout: 30_000 }, () =
       io: human.io,
     })).toBe(1);
     expect(human.stdout()).toBe('');
+    expect(human.stderr()).toMatch(
+      /^Could not inspect the Catalog publication remote\. Git exited with code \d+: /u,
+    );
     for (const sensitive of [root, awHome, credential, querySecret, hashSecret, remoteUrl]) {
       expect(human.stderr()).not.toContain(sensitive);
     }

@@ -357,6 +357,113 @@ describe('preApply script', () => {
     );
   });
 
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'handles a large input when the process exits immediately or reads it fully',
+    async () => {
+      const plugin = await createPlugin();
+      const input = 'x'.repeat(2 * 1024 * 1024);
+      const scripts = [
+        { name: 'immediate-success.mjs', source: 'process.exit(0);\n', exitCode: 0 },
+        { name: 'immediate-failure.mjs', source: 'process.exit(7);\n', exitCode: 7 },
+        {
+          name: 'read-input.mjs',
+          source: [
+            'let input = "";',
+            'for await (const chunk of process.stdin) input += chunk;',
+            `process.exit(input.length === ${input.length} ? 0 : 9);`,
+          ].join('\n'),
+          exitCode: 0,
+        },
+      ];
+      const runner = createDefaultPluginProcessRunner();
+
+      for (const script of scripts) {
+        const entryPath = path.join(plugin.rootDir, 'scripts', script.name);
+        await fs.outputFile(entryPath, script.source);
+        const result = await runner.run({
+          command: process.execPath,
+          args: [entryPath],
+          cwd: plugin.rootDir,
+          env: { PATH: process.env.PATH },
+          stdin: input,
+        }, { timeoutMs: 5_000 });
+
+        expect(result).toMatchObject({
+          exitCode: script.exitCode,
+          signal: null,
+          timedOut: false,
+        });
+      }
+    },
+  );
+
+  it('reports a non-EPIPE input error after process exit and cleanup', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const stdin = Object.assign(new EventEmitter(), {
+      end: vi.fn((_input: string, callback: (error?: Error) => void) => {
+        queueMicrotask(() => {
+          const error = Object.assign(new Error('private input failure'), { code: 'EIO' });
+          stdin.emit('error', error);
+          callback(error);
+        });
+      }),
+    });
+    const child = Object.assign(new EventEmitter(), {
+      pid: 321,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+    });
+    const observation = {
+      pid: 321,
+      onFailure: () => () => undefined,
+      dispose: vi.fn(),
+    };
+    const terminateProcessTree = vi.fn(async () => undefined);
+    const runner = createDefaultPluginProcessRunner({
+      platform: 'linux',
+      spawn: vi.fn(() => child) as unknown as typeof import('node:child_process').spawn,
+      observeProcessTree: () => observation,
+      terminateProcessTree,
+    });
+    const running = runner.run({
+      command: 'node', args: [], cwd: '/', env: {}, stdin: 'context',
+    }, { timeoutMs: 2_000 });
+
+    await Promise.resolve();
+    child.exitCode = 0;
+    child.emit('exit', 0, null);
+    const inputFailure = await running.catch((error: unknown) => error as Error);
+
+    expect(inputFailure).toMatchObject({
+      name: 'PluginProcessInputError',
+      message: 'Plugin process input could not be sent.',
+    });
+    expect(inputFailure.message).not.toContain('private input failure');
+    expect(terminateProcessTree).toHaveBeenCalledOnce();
+
+    const plugin = await createPlugin();
+    const preApplyFailure = await runPreApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      runner: { async run() { throw inputFailure; } },
+    }).catch((error: unknown) => error as Error & { operationDiagnostic?: unknown });
+
+    expect(preApplyFailure.message).toBe('preApply input could not be sent.');
+    expect(preApplyFailure.operationDiagnostic).toEqual({
+      code: 'preApplyInputFailed',
+      stage: 'preApply',
+      safeMessage: 'The preApply context could not be sent to the process.',
+    });
+  });
+
   it('redacts every exact substring of a short sensitive scalar', () => {
     expect(summarizePluginScriptOutput(
       'prefixabcSuffix ordinary short text',

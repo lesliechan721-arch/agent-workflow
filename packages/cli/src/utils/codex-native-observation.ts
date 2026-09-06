@@ -108,7 +108,7 @@ export async function createCodexNativeObservationSession(options: {
   let disposed = false;
 
   const read = (marketplace: string, scope: CodexObservationScope): Promise<CodexObservationEntries> => {
-    const key = `${generation}\0${marketplace}\0${scope}`;
+    const key = `${marketplace}\0${scope}`;
     let result = snapshots.get(key);
     if (!result) {
       result = (async () => {
@@ -202,7 +202,7 @@ export async function createCodexNativeObservationSession(options: {
         return;
       }
       for (const key of snapshots.keys()) {
-        if (key.split('\0')[1] === marketplace) snapshots.delete(key);
+        if (key.startsWith(`${marketplace}\0`)) snapshots.delete(key);
       }
     },
     async dispose() {

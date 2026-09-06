@@ -5058,6 +5058,8 @@ export function createRebuildIntegration(options: {
       const skillRoots = input.platform === 'codex'
         ? input.scope === 'project'
           ? materializing
+            || ((input.command === 'cleanup' || input.command === 'uninstall')
+              && input.readOnlyInspectionPlan !== true)
             ? [path.join(input.cwd, '.agents', 'skills')]
             : []
           : [

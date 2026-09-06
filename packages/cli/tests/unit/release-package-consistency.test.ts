@@ -15,10 +15,18 @@ import {
 const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 
-async function packageTarball(root: string, name: string, contents: string): Promise<string> {
+async function packageTarball(
+  root: string,
+  name: string,
+  contents: string,
+  packageName = 'fixture',
+): Promise<string> {
   const source = path.join(root, `${name}-source`);
   await fs.mkdir(path.join(source, 'package', 'dist'), { recursive: true });
-  await fs.writeFile(path.join(source, 'package', 'package.json'), '{"name":"fixture","version":"1.0.0"}\n');
+  await fs.writeFile(path.join(source, 'package', 'package.json'), `${JSON.stringify({
+    name: packageName,
+    version: '1.0.0',
+  })}\n`);
   await fs.writeFile(path.join(source, 'package', 'dist', 'index.js'), contents);
   const tarballPath = path.join(root, `${name}.tgz`);
   await execFileAsync('tar', ['-czf', tarballPath, '-C', source, 'package']);
@@ -30,6 +38,21 @@ afterEach(async () => {
 });
 
 describe('published package file consistency', () => {
+  it.each([
+    '@lesliechan721/aw-windows-job-win32-x64',
+    '@lesliechan721/aw-windows-job-win32-arm64',
+  ])('normalizes Windows Job release package metadata for %s', async (packageName) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-package-consistency-'));
+    roots.push(root);
+    const tarball = await packageTarball(root, 'release-package', 'fixture\n', packageName);
+
+    await expect(computePackageTarballTreeDigest(tarball, {
+      normalizeReleaseMetadata: true,
+      expectedPackageName: packageName,
+      expectedVersion: '1.0.0',
+    })).resolves.toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
   it('downloads the exact version without lifecycle scripts through an injectable registry command', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-package-consistency-'));
     roots.push(root);

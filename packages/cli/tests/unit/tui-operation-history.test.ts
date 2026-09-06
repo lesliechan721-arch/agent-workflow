@@ -138,7 +138,7 @@ describe('TUI operation diagnostic projection', () => {
           },
         },
       }],
-    }, '1:operation');
+    }, '1:operation', [], 'pluginWrite');
 
     expect(projected.effects).toMatchObject({
       awWrite: 'notStarted', preApplyExternalEffect: 'possible', finalVerification: 'notStarted',
@@ -161,7 +161,7 @@ describe('TUI operation diagnostic projection', () => {
           state: 'failed', errorCode: 'nativeCliTimedOut', message: 'private raw target error',
         }],
       },
-    }, '2:operation');
+    }, '2:operation', [], 'configSave');
 
     expect(projected.effects).toMatchObject({ configCommit: 'completed', awWrite: 'partial' });
     expect(projected.diagnostics.map((entry) => entry.code)).toEqual([
@@ -178,7 +178,7 @@ describe('TUI operation diagnostic projection', () => {
         actions: [{ name: 'preflight.inspect', status: 'failed' }],
         error: { phase: 'preflight.inspect', message: 'private failure' },
       }],
-    }, '3:operation');
+    }, '3:operation', [], 'pluginWrite');
 
     expect(projected.effects.awWrite).toBe('notStarted');
   });
@@ -193,7 +193,7 @@ describe('TUI operation diagnostic projection', () => {
         quarantined: [],
         error: { phase: 'cleanup.owned', message: 'private failure' },
       }],
-    }, '4:operation');
+    }, '4:operation', [], 'pluginWrite');
 
     expect(projected.effects).toMatchObject({ awWrite: 'partial', finalVerification: 'notStarted' });
   });
@@ -208,7 +208,7 @@ describe('TUI operation diagnostic projection', () => {
         quarantined: [],
         error: { phase: 'cleanup.owned', message: 'private finalization failure' },
       }],
-    }, '5:operation');
+    }, '5:operation', [], 'pluginWrite');
 
     expect(projected.effects).toMatchObject({ awWrite: 'completed', finalVerification: 'failed' });
   });
@@ -226,8 +226,106 @@ describe('TUI operation diagnostic projection', () => {
         quarantined: ['owned-b'],
         error: { phase: 'artifacts.write', message: 'private failure' },
       }],
-    }, '6:operation');
+    }, '6:operation', [], 'pluginWrite');
 
     expect(projected.effects).toMatchObject({ awWrite: 'partial', finalVerification: 'notStarted' });
+  });
+
+  it('dispatches source, bootstrap, and Catalog generation receipts by operation kind', () => {
+    const source = projectExecutionDiagnostics({
+      ok: false,
+      changed: true,
+      errors: [
+        { code: 'stateInventoryFailed', message: 'Catalog source reference inventory is incomplete.' },
+        { code: 'manifestUnavailable', message: 'The previous Catalog manifest is unavailable.' },
+      ],
+    }, '7:source', [], 'sourceMutation');
+    const bootstrap = projectExecutionDiagnostics({ backupPath: 'private-backup-name' }, '7:bootstrap', [], 'catalogSourcesRecovery');
+    const activation = projectExecutionDiagnostics({
+      status: 'partial', partialReason: 'activation', configSaved: true,
+      errorCode: 'catalogGenerationRefreshFailed', secret: 'private-token',
+    }, '7:activation', ['private-token'], 'catalogGeneration');
+    const primary = projectExecutionDiagnostics({
+      status: 'partial', partialReason: 'primary', configSaved: true,
+      activeAvailable: true, errorCode: 'catalogSourcePrimaryFailed',
+    }, '7:primary', [], 'catalogGeneration');
+    const primaryOnlyFailed = projectExecutionDiagnostics({
+      status: 'partial', partialReason: 'primary', configSaved: false,
+      activeAvailable: true, errorCode: 'catalogSourcePrimaryFailed',
+    }, '7:primary-only', [], 'catalogGeneration');
+    const primarySucceeded = projectExecutionDiagnostics({
+      status: 'succeeded', configSaved: false, primaryChanged: true, generation: {},
+    }, '7:primary-succeeded', [], 'catalogGeneration');
+    const generationOnlySucceeded = projectExecutionDiagnostics({
+      status: 'succeeded', configSaved: false, primaryChanged: false, generation: {},
+    }, '7:generation-succeeded', [], 'catalogGeneration');
+
+    expect(source.effects.configCommit).toBe('completed');
+    expect(source.diagnostics.map((entry) => entry.code)).toEqual(['stateInventoryFailed', 'manifestUnavailable']);
+    expect(source.diagnostics.map((entry) => entry.safeMessage)).toEqual([
+      'Catalog source reference inventory is incomplete.',
+      'The previous Catalog manifest is unavailable.',
+    ]);
+    expect(bootstrap.effects.configCommit).toBe('completed');
+    expect(activation).toMatchObject({
+      effects: { configCommit: 'completed', awWrite: 'partial', finalVerification: 'failed' },
+      diagnostics: [{ code: 'catalogGenerationRefreshFailed', stage: 'activation' }],
+    });
+    expect(primary).toMatchObject({
+      effects: { configCommit: 'partial', awWrite: 'completed', finalVerification: 'completed' },
+      diagnostics: [{ code: 'catalogSourcePrimaryFailed', stage: 'primary' }],
+    });
+    expect(primaryOnlyFailed.effects.configCommit).toBe('failed');
+    expect(primarySucceeded.effects.configCommit).toBe('completed');
+    expect(generationOnlySucceeded.effects.configCommit).toBe('notApplicable');
+    expect(JSON.stringify({ source, bootstrap, activation, primary })).not.toContain('private raw');
+    expect(JSON.stringify(activation)).not.toContain('private-token');
+  });
+
+  it('keeps every Portable failure and missing verification fact without treating it as a platform target', () => {
+    const projected = projectExecutionDiagnostics({
+      status: 'partial',
+      failures: [
+        { code: 'portableSkillsCliInstallFailed', message: 'Authorization=private-token', recovery: '/Users/private/retry' },
+        { code: 'portableSkillsCliVerificationFailed', message: 'The installed Skills could not be verified.', recovery: 'Run aw skill install again.' },
+      ],
+      verification: {
+        records: [],
+        missing: [{ skill: 'review', agent: 'codex' }, { skill: 'audit' }],
+      },
+    }, '8:portable', ['private-token'], 'portableInstall');
+
+    expect(projected.effects).toEqual({
+      configCommit: 'notApplicable', awWrite: 'partial',
+      preApplyExternalEffect: 'notApplicable', finalVerification: 'unknown',
+    });
+    expect(projected.diagnostics.map(({ code, stage, target }) => ({ code, stage, target }))).toEqual([
+      { code: 'portableSkillsCliInstallFailed', stage: 'portable.add', target: undefined },
+      { code: 'portableSkillsCliVerificationFailed', stage: 'portable.verify', target: undefined },
+      { code: 'portableVerificationMissing', stage: 'portable.verify', target: undefined },
+      { code: 'portableVerificationMissing', stage: 'portable.verify', target: undefined },
+    ]);
+    expect(projected.diagnostics[2]?.detailLines).toEqual(['Skill: review', 'Agent: codex']);
+    expect(projected.diagnostics[3]?.detailLines).toEqual(['Skill: audit']);
+    expect(projected.diagnostics[1]).toMatchObject({
+      safeMessage: 'The installed Skills could not be verified.',
+      detailLines: ['Recovery: Run aw skill install again.'],
+    });
+    expect(JSON.stringify(projected)).not.toContain('private-token');
+    expect(JSON.stringify(projected)).not.toContain('/Users/private');
+    expect(projected.targetEffects.size).toBe(0);
+  });
+
+  it('does not treat an empty verification object on a failed Portable receipt as completed', () => {
+    const failed = projectExecutionDiagnostics({
+      status: 'failed', failures: [], verification: { records: [], missing: [] },
+    }, '9:portable-failed', [], 'portableInstall');
+    const succeeded = projectExecutionDiagnostics({
+      status: 'succeeded', failures: [],
+      verification: { records: [{ name: 'review', agents: ['codex'] }], missing: [] },
+    }, '9:portable-succeeded', [], 'portableInstall');
+
+    expect(failed.effects.finalVerification).toBe('unknown');
+    expect(succeeded.effects.finalVerification).toBe('completed');
   });
 });

@@ -33,6 +33,13 @@ export interface PluginProcessRunner {
 
 interface DefaultPluginProcessRunOptions { timeoutMs: number; signal?: AbortSignal; sensitiveValues?: readonly string[] }
 
+class PluginProcessInputError extends Error {
+  constructor(cause: unknown) {
+    super('Plugin process input could not be sent.', { cause });
+    this.name = 'PluginProcessInputError';
+  }
+}
+
 /** @internal Test-only dependency seam. It is not exported from the package entrypoint. */
 interface DefaultPluginProcessRunnerDependencies {
   platform?: NodeJS.Platform;
@@ -290,25 +297,37 @@ export function createDefaultPluginProcessRunner(
         ? createWindowsJobInvocationImpl(invocation.command, invocation.args)
         : undefined;
       const child = spawnImpl(windowsJobInvocation?.command ?? invocation.command, windowsJobInvocation?.args ?? invocation.args, { cwd: invocation.cwd, env: { ...invocation.env, AW_NATIVE_CLI_PROCESS_MARKER: marker }, shell: false, stdio: ['pipe', 'pipe', 'pipe'], detached: platform !== 'win32' });
-      child.stdin?.end(invocation.stdin ?? '');
       let stdout = ''; let stderr = ''; let timedOut = false; let aborted = false; let settled = false; let terminating = false;
+      let inputCompleted = child.stdin === null; let inputError: unknown;
+      let childExited = false; let cleanupCompleted = false;
+      let completedExitCode: number | null = null; let completedSignal: NodeJS.Signals | null = null;
       let windowsJobCloseTimer: NodeJS.Timeout | undefined;
       const outputCaptureLimit = resolveOutputCaptureLimit(options.sensitiveValues ?? []);
       let observation: ProcessTreeObservation | undefined; if (!windowsJobInvocation && child.pid !== undefined) observation = observeProcessTreeImpl(child.pid, marker);
       const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
       const abort = (): void => { aborted = true; terminate(); };
       const cleanup = (): void => { clearTimeout(timer); if (windowsJobCloseTimer) clearTimeout(windowsJobCloseTimer); options.signal?.removeEventListener('abort', abort); observation?.dispose(); };
-      const result = (): PluginProcessResult => ({ exitCode: child.exitCode, signal: child.signalCode, stdout, stderr, timedOut });
-      const settle = (cleanupError?: unknown): void => {
+      const result = (): PluginProcessResult => ({ exitCode: completedExitCode, signal: completedSignal, stdout, stderr, timedOut });
+      const settleImmediately = (error: unknown): void => {
         if (settled) return;
         settled = true;
         cleanup();
-        if (cleanupError) {
-          reject(cleanupError);
-          return;
-        }
+        reject(error);
+      };
+      const settleIfComplete = (): void => {
+        if (settled || !childExited || !cleanupCompleted || !inputCompleted) return;
+        settled = true;
+        cleanup();
         if (aborted) {
           try { options.signal?.throwIfAborted(); } catch (error) { reject(error); return; }
+        }
+        if (inputError && !(
+          (inputError as NodeJS.ErrnoException).code === 'EPIPE'
+          && completedExitCode === 0
+          && completedSignal === null
+        ) && !timedOut && completedExitCode === 0 && completedSignal === null) {
+          reject(new PluginProcessInputError(inputError));
+          return;
         }
         resolve(result());
       };
@@ -326,11 +345,11 @@ export function createDefaultPluginProcessRunner(
               throw new Error('Windows Job helper did not accept termination.');
             }
           } catch (error) {
-            settle(error);
+            settleImmediately(error);
             return;
           }
           windowsJobCloseTimer = setTimeout(
-            () => settle(new Error('Windows Job helper exit could not be confirmed.')),
+            () => settleImmediately(new Error('Windows Job helper exit could not be confirmed.')),
             WINDOWS_JOB_CLOSE_TIMEOUT_MS,
           );
           windowsJobCloseTimer.unref();
@@ -351,27 +370,48 @@ export function createDefaultPluginProcessRunner(
               },
             );
         void Promise.resolve(termination).then(
-          () => settle(),
-          (error: unknown) => settle(error),
+          () => { cleanupCompleted = true; settleIfComplete(); },
+          (error: unknown) => settleImmediately(error),
         );
       }
       child.stdout?.setEncoding('utf8'); child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => { if (stdout.length < outputCaptureLimit) stdout += chunk.slice(0, outputCaptureLimit - stdout.length); });
       child.stderr?.on('data', (chunk: string) => { if (stderr.length < outputCaptureLimit) stderr += chunk.slice(0, outputCaptureLimit - stderr.length); });
-      child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settle(error); });
+      child.on('error', (error) => { if (!settled && (!terminating || windowsJobInvocation)) settleImmediately(error); });
       const complete = (exitCode: number | null, signal: NodeJS.Signals | null): void => {
         if (settled) return;
+        childExited = true;
+        completedExitCode = exitCode;
+        completedSignal = signal;
         if (windowsJobInvocation) {
-          settle();
+          cleanupCompleted = true;
+          settleIfComplete();
           return;
         }
-        if (terminating) return;
+        if (terminating) {
+          settleIfComplete();
+          return;
+        }
         terminate(
           true,
           platform === 'win32' && exitCode === 0 && signal === null,
         );
       };
       child.on(platform === 'win32' ? 'close' : 'exit', complete);
+      if (child.stdin) {
+        const completeInput = (error?: unknown): void => {
+          if (error !== undefined && error !== null) inputError = error;
+          inputCompleted = true;
+          settleIfComplete();
+        };
+        child.stdin.once('error', completeInput);
+        child.stdin.once('finish', completeInput);
+        try {
+          child.stdin.end(invocation.stdin ?? '', completeInput);
+        } catch (error) {
+          completeInput(error);
+        }
+      }
       options.signal?.addEventListener('abort', abort, { once: true }); if (options.signal?.aborted) abort();
     });
   },
@@ -458,6 +498,12 @@ export async function runPreApplyScript(options: {
         runnerCleanupConfirmed = true;
       } else if (interruptSignal) {
         throw new Error(`preApply process cleanup failed after ${interruptSignal}.`);
+      } else if (error instanceof PluginProcessInputError) {
+        throw attachSafeOperationError(new Error('preApply input could not be sent.'), {
+          code: 'preApplyInputFailed',
+          stage: 'preApply',
+          safeMessage: 'The preApply context could not be sent to the process.',
+        });
       } else {
         const causeCode = error && typeof error === 'object' && 'code' in error
           && typeof error.code === 'string' ? error.code : undefined;

@@ -14,9 +14,11 @@ import {
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
 import {
+  pluginWriteBatchFailedRequestedTargets,
   TuiConfigInvalidStoreError,
   TuiController,
   type OperationEvidence,
+  type PluginWriteBatchExecutionResult,
 } from '../../src/tui/controller.js';
 import { buildOperationReviewProjection } from '../../src/tui/operation-review-planner.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -362,6 +364,88 @@ describe('TUI batch write runtime', () => {
       ['team/first', 'team/second'],
       expect.objectContaining({ platform: 'both', scope: 'user', scriptTimeoutMs: 33_000 }),
       expect.objectContaining({ previewOperationPlan: true }),
+    );
+  });
+
+  it('retries only the failed actual platform after a project-all sync', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-project-all-retry');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const intentState = upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team/demo', platforms: ['codex', 'claude'],
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, intentState);
+    runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
+      const platform = options.platform as 'codex' | 'claude';
+      const failed = platform === 'claude';
+      const target = {
+        pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team',
+        platform, scope: options.scope,
+      };
+      return {
+        platforms: [platform], plugins: failed ? [] : pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [{
+          target, action: 'sync', state: failed ? 'failed' as const : 'completed' as const,
+          requiredBy: [], ...(failed ? { errorCode: 'preApplyFailed' } : {}),
+        }],
+        overallState: failed ? 'failed' as const : 'succeeded' as const,
+        receiptTargets: [target],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [`team/demo:${platform}`], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const initialIntent = {
+      kind: 'pluginWriteBatch' as const, action: 'sync' as const,
+      selection: { kind: 'currentProjectIntentRoots' as const },
+      platform: 'both' as const, scope: 'project' as const,
+    };
+    const initialEvidence = await dependencies.captureEvidence(
+      initialIntent, new AbortController().signal,
+    );
+    const initialResult = await dependencies.executeIntent(
+      initialIntent, initialEvidence,
+    ) as PluginWriteBatchExecutionResult;
+    expect(initialResult.groupResults.map((group) => group.platform)).toEqual(['claude', 'codex']);
+    const retryTargets = pluginWriteBatchFailedRequestedTargets(initialResult);
+    expect(retryTargets).toEqual([
+      { pluginId: 'team/demo', platform: 'claude', scope: 'project' },
+    ]);
+    const actualCalls = () => runtimeMocks.installWriteCommand.mock.calls.filter((call) =>
+      call[2]?.previewOperationPlan !== true);
+    const codexActualBeforeRetry = actualCalls().filter((call) => call[1].platform === 'codex').length;
+    const claudeActualBeforeRetry = actualCalls().filter((call) => call[1].platform === 'claude').length;
+
+    const retryIntent = {
+      ...initialIntent,
+      selection: { kind: 'targets' as const, targets: retryTargets },
+    };
+    const retryEvidence = await dependencies.captureEvidence(retryIntent, new AbortController().signal);
+    await dependencies.executeIntent(retryIntent, retryEvidence);
+
+    expect(actualCalls().filter((call) => call[1].platform === 'codex')).toHaveLength(
+      codexActualBeforeRetry,
+    );
+    expect(actualCalls().filter((call) => call[1].platform === 'claude')).toHaveLength(
+      claudeActualBeforeRetry + 1,
     );
   });
 

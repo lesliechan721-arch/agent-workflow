@@ -408,6 +408,7 @@ interface PluginWriteBatchGroup {
   groupId: string;
   sourceId: string;
   platform: 'codex' | 'claude' | 'both';
+  scope: Scope;
   requestedPluginIds: string[];
 }
 
@@ -415,33 +416,60 @@ function selectedBatchGroups(intent: Extract<OperationIntent, { kind: 'pluginWri
   requestedPluginIds: string[];
   groups: PluginWriteBatchGroup[];
 } {
-  if (intent.selection.kind !== 'selected') {
+  if (intent.selection.kind !== 'selected' && intent.selection.kind !== 'targets') {
     throw new TuiOperationBlockedError(
       'syncSelectionRequired',
       '当前项目全部同步必须从项目 intent roots 解析。',
     );
   }
-  const requestedPluginIds = [...new Set(intent.selection.pluginIds.map((pluginId) => {
+  const rawTargets = intent.selection.kind === 'targets'
+    ? intent.selection.targets
+    : intent.selection.pluginIds.map((pluginId) => ({
+        pluginId, platform: intent.platform, scope: intent.scope,
+      }));
+  const normalizedTargets = rawTargets.map((target) => {
+    if ((target.platform !== 'codex' && target.platform !== 'claude' && target.platform !== 'both')
+      || target.scope !== intent.scope
+      || (intent.selection.kind === 'targets' && target.platform === 'both')) {
+      throw new TuiOperationBlockedError('batchTargetInvalid', '批量精确目标必须使用共同 scope 和单个平台。');
+    }
+    const pluginId = target.pluginId;
     const parsed = parsePluginId(pluginId);
     if (!parsed.sourceId) {
       throw new TuiOperationBlockedError('invalidPluginId', '批量操作必须使用 canonical pluginId。');
     }
-    return formatPluginId({ sourceId: parsed.sourceId, pluginName: parsed.pluginName });
-  }))];
+    const canonicalPluginId = formatPluginId({ sourceId: parsed.sourceId, pluginName: parsed.pluginName });
+    if (intent.selection.kind === 'targets' && canonicalPluginId !== pluginId) {
+      throw new TuiOperationBlockedError('invalidPluginId', '批量精确目标必须使用 canonical pluginId。');
+    }
+    return {
+      pluginId: canonicalPluginId,
+      platform: target.platform,
+      scope: target.scope,
+    };
+  }).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+    .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
+  const uniqueTargets = [...new Map(normalizedTargets.map((target) => [
+    [target.pluginId, target.platform, target.scope].join('\0'), target,
+  ])).values()];
+  const requestedPluginIds = [...new Set(uniqueTargets.map((target) => target.pluginId))];
   if (requestedPluginIds.length === 0) {
     throw new TuiOperationBlockedError('syncSelectionRequired', '批量操作至少需要一个插件。');
   }
   const groups = new Map<string, PluginWriteBatchGroup>();
-  for (const pluginId of requestedPluginIds) {
+  for (const target of uniqueTargets) {
+    const pluginId = target.pluginId;
     const sourceId = parsePluginId(pluginId).sourceId!;
-    const group = groups.get(sourceId) ?? {
-      groupId: `${sourceId}\0${intent.platform}`,
+    const groupKey = [sourceId, target.platform, target.scope].join('\0');
+    const group = groups.get(groupKey) ?? {
+      groupId: groupKey,
       sourceId,
-      platform: intent.platform,
+      platform: target.platform,
+      scope: target.scope,
       requestedPluginIds: [],
     };
     group.requestedPluginIds.push(pluginId);
-    groups.set(sourceId, group);
+    groups.set(groupKey, group);
   }
   return { requestedPluginIds, groups: [...groups.values()] };
 }
@@ -452,7 +480,9 @@ async function resolveBatchGroups(
   cwd: string,
   frozenRequestedPluginIds?: readonly string[],
 ): Promise<{ requestedPluginIds: string[]; groups: PluginWriteBatchGroup[] }> {
-  if (intent.selection.kind === 'selected') return selectedBatchGroups(intent);
+  if (intent.selection.kind === 'selected' || intent.selection.kind === 'targets') {
+    return selectedBatchGroups(intent);
+  }
   if (intent.action !== 'sync' || intent.scope !== 'project') {
     throw new TuiOperationBlockedError(
       'syncSelectionRequired',
@@ -472,9 +502,10 @@ async function resolveBatchGroups(
   return {
     requestedPluginIds: selection.requestedPluginIds,
     groups: selection.groups.map((group) => ({
-      groupId: `${group.sourceId}\0${group.platform}`,
+      groupId: `${group.sourceId}\0${group.platform}\0${intent.scope}`,
       sourceId: group.sourceId,
       platform: group.platform,
+      scope: intent.scope,
       requestedPluginIds: group.pluginIds,
     })),
   };
@@ -489,7 +520,7 @@ async function runBatchWriteGroup(options: {
   const commandOptions = {
     cwd: options.cwd,
     platform: options.group.platform,
-    scope: options.intent.scope,
+    scope: options.group.scope,
     ...(reviewedScriptTimeoutMs(options.intent) === undefined
       ? {}
       : { scriptTimeoutMs: reviewedScriptTimeoutMs(options.intent) }),
@@ -2598,6 +2629,7 @@ export function createTuiControllerDependencies(
               groupId: group.groupId,
               sourceId: group.sourceId,
               platform: group.platform,
+              scope: group.scope,
               requestedPluginIds: group.requestedPluginIds,
               executable: group.executable,
               planFingerprint: group.preview.operationPlan
@@ -2608,6 +2640,7 @@ export function createTuiControllerDependencies(
               groupId: group.groupId,
               sourceId: group.sourceId,
               platform: group.platform,
+              scope: group.scope,
               requestedPluginIds: group.requestedPluginIds,
               executable: expectedBatch.groups.find((reviewed) => reviewed.groupId === group.groupId)
                 ?.executable === false ? false : group.executable,
@@ -2634,11 +2667,12 @@ export function createTuiControllerDependencies(
                   groupId: stopped.groupId,
                   sourceId: stopped.sourceId,
                   platform: stopped.platform,
+                  scope: stopped.scope,
                   requestedPluginIds: stopped.requestedPluginIds,
                   result: !stopped.executable ? stopped.preview : failedWriteCommandResult(
                     intent.action,
                     stopped.requestedPluginIds,
-                    { cwd: context.cwd, platform: stopped.platform, scope: intent.scope },
+                    { cwd: context.cwd, platform: stopped.platform, scope: stopped.scope },
                     offset === 0
                       ? new TuiOperationBlockedError('operationReviewStale', staleMessage)
                       : new TuiOperationBlockedError(
@@ -2656,6 +2690,7 @@ export function createTuiControllerDependencies(
                   groupId: reviewed.groupId,
                   sourceId: reviewed.sourceId,
                   platform: reviewed.platform,
+                  scope: reviewed.scope,
                   requestedPluginIds: reviewed.requestedPluginIds,
                   result: reviewed.preview,
                 });
@@ -2733,6 +2768,7 @@ export function createTuiControllerDependencies(
                 groupId: reviewed.groupId,
                 sourceId: reviewed.sourceId,
                 platform: reviewed.platform,
+                scope: reviewed.scope,
                 requestedPluginIds: reviewed.requestedPluginIds,
                 result,
               });

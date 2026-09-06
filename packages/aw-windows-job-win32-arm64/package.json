@@ -1,15 +1,15 @@
 {
   "name": "@lesliechan721/aw-windows-job-win32-arm64",
   "version": "0.1.0",
-  "os": [
-    "win32"
-  ],
-  "cpu": [
-    "arm64"
-  ],
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://registry.npmjs.org/",
+    "os": [
+      "win32"
+    ],
+    "cpu": [
+      "arm64"
+    ]
   },
   "exports": {
     "./aw-windows-job.exe": "./dist/aw-windows-job.exe"

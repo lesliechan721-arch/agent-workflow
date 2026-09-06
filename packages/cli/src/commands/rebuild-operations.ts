@@ -516,6 +516,10 @@ async function cleanupOwned(
   target: DesiredTarget,
   driver: RebuildTargetDriver,
   components: readonly OwnedComponent[] = target.ownedComponents,
+  hooks: {
+    beforeMutation?: (component: OwnedComponent) => Promise<void>;
+    afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+  } = {},
 ): Promise<CleanupResult> {
   return cleanupOwnedComponents({
     components,
@@ -523,6 +527,7 @@ async function cleanupOwned(
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
     forceExclusive: target.forceExclusiveCleanup,
+    ...hooks,
   });
 }
 
@@ -533,13 +538,17 @@ async function cleanupTarget(
   ownedAction: 'cleanup.owned' | 'recovery.cleanup',
   events: RebuildActionEvents,
   components: readonly OwnedComponent[] = target.ownedComponents,
+  hooks: {
+    beforeMutation?: (component: OwnedComponent) => Promise<void>;
+    afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+  } = {},
 ): Promise<{ phase: RebuildFailure['phase']; message: string } | null> {
   accumulator.cleanupAttempted = true;
   try {
     const cleanup = await action(
       accumulator,
       ownedAction,
-      () => cleanupOwned(target, driver, components),
+      () => cleanupOwned(target, driver, components, hooks),
       events,
       (value) => value.failures[0]?.message
         ?? (value.residual.length > 0
@@ -569,6 +578,47 @@ async function cleanupTarget(
   }
 
   return null;
+}
+
+export async function executeRebuildComponentCleanup(options: {
+  command: RebuildCommand;
+  target: DesiredTarget;
+  driver: RebuildTargetDriver;
+  components: readonly OwnedComponent[];
+  actions?: readonly RebuildAction[];
+  onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
+  now?: () => number;
+  beforeMutation?: (component: OwnedComponent) => Promise<void>;
+  afterQuarantine?: (component: OwnedComponent, quarantinePath: string) => Promise<void>;
+}): Promise<RebuildResult> {
+  const accumulator = createAccumulator();
+  accumulator.actions.push(...(options.actions ?? []));
+  const cleanupError = await cleanupTarget(
+    options.target,
+    options.driver,
+    accumulator,
+    'cleanup.owned',
+    {
+      command: options.command,
+      target: options.target.identity,
+      emit: options.onActionEvent,
+      now: options.now ?? Date.now,
+    },
+    options.components,
+    {
+      ...(options.beforeMutation ? { beforeMutation: options.beforeMutation } : {}),
+      ...(options.afterQuarantine ? { afterQuarantine: options.afterQuarantine } : {}),
+    },
+  );
+  return cleanupError
+    ? failed(
+        options.command,
+        options.target,
+        accumulator,
+        cleanupError.phase,
+        cleanupError.message,
+      )
+    : succeeded(options.command, options.target, accumulator);
 }
 
 async function materializeTarget(options: {

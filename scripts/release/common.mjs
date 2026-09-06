@@ -524,7 +524,13 @@ export async function computePackageTarballTreeDigest(tarballPath, options = {})
       } catch (error) {
         throw new Error('Package tarball package.json is invalid JSON.', { cause: error });
       }
-      if (![CLI_PACKAGE_NAME, EVAL_PACKAGE_NAME, CORE_PACKAGE_NAME].includes(packageJson.name)) {
+      if (![
+        WINDOWS_X64_PACKAGE_NAME,
+        WINDOWS_ARM64_PACKAGE_NAME,
+        CLI_PACKAGE_NAME,
+        EVAL_PACKAGE_NAME,
+        CORE_PACKAGE_NAME,
+      ].includes(packageJson.name)) {
         throw new Error(`Unsupported release package ${JSON.stringify(packageJson.name)}.`);
       }
       assertValidVersion(packageJson.version);
