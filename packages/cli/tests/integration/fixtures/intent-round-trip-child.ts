@@ -15,5 +15,5 @@ it('runs one public write command from argv in an isolated process', async () =>
     throw new Error(`Network access is disabled in the CLI child: ${String(input)}`);
   };
   process.chdir(cwd);
-  await expect(runCli(argv)).resolves.toBe(0);
+  await expect(runCli(argv)).resolves.toBe(Number(process.env.AW_INTENT_CHILD_EXIT_CODE ?? '0'));
 });

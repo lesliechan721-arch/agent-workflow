@@ -370,7 +370,8 @@ async function runIntentRoundTripCliChild(
   argv: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-): Promise<void> {
+  expectedExitCode = 0,
+): Promise<string> {
   const packageRoot = getSourceTestRepositoryCwd();
   const child = spawn(process.execPath, [
     path.join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs'),
@@ -384,6 +385,7 @@ async function runIntentRoundTripCliChild(
       ...env,
       AW_INTENT_CHILD_ARGV: JSON.stringify(argv),
       AW_INTENT_CHILD_CWD: cwd,
+      AW_INTENT_CHILD_EXIT_CODE: String(expectedExitCode),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -395,6 +397,24 @@ async function runIntentRoundTripCliChild(
     child.on('close', resolve);
   });
   expect(code, `aw ${argv.join(' ')} child failed:\n${output}`).toBe(0);
+  return output;
+}
+
+function parseIntentRoundTripReceipt(output: string): {
+  targetResults: Array<{
+    target: { pluginId?: string; scope: string };
+    state: string;
+  }>;
+} {
+  const start = output.indexOf('{\n  "ok":');
+  const end = output.indexOf('\n}\n', start);
+  if (start < 0 || end < 0) throw new Error(`Child receipt is missing:\n${output}`);
+  return JSON.parse(output.slice(start, end + 2)) as {
+    targetResults: Array<{
+      target: { pluginId?: string; scope: string };
+      state: string;
+    }>;
+  };
 }
 
 async function createNativeDependencyCatalog(
@@ -1636,6 +1656,141 @@ describe('five namespaced write commands', () => {
     }
   }, 30_000);
 
+  it.each(['beforeRename', 'afterQuarantine'] as const)(
+    'reports activation-only legacy Skill cleanup failure at %s and supports retry recovery',
+    async (failurePoint) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `activation-legacy-cleanup-${failurePoint}`,
+      );
+      const configureDynamicNative = (manifest: PluginMeta['manifest']) => {
+        manifest.scripts = {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        };
+        manifest.artifacts = { targets: [{
+          id: 'dynamic-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-skill',
+        }] };
+      };
+      const definitions = [{ name: 'demo', configureManifest: configureDynamicNative }, {
+        name: 'consumer', dependencies: ['demo'],
+      }, { name: 'independent' }];
+      await createNativeDependencyCatalog(sourceRoot, definitions);
+      await writeDynamicSkillRenderer({
+        pluginRoot: path.join(sourceRoot, 'plugins', 'demo'),
+        skillKey: 'native-skill',
+      });
+      await createNativeDependencyCatalog(sourceRoot, definitions);
+      const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: {
+          schemaVersion: 2,
+          sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+        },
+        expectedDigest: snapshot.digest,
+        env: isolation.env,
+      });
+      const runtime = createCodexNativeTestRuntime(isolation);
+      const initialInstall = await installWriteCommand(['team/demo'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      }, runtime);
+      expect(initialInstall.overallState, JSON.stringify(initialInstall.rebuildResults)).toBe('succeeded');
+
+      const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+      const legacySkillRoot = path.join(skillsRoot, 'native-skill');
+      await fs.outputFile(path.join(legacySkillRoot, 'SKILL.md'), 'legacy\n');
+      await writeSkillOwnerMarker({
+        skillRoot: legacySkillRoot,
+        allowedRoot: skillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: 'team',
+          pluginId: 'team/demo',
+          plugin: 'demo',
+          artifactKey: 'native-skill',
+          platform: 'codex',
+          scope: 'project',
+        },
+      });
+      let quarantinedPath: string | undefined;
+      setRebuildCommandTestHooksForTests(failurePoint === 'beforeRename'
+        ? {
+            beforeActivationLegacyCleanupMutation: async () => {
+              throw new Error('injected rename precondition failure');
+            },
+          }
+        : {
+            afterActivationLegacyCleanupQuarantine: async (_component, candidate) => {
+              quarantinedPath = candidate;
+              throw new Error('injected quarantined removal failure');
+            },
+          });
+      let failed;
+      try {
+        failed = await installWriteCommand(['team/consumer', 'team/independent'], {
+          cwd: isolation.layout.fixtureCwd,
+          platform: 'codex',
+          scope: 'project',
+        }, runtime);
+      } finally {
+        setRebuildCommandTestHooksForTests(undefined);
+      }
+
+      expect(failed.overallState, JSON.stringify(failed.rebuildResults)).toBe('partial');
+      expect(failed.rebuildResults).toContainEqual(expect.objectContaining({
+        status: 'failed',
+        target: expect.objectContaining({ pluginName: 'demo' }),
+        cleanupAttempted: true,
+        residual: ['native-skill'],
+        failures: [expect.objectContaining({ phase: 'cleanup.owned' })],
+        actions: expect.arrayContaining([
+          expect.objectContaining({ name: 'cleanup.owned', status: 'failed' }),
+        ]),
+      }));
+      expect(failed.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginName: 'consumer' }),
+          state: 'failed',
+          errorCode: 'dependencyInstallFailed',
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginName: 'independent' }),
+          state: 'completed',
+        }),
+      ]));
+      const demoFailure = failed.rebuildResults.find((entry) =>
+        entry.target.pluginName === 'demo')!;
+      if (failurePoint === 'beforeRename') {
+        expect(demoFailure.quarantined).toEqual([]);
+        await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(true);
+      } else {
+        expect(quarantinedPath).toBeDefined();
+        expect(demoFailure.quarantined).toEqual([path.basename(quarantinedPath!)]);
+        await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(false);
+        await expect(fs.pathExists(quarantinedPath!)).resolves.toBe(true);
+        await fs.move(quarantinedPath!, legacySkillRoot);
+      }
+
+      const recovered = await installWriteCommand(['team/consumer', 'team/independent'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+      }, runtime);
+      expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+      await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(false);
+    },
+    30_000,
+  );
+
   it('preflights native render once and excludes a preApply failure from its marketplace group', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-pre-apply-group-source');
@@ -1757,6 +1912,12 @@ describe('five namespaced write commands', () => {
     ]));
     expect(codexOperationConsumerResolver).toHaveBeenCalledTimes(1);
     expect(runtime.installed).toEqual(new Set(['beta@aw']));
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/beta', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+    });
     for (const name of ['alpha', 'beta']) {
       await expect(fs.readFile(path.join(counterRoot, `render-count-${name}.txt`), 'utf8'))
         .resolves.toBe('1');
@@ -1779,6 +1940,86 @@ describe('five namespaced write commands', () => {
       'dynamic-skill',
       'SKILL.md',
     ), 'utf8')).resolves.toContain('name: dynamic-skill');
+  }, 30_000);
+
+  it('keeps an immediate preApply failure with large context isolated from another target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'large-pre-apply-input-source');
+    const largeConfigFields = Object.fromEntries(Array.from({ length: 32 }, (_, index) => [
+      `value${index}`,
+      { type: 'string' as const, default: 'x'.repeat(4_096), validation: { maxLength: 4_096 } },
+    ]));
+    const definitions = ['immediate-failure', 'independent'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: `${name} policy.` }],
+        };
+        manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+        if (name === 'immediate-failure') manifest.config = { fields: largeConfigFields };
+      },
+    }));
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const independentMarker = path.join(isolation.env.AW_HOME!, 'independent-pre-apply.txt');
+    await Promise.all([
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'immediate-failure', 'scripts', 'preApply.mjs'),
+        'process.exit(7);\n',
+      ),
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'independent', 'scripts', 'preApply.mjs'),
+        [
+          'let input = "";',
+          'for await (const chunk of process.stdin) input += chunk;',
+          'const context = JSON.parse(input);',
+          `await import("node:fs/promises").then(({ writeFile }) => writeFile(${JSON.stringify(independentMarker)}, context.plugin.name));`,
+        ].join('\n'),
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const result = await installWriteCommand([
+      'team/immediate-failure',
+      'team/independent',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      yes: true,
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async () => ({
+        exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+      }),
+    });
+
+    expect(result.overallState, JSON.stringify(result, null, 2)).toBe('partial');
+    expect(result.rebuildResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/immediate-failure' }),
+        status: 'failed',
+        error: expect.objectContaining({
+          phase: 'preApply',
+          operationDiagnostic: expect.objectContaining({ code: 'preApplyExited', exitCode: 7 }),
+        }),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        status: 'succeeded',
+      }),
+    ]));
+    expect(JSON.stringify(result)).not.toContain('preApplyStartFailed');
+    await expect(fs.readFile(independentMarker, 'utf8')).resolves.toBe('independent');
   }, 30_000);
 
   it('stops before preApply and manager resolution when native render preflight fails', async () => {
@@ -8273,7 +8514,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
   }, 30_000);
 
-  it('removes a project Codex Skill deleted by a new source identity manifest', async () => {
+  it.each(['sync', 'uninstall'] as const)('removes a project Codex Skill removed by the active manifest through %s', async (command) => {
     const isolation = getCurrentSourceTestIsolation();
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v1-source');
     const secondRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v2-source');
@@ -8299,6 +8540,9 @@ describe('five namespaced write commands', () => {
       configureManifest: (manifest) => {
         manifest.version = '2.0.0';
         manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'current', title: 'Current', content: 'Current instruction.' }],
+        };
       },
     }]);
     const firstSource = { id: 'team', type: 'path' as const, primary: true, path: firstRoot };
@@ -8312,9 +8556,10 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
-    await expect(installWriteCommand(['team/demo'], {
+    const initialInstall = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    }, runtime);
+    expect(initialInstall.overallState, JSON.stringify(initialInstall.rebuildResults)).toBe('succeeded');
     const skillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'removed-in-v2');
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(true);
     const changed = await updateCatalogSourceCommand({
@@ -8328,14 +8573,37 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
+    const foreignSkillRoot = path.join(
+      isolation.layout.fixtureCwd,
+      '.agents',
+      'skills',
+      'foreign-skill',
+    );
+    await fs.outputFile(path.join(foreignSkillRoot, 'SKILL.md'), 'foreign\n');
+    await writeSkillOwnerMarker({
+      skillRoot: foreignSkillRoot,
+      allowedRoot: path.dirname(foreignSkillRoot),
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'other',
+        pluginId: 'other/demo',
+        plugin: 'demo',
+        artifactKey: 'foreign-skill',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
 
-    const result = await syncWriteCommand(['team/demo'], {
+    const result = await (command === 'sync' ? syncWriteCommand : uninstallWriteCommand)(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.rebuildResults.some((entry) => entry.removed.includes('removed-in-v2'))).toBe(true);
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(foreignSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('foreign\n');
   }, 30_000);
 
   it('only removes direct project Codex Skills with an exact current owner identity', async () => {
@@ -9294,6 +9562,220 @@ describe('five namespaced write commands', () => {
       }),
     ]));
   });
+
+  it('keeps a failed native dependency override for a prepared AW extension root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(
+      isolation.layout.fixtureCwd,
+      'failed-native-manager-intent-source',
+    );
+    const definitions = [
+      {
+        name: 'b',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.skills = './skills';
+          manifest.extensions = undefined;
+        },
+      },
+      {
+        name: 'a',
+        dependencies: ['b'],
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+      {
+        name: 'independent',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+    ];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const nativeSkillRoot = path.join(sourceRoot, 'plugins', 'b', 'skills', 'b-skill');
+    await Promise.all([
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'SKILL.md'),
+        '---\nname: b-skill\ndescription: B skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const listCallsBefore = runtime.nativeCliRunner.mock.calls.length;
+    const failingManagerResolver: NonNullable<
+      RebuildCommandRuntime['codexManagerResolver']
+    > = async (options) => {
+      const listed = await options.runner({
+        command: 'codex',
+        args: ['plugin', 'list', '--marketplace', 'aw', '--json'],
+        agentKind: 'codex',
+        cwd: options.cwd,
+        env: options.env,
+      });
+      expect(listed.exitCode).toBe(0);
+      throw new Error('injected manager resolver failure');
+    };
+
+    const first = await installWriteCommand(['team/a', 'team/independent'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      dependencyScopeOverrides: [{
+        pluginId: 'team/b', platform: 'codex', scope: 'user',
+      }],
+    }, {
+      ...runtime,
+      codexManagerResolver: failingManagerResolver,
+    });
+
+    expect(runtime.nativeCliRunner.mock.calls.slice(listCallsBefore).some(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'list' && args.includes('--json');
+    }), JSON.stringify(first, null, 2)).toBe(true);
+    expect(first.overallState).toBe('partial');
+    expect(first.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'project' }),
+        action: 'skipped', state: 'failed', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'project' }),
+        state: 'completed',
+      }),
+    ]));
+    const receipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('install', first);
+    expect(receipt).toMatchObject({
+      overallState: 'partial',
+      requestedPluginIds: ['team/a', 'team/independent'],
+      resolvedPluginIds: ['team/a', 'team/b', 'team/independent'],
+      dependencyEdges: [{ from: 'team/a', to: 'team/b', platform: 'codex' }],
+    });
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        state: 'completed',
+      }),
+    ]));
+    const intentLocation = {
+      scope: 'project' as const,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    };
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const fakeCodexBin = await writeIntentRoundTripCodexPackage(path.join(
+      isolation.layout.rootDir,
+      'failed-native-manager-intent-codex',
+    ));
+    const syncOutput = await runIntentRoundTripCliChild([
+      'sync',
+      '--all',
+      '--scope',
+      'project',
+      '--platform',
+      'codex',
+      '--json',
+      '--yes',
+    ], isolation.layout.fixtureCwd, {
+      ...isolation.env,
+      PATH: `${fakeCodexBin}${path.delimiter}${isolation.env.PATH ?? ''}`,
+      npm_config_offline: 'true',
+      NPM_CONFIG_OFFLINE: 'true',
+    }, 1);
+    const syncReceipt = parseIntentRoundTripReceipt(syncOutput);
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/b')).toMatchObject({
+      target: { pluginId: 'team/b', scope: 'user' },
+    });
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/independent')).toMatchObject({
+      target: { pluginId: 'team/independent', scope: 'project' },
+      state: 'completed',
+    });
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const overlapping = await installWriteCommand(
+      ['team/a', 'team/b', 'team/independent'],
+      {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      },
+      { ...runtime, codexManagerResolver: failingManagerResolver },
+    );
+    expect(overlapping.overallState).toBe('partial');
+    expect(overlapping.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'user' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'user' }),
+        state: 'completed',
+      }),
+    ]));
+    await expect(readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [],
+    });
+  }, 60_000);
 
   it('round-trips only an explicit dependency override through independent CLI processes', async () => {
     const isolation = getCurrentSourceTestIsolation();
