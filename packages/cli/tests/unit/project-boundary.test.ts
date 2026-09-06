@@ -36,6 +36,100 @@ describe('project config Git visibility', () => {
       .resolves.toEqual({ state: 'visible' });
   });
 
+  it('keeps a file visible when a later negated rule re-includes it', async () => {
+    const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const targetPath = path.join(
+      cwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputJson(targetPath, { schemaVersion: 2 });
+    await fs.outputFile(path.join(cwd, '.gitignore'), [
+      '.agent-workflows/plugin-config/team/demo/config.json',
+      '!.agent-workflows/plugin-config/team/demo/config.json',
+      '',
+    ].join('\n'));
+
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .resolves.toEqual({ state: 'visible' });
+  });
+
+  it('keeps a file visible when each ignored parent directory is re-included', async () => {
+    const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const targetPath = path.join(
+      cwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputJson(targetPath, { schemaVersion: 2 });
+    await fs.outputFile(path.join(cwd, '.gitignore'), [
+      '.agent-workflows/',
+      '!.agent-workflows/',
+      '.agent-workflows/*',
+      '!.agent-workflows/plugin-config/',
+      '.agent-workflows/plugin-config/*',
+      '!.agent-workflows/plugin-config/team/',
+      '.agent-workflows/plugin-config/team/*',
+      '!.agent-workflows/plugin-config/team/demo/',
+      '.agent-workflows/plugin-config/team/demo/*',
+      '!.agent-workflows/plugin-config/team/demo/config.json',
+      '',
+    ].join('\n'));
+
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .resolves.toEqual({ state: 'visible' });
+  });
+
+  it('keeps a tracked config path visible even when it matches an ignore rule', async () => {
+    const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const targetPath = path.join(
+      cwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    await fs.outputJson(targetPath, { schemaVersion: 2 });
+    await fs.outputFile(
+      path.join(cwd, '.gitignore'),
+      '.agent-workflows/plugin-config/team/demo/config.json\n',
+    );
+    await git(cwd, ['add', '--force', targetPath]);
+
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .resolves.toEqual({ state: 'visible' });
+  });
+
+  it('rejects a positive rule from the isolated core excludes file', async () => {
+    const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    await git(cwd, ['init', '--quiet']);
+    const targetPath = path.join(
+      cwd,
+      '.agent-workflows',
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    const excludesPath = path.join(cwd, 'isolated-excludes');
+    await fs.outputJson(targetPath, { schemaVersion: 2 });
+    await fs.outputFile(excludesPath, '.agent-workflows/plugin-config/team/\n');
+    await git(cwd, ['config', 'core.excludesFile', excludesPath]);
+
+    await expect(assertProjectSharedConfigPathVisible({ cwd, targetPath }))
+      .rejects.toMatchObject({ code: 'projectConfigIgnored' });
+  });
+
   it('reports unverified when the project is not a Git worktree', async () => {
     const cwd = getCurrentSourceTestIsolation().layout.fixtureCwd;
     const targetPath = path.join(cwd, '.agent-workflows', 'plugin-config', 'team', 'demo', 'config.json');

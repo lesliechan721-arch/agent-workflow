@@ -11914,6 +11914,7 @@ describe('five namespaced write commands', () => {
       });
       return {
         exitCode,
+        stdout: captured.readStdout(),
         payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
         stderr: captured.readStderr(),
       };
@@ -11962,6 +11963,11 @@ describe('five namespaced write commands', () => {
       },
     });
     expect(set.payload).not.toHaveProperty('targetResults');
+    expect(JSON.parse(set.stdout)).toEqual(set.payload);
+    expect(set.stderr).toBe('');
+    expect(set.payload.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('projectConfigShareabilityUnverified'),
+    ]));
     expect((await readStore()).values).toEqual({ mode: 'fast' });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
@@ -11977,6 +11983,34 @@ describe('five namespaced write commands', () => {
     })).resolves.toBe(0);
     expect(human.readStdout()).toContain('已写入 demo.mode');
     expect(human.readStderr()).toContain('配置内容没有变化，因此没有运行 reinstall');
+
+    const runHumanConfig = async (args: string[]) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli(args, {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+        nativeCliRunner,
+      });
+      return { exitCode, stdout: output.readStdout(), stderr: output.readStderr() };
+    };
+    const userSet = await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"user-fast"', '--scope', 'user',
+    ]);
+    const userUnset = await runHumanConfig([
+      'config', 'unset', 'team/demo', 'mode', '--scope', 'user',
+    ]);
+    await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"user-reset"', '--scope', 'user',
+    ]);
+    const userReset = await runHumanConfig([
+      'config', 'reset', 'team/demo', '--scope', 'user', '--yes',
+    ]);
+    for (const result of [userSet, userUnset, userReset]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.match(/其它项目不会由本次命令扫描或更新/g)).toHaveLength(1);
+    }
 
     setAtomicConfigBeforeRenameHookForTests(async () => {
       throw new Error('injected config commit failure');
@@ -12037,6 +12071,11 @@ describe('five namespaced write commands', () => {
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
+    await git(isolation.layout.fixtureCwd, ['init', '--quiet']);
+    await fs.outputFile(
+      path.join(isolation.layout.fixtureCwd, '.gitignore'),
+      '.agent-workflows/plugin-config/team/demo/config.json\n',
+    );
     const reset = await runPublic([
       'config', 'reset', 'team/demo', '--scope', 'project', '--yes', '--apply',
     ]);
@@ -12051,6 +12090,7 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+    await fs.remove(path.join(isolation.layout.fixtureCwd, '.gitignore'));
 
     await writePluginConfigStore({
       sourceId: 'team',
@@ -12090,6 +12130,16 @@ describe('five namespaced write commands', () => {
     });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
+    const unavailableHuman = await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--scope', 'project', '--apply',
+    ]);
+    expect(unavailableHuman).toMatchObject({ exitCode: 1 });
+    expect(unavailableHuman.stdout).toContain('已写入 demo.mode');
+    expect(unavailableHuman.stderr).toContain('invalidConfig：The effective config is invalid for every visible target.');
+    expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig] The effective config is invalid for this target.');
+    expect(unavailableHuman.stderr).toContain('请修复无效配置后运行 aw sync。');
+    expect(unavailableHuman.stderr).not.toContain('bad key');
+
     const repaired = await runPublic([
       'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
       '--scope', 'project', '--apply',
@@ -12100,18 +12150,18 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
-      mode: 'fast',
+      mode: 'slow',
     });
-    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
+    expect(await fs.readFile(configPath, 'utf8')).toContain('mode=slow');
 
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
-    const failed = await runPublic([
+    const failed = await runHumanConfig([
       'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project', '--apply',
     ]);
-    expect(failed).toMatchObject({
-      exitCode: 1,
-      payload: { configWrite: 'succeeded', overallState: 'partial' },
-    });
+    expect(failed).toMatchObject({ exitCode: 1 });
+    expect(failed.stderr).toContain('renderer requested failure');
+    expect(failed.stderr).toContain('请在解决失败原因后运行 aw reinstall demo -p codex -s project。');
+    expect(failed.stderr).not.toContain('file:///');
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
       mode: 'fail',
