@@ -2683,16 +2683,14 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (skillsRootStats && (!skillsRootStats.isDirectory() || skillsRootStats.isSymbolicLink())) {
     return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
   }
-  if (skillsRootStats) {
-    for (const skillEntry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
-      if (!skillEntry.isDirectory()) continue;
-      if (await lstatIfPresent(path.join(
-        skillsRoot,
-        skillEntry.name,
-        '.agent-workflows-owner.json',
-      ))) {
-        return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
-      }
+  const targets = codexNativeRenderTargets(options.plugin);
+  for (const target of targets) {
+    if (await lstatIfPresent(path.join(
+      skillsRoot,
+      target.skillKey!,
+      '.agent-workflows-owner.json',
+    ))) {
+      return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
     }
   }
   const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
@@ -2750,7 +2748,6 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (payloadDigest !== receipt.payloadDigest) {
     return codexNativeRenderEvidenceIssue('damaged', 'projectionPayloadDigestMismatch');
   }
-  const targets = codexNativeRenderTargets(options.plugin);
   const receiptTargets = new Map(receipt.targets.map((target) => [target.id, target]));
   if (targets.length === 0
     || targets.length !== receipt.targets.length
