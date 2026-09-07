@@ -4271,6 +4271,149 @@ describe('rebuild adapter integration', () => {
     expect(await fs.readFile(configPath, 'utf8')).toContain(`${pluginB}@aw`);
   });
 
+  it('keeps plugin A native dynamic projection when Codex rebuilds plugin B', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [
+        path.join(repositoryRoot, 'plugins', 'codex-enhance'),
+        path.join(repositoryRoot, 'plugins', 'git-toolkit'),
+        path.join(repositoryRoot, 'plugins', 'ask-me'),
+      ],
+    });
+    const pluginA = await readPluginManifest(path.join(catalogRoot, 'plugins', 'codex-enhance'), {
+      mode: 'bundle',
+    });
+    const pluginB = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-toolkit'), {
+      mode: 'bundle',
+    });
+    const pluginC = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+      mode: 'bundle',
+    });
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    await fs.ensureDir(path.dirname(marketplaceRoot));
+    const installed = new Map<string, string>();
+    const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
+    const runner: NativeCliRunner = async (invocation) => {
+      if (invocation.args.includes('--version')) {
+        return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+      }
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'add') {
+        const pluginId = invocation.args[2]!;
+        installed.set(pluginId, pluginId.startsWith('codex-enhance@')
+          ? pluginA.manifest.version
+          : pluginB.manifest.version);
+        const config = await fs.readFile(configPath, 'utf8').catch(() => '');
+        if (!config.includes(`[plugins.${JSON.stringify(pluginId)}]`)) {
+          await fs.outputFile(configPath, `${config}[plugins.${JSON.stringify(pluginId)}]\nenabled = true\n`);
+        }
+      }
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'marketplace'
+        && invocation.args[2] === 'add') {
+        await fs.outputFile(configPath, [
+          '[marketplaces.aw-team]',
+          `source = ${JSON.stringify(marketplaceRoot)}`,
+          'source_type = "local"',
+          '',
+        ].join('\n'));
+      }
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'remove') {
+        installed.delete(invocation.args[2]!);
+      }
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'list') {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            installed: [...installed].map(([pluginId, version]) => ({
+              pluginId, version, installed: true, enabled: true,
+            })),
+            available: [],
+          }),
+          stderr: '',
+        };
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const install = async (plugin: PluginMeta) => {
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner }),
+      });
+      const target = await integration.buildTarget({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+      });
+      return executeRebuildOperation({ command: 'install', target, driver: integration.driver });
+    };
+
+    const first = await install(pluginA);
+    expect(first.status, JSON.stringify(first.failures)).toBe('succeeded');
+    const receiptPath = path.join(
+      marketplaceRoot, 'plugins', 'codex-enhance', CODEX_NATIVE_RENDER_RECEIPT_PATH,
+    );
+    const receiptContent = await fs.readFile(receiptPath, 'utf8');
+    const receipt = parseCodexNativeRenderReceipt(receiptContent);
+    const retainedSkillPath = path.join(
+      marketplaceRoot, 'plugins', 'codex-enhance', 'codex', 'skills',
+      receipt.targets.find((entry) => entry.artifactDigest
+        !== createCodexSkillStagingTreeContentDigest({ skillKey: 'empty', files: {} }))!.skillKey,
+      'SKILL.md',
+    );
+    const retainedSkillContent = await fs.readFile(retainedSkillPath, 'utf8');
+
+    const second = await install(pluginB);
+    expect(second.status, JSON.stringify(second.failures)).toBe('succeeded');
+    await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
+    await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
+
+    const claudePaths = resolveClaudePaths(isolation.layout.fixtureCwd, 'user', isolation.env);
+    const claudeRunner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[0] === 'plugin' && invocation.args[1] === 'install') {
+        const sourceDescriptor = { source: 'directory', path: marketplaceRoot };
+        await fs.outputJson(claudePaths.settingsPath, {
+          extraKnownMarketplaces: { 'aw-team': { source: sourceDescriptor } },
+          enabledPlugins: { 'ask-me@aw-team': true },
+        });
+        await fs.outputJson(claudePaths.knownMarketplacesPath, {
+          'aw-team': { source: sourceDescriptor, installLocation: marketplaceRoot },
+        });
+        await fs.outputJson(claudePaths.installedPluginsPath, {
+          plugins: {
+            'ask-me@aw-team': [{
+              name: 'ask-me', marketplace: 'aw-team', scope: 'user',
+              version: pluginC.manifest.version,
+            }],
+          },
+        });
+      }
+      return { exitCode: 0, stdout: '', stderr: '' };
+    };
+    const claudeIntegration = createRebuildIntegration({
+      context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner: claudeRunner }),
+    });
+    const claudeTarget = await claudeIntegration.buildTarget({
+      plugin: pluginC,
+      platform: 'claude',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: catalogRoot, source: 'local' },
+      marketplaceName: 'aw-team',
+      marketplaceRoot,
+    });
+    const third = await executeRebuildOperation({
+      command: 'install', target: claudeTarget, driver: claudeIntegration.driver,
+    });
+    expect(third.status, JSON.stringify(third.failures)).toBe('succeeded');
+    await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
+    await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
+  });
+
   it('preserves the custom Codex user payload root from the platform manifest during cleanup', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const pluginRoot = path.join(isolation.layout.rootDir, 'custom-root-plugin');

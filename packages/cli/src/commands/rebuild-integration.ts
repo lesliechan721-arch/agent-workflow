@@ -122,6 +122,7 @@ import {
   getNamespacedMarketplaceName,
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
+  replayNamespacedCodexNativeRenderProjections,
   replayNamespacedCodexSkillOverlays,
 } from '../utils/local-marketplace.js';
 import { commitMarketplaceGenerationBackup } from '../utils/orphan-marketplace-cleanup.js';
@@ -3735,6 +3736,7 @@ async function mirrorCatalog(
   target?: Pick<RebuildTargetIdentity, 'sourceId' | 'sourceIdentity' | 'marketplaceName' | 'marketplaceRoot'>,
   logicalIdentity?: string,
   prepareStaging?: (stagingRoot: string) => Promise<void>,
+  rematerializedCodexNativePluginIds: ReadonlySet<string> = new Set(),
 ): Promise<{
   rootDir: string;
   commit(): Promise<void>;
@@ -3804,6 +3806,14 @@ async function mirrorCatalog(
         sourceId: target.sourceId,
         sourceIdentity: target.sourceIdentity!,
         marketplaceName,
+      });
+      await replayNamespacedCodexNativeRenderProjections({
+        sourceRoot: destination,
+        stagingRoot: staging,
+        sourceId: target.sourceId,
+        sourceIdentity: target.sourceIdentity!,
+        marketplaceName,
+        rematerializedPluginIds: rematerializedCodexNativePluginIds,
       });
     }
     await prepareStaging?.(staging);
@@ -4186,6 +4196,12 @@ function createNativeDriver(options: {
               }
             }
           } : undefined,
+          new Set(first.identity.platform === 'codex'
+            ? materializationTargets.flatMap((candidate) =>
+                pluginHasCodexNativeSkillSurface(candidate.plugin)
+                  ? [candidate.identity.pluginId ?? `${candidate.identity.sourceId}/${candidate.identity.pluginName}`]
+                  : [])
+            : []),
         );
         try {
           await transaction.commit();
