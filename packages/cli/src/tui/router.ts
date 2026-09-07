@@ -80,6 +80,7 @@ export type TuiRoute =
       platform: PlatformName;
     }
   | { name: 'pluginDetail'; pluginId: string }
+  | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }

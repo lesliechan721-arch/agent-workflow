@@ -5,7 +5,7 @@ import type { TuiRoute } from './router.js';
 export const TUI_SCREEN_IDS = [
   'G01', 'G02', 'G03', 'G04', 'G05',
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
-  'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21',
+  'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
   'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
   'S01', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
@@ -148,7 +148,7 @@ export const TUI_ROUTE_DEFINITIONS = {
     return route.mode === 'installed' ? 'P11' : searchMode ? 'P02' : 'P01';
   } },
   pluginWriteTask: { entity: 'plugin', rendererFamily: 'task', keymap: 'menu', normalize: plugin, screenId: fixed('T01') },
-  batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B01') },
+  batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('B01') },
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
   pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },
@@ -176,6 +176,7 @@ export const TUI_ROUTE_DEFINITIONS = {
       ? route : { name: 'pluginList', mode: 'browse' }, screenId: fixed('D04') },
   pluginDetail: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D09' : 'P13' },
+  pluginMore: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P22') },
   platform: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) => {
     const item = controller.getPluginOverview(route.pluginId);
     if (item?.aggregateStatus === 'unavailable') return 'P17';
