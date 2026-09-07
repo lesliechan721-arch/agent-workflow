@@ -15,6 +15,7 @@ import {
 import { inspectReviewTarget } from '../../src/commands/review-inspection.js'
 import { readAwSkillEvalManifest } from '../../src/eval/manifest-v1.js'
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js'
+import { materializePortableSkills } from '../../src/portable/materializer.js'
 import {
   resolveEvalProfileBindingInput,
   resolveEvalSourceBindingInput,
@@ -24,6 +25,7 @@ import {
 } from '../../src/review/source-binding.js'
 import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js'
 import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js'
+import { writePluginConfigStore } from '../../src/utils/plugin-config.js'
 
 const roots: string[] = []
 
@@ -536,6 +538,70 @@ describe('AW Review static inspection', () => {
       materializations: [{ state: 'verified', finalKeys: [] }],
       issues: [{ category: 'unknown', code: 'sourceBindingUnused', blocking: false }],
     })
+  })
+
+  it('rejects an old portable final when equal config values change their source', async () => {
+    const root = await tempRoot()
+    const outputRoot = await tempRoot('aw-review-config-source-')
+    const env = { ...process.env, AW_HOME: path.join(outputRoot, 'home') }
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const target = {
+      id: 'configured', distribution: 'agent-skills' as const,
+      target: 'agent-skills.skill' as const, kind: 'skill' as const,
+      scopes: ['project' as const], states: ['present' as const],
+      refreshKeys: ['mode'], skillKey: 'configured',
+    }
+    const pluginRoot = await writePlugin(root, manifest('configured', {
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      config: { fields: { mode: { type: 'string' } } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [target] },
+    }))
+    await writeSkill(pluginRoot, 'configured', 'portable-skills')
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
+      "import { readFileSync } from 'node:fs';",
+      'const context = JSON.parse(readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      `const target = ${JSON.stringify(target)};`,
+      'delete target.scopes; delete target.states;',
+      'const body = "---\\nname: configured\\ndescription: Config source fixture.\\n---\\n" + context.config.values.mode + ":" + context.config.sources.mode;',
+      'console.log(JSON.stringify({ version: 2, artifacts: [{ ...target, state: "present", content: { files: { "SKILL.md": body, "README.md": "# Config source fixture" } } }] }));',
+    ].join('\n'))
+    const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
+    const configOptions = { pluginName: 'configured', cwd: root, env, values: { mode: 'same' } }
+    const profileOptions = {
+      plugins: workspace.plugins, pluginName: 'configured', scope: 'project' as const, cwd: root, env,
+    }
+    const materializeOptions = { ...profileOptions, pluginId: 'configured' }
+    await writePluginConfigStore({ ...configOptions, scope: 'user' })
+    const first = await materializePortableSkills({
+      ...materializeOptions, outputRoot: path.join(outputRoot, 'first'),
+    })
+    const profile = await resolvePortableProfileBindingInput(profileOptions)
+    expect(first.configDigest).toBe(profile.inputDigest)
+    await expect(fs.readFile(path.join(first.rootDir, 'skills/configured/SKILL.md'), 'utf8'))
+      .resolves.toContain('same:user')
+    const written = await writeAwSourceBinding({
+      rootDir: first.rootDir,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'configured' }, profile,
+      artifacts: [{ kind: 'portable-skill', plugin: 'configured', skill: 'configured', path: 'skills/configured' }],
+    })
+    const inspectOptions = { cwd: root, env, target: pluginRoot, materializations: [written.bindingPath] }
+    expect((await inspectReviewTarget(inspectOptions)).materializations[0]?.state).toBe('verified')
+
+    await writePluginConfigStore({ ...configOptions, scope: 'project' })
+    const second = await materializePortableSkills({
+      ...materializeOptions, outputRoot: path.join(outputRoot, 'second'),
+    })
+    await expect(fs.readFile(path.join(second.rootDir, 'skills/configured/SKILL.md'), 'utf8'))
+      .resolves.toContain('same:project')
+    expect(second.digest).not.toBe(first.digest)
+    expect(second.configDigest).not.toBe(first.configDigest)
+    expect((await resolvePortableProfileBindingInput(profileOptions)).inputDigest).toBe(second.configDigest)
+    const stale = await inspectReviewTarget(inspectOptions)
+    expect(stale.materializations[0]).toMatchObject({ state: 'drifted', finalKeys: [] })
+    expect(stale.issues).toContainEqual(expect.objectContaining({ code: 'sourceBindingDrifted', blocking: true }))
   })
 
   it('accepts a verified Eval final, then rejects it after Workspace source drift', async () => {

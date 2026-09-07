@@ -359,7 +359,7 @@ AW Eval prepare 和 Skill materialize 在既有准备流程中生成 `aw-source-
 
 Eval 绑定还覆盖所选 suite/default、用例与实际复制的 fixture 输入，并保存准备时的 provider 摘要。消费者通过当前绑定关联 Spec 的 target、cases、workspace 和 provider；完整源 corpus 的 canonical 摘要与准备后选集文件的字节摘要属于不同对象，不能直接比较。
 
-Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归到根插件。消费者按当前依赖闭包及声明重新检查这项归属。
+Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归到根插件。消费者按当前依赖闭包及声明重新检查这项归属。Portable profile 摘要同时绑定有效配置值及其来源；相同值从 user 改由 project 提供时，旧凭据也必须重新物化，因为 Renderer 可以读取配置来源。
 
 来源绑定是可删除、可重建的弱证据，供后续只读消费者重新校验，不是签名、安装 ledger 或运行授权。旧产物缺少绑定时重新 prepare/materialize；检查器不能凭同名路径、有效旧 EvalSpec 或模型填写的字段推断 currentness。检查源码漂移不需要运行被审插件代码，也不新增锁、journal 或恢复状态机。
 

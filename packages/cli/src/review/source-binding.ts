@@ -14,7 +14,6 @@ import {
   readCatalogWorkspace,
   type CatalogWorkspace,
 } from '@lesliechan721/aw-plugin-core'
-import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/manifest'
 import fs from 'fs-extra'
 
 import type { AwSkillEvalMaterializationProfile } from '../../scripts/aw-skill-eval-materializer.js'
@@ -523,9 +522,7 @@ export async function resolvePortablePluginProfileConfig(options: {
   }
   return {
     config,
-    digest: `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify(canonicalizePluginConfigValues(config.values)))
-      .digest('hex')}`,
+    digest: digestCanonical({ values: config.values, sources: config.sources }),
   }
 }
 

@@ -28,13 +28,17 @@
 
 阶段一 checkpoint 为 `c04f1f17`：新增只读 inspection 与 Eval/portable 来源绑定。独立 Milestone Review 的来源漂移、静态 final 映射、可选 Eval 门禁和多凭据顺序问题已修复。构建、三包单元测试与 CLI 集成回归通过；用例、fixture 与默认配置在 prepare 提交前变化都会拒绝最终输出。
 
-阶段二已迁移 Skill、共享资源与机器消费者。V4 的 43 个 Skill 主文件与 reference 均有最终源码或构建投影映射。正式构建和公开 Catalog build/validate 通过；CLI runtime bundle 与本地 Catalog snapshot 均包含目标四插件、Codex/Claude 各十个 Skill，各二十四个共享资源副本与源码逐字节一致，退休文件和入口均已消失。
+阶段二 checkpoint 为 `ea21974d`，已迁移 Skill、共享资源与机器消费者。V4 的 43 个 Skill 主文件与 reference 均有最终源码或构建投影映射。正式构建和公开 Catalog build/validate 通过；CLI runtime bundle 与本地 Catalog snapshot 均包含目标四插件、Codex/Claude 各十个 Skill，各二十四个共享资源副本与源码逐字节一致，退休文件和入口均已消失。
 
 确定性验证通过：Eval 单元测试 246 项（另有 2 项环境跳过）、Core 116 项、CLI 2253 项、CLI integration 476 项、build smoke 10 项、Git batch dist contract 2 项。四插件的双平台测试均通过；十九份 Eval 文档、一百一十七条用例通过当前公开 parser。全量测试发现的旧 inventory 数量快照已移除，实际注册用例仍逐个经真实 adapter 验证。Author behavior 与 AW Review diagnostic 也已通过当前 Workspace 的 prepare、正式 Spec validation 和来源 inspection；未执行模型。
 
 合同扫描覆盖 641 个源码与物化文本文件，扫描完整；所列格式各有一份源码、两份平台副本。扫描器对无法从静态路径证明的业务用途保留 unknown，不据此删除 AWReviewEvidence 或 EvalAudit 等已有实际消费者的合同。全新独立上下文的阶段二 Milestone Review 通过，未发现阻塞项。
 
-阶段三完成整体独立评审、修复与最终检查。实际结果在阶段完成时更新，不能用“已设计测试”替代执行记录。
+阶段三已用迁移后的源码刷新两个代表性 Skill 的 prepare、正式 Spec validation 与来源 inspection，均通过；本地 bare Git remote 的 Catalog publish/fetch smoke 通过。当前 Catalog snapshot 有效；全 Catalog inspection 如实保留未参与迁移的 `codex-enhance` 四个动态 final 的物化缺口，不将其推断为完整 Catalog readiness。用户安装配置、project intent 与 Catalog 版本均保持不变。
+
+全新独立上下文的整体评审发现一项重大来源有效性问题：Portable 摘要遗漏 Renderer 可读取的配置来源。已将有效值与来源共同纳入现有摘要，没有新增 receipt 字段或状态。回归用真实 Renderer 证明，相同值由 user 改为 project 提供时，输出与 profile/config 摘要均改变，旧凭据经 inspection 返回 `drifted` 且不再提供 final；该测试在修复前能复现失败。三个相关测试文件共 22 项通过，修复后的正式 build、Catalog build/validate 和 build smoke 10 项通过。评审未发现其它重大问题、实质计划偏离或需要处理的性能问题。
+
+最后的 CLI 回归覆盖单元测试 2254 项和集成测试 476 项。集成首次执行有 6 项 Catalog 测试因并行正式构建清理 `dist/authoring` 而缺少插件 fixture；构建完成后，该文件 40 项独立复核全部通过，其余集成用例及随后补跑的 3 项进程测试也通过。保留首次失败日志，不将验证顺序干扰写成产品修复。已清理本任务创建的临时 prepare 输出与隔离 homes。
 
 ## 尚需真实环境证据
 
