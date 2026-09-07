@@ -110,6 +110,19 @@ async function send(instance: ReturnType<typeof render>, ...keys: string[]): Pro
   }
 }
 
+async function openPortableFromMore(instance: ReturnType<typeof render>): Promise<void> {
+  for (let index = 0; index < 4 && !instance.lastFrame()?.includes('› 更多操作…'); index += 1) {
+    await send(instance, '\u001B[B');
+  }
+  expect(instance.lastFrame()).toContain('› 更多操作…');
+  await send(instance, '\r');
+  for (let index = 0; index < 12 && !instance.lastFrame()?.includes('› 在其他 Agent 使用'); index += 1) {
+    await send(instance, '\u001B[B');
+  }
+  expect(instance.lastFrame()).toContain('› 在其他 Agent 使用');
+  await send(instance, '\r');
+}
+
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
   return { promise: new Promise<T>((settle) => { resolve = settle; }), resolve };
@@ -484,8 +497,7 @@ describe('Portable Skills TUI V1', () => {
     await tick();
 
     expect(instance.lastFrame()).not.toContain('选择使用位置并确认变化');
-    await send(instance, '\u001B[B');
-    await send(instance, '\r');
+    await openPortableFromMore(instance);
     expect(value.snapshot.router.current.route).toEqual({
       name: 'portableSkillSelect', pluginId: 'official/toolkit',
     });
@@ -652,7 +664,7 @@ describe('Portable Skills TUI V1', () => {
     expect(instance.lastFrame()).not.toContain('3 个候选');
     expect(capture).not.toHaveBeenCalled();
 
-    await send(instance, '\u001B[B', '\r');
+    await openPortableFromMore(instance);
     expect(value.snapshot.router.current.route.name).toBe('portableSkillSelect');
     expect(instance.lastFrame()).toContain('3 / 3 已选择');
     expect(instance.lastFrame()).toContain('Content');

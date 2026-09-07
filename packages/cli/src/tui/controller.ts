@@ -1983,14 +1983,18 @@ export class TuiController {
     this.#catalogSourcesSession.configure(status.payload.catalog.sources.map((source) => {
       const generation = this.#catalogGenerations.get(source.id);
       const detail = details.get(source.id);
+      const probeFingerprint = JSON.stringify({
+        sourceIdentity: source.identity,
+        requestedRef: source.requestedRef,
+      });
       return {
         sourceId: source.id,
         primary: source.primary,
         autoCheck: this.dependencies.probeCatalogFreshness !== undefined
           && (detail?.autoCheck ?? true),
+        probeFingerprint,
         fingerprint: JSON.stringify({
-          sourceIdentity: source.identity,
-          requestedRef: source.requestedRef,
+          probeFingerprint,
           activeStoreKey: generation?.active?.storeKey,
           generationState: generation?.state,
           generationErrorCode: generation?.errorCode,
@@ -3914,6 +3918,17 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#applyStatus(refreshed);
+      if (ticket.intent.kind === 'catalogGeneration') {
+        const completed = typeof execution === 'object' && execution !== null
+          ? (execution as { generation?: CatalogGenerationSyncResult }).generation
+          : undefined;
+        const active = this.#catalogGenerations.get(ticket.intent.sourceId)?.active;
+        if (completed && active
+          && active.catalogVersion === completed.resolution.catalogVersion
+          && active.resolvedCommit === completed.resolution.resolvedCommit) {
+          this.#catalogSourcesSession.recordVerifiedGeneration(ticket.intent.sourceId, active);
+        }
+      }
       const verifiedProjection = this.#operationDiagnostics.get(operationId);
       if (verifiedProjection && verifiedProjection.effects.finalVerification !== 'failed') {
         verifiedProjection.effects.finalVerification = 'completed';

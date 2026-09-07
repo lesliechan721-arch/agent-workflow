@@ -768,7 +768,11 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')?.active?.catalogVersion).toBe('2.0.0');
     expect((await readCatalogGenerationState(isolation.env)).sources.local!.active?.snapshotDigest)
       .not.toBe(before.snapshotDigest);
-    expect(controller.getCatalogFreshness('local')?.state).toBe('notChecked');
+    await waitFor(
+      () => controller.getCatalogFreshness('local')?.state === 'current',
+      'post-update freshness check',
+      () => controller.getCatalogFreshness('local'),
+    );
     controller.dispose();
   });
 
@@ -1145,10 +1149,12 @@ describe('TUI v4 real catalog source boundary', () => {
     const frame = instance.lastFrame() ?? '';
     const compactFrame = frame.replace(/\s+/gu, '');
     expect(frame).toContain('重新下载旧版本并精确修复');
-    expect(frame).toContain('使用待检查版本替换损坏版本…');
     expect(frame).toContain('编辑来源…');
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
+    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
     controller.push({ name: 'sourceTechnical', sourceId: 'local' });
     await nextTurn(2);
     const technicalFrame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
@@ -1264,7 +1270,11 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
     expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
     expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
+    controller.back();
+    await nextTurn(2);
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'combined repair Review');

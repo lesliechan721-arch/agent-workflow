@@ -276,14 +276,17 @@ describe('TUI plugin update evidence', () => {
     controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     await nextTurn();
     expect(instance.lastFrame()).toContain('更新到 2.0.0');
-    instance.stdin.write('\r');
+    instance.unmount();
+    const detail = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+    detail.stdin.write('\r');
     await nextTurn();
     expect(controller.snapshot.router.current.route).toEqual({
       name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
       targetKeys: ['official/demo\0codex\0user'],
       versionEvidence: { 'official/demo\0codex\0user': '2.0.0' },
     });
-    instance.stdin.write('\r');
+    detail.stdin.write('\r');
     await nextTurn();
     expect(controllerDependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWriteTask', goal: 'update', executionPolicy: 'all',

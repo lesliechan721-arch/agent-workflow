@@ -118,6 +118,14 @@ Git provider 保持非交互，并保留 timeout、protocol/ref/temp validation�
 
 primary development deactivate 把 remove 和 primary change 放入同一 inventory、impact digest、mutation lock 和最终 config CAS。Catalog dev deactivate Receipt v4 使用 inventory v2 的脱敏 `impact`。
 
+### TUI Catalog 管理
+
+Catalog 管理是与插件消费来源页分开的按需工作流。用户进入该页后才读取所选 Workspace、Store、开发来源或 publication journal；状态和完整验证保持只读。Workspace 创建、版本修改、构建、开发来源启停、Store prune、publish plan 和 publish apply 都通过独立 Review、执行前证据复核和 Result 执行；取消 Review 不写入。
+
+Store prune Review 只授权当时列出的精确 reclaimable item。实际 prune 继续用现有 `catalog store prune` 锁内重新检查，新增、漂移、foreign 或无法证明安全的 item 保留，结果分别报告 deleted 和 retained。TUI 不提供任意路径删除或 Store 的 force 入口。
+
+Catalog publication plan 在确认后准备 version-scoped journal 和隔离 repository；apply 只用 `expected-plan-digest` 唯一选择既有 schema v2 journal，不以当前 metadata version 或当前 HEAD 重建计划。只有可信 `prepared` 或 `uncertain` record 可以进入 apply Review。journal 或 pending repository 缺失、损坏或与已授权 Workspace、remote identity、branch 不匹配时，TUI 停止并要求提高 Catalog version；direct remote 未保存在 journal 时，必须重新输入 remote 或 URL 并重新核对 identity。TUI 不覆盖单 Plugin 作者流程或 CLI/npm 发布。
+
 ## Write Pipeline
 
 需要 Catalog 的公开写命令和 `config ... --apply` 使用同一条 rebuild 流程：
@@ -168,6 +176,8 @@ dependency placement 只在安装流程中选择。已安装插件不提供调�
 Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在执行时重新探测。仅修改已有 shared native 的 project activation 不使用 native manager；project intent 若需要写入、替换或移除 shared native package，仍解析同一个 user-level manager。正常写入优先使用兼容的 system CLI；system CLI 缺失时复用有效的 AW-managed cache，只有 cache 缺失或可安全重建时才需要本次授权。直接 TTY 可在首次获取前确认；JSON 和非交互命令必须传 `--allow-managed-codex-install`。已安装但过旧、版本不可解析或探测失败的 system CLI 会阻止操作，不能用 managed runtime 绕过。manager 选择不进入 Receipt v6 或 Status v7，也不成为 `operationReviewStale` 证据。
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
+
+TUI 的依赖关系页只解释当前数据，不改变 placement。正向边来自当前 source 的 manifest declaration；反向“谁在使用它”只来自已验证的 placement reference。已声明但没有实际引用的使用者和没有 reference 的声明依赖都保留为 unknown 或 unverified，不能按 `depth` 推断一条边。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，也不提供绕过依赖保护的删除入口。
 
 依赖执行顺序只在本次命令内存在。Receipt v6 的 `overallState` 只能是 `succeeded | partial | failed`；结果使用 `changes`、`targetResults`、`warnings`、`recoveryActions` 和适用时的 `planFingerprint` 表达，不使用六层 `layers`。Receipt 顶层保留 requested/resolved plugin ID 和 dependency edge；`targetResults` 保留 relation、requiredBy、target state 和恢复建议。partial 或 failed 结果不能丢失目标关系和恢复信息。精确匹配的现有 shared native 公开为 `reuse`，并明确不建立 ownership ledger。receipt 不公开持久计划、锁或来源内部证据。
 
@@ -233,6 +243,8 @@ TUI 插件清单组合当前 Catalog summary、status target 和可识别的 nam
 TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。
 
 ownership health 只表示当前 live 组件是否完整。Status v7 的 shared native version 比较投影为 `replaceable: outdated`，target 状态为 `needsSync`，并使用 `codexSharedNativeUpdateRequired` 原因。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v7 JSON。
+
+TUI 的 `PluginUpdateProjection` 把 runtime 的 target revision 与当前 session 的已验证 Catalog candidate 合并为插件级更新事实，并与 health 分开显示。它只在 installed version、目标 Active 或 candidate version、source identity、generation key、manifest/content evidence 和 capability compatibility 都可验证时提供“更新到 X”；Catalog version、ref commit 或未验证 candidate 本身都不能作为插件更新。candidate 需要切换 Active 时，来源切换 Review 与重新规划后的精确插件更新 Review 是两个确认边界。来源切换成功只说明 Active 已改变；插件写入失败仍单独报告。更新 intent 绑定 installed/active version、source identity 和 generation key；锁内任一项改变时返回 stale，不得无声跟随新 candidate。该 projection 和 candidate overlay 都是 session-private 数据，不改变 Status v7 JSON。
 
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v7 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
 

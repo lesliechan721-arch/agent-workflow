@@ -59,6 +59,7 @@ export interface CatalogSourceSessionDescriptor {
   sourceId: string;
   primary: boolean;
   autoCheck: boolean;
+  probeFingerprint: string;
   fingerprint: string;
   fixedCommit: boolean;
 }

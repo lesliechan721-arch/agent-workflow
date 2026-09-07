@@ -64,10 +64,11 @@ export class CatalogSourcesSession {
       const previous = this.#sources.get(source.sourceId);
       this.#sources.set(source.sourceId, source);
       if (previous && previous.fingerprint !== source.fingerprint) {
+        const probeChanged = previous.probeFingerprint !== source.probeFingerprint;
         this.#cancel(source.sourceId);
         this.#reusableCandidates.delete(source.sourceId);
         this.#lastSuccessful.delete(source.sourceId);
-        this.#attempted.delete(source.sourceId);
+        if (probeChanged) this.#attempted.delete(source.sourceId);
         this.options.onChange(source.sourceId, { sourceId: source.sourceId, state: 'notChecked' });
       }
       if (source.fixedCommit) {
@@ -133,6 +134,25 @@ export class CatalogSourcesSession {
       || entry.token !== this.#tokens.get(sourceId)
       || entry.fingerprint !== source.fingerprint) return undefined;
     return structuredClone(entry.candidate);
+  }
+
+  recordVerifiedGeneration(
+    sourceId: string,
+    active: { catalogVersion: string; resolvedCommit: string },
+  ): void {
+    if (this.#disposed || !this.#sources.has(sourceId)) return;
+    this.#removeQueued(sourceId);
+    this.#cancel(sourceId);
+    this.#attempted.add(sourceId);
+    const freshness: CatalogSourceFreshnessViewModel = {
+      sourceId,
+      state: 'current',
+      activeVersion: active.catalogVersion,
+      activeResolvedCommit: active.resolvedCommit,
+      checkedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
+    };
+    this.#lastSuccessful.set(sourceId, freshness);
+    this.options.onChange(sourceId, structuredClone(freshness));
   }
 
   refresh(sourceId: string, fullValidation: boolean): Promise<void> {

@@ -390,16 +390,22 @@ function selectCodexActivationPlans(
     const includesScope = (pluginId: string, scope: Scope) =>
       targetScopes.has(`${pluginId}\0${scope}`);
     const pluginIds = new Set(plan.desiredTargets.flatMap((target) =>
-      target.scopes.some((scope) => includesScope(target.pluginId, scope))
+      (['user', 'project'] as const).some((scope) => includesScope(target.pluginId, scope))
         ? [target.pluginId]
         : []));
     if (pluginIds.size === 0) return [];
+    const includesActivationAction = (
+      action: CodexReconcilePlan['activationActions'][Scope][number],
+    ) => includesScope(action.pluginId, action.scope)
+      || !(action.scope === plan.requirement.scope
+        ? plan.managedInventory.desired
+        : plan.managedInventory.related.desired).includes(action.codexPluginId);
     const sharedNativeActions = plan.sharedNativeActions.filter((action) =>
       pluginIds.has(action.pluginId));
     const userActions = plan.activationActions.user.filter((action) =>
-      includesScope(action.pluginId, 'user'));
+      pluginIds.has(action.pluginId) && includesActivationAction(action));
     const projectActions = plan.activationActions.project.filter((action) =>
-      includesScope(action.pluginId, 'project'));
+      pluginIds.has(action.pluginId) && includesActivationAction(action));
     const desiredTargets = plan.desiredTargets.flatMap((target) => {
       const scopes = target.scopes.filter((scope) => includesScope(target.pluginId, scope));
       return scopes.length > 0 ? [{ ...target, scopes }] : [];
@@ -407,10 +413,10 @@ function selectCodexActivationPlans(
     const postcheckPlugins = plan.postcheck.plugins.filter((plugin) =>
       pluginIds.has(plugin.pluginId)).map((plugin) => ({
         ...plugin,
-        expectedUserEnabled: includesScope(plugin.pluginId, 'user')
+        expectedUserEnabled: userActions.some((action) => action.pluginId === plugin.pluginId)
           ? plugin.expectedUserEnabled
           : preservedActivations?.user.get(plugin.codexPluginId) ?? false,
-        expectedProjectEnabled: includesScope(plugin.pluginId, 'project')
+        expectedProjectEnabled: projectActions.some((action) => action.pluginId === plugin.pluginId)
           ? plugin.expectedProjectEnabled
           : preservedActivations?.project.get(plugin.codexPluginId) ?? false,
       }));
@@ -3278,10 +3284,11 @@ async function runRebuildCommandInSession(
             placement,
             actual: placement.targets.map((target) => {
               const targetScope = target.requestedScope ?? target.resolvedScope;
+              const inspectedScope = target.requestedScope ?? options.commandOptions.scope;
               const prior = targets.find((candidate) =>
                 candidate.pluginId === target.pluginId
                 && candidate.platform === target.platform
-                && candidate.requestedScope === targetScope)!;
+                && candidate.requestedScope === inspectedScope)!;
               const state = actualStates.get(
                 `${target.pluginId}\0${target.platform}\0${target.resolvedScope}`,
               ) ?? prior.state;
