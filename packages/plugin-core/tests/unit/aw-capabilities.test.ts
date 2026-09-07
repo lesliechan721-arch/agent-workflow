@@ -45,6 +45,7 @@ describe('AW capability contracts', () => {
     expect(registry.every((capability) => normalizeAwCapabilities([capability])[0] === capability))
       .toBe(true)
     expect(new Set(registry).size).toBe(registry.length)
+    expect(registry).toContain('aw.review-inspection.v1')
     expect(registry).not.toContain('aw.catalog-context.v1')
     expect(normalizeAwCapabilities([
       'aw.plugin-skills.v1', 'aw.plugin-config.v2', 'aw.plugin-skills.v1',
@@ -115,6 +116,7 @@ describe('AW capability contracts', () => {
       '```',
       '```bash',
       'aw catalog publish plan --json',
+      'aw review inspect . --json',
       'aw self check --json && aw future command',
       'aw "$GROUP" status',
       '```',
@@ -171,9 +173,18 @@ describe('AW capability contracts', () => {
     expect(result.detected).toEqual([
       'aw.catalog-publication.v1',
       'aw.catalog-source.v2',
+      'aw.review-inspection.v1',
       'aw.self-check.v1',
     ])
     expect(result.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'aw-command-detected',
+        path: 'skills/one/SKILL.md',
+        provenance: 'shell-fence',
+        command: 'aw review inspect',
+        capability: 'aw.review-inspection.v1',
+        blocking: false,
+      }),
       expect.objectContaining({
         code: 'aw-command-detected',
         path: 'skills/one/SKILL.md',

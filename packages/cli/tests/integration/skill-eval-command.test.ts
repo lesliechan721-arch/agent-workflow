@@ -4,6 +4,7 @@ import path from 'node:path'
 
 import {
   computeCanonicalDirectoryDigest,
+  computeEvalProviderDigest,
   computeSkillDigest,
   validateEvalSpecFile,
 } from '@lesliechan721/agent-skill-eval'
@@ -11,6 +12,11 @@ import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { runCli } from '../../src/index.js'
+import { setSkillEvalCommandTestHooksForTests } from '../../src/commands/skill-eval.js'
+import {
+  createAwSourceBindingWorkspaceValidationContext,
+  validateAwSourceBindingForWorkspace,
+} from '../../src/review/source-binding.js'
 
 const roots: string[] = []
 
@@ -167,6 +173,7 @@ async function createWorkspace(): Promise<{
 }
 
 afterEach(async () => {
+  setSkillEvalCommandTestHooksForTests(undefined)
   await Promise.all(roots.splice(0).map((root) => fs.remove(root)))
 })
 describe('aw skill eval commands', () => {
@@ -332,9 +339,12 @@ describe('aw skill eval commands', () => {
       suite: 'trigger-suite',
       profile: 'project-default',
       specPath: path.join(output, 'spec.json'),
+      sourceBindingPath: path.join(output, 'aw-source-binding.json'),
     })
     await expect(validateEvalSpecFile(path.join(output, 'spec.json'))).resolves.toMatchObject({ valid: true })
-    expect((await fs.readdir(output)).sort()).toEqual(['cases.json', 'spec.json', 'targets', 'workspace'])
+    expect((await fs.readdir(output)).sort()).toEqual([
+      'aw-source-binding.json', 'cases.json', 'spec.json', 'targets', 'workspace',
+    ])
     await expect(fs.pathExists(path.join(output, 'output'))).resolves.toBe(false)
     await expect(fs.pathExists(path.join(output, 'preparation.json'))).resolves.toBe(false)
     await expect(fs.pathExists(path.join(output, 'provider'))).resolves.toBe(false)
@@ -368,6 +378,174 @@ describe('aw skill eval commands', () => {
     expect(await computeCanonicalDirectoryDigest(path.join(output, 'workspace'))).toBe(spec.workspace.digest)
     expect(await computeSkillDigest(path.join(output, 'targets', 'current'))).toBe(spec.target.digest)
     expect(await treeDigests(fixture.ownerRoot)).toEqual(sourceBefore)
+
+    const bindingContext = await createAwSourceBindingWorkspaceValidationContext(fixture.root)
+    const bindingOptions = {
+      bindingPath: receipt.sourceBindingPath,
+      context: bindingContext,
+      expectedSubject: { plugin: 'eval-owner', skill: 'owner-skill', suite: 'trigger-suite' },
+      cwd: fixture.root,
+      env: fixture.env,
+    }
+    const verifiedBinding = await validateAwSourceBindingForWorkspace(bindingOptions)
+    expect(verifiedBinding.state).toBe('verified')
+    if (verifiedBinding.state !== 'verified') throw new Error('Expected a verified source binding.')
+    expect(verifiedBinding.binding).toMatchObject({
+      source: { kind: 'workspace', workspaceIdentity: expect.any(String) },
+      profile: { kind: 'eval', id: 'project-default', scope: 'project' },
+      evalInput: {
+        casesPath: expect.stringMatching(/selected-cases\.json$/u),
+        selectedCaseIds: ['validation_case'],
+        suiteDefaultsDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        selectedCasesDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        fixturesDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        providerDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+        inputDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+      },
+    })
+    expect(verifiedBinding.outputs).toEqual(expect.arrayContaining([
+      expect.objectContaining(
+        { kind: 'eval-target', skill: 'owner-skill', path: path.join(output, 'targets', 'current') },
+      ),
+      expect.objectContaining(
+        { kind: 'eval-workspace', path: path.join(output, 'workspace') },
+      ),
+    ]))
+    const preparedCasesOutput = verifiedBinding.outputs.find((entry) => entry.kind === 'eval-cases')
+    expect(preparedCasesOutput?.digest).not.toBe(verifiedBinding.binding.evalInput?.selectedCasesDigest)
+    expect(verifiedBinding.binding.evalInput?.providerDigest).toBe(computeEvalProviderDigest(spec.provider))
+
+    const sourceCasesBytes = await fs.readFile(selectedCasesPath)
+    await fs.writeJson(selectedCasesPath, {
+      ...v1Cases,
+      cases: v1Cases.cases.map((entry) => entry.id === 'train_case'
+        ? { ...entry, input: { ...entry.input, query: 'Changed unselected source case.' } }
+        : entry),
+    }, { spaces: 2 })
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'verified',
+    })
+    await fs.writeFile(selectedCasesPath, sourceCasesBytes)
+
+    await fs.writeJson(selectedCasesPath, {
+      ...v1Cases,
+      cases: v1Cases.cases.map((entry) => entry.id === 'validation_case'
+        ? { ...entry, input: { ...entry.input, query: 'Changed selected source case.' } }
+        : entry),
+    }, { spaces: 2 })
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingEvalInputDrift' })]),
+    })
+    await fs.writeFile(selectedCasesPath, sourceCasesBytes)
+
+    const fixturePath = path.join(fixture.evalRoot, 'provider.mjs')
+    const fixtureBytes = await fs.readFile(fixturePath)
+    await fs.appendFile(fixturePath, '\n// changed fixture\n')
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingEvalInputDrift' })]),
+    })
+    await fs.writeFile(fixturePath, fixtureBytes)
+
+    const manifestBytes = await fs.readFile(manifestPath)
+    await fs.writeJson(manifestPath, {
+      ...v1Manifest,
+      defaults: { ...v1Manifest.defaults, runs: 4 },
+    }, { spaces: 2 })
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingEvalInputDrift' })]),
+    })
+    await fs.writeFile(manifestPath, manifestBytes)
+
+    const targetSkillPath = path.join(output, 'targets', 'current', 'SKILL.md')
+    const targetSkillBytes = await fs.readFile(targetSkillPath)
+    await fs.appendFile(targetSkillPath, '\nchanged target\n')
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingArtifactDrift' })]),
+    })
+    await fs.writeFile(targetSkillPath, targetSkillBytes)
+
+    const participantPath = path.join(
+      output, 'workspace', 'subject', '.agents', 'skills', 'participant-skill', 'SKILL.md',
+    )
+    const participantBytes = await fs.readFile(participantPath)
+    await fs.appendFile(participantPath, '\nchanged workspace\n')
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingArtifactDrift' })]),
+    })
+    await fs.writeFile(participantPath, participantBytes)
+
+    const ownerReadmePath = path.join(fixture.ownerRoot, 'README.md')
+    const ownerReadmeBytes = await fs.readFile(ownerReadmePath)
+    await fs.appendFile(ownerReadmePath, '\nchanged shared source\n')
+    await expect(validateAwSourceBindingForWorkspace({
+      ...bindingOptions,
+      context: await createAwSourceBindingWorkspaceValidationContext(fixture.root),
+    })).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingSourceDrift' })]),
+    })
+    await fs.writeFile(ownerReadmePath, ownerReadmeBytes)
+
+    await fs.writeJson(manifestPath, {
+      ...v1Manifest,
+      profiles: {
+        'project-default': {
+          ...v1Manifest.profiles['project-default'],
+          plugins: {
+            ...v1Manifest.profiles['project-default'].plugins,
+            'eval-owner': { mode: 'changed-profile' },
+          },
+        },
+      },
+    }, { spaces: 2 })
+    await expect(validateAwSourceBindingForWorkspace(bindingOptions)).resolves.toMatchObject({
+      state: 'drifted',
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingProfileDrift' })]),
+    })
+    await fs.writeJson(manifestPath, v1Manifest, { spaces: 2 })
+
+    const prepareMutations = [
+      {
+        name: 'case',
+        mutate: () => fs.writeJson(selectedCasesPath, {
+          ...v1Cases,
+          cases: v1Cases.cases.map((entry) => entry.id === 'validation_case'
+            ? { ...entry, input: { ...entry.input, query: 'Changed while staged.' } }
+            : entry),
+        }, { spaces: 2 }),
+      },
+      { name: 'fixture', mutate: () => fs.appendFile(fixturePath, '\n// changed while staged\n') },
+      {
+        name: 'defaults',
+        mutate: () => fs.writeJson(manifestPath, {
+          ...v1Manifest, defaults: { ...v1Manifest.defaults, runs: 4 },
+        }, { spaces: 2 }),
+      },
+    ]
+    for (const mutation of prepareMutations) {
+      const changedDuringPrepareOutput = path.join(fixture.outputRoot, `${mutation.name}-changed-during-prepare`)
+      setSkillEvalCommandTestHooksForTests({ beforePrepareCommit: mutation.mutate })
+      const changedDuringPrepare = capture()
+      expect(await runCli([
+        'skill', 'eval', 'prepare', 'eval-owner', 'owner-skill',
+        '--suite', 'trigger-suite',
+        '--workspace-root', fixture.root,
+        '--output', changedDuringPrepareOutput,
+        '--json',
+      ], { cwd: fixture.root, env: fixture.env, io: changedDuringPrepare.io }), mutation.name).toBe(1)
+      await expect(fs.pathExists(changedDuringPrepareOutput)).resolves.toBe(false)
+      setSkillEvalCommandTestHooksForTests(undefined)
+      await Promise.all([
+        fs.writeFile(selectedCasesPath, sourceCasesBytes),
+        fs.writeFile(fixturePath, fixtureBytes),
+        fs.writeFile(manifestPath, manifestBytes),
+      ])
+    }
 
     fixture.env.AW_SKILL_EVAL_CODEX_BIN = 'fixture-isolated-codex'
     const beforeDoctor = await treeDigests(fixture.root)

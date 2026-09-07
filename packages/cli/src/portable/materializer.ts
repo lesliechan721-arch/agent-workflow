@@ -3,17 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { canonicalizePluginConfigValues } from '@lesliechan721/aw-plugin-core/manifest';
 
 import type {
   ArtifactRuntimeImportDefinition,
+  CatalogSourceResolution,
   PluginMeta,
   PortablePluginRelation,
   PortableSkillCandidate,
   Scope,
 } from '../types.js';
 import { validateArtifactPlan } from '../utils/artifact-plan.js';
-import { runArtifactRenderer, resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
+import { runArtifactRenderer } from '../utils/artifact-renderer.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
@@ -42,6 +42,13 @@ import {
   AwCapabilityUnsupportedError,
   IMPLEMENTED_AW_CAPABILITIES,
 } from '../commands/aw-capabilities.js';
+import {
+  resolveCatalogSnapshotBindingSource,
+  resolvePortablePluginProfileConfig,
+  resolvePortableProfileBindingInput,
+  type AwCatalogSnapshotBindingSource,
+  type AwSourceBindingProfile,
+} from '../review/source-binding.js';
 
 export interface PortableMaterializationProvenance {
   schemaVersion: 1;
@@ -76,6 +83,7 @@ export interface MaterializedPortableSkills {
   configDigest: string;
   digest: string;
   provenancePath: string;
+  sourceBindingSource?: AwCatalogSnapshotBindingSource;
   cleanup(): Promise<void>;
 }
 
@@ -95,6 +103,12 @@ interface CandidateTree {
   relation: PortablePluginRelation;
   dynamic: boolean;
   tree: DynamicSkillTree;
+}
+
+export interface PortableCatalogBindingInput {
+  source: AwCatalogSnapshotBindingSource;
+  subject: { plugin: string };
+  profile: AwSourceBindingProfile & { kind: 'portable' };
 }
 
 function pluginId(plugin: PluginMeta): string {
@@ -250,25 +264,14 @@ async function materializePluginCandidates(options: {
     .filter((target) => target.target === 'agent-skills.skill')
     .map((target) => target.skillKey!));
   const output: CandidateTree[] = [];
-  const config = await resolveArtifactRenderConfig({
-    sourceId: options.plugin.sourceId,
-    sourceIdentity: options.plugin.sourceIdentity,
-    logicalIdentity: options.plugin.catalogLogicalIdentity,
-    pluginName: options.plugin.manifest.name,
-    manifest: options.plugin.manifest,
+  const profileConfig = await resolvePortablePluginProfileConfig({
+    plugin: options.plugin,
     scope: options.scope,
     cwd: options.cwd,
     env: options.env,
   });
-  if (config.issues.length > 0) {
-    throw new Error(`Portable materialization config is invalid: ${config.issues.map((issue) => issue.message).join('; ')}`);
-  }
-  options.recordConfigDigest(
-    pluginId(options.plugin),
-    `sha256:${crypto.createHash('sha256')
-      .update(JSON.stringify(canonicalizePluginConfigValues(config.values)))
-      .digest('hex')}`,
-  );
+  const config = profileConfig.config;
+  options.recordConfigDigest(pluginId(options.plugin), profileConfig.digest);
   const sensitiveValues = collectSensitivePluginConfigValues(
     options.plugin.manifest,
     config.values,
@@ -429,6 +432,75 @@ async function materializePluginCandidates(options: {
   return finalizeCandidates();
 }
 
+async function resolvePortableCatalogPlugins(options: {
+  source: CatalogSourceResolution;
+  requestedPlugin: PluginMeta;
+}): Promise<PluginMeta[]> {
+  const entriesByName = new Map(options.source.manifest.entries.map((entry) => [entry.name, entry]));
+  const closureNames: string[] = [];
+  const seen = new Set<string>();
+  const visit = (name: string): void => {
+    if (seen.has(name)) return;
+    const entry = entriesByName.get(name);
+    if (!entry) throw new Error(`Portable plugin "${name}" is missing from its catalog source.`);
+    seen.add(name);
+    for (const dependency of entry.dependencies) visit(dependency);
+    const support = checkAwCapabilitySupport(
+      entry.requires.aw.capabilities ?? [],
+      IMPLEMENTED_AW_CAPABILITIES,
+    );
+    if (!support.supported) {
+      throw new AwCapabilityUnsupportedError(`${options.source.sourceId}/${name}`, support.missing);
+    }
+    closureNames.push(name);
+  };
+  visit(options.requestedPlugin.manifest.name);
+  await validateCatalogSnapshotPluginEntriesComplete(options.source.rootDir, closureNames);
+  const plugins = await Promise.all(closureNames.map((name) => readPluginManifest(
+    path.join(options.source.rootDir, 'plugins', name),
+    { mode: 'bundle' },
+  )));
+  for (const plugin of plugins) {
+    plugin.sourceId = options.source.sourceId;
+    plugin.sourceIdentity = options.source.sourceIdentity;
+    plugin.catalogLogicalIdentity = options.source.logicalIdentity;
+    plugin.pluginId = `${options.source.sourceId}/${plugin.manifest.name}`;
+  }
+  return plugins;
+}
+
+export async function resolvePortableCatalogBindingInput(
+  options: MaterializePortableSkillsFromCatalogOptions,
+): Promise<PortableCatalogBindingInput> {
+  return withResolvedCatalogPlugin({
+    selector: options.selector,
+    cliVersion: options.cliVersion,
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.configSnapshot ? { configSnapshot: options.configSnapshot } : {}),
+    ...(options.catalogOperationContext
+      ? { operationContext: options.catalogOperationContext }
+      : {}),
+    consume: async ({ source, plugin: requestedPlugin }) => {
+      const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin });
+      return {
+        source: await resolveCatalogSnapshotBindingSource(source),
+        subject: { plugin: requestedPlugin.manifest.name },
+        profile: await resolvePortableProfileBindingInput({
+          plugins,
+          pluginName: requestedPlugin.manifest.name,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env,
+          sourceId: source.sourceId,
+          catalogSourceIdentity: source.sourceIdentity,
+          logicalIdentity: source.logicalIdentity,
+        }),
+      };
+    },
+  });
+}
+
 export async function materializePortableSkillsFromCatalog(
   options: MaterializePortableSkillsFromCatalogOptions,
 ): Promise<MaterializedPortableSkills> {
@@ -445,36 +517,7 @@ export async function materializePortableSkillsFromCatalog(
         ? { operationContext: options.catalogOperationContext }
         : {}),
       consume: async ({ pluginId: resolvedPluginId, source, plugin: requestedPlugin }) => {
-        const entriesByName = new Map(source.manifest.entries.map((entry) => [entry.name, entry]));
-        const closureNames: string[] = [];
-        const seen = new Set<string>();
-        const visit = (name: string): void => {
-          if (seen.has(name)) return;
-          const entry = entriesByName.get(name);
-          if (!entry) throw new Error(`Portable plugin "${name}" is missing from its catalog source.`);
-          seen.add(name);
-          for (const dependency of entry.dependencies) visit(dependency);
-          const support = checkAwCapabilitySupport(
-            entry.requires.aw.capabilities ?? [],
-            IMPLEMENTED_AW_CAPABILITIES,
-          );
-          if (!support.supported) {
-            throw new AwCapabilityUnsupportedError(`${source.sourceId}/${name}`, support.missing);
-          }
-          closureNames.push(name);
-        };
-        visit(requestedPlugin.manifest.name);
-        await validateCatalogSnapshotPluginEntriesComplete(source.rootDir, closureNames);
-        const plugins = await Promise.all(closureNames.map((name) => readPluginManifest(
-          path.join(source.rootDir, 'plugins', name),
-          { mode: 'bundle' },
-        )));
-        for (const plugin of plugins) {
-          plugin.sourceId = source.sourceId;
-          plugin.sourceIdentity = source.sourceIdentity;
-          plugin.catalogLogicalIdentity = source.logicalIdentity;
-          plugin.pluginId = `${source.sourceId}/${plugin.manifest.name}`;
-        }
+        const plugins = await resolvePortableCatalogPlugins({ source, requestedPlugin });
         const materialized = await materializePortableSkills({
           plugins,
           pluginId: resolvedPluginId,
@@ -495,6 +538,7 @@ export async function materializePortableSkillsFromCatalog(
           dependencyPluginIds: materialized.dependencyPluginIds,
           configDigest: materialized.configDigest,
           digest: materialized.digest,
+          sourceBindingSource: await resolveCatalogSnapshotBindingSource(source),
         };
       },
     });

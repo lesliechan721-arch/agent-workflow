@@ -16,6 +16,8 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import { resolveCatalogStoreLocation } from '../../src/utils/catalog-generation-store.js';
 import {
   createAwPluginRequirementsReceipt,
   readPluginManifest,
@@ -30,6 +32,7 @@ import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 async function configurePortableCatalog(options: {
   targetCapabilities?: string[];
   dependencyCapability?: string;
+  dependencySkill?: boolean;
 } = {}): Promise<{
   cwd: string;
   env: NodeJS.ProcessEnv;
@@ -42,7 +45,7 @@ async function configurePortableCatalog(options: {
     manifest.extensions = { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] };
     manifest.distributions = { agentSkills: { skills: './agent-skills/skills' } };
   };
-  if (options.dependencyCapability) {
+  if (options.dependencyCapability || options.dependencySkill) {
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       {
         name: 'portable',
@@ -50,7 +53,11 @@ async function configurePortableCatalog(options: {
         requiredCapabilities: options.targetCapabilities,
         configureManifest,
       },
-      { name: 'future', requiredCapabilities: [options.dependencyCapability] },
+      {
+        name: 'future',
+        requiredCapabilities: options.dependencyCapability ? [options.dependencyCapability] : [],
+        ...(options.dependencySkill ? { configureManifest } : {}),
+      },
     ]);
   } else {
     await createCatalogSnapshotFixture(
@@ -62,27 +69,28 @@ async function configurePortableCatalog(options: {
     );
   }
   const pluginRoot = path.join(sourceRoot, 'plugins', 'portable');
-  const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-  const receipt = createAwPluginRequirementsReceipt(
-    { name: plugin.manifest.name, version: plugin.manifest.version },
-    plugin.manifest.requires?.aw.capabilities ?? [],
-  );
-  for (const name of ['alpha', 'beta']) {
-    await fs.outputFile(
-      path.join(pluginRoot, 'agent-skills', 'skills', name, 'SKILL.md'),
-      `---\nname: ${name}\ndescription: ${name} description\n---\nBody.\n`,
+  const writeSkills = async (pluginName: string, names: string[]): Promise<void> => {
+    const root = path.join(sourceRoot, 'plugins', pluginName);
+    const plugin = await readPluginManifest(root, { mode: 'bundle' });
+    const receipt = createAwPluginRequirementsReceipt(
+      { name: plugin.manifest.name, version: plugin.manifest.version },
+      plugin.manifest.requires?.aw.capabilities ?? [],
     );
-    await fs.outputFile(
-      path.join(pluginRoot, 'agent-skills', 'skills', name, 'README.md'),
-      `# ${name}\n`,
-    );
-    await fs.outputJson(
-      path.join(pluginRoot, 'agent-skills', 'skills', name, 'aw-plugin-requirements.json'),
-      receipt,
-      { spaces: 2 },
-    );
-  }
-  const pluginNames = options.dependencyCapability ? ['future', 'portable'] : ['portable'];
+    for (const name of names) {
+      const skillRoot = path.join(root, 'agent-skills', 'skills', name);
+      await fs.outputFile(
+        path.join(skillRoot, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: ${name} description\n---\nBody.\n`,
+      );
+      await fs.outputFile(path.join(skillRoot, 'README.md'), `# ${name}\n`);
+      await fs.outputJson(path.join(skillRoot, 'aw-plugin-requirements.json'), receipt, { spaces: 2 });
+    }
+  };
+  await writeSkills('portable', ['alpha', 'beta']);
+  if (options.dependencySkill) await writeSkills('future', ['dependency-skill']);
+  const pluginNames = options.dependencyCapability || options.dependencySkill
+    ? ['future', 'portable']
+    : ['portable'];
   const entries = await Promise.all(pluginNames.map(async (name) => {
     const root = path.join(sourceRoot, 'plugins', name);
     return createCatalogManifestV7Entry(await readPluginManifest(root, { mode: 'bundle' }), root);
@@ -526,21 +534,53 @@ describe('portable skill public commands', () => {
   });
 
   it('materializes a filtered tree and safely replaces only matching marked output', async () => {
-    const fixture = await configurePortableCatalog();
+    const fixture = await configurePortableCatalog({ dependencySkill: true });
     const out = path.join(fixture.cwd, 'portable-output');
     const firstIo = createCapturedCliIo();
     expect(await runCli(
-      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', out, '--skill', 'alpha', '--json'],
+      [
+        'skill', 'materialize', 'portable', '--scope', 'project', '--out', out,
+        '--skill', 'alpha', 'dependency-skill', '--json',
+      ],
       { cwd: fixture.cwd, env: fixture.env, io: firstIo.io },
     ), firstIo.readStdout()).toBe(0);
     const receipt = JSON.parse(firstIo.readStdout());
-    expect(receipt.selectedSkills).toMatchObject([{ name: 'alpha', providerPluginId: 'local/portable' }]);
+    expect(receipt.selectedSkills).toMatchObject([
+      { name: 'alpha', providerPluginId: 'local/portable' },
+      { name: 'dependency-skill', providerPluginId: 'local/future' },
+    ]);
+    expect(receipt.sourceBindingPath).toBe(path.join(receipt.out, 'aw-source-binding.json'));
     await expect(fs.pathExists(path.join(out, 'skills', 'alpha', 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(out, 'skills', 'dependency-skill', 'SKILL.md'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(out, 'skills', 'beta'))).resolves.toBe(false);
     expect(await fs.readJson(path.join(out, '.aw-materialization.json'))).toMatchObject({
       schemaVersion: 1,
       plugin: { id: 'local/portable', version: '1.0.0' },
       scope: 'project',
+    });
+    await expect(fs.readJson(receipt.sourceBindingPath)).resolves.toMatchObject({
+      schemaVersion: 1,
+      kind: 'aw-source-binding',
+      source: {
+        kind: 'catalog-snapshot',
+        sourceId: 'local',
+        snapshotDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+        workspaceIdentity: expect.any(String),
+        workspaceSourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      },
+      subject: { plugin: 'portable' },
+      profile: { kind: 'portable', id: 'agent-skills-project', scope: 'project' },
+      artifacts: [
+        {
+          kind: 'portable-skill', plugin: 'portable', skill: 'alpha', path: 'skills/alpha',
+          digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+        },
+        {
+          kind: 'portable-skill', plugin: 'future', skill: 'dependency-skill',
+          path: 'skills/dependency-skill',
+          digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+        },
+      ],
     });
 
     const unknownIo = createCapturedCliIo();
@@ -711,5 +751,29 @@ describe('portable skill public commands', () => {
     await expect(fs.readFile(path.join(target, 'foreign.txt'), 'utf8')).resolves.toBe('preserve me');
     await expect(fs.readJson(path.join(target, '.aw-materialization.json')))
       .resolves.toMatchObject({ plugin: { id: 'local/other-plugin' } });
+  });
+
+  it('does not publish a staged output after the validated Catalog snapshot changes', async () => {
+    const fixture = await configurePortableCatalog();
+    const target = path.join(fixture.cwd, 'changed-source-output');
+    const state = await readCatalogGenerationState(fixture.env);
+    const active = state.sources.local!.active!;
+    const location = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env: fixture.env,
+    });
+    setPortableCommandTestHooksForTests({
+      beforeMaterializeOutputCommit: async () => fs.appendFile(
+        path.join(location.snapshotRoot, 'plugins', 'portable', 'README.md'),
+        '\nchanged while staged\n',
+      ),
+    });
+    const io = createCapturedCliIo();
+    expect(await runCli(
+      ['skill', 'materialize', 'portable', '--scope', 'project', '--out', target, '--json'],
+      { cwd: fixture.cwd, env: fixture.env, io: io.io },
+    )).toBe(1);
+    await expect(fs.pathExists(target)).resolves.toBe(false);
   });
 });

@@ -76,6 +76,12 @@ function runManagedEval(
   options: Parameters<typeof runEvalSpec>[1],
 ): ReturnType<typeof runEvalSpec> {
   return runEvalSpec(specPath, {
+    // Fake providers use an explicit test session, independent of the host agent's permissions.
+    sourceEnv: {
+      PATH: process.env.PATH,
+      CODEX_HOME: process.env.CODEX_HOME,
+      CODEX_PERMISSION_PROFILE: ':danger-full-access',
+    },
     ...options,
     processManagementDependencies: options.processManagementDependencies ?? {
       platform: 'linux',
@@ -1346,7 +1352,9 @@ describe('EvalSpec v1 execution', () => {
       auditPath: without.auditPath,
       executeCustomProvider: execute as never,
       sourceEnv: {
-        ...process.env,
+        PATH: process.env.PATH,
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':danger-full-access',
         OPENAI_API_KEY: secret,
         AW_SKILL_EVAL_CODEX_MODEL: control,
         HOME: '/phase3/home-control',

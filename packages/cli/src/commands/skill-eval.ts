@@ -5,10 +5,10 @@ import {
   assertEvalProviderSuiteKind,
   computeCanonicalDirectoryDigest,
   computeEvalFileDigest,
+  computeEvalProviderDigest,
   createRuntimeSkillSnapshot,
   validateEvalSpecFile,
   validateSelectedCasesFile,
-  type EvalProvider,
   type EvalSpec,
   type SelectedCasesDocument,
 } from '@lesliechan721/agent-skill-eval'
@@ -18,22 +18,25 @@ import fs from 'fs-extra'
 import {
   materializeAwSkillEvalSubject,
   resolveMaterializedSubjectRoot,
-  type AwSkillEvalMaterializationProfile,
 } from '../../scripts/aw-skill-eval-materializer.js'
 import type { CatalogWorkspaceResolvedFrom } from './catalog-workspace-resolution.js'
 import {
   assertNoSensitiveProfileConfig,
   readAwSkillEvalManifest,
-  resolveAwSkillEvalCustomCommand,
   type AwSkillEvalManifestV1Profile,
   type AwSkillEvalManifestV1Suite,
 } from '../eval/manifest-v1.js'
 import type { PluginMeta } from '../types.js'
 import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js'
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js'
-import { resolvePluginMetaDependencyClosure } from '../utils/plugin-dependencies.js'
-
-const safeSegmentPattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
+import {
+  resolveAwSourceBindingEvalProvider,
+  resolveEvalProfileBindingInput,
+  resolveEvalSourceBindingInput,
+  resolveWorkspaceBindingSource,
+  selectAwSourceBindingEvalCases,
+  writeAwSourceBinding,
+} from '../review/source-binding.js'
 
 export interface SkillEvalSelection {
   workspaceRoot: string
@@ -66,14 +69,30 @@ export interface PrepareSkillEvalReceipt {
   specPath: string
   targetDigest: string
   corpusDigest: string
+  sourceBindingPath: string
   workspacePath?: string
+}
+
+export interface SkillEvalCommandTestHooks {
+  beforePrepareCommit?: () => Promise<void>
+}
+
+let skillEvalCommandTestHooks: SkillEvalCommandTestHooks | undefined
+
+export function setSkillEvalCommandTestHooksForTests(
+  hooks: SkillEvalCommandTestHooks | undefined,
+): void {
+  skillEvalCommandTestHooks = hooks
 }
 
 interface ResolvedSelection {
   workspaceRoot: string
+  workspaceIdentity: string
+  metadataPath: string
   plugin: PluginMeta
   plugins: PluginMeta[]
   evalRoot: string
+  manifestPath: string
   suite: AwSkillEvalManifestV1Suite
   profile: AwSkillEvalManifestV1Profile
   cases: SelectedCasesDocument
@@ -215,60 +234,18 @@ async function resolveSelection(options: SkillEvalSelection): Promise<ResolvedSe
   assertNoSensitiveProfileConfig(profile, workspace.plugins)
   return {
     workspaceRoot: workspace.workspaceRoot,
+    workspaceIdentity: workspace.workspaceIdentity,
+    metadataPath: workspace.metadataPath,
     plugin,
     plugins: workspace.plugins,
     evalRoot: loaded.evalRoot,
+    manifestPath: loaded.manifestPath,
     suite,
     profile,
     cases: loaded.casesBySuite.get(suite.id)!,
     defaults: loaded.manifest.defaults,
     corpusPaths: loaded.manifest.suites.map((entry) => entry.cases),
   }
-}
-
-function materializationProfile(selection: ResolvedSelection): AwSkillEvalMaterializationProfile {
-  const explicitConfig = new Map(selection.profile.plugins.map((entry) => [entry.name, entry.config]))
-  const closure = resolvePluginMetaDependencyClosure(
-    selection.plugins,
-    selection.profile.plugins.map((entry) => entry.name),
-  )
-  const plugins = closure.map((plugin) => ({
-    name: plugin.manifest.name,
-    config: explicitConfig.get(plugin.manifest.name) ?? {},
-  }))
-  for (const plugin of closure) {
-    const config = explicitConfig.get(plugin.manifest.name) ?? {}
-    for (const [key, field] of Object.entries(plugin.manifest.config?.fields ?? {})) {
-      if (field.required === true && field.default === undefined && !Object.hasOwn(config, key)) {
-        throw new Error(
-          `Eval profile "${selection.profile.id}" is missing required config "${key}" `
-          + `for plugin "${plugin.manifest.name}".`,
-        )
-      }
-    }
-  }
-  return { id: selection.profile.id, scope: selection.profile.scope, plugins }
-}
-
-function selectedCases(
-  document: SelectedCasesDocument,
-  split?: string,
-  caseId?: string,
-): SelectedCasesDocument {
-  if (split !== undefined && split !== 'all' && !safeSegmentPattern.test(split)) {
-    throw new Error('Eval split must be a safe path segment or all.')
-  }
-  if (caseId !== undefined && !safeSegmentPattern.test(caseId)) {
-    throw new Error('Eval case id must be a safe path segment.')
-  }
-  const splitCases = split === undefined || split === 'all'
-    ? document.cases
-    : document.cases.filter((entry) => entry.split === split)
-  const cases = caseId === undefined
-    ? splitCases
-    : splitCases.filter((entry) => entry.id === caseId)
-  if (cases.length === 0) throw new Error('Eval case selection matched no cases.')
-  return { ...document, cases }
 }
 
 async function copyEvalWorkspace(
@@ -292,29 +269,6 @@ async function copyEvalWorkspace(
   await computeCanonicalDirectoryDigest(destination)
 }
 
-async function resolveProvider(
-  selection: ResolvedSelection,
-  preparedEvalRoot: string,
-): Promise<EvalProvider> {
-  if (selection.suite.kind === 'trigger') return 'codex-trigger'
-  if (selection.suite.kind === 'conversation') return 'codex-conversation'
-  const resolved = await resolveAwSkillEvalCustomCommand(selection.evalRoot, selection.suite.provider!)
-  const command = [...resolved.command]
-  for (const [index, { prefix, relative }] of resolved.localArguments) {
-    if (!await fs.pathExists(path.join(preparedEvalRoot, relative))) {
-      throw new Error(`Prepared custom provider asset is missing: ${relative}`)
-    }
-    command[index] = `${prefix}workspace/eval/${relative}`
-  }
-  return selection.suite.provider!.type === 'custom-process'
-    ? { type: 'custom-process', command }
-    : {
-        type: 'codex-workflow',
-        command,
-        allowedModels: selection.suite.provider!.allowedModels,
-      }
-}
-
 export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promise<PrepareSkillEvalReceipt> {
   if (options.runs !== undefined && (!Number.isSafeInteger(options.runs) || options.runs < 1)) {
     throw new Error('--runs must be a positive safe integer.')
@@ -329,6 +283,13 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     throw new Error('--baseline and --previous-version are mutually exclusive.')
   }
   const selection = await resolveSelection(options)
+  const source = await resolveWorkspaceBindingSource({
+    workspaceRoot: selection.workspaceRoot,
+    workspaceIdentity: selection.workspaceIdentity,
+    metadataPath: selection.metadataPath,
+    plugins: selection.plugins,
+  })
+  const profileBinding = resolveEvalProfileBindingInput(selection.profile, selection.plugins)
   const outputBoundary = {
     target: path.resolve(options.cwd, options.output),
     cwd: options.cwd,
@@ -341,7 +302,11 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
   let committed = false
   let keepOperationRoot = false
   try {
-    const selected = selectedCases(selection.cases, options.split, options.caseId)
+    const caseSelection = {
+      split: options.split ?? null,
+      caseId: options.caseId ?? null,
+    }
+    const selected = selectAwSourceBindingEvalCases(selection.cases, caseSelection)
     const selectedCasesPath = path.join(staging, 'cases.json')
     await fs.writeFile(selectedCasesPath, prettyJson(selected), { flag: 'wx' })
     const targetSourceRoot = path.join(operationRoot, 'materialized')
@@ -354,7 +319,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     const materialized = await materializeAwSkillEvalSubject({
       plugin: selection.plugin,
       plugins: selection.plugins,
-      profile: materializationProfile(selection),
+      profile: profileBinding.materializationProfile,
       requiredSkills,
       initializeGitRepository: selection.suite.kind === 'conversation',
       outputRoot: targetSourceRoot,
@@ -398,7 +363,23 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     }
     const runs = options.runs ?? selection.suite.runs ?? selection.defaults.runs ?? 1
     const timeoutMs = options.timeoutMs ?? selection.suite.timeoutMs ?? selection.defaults.timeoutMs ?? 120_000
-    const provider = await resolveProvider(selection, path.join(staging, 'workspace', 'eval'))
+    const provider = await resolveAwSourceBindingEvalProvider({
+      evalRoot: selection.evalRoot,
+      preparedEvalRoot: path.join(staging, 'workspace', 'eval'),
+      suite: selection.suite,
+    })
+    const evalSourceInput = await resolveEvalSourceBindingInput({
+      workspaceRoot: selection.workspaceRoot,
+      evalRoot: selection.evalRoot,
+      manifestPath: selection.manifestPath,
+      suite: selection.suite,
+      defaults: selection.defaults,
+      cases: selection.cases,
+      corpusPaths: selection.corpusPaths,
+      selection: caseSelection,
+      providerDigest: computeEvalProviderDigest(provider),
+      preparedEvalRoot: path.join(staging, 'workspace', 'eval'),
+    })
     assertEvalProviderSuiteKind(provider, selected.suite.kind)
     const spec: EvalSpec = {
       version: 1,
@@ -429,6 +410,56 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
     if (!caseValidation.valid) {
       throw new Error(`Prepared selected cases are invalid: ${caseValidation.errors.join('; ')}`)
     }
+    const sourceBinding = await writeAwSourceBinding({
+      rootDir: staging,
+      source,
+      subject: {
+        plugin: selection.plugin.manifest.name,
+        skill: options.skillName,
+        suite: selection.suite.id,
+      },
+      profile: profileBinding.profile,
+      evalInput: evalSourceInput.input,
+      artifacts: [
+        { kind: 'eval-target', skill: options.skillName, path: 'targets/current' },
+        { kind: 'eval-workspace', path: 'workspace' },
+        { kind: 'eval-cases', path: 'cases.json' },
+      ],
+    })
+    await skillEvalCommandTestHooks?.beforePrepareCommit?.()
+    const currentSelection = await resolveSelection(options)
+    const currentWorkspace = await readCatalogWorkspace(currentSelection.workspaceRoot, {
+      reservedImports: CLI_RESERVED_IMPORTS,
+    })
+    const currentSource = await resolveWorkspaceBindingSource(currentWorkspace)
+    const currentProfile = resolveEvalProfileBindingInput(
+      currentSelection.profile,
+      currentSelection.plugins,
+    ).profile
+    const currentProvider = await resolveAwSourceBindingEvalProvider({
+      evalRoot: currentSelection.evalRoot,
+      preparedEvalRoot: path.join(staging, 'workspace', 'eval'),
+      suite: currentSelection.suite,
+    })
+    const currentEvalInput = await resolveEvalSourceBindingInput({
+      workspaceRoot: currentSelection.workspaceRoot,
+      evalRoot: currentSelection.evalRoot,
+      manifestPath: currentSelection.manifestPath,
+      suite: currentSelection.suite,
+      defaults: currentSelection.defaults,
+      cases: currentSelection.cases,
+      corpusPaths: currentSelection.corpusPaths,
+      selection: caseSelection,
+      providerDigest: computeEvalProviderDigest(currentProvider),
+      preparedEvalRoot: path.join(staging, 'workspace', 'eval'),
+    })
+    if (
+      JSON.stringify(currentSource) !== JSON.stringify(source)
+      || JSON.stringify(currentProfile) !== JSON.stringify(profileBinding.profile)
+      || JSON.stringify(currentEvalInput.input) !== JSON.stringify(evalSourceInput.input)
+    ) {
+      throw new Error('Eval source or profile changed while the prepared output was staged.')
+    }
     const recheckedOutput = await assertAbsentSafeOutputDirectory(outputBoundary)
     if (recheckedOutput !== finalOutput) {
       throw new Error('EvalSpec output path changed before commit.')
@@ -446,6 +477,7 @@ export async function prepareSkillEval(options: PrepareSkillEvalOptions): Promis
       specPath: path.join(finalOutput, 'spec.json'),
       targetDigest: target.digest,
       corpusDigest: spec.cases.digest,
+      sourceBindingPath: path.join(finalOutput, path.basename(sourceBinding.bindingPath)),
       ...(keepOperationRoot ? { workspacePath: operationRoot } : {}),
     }
   } finally {

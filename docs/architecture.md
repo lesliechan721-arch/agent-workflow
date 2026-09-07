@@ -347,6 +347,22 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 - macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
 - Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
 
+## AW Review 只读取证与来源绑定
+
+`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... --json` 为 Plugin 或 Catalog 的 Review 与 Release Check 提供机器事实。`aw.review-inspection.v1` 表示该能力。它读取当前 source inventory、已有 snapshot、适用 profile、Skill digest 和当前 manifest 的必需 Eval；不判断语义质量或发布 readiness。Catalog target 覆盖全部当前插件，Plugin target 只覆盖所选插件。缺少 materialized final 时保留 source 事实并报告缺口，不阻断普通源码 Review。
+
+Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验和官方 Eval parser，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。相同内容的不同 profile 仍是独立覆盖项；相同物化身份的重复凭据可去重，产物摘要冲突时报告歧义，不按参数顺序选择。`profile` 表示平台和 scope；有 `materializationProfile` 时，消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分实际配置身份，不只按平台合并。缺失、陈旧或无法建立来源关系的 final 不能成为当前版本的通过证据。
+
+必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。AW prepare 当前提供 Codex 目标；Claude 和 portable 的 final 覆盖不自动产生对应平台的 Eval 要求。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
+
+AW Eval prepare 和 Skill materialize 在既有准备流程中生成 `aw-source-binding.json`，公开 receipt 返回其路径。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存凭据明文，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
+
+Eval 绑定还覆盖所选 suite/default、用例与实际复制的 fixture 输入，并保存准备时的 provider 摘要。消费者通过当前绑定关联 Spec 的 target、cases、workspace 和 provider；完整源 corpus 的 canonical 摘要与准备后选集文件的字节摘要属于不同对象，不能直接比较。
+
+Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归到根插件。消费者按当前依赖闭包及声明重新检查这项归属。
+
+来源绑定是可删除、可重建的弱证据，供后续只读消费者重新校验，不是签名、安装 ledger 或运行授权。旧产物缺少绑定时重新 prepare/materialize；检查器不能凭同名路径、有效旧 EvalSpec 或模型填写的字段推断 currentness。检查源码漂移不需要运行被审插件代码，也不新增锁、journal 或恢复状态机。
+
 ## Quality Review、Release Check 与 Review Publication
 
 这三种合同彼此独立：

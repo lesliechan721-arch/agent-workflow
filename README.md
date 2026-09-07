@@ -166,6 +166,10 @@ aw sync --all -p codex -s project
 aw status
 aw status git --verbose
 
+# 只读取得当前 Workspace 或单插件的 Review 证据
+aw review inspect . --json
+aw review inspect ./plugins/ask-me --json
+
 # 项目级安装
 aw install ask-me -p codex -s project
 
@@ -181,6 +185,8 @@ aw reinstall git -p codex -s user
 ```
 
 `cleanup`、`uninstall` 和 `reinstall` 不会删除 AW 保存的插件配置；配置只由 `aw config reset` 删除。
+
+`aw review inspect` 读取源码、已有 snapshot 和显式提供的物化来源 receipt，不执行被审插件代码。缺少当前物化产物时仍返回源码事实和证据缺口；该命令不作质量评价或发布决定。Eval prepare 和 Skill materialize 返回的 `sourceBindingPath` 可通过 `--materialization <receipt>` 交给检查命令，旧产物缺少该证据时重新准备即可。
 
 project 配置按 Catalog logical identity 共享，不绑定 Git URL、SSH/HTTPS transport 或本地 path。若 Git 无法验证配置路径可提交，命令仍写入并返回 `projectConfigShareabilityUnverified`；若路径明确被 ignore，则以 `projectConfigIgnored` 停止且不修改配置。`aw config reset` 不受该检查阻止。
 
