@@ -370,7 +370,8 @@ async function runIntentRoundTripCliChild(
   argv: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-): Promise<void> {
+  expectedExitCode = 0,
+): Promise<string> {
   const packageRoot = getSourceTestRepositoryCwd();
   const child = spawn(process.execPath, [
     path.join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs'),
@@ -384,6 +385,7 @@ async function runIntentRoundTripCliChild(
       ...env,
       AW_INTENT_CHILD_ARGV: JSON.stringify(argv),
       AW_INTENT_CHILD_CWD: cwd,
+      AW_INTENT_CHILD_EXIT_CODE: String(expectedExitCode),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -395,6 +397,24 @@ async function runIntentRoundTripCliChild(
     child.on('close', resolve);
   });
   expect(code, `aw ${argv.join(' ')} child failed:\n${output}`).toBe(0);
+  return output;
+}
+
+function parseIntentRoundTripReceipt(output: string): {
+  targetResults: Array<{
+    target: { pluginId?: string; scope: string };
+    state: string;
+  }>;
+} {
+  const start = output.indexOf('{\n  "ok":');
+  const end = output.indexOf('\n}\n', start);
+  if (start < 0 || end < 0) throw new Error(`Child receipt is missing:\n${output}`);
+  return JSON.parse(output.slice(start, end + 2)) as {
+    targetResults: Array<{
+      target: { pluginId?: string; scope: string };
+      state: string;
+    }>;
+  };
 }
 
 async function createNativeDependencyCatalog(
@@ -1636,6 +1656,141 @@ describe('five namespaced write commands', () => {
     }
   }, 30_000);
 
+  it.each(['beforeRename', 'afterQuarantine'] as const)(
+    'reports activation-only legacy Skill cleanup failure at %s and supports retry recovery',
+    async (failurePoint) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(
+        isolation.layout.fixtureCwd,
+        `activation-legacy-cleanup-${failurePoint}`,
+      );
+      const configureDynamicNative = (manifest: PluginMeta['manifest']) => {
+        manifest.scripts = {
+          artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+        };
+        manifest.artifacts = { targets: [{
+          id: 'dynamic-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'native-skill',
+        }] };
+      };
+      const definitions = [{ name: 'demo', configureManifest: configureDynamicNative }, {
+        name: 'consumer', dependencies: ['demo'],
+      }, { name: 'independent' }];
+      await createNativeDependencyCatalog(sourceRoot, definitions);
+      await writeDynamicSkillRenderer({
+        pluginRoot: path.join(sourceRoot, 'plugins', 'demo'),
+        skillKey: 'native-skill',
+      });
+      await createNativeDependencyCatalog(sourceRoot, definitions);
+      const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: {
+          schemaVersion: 2,
+          sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+        },
+        expectedDigest: snapshot.digest,
+        env: isolation.env,
+      });
+      const runtime = createCodexNativeTestRuntime(isolation);
+      const initialInstall = await installWriteCommand(['team/demo'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      }, runtime);
+      expect(initialInstall.overallState, JSON.stringify(initialInstall.rebuildResults)).toBe('succeeded');
+
+      const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+      const legacySkillRoot = path.join(skillsRoot, 'native-skill');
+      await fs.outputFile(path.join(legacySkillRoot, 'SKILL.md'), 'legacy\n');
+      await writeSkillOwnerMarker({
+        skillRoot: legacySkillRoot,
+        allowedRoot: skillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: 'team',
+          pluginId: 'team/demo',
+          plugin: 'demo',
+          artifactKey: 'native-skill',
+          platform: 'codex',
+          scope: 'project',
+        },
+      });
+      let quarantinedPath: string | undefined;
+      setRebuildCommandTestHooksForTests(failurePoint === 'beforeRename'
+        ? {
+            beforeActivationLegacyCleanupMutation: async () => {
+              throw new Error('injected rename precondition failure');
+            },
+          }
+        : {
+            afterActivationLegacyCleanupQuarantine: async (_component, candidate) => {
+              quarantinedPath = candidate;
+              throw new Error('injected quarantined removal failure');
+            },
+          });
+      let failed;
+      try {
+        failed = await installWriteCommand(['team/consumer', 'team/independent'], {
+          cwd: isolation.layout.fixtureCwd,
+          platform: 'codex',
+          scope: 'project',
+        }, runtime);
+      } finally {
+        setRebuildCommandTestHooksForTests(undefined);
+      }
+
+      expect(failed.overallState, JSON.stringify(failed.rebuildResults)).toBe('partial');
+      expect(failed.rebuildResults).toContainEqual(expect.objectContaining({
+        status: 'failed',
+        target: expect.objectContaining({ pluginName: 'demo' }),
+        cleanupAttempted: true,
+        residual: ['native-skill'],
+        failures: [expect.objectContaining({ phase: 'cleanup.owned' })],
+        actions: expect.arrayContaining([
+          expect.objectContaining({ name: 'cleanup.owned', status: 'failed' }),
+        ]),
+      }));
+      expect(failed.targetResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginName: 'consumer' }),
+          state: 'failed',
+          errorCode: 'dependencyInstallFailed',
+        }),
+        expect.objectContaining({
+          target: expect.objectContaining({ pluginName: 'independent' }),
+          state: 'completed',
+        }),
+      ]));
+      const demoFailure = failed.rebuildResults.find((entry) =>
+        entry.target.pluginName === 'demo')!;
+      if (failurePoint === 'beforeRename') {
+        expect(demoFailure.quarantined).toEqual([]);
+        await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(true);
+      } else {
+        expect(quarantinedPath).toBeDefined();
+        expect(demoFailure.quarantined).toEqual([path.basename(quarantinedPath!)]);
+        await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(false);
+        await expect(fs.pathExists(quarantinedPath!)).resolves.toBe(true);
+        await fs.move(quarantinedPath!, legacySkillRoot);
+      }
+
+      const recovered = await installWriteCommand(['team/consumer', 'team/independent'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'project',
+      }, runtime);
+      expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('succeeded');
+      await expect(fs.pathExists(legacySkillRoot)).resolves.toBe(false);
+    },
+    30_000,
+  );
+
   it('preflights native render once and excludes a preApply failure from its marketplace group', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-pre-apply-group-source');
@@ -1720,7 +1875,6 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: runtime.nativeCliRunner,
       codexOperationConsumerResolver,
-      directCli: true,
     });
     expect(unauthorized.overallState).toBe('failed');
     expect(unauthorized.targetResults).toEqual(expect.arrayContaining([
@@ -1757,6 +1911,12 @@ describe('five namespaced write commands', () => {
     ]));
     expect(codexOperationConsumerResolver).toHaveBeenCalledTimes(1);
     expect(runtime.installed).toEqual(new Set(['beta@aw']));
+    await expect(readPluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toMatchObject({
+      roots: [{ pluginId: 'team/beta', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+    });
     for (const name of ['alpha', 'beta']) {
       await expect(fs.readFile(path.join(counterRoot, `render-count-${name}.txt`), 'utf8'))
         .resolves.toBe('1');
@@ -1779,6 +1939,86 @@ describe('five namespaced write commands', () => {
       'dynamic-skill',
       'SKILL.md',
     ), 'utf8')).resolves.toContain('name: dynamic-skill');
+  }, 30_000);
+
+  it('keeps an immediate preApply failure with large context isolated from another target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'large-pre-apply-input-source');
+    const largeConfigFields = Object.fromEntries(Array.from({ length: 32 }, (_, index) => [
+      `value${index}`,
+      { type: 'string' as const, default: 'x'.repeat(4_096), validation: { maxLength: 4_096 } },
+    ]));
+    const definitions = ['immediate-failure', 'independent'].map((name) => ({
+      name,
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'policy', title: 'Policy', content: `${name} policy.` }],
+        };
+        manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+        if (name === 'immediate-failure') manifest.config = { fields: largeConfigFields };
+      },
+    }));
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const independentMarker = path.join(isolation.env.AW_HOME!, 'independent-pre-apply.txt');
+    await Promise.all([
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'immediate-failure', 'scripts', 'preApply.mjs'),
+        'process.exit(7);\n',
+      ),
+      fs.outputFile(
+        path.join(sourceRoot, 'plugins', 'independent', 'scripts', 'preApply.mjs'),
+        [
+          'let input = "";',
+          'for await (const chunk of process.stdin) input += chunk;',
+          'const context = JSON.parse(input);',
+          `await import("node:fs/promises").then(({ writeFile }) => writeFile(${JSON.stringify(independentMarker)}, context.plugin.name));`,
+        ].join('\n'),
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+
+    const result = await installWriteCommand([
+      'team/immediate-failure',
+      'team/independent',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      yes: true,
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async () => ({
+        exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '',
+      }),
+    });
+
+    expect(result.overallState, JSON.stringify(result, null, 2)).toBe('partial');
+    expect(result.rebuildResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/immediate-failure' }),
+        status: 'failed',
+        error: expect.objectContaining({
+          phase: 'preApply',
+          operationDiagnostic: expect.objectContaining({ code: 'preApplyExited', exitCode: 7 }),
+        }),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        status: 'succeeded',
+      }),
+    ]));
+    expect(JSON.stringify(result)).not.toContain('preApplyStartFailed');
+    await expect(fs.readFile(independentMarker, 'utf8')).resolves.toBe('independent');
   }, 30_000);
 
   it('stops before preApply and manager resolution when native render preflight fails', async () => {
@@ -3121,7 +3361,7 @@ describe('five namespaced write commands', () => {
     });
     const runtime = createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const preApplyCounter = path.join(
       isolation.env.AW_HOME!,
@@ -3162,7 +3402,7 @@ describe('five namespaced write commands', () => {
     let result: Awaited<ReturnType<typeof installWriteCommand>>;
     try {
       result = await installWriteCommand(['team/demo'], {
-        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
       }, {
         ...runtime,
         nativeCliRunner,
@@ -4256,7 +4496,7 @@ describe('five namespaced write commands', () => {
     });
     const installedRuntime = createCodexNativeTestRuntime(isolation);
     await expect(installWriteCommand(['team/demo'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const counterPath = path.join(isolation.env.AW_HOME!, 'activation-pre-apply-count.txt');
     await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
@@ -4346,7 +4586,7 @@ describe('five namespaced write commands', () => {
     const installedRuntime = createCodexNativeTestRuntime(isolation);
     const selectors = ['team/alpha', 'team/beta'];
     await expect(installWriteCommand(selectors, {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, installedRuntime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const alphaCounter = path.join(
       isolation.env.AW_HOME!,
@@ -4477,7 +4717,7 @@ describe('five namespaced write commands', () => {
     try {
       result = await installWriteCommand(['team/demo'], {
         cwd: isolation.layout.fixtureCwd, platform: 'both', scope: 'project',
-      }, { ...codexRuntime, nativeCliRunner, reporter });
+      }, { ...codexRuntime, nativeCliRunner, reporter, preApplyConfirmed: true });
     } finally {
       setRebuildCommandTestHooksForTests(undefined);
     }
@@ -4516,6 +4756,8 @@ describe('five namespaced write commands', () => {
   it('requires --yes and reports a preApply failure without platform writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'claude-pre-apply-warning-source');
+    const secret = 'private "pre-apply"\ntoken\\7f3e9c';
+    const escapedSecret = JSON.stringify(secret).slice(1, -1);
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.marketplace.policy.products = ['CLAUDE'];
       manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
@@ -4528,7 +4770,7 @@ describe('five namespaced write commands', () => {
         'for await (const chunk of process.stdin) input += chunk;',
         'const context = JSON.parse(input);',
         'throw new Error([',
-        '  `prefix${context.config.values.token}Suffix ordinary preApply failed`,',
+        '  `prefix${JSON.stringify(context.config.values.token).slice(1, -1)}Suffix ordinary preApply failed`,',
         '  context.plugin.rootDir, context.target.projectRoot,',
         '  process.env.AW_HOME, process.env.HOME, process.env.TMPDIR,',
         '].filter(Boolean).join(" | "));',
@@ -4558,7 +4800,7 @@ describe('five namespaced write commands', () => {
       scope: 'user',
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      values: { token: 'private-pre-apply-token-7f3e9c' },
+      values: { token: secret },
     });
     const marketplaceRoots = new Map<string, string>();
     const nativeCliRunner = async (invocation: NativeCliInvocation) => {
@@ -4636,8 +4878,10 @@ describe('five namespaced write commands', () => {
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
         error.code === 'ENOENT' ? null : Promise.reject(error))));
     const output = createCapturedCliIo();
+    const debugLogPath = path.join(isolation.layout.debugLogsDir, 'pre-apply-redaction.log');
     const exitCode = await runCli([
       'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes', '--json',
+      '--debug', '--log-file', debugLogPath,
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -4673,12 +4917,32 @@ describe('five namespaced write commands', () => {
     const serializedReceipt = JSON.stringify(receipt);
     expect(serializedReceipt).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
     for (const privateValue of [
-      'private-pre-apply-token-7f3e9c',
+      secret,
+      escapedSecret,
       isolation.layout.fixtureCwd,
       isolation.env.AW_HOME!,
     ]) {
       expect(serializedReceipt).not.toContain(privateValue);
     }
+    const debugLog = await fs.readFile(debugLogPath, 'utf8');
+    expect(debugLog).not.toContain(secret);
+    expect(debugLog).not.toContain(escapedSecret);
+
+    const humanOutput = createCapturedCliIo();
+    const humanExitCode = await runCli([
+      'install', 'team/demo', '--platform', 'claude', '--scope', 'user', '--yes',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: humanOutput.io,
+      interactive: false,
+      nativeCliRunner,
+    });
+    expect(humanExitCode).toBe(1);
+    const humanText = `${humanOutput.readStdout()}\n${humanOutput.readStderr()}`;
+    expect(humanText).toContain('prefix[REDACTED]Suffix ordinary preApply failed');
+    expect(humanText).not.toContain(secret);
+    expect(humanText).not.toContain(escapedSecret);
     expect(marketplaceRoots.size).toBe(0);
     await expect(snapshotRegularTree(isolation.env.AW_CLAUDE_HOME!))
       .resolves.toEqual(platformBefore);
@@ -4686,6 +4950,93 @@ describe('five namespaced write commands', () => {
       fs.readFile(intentPath).catch((error: NodeJS.ErrnoException) =>
         error.code === 'ENOENT' ? null : Promise.reject(error)))))
       .resolves.toEqual(intentsBefore);
+  }, 30_000);
+
+  it('does not authorize preApply from the legacy write wizard confirmation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'legacy-wizard-pre-apply-source');
+    const definitions = [{
+      name: 'demo',
+      configureManifest: (manifest: PluginMeta['manifest']) => {
+        manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+      },
+    }];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+      'await import("node:fs/promises").then((fs) => fs.writeFile(`${process.env.AW_HOME}/legacy-wizard-pre-apply.txt`, "ran"));\n',
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const markerPath = path.join(isolation.env.AW_HOME!, 'legacy-wizard-pre-apply.txt');
+    const nativeCliRunner = async () => ({
+      exitCode: 0,
+      stdout: 'codex-cli 99.0.0',
+      stderr: '',
+    });
+    const runWizard = async (yes: boolean) => {
+      const captured = createCapturedCliIo();
+      let executed: Awaited<ReturnType<typeof installWriteCommand>> | undefined;
+      const launch = vi.fn(async (request: {
+        render: (complete: (result: unknown) => void) => {
+          props: {
+            request: {
+              initial: CommandWizardSelection;
+              execute: (selection: CommandWizardSelection) => Promise<
+                Awaited<ReturnType<typeof installWriteCommand>>
+              >;
+            };
+          };
+        };
+      }) => {
+        const wizard = request.render(() => undefined).props.request;
+        const selection: CommandWizardSelection = {
+          ...wizard.initial,
+          platform: 'codex',
+          scope: 'project',
+        };
+        executed = await wizard.execute(selection);
+        return {
+          cancelled: false,
+          selection,
+          value: executed,
+          failed: executed.overallState === 'failed',
+        };
+      });
+      const exitCode = await runCli([
+        'install', 'team/demo', '--scope', 'project', ...(yes ? ['--yes'] : []),
+      ], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: captured.io,
+        interactive: true,
+        tuiRunner: { launch } as never,
+        nativeCliRunner,
+        ...createTtyRuntimeStreams(),
+      });
+      return { exitCode, executed, launch };
+    };
+
+    const ordinaryConfirmation = await runWizard(false);
+    expect(ordinaryConfirmation.exitCode).toBe(1);
+    expect(ordinaryConfirmation.launch).toHaveBeenCalledOnce();
+    expect(ordinaryConfirmation.executed?.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'preApplyAuthorizationRequired' }),
+    ]);
+    await expect(fs.pathExists(markerPath)).resolves.toBe(false);
+
+    const explicitAuthorization = await runWizard(true);
+    expect(explicitAuthorization.exitCode).toBe(0);
+    expect(explicitAuthorization.executed).toMatchObject({ overallState: 'succeeded' });
+    await expect(fs.readFile(markerPath, 'utf8')).resolves.toBe('ran');
   }, 30_000);
 
   it('redacts private preApply data from a config apply receipt', async () => {
@@ -5175,7 +5526,7 @@ describe('five namespaced write commands', () => {
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
     const leafInstall = await installWriteCommand(['team/leaf'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', yes: true,
     }, runtime);
     expect(leafInstall.overallState, JSON.stringify(leafInstall.rebuildResults)).toBe('succeeded');
     const leafStatus = await statusCommandV7({
@@ -5186,7 +5537,7 @@ describe('five namespaced write commands', () => {
     expect(leafUserTarget?.state, JSON.stringify(leafUserTarget)).toBe('ready');
 
     const installed = await installWriteCommand(['team/root'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, runtime);
 
     expect(installed.dependencyPlan?.targets).toEqual(expect.arrayContaining([
@@ -5250,7 +5601,7 @@ describe('five namespaced write commands', () => {
       }),
     ]));
     const repeated = await installWriteCommand(['team/root'], {
-      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
     }, runtime);
     expect(repeated.overallState, JSON.stringify(repeated.rebuildResults)).toBe('succeeded');
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-leaf.txt'), 'utf8'))
@@ -5268,7 +5619,7 @@ describe('five namespaced write commands', () => {
     let preflightFailed: Awaited<ReturnType<typeof installWriteCommand>>;
     try {
       preflightFailed = await installWriteCommand(['team/root'], {
-        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', yes: true,
       }, runtime);
     } finally {
       setRebuildCommandTestHooksForTests(undefined);
@@ -5612,10 +5963,14 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(projectAgentPath)).resolves.toBe(false);
   });
 
-  it('reapplies a root config change through the normal dependency closure', async () => {
+  it('authorizes a dependency preApply before committing a root config change', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-config-source');
-    const definitions = [
+    const definitions: Array<{
+      name: string;
+      dependencies?: string[];
+      configureManifest?: (manifest: PluginMeta['manifest']) => void;
+    }> = [
       { name: 'leaf' },
       {
         name: 'root',
@@ -5624,20 +5979,9 @@ describe('five namespaced write commands', () => {
           manifest.config = {
             fields: { mode: { type: 'string', default: 'safe' } },
           };
-          manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
         },
       },
     ];
-    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
-    await fs.outputFile(
-      path.join(sourceRoot, 'plugins', 'root', 'scripts', 'preApply.mjs'),
-      [
-        'import { readFile, writeFile } from "node:fs/promises";',
-        'const counter = `${process.env.AW_HOME}/config-pre-apply-count.txt`;',
-        'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
-        'await writeFile(counter, String(previous + 1));',
-      ].join('\n'),
-    );
     await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
     const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
@@ -5646,21 +5990,78 @@ describe('five namespaced write commands', () => {
       expectedDigest: snapshot.digest,
       env: isolation.env,
     });
-    const nativeCliRunner = vi.fn(async () => ({
-      exitCode: 0,
-      stdout: 'codex-cli 0.200.0',
-      stderr: '',
-    }));
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const nativeCliRunner = runtime.nativeCliRunner;
     const installed = await installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',
       scope: 'project',
     }, { env: isolation.env, nativeCliRunner });
     expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
-    await expect(fs.readFile(
+    definitions[0]!.configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'leaf', 'scripts', 'preApply.mjs'),
+      [
+        'import { readFile, writeFile } from "node:fs/promises";',
+        'const counter = `${process.env.AW_HOME}/config-pre-apply-count.txt`;',
+        'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
+        'await writeFile(counter, String(previous + 1));',
+      ].join('\n'),
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await syncCatalogSourceGeneration({
+      sourceId: 'team',
+      cliVersion: '1.0.0',
+      env: isolation.env,
+    });
+    const updatedSourceIdentity = await calculateCatalogSourceIdentity(source);
+    const logicalIdentity = await readCatalogLogicalIdentity(sourceRoot);
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: updatedSourceIdentity,
+      logicalIdentity,
+      pluginName: 'root',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 7 },
+    });
+    await expect(fs.pathExists(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
-      'utf8',
-    )).resolves.toBe('1');
+    )).resolves.toBe(false);
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: updatedSourceIdentity,
+      logicalIdentity,
+      pluginName: 'root',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ values: { mode: 7 } });
+    const tuiDependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner,
+      interactive: false,
+    }));
+    const tuiEvidence = await tuiDependencies.captureEvidence({
+      kind: 'configSave',
+      pluginId: 'team/root',
+      scope: 'project',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'fast' },
+      changes: [{ key: 'mode', title: 'mode', before: 7, after: 'fast' }],
+    });
+    expect(tuiEvidence.config?.preApplyAuthorization).toEqual([
+      expect.objectContaining({ pluginId: 'team/leaf', relation: 'direct' }),
+    ]);
+    await expect(fs.pathExists(
+      path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
+    )).resolves.toBe(false);
 
     const unauthorized = createCapturedCliIo();
     const unauthorizedExitCode = await runCli([
@@ -5679,10 +6080,18 @@ describe('five namespaced write commands', () => {
       overallState: 'failed',
       errors: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
     });
-    await expect(fs.readFile(
+    await expect(fs.pathExists(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
-      'utf8',
-    )).resolves.toBe('1');
+    )).resolves.toBe(false);
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: updatedSourceIdentity,
+      logicalIdentity,
+      pluginName: 'root',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ values: { mode: 7 } });
 
     const captured = createCapturedCliIo();
     const exitCode = await runCli([
@@ -5696,7 +6105,7 @@ describe('five namespaced write commands', () => {
     });
     const receipt = JSON.parse(captured.readStdout()) as Record<string, unknown>;
 
-    expect(exitCode).toBe(0);
+    expect(exitCode, captured.readStdout()).toBe(0);
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
       overallState: 'succeeded',
@@ -5719,8 +6128,219 @@ describe('five namespaced write commands', () => {
     await expect(fs.readFile(
       path.join(isolation.env.AW_HOME!, 'config-pre-apply-count.txt'),
       'utf8',
-    )).resolves.toBe('2');
+    )).resolves.toBe('1');
+
+    definitions[1]!.configureManifest = (manifest: PluginMeta['manifest']) => {
+      manifest.config = { fields: { mode: { type: 'string', default: 'safe' } } };
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'root', 'scripts', 'preApply.mjs'),
+      'await import("node:fs/promises").then((fs) => fs.writeFile(`${process.env.AW_HOME}/root-config-pre-apply.txt`, "ran"));\n',
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await writePluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: await calculateCatalogSourceIdentity(source),
+      logicalIdentity,
+      pluginName: 'root',
+      scope: 'project',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { mode: 7 },
+    });
+    const rootScriptEvidence = await tuiDependencies.captureEvidence({
+      kind: 'configSave',
+      pluginId: 'team/root',
+      scope: 'project',
+      projectLayer: 'shared',
+      apply: true,
+      updates: { mode: 'strict' },
+      changes: [{ key: 'mode', title: 'mode', before: 7, after: 'strict' }],
+    });
+    expect(rootScriptEvidence.config?.preApplyAuthorization).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', relation: 'requested' }),
+      expect.objectContaining({ pluginId: 'team/leaf', relation: 'direct' }),
+    ]));
+    const rootUnauthorized = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'set', 'team/root', 'mode', '--value-json', '"strict"',
+      '--scope', 'project', '--apply', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: rootUnauthorized.io,
+      interactive: false,
+      nativeCliRunner,
+    })).toBe(1);
+    expect(JSON.parse(rootUnauthorized.readStdout())).toMatchObject({
+      configWrite: 'notStarted',
+      errors: [expect.objectContaining({ code: 'preApplyAuthorizationRequired' })],
+    });
+    await expect(fs.pathExists(
+      path.join(isolation.env.AW_HOME!, 'root-config-pre-apply.txt'),
+    )).resolves.toBe(false);
+    const rootAuthorized = createCapturedCliIo();
+    expect(await runCli([
+      'config', 'set', 'team/root', 'mode', '--value-json', '"strict"',
+      '--scope', 'project', '--apply', '--yes', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: rootAuthorized.io,
+      interactive: false,
+      nativeCliRunner,
+    }), rootAuthorized.readStdout()).toBe(0);
+    await expect(fs.readFile(
+      path.join(isolation.env.AW_HOME!, 'root-config-pre-apply.txt'),
+      'utf8',
+    )).resolves.toBe('ran');
   });
+
+  it('runs a shared dependency preApply once per config command across user and project roots', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'config-shared-pre-apply-source');
+    const controlPath = path.join(isolation.env.AW_HOME!, 'config-shared-pre-apply-control.txt');
+    const counterPath = path.join(isolation.env.AW_HOME!, 'config-shared-pre-apply-count.txt');
+    const definitions: Array<{
+      name: string;
+      dependencies?: string[];
+      configureManifest?: (manifest: PluginMeta['manifest']) => void;
+    }> = [
+      { name: 'leaf' },
+      {
+        name: 'root',
+        dependencies: ['leaf'],
+        configureManifest: (manifest) => {
+          manifest.config = {
+            fields: { mode: { type: 'string', default: 'safe' } },
+          };
+        },
+      },
+    ];
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const nativeCliRunner = runtime.nativeCliRunner;
+    for (const scope of ['user', 'project'] as const) {
+      const installed = await installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope,
+      }, runtime);
+      expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    }
+    const visible = await statusCommandV7({
+      plugins: ['team/root'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      json: true,
+    });
+    expect(statusTargetIntent(visible.payload.targets[0]!)).toMatchObject({
+      enabled: true,
+      scopes: ['project', 'user'],
+    });
+
+    definitions[0]!.configureManifest = (manifest) => {
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    };
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'leaf', 'scripts', 'preApply.mjs'),
+      [
+        'import { readFile, writeFile } from "node:fs/promises";',
+        `const counter = ${JSON.stringify(counterPath)};`,
+        'const previous = Number(await readFile(counter, "utf8").catch(() => "0"));',
+        'await writeFile(counter, String(previous + 1));',
+        `if (await readFile(${JSON.stringify(controlPath)}, "utf8").catch(() => "ok") === "fail") {`,
+        '  throw new Error("shared dependency preApply failed");',
+        '}',
+      ].join('\n'),
+    );
+    await createNativeDependencyCatalog(sourceRoot, definitions);
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+
+    const applyMode = async (mode: string) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli([
+        'config', 'set', 'team/root', 'mode', '--value-json', JSON.stringify(mode),
+        '--scope', 'user', '--apply', '--yes', '--json',
+      ], {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+        nativeCliRunner,
+      });
+      return {
+        exitCode,
+        receipt: JSON.parse(output.readStdout()) as {
+          configWrite: string;
+          overallState: string;
+          apply: { targetResults: Array<{ target: { pluginId?: string }; errorCode?: string }> };
+        },
+      };
+    };
+
+    const succeeded = await applyMode('fast');
+    expect(succeeded.exitCode, JSON.stringify(succeeded.receipt)).toBe(1);
+    expect(succeeded.receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/root', scope: 'user' }),
+            errorCode: 'dependencyStillRequired',
+          }),
+          expect.objectContaining({
+            target: expect.objectContaining({ pluginId: 'team/root', scope: 'project' }),
+            state: 'completed',
+          }),
+        ]),
+      },
+    });
+    await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('1');
+
+    await fs.outputFile(controlPath, 'fail');
+    const failed = await applyMode('strict');
+    expect(failed.exitCode).toBe(1);
+    expect(failed.receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+    });
+    expect(failed.receipt.apply.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
+        errorCode: 'preApplyFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/leaf', scope: 'user' }),
+        errorCode: 'dependencyStillRequired',
+      }),
+    ]));
+    await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('2');
+
+    const nextCommand = await applyMode('again');
+    expect(nextCommand.exitCode).toBe(1);
+    await expect(fs.readFile(counterPath, 'utf8')).resolves.toBe('3');
+  }, 30_000);
 
   it('keeps a dual-platform dependency on the platform required by a Codex-only root', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -5943,6 +6563,7 @@ describe('five namespaced write commands', () => {
     }, {
       ...runtime,
       expectedPlanFingerprint: reviewed.operationPlan!.planFingerprint,
+      preApplyConfirmed: true,
     });
 
     expect(stale.targetResults).toEqual([
@@ -6203,6 +6824,58 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(
       isolation.env.AW_CODEX_HOME!, 'skills', 'leaf-skill',
     ))).resolves.toBe(false);
+  }, 30_000);
+
+  it('does not run preApply when cleanup reconciles a still-desired Codex target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cleanup-desired-pre-apply-source');
+    const definitions: Array<{
+      name: string;
+      configureManifest?: (manifest: PluginMeta['manifest']) => void;
+    }> = [{ name: 'demo' }];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    definitions[0]!.configureManifest = (manifest) => {
+      manifest.scripts = { preApply: { path: './scripts/preApply.mjs' } };
+    };
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'scripts', 'preApply.mjs'),
+      'await import("node:fs/promises").then((fs) => fs.writeFile(`${process.env.AW_HOME}/cleanup-pre-apply-ran.txt`, "ran"));\n',
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', env: isolation.env,
+    });
+
+    const result = await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, runtime);
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    await expect(fs.pathExists(
+      path.join(isolation.env.AW_HOME!, 'cleanup-pre-apply-ran.txt'),
+    )).resolves.toBe(false);
   }, 30_000);
 
   it('preserves incomplete, all-zero, and path-mismatched owner markers during force cleanup', async () => {
@@ -8400,7 +9073,7 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
   }, 30_000);
 
-  it('removes a project Codex Skill deleted by a new source identity manifest', async () => {
+  it.each(['sync', 'uninstall'] as const)('removes a project Codex Skill removed by the active manifest through %s', async (command) => {
     const isolation = getCurrentSourceTestIsolation();
     const firstRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v1-source');
     const secondRoot = path.join(isolation.layout.fixtureCwd, 'project-skill-v2-source');
@@ -8426,6 +9099,9 @@ describe('five namespaced write commands', () => {
       configureManifest: (manifest) => {
         manifest.version = '2.0.0';
         manifest.marketplace.policy.products = ['CODEX'];
+        manifest.extensions = {
+          instructions: [{ name: 'current', title: 'Current', content: 'Current instruction.' }],
+        };
       },
     }]);
     const firstSource = { id: 'team', type: 'path' as const, primary: true, path: firstRoot };
@@ -8439,9 +9115,10 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
     };
-    await expect(installWriteCommand(['team/demo'], {
+    const initialInstall = await installWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    }, runtime);
+    expect(initialInstall.overallState, JSON.stringify(initialInstall.rebuildResults)).toBe('succeeded');
     const skillRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills', 'removed-in-v2');
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(true);
     const changed = await updateCatalogSourceCommand({
@@ -8455,14 +9132,37 @@ describe('five namespaced write commands', () => {
     await syncCatalogSourceGeneration({
       sourceId: 'team', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
     });
+    const foreignSkillRoot = path.join(
+      isolation.layout.fixtureCwd,
+      '.agents',
+      'skills',
+      'foreign-skill',
+    );
+    await fs.outputFile(path.join(foreignSkillRoot, 'SKILL.md'), 'foreign\n');
+    await writeSkillOwnerMarker({
+      skillRoot: foreignSkillRoot,
+      allowedRoot: path.dirname(foreignSkillRoot),
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'other',
+        pluginId: 'other/demo',
+        plugin: 'demo',
+        artifactKey: 'foreign-skill',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
 
-    const result = await syncWriteCommand(['team/demo'], {
+    const result = await (command === 'sync' ? syncWriteCommand : uninstallWriteCommand)(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
 
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    expect(result.rebuildResults.some((entry) => entry.removed.includes('removed-in-v2'))).toBe(true);
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(foreignSkillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('foreign\n');
   }, 30_000);
 
   it('only removes direct project Codex Skills with an exact current owner identity', async () => {
@@ -9421,6 +10121,220 @@ describe('five namespaced write commands', () => {
       }),
     ]));
   });
+
+  it('keeps a failed native dependency override for a prepared AW extension root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(
+      isolation.layout.fixtureCwd,
+      'failed-native-manager-intent-source',
+    );
+    const definitions = [
+      {
+        name: 'b',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.skills = './skills';
+          manifest.extensions = undefined;
+        },
+      },
+      {
+        name: 'a',
+        dependencies: ['b'],
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+      {
+        name: 'independent',
+        configureManifest: (manifest: PluginMeta['manifest']) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+        },
+      },
+    ];
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const nativeSkillRoot = path.join(sourceRoot, 'plugins', 'b', 'skills', 'b-skill');
+    await Promise.all([
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'SKILL.md'),
+        '---\nname: b-skill\ndescription: B skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(nativeSkillRoot, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+    ]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, definitions);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const listCallsBefore = runtime.nativeCliRunner.mock.calls.length;
+    const failingManagerResolver: NonNullable<
+      RebuildCommandRuntime['codexManagerResolver']
+    > = async (options) => {
+      const listed = await options.runner({
+        command: 'codex',
+        args: ['plugin', 'list', '--marketplace', 'aw', '--json'],
+        agentKind: 'codex',
+        cwd: options.cwd,
+        env: options.env,
+      });
+      expect(listed.exitCode).toBe(0);
+      throw new Error('injected manager resolver failure');
+    };
+
+    const first = await installWriteCommand(['team/a', 'team/independent'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      dependencyScopeOverrides: [{
+        pluginId: 'team/b', platform: 'codex', scope: 'user',
+      }],
+    }, {
+      ...runtime,
+      codexManagerResolver: failingManagerResolver,
+    });
+
+    expect(runtime.nativeCliRunner.mock.calls.slice(listCallsBefore).some(([invocation]) => {
+      const pluginIndex = invocation.args.indexOf('plugin');
+      const args = pluginIndex >= 0 ? invocation.args.slice(pluginIndex) : invocation.args;
+      return args[1] === 'list' && args.includes('--json');
+    }), JSON.stringify(first, null, 2)).toBe(true);
+    expect(first.overallState).toBe('partial');
+    expect(first.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'project' }),
+        action: 'skipped', state: 'failed', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'project' }),
+        state: 'completed',
+      }),
+    ]));
+    const receipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('install', first);
+    expect(receipt).toMatchObject({
+      overallState: 'partial',
+      requestedPluginIds: ['team/a', 'team/independent'],
+      resolvedPluginIds: ['team/a', 'team/b', 'team/independent'],
+      dependencyEdges: [{ from: 'team/a', to: 'team/b', platform: 'codex' }],
+    });
+    expect(receipt.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent' }),
+        state: 'completed',
+      }),
+    ]));
+    const intentLocation = {
+      scope: 'project' as const,
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    };
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const fakeCodexBin = await writeIntentRoundTripCodexPackage(path.join(
+      isolation.layout.rootDir,
+      'failed-native-manager-intent-codex',
+    ));
+    const syncOutput = await runIntentRoundTripCliChild([
+      'sync',
+      '--all',
+      '--scope',
+      'project',
+      '--platform',
+      'codex',
+      '--json',
+      '--yes',
+    ], isolation.layout.fixtureCwd, {
+      ...isolation.env,
+      PATH: `${fakeCodexBin}${path.delimiter}${isolation.env.PATH ?? ''}`,
+      npm_config_offline: 'true',
+      NPM_CONFIG_OFFLINE: 'true',
+    }, 1);
+    const syncReceipt = parseIntentRoundTripReceipt(syncOutput);
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/b')).toMatchObject({
+      target: { pluginId: 'team/b', scope: 'user' },
+    });
+    expect(syncReceipt.targetResults.find((target) =>
+      target.target.pluginId === 'team/independent')).toMatchObject({
+      target: { pluginId: 'team/independent', scope: 'project' },
+      state: 'completed',
+    });
+    await expect(readPluginIntentState(intentLocation)).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [
+        { pluginId: 'team/b', platform: 'codex', scope: 'user' },
+      ],
+    });
+
+    const overlapping = await installWriteCommand(
+      ['team/a', 'team/b', 'team/independent'],
+      {
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      },
+      { ...runtime, codexManagerResolver: failingManagerResolver },
+    );
+    expect(overlapping.overallState).toBe('partial');
+    expect(overlapping.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/b', scope: 'user' }),
+        state: 'failed',
+        message: expect.stringContaining('injected manager resolver failure'),
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/a', scope: 'user' }),
+        action: 'skipped', errorCode: 'dependencyInstallFailed',
+      }),
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/independent', scope: 'user' }),
+        state: 'completed',
+      }),
+    ]));
+    await expect(readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toEqual({
+      schemaVersion: 2,
+      kind: 'aw-plugin-intents',
+      roots: [
+        { pluginId: 'team/a', platforms: ['codex'] },
+        { pluginId: 'team/independent', platforms: ['codex'] },
+      ],
+      dependencyScopeOverrides: [],
+    });
+  }, 60_000);
 
   it('round-trips only an explicit dependency override through independent CLI processes', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -11841,6 +12755,7 @@ describe('five namespaced write commands', () => {
       });
       return {
         exitCode,
+        stdout: captured.readStdout(),
         payload: JSON.parse(captured.readStdout()) as Record<string, unknown>,
         stderr: captured.readStderr(),
       };
@@ -11910,12 +12825,17 @@ describe('five namespaced write commands', () => {
       },
     });
     expect(set.payload).not.toHaveProperty('targetResults');
+    expect(JSON.parse(set.stdout)).toEqual(set.payload);
+    expect(set.stderr).toBe('');
+    expect(set.payload.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('projectConfigShareabilityUnverified'),
+    ]));
     expect((await readStore()).values).toEqual({ mode: 'fast' });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=fast');
 
     const human = createCapturedCliIo();
     await expect(runCli([
-      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project',
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"human-fast"', '--scope', 'project',
     ], {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -11924,7 +12844,39 @@ describe('five namespaced write commands', () => {
       nativeCliRunner,
     })).resolves.toBe(0);
     expect(human.readStdout()).toContain('已写入 demo.mode');
-    expect(human.readStderr()).toContain('配置内容没有变化，因此没有运行 reinstall');
+    expect(human.readStderr()).toContain('配置已保存，但未请求应用配置');
+    expect(human.readStderr()).toContain('projectConfigShareabilityUnverified');
+    await runPublic([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project',
+    ]);
+
+    const runHumanConfig = async (args: string[]) => {
+      const output = createCapturedCliIo();
+      const exitCode = await runCli(args, {
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        io: output.io,
+        interactive: false,
+        nativeCliRunner,
+      });
+      return { exitCode, stdout: output.readStdout(), stderr: output.readStderr() };
+    };
+    const userSet = await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"user-fast"', '--scope', 'user',
+    ]);
+    const userUnset = await runHumanConfig([
+      'config', 'unset', 'team/demo', 'mode', '--scope', 'user',
+    ]);
+    await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"user-reset"', '--scope', 'user',
+    ]);
+    const userReset = await runHumanConfig([
+      'config', 'reset', 'team/demo', '--scope', 'user', '--yes',
+    ]);
+    for (const result of [userSet, userUnset, userReset]) {
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.match(/其它项目不会由本次命令扫描或更新/g)).toHaveLength(1);
+    }
 
     setAtomicConfigBeforeRenameHookForTests(async () => {
       throw new Error('injected config commit failure');
@@ -11985,6 +12937,11 @@ describe('five namespaced write commands', () => {
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
+    await git(isolation.layout.fixtureCwd, ['init', '--quiet']);
+    await fs.outputFile(
+      path.join(isolation.layout.fixtureCwd, '.gitignore'),
+      '.agent-workflows/plugin-config/team/demo/config.json\n',
+    );
     const reset = await runPublic([
       'config', 'reset', 'team/demo', '--scope', 'project', '--yes', '--apply',
     ]);
@@ -11999,6 +12956,7 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).exists).toBe(false);
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
+    await fs.remove(path.join(isolation.layout.fixtureCwd, '.gitignore'));
 
     await writePluginConfigStore({
       sourceId: 'team',
@@ -12038,6 +12996,16 @@ describe('five namespaced write commands', () => {
     });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
+    const unavailableHuman = await runHumanConfig([
+      'config', 'set', 'team/demo', 'mode', '--value-json', '"slow"', '--scope', 'project', '--apply',
+    ]);
+    expect(unavailableHuman).toMatchObject({ exitCode: 1 });
+    expect(unavailableHuman.stdout).toContain('已写入 demo.mode');
+    expect(unavailableHuman.stderr).toContain('invalidConfig：The effective config is invalid for every visible target.');
+    expect(unavailableHuman.stderr).toContain('codex/project：[invalidConfig] The effective config is invalid for this target.');
+    expect(unavailableHuman.stderr).toContain('请修复无效配置后运行 aw sync。');
+    expect(unavailableHuman.stderr).not.toContain('bad key');
+
     const repaired = await runPublic([
       'config', 'set', 'team/demo', 'labels', '--value-json', '{"good_key":"repaired"}',
       '--scope', 'project', '--apply',
@@ -12052,19 +13020,19 @@ describe('five namespaced write commands', () => {
     });
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
-      mode: 'fast',
+      mode: 'slow',
     });
     expect(await fs.readFile(configPath, 'utf8')).toContain('mode=safe');
 
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"safe"', '--scope', 'project', '--apply']);
     await runPublic(['config', 'set', 'team/demo', 'mode', '--value-json', '"fast"', '--scope', 'project', '--apply']);
-    const failed = await runPublic([
+    const failed = await runHumanConfig([
       'config', 'set', 'team/demo', 'mode', '--value-json', '"fail"', '--scope', 'project', '--apply',
     ]);
-    expect(failed).toMatchObject({
-      exitCode: 1,
-      payload: { configWrite: 'succeeded', overallState: 'partial' },
-    });
+    expect(failed).toMatchObject({ exitCode: 1 });
+    expect(failed.stderr).toContain('renderer requested failure');
+    expect(failed.stderr).toContain('请在解决失败原因后运行 aw reinstall demo -p codex -s project。');
+    expect(failed.stderr).not.toContain('file:///');
     expect((await readStore()).values).toEqual({
       labels: { good_key: 'repaired' },
       mode: 'fail',

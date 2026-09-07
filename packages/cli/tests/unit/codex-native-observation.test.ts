@@ -72,6 +72,86 @@ describe('Codex native observation session', () => {
     }
   });
 
+  it('invalidates one marketplace without discarding another marketplace cache', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    let teamReads = 0;
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        const marketplace = invocation.args[3]!;
+        if (marketplace === 'aw-team') {
+          teamReads += 1;
+          return listResult(teamReads === 1 ? [] : ['demo@aw-team']);
+        }
+        return listResult([`demo@${marketplace}`]);
+      },
+    });
+    try {
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw-team', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'absent' });
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw-other', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'installed' });
+      expect(calls).toHaveLength(2);
+
+      session.invalidate('aw-team');
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw-other', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'installed' });
+      expect(calls).toHaveLength(2);
+
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw-team', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'installed' });
+      expect(calls).toHaveLength(3);
+
+      session.invalidate();
+      await session.inspectPlugin({ pluginId: 'demo@aw-team', scope: 'user' });
+      await session.inspectPlugin({ pluginId: 'demo@aw-other', scope: 'user' });
+      expect(calls).toHaveLength(5);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  it('does not let an invalidated in-flight list replace a newer cache entry', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const calls: NativeCliInvocation[] = [];
+    let startFirstRead: (() => void) | undefined;
+    let resolveFirstRead: ((result: ReturnType<typeof listResult>) => void) | undefined;
+    const firstReadStarted = new Promise<void>((resolve) => {
+      startFirstRead = resolve;
+    });
+    const session = await createCodexNativeObservationSession({
+      exactCwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runner: async (invocation) => {
+        calls.push(invocation);
+        if (calls.length > 1) return listResult(['demo@aw']);
+        startFirstRead!();
+        return new Promise((resolve) => {
+          resolveFirstRead = resolve;
+        });
+      },
+    });
+    try {
+      const staleRead = session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' });
+      await firstReadStarted;
+      session.invalidate('aw');
+
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'installed' });
+      resolveFirstRead!(listResult([]));
+      await staleRead;
+
+      expect((await session.inspectPlugin({ pluginId: 'demo@aw', scope: 'user' })).observation)
+        .toMatchObject({ state: 'observed', value: 'installed' });
+      expect(calls).toHaveLength(2);
+    } finally {
+      await session.dispose();
+    }
+  });
+
   it('does not share generations between sessions and removes each neutral cwd', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const neutralCwds: string[] = [];

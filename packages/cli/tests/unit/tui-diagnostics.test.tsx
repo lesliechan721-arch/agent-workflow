@@ -67,12 +67,19 @@ describe('TUI diagnostic projection', () => {
 
   it('keeps safe code, ref, and commit values while bounding text and omitting unsafe causes', () => {
     const commit = 'fedcba9876543210fedcba9876543210fedcba98';
+    const secret = 'private "value"\npath\\tail';
+    const escaped = JSON.stringify(secret).slice(1, -1);
     expect(safeDiagnosticCode('configReadFailed.v2', 'fallbackCode')).toBe('configReadFailed.v2');
     expect(safeDiagnosticCode('bad code: token=secret', 'fallbackCode')).toBe('fallbackCode');
     expect(sanitizeDiagnosticText('refs/heads/release-v5')).toBe('refs/heads/release-v5');
     expect(sanitizeDiagnosticText(commit)).toBe(commit);
     expect(sanitizeDiagnosticText('x'.repeat(400))).toHaveLength(240);
     expect(sanitizeDiagnosticText('x'.repeat(400))).toMatch(/…$/u);
+    expect(sanitizeDiagnosticText(
+      `raw=${secret} escaped=${escaped}`,
+      [],
+      [secret],
+    )).toBe('raw=[REDACTED] escaped=[REDACTED]');
     expect(sanitizeDiagnosticCause('git fetch returned an error')).toBeUndefined();
     expect(sanitizeDiagnosticCause('token=cause-secret')).toBeUndefined();
     expect(sanitizeDiagnosticCause('已验证缓存不可用')).toBe('已验证缓存不可用');

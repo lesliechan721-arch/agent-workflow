@@ -63,6 +63,7 @@ import {
 } from './diagnostics.js';
 import type {
   BatchPluginWriteAction,
+  ExternalDraftState,
   OperationIntent,
   OperationReviewChange,
   OperationResultSummary,
@@ -1061,6 +1062,12 @@ function isCatalogSourcesBootstrapFlow(snapshot: TuiControllerSnapshot): boolean
     && snapshot.result.operationKind === 'catalogSourcesRecovery';
 }
 
+function isOperationHistoryRoute(route: TuiRoute): boolean {
+  return route.name === 'operationHistory'
+    || route.name === 'operationDiagnostic'
+    || route.name === 'operationReportPreview';
+}
+
 function operationTargetStateLabel(
   state: 'completed' | 'kept' | 'failed' | 'skipped',
 ): { label: string; status: ActionItem['status'] } {
@@ -1091,7 +1098,8 @@ export function resolveConsoleV4ScreenId(
   if (tooSmall) return 'G05';
   if (overlay === 'help') return 'G03';
   if (overlay === 'discard') return 'G04';
-  if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) return 'G01';
+  if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(snapshot.router.current.route)) return 'G01';
   return resolveRouteScreenId(snapshot.router.current.route, {
     snapshot,
     controller,
@@ -1111,9 +1119,10 @@ export function ConsoleAppV4(props: {
   onScreenChange?: (screen: ConsoleV4ScreenId) => void;
   ownsController?: boolean;
   pendingSessionNavigation?: SessionNavigation;
+  pendingSessionNavigationDrafts?: ExternalDraftState[];
   onSessionNavigation?: (
     navigation: SessionNavigation,
-    options?: { discardDrafts?: boolean },
+    options?: { discardDrafts?: boolean; draftConfirmation?: ExternalDraftState[] },
   ) => Promise<SessionNavigationResult>;
   onCancelPendingSessionNavigation?: () => boolean;
 }): React.JSX.Element {
@@ -1125,6 +1134,7 @@ export function ConsoleAppV4(props: {
   const [overlayFocus, setOverlayFocus] = useState(0);
   const [discardForExit, setDiscardForExit] = useState(false);
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
+  const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
   const [focus, setFocus] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [searchFocus, setSearchFocus] = useState(false);
@@ -1177,6 +1187,11 @@ export function ConsoleAppV4(props: {
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
   const [confirmedSharedReviewToken, setConfirmedSharedReviewToken] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
+  const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0 });
+  const previousExternalDraftValues = useRef({
+    draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+  });
+  const externalDraftFlowIds = useRef(new Map<string, string>());
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
@@ -1187,6 +1202,15 @@ export function ConsoleAppV4(props: {
   const setShowTechnical = (next: boolean | ((current: boolean) => boolean)): void => {
     const visible = typeof next === 'function' ? next(showTechnical) : next;
     setTechnicalRouteKey(visible ? routeKey : undefined);
+  };
+  const resetRootUiState = (): void => {
+    setFocus(0);
+    setScrollOffset(0);
+    setSearchFocus(false);
+    setQuery('');
+    setShowTechnical(false);
+    setSourceDependenciesExpanded(false);
+    setBatchTargetOffset(0);
   };
   const plugin = currentPlugin(props.controller, route);
   const issue = route.name === 'issueDetail'
@@ -1210,8 +1234,9 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     const unsubscribe = props.controller.subscribe(setSnapshot);
     if (props.controller.snapshot.phase === 'idle') {
-      void props.controller.load().catch(() => {
-        props.controller.recordSafeUiFailure('tuiLoadFailed', 'ui-load');
+      void props.controller.load().catch((error: unknown) => {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        props.controller.recordUiFailure(error, { code: 'tuiLoadFailed', stage: 'ui-load' });
       });
     }
     return () => {
@@ -1219,15 +1244,6 @@ export function ConsoleAppV4(props: {
       if (props.ownsController) props.controller.dispose();
     };
   }, [props.controller, props.ownsController]);
-  useEffect(() => {
-    props.controller.setExternalDraftState(
-      sourceDraft ? 'sourceDraft'
-        : batchDraft ? 'batchDraft'
-          : dirty || changedObjectDraftKeys.length > 0 ? 'configDraft' : undefined,
-    );
-    return () => props.controller.setExternalDraftState(undefined);
-  }, [props.controller, batchDraft, changedObjectDraftKeys.length, dirty, route.name, sourceDraft]);
-
   useEffect(() => {
     if (!exitAfterBusy || !snapshot.result) return;
     const state = snapshot.result.state;
@@ -1284,6 +1300,10 @@ export function ConsoleAppV4(props: {
     setReportSaveError(undefined);
   }, [route.name]);
   useEffect(() => {
+    if (route.name !== 'home') return;
+    resetRootUiState();
+  }, [route.name]);
+  useEffect(() => {
     if (route.name === 'portableAgentInput') {
       setPortableAgentInput(snapshot.portableDraft?.requestedAgents.join(' ') ?? '');
     } else setPortableAgentInput('');
@@ -1300,6 +1320,54 @@ export function ConsoleAppV4(props: {
     || route.name === 'configSave'
     ? route
     : undefined;
+  const configRouteOwner = configRoute ? configOwnerKey(configRoute) : undefined;
+  useEffect(() => {
+    const previous = previousExternalDraftValues.current;
+    if (previous.draftUpdates !== draftUpdates
+      || previous.draftRemoves !== draftRemoves
+      || previous.objectDrafts !== objectDrafts
+      || previous.changedObjectDraftKeys !== changedObjectDraftKeys) {
+      externalDraftRevision.current.config += 1;
+    }
+    if (previous.sourceDraft !== sourceDraft) externalDraftRevision.current.source += 1;
+    if (previous.batchDraft !== batchDraft) externalDraftRevision.current.batch += 1;
+    previousExternalDraftValues.current = {
+      draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
+    };
+    const currentFlowId = snapshot.router.currentFlowId;
+    if (currentFlowId && configRouteOwner) {
+      externalDraftFlowIds.current.set(configRouteOwner, currentFlowId);
+    }
+    if (currentFlowId && sourceDraft) externalDraftFlowIds.current.set(sourceDraft.owner, currentFlowId);
+    if (currentFlowId && batchDraft) externalDraftFlowIds.current.set('batch-write', currentFlowId);
+    const drafts: ExternalDraftState[] = [];
+    if ((dirty || changedObjectDraftKeys.length > 0) && draftOwner) {
+      const flowId = externalDraftFlowIds.current.get(draftOwner);
+      drafts.push({
+        kind: 'configDraft', owner: draftOwner, revision: externalDraftRevision.current.config,
+        ...(flowId ? { flowId } : {}),
+      });
+    }
+    if (sourceDraft) {
+      const flowId = externalDraftFlowIds.current.get(sourceDraft.owner);
+      drafts.push({
+        kind: 'sourceDraft', owner: sourceDraft.owner, revision: externalDraftRevision.current.source,
+        ...(flowId ? { flowId } : {}),
+      });
+    }
+    if (batchDraft) {
+      const flowId = externalDraftFlowIds.current.get('batch-write');
+      drafts.push({
+        kind: 'batchDraft', owner: 'batch-write', revision: externalDraftRevision.current.batch,
+        ...(flowId ? { flowId } : {}),
+      });
+    }
+    props.controller.setExternalDraftState(drafts);
+  }, [
+    props.controller, batchDraft, changedObjectDraftKeys, configRouteOwner, dirty, draftOwner,
+    draftRemoves, draftUpdates, objectDrafts, snapshot.router.currentFlowId, sourceDraft,
+  ]);
+  useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
   const configDraftIssues = (() => {
     if (!configRoute || !currentConfigPage) return [];
@@ -1773,8 +1841,9 @@ export function ConsoleAppV4(props: {
     restorePageContext();
     setActionError(undefined);
   };
-  const showSafeUiFailure = (code: string, stage: string): void => {
-    const recordId = props.controller.recordSafeUiFailure(code, stage);
+  const showSafeUiFailure = (error: unknown, code: string, stage: string): void => {
+    if (error instanceof Error && error.name === 'AbortError') return;
+    const recordId = props.controller.recordUiFailure(error, { code, stage });
     go({ name: 'operationDiagnostic', recordId });
   };
   const leaveResult = (target?: TuiRoute): void => {
@@ -1953,8 +2022,8 @@ export function ConsoleAppV4(props: {
       setFocus(0);
       setScrollOffset(0);
       setActionError(undefined);
-    } catch {
-      showSafeUiFailure('tuiForceCleanupReviewFailed', 'force-cleanup-review');
+    } catch (error) {
+      showSafeUiFailure(error, 'tuiForceCleanupReviewFailed', 'force-cleanup-review');
     }
   };
   const beginAddSource = (): void => {
@@ -2463,8 +2532,8 @@ export function ConsoleAppV4(props: {
         changes: configChanges(),
       });
       setConfigActionError(undefined);
-    } catch {
-      props.controller.recordSafeUiFailure('tuiConfigReviewFailed', 'config-review');
+    } catch (error) {
+      props.controller.recordUiFailure(error, { code: 'tuiConfigReviewFailed', stage: 'config-review' });
       setConfigActionError('设置值未通过验证。请重新检查修改。');
     }
   };
@@ -2509,7 +2578,8 @@ export function ConsoleAppV4(props: {
     setPendingPresetId(undefined);
   }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
 
-  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)) {
+  if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(route)) {
     const sourcesConfigInvalid = snapshot.loadError?.code === 'catalogSourcesConfigInvalid';
     breadcrumb = sourcesConfigInvalid ? 'Catalog 来源恢复' : '启动失败';
     title = sourcesConfigInvalid ? 'Catalog 来源配置损坏' : '无法读取插件状态';
@@ -2521,7 +2591,7 @@ export function ConsoleAppV4(props: {
       : 'd 技术详情 · q 退出 · Ctrl-C 退出';
     actions = sourcesConfigInvalid ? [{
       label: '备份并恢复官方默认来源',
-      description: '先进入 Review；不会删除 Catalog state 或 store',
+      description: '先进入确认页；不会删除目录版本状态或本地缓存',
       run: () => beginReview({ kind: 'catalogSourcesRecovery' }),
     }] : [];
     content = <Box flexDirection="column">
@@ -2529,7 +2599,8 @@ export function ConsoleAppV4(props: {
       {actions.length > 0 ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /> : null}
       {showTechnical ? <TechnicalDetails><StaticRow title="安全诊断" meta={snapshot.loadError?.code ?? 'statusLoadFailed'} compact /></TechnicalDetails> : null}
     </Box>;
-  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)) {
+  } else if (snapshot.phase !== 'ready' && !isCatalogSourcesBootstrapFlow(snapshot)
+    && !isOperationHistoryRoute(route)) {
     breadcrumb = '启动';
     title = '正在检查插件状态';
     description = '单个来源失败不会阻止其他来源继续加载。';
@@ -4756,7 +4827,7 @@ export function ConsoleAppV4(props: {
       : '当前状态检查没有发现需要处理的安装、来源或设置问题。';
     if (issues.length === 0) {
       actions = [
-        { label: '返回首页', run: () => go({ name: 'home' }) },
+        { label: '返回首页', run: () => requestSessionNavigation('home') },
         { label: '浏览插件', run: () => go({ name: 'pluginList', mode: 'browse' }) },
       ];
     } else {
@@ -4960,7 +5031,7 @@ export function ConsoleAppV4(props: {
       ? '完成操作或遇到问题后，安全摘要会保留在这里。'
       : '记录只包含安全摘要，不携带可重放的确认票据。';
     actions = records.length === 0
-      ? [{ label: '返回首页', run: () => go({ name: 'home' }) }]
+      ? [{ label: '返回首页', run: () => requestSessionNavigation('home') }]
       : [
           ...records.map((record) => ({
             label: record.message,
@@ -5565,7 +5636,9 @@ export function ConsoleAppV4(props: {
       ? blocked
         ? '批量写入被阻止。已完成和未完成目标按实际结果保留。'
         : partial
-          ? `${resultSummary?.batch?.failedRequestedPluginIds.length ?? 0} 个根插件失败。成功目标不会重放。`
+          ? (resultSummary?.batch?.retryTargets?.length ?? 0) > 0
+            ? `${resultSummary?.batch?.retryTargets?.length ?? 0} 个根目标失败。成功目标不会重放。`
+            : '失败目标无法精确定位。请查看本次记录后重新操作。'
           : `${resultSummary?.batch?.requestedPluginIds.length ?? 0} 个根插件已完成。`
       : portableOperation
       ? blocked
@@ -5673,9 +5746,9 @@ export function ConsoleAppV4(props: {
       : undefined;
     actions = batchOperation
       ? [
-          ...((partial || blocked) && (resultSummary?.batch?.failedRequestedPluginIds.length ?? 0) > 0 ? [{
-            label: '仅重试失败插件…',
-            description: '重新读取失败根插件及其依赖，并进入新的确认页',
+          ...((partial || blocked) && (resultSummary?.batch?.retryTargets?.length ?? 0) > 0 ? [{
+            label: '仅重试失败目标…',
+            description: '重新读取失败根目标及其依赖，并进入新的确认页',
             run: () => {
               props.controller.retryFailedPluginWriteBatch();
               setFocus(0);
@@ -5753,10 +5826,10 @@ export function ConsoleAppV4(props: {
           ]
         : [
             { label: '查看问题列表', run: () => leaveResult({ name: 'issueList' }) },
-            { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
+            { label: '返回首页', run: () => requestSessionNavigation('home') },
           ]
       : sourceOperation
-      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult() }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
+      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult() }, { label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
           ...(configRetryAvailable ? [{
@@ -5777,7 +5850,7 @@ export function ConsoleAppV4(props: {
       : configOperation && blocked
       ? [
           { label: '返回设置', run: () => props.controller.resumeResultDraft() },
-          { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
+          { label: '返回首页', run: () => requestSessionNavigation('home') },
         ]
       : [{ label: partial || blockedDependencyFailure ? '查看失败项' : successfulConfigOperation && configOrigin
         ? configOrigin?.name === 'pluginPreview' ? '返回插件预览' : '返回插件详情'
@@ -5812,7 +5885,7 @@ export function ConsoleAppV4(props: {
           scope: failedTarget.scope,
         });
       },
-    }] : []), { label: '返回首页', run: () => leaveResult({ name: 'home' }) }];
+    }] : []), { label: '返回首页', run: () => requestSessionNavigation('home') }];
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
     const resultTargetName = (target: NonNullable<OperationResultSummary['targets']>[number]): string =>
@@ -6015,12 +6088,12 @@ export function ConsoleAppV4(props: {
       label: unavailable === 'plugin' ? '返回插件列表'
         : unavailable === 'issue' ? '返回问题列表'
           : unavailable === 'config' ? '返回设置列表' : '返回首页',
-      run: () => go(unavailable === 'plugin'
-        ? { name: 'pluginList', mode: 'installed' }
-        : unavailable === 'issue' ? { name: 'issueList' }
-          : unavailable === 'config'
-            ? { name: 'configFields', pluginId: configRoute!.pluginId, layer: configRoute!.layer }
-            : { name: 'home' }),
+      run: () => unavailable === 'flow'
+        ? requestSessionNavigation('home')
+        : go(unavailable === 'plugin'
+          ? { name: 'pluginList', mode: 'installed' }
+          : unavailable === 'issue' ? { name: 'issueList' }
+            : { name: 'configFields', pluginId: configRoute!.pluginId, layer: configRoute!.layer }),
     }];
     content = <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />;
   }
@@ -6072,25 +6145,75 @@ export function ConsoleAppV4(props: {
       const pending = action.run?.();
       if (pending) void pending.catch((error: unknown) => {
         if (error instanceof Error && error.name === 'AbortError') return;
-        showSafeUiFailure('tuiActionFailed', 'ui-action');
+        showSafeUiFailure(error, 'tuiActionFailed', 'ui-action');
       });
-    } catch {
-      showSafeUiFailure('tuiActionFailed', 'ui-action');
+    } catch (error) {
+      showSafeUiFailure(error, 'tuiActionFailed', 'ui-action');
     }
   };
 
-  const requestSessionNavigation = (
+  function requestSessionNavigation(
     navigation: SessionNavigation,
     discardDrafts = false,
-  ): void => {
-    if (!props.onSessionNavigation) return;
-    void props.onSessionNavigation(navigation, { discardDrafts }).then((result) => {
-      if (result !== 'draftBlocked') return;
-      setDiscardForSessionNavigation(navigation);
-      setOverlayFocus(0);
-      setOverlay('sessionNavigation');
-    }).catch(() => showSafeUiFailure('tuiSessionNavigationFailed', 'session-navigation'));
-  };
+  ): void {
+    if (!props.onSessionNavigation) {
+      if (navigation !== 'home') return;
+      if (!props.controller.goHome({ discardDrafts })) {
+        setDiscardDraftConfirmation(props.controller.externalDrafts);
+        setDiscardForSessionNavigation(navigation);
+        setOverlayFocus(0);
+        setOverlay('sessionNavigation');
+        return;
+      }
+      resetRootUiState();
+      if (discardDrafts) clearExternalDraftValues();
+      return;
+    }
+    const draftConfirmation = discardDrafts ? discardDraftConfirmation : undefined;
+    void props.onSessionNavigation(navigation, {
+      discardDrafts,
+      ...(draftConfirmation ? { draftConfirmation } : {}),
+    }).then((result) => {
+      if (result === 'draftBlocked') {
+        setDiscardDraftConfirmation(props.controller.externalDrafts);
+        setDiscardForSessionNavigation(navigation);
+        setOverlayFocus(0);
+        setOverlay('sessionNavigation');
+        return;
+      }
+      if (result === 'completed') {
+        if (navigation === 'home') resetRootUiState();
+        if (discardDrafts) clearExternalDraftValues();
+        setDiscardDraftConfirmation(undefined);
+      }
+    }).catch((error: unknown) => showSafeUiFailure(error, 'tuiSessionNavigationFailed', 'session-navigation'));
+  }
+
+  function clearExternalDraftValues(): void {
+    setDirty(false);
+    setDraftUpdates({});
+    setDraftRemoves([]);
+    setObjectDrafts({});
+    setChangedObjectDraftKeys([]);
+    setObjectError(undefined);
+    setSourceDraft(undefined);
+    setBatchDraft(undefined);
+  }
+
+  function continueEditingFromSessionNavigation(): void {
+    if (props.pendingSessionNavigation) props.onCancelPendingSessionNavigation?.();
+    setOverlay(undefined);
+    setDiscardForSessionNavigation(undefined);
+    setDiscardDraftConfirmation(undefined);
+  }
+
+  useEffect(() => {
+    if (!props.pendingSessionNavigation || !props.pendingSessionNavigationDrafts) return;
+    setDiscardForSessionNavigation(props.pendingSessionNavigation);
+    setDiscardDraftConfirmation(props.pendingSessionNavigationDrafts);
+    setOverlayFocus(0);
+    setOverlay('sessionNavigation');
+  }, [props.pendingSessionNavigation, props.pendingSessionNavigationDrafts]);
 
   useInput((input, key) => {
     if (!overlay && route.name === 'reviewPreparing' && snapshot.reviewPreparation?.state === 'failed'
@@ -6161,8 +6284,9 @@ export function ConsoleAppV4(props: {
         return;
       }
       if (key.escape || input.toLowerCase() === 'b' || input === '?') {
-        setOverlay(undefined);
-        if (overlay === 'sessionNavigation') setDiscardForSessionNavigation(undefined);
+        if (overlay === 'sessionNavigation') {
+          continueEditingFromSessionNavigation();
+        } else setOverlay(undefined);
         return;
       }
       if (key.leftArrow || key.rightArrow || key.upArrow || key.downArrow) {
@@ -6176,7 +6300,10 @@ export function ConsoleAppV4(props: {
           setOverlay(undefined);
           if (props.onSessionNavigation && overlayFocus === 1) requestSessionNavigation('home');
           else if (props.onSessionNavigation && overlayFocus === 2) requestSessionNavigation('reload');
-        } else if (overlayFocus === 0) setOverlay(undefined);
+        } else if (overlayFocus === 0) {
+          if (overlay === 'sessionNavigation') continueEditingFromSessionNavigation();
+          else setOverlay(undefined);
+        }
         else if (overlay === 'discard') {
           setOverlay(undefined);
           setDirty(false);
@@ -6203,14 +6330,6 @@ export function ConsoleAppV4(props: {
           const navigation = discardForSessionNavigation;
           setOverlay(undefined);
           setDiscardForSessionNavigation(undefined);
-          setDirty(false);
-          setDraftUpdates({});
-          setDraftRemoves([]);
-          setObjectDrafts({});
-          setChangedObjectDraftKeys([]);
-          setObjectError(undefined);
-          setSourceDraft(undefined);
-          setBatchDraft(undefined);
           requestSessionNavigation(navigation, true);
         } else requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
       }
@@ -6654,6 +6773,11 @@ export function ConsoleAppV4(props: {
         || route.name === 'configFieldAction')) {
       back();
     } else if (globalAction === 'back' && route.name === 'batchPlacement') {
+      back();
+    } else if (globalAction === 'back'
+      && (route.name === 'operationHistory'
+        || route.name === 'operationDiagnostic'
+        || route.name === 'operationReportPreview')) {
       back();
     } else if (globalAction === 'back') {
       if (dirty && route.name !== 'review') {

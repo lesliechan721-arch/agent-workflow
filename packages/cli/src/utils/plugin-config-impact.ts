@@ -345,7 +345,8 @@ export async function analyzePluginConfigMutationImpact(options: {
     for (const target of dedupeTargets(options.visibleTargets)) {
       let affected = false;
       const declarations = targetArtifactDeclarations(options.plugin, target);
-      if (options.plugin.manifest.scripts?.preApply) {
+      if (options.plugin.manifest.scripts?.preApply
+        || (options.plugin.manifest.dependencies?.length ?? 0) > 0) {
         const config = await resolveScope(target.scope);
         affected = !configValuesEqual(config.before.values, config.after.values);
       }

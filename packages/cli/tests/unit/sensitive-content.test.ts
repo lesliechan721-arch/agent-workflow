@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectSensitiveTokenRepresentations,
   findSensitiveTokenPath,
   resolveSensitiveTokenRepresentations,
 } from '../../src/utils/sensitive-content.js';
 import { assertNoSensitiveConfigValues } from '../../src/utils/plugin-scripts.js';
 
 describe('sensitive content scan', () => {
+  it('creates unique raw and JSON-escaped representations for non-empty values', () => {
+    const secret = 'quote" newline\n slash\\';
+
+    expect(collectSensitiveTokenRepresentations([secret, secret, ''])).toEqual([
+      JSON.stringify(secret).slice(1, -1),
+      secret,
+    ]);
+  });
+
   it('blocks raw and JSON-escaped values at the eight Unicode code point boundary', () => {
     const raw = '🔐'.repeat(8);
     const escaped = 'ab\ncdefg';

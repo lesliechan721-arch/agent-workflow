@@ -34,7 +34,11 @@ import {
   type CodexAgentRegistrationSnapshot,
   type CodexMcpServerSnapshot,
 } from '../utils/codex-config.js';
-import { canonicalizePathThroughExistingAncestor } from '../utils/state-paths.js';
+import {
+  canonicalizePathThroughExistingAncestor,
+  resolveClaudeProjectKey,
+  resolveCodexProjectKey,
+} from '../utils/state-paths.js';
 import {
   createCodexSkillExpectedTree,
   createCodexSkillStagingTreeContentDigest,
@@ -258,6 +262,7 @@ export interface RebuildExecutionContext {
   codexUserActivationDesired?: ReadonlySet<string>;
   codexObservationSession?: CodexNativeObservationSession;
   codexObservationScopeByMarketplace?: ReadonlyMap<string, 'user' | 'both'>;
+  preApplyExecutionCache?: Map<string, Promise<void>>;
 }
 
 function codexObservationScope(
@@ -4963,7 +4968,7 @@ function createNativeDriver(options: {
       return target.artifacts;
     },
     runPreApply: async (invocation: RebuildPreApplyInvocation) => {
-      await runPreApplyScript({
+      const run = () => runPreApplyScript({
         plugin: invocation.plugin,
         platform: invocation.target.identity.platform,
         scope: invocation.target.identity.scope,
@@ -4971,6 +4976,36 @@ function createNativeDriver(options: {
         context: options.context as never,
         scriptTimeoutMs: options.scriptTimeoutMs,
       });
+      const cache = options.context.preApplyExecutionCache;
+      if (!cache) {
+        await run();
+        return;
+      }
+      const { identity } = invocation.target;
+      const sourceIdentity = invocation.plugin.sourceIdentity ?? identity.sourceIdentity;
+      const pluginId = invocation.plugin.pluginId ?? identity.pluginId;
+      if (!sourceIdentity || !pluginId) {
+        await run();
+        return;
+      }
+      const projectKey = identity.scope === 'project'
+        ? identity.platform === 'codex'
+          ? await resolveCodexProjectKey(identity.cwd)
+          : await resolveClaudeProjectKey(identity.cwd)
+        : '';
+      const key = [
+        sourceIdentity,
+        pluginId,
+        identity.platform,
+        identity.scope,
+        projectKey,
+      ].join('\0');
+      let execution = cache.get(key);
+      if (!execution) {
+        execution = run();
+        cache.set(key, execution);
+      }
+      await execution;
     },
   };
 }
@@ -5100,6 +5135,8 @@ export function createRebuildIntegration(options: {
       const skillRoots = input.platform === 'codex'
         ? input.scope === 'project'
           ? materializing
+            || ((input.command === 'cleanup' || input.command === 'uninstall')
+              && input.readOnlyInspectionPlan !== true)
             ? [path.join(input.cwd, '.agents', 'skills')]
             : []
           : [

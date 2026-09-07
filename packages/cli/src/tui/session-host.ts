@@ -1,6 +1,6 @@
 import type { CommandReporter } from '../commands/runtime.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
-import type { OperationExecuteResult, TuiController } from './controller.js';
+import type { ExternalDraftState, OperationExecuteResult, TuiController } from './controller.js';
 import { OperationHistoryStore } from './operation-history.js';
 
 export type SessionNavigation = 'home' | 'reload';
@@ -28,6 +28,7 @@ export interface SessionHostSnapshot {
   epoch: number;
   controller: TuiController;
   pendingNavigation?: SessionNavigation;
+  pendingNavigationDrafts?: ExternalDraftState[];
   reloading: boolean;
 }
 
@@ -42,6 +43,8 @@ export class SessionHost {
   #progressFeed: RebuildProgressFeed;
   #controllerUnsubscribe?: () => void;
   #pendingNavigation?: SessionNavigation;
+  #pendingNavigationDrafts?: ExternalDraftState[];
+  #pendingConsumedDraft?: ExternalDraftState;
   #reloading = false;
   #disposed = false;
 
@@ -63,6 +66,9 @@ export class SessionHost {
       epoch: this.#epoch,
       controller: this.#controller,
       ...(this.#pendingNavigation ? { pendingNavigation: this.#pendingNavigation } : {}),
+      ...(this.#pendingNavigationDrafts
+        ? { pendingNavigationDrafts: structuredClone(this.#pendingNavigationDrafts) }
+        : {}),
       reloading: this.#reloading,
     });
   }
@@ -80,15 +86,22 @@ export class SessionHost {
 
   async requestNavigation(
     navigation: SessionNavigation,
-    options: { discardDrafts?: boolean } = {},
+    options: { discardDrafts?: boolean; draftConfirmation?: ExternalDraftState[] } = {},
   ): Promise<SessionNavigationResult> {
     if (this.#disposed || this.#reloading) return 'busy';
     if (this.#controller.hasActiveWrite) {
       this.#pendingNavigation = navigation;
+      this.#pendingNavigationDrafts = undefined;
+      this.#pendingConsumedDraft = undefined;
       this.#publish();
       return 'pending';
     }
     if (this.#controller.hasSessionDraft && !options.discardDrafts) return 'draftBlocked';
+    if (this.#controller.hasSessionDraft
+      && !this.#draftConfirmationMatches(options.draftConfirmation)) return 'draftBlocked';
+    this.#pendingNavigation = undefined;
+    this.#pendingNavigationDrafts = undefined;
+    this.#pendingConsumedDraft = undefined;
     if (navigation === 'home') {
       return this.#controller.goHome(options) ? 'completed' : 'draftBlocked';
     }
@@ -98,6 +111,8 @@ export class SessionHost {
   cancelPendingNavigation(): boolean {
     if (!this.#pendingNavigation) return false;
     this.#pendingNavigation = undefined;
+    this.#pendingNavigationDrafts = undefined;
+    this.#pendingConsumedDraft = undefined;
     this.#publish();
     return true;
   }
@@ -155,21 +170,45 @@ export class SessionHost {
       const pending = this.#pendingNavigation;
       if (!pending || snapshot.router.current.route.name !== 'result' || !snapshot.result) return;
       if (controller.hasActiveWrite) return;
-      this.#pendingNavigation = undefined;
       if (snapshot.result.state !== 'succeeded') {
+        this.#pendingNavigation = undefined;
+        this.#pendingNavigationDrafts = undefined;
+        this.#pendingConsumedDraft = undefined;
         this.#publish();
         return;
       }
       if (this.history instanceof LatestSessionResultHistory) {
         this.history.recordResult({ epoch, result: snapshot.result });
       }
-      if (pending === 'home') {
-        controller.goHome({ discardDrafts: true });
+      const externalDrafts = 'externalDrafts' in controller ? controller.externalDrafts : [];
+      if (!this.#pendingConsumedDraft) {
+        const consumedKind = snapshot.result.operationKind === 'configSave'
+          || snapshot.result.operationKind === 'configReset' ? 'configDraft'
+          : snapshot.result.operationKind === 'sourceMutation'
+            || snapshot.result.operationKind === 'catalogGeneration' ? 'sourceDraft'
+            : snapshot.result.operationKind === 'pluginWriteBatch' ? 'batchDraft' : undefined;
+        this.#pendingConsumedDraft = externalDrafts.find((draft) => draft.kind === consumedKind);
+        if (this.#pendingConsumedDraft) return;
+      } else if (externalDrafts.some((draft) =>
+        JSON.stringify(draft) === JSON.stringify(this.#pendingConsumedDraft))) return;
+      this.#pendingConsumedDraft = undefined;
+      if (controller.hasSessionDraft) {
+        this.#pendingNavigationDrafts = externalDrafts;
         this.#publish();
-      } else {
-        void this.#reload();
+        return;
       }
+      this.#pendingNavigation = undefined;
+      this.#pendingNavigationDrafts = undefined;
+      if (pending === 'home') {
+        controller.goHome();
+        this.#publish();
+      } else void this.#reload();
     });
+  }
+
+  #draftConfirmationMatches(confirmation?: ExternalDraftState[]): boolean {
+    if (!confirmation || !('externalDrafts' in this.#controller)) return false;
+    return JSON.stringify(confirmation) === JSON.stringify(this.#controller.externalDrafts);
   }
 
   #attachOperationHistory(): void {

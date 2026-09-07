@@ -13,6 +13,7 @@ import {
   resetPluginConfigStore,
   resolveConfigRead,
   resolveEffectivePluginConfig,
+  resolveProjectScopedPluginConfigView,
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
@@ -371,6 +372,145 @@ describe('plugin config Store v4', () => {
         issues: [expect.objectContaining({ key: 'connection', source: 'user' })],
       });
     }
+  });
+
+  it('keeps string values invalid after a number and boolean schema change until typed values replace them', async () => {
+    const user = storeOptions('user');
+    const project = storeOptions('project');
+    const stringConfig = normalizePluginConfigDefinition({
+      fields: {
+        count: { type: 'string' },
+        enabled: { type: 'string' },
+      },
+    });
+    const changedConfig = normalizePluginConfigDefinition({
+      fields: {
+        count: { type: 'number' },
+        enabled: { type: 'boolean' },
+      },
+    });
+    const originalManifest = {
+      ...manifest,
+      config: stringConfig,
+    } as NormalizedPluginManifest;
+    const changedManifest = {
+      ...manifest,
+      config: changedConfig,
+    } as NormalizedPluginManifest;
+    const pluginFor = (currentManifest: NormalizedPluginManifest) => ({
+      rootDir: user.cwd,
+      manifestPath: path.join(user.cwd, '.agents-plugin', 'plugin.json'),
+      manifest: currentManifest,
+      sourceId: user.sourceId,
+      sourceIdentity,
+      catalogLogicalIdentity: logicalIdentity,
+    });
+    await writePluginConfigStore({
+      ...user,
+      values: { count: '42', enabled: 'false' },
+    });
+    await writePluginConfigStore({
+      ...project,
+      values: { count: '7', enabled: 'true' },
+    });
+    await expect(resolveConfigRead({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      logicalIdentity,
+      pluginName: originalManifest.name,
+      plugin: pluginFor(originalManifest),
+      scope: 'project',
+      cwd: user.cwd,
+      env: user.env,
+    })).resolves.toMatchObject({
+      fields: [
+        { key: 'count', valueState: 'configured', effectiveValue: '7' },
+        { key: 'enabled', valueState: 'configured', effectiveValue: 'true' },
+      ],
+    });
+    const before = await Promise.all([
+      fs.readFile(resolvePluginConfigStorePath(user), 'utf8'),
+      fs.readFile(resolvePluginConfigStorePath(project), 'utf8'),
+    ]);
+    const read = (scope: 'user' | 'project') => resolveConfigRead({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      logicalIdentity,
+      pluginName: changedManifest.name,
+      plugin: pluginFor(changedManifest),
+      scope,
+      cwd: user.cwd,
+      env: user.env,
+    });
+
+    const userRead = await read('user');
+    for (const field of userRead.fields) {
+      expect(field).toMatchObject({
+        valueState: 'invalid',
+        effectiveValue: null,
+        sourceLayer: 'user',
+        source: 'user',
+        storedSourceLayer: 'user',
+        valid: false,
+        issues: [{ type: 'invalid-config', key: field.key, source: 'user' }],
+      });
+      expect(field).not.toHaveProperty('storedValue');
+    }
+
+    const projectRead = await read('project');
+    for (const field of projectRead.fields) {
+      expect(field).toMatchObject({
+        valueState: 'invalid',
+        effectiveValue: null,
+        sourceLayer: 'project',
+        source: 'project',
+        storedSourceLayer: 'project',
+        invalidOverride: { sourceLayer: 'project' },
+        fallback: { state: 'invalid', sourceLayer: 'user' },
+        valid: false,
+        issues: [{ type: 'invalid-config', key: field.key, source: 'project' }],
+      });
+      expect(field).not.toHaveProperty('storedValue');
+    }
+
+    const view = await resolveProjectScopedPluginConfigView({
+      sourceId: user.sourceId,
+      sourceIdentity,
+      logicalIdentity,
+      manifest: changedManifest,
+      cwd: user.cwd,
+      env: user.env,
+    });
+    for (const entry of Object.values(view.entries)) {
+      expect(entry).toMatchObject({ effectiveSource: 'project' });
+      expect(entry).not.toHaveProperty('userValue');
+      expect(entry).not.toHaveProperty('projectValue');
+    }
+    await expect(Promise.all([
+      fs.readFile(resolvePluginConfigStorePath(user), 'utf8'),
+      fs.readFile(resolvePluginConfigStorePath(project), 'utf8'),
+    ])).resolves.toEqual(before);
+
+    await writePluginConfigStore({
+      ...user,
+      values: { count: 42, enabled: false },
+    });
+    await writePluginConfigStore({
+      ...project,
+      values: { count: 7, enabled: true },
+    });
+    await expect(read('project')).resolves.toMatchObject({
+      fields: [
+        {
+          key: 'count', valueState: 'configured', effectiveValue: 7, storedValue: 7,
+          sourceLayer: 'project', storedSourceLayer: 'project', valid: true,
+        },
+        {
+          key: 'enabled', valueState: 'configured', effectiveValue: true, storedValue: true,
+          sourceLayer: 'project', storedSourceLayer: 'project', valid: true,
+        },
+      ],
+    });
   });
 
   it('validates fixed and key-value objects without mixing their schemas', async () => {

@@ -17,6 +17,18 @@ export function containsBlockedSensitiveToken(
   });
 }
 
+export function collectSensitiveTokenRepresentations(
+  sensitiveValues: readonly string[],
+): string[] {
+  const representations = new Set<string>();
+  for (const value of sensitiveValues) {
+    if (value.length === 0) continue;
+    representations.add(value);
+    representations.add(JSON.stringify(value).slice(1, -1));
+  }
+  return [...representations].sort((left, right) => right.length - left.length);
+}
+
 export function findSensitiveTokenPath(
   files: Readonly<Record<string, string | Buffer>>,
   sensitiveValues: readonly string[],

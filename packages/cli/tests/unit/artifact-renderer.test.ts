@@ -750,12 +750,14 @@ describe('artifact renderer runtime', () => {
     const plugin = await writePlugin(root);
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
 
+    const secret = 'secret "token"\npath\\tail';
+    const escaped = JSON.stringify(secret).slice(1, -1);
     await writePluginConfigStore({
       pluginName: plugin.manifest.name,
       scope: 'user',
       cwd,
       env,
-      values: { token: 'secret-token', credentials: { accessKey: 'nested-render-secret' } },
+      values: { token: secret, credentials: { accessKey: 'nested-render-secret' } },
     });
 
     const error = await runArtifactRenderer({
@@ -770,15 +772,16 @@ describe('artifact renderer runtime', () => {
           return {
             exitCode: 0,
             signal: null,
-            stdout: 'not-json secret-token nested-render-secret',
-            stderr: 'stderr secret-token nested-render-secret',
+            stdout: `not-json ${escaped} nested-render-secret`,
+            stderr: `stderr ${escaped} nested-render-secret`,
             timedOut: false,
           };
         },
       },
     }).then(() => undefined, (failure: unknown) => failure);
     expect(String(error)).toContain('[REDACTED]');
-    expect(String(error)).not.toContain('secret-token');
+    expect(String(error)).not.toContain(secret);
+    expect(String(error)).not.toContain(escaped);
     expect(String(error)).not.toContain('nested-render-secret');
   });
 

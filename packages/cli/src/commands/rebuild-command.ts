@@ -43,6 +43,7 @@ import {
 } from '../utils/codex-reconciler.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import {
+  executeRebuildComponentCleanup,
   executeRebuildOperation,
   prepareRebuildOperation,
   type DesiredTarget,
@@ -96,7 +97,6 @@ import { sanitizeCatalogSourceErrorMessage } from '../utils/catalog-public-error
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 import { resolveArtifactRenderConfig } from '../utils/artifact-renderer.js';
 import {
-  cleanupOwnedComponents,
   inspectOwnedComponents,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
@@ -186,6 +186,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
   >;
   previewOperationPlan?: boolean;
+  resolvePreApplyAuthorization?: boolean;
+  preApplyConfirmed?: boolean;
   scriptTimeoutMs?: number;
   directCli?: boolean;
   managedCodexAuthorizer?: ManagedCodexAuthorizer;
@@ -264,6 +266,17 @@ export interface RebuildCommandResult {
   operationPlan?: OperationPlan;
   codexManagerPreview?: CodexManagerPreview;
   offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
+  preApplyAuthorization?: PreApplyAuthorizationTarget[];
+}
+
+export interface PreApplyAuthorizationTarget {
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  platform: PlatformName;
+  scope: Scope;
+  relation: 'requested' | 'direct' | 'transitive';
 }
 
 export interface RebuildCommandTestHooks {
@@ -271,6 +284,11 @@ export interface RebuildCommandTestHooks {
     command: RebuildCommand;
     identity: RebuildTargetIdentity;
   }) => Promise<void>;
+  beforeActivationLegacyCleanupMutation?: (component: OwnedComponent) => Promise<void>;
+  afterActivationLegacyCleanupQuarantine?: (
+    component: OwnedComponent,
+    quarantinePath: string,
+  ) => Promise<void>;
 }
 
 let rebuildCommandTestHooks: RebuildCommandTestHooks | undefined;
@@ -681,6 +699,7 @@ async function runSingleSourceRebuildCommand(options: {
     preparationError?: unknown;
     reviewCompleted?: boolean;
     targetHookCompleted?: boolean;
+    skipPreApply?: boolean;
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
@@ -692,6 +711,7 @@ async function runSingleSourceRebuildCommand(options: {
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
     codexObservationSession: options.runtime?.codexObservationSession,
+    preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -843,12 +863,31 @@ async function runSingleSourceRebuildCommand(options: {
           });
         }
         const driver = integration.driver;
+        let operationPreparation = options.execution?.operationPreparation;
+        if (options.execution?.skipPreApply
+          && !operationPreparation
+          && (options.command === 'install'
+            || options.command === 'sync'
+            || options.command === 'reinstall')) {
+          const prepared = await prepareRebuildOperation({
+            command: options.command,
+            target,
+            driver,
+            skipPreApply: true,
+            onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
+          });
+          if (prepared.status === 'failed') {
+            results.push(prepared.result);
+            continue;
+          }
+          operationPreparation = prepared.preparation;
+        }
         result = await executeRebuildOperation({
           command: options.command,
           target,
           driver,
-          ...(options.execution?.operationPreparation
-            ? { preparation: options.execution.operationPreparation }
+          ...(operationPreparation
+            ? { preparation: operationPreparation }
             : {}),
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
@@ -2510,6 +2549,7 @@ async function runRebuildCommandInSession(options: {
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
         codexObservationScopeByMarketplace,
+        preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -2527,6 +2567,54 @@ async function runRebuildCommandInSession(options: {
                     : []),
               }] as const]
             : [])).values()];
+      const intentPlanForPreparedRoots = (
+        plan: ReconcileOperationPlan,
+        preparedKeys: ReadonlySet<string>,
+      ): {
+        plan: ReconcileOperationPlan;
+        selectedRoots: Array<{ pluginId: string; platforms: PlatformName[] }>;
+      } => {
+        const retainedRootKeys = new Set(plan.targets.flatMap((target) =>
+          target.relation === 'requested'
+          && preparedKeys.has(`${target.pluginId}\0${target.platform}`)
+            ? [`${target.pluginId}\0${target.platform}`]
+            : []));
+        const closureKeys = new Set(retainedRootKeys);
+        const pending = [...closureKeys];
+        while (pending.length > 0) {
+          const consumerKey = pending.pop()!;
+          for (const edge of plan.dependencyEdges) {
+            if (`${edge.from}\0${edge.platform}` !== consumerKey) continue;
+            const dependencyKey = `${edge.to}\0${edge.platform}`;
+            if (closureKeys.has(dependencyKey)) continue;
+            closureKeys.add(dependencyKey);
+            pending.push(dependencyKey);
+          }
+        }
+        return {
+          plan: {
+            ...plan,
+            requestedPluginIds: plan.requestedPluginIds.filter((pluginId) =>
+              plan.targets.some((target) => target.pluginId === pluginId
+                && retainedRootKeys.has(`${target.pluginId}\0${target.platform}`))),
+            resolvedPluginIds: plan.resolvedPluginIds.filter((pluginId) =>
+              plan.targets.some((target) => target.pluginId === pluginId
+                && closureKeys.has(`${target.pluginId}\0${target.platform}`))),
+            dependencyEdges: plan.dependencyEdges.filter((edge) =>
+              closureKeys.has(`${edge.from}\0${edge.platform}`)
+              && closureKeys.has(`${edge.to}\0${edge.platform}`)),
+            scopeOverrides: plan.scopeOverrides.filter((override) =>
+              closureKeys.has(`${override.pluginId}\0${override.platform}`)),
+            targets: plan.targets.filter((target) =>
+              closureKeys.has(`${target.pluginId}\0${target.platform}`)),
+          },
+          selectedRoots: selectedRootsForPlan(plan).flatMap((root) => {
+            const platforms = root.platforms.filter((platform) =>
+              retainedRootKeys.has(`${root.pluginId}\0${platform}`));
+            return platforms.length > 0 ? [{ ...root, platforms }] : [];
+          }),
+        };
+      };
       let plannedCodexRegistrations = new Map<
         string,
         CodexPluginRegistrationLiveInspection
@@ -2564,6 +2652,7 @@ async function runRebuildCommandInSession(options: {
       const createPlan = async (
         inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
         codexManager?: CodexManager,
+        planOptions?: { skipConfigValidation?: boolean },
       ): Promise<ReconcileOperationPlan> => {
         plannedCodexRegistrations = new Map();
         plannedOwnedTextTargets = new Map();
@@ -2865,7 +2954,8 @@ async function runRebuildCommandInSession(options: {
             state = resolvedInspection.state;
             errorCode ??= 'dependencyNotReady';
           }
-          if (entry.plugin.manifest.config?.fields
+          if (!planOptions?.skipConfigValidation
+            && entry.plugin.manifest.config?.fields
             && (action === 'install' || action === 'reinstall')) {
             const effective = resolvedScope === 'project'
               ? await resolveArtifactRenderConfig({
@@ -3596,6 +3686,42 @@ async function runRebuildCommandInSession(options: {
           configDigests,
         };
       };
+      if (options.runtime?.resolvePreApplyAuthorization) {
+        const authorizationPlan = await measureCommandPerformanceStage(
+          options.runtime,
+          'dependency.plan',
+          () => createPlan(stateInventory, undefined, { skipConfigValidation: true }),
+        );
+        assertWriteInventoryComplete(
+          stateInventory,
+          exactOwnedTextTargets(authorizationPlan),
+          exactSkillMarkerTargets(authorizationPlan),
+        );
+        const preview = mergeRebuildCommandResults([]);
+        preview.dependencyPlan = authorizationPlan;
+        preview.preApplyAuthorization = executionSelections.flatMap(({ entry, platform }) => {
+          const planned = authorizationPlan.targets.find((target) =>
+            target.pluginId === entry.pluginId && target.platform === platform);
+          if (!planned || planned.action === 'block' || !entry.plugin.manifest.scripts?.preApply) {
+            return [];
+          }
+          const relation = planned.relation === 'requested'
+            ? 'requested' as const
+            : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId))
+              ? 'direct' as const
+              : 'transitive' as const;
+          return [{
+            pluginId: entry.pluginId,
+            pluginName: entry.plugin.manifest.name,
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            platform,
+            scope: planned.resolvedScope,
+            relation,
+          }];
+        });
+        return preview;
+      }
       if (options.runtime?.previewOperationPlan) {
         await options.runtime.onPreviewStage?.('dependencyPlan');
         const initialPlan = await measureCommandPerformanceStage(
@@ -3706,6 +3832,23 @@ async function runRebuildCommandInSession(options: {
           exactOwnedTextTargets(lockedPlan),
           exactSkillMarkerTargets(lockedPlan),
         );
+        const lifecycleCommand = options.command === 'install'
+          || options.command === 'sync'
+          || options.command === 'reinstall';
+        const preApplyRequired = lifecycleCommand && executionSelections.some(({ entry, platform }) =>
+          entry.plugin.manifest.scripts?.preApply !== undefined
+          && lockedPlan.targets.some((target) =>
+            target.pluginId === entry.pluginId
+            && target.platform === platform
+            && target.action !== 'block'));
+        if (preApplyRequired
+          && options.commandOptions.yes !== true
+          && options.runtime?.preApplyConfirmed !== true) {
+          throw namespacedPreflightError(
+            'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
+            preflightTargets,
+          );
+        }
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
@@ -3741,27 +3884,18 @@ async function runRebuildCommandInSession(options: {
         }
         if (options.runtime?.directCli
           && options.commandOptions.yes !== true
-          && (options.command === 'install'
-            || options.command === 'sync'
-            || options.command === 'reinstall')) {
+          && lifecycleCommand) {
           const sharedNativeImpact = lockedCodexPlans.some((plan) =>
             plan.review.requiresConfirmation);
-          const preApplyRequired = executionSelections.some(({ entry }) =>
-            entry.plugin.manifest.scripts?.preApply !== undefined);
-          if (preApplyRequired || sharedNativeImpact) {
+          if (sharedNativeImpact) {
             throw namespacedPreflightError(
-              preApplyRequired
-                ? 'preApplyAuthorizationRequired: Running plugin preApply requires --yes.'
-                : 'sharedNativeImpactAuthorizationRequired: Replacing or force-reinstalling shared Codex native state requires --yes.',
+              'sharedNativeImpactAuthorizationRequired: Replacing or force-reinstalling shared Codex native state requires --yes.',
               preflightTargets,
             );
           }
         }
         const operationPreparations = new Map<string, PreparedRebuildOperation>();
         const operationPreparationFailures = new Map<string, RebuildResult>();
-        const lifecycleCommand = options.command === 'install'
-          || options.command === 'sync'
-          || options.command === 'reinstall';
         const executionCommandFor = (
           entry: (typeof executionSelections)[number]['entry'],
           platform: PlatformName,
@@ -4062,24 +4196,9 @@ async function runRebuildCommandInSession(options: {
         if (options.runtime?.awHomeMutationToken) {
           if (lifecycleCommand) {
             const preparedKeys = new Set(operationPreparations.keys());
-            const intentPlan: ReconcileOperationPlan = {
-              ...lockedPlan,
-              requestedPluginIds: lockedPlan.requestedPluginIds.filter((pluginId) =>
-                lockedPlan.targets.some((target) => target.pluginId === pluginId
-                  && target.relation === 'requested'
-                  && preparedKeys.has(`${target.pluginId}\0${target.platform}`))),
-              resolvedPluginIds: lockedPlan.resolvedPluginIds.filter((pluginId) =>
-                lockedPlan.targets.some((target) => target.pluginId === pluginId
-                  && preparedKeys.has(`${target.pluginId}\0${target.platform}`))),
-              dependencyEdges: lockedPlan.dependencyEdges.filter((edge) =>
-                preparedKeys.has(`${edge.from}\0${edge.platform}`)
-                && preparedKeys.has(`${edge.to}\0${edge.platform}`)),
-              scopeOverrides: lockedPlan.scopeOverrides.filter((override) =>
-                preparedKeys.has(`${override.pluginId}\0${override.platform}`)),
-              targets: lockedPlan.targets.filter((target) =>
-                preparedKeys.has(`${target.pluginId}\0${target.platform}`)),
-            };
-            const selectedRoots = selectedRootsForPlan(intentPlan);
+            const intentSelection = intentPlanForPreparedRoots(lockedPlan, preparedKeys);
+            const intentPlan = intentSelection.plan;
+            const selectedRoots = intentSelection.selectedRoots;
             if (selectedRoots.length > 0) {
               await writeDesiredIntentSuperset({
                 command: options.command,
@@ -4437,8 +4556,8 @@ async function runRebuildCommandInSession(options: {
           }
           const actions = operationPreparations.get(`${entry.pluginId}\0${platform}`)?.actions
             ?? [];
-          const warnings: string[] = [];
           const preparedTarget = preparedTargets.get(`${entry.pluginId}\0${platform}`)?.target;
+          let result: RebuildResult | undefined;
           if (preparedTarget) {
             const nativeSkillKeys = new Set((entry.plugin.manifest.artifacts?.targets ?? [])
               .filter((target) => target.platform === 'codex'
@@ -4451,30 +4570,43 @@ async function runRebuildCommandInSession(options: {
               && nativeSkillKeys.has(component.identity.artifactKey)
               && (!marketplaceRoot || path.relative(marketplaceRoot, component.path).startsWith('..')));
             if (legacyNativeSkills.length > 0) {
-              const cleanup = await cleanupOwnedComponents({
+              result = await executeRebuildComponentCleanup({
+                command: options.command,
+                target: preparedTarget,
+                driver: lockedPreparation.integration.driver,
                 components: legacyNativeSkills,
-                executor: lockedPreparation.integration.driver.ownership,
+                actions,
+                onActionEvent: (event) => emitRebuildActionEvent(executionContext, event),
+                ...(rebuildCommandTestHooks?.beforeActivationLegacyCleanupMutation ? {
+                  beforeMutation: rebuildCommandTestHooks.beforeActivationLegacyCleanupMutation,
+                } : {}),
+                ...(rebuildCommandTestHooks?.afterActivationLegacyCleanupQuarantine ? {
+                  afterQuarantine: rebuildCommandTestHooks.afterActivationLegacyCleanupQuarantine,
+                } : {}),
               });
-              for (const failure of cleanup.failures) {
-                warnings.push(failure.message);
-              }
             }
           }
-          const result: RebuildResult = {
+          result ??= {
             status: 'succeeded', command: options.command, target: identity,
             actions,
             cleanupAttempted: false, removed: [], absent: [], residual: [], quarantined: [], failures: [],
           };
           results.push({
-            platforms: [platform], plugins: [identity.pluginName], warnings, rebuildResults: [result],
-            targetResults: [{ target: identity, action: planned.action, state: 'completed' }],
-            overallState: 'succeeded',
+            platforms: [platform],
+            plugins: result.status === 'succeeded' ? [identity.pluginName] : [],
+            warnings: result.failures.map((failure) => failure.message),
+            rebuildResults: [result],
+            targetResults: [{ ...toTargetResult(result), action: planned.action }],
+            overallState: result.status === 'succeeded' ? 'succeeded' : 'failed',
             receiptTargets: [{
               pluginName: identity.pluginName, pluginId: identity.pluginId,
               sourceId: identity.sourceId, platform, scope: planned.resolvedScope,
             }],
           });
-          dependencyStates.set(`${entry.pluginId}\0${platform}`, 'completed');
+          dependencyStates.set(
+            `${entry.pluginId}\0${platform}`,
+            result.status === 'succeeded' ? 'completed' : 'failed',
+          );
           continue;
         }
         if (platform === 'codex'
@@ -4606,6 +4738,7 @@ async function runRebuildCommandInSession(options: {
             operationPreparation: operationPreparations.get(`${entry.pluginId}\0${platform}`),
             integration: lockedPreparation.integration,
             preparationError: preparedTargetErrors.get(`${entry.pluginId}\0${platform}`),
+            skipPreApply: reconcileDesiredCleanup,
           },
         });
         if (reconcileDesiredCleanup) {
