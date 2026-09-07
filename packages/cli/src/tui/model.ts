@@ -1030,6 +1030,9 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
     const codes = new Set(target.reasons.map((error) => error.code));
     const sharedNativeRenderDrift = target.state === 'needsSync'
       && codes.has('codexSharedNativeRenderDrift');
+    const sharedNativeDamaged = target.state === 'needsSync'
+      && codes.has('codexSharedNativeCorrupt');
+    const sharedNativeProjectionIssue = sharedNativeRenderDrift || sharedNativeDamaged;
     const dependencyCodes = [
       'dependencyMissing',
       'dependencyNotReady',
@@ -1207,7 +1210,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeRenderDrift ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1220,15 +1223,17 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           ? dependencyPluginId
             ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
             : '当前依赖检查不能安全通过。'
+          : sharedNativeDamaged
+          ? 'Codex 平台共享生成内容缺失或损坏。'
           : sharedNativeRenderDrift
-          ? '个人默认已变化。Codex 平台共享 Skill 尚未重新生成。'
+          ? 'Codex 平台共享生成内容与当前渲染输入不一致。'
           : target.state === 'needsSync'
           ? '必要内容缺失，插件可能不能稳定运行。'
           : bundleUnavailable
             ? '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : '当前目标不能安全分类为正常安装。',
-        impact: [sharedNativeRenderDrift
-          ? '运行同步可恢复；这不是缓存损坏。'
+        impact: [sharedNativeProjectionIssue
+          ? '运行同步可重新生成平台共享 Skill。'
           : root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable

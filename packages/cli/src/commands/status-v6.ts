@@ -203,13 +203,13 @@ export function projectStatusSharedNativeReasons(
       ? [blocking('codexSharedNativeCorrupt', `${sharedNative.pluginId} is unreadable.`)]
       : []),
     ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'damaged'
-      ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} is damaged and can be replaced.`)]
+      ? [warning('codexSharedNativeCorrupt', `${sharedNative.pluginId} shared generated content is missing or damaged and can be replaced.`)]
       : []),
     ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'outdated'
       ? [warning('codexSharedNativeUpdateRequired', `${sharedNative.pluginId} requires a shared update.`)]
       : []),
     ...(sharedNative.state === 'replaceable' && sharedNative.reason === 'renderDrift'
-      ? [warning('codexSharedNativeRenderDrift', `${sharedNative.pluginId} render inputs changed and the shared native projection can be replaced.`)]
+      ? [warning('codexSharedNativeRenderDrift', `${sharedNative.pluginId} shared generated content does not match the current render inputs and can be replaced.`)]
       : []),
     ...(sharedNative.staleCacheObserved
       ? [warning('staleCacheObserved', `${sharedNative.pluginId} has non-blocking stale Codex cache residue.`)]

@@ -64,6 +64,10 @@ export interface CodexSharedNativeEvidence {
   marketplacePathSafe: boolean;
   observation: CodexNativePluginObservation;
   sourceProjection?: 'current' | 'drifted';
+  sourceProjectionIssue?: {
+    reason: 'damaged' | 'foreign' | 'unreadable';
+    diagnostic: CodexSharedNativeDiagnostic;
+  };
 }
 
 function samePath(left: string, right: string): boolean {
@@ -125,12 +129,28 @@ export function inspectCodexSharedNative(
   if (!evidence.marketplaceRegistration) {
     return blocked('foreign', 'marketplaceRegistrationForeign');
   }
+  if (evidence.sourceProjectionIssue
+    && evidence.sourceProjectionIssue.reason !== 'damaged') {
+    return blocked(
+      evidence.sourceProjectionIssue.reason,
+      evidence.sourceProjectionIssue.diagnostic,
+    );
+  }
   if (listEntry.version !== undefined && listEntry.version !== evidence.desiredVersion) {
     return {
       state: 'replaceable',
       reason: 'outdated',
       version: listEntry.version,
       desiredVersion: evidence.desiredVersion,
+    };
+  }
+  if (evidence.sourceProjectionIssue?.reason === 'damaged') {
+    return {
+      state: 'replaceable',
+      reason: 'damaged',
+      ...(listEntry.version ? { version: listEntry.version } : {}),
+      desiredVersion: evidence.desiredVersion,
+      diagnostic: evidence.sourceProjectionIssue.diagnostic,
     };
   }
   if (evidence.sourceProjection === 'drifted') {

@@ -2934,7 +2934,10 @@ describe('five namespaced write commands', () => {
     const intentBytes = await fs.readFile(repositoryIntentPath);
     await fs.outputFile(fixtureIntentPath, intentBytes);
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'self-hosting-intent-source');
-    await createDependencyCatalogSnapshotFixture(sourceRoot, [{ name: 'aw-plugin-development' }]);
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'aw-plugin-development' },
+      { name: 'aw-skill-eval-runner' },
+    ]);
     const sourceSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
       config: {
@@ -13722,11 +13725,141 @@ describe('five namespaced write commands', () => {
     expect(statusTargetSharedNative(mismatchedCanonicalStatus.status.payload.targets[0]!))
       .toMatchObject({ state: 'blocked', reason: 'foreign' });
     await fs.outputJson(canonicalMarketplaceConfigPath, canonicalMarketplaceConfig);
+    const canonicalSourceManifestPath = path.join(
+      marketplacePluginRoot, '.agents-plugin', 'plugin.json',
+    );
+    const canonicalSourceManifest = await fs.readJson(canonicalSourceManifestPath);
     await fs.remove(canonicalReceiptPath);
+    await fs.outputJson(canonicalSourceManifestPath, {
+      ...canonicalSourceManifest,
+      name: 'foreign-native-config',
+    });
+    const missingReceiptForeignManifestStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(
+      missingReceiptForeignManifestStatus.status.payload.targets[0]!,
+    )).toMatchObject({
+      state: 'blocked', reason: 'foreign', diagnostic: 'manifestIdentityMismatch',
+    });
+    await fs.outputJson(canonicalSourceManifestPath, canonicalSourceManifest);
     const missingCanonicalStatus = await readNativeStatus();
     expect(statusTargetSharedNative(missingCanonicalStatus.status.payload.targets[0]!))
-      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
+      .toMatchObject({
+        state: 'replaceable', reason: 'damaged', diagnostic: 'projectionReceiptMissing',
+      });
+    const originalReadJson = fs.readJson.bind(fs);
+    const readJson = vi.spyOn(fs, 'readJson').mockImplementation(
+      async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.resolve(String(args[0])) === path.resolve(canonicalSourceManifestPath)) {
+          throw Object.assign(new Error('private manifest read failure'), { code: 'EIO' });
+        }
+        return originalReadJson(...args);
+      },
+    );
+    const missingReceiptUnreadableManifestStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(
+      missingReceiptUnreadableManifestStatus.status.payload.targets[0]!,
+    )).toMatchObject({
+      state: 'blocked', reason: 'unreadable', diagnostic: 'manifestUnreadable',
+    });
+    expect(JSON.stringify(missingReceiptUnreadableManifestStatus.status.payload))
+      .not.toContain('private manifest read failure');
+    readJson.mockRestore();
+    await fs.outputFile(canonicalReceiptPath, '{invalid');
+    await fs.outputFile(path.join(marketplaceSkillRoot, SKILL_OWNER_MARKER), '{}\n');
+    const invalidReceiptForeignOwnerStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(invalidReceiptForeignOwnerStatus.status.payload.targets[0]!))
+      .toMatchObject({
+        state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
+      });
+    await fs.remove(path.join(marketplaceSkillRoot, SKILL_OWNER_MARKER));
+    const invalidCanonicalStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(invalidCanonicalStatus.status.payload.targets[0]!))
+      .toMatchObject({
+        state: 'replaceable', reason: 'damaged', diagnostic: 'projectionReceiptUnreadable',
+      });
     await fs.outputFile(canonicalReceiptPath, canonicalReceipt);
+
+    if (process.platform !== 'win32') {
+      await fs.chmod(canonicalReceiptPath, 0o000);
+      const unreadableCanonicalStatus = await readNativeStatus();
+      expect(statusTargetSharedNative(unreadableCanonicalStatus.status.payload.targets[0]!))
+        .toMatchObject({
+          state: 'blocked', reason: 'unreadable', diagnostic: 'projectionReceiptUnreadable',
+        });
+      await fs.chmod(canonicalReceiptPath, 0o644);
+    }
+
+    await fs.outputJson(canonicalSourceManifestPath, {
+      ...canonicalSourceManifest,
+      name: 'foreign-native-config',
+    });
+    const foreignManifestStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(foreignManifestStatus.status.payload.targets[0]!))
+      .toMatchObject({
+        state: 'blocked', reason: 'foreign', diagnostic: 'manifestIdentityMismatch',
+      });
+    await fs.outputJson(canonicalSourceManifestPath, canonicalSourceManifest);
+
+    const canonicalCodexManifestPath = path.join(
+      marketplacePluginRoot, '.codex-plugin', 'plugin.json',
+    );
+    const canonicalCodexManifest = await fs.readJson(canonicalCodexManifestPath);
+    for (const identityChange of [
+      { name: 'foreign-native-config' },
+      { version: '9.9.9' },
+    ]) {
+      await fs.outputJson(canonicalCodexManifestPath, {
+        ...canonicalCodexManifest,
+        ...identityChange,
+      });
+      const foreignCodexManifestStatus = await readNativeStatus();
+      expect(statusTargetSharedNative(foreignCodexManifestStatus.status.payload.targets[0]!))
+        .toMatchObject({
+          state: 'blocked', reason: 'foreign', diagnostic: 'manifestIdentityMismatch',
+        });
+    }
+    await fs.outputJson(canonicalCodexManifestPath, canonicalCodexManifest);
+
+    const marketplaceSkillContent = await fs.readFile(
+      path.join(marketplaceSkillRoot, 'SKILL.md'),
+    );
+    await fs.outputFile(path.join(marketplaceSkillRoot, 'SKILL.md'), '');
+    const malformedSkillStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(malformedSkillStatus.status.payload.targets[0]!))
+      .toMatchObject({
+        state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
+      });
+    await fs.outputFile(path.join(marketplaceSkillRoot, 'SKILL.md'), marketplaceSkillContent);
+
+    if (process.platform !== 'win32') {
+      const outsideSkillRoot = path.join(
+        isolation.layout.fixtureCwd, 'foreign-native-config-skill',
+      );
+      await fs.move(marketplaceSkillRoot, outsideSkillRoot);
+      await fs.symlink(outsideSkillRoot, marketplaceSkillRoot, 'dir');
+      const unsafeSkillStatus = await readNativeStatus();
+      expect(statusTargetSharedNative(unsafeSkillStatus.status.payload.targets[0]!))
+        .toMatchObject({
+          state: 'blocked', reason: 'foreign', diagnostic: 'payloadPathUnsafe',
+        });
+      await fs.remove(marketplaceSkillRoot);
+      await fs.move(outsideSkillRoot, marketplaceSkillRoot);
+    }
+
+    await fs.remove(marketplaceSkillRoot);
+    const missingSkillStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(missingSkillStatus.status.payload.targets[0]!))
+      .toMatchObject({
+        state: 'replaceable', reason: 'damaged', diagnostic: 'projectionPayloadDigestMismatch',
+      });
+    const recoveredProjection = await runPublic([
+      'sync', 'team/native-config', '--platform', 'codex', '--scope', 'project', '--yes',
+    ]);
+    expect(recoveredProjection, JSON.stringify(recoveredProjection, null, 2))
+      .toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
+    const recoveredProjectionStatus = await readNativeStatus();
+    expect(statusTargetSharedNative(recoveredProjectionStatus.status.payload.targets[0]!))
+      .toMatchObject({ state: 'usable', version: '1.0.0' });
 
     await fs.outputFile(path.join(cacheSkillRoot, 'SKILL.md'), 'tampered\n');
     await fs.outputJson(

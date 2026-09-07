@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
+  replayNamespacedCodexNativeRenderProjections,
   replayNamespacedCodexSkillOverlays,
 } from '../../src/utils/local-marketplace.js';
 import type { MarketplaceManifest } from '../../src/types.js';
@@ -19,6 +20,12 @@ import {
   commitMarketplaceGenerationBackup,
 } from '../../src/utils/orphan-marketplace-cleanup.js';
 import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import {
+  createCodexNativeRenderReceipt,
+  serializeCodexNativeRenderReceipt,
+} from '../../src/utils/codex-native-render-receipt.js';
+import { calculateCodexNativeRenderPayloadDigest } from '../../src/utils/catalog-digests.js';
+import { createCodexSkillStagingTreeContentDigest } from '../../src/utils/codex-skill-staging.js';
 
 const sourceIdentity = `sha256:${'a'.repeat(64)}`;
 
@@ -37,6 +44,77 @@ async function createMarketplaceRoot(rootDir: string): Promise<void> {
       name: 'aw', owner: {}, interface: {}, plugins: [],
     }),
   ]);
+}
+
+const nativeDigest = (character: string): string => `sha256:${character.repeat(64)}`;
+
+async function createNativeProjectionFixture(options: {
+  sourceRoot: string;
+  stagingRoot: string;
+  pluginName?: string;
+  empty?: boolean;
+  configDigest?: string;
+  scopes?: Array<'user' | 'project'>;
+}): Promise<{ receiptContent: string; skillKey: string }> {
+  const pluginName = options.pluginName ?? 'native-projection';
+  const skillKey = `${pluginName}-skill`;
+  const target = {
+    id: `${pluginName}-target`, platform: 'codex', target: 'codex.skill',
+    scopes: options.scopes ?? ['user'], states: ['present'], refreshKeys: [], skillKey,
+    delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+  };
+  const pluginManifest = {
+    name: pluginName, version: '1.0.0', description: pluginName, schemaVersion: 3,
+    marketplace: {
+      category: 'workflow', strict: true,
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+    },
+    artifacts: { targets: [target] },
+  };
+  for (const root of [options.sourceRoot, options.stagingRoot]) {
+    await fs.outputJson(path.join(root, 'plugins', pluginName, '.agents-plugin', 'plugin.json'), pluginManifest);
+    await fs.outputJson(path.join(root, 'plugins', pluginName, '.codex-plugin', 'plugin.json'), {
+      name: pluginName,
+      version: '1.0.0',
+      ...(!options.empty || root === options.stagingRoot ? { skills: './codex/skills' } : {}),
+    });
+  }
+  const files = options.empty ? {} : {
+    'SKILL.md': Buffer.from(`# ${pluginName}\n`, 'utf8'),
+    'agents/openai.yaml': Buffer.from([
+      'interface:',
+      '  display_name: "Native projection"',
+      '  short_description: "Native projection fixture"',
+      '  default_prompt: "Use the native projection fixture."',
+      'policy:',
+      '  allow_implicit_invocation: true',
+      '',
+    ].join('\n'), 'utf8'),
+  };
+  if (!options.empty) {
+    for (const [relativePath, content] of Object.entries(files)) {
+      await fs.outputFile(path.join(
+        options.sourceRoot, 'plugins', pluginName, 'codex', 'skills', skillKey, relativePath,
+      ), content);
+    }
+  }
+  const sourcePluginRoot = path.join(options.sourceRoot, 'plugins', pluginName);
+  const receipt = createCodexNativeRenderReceipt({
+    logicalPluginId: `official/${pluginName}`,
+    sourceIdentity,
+    pluginVersion: '1.0.0',
+    rendererDigest: nativeDigest('b'),
+    targets: [{
+      id: target.id,
+      skillKey,
+      configDigest: options.configDigest ?? nativeDigest('c'),
+      artifactDigest: createCodexSkillStagingTreeContentDigest({ skillKey, files }),
+    }],
+    payloadDigest: await calculateCodexNativeRenderPayloadDigest(sourcePluginRoot),
+  });
+  const receiptContent = serializeCodexNativeRenderReceipt(receipt);
+  await fs.outputFile(path.join(sourcePluginRoot, '.agents-plugin', 'aw-codex-native-render.json'), receiptContent);
+  return { receiptContent, skillKey };
 }
 
 describe('namespaced marketplace root', () => {
@@ -899,6 +977,270 @@ describe('namespaced marketplace root', () => {
       reference.kind === 'namespacedOwner'
       && reference.location.startsWith(sourceRoot))).toEqual([]);
   });
+
+  it('preserves a complete native dynamic projection and its original drift receipt', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'native-projection-staging');
+    await createMarketplaceRoot(sourceRoot);
+    const fixture = await createNativeProjectionFixture({
+      sourceRoot,
+      stagingRoot,
+      configDigest: nativeDigest('d'),
+    });
+
+    await replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    });
+
+    await expect(fs.readFile(path.join(
+      stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey, 'SKILL.md',
+    ), 'utf8')).resolves.toBe('# native-projection\n');
+    await expect(fs.readFile(path.join(
+      stagingRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
+    ), 'utf8')).resolves.toBe(fixture.receiptContent);
+  });
+
+  it('preserves an empty native target and the absent Codex skills field', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'empty-native-projection-staging');
+    await createMarketplaceRoot(sourceRoot);
+    const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot, empty: true });
+
+    await replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    });
+
+    const manifest = await fs.readJson(path.join(
+      stagingRoot, 'plugins', 'native-projection', '.codex-plugin', 'plugin.json',
+    ));
+    expect(manifest).not.toHaveProperty('skills');
+    await expect(fs.pathExists(path.join(
+      stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey,
+    ))).resolves.toBe(false);
+  });
+
+  it('preserves a project-only native target in the shared user projection', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'project-only-native-projection');
+    await createMarketplaceRoot(sourceRoot);
+    const fixture = await createNativeProjectionFixture({
+      sourceRoot,
+      stagingRoot,
+      scopes: ['project'],
+    });
+
+    await replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    });
+
+    await expect(fs.readFile(path.join(
+      stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey, 'SKILL.md',
+    ), 'utf8')).resolves.toBe('# native-projection\n');
+  });
+
+  it.each([
+    ['version changed', async (root: string) => {
+      const manifestPath = path.join(root, 'plugins', 'native-projection', '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, version: '2.0.0' });
+    }],
+    ['target changed', async (root: string) => {
+      const manifestPath = path.join(root, 'plugins', 'native-projection', '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      manifest.artifacts.targets[0].id = 'changed-target';
+      await fs.writeJson(manifestPath, manifest);
+    }],
+    ['render input changed', async (root: string) => {
+      await fs.outputFile(path.join(root, 'plugins', 'native-projection', 'changed-input.txt'), 'changed\n');
+    }],
+  ] as const)('does not reuse a projection when %s', async (_label, changeStaging) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, `changed-native-projection-${_label.replaceAll(' ', '-')}`);
+    await createMarketplaceRoot(sourceRoot);
+    const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    await changeStaging(stagingRoot);
+
+    await replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    });
+
+    await expect(fs.pathExists(path.join(
+      stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey,
+    ))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(
+      stagingRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
+    ))).resolves.toBe(false);
+  });
+
+  it.each(['receipt', 'payload'] as const)(
+    'skips a damaged native projection %s while leaving the new generation usable',
+    async (damage) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, `damaged-native-projection-${damage}`);
+      await createMarketplaceRoot(sourceRoot);
+      const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+      if (damage === 'receipt') {
+        await fs.outputFile(path.join(
+          sourceRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
+        ), '{invalid');
+      } else {
+        await fs.outputFile(path.join(
+          sourceRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey, 'SKILL.md',
+        ), '# damaged\n');
+      }
+
+      await replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      });
+
+      await expect(fs.readFile(path.join(
+        stagingRoot, 'plugins', 'native-projection', '.agents-plugin', 'plugin.json',
+      ), 'utf8')).resolves.toContain('native-projection');
+      await expect(fs.pathExists(path.join(
+        stagingRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey,
+      ))).resolves.toBe(false);
+    },
+  );
+
+  it('blocks a native projection receipt with a conflicting source identity', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'mismatched-native-projection');
+    await createMarketplaceRoot(sourceRoot);
+    await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const receiptPath = path.join(
+      sourceRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
+    );
+    const original = await fs.readJson(receiptPath);
+    const conflicting = createCodexNativeRenderReceipt({
+      logicalPluginId: original.logicalPluginId,
+      sourceIdentity: nativeDigest('e'),
+      pluginVersion: original.pluginVersion,
+      rendererDigest: original.rendererDigest,
+      targets: original.targets,
+      payloadDigest: original.payloadDigest,
+    });
+    await fs.writeFile(receiptPath, serializeCodexNativeRenderReceipt(conflicting));
+
+    await expect(replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    })).rejects.toThrow('codexNativeProjectionIdentityMismatch');
+  });
+
+  it.each([
+    ['missing receipt and plugin identity conflict', 'missing', 'identity', 'codexNativeProjectionIdentityMismatch'],
+    ['invalid receipt and plugin identity conflict', 'invalid', 'identity', 'codexNativeProjectionIdentityMismatch'],
+    ['invalid receipt and absolute Skills root', 'invalid', 'absolute', 'codexNativeProjectionUnsafe'],
+  ] as const)('blocks %s before treating receipt damage as recoverable', async (
+    _label,
+    receiptState,
+    violation,
+    expectedError,
+  ) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, `receipt-order-${receiptState}-${violation}`);
+    await createMarketplaceRoot(sourceRoot);
+    await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const sourcePluginRoot = path.join(sourceRoot, 'plugins', 'native-projection');
+    const receiptPath = path.join(sourcePluginRoot, '.agents-plugin', 'aw-codex-native-render.json');
+    if (receiptState === 'missing') await fs.remove(receiptPath);
+    else await fs.outputFile(receiptPath, '{invalid');
+    if (violation === 'identity') {
+      const manifestPath = path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, name: 'conflicting-plugin' });
+    } else {
+      const manifestPath = path.join(sourcePluginRoot, '.codex-plugin', 'plugin.json');
+      const manifest = await fs.readJson(manifestPath);
+      await fs.writeJson(manifestPath, { ...manifest, skills: '/unsafe/skills' });
+    }
+
+    await expect(replayNamespacedCodexNativeRenderProjections({
+      sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+    })).rejects.toThrow(expectedError);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'blocks an old projection symlink before treating a missing receipt as recoverable',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, 'missing-receipt-unsafe-tree');
+      await createMarketplaceRoot(sourceRoot);
+      await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+      const sourcePluginRoot = path.join(sourceRoot, 'plugins', 'native-projection');
+      await fs.remove(path.join(sourcePluginRoot, '.agents-plugin', 'aw-codex-native-render.json'));
+      const outside = path.join(isolation.layout.rootDir, 'outside-missing-receipt');
+      await fs.outputFile(outside, 'outside\n');
+      await fs.symlink(outside, path.join(sourcePluginRoot, 'unsafe-link'));
+
+      await expect(replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('codexNativeProjectionUnsafe');
+    },
+  );
+
+  it('blocks projection I/O errors and skips excluded current targets before reading them', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+    const stagingRoot = path.join(isolation.layout.rootDir, 'native-projection-io');
+    await createMarketplaceRoot(sourceRoot);
+    await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+    const receiptPath = path.join(
+      sourceRoot, 'plugins', 'native-projection', '.agents-plugin', 'aw-codex-native-render.json',
+    );
+    const realReadFile = fs.readFile.bind(fs);
+    const readFile = vi.spyOn(fs, 'readFile').mockImplementation((async (filePath, ...args) => {
+      if (path.resolve(String(filePath)) === path.resolve(receiptPath)) {
+        throw Object.assign(new Error('EIO projection read'), { code: 'EIO' });
+      }
+      return realReadFile(filePath, ...args as never[]);
+    }) as typeof fs.readFile);
+    try {
+      await expect(replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('EIO projection read');
+      await expect(replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+        rematerializedPluginIds: new Set(['official/native-projection']),
+      })).resolves.toBeUndefined();
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'blocks a symlink in a native projection but lets the current target replace it',
+    async () => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
+      const stagingRoot = path.join(isolation.layout.rootDir, 'unsafe-native-projection');
+      await createMarketplaceRoot(sourceRoot);
+      const fixture = await createNativeProjectionFixture({ sourceRoot, stagingRoot });
+      const skillRoot = path.join(
+        sourceRoot, 'plugins', 'native-projection', 'codex', 'skills', fixture.skillKey,
+      );
+      await fs.outputFile(path.join(isolation.layout.rootDir, 'outside-native-file'), 'outside\n');
+      await fs.symlink(
+        path.join(isolation.layout.rootDir, 'outside-native-file'),
+        path.join(skillRoot, 'unsafe-link'),
+      );
+
+      await expect(replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+      })).rejects.toThrow('codexNativeProjectionUnsafe');
+      await expect(replayNamespacedCodexNativeRenderProjections({
+        sourceRoot, stagingRoot, sourceId: 'official', sourceIdentity, marketplaceName: 'aw',
+        rematerializedPluginIds: new Set(['official/native-projection']),
+      })).resolves.toBeUndefined();
+    },
+  );
 
   it.skipIf(process.platform === 'win32')(
     'rejects a source plugins ancestor symlink without changing staging',

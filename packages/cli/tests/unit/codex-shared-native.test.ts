@@ -115,6 +115,60 @@ describe('codex-shared-native', () => {
     });
   });
 
+  it.each([
+    ['damaged', 'projectionReceiptMissing', {
+      state: 'replaceable', reason: 'damaged', version: '2.0.0', desiredVersion: '2.0.0',
+      diagnostic: 'projectionReceiptMissing',
+    }],
+    ['foreign', 'projectionReceiptIdentityMismatch', {
+      state: 'blocked', reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+    }],
+    ['unreadable', 'projectionReceiptUnreadable', {
+      state: 'blocked', reason: 'unreadable', diagnostic: 'projectionReceiptUnreadable',
+    }],
+  ] as const)('classifies a %s projection evidence issue without claiming render drift', (
+    reason,
+    diagnostic,
+    expected,
+  ) => {
+    expect(inspectCodexSharedNative(evidence({
+      sourceProjectionIssue: { reason, diagnostic },
+    }))).toEqual(expected);
+  });
+
+  it('keeps an old installed version ahead of damaged projection evidence', () => {
+    expect(inspectCodexSharedNative(evidence({
+      observation: {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
+      },
+      sourceProjectionIssue: {
+        reason: 'damaged', diagnostic: 'projectionReceiptMissing',
+      },
+    }))).toEqual({
+      state: 'replaceable',
+      reason: 'outdated',
+      version: '1.0.0',
+      desiredVersion: '2.0.0',
+    });
+  });
+
+  it('does not let an old installed version hide foreign projection evidence', () => {
+    expect(inspectCodexSharedNative(evidence({
+      observation: {
+        state: 'observed', value: 'installed',
+        entry: { pluginId: 'demo@aw-team', version: '1.0.0', enabled: true },
+      },
+      sourceProjectionIssue: {
+        reason: 'foreign', diagnostic: 'projectionReceiptIdentityMismatch',
+      },
+    }))).toEqual({
+      state: 'blocked',
+      reason: 'foreign',
+      diagnostic: 'projectionReceiptIdentityMismatch',
+    });
+  });
+
   it('fails closed for foreign public marketplace config and unavailable official evidence', () => {
     expect(inspectCodexSharedNative(evidence({
       marketplaceRegistration: {
