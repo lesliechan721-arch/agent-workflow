@@ -182,7 +182,6 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
-      dependencyPlacementAdjustment?: true;
       recoveryDescription?: string;
       force?: boolean;
       scriptTimeoutMs?: number;
@@ -284,6 +283,8 @@ export interface OperationEvidence {
     scope: Scope;
     schemaIdentity?: string;
     storeDigest: string;
+    impactState?: 'known' | 'unknown';
+    noEffectiveChange?: true;
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
     shareability?: 'verified' | 'unverified';
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
@@ -675,7 +676,6 @@ export interface TuiControllerSnapshot {
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
   plan?: ReconcileOperationPlan;
-  adjustingExisting: boolean;
 }
 
 interface ReviewTicket {
@@ -738,6 +738,9 @@ function canonicalBatchTargets(targets: readonly PluginWriteBatchTarget[]): Plug
 }
 
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
+  if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
+    return { ...intent, apply: true };
+  }
   if (intent.kind !== 'pluginWriteBatch') return intent;
   if (intent.selection.kind === 'targets') {
     return {
@@ -968,10 +971,21 @@ export function operationEvidenceMatches(
       !== JSON.stringify(stableValue(current.resetTarget))) {
       return false;
     }
-    if (!expected.source) return true;
-    return current.source !== undefined
-      && JSON.stringify(stableValue(expected.source))
-        === JSON.stringify(stableValue(current.source));
+    if (expected.source && (current.source === undefined
+      || JSON.stringify(stableValue(expected.source))
+        !== JSON.stringify(stableValue(current.source)))) {
+      return false;
+    }
+    if (expected.targetFingerprint !== undefined
+      && expected.targetFingerprint !== current.targetFingerprint) {
+      return false;
+    }
+    if (expected.config?.impactState !== 'known') return true;
+    return JSON.stringify(stableValue({
+      config: expected.config,
+    })) === JSON.stringify(stableValue({
+      config: current.config,
+    }));
   }
   return operationEvidenceFingerprint(expected) === operationEvidenceFingerprint(current);
 }
@@ -2213,7 +2227,6 @@ export class TuiController {
   beginInstallFlow(
     pluginId: string,
     rootScope: Scope,
-    options: { adjustingExisting?: boolean } = {},
   ): void {
     this.#cancelInstallPlacementRequest();
     const active = this.#router.activeFlow();
@@ -2226,7 +2239,6 @@ export class TuiController {
       state: 'selecting',
       targets: [],
       canContinue: false,
-      adjustingExisting: options.adjustingExisting === true,
     };
     this.#publish();
   }
@@ -2289,7 +2301,6 @@ export class TuiController {
       ...(draft.dependencyScopeOverrides.length > 0
         ? { dependencyScopeOverrides: draft.dependencyScopeOverrides }
         : {}),
-      ...(draft.adjustingExisting ? { dependencyPlacementAdjustment: true } : {}),
     };
   }
 

@@ -65,7 +65,7 @@ async function createFixture(): Promise<{
   const manifest: PluginMeta['manifest'] = {
     name: 'claude-native-only',
     version: '1.0.0',
-    description: 'Claude native-only config fixture',
+    description: 'Claude project renderer config fixture',
     schemaVersion: 3,
     marketplace: {
       category: 'test',
@@ -90,6 +90,21 @@ async function createFixture(): Promise<{
           default: 'safe',
         },
       },
+    },
+    scripts: {
+      artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+    },
+    artifacts: {
+      targets: [{
+        id: 'project-skill',
+        platform: 'claude',
+        target: 'claude.skill',
+        kind: 'skill',
+        scopes: ['project'],
+        states: ['present'],
+        refreshKeys: ['mode'],
+        skillKey: 'project-skill',
+      }],
     },
   };
   await fs.outputJson(manifestPath, manifest);
@@ -140,11 +155,11 @@ afterEach(async () => {
   while (tempDirs.length > 0) await fs.remove(tempDirs.pop()!);
 });
 
-describe('Claude project native-only config apply', () => {
+describe('Claude project renderer config apply', () => {
   it.each([
     ['user' as const, ['project']],
     ['project' as const, ['project']],
-  ])('applies a %s config write to the visible current-project native target', async (scope, expectedScopes) => {
+  ])('applies a %s config write to the visible current-project renderer target', async (scope, expectedScopes) => {
     const fixture = await createFixture();
     const nativeCliRunner = createNativeRunner();
     const reinstallCommandImpl = createReinstallMock();

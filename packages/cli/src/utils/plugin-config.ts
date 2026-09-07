@@ -1680,6 +1680,41 @@ export async function resolveEffectivePluginConfig(options: {
   assertReadyPluginConfigStore(userStore);
   if (projectStore) assertReadyPluginConfigStore(projectStore);
 
+  return resolveEffectivePluginConfigFromStores({
+    pluginName,
+    manifest: options.manifest,
+    targetScope: options.targetScope,
+    projectRoot,
+    stores: {
+      user: userStore,
+      ...(projectStore ? { project: projectStore } : {}),
+    },
+  });
+}
+
+export async function resolveEffectivePluginConfigFromStores(options: {
+  pluginName?: string;
+  manifest: NormalizedPluginManifest;
+  targetScope?: Scope;
+  projectRoot: string;
+  stores: {
+    user: PluginConfigStore;
+    project?: PluginConfigStore;
+  };
+}): Promise<ResolvedEffectivePluginConfig> {
+  const pluginName = assertSafePluginConfigSegment(options.pluginName ?? options.manifest.name);
+  const schema = options.manifest.config?.fields;
+  if (!schema) {
+    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
+  }
+  const userStore = options.stores.user;
+  const projectStore = options.targetScope === 'user' ? undefined : options.stores.project;
+  assertReadyPluginConfigStore(userStore);
+  if (!projectStore && options.targetScope !== 'user') {
+    throw new Error(`Project plugin config store is required for ${pluginName}.`);
+  }
+  if (projectStore) assertReadyPluginConfigStore(projectStore);
+
   const values: Record<string, PluginConfigValue> = {};
   const redactedValues: Record<string, RedactedPluginConfigValue> = {};
   const sources: Record<string, PluginConfigSource> = {};
@@ -1779,7 +1814,7 @@ export async function resolveEffectivePluginConfig(options: {
 
   return {
     pluginName,
-    projectRoot,
+    projectRoot: options.projectRoot,
     values,
     redactedValues,
     sources,

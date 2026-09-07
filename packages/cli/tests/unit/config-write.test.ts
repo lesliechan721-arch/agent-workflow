@@ -151,17 +151,31 @@ async function createFixture(
     ...(options.dynamicTarget
       ? {
           artifacts: {
-            targets: [{
-              id: 'dynamic-skill',
-              platform: 'codex',
-              target: 'codex.skill',
-              delivery: { mode: 'aw-extension' },
-              kind: 'skill',
-              scopes: ['user'],
-              states: ['present'],
-              refreshKeys: ['mode'],
-              skillKey: 'dynamic-skill',
-            }],
+            targets: [
+              {
+                id: 'dynamic-instruction',
+                platform: 'codex',
+                target: 'codex.developerInstructionsBlock',
+                kind: 'instruction',
+                scopes: ['user', 'project'],
+                states: ['present'],
+                refreshKeys: [
+                  'token', 'mode', 'workspace', 'certificate',
+                  'presetCertificate', 'locations', 'genericPath',
+                ],
+                requiresCodexProjectConfig: true,
+              },
+              {
+                id: 'dynamic-claude-skill',
+                platform: 'claude',
+                target: 'claude.skill',
+                kind: 'skill',
+                scopes: ['user', 'project'],
+                states: ['present'],
+                refreshKeys: ['mode'],
+                skillKey: 'dynamic-claude-skill',
+              },
+            ],
           },
         }
       : {}),
@@ -282,7 +296,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it.each(['__proto__', 'constructor', 'prototype'])(
-    'preserves a top-level %s own key and blocks config apply as invalid',
+    'preserves a top-level %s own key without applying an absent target',
     async (dangerousKey) => {
       const fixture = await createFixture();
       const sourceIdentity = `sha256:${'d'.repeat(64)}`;
@@ -344,8 +358,8 @@ describe('config write full reinstall apply', () => {
 
       expect(receipt).toMatchObject({
         configWrite: 'succeeded',
-        overallState: 'partial',
-        apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
       });
       const patchedStore = await readPluginConfigStore(storeOptions);
       expect(Object.hasOwn(patchedStore.values, dangerousKey)).toBe(true);
@@ -391,8 +405,8 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'partial',
-      apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
       updatedKeys: ['token'],
       effective: {
         fieldStates: {
@@ -445,6 +459,148 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
+  it('applies when a same-value set changes the renderer source from default to user', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    mocks.visible.add('codex:user');
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'safe' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      updatedKeys: ['mode'],
+      apply: { state: 'succeeded' },
+    });
+    expect(reinstall).toHaveBeenCalledOnce();
+  });
+
+  it('does not apply a user change hidden by the visible project override', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    fixture.plugin.manifest.artifacts!.targets![0]!.scopes = ['user', 'project'];
+    mocks.visible.add('codex:project');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'fast' },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      updatedKeys: ['mode'],
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+      otherProjectsMayRequireSync: true,
+    });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  it('applies a project unset that falls back to the manifest default', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    fixture.plugin.manifest.artifacts!.targets![0]!.scopes = ['user', 'project'];
+    mocks.visible.add('codex:project');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'fast' },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['mode'] },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      removedKeys: ['mode'],
+      apply: { state: 'succeeded' },
+    });
+    expect(reinstall).toHaveBeenCalledOnce();
+  });
+
+  it('does not apply when an unchanged invalid renderer projection receives an unrelated update', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    fixture.plugin.manifest.artifacts!.targets![0]!.refreshKeys = ['mode'];
+    mocks.visible.add('codex:user');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 42 },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { token: 'saved' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+      effective: { issues: [expect.objectContaining({ key: 'mode' })] },
+    });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  it('does not apply when an unrelated invalid issue is repaired', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    fixture.plugin.manifest.artifacts!.targets![0]!.refreshKeys = ['mode'];
+    mocks.visible.add('codex:user');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'fast', locations: { unknown: 'invalid' } },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { locations: { workspace: 'repaired' } } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+      effective: { issues: [] },
+    });
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
   it('commits an unset that leaves a required field missing and skips apply', async () => {
     const fixture = await createFixture();
     fixture.plugin.manifest.config!.fields.token!.required = true;
@@ -468,9 +624,9 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'partial',
+      overallState: 'succeeded',
       removedKeys: ['token'],
-      apply: { state: 'unavailable', reason: 'invalidConfig', targetResults: [] },
+      apply: { state: 'skipped', reason: 'noVisibleTarget', targetResults: [] },
       effective: {
         issues: [expect.objectContaining({ type: 'missing-required', key: 'token' })],
       },
@@ -485,7 +641,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('writes and resets user config when the project store is invalid', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     await fs.outputFile(resolvePluginConfigStorePath({
       pluginName: fixture.plugin.manifest.name,
@@ -652,6 +808,36 @@ describe('config write full reinstall apply', () => {
     await expect(fs.pathExists(projectPath)).resolves.toBe(false);
   });
 
+  it('conservatively applies a readable target after resetting an invalid store', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
+    const userPath = resolvePluginConfigStorePath({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+    await fs.outputFile(userPath, '{invalid');
+    mocks.visible.add('codex:user');
+    const reinstall = createReinstallMock();
+
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      deleted: true,
+      configWrite: 'succeeded',
+      apply: { state: 'succeeded' },
+    });
+    expect(reinstall).toHaveBeenCalledOnce();
+    await expect(fs.pathExists(userPath)).resolves.toBe(false);
+  });
+
   it.each(['save', 'reset'] as const)(
     'rejects a stale Review for config %s once under the config transaction without a write',
     async (action) => {
@@ -793,7 +979,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('passes the active progress reporter into config-triggered reinstall', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     const events: CommandEvent[] = [];
     const progress = createRebuildProgressFeed();
@@ -869,7 +1055,7 @@ describe('config write full reinstall apply', () => {
         env: fixture.env,
       };
       if (action === 'unset' || action === 'reset') {
-        await writePluginConfigStore({ ...storeOptions, values: { mode: 'safe' } });
+        await writePluginConfigStore({ ...storeOptions, values: { mode: 'fast' } });
       }
       const reinstall = createPreApplyAuthorizationMock();
       const applyTargets: ReceiptTargetIdentity[] = [{
@@ -898,7 +1084,7 @@ describe('config write full reinstall apply', () => {
       expect(reinstall).toHaveBeenCalledOnce();
       expect(reinstall.mock.calls[0]![2]).toMatchObject({ resolvePreApplyAuthorization: true });
       expect((await readPluginConfigStore(storeOptions)).values).toEqual(
-        action === 'unset' || action === 'reset' ? { mode: 'safe' } : {},
+        action === 'unset' || action === 'reset' ? { mode: 'fast' } : {},
       );
     },
   );
@@ -1041,7 +1227,7 @@ describe('config write full reinstall apply', () => {
         env: fixture.env,
       };
       if (action === 'reset') {
-        await writePluginConfigStore({ ...storeOptions, values: { mode: 'safe' } });
+        await writePluginConfigStore({ ...storeOptions, values: { mode: 'fast' } });
       }
       const reinstall = createPreApplyAuthorizationMock(true);
       const applyTargets: ReceiptTargetIdentity[] = [{
@@ -1233,7 +1419,11 @@ describe('config write full reinstall apply', () => {
       applyTargets: target,
       reinstallCommandImpl: reinstall,
       sharedNativeApplyConfirmed: true,
-    })).resolves.toMatchObject({ deleted: true, overallState: 'succeeded' });
+    })).resolves.toMatchObject({
+      deleted: true,
+      overallState: 'succeeded',
+      apply: { state: 'succeeded' },
+    });
     expect(reinstall).toHaveBeenCalledOnce();
 
     await writePluginConfigStore({ ...store, values: { mode: 'fast' } });
@@ -1282,8 +1472,12 @@ describe('config write full reinstall apply', () => {
         scope: 'user',
       }],
       reinstallCommandImpl: reinstall,
-    })).resolves.toMatchObject({ deleted: true, overallState: 'succeeded' });
-    expect(reinstall).toHaveBeenCalledOnce();
+    })).resolves.toMatchObject({
+      deleted: true,
+      overallState: 'succeeded',
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+    });
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it.each([undefined, false])(
@@ -1419,15 +1613,21 @@ describe('config write full reinstall apply', () => {
       scope: 'project', cwd: fixture.cwd, env: fixture.env,
       values: { mode: 'safe' },
     });
+    mocks.visible.add('codex:project');
+    const reinstall = createReinstallMock();
 
     await expect(applyPluginConfigWrite({
       plugin: fixture.plugin,
       scope: 'project',
       cwd: fixture.cwd,
       env: fixture.env,
-      apply: false,
       request: { removeKeys: ['mode'] },
-    })).resolves.toMatchObject({ removedKeys: ['mode'], configWrite: 'succeeded' });
+      reinstallCommandImpl: reinstall,
+    })).resolves.toMatchObject({
+      removedKeys: ['mode'],
+      configWrite: 'succeeded',
+      apply: { state: 'skipped', reason: 'noEffectiveConfigChange' },
+    });
 
     expect((await readPluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
@@ -1438,10 +1638,11 @@ describe('config write full reinstall apply', () => {
       manifest: fixture.plugin.manifest,
       targetScope: 'project', cwd: fixture.cwd, env: fixture.env,
     })).values.mode).toBe('fast');
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it('reinstalls both user and current-project targets on both platforms after a user write', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     for (const platform of ['codex', 'claude'] as const) {
       for (const scope of ['user', 'project'] as const) mocks.visible.add(locationKey(platform, scope));
     }
@@ -1469,7 +1670,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('skips every sync when a visible project target has invalid project config', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     mocks.visible.add('codex:project');
     await writePluginConfigStore({
@@ -1505,7 +1706,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('does not let invalid project config block a user write with only a user target', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
@@ -1531,8 +1732,8 @@ describe('config write full reinstall apply', () => {
     expect(reinstall.mock.calls[0]?.[1].scope).toBe('user');
   });
 
-  it('applies the same affected-scope invalid-config gate to reset', async () => {
-    const fixture = await createFixture();
+  it('does not apply a project target whose invalid override is unchanged by user reset', async () => {
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     mocks.visible.add('codex:project');
     await writePluginConfigStore({
@@ -1562,20 +1763,19 @@ describe('config write full reinstall apply', () => {
 
     expect(receipt).toMatchObject({
       configWrite: 'succeeded',
-      overallState: 'partial',
+      overallState: 'succeeded',
       apply: {
-        state: 'partial',
-        targetResults: expect.arrayContaining([
+        state: 'succeeded',
+        targetResults: [
           expect.objectContaining({ state: 'completed', target: expect.objectContaining({ scope: 'user' }) }),
-          expect.objectContaining({ state: 'skipped', errorCode: 'invalidConfig' }),
-        ]),
+        ],
       },
       deleted: true,
     });
     expect(reinstall).toHaveBeenCalledOnce();
   });
 
-  it('expands one Status target into both desired pure-native scopes', async () => {
+  it('does not apply expanded pure-native scopes without a config consumer', async () => {
     const fixture = await createFixture();
     mocks.status.mockResolvedValueOnce({
       payload: {
@@ -1608,12 +1808,14 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'user']);
-    expect(reinstall).toHaveBeenCalledTimes(2);
+    expect(receipt.apply).toEqual({
+      state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [],
+    });
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it('preserves a failed dependency and skipped root from the normal reinstall receipt', async () => {
-    const fixture = await createFixture('root');
+    const fixture = await createFixture('root', { dynamicTarget: true });
     fixture.plugin.sourceId = 'team';
     fixture.plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
     fixture.plugin.catalogLogicalIdentity = 'catalog.example/team';
@@ -1706,7 +1908,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('limits a project write to current-project targets', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     for (const platform of ['codex', 'claude'] as const) {
       mocks.visible.add(locationKey(platform, 'user'));
       mocks.visible.add(locationKey(platform, 'project'));
@@ -1811,7 +2013,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
-  it('syncs a desired target when all of its actual content is absent', async () => {
+  it('does not sync an absent static target without a config consumer', async () => {
     const fixture = await createFixture();
     mocks.visible.add('codex:user');
     mocks.states.set('codex:user', 'absent');
@@ -1826,17 +2028,16 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.apply.state).toBe('succeeded');
-    expect(reinstall).toHaveBeenCalledOnce();
-    expect(reinstall).toHaveBeenCalledWith(
-      ['configurable-plugin'],
-      expect.objectContaining({ platform: 'codex', scope: 'user' }),
-      expect.any(Object),
-    );
+    expect(receipt.apply).toEqual({
+      state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [],
+    });
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it('applies only the desired Claude target for a Claude-only manifest', async () => {
-    const fixture = await createFixture('configurable-plugin', { products: ['CLAUDE'] });
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CLAUDE'], dynamicTarget: true,
+    });
     mocks.visible.add('claude:user');
     const reinstall = createReinstallMock();
 
@@ -1854,7 +2055,9 @@ describe('config write full reinstall apply', () => {
   });
 
   it('applies only the desired Codex target for a Codex-only manifest', async () => {
-    const fixture = await createFixture('configurable-plugin', { products: ['CODEX'] });
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CODEX'], dynamicTarget: true,
+    });
     mocks.visible.add('codex:user');
     const reinstall = createReinstallMock();
 
@@ -1871,7 +2074,7 @@ describe('config write full reinstall apply', () => {
     expect(receipt.apply.targetResults.map((entry) => entry.target.platform)).toEqual(['codex']);
   });
 
-  it('applies a user config write to a visible Claude project native-only target', async () => {
+  it('does not apply a user config write to a native-only target without a config consumer', async () => {
     const fixture = await createFixture('configurable-plugin', {
       products: ['CLAUDE'],
       codexProjectManaged: false,
@@ -1889,19 +2092,13 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(receipt.overallState).toBe('succeeded');
-    expect(receipt.apply.targetResults).toHaveLength(1);
-    expect(receipt.apply.targetResults[0]?.target).toMatchObject({
-      platform: 'claude',
-      scope: 'project',
+    expect(receipt.apply).toEqual({
+      state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [],
     });
-    expect(reinstall).toHaveBeenCalledWith(
-      ['configurable-plugin'],
-      expect.objectContaining({ platform: 'claude', scope: 'project', cwd: fixture.cwd }),
-      expect.any(Object),
-    );
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
-  it('limits a project config write to the visible Claude project native-only target', async () => {
+  it('does not apply a project config write to a native-only target without a config consumer', async () => {
     const fixture = await createFixture('configurable-plugin', {
       products: ['CLAUDE'],
       codexProjectManaged: false,
@@ -1919,15 +2116,13 @@ describe('config write full reinstall apply', () => {
       reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt.apply.targetResults).toHaveLength(1);
-    expect(receipt.apply.targetResults[0]?.target).toMatchObject({
-      platform: 'claude',
-      scope: 'project',
+    expect(receipt.apply).toEqual({
+      state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [],
     });
-    expect(reinstall).toHaveBeenCalledTimes(1);
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
-  it('discovers a current Codex project activation without legacy project-managed capability', async () => {
+  it('does not apply a current Codex activation without a config consumer', async () => {
     const fixture = await createFixture('configurable-plugin', {
       products: ['CODEX'],
       codexProjectManaged: false,
@@ -1946,7 +2141,10 @@ describe('config write full reinstall apply', () => {
     });
 
     expect(mocks.status).toHaveBeenCalledOnce();
-    expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(['user', 'project']);
+    expect(receipt.apply).toEqual({
+      state: 'skipped', reason: 'noEffectiveConfigChange', targetResults: [],
+    });
+    expect(reinstall).not.toHaveBeenCalled();
   });
 
   it('does not inspect or render an absent dynamic plugin target', async () => {
@@ -1971,7 +2169,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('keeps the saved config and completed target when another reinstall target fails', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     mocks.visible.add('claude:user');
     let claudeAttempts = 0;
@@ -2114,7 +2312,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('marks every invalid visible target as skipped and makes apply unavailable', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     mocks.visible.add('codex:project');
     await writePluginConfigStore({
@@ -2156,7 +2354,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('serializes a failed runtime apply and a later successful write for one namespaced store', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     fixture.plugin.sourceId = 'team';
     fixture.plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
     fixture.plugin.pluginId = 'team/configurable-plugin';
@@ -2238,7 +2436,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('reports one failed runtime apply while keeping the committed config', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     const reinstall = createReinstallMock({ fail: () => true });
 
@@ -2269,7 +2467,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('keeps a reset committed when reinstall fails', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     await writePluginConfigStore({
       pluginName: fixture.plugin.manifest.name,
@@ -2496,7 +2694,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('redacts sensitive values and absolute config paths from apply target failures', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     const secret = 'plain-sensitive-leaf';
     const configPath = resolvePluginConfigStorePath({
@@ -2529,7 +2727,7 @@ describe('config write full reinstall apply', () => {
   });
 
   it('redacts short secrets only from free-text debug fields', async () => {
-    const fixture = await createFixture();
+    const fixture = await createFixture('configurable-plugin', { dynamicTarget: true });
     mocks.visible.add('codex:user');
     const debugEvents: unknown[] = [];
     const receipt = await applyPluginConfigWrite({

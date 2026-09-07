@@ -3227,34 +3227,54 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
     });
 
-    for (const secretField of [
-      { type: 'string', sensitive: true },
-      {
-        type: 'object',
-        properties: { token: { type: 'string', sensitive: true } },
-        additionalProperties: false,
-      },
-      {
-        type: 'object',
-        additionalProperties: { type: 'string', sensitive: true },
-      },
-    ]) {
+    for (const [target, errorCode] of [
+      [{
+        id: 'native-secret',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        states: ['present'],
+        refreshKeys: ['secret'],
+        skillKey: 'native-secret',
+      }, 'codexNativeRenderSensitiveRefreshKey'],
+      [{
+        id: 'codex-secret',
+        platform: 'codex',
+        scopes: ['user'],
+        target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
+        states: ['present'],
+        refreshKeys: ['secret'],
+        skillKey: 'codex-secret',
+      }, 'skillRenderSensitiveRefreshKey'],
+      [{
+        id: 'claude-secret',
+        platform: 'claude',
+        scopes: ['user'],
+        target: 'claude.skill',
+        states: ['present'],
+        refreshKeys: ['secret'],
+        skillKey: 'claude-secret',
+      }, 'skillRenderSensitiveRefreshKey'],
+      [{
+        id: 'portable-secret',
+        distribution: 'agent-skills',
+        scopes: ['user'],
+        target: 'agent-skills.skill',
+        states: ['present'],
+        refreshKeys: ['secret'],
+        skillKey: 'portable-secret',
+      }, 'skillRenderSensitiveRefreshKey'],
+    ] as const) {
       await fs.writeJson(manifestPath, {
         ...validManifest,
-        config: { fields: { secret: secretField } },
-        artifacts: { targets: [{
-          id: 'native-secret',
-          platform: 'codex',
-          scopes: ['user', 'project'],
-          target: 'codex.skill',
-          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-          states: ['present'],
-          refreshKeys: ['secret'],
-          skillKey: 'native-secret',
-        }] },
+        distributions: { agentSkills: { skills: './portable' } },
+        config: { fields: { secret: { type: 'string', sensitive: true } } },
+        artifacts: { targets: [target] },
       }, { spaces: 2 });
       await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-        stdout: expect.stringContaining('codexNativeRenderSensitiveRefreshKey:'),
+        stdout: expect.stringContaining(`${errorCode}:`),
       });
     }
 
@@ -4304,6 +4324,7 @@ describe('authoring tools', () => {
     const pluginName = 'renderer-partitions';
     const nativeId = 'native-shared';
     const extensionId = 'extension-skill';
+    const roleId = 'sensitive-role';
     const { pluginDir, manifestPath } = await writeSourcePlugin(
       tempRoot,
       pluginName,
@@ -4321,6 +4342,7 @@ describe('authoring tools', () => {
           fields: {
             nativeMode: { type: 'string', default: 'native-default' },
             extensionMode: { type: 'string', default: 'extension-default' },
+            secret: { type: 'string', sensitive: true },
           },
         },
         scripts: {
@@ -4373,6 +4395,15 @@ describe('authoring tools', () => {
       skillKey: extensionId,
       sourceDirs: [`./skills/${extensionId}`],
     });
+    manifest.artifacts.targets.push({
+      id: roleId,
+      platform: 'codex',
+      target: 'codex.agentRole',
+      scopes: ['user'],
+      states: ['present'],
+      refreshKeys: ['secret'],
+      roleKey: roleId,
+    });
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     await waitForAll([
       fs.outputFile(
@@ -4387,17 +4418,30 @@ describe('authoring tools', () => {
         'const fs = await import("node:fs");',
         'const path = await import("node:path");',
         'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'const homeMarker = path.join(process.env.AW_HOME, "renderer-request-marker");',
+        'if (fs.existsSync(homeMarker)) process.exit(3);',
+        'fs.writeFileSync(homeMarker, context.requestedArtifactIds.join(","));',
         'fs.appendFileSync(path.join(process.env.AW_PLUGIN_ROOT, "renderer-calls.jsonl"), JSON.stringify({',
-        '  scope: context.scope, targetScope: context.config.targetScope, requestedArtifactIds: context.requestedArtifactIds',
+        '  scope: context.scope, targetScope: context.config.targetScope,',
+        '  requestedArtifactIds: context.requestedArtifactIds,',
+        '  schemaKeys: Object.keys(context.config.schema), valueKeys: Object.keys(context.config.values),',
+        '  previousArtifacts: context.previousArtifacts, awHome: process.env.AW_HOME',
         '}) + "\\n");',
         'if (context.scope !== "user" || context.config.targetScope !== "user") process.exit(1);',
         'const id = context.requestedArtifactIds[0];',
-        'if (context.requestedArtifactIds.length !== 1 || (id !== "native-shared" && id !== "extension-skill")) process.exit(2);',
-        'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+        'if (context.requestedArtifactIds.length !== 1 || !["native-shared", "extension-skill", "sensitive-role"].includes(id)) process.exit(2);',
+        'const artifact = id === "sensitive-role" ? {',
+        '  id, platform: "codex", target: "codex.agentRole", kind: "codexRole", state: "present",',
+        '  refreshKeys: ["secret"], roleKey: id, content: {',
+        '    registration: { description: "Sensitive role." },',
+        '    roleFile: { name: id, description: "Sensitive role.", developer_instructions: "Use config." }',
+        '  }',
+        '} : {',
         '  id, platform: "codex", target: "codex.skill", kind: "skill", state: "present",',
         '  refreshKeys: id === "native-shared" ? ["nativeMode"] : ["extensionMode"],',
         '  skillKey: id, content: { files: {} }',
-        '}] }));',
+        '};',
+        'process.stdout.write(JSON.stringify({ version: 2, artifacts: [artifact] }));',
       ].join('\n'), 'utf8'),
     ]);
 
@@ -4408,11 +4452,25 @@ describe('authoring tools', () => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(calls).toEqual(expect.arrayContaining([
-      { scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId] },
-      { scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId] },
+      {
+        scope: 'user', targetScope: 'user', requestedArtifactIds: [nativeId],
+        schemaKeys: ['nativeMode'], valueKeys: ['nativeMode'], previousArtifacts: [],
+        awHome: expect.any(String),
+      },
+      {
+        scope: 'user', targetScope: 'user', requestedArtifactIds: [extensionId],
+        schemaKeys: ['extensionMode'], valueKeys: ['extensionMode'], previousArtifacts: [],
+        awHome: expect.any(String),
+      },
+      {
+        scope: 'user', targetScope: 'user', requestedArtifactIds: [roleId],
+        schemaKeys: ['secret'], valueKeys: [], previousArtifacts: [],
+        awHome: expect.any(String),
+      },
     ]));
+    expect(new Set(calls.map((call) => call.awHome)).size).toBe(3);
 
     await fs.writeFile(path.join(pluginDir, 'scripts', 'render.mjs'), [
       'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',

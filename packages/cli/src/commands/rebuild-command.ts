@@ -4977,8 +4977,9 @@ async function runRebuildCommandInSession(options: {
           return {
             ...target,
             recoveryActions: [
-              `run aw cleanup ${planned.pluginId} --platform ${planned.platform} --scope ${planned.preservedScope}`,
-              `then run aw sync --all --platform ${planned.platform} --scope ${planned.resolvedScope}`,
+              `remove every direct and indirect dependent of ${planned.pluginId} in consumer-first order; if dependencyStillRequired is reported, handle the other reported dependents first`,
+              `then run aw cleanup ${planned.pluginId} --platform ${planned.platform} --scope ${planned.preservedScope}`,
+              `then reinstall every removed root at its original platform and scope, selecting --dependency-scope ${planned.pluginId}#${planned.platform}=${planned.resolvedScope} during each install`,
             ],
           };
         });

@@ -188,15 +188,7 @@ async function overlayDirectory(
   await visit(sourceRoot);
 }
 
-function assertNoSensitiveValues(
-  candidate: CandidateTree,
-  sensitiveValues: readonly string[],
-): void {
-  assertNoSensitiveConfigInFiles(
-    candidate.tree.files,
-    sensitiveValues,
-    'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
-  );
+function assertNoUnresolvedTemplates(candidate: CandidateTree): void {
   for (const [relativePath, content] of Object.entries(candidate.tree.files)) {
     const text = content.toString('utf8');
     if (/\{\{[^{}]+\}\}/u.test(text)) {
@@ -336,7 +328,14 @@ async function materializePluginCandidates(options: {
       } else {
         candidate.tree.files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH] = receiptBytes;
       }
-      assertNoSensitiveValues(candidate, sensitiveValues);
+      const filesToScan = { ...candidate.tree.files };
+      delete filesToScan[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
+      assertNoSensitiveConfigInFiles(
+        filesToScan,
+        sensitiveValues,
+        'portableSkillSensitiveConfigExposed: Portable Skill exposes sensitive config.',
+      );
+      assertNoUnresolvedTemplates(candidate);
     }
     return output;
   };

@@ -11,6 +11,42 @@ export interface ResolvedArtifactRequest {
   declarations: PluginArtifactTargetDefinition[];
 }
 
+function isSkillTarget(target: PluginArtifactTargetDefinition): boolean {
+  return target.target === 'codex.skill'
+    || target.target === 'claude.skill'
+    || target.target === 'agent-skills.skill';
+}
+
+function sensitiveConfigKeys(manifest: NormalizedPluginManifest): Set<string> {
+  return new Set(Object.entries(manifest.config?.fields ?? {})
+    .filter(([, field]) => field.sensitive === true
+      || (field.type === 'object'
+        && (Object.values(field.properties ?? {}).some((child) => child.sensitive === true)
+          || (field.additionalProperties !== false
+            && field.additionalProperties?.sensitive === true))))
+    .map(([key]) => key));
+}
+
+function usesSensitiveConfig(
+  target: PluginArtifactTargetDefinition,
+  sensitiveKeys: ReadonlySet<string>,
+): boolean {
+  return target.refreshKeys.some((key) => sensitiveKeys.has(key));
+}
+
+function assertSafeArtifactRequestMix(
+  manifest: NormalizedPluginManifest,
+  declarations: readonly PluginArtifactTargetDefinition[],
+): void {
+  const sensitiveKeys = sensitiveConfigKeys(manifest);
+  if (declarations.some(isSkillTarget)
+    && declarations.some((target) => !isSkillTarget(target) && usesSensitiveConfig(target, sensitiveKeys))) {
+    throw new Error(
+      'artifactRendererSensitiveRequestMixed: Skill artifacts cannot share a renderer request with non-Skill artifacts that require sensitive config.',
+    );
+  }
+}
+
 export function resolveAwDeliveredArtifactIds(options: {
   manifest: NormalizedPluginManifest;
   platform: PlatformName | DistributionName;
@@ -22,6 +58,27 @@ export function resolveAwDeliveredArtifactIds(options: {
       && target.scopes.includes(options.scope)
       && target.delivery?.mode !== 'codex-native')
     .map((target) => target.id);
+}
+
+export function resolveAwDeliveredArtifactRequestBatches(options: {
+  manifest: NormalizedPluginManifest;
+  platform: PlatformName | DistributionName;
+  scope: Scope;
+}): string[][] {
+  const requestedArtifactIds = resolveAwDeliveredArtifactIds(options);
+  const requested = new Set(requestedArtifactIds);
+  const declarations = (options.manifest.artifacts?.targets ?? []).filter((target) =>
+    requested.has(target.id)
+    && (target.platform ?? target.distribution) === options.platform
+    && target.scopes.includes(options.scope));
+  const sensitiveKeys = sensitiveConfigKeys(options.manifest);
+  const skillIds = declarations.filter(isSkillTarget).map((target) => target.id);
+  const nonSkillTargets = declarations.filter((target) => !isSkillTarget(target));
+  if (skillIds.length === 0
+    || !nonSkillTargets.some((target) => usesSensitiveConfig(target, sensitiveKeys))) {
+    return requestedArtifactIds.length === 0 ? [] : [requestedArtifactIds];
+  }
+  return [skillIds, nonSkillTargets.map((target) => target.id)];
 }
 
 export function resolveArtifactRequest(options: {
@@ -66,6 +123,7 @@ export function resolveArtifactRequest(options: {
   }
 
   const declarations = allowedDeclarations.filter((target) => requested.has(target.id));
+  assertSafeArtifactRequestMix(options.manifest, declarations);
   return {
     requestedArtifactIds: declarations.map((target) => target.id),
     declarations,

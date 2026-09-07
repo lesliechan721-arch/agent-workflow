@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactRenderEvent } from '../../src/utils/artifact-renderer.js';
 import type { PluginManifestSource, PluginMeta } from '../../src/types.js';
@@ -16,7 +16,11 @@ import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import { resolveAwDeliveredArtifactIds } from '../../src/utils/artifact-request.js';
+import {
+  resolveArtifactRequest,
+  resolveAwDeliveredArtifactIds,
+  resolveAwDeliveredArtifactRequestBatches,
+} from '../../src/utils/artifact-request.js';
 
 const tempDirs: string[] = [];
 const descendantPids = new Set<number>();
@@ -243,6 +247,57 @@ afterEach(async () => {
 });
 
 describe('artifact renderer runtime', () => {
+  it('removes its context directory when a runtime import is unresolved', async () => {
+    const root = await makeTempRoot('aw-artifact-context-import-');
+    const plugin = await writePlugin(root);
+    const target = await resolveArtifactRendererTarget(plugin);
+    target.sourceManifest!.artifacts!.targets = [{
+      id: 'portable-skill',
+      distribution: 'agent-skills',
+      target: 'agent-skills.skill',
+      scopes: ['user'],
+      states: ['present'],
+      refreshKeys: [],
+      skillKey: 'portable-skill',
+      runtimeImports: [{ name: 'helper', plugin: 'provider', export: 'helper' }],
+    }];
+    const createdDirectories = vi.spyOn(fs, 'mkdtemp');
+    try {
+      await expect(writeArtifactRendererContext({
+        target, event: 'install', platform: 'agent-skills', scope: 'user',
+        cwd: root, commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      })).rejects.toThrow('portable-skill/helper" is not resolved');
+      expect(createdDirectories).toHaveBeenCalledOnce();
+      const tempDir = await createdDirectories.mock.results[0]!.value;
+      tempDirs.push(tempDir);
+      await expect(fs.pathExists(tempDir)).resolves.toBe(false);
+    } finally {
+      createdDirectories.mockRestore();
+    }
+  });
+
+  it('removes its context directory and preserves a context write failure', async () => {
+    const root = await makeTempRoot('aw-artifact-context-write-');
+    const plugin = await writePlugin(root);
+    const target = await resolveArtifactRendererTarget(plugin);
+    const failure = Object.assign(new Error('context write denied'), { code: 'EACCES' });
+    const createdDirectories = vi.spyOn(fs, 'mkdtemp');
+    const writeContext = vi.spyOn(fs, 'writeJson').mockRejectedValueOnce(failure);
+    try {
+      await expect(writeArtifactRendererContext({
+        target, event: 'install', platform: 'codex', scope: 'user',
+        cwd: root, commandEnv: { AW_HOME: path.join(root, 'aw-home') },
+      })).rejects.toBe(failure);
+      expect(createdDirectories).toHaveBeenCalledOnce();
+      const tempDir = await createdDirectories.mock.results[0]!.value;
+      tempDirs.push(tempDir);
+      await expect(fs.pathExists(tempDir)).resolves.toBe(false);
+    } finally {
+      writeContext.mockRestore();
+      createdDirectories.mockRestore();
+    }
+  });
+
   it.runIf(process.platform !== 'win32')('terminates an inherited-pipe descendant and preserves the abort reason', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-abort-');
     const cwd = path.join(root, 'repo');
@@ -511,6 +566,43 @@ describe('artifact renderer runtime', () => {
     expect(result.plan.artifacts.map((artifact) => artifact.id)).toEqual(['lightweight-instruction']);
   });
 
+  it('splits Skill requests from non-Skill requests that require sensitive config and rejects unsafe callers', () => {
+    const manifest = createManifest() as PluginMeta['manifest'];
+    manifest.artifacts!.targets = [
+      {
+        id: 'safe-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+        delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: [], skillKey: 'safe-skill',
+      },
+      {
+        id: 'sensitive-instruction', platform: 'codex', scopes: ['user'],
+        target: 'codex.developerInstructionsBlock', states: ['present'], refreshKeys: ['token'],
+      },
+      {
+        id: 'safe-role', platform: 'codex', scopes: ['user'], target: 'codex.agentRole',
+        states: ['present'], refreshKeys: ['explorerModel'], roleKey: 'safe-role',
+      },
+    ];
+
+    expect(resolveAwDeliveredArtifactRequestBatches({
+      manifest, platform: 'codex', scope: 'user',
+    })).toEqual([
+      ['safe-skill'],
+      ['sensitive-instruction', 'safe-role'],
+    ]);
+    expect(() => resolveArtifactRequest({
+      manifest,
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['safe-skill', 'sensitive-instruction'],
+    })).toThrow('artifactRendererSensitiveRequestMixed');
+    expect(() => resolveArtifactRequest({
+      manifest,
+      platform: 'codex',
+      scope: 'user',
+      requestedArtifactIds: ['sensitive-instruction', 'safe-role'],
+    })).not.toThrow();
+  });
+
   it('runs each renderer with the isolated homes declared in its context', async () => {
     const root = await makeTempRoot('aw-artifact-renderer-isolated-home-');
     const cwd = path.join(root, 'repo');
@@ -706,7 +798,7 @@ describe('artifact renderer runtime', () => {
       scopes: ['user'],
       target: 'codex.skill',
       states: ['present'],
-      refreshKeys: ['token'],
+      refreshKeys: [],
       skillKey: 'sensitive-skill',
     });
     const plugin = await writePlugin(root, manifest);
@@ -749,7 +841,7 @@ describe('artifact renderer runtime', () => {
         target: 'codex.skill',
         state: 'present',
         skillKey: 'sensitive-skill',
-        refreshKeys: ['token'],
+        refreshKeys: [],
         content: {
           files: {
             'SKILL.md': '---\nname: sensitive-skill\ndescription: Test.\n---\n',
@@ -772,6 +864,143 @@ describe('artifact renderer runtime', () => {
 
     expect(error.message).toContain('artifactRendererSensitiveConfigExposed');
     expect(error.message).not.toContain(secret);
+  });
+
+  it('blocks sensitive data in an unrecognized plan attachment before validation can disclose it', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-sensitive-attachment-');
+    const cwd = path.join(root, 'repo');
+    const secret = 'sensitive-attachment-value';
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: secret },
+    });
+    const error = await runArtifactRendererExact({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      requestedArtifactIds: ['codex-explorer-role'],
+      runner: {
+        async run() {
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: JSON.stringify({ version: 2, artifacts: [{
+              id: 'codex-explorer-role',
+              kind: 'codexRole',
+              platform: 'codex',
+              target: 'codex.agentRole',
+              state: 'present',
+              roleKey: 'codex-explorer',
+              refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+              content: { roleFile: { name: 'codex-explorer', developer_instructions: 'Safe.' } },
+              attachment: secret,
+            }] }),
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('artifactRendererSensitiveConfigExposed');
+    expect(error.message).not.toContain(secret);
+  });
+
+  it('redacts a short sensitive value from plan validation errors without treating it as a leak', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-short-sensitive-error-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const secret = 'ab\nc';
+    const encoded = JSON.stringify(secret).slice(1, -1);
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: secret },
+    });
+    const error = await runArtifactRendererExact({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      requestedArtifactIds: ['codex-explorer-role'],
+      runner: {
+        async run() {
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: JSON.stringify({ version: 2, artifacts: [{
+              id: 'codex-explorer-role', kind: 'codexRole', platform: 'codex',
+              target: 'codex.agentRole', state: secret, roleKey: 'codex-explorer',
+              refreshKeys: ['explorerModel', 'modelReasoningEffort'],
+            }] }),
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('unsupported state');
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain(encoded);
+  });
+
+  it('redacts a JSON-escaped short sensitive value from invalid JSON output', async () => {
+    const root = await makeTempRoot('aw-artifact-renderer-short-sensitive-json-error-');
+    const cwd = path.join(root, 'repo');
+    await fs.ensureDir(cwd);
+    const plugin = await writePlugin(root);
+    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
+    const secret = 'ab\nc';
+    const encoded = JSON.stringify(secret).slice(1, -1);
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd,
+      env,
+      values: { token: secret },
+    });
+    const error = await runArtifactRendererExact({
+      event: 'install',
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd,
+      commandEnv: env,
+      requestedArtifactIds: ['codex-explorer-role'],
+      runner: {
+        async run() {
+          return {
+            exitCode: 0,
+            signal: null,
+            stdout: `invalid ${encoded}`,
+            stderr: `invalid ${encoded}`,
+            timedOut: false,
+          };
+        },
+      },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('must write JSON');
+    expect(error.message.match(/\[REDACTED\]/gu)?.length).toBe(2);
+    expect(error.message).not.toContain(secret);
+    expect(error.message).not.toContain(encoded);
   });
 
   it('redacts a sensitive renderer token split across the output limit by the default runner', async () => {

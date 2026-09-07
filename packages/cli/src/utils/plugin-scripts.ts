@@ -16,7 +16,10 @@ import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import { attachSafeOperationError } from './safe-operation-diagnostic.js';
-import { collectSensitiveTokenRepresentations } from './sensitive-content.js';
+import {
+  collectSensitiveTokenRepresentations,
+  containsBlockedSensitiveToken,
+} from './sensitive-content.js';
 export { calculateFileDigest } from './bundle-integrity.js';
 
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
@@ -135,8 +138,8 @@ export function assertNoSensitiveConfigValues(
     }
   };
   visit(value);
-  for (const representation of collectSensitiveTokenRepresentations(sensitiveValues)) {
-    if (strings.some((entry) => entry.includes(representation))) throw new Error(message);
+  if (strings.some((entry) => containsBlockedSensitiveToken(entry, sensitiveValues))) {
+    throw new Error(message);
   }
 }
 

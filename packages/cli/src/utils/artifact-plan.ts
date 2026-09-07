@@ -352,7 +352,7 @@ function normalizeArtifact(options: {
   platform: PlatformName | DistributionName;
   pluginName: string;
   declarationMap: Map<string, PluginArtifactTargetDefinition>;
-  renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
+  renderConfig: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'>;
   digestSalt: string;
 }): ValidatedArtifactPlanArtifact {
   const fieldName = `artifacts[${options.index}]`;
@@ -446,7 +446,7 @@ function normalizeArtifact(options: {
       logicalIdentity,
       configDigest: createArtifactConfigDigest({
         artifact: normalized,
-        configValues: options.renderConfig.values,
+        renderConfig: options.renderConfig,
         digestSalt: options.digestSalt,
       }),
     };
@@ -481,7 +481,7 @@ function normalizeArtifact(options: {
       logicalIdentity,
       configDigest: createArtifactConfigDigest({
         artifact: normalized,
-        configValues: options.renderConfig.values,
+        renderConfig: options.renderConfig,
         digestSalt: options.digestSalt,
       }),
     };
@@ -514,7 +514,7 @@ function normalizeArtifact(options: {
     logicalIdentity,
     configDigest: createArtifactConfigDigest({
       artifact: normalized,
-      configValues: options.renderConfig.values,
+      renderConfig: options.renderConfig,
       digestSalt: options.digestSalt,
     }),
   };
@@ -542,7 +542,7 @@ function resolveDigestSalt(options: {
 
 export function createArtifactConfigDigest(options: {
   artifact: Pick<ArtifactPlanArtifact, 'id' | 'platform' | 'distribution' | 'target' | 'refreshKeys'>;
-  configValues: Record<string, unknown>;
+  renderConfig: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'>;
   digestSalt: string;
 }): string {
   return digestHex({
@@ -551,10 +551,12 @@ export function createArtifactConfigDigest(options: {
     distribution: options.artifact.distribution,
     target: options.artifact.target,
     id: options.artifact.id,
-    refreshValues: options.artifact.refreshKeys.map((key) => ({
+    refreshInputs: options.artifact.refreshKeys.map((key) => ({
       key,
-      present: Object.hasOwn(options.configValues, key),
-      value: options.configValues[key],
+      present: Object.hasOwn(options.renderConfig.values, key),
+      value: options.renderConfig.values[key],
+      source: options.renderConfig.sources[key],
+      issues: options.renderConfig.issues.filter((issue) => issue.key === key),
     })),
   });
 }
@@ -566,7 +568,7 @@ export function validateArtifactPlan(options: {
   platform: PlatformName | DistributionName;
   scope: Scope;
   requestedArtifactIds: readonly string[];
-  renderConfig: Pick<ResolvedArtifactRenderConfig, 'values'>;
+  renderConfig: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'>;
   rendererDigest?: string;
   manifestDigest?: string;
 }): ValidatedArtifactPlan {

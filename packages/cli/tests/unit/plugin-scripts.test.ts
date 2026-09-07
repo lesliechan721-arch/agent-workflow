@@ -473,6 +473,21 @@ describe('preApply script', () => {
     );
   });
 
+  it('redacts raw and JSON-escaped forms of short sensitive scalars', () => {
+    const secrets = ['ab\nc', 'a"b', 'a\\b'];
+    const output = secrets.flatMap((secret) => [
+      `raw=${secret}`,
+      `escaped=${JSON.stringify(secret).slice(1, -1)}`,
+    ]).join(' ');
+    const summary = summarizePluginScriptOutput(output, secrets);
+
+    expect(summary.match(/\[REDACTED\]/gu)?.length).toBe(6);
+    for (const secret of secrets) {
+      expect(summary).not.toContain(secret);
+      expect(summary).not.toContain(JSON.stringify(secret).slice(1, -1));
+    }
+  });
+
   it('redacts raw and JSON-escaped forms of quotes, newlines, and backslashes', () => {
     const secret = 'quote" newline\n slash\\';
     const escaped = JSON.stringify(secret).slice(1, -1);
@@ -835,6 +850,44 @@ describe('preApply script', () => {
       expect(serialized).not.toContain(privateValue);
     }
   });
+
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'captures and redacts a longer JSON-escaped token across the output limit', async () => {
+      const secret = '§\0x';
+      const encoded = JSON.stringify(secret).slice(1, -1);
+      const plugin = await createPlugin({ sensitiveDefault: secret });
+      await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+        'let input = "";',
+        'process.stdin.setEncoding("utf8");',
+        'process.stdin.on("data", (chunk) => { input += chunk; });',
+        'process.stdin.on("end", () => {',
+        '  const token = JSON.parse(input).config.values.token;',
+        '  const encoded = JSON.stringify(token).slice(1, -1);',
+        '  const splitAt = 2;',
+        `  const first = "x".repeat(${OUTPUT_LIMIT} - splitAt) + encoded.slice(0, splitAt);`,
+        '  process.stderr.write(first, () => {',
+        '    setTimeout(() => {',
+        '      process.stderr.write(encoded.slice(splitAt), () => { process.exitCode = 7; });',
+        '    }, 20);',
+        '  });',
+        '});',
+      ].join('\n'));
+
+      const error = await runPreApplyScript({
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: plugin.rootDir,
+        context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      }).catch((failure: unknown) => failure as Error);
+
+      expect(error.message).toContain('[REDACTED]');
+      expect(error.message).not.toContain(encoded);
+      for (let prefixLength = 1; prefixLength <= encoded.length; prefixLength += 1) {
+        expect(error.message).not.toContain(encoded.slice(0, prefixLength));
+      }
+    },
+  );
 
   it('redacts a sensitive value that contains a private root as one overlapping range', async () => {
     const plugin = await createPlugin();

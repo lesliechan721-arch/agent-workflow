@@ -175,14 +175,6 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
         || intent.action === 'cleanup',
     };
   }
-  if (intent.kind === 'pluginWrite' && intent.dependencyPlacementAdjustment) {
-    return {
-      title: '调整依赖位置',
-      description: '保存最终的依赖使用位置，并应用非破坏性变更。',
-      primaryLabel: '应用依赖位置',
-      destructive: false,
-    };
-  }
   if (intent.kind === 'pluginWrite') {
     if (intent.originIssue) {
       if (intent.action === 'cleanup') {
@@ -420,12 +412,8 @@ function reviewChanges(
       changes.push({
         kind: 'keep',
         group: 'preserved',
-        title: intent.dependencyPlacementAdjustment
-          ? '根插件和插件设置保持不变'
-          : '插件设置和已有依赖保持不变',
-        description: intent.dependencyPlacementAdjustment
-          ? '这里只调整所列依赖使用位置。'
-          : '移除根插件时不会自动清理依赖。',
+        title: '插件设置和已有依赖保持不变',
+        description: '移除根插件时不会自动清理依赖。',
       });
       return [...changes, ...codexChanges, ...runtimeChanges];
     }
@@ -493,6 +481,20 @@ function reviewChanges(
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
       : '当前项目';
+    const impact = evidence?.config;
+    const impactChanges: OperationReviewChange[] = impact?.impactState === 'unknown'
+      ? [{
+          kind: 'warning', group: 'configImpact', title: '设置重置后的应用影响未知',
+          description: '当前无法解析来源或设置；重置仍会删除所选设置层。',
+        }]
+      : impact?.noEffectiveChange
+        ? [{ kind: 'keep', group: 'configImpact', title: '有效设置输入不变；无需同步当前安装' }]
+        : (impact?.affectedTargets ?? []).length > 0
+          ? impact!.affectedTargets.map((target): OperationReviewChange => ({
+              kind: 'warning', group: 'configImpact',
+              title: `重置后需同步 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+            }))
+          : [{ kind: 'keep', group: 'configImpact', title: '只删除设置层；当前安装保持不变' }];
     return [
       ...(intent.changes?.map((change): OperationReviewChange => ({
         kind: 'remove', group: 'configChanges', title: `${layerLabel} · ${change.title}`,
@@ -502,7 +504,7 @@ function reviewChanges(
             ).join('；')}`
           : `${change.before} → ${change.after}`,
       })) ?? [{ kind: 'remove' as const, group: 'configChanges' as const, title: `删除${layerLabel}中的已存值`, description: '删除整个设置层且不创建备份；有效值将恢复为继承值或默认值。' }]),
-      { kind: 'keep', group: 'configImpact', title: '只保存设置；当前安装保持不变' },
+      ...impactChanges,
       { kind: 'keep', group: 'preserved', title: intent.scope === 'user' ? '当前项目设置保持不变' : '个人默认保持不变' },
     ];
   }
@@ -634,13 +636,14 @@ function reviewChanges(
     ];
   }
   if (intent.changes) {
+    const noEffectiveChange = evidence?.config?.noEffectiveChange === true;
     const hasAffectedCodexTarget = evidence?.config?.affectedTargets.some(
       (target) => target.platform === 'codex',
     ) ?? false;
     const sharedNativeTargets = hasAffectedCodexTarget
       ? evidence?.config?.sharedNativeRenderTargets ?? []
       : [];
-    const sharedNativeImpact: OperationReviewChange[] = sharedNativeTargets.length === 0
+    const sharedNativeImpact: OperationReviewChange[] = noEffectiveChange || sharedNativeTargets.length === 0
       ? []
       : intent.apply
         ? [
@@ -685,12 +688,24 @@ function reviewChanges(
           : privateKeys.has(change.key) ? '已设置 → 将更新'
           : `${change.before} → ${change.after}`,
       })),
+      ...(evidence?.config?.impactState === 'unknown' ? [{
+        kind: 'warning' as const, group: 'configImpact' as const,
+        title: '设置的应用影响未知',
+        description: '当前无法比较保存前后的有效设置输入。',
+      }] : noEffectiveChange ? [{
+        kind: 'keep' as const, group: 'configImpact' as const,
+        title: '有效设置输入不变；无需重新应用',
+      }] : []),
       ...sharedNativeImpact,
-      ...(sharedNativeTargets.length > 0
+      ...(evidence?.config?.impactState === 'unknown' || noEffectiveChange || sharedNativeTargets.length > 0
         ? []
         : intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
         ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
             kind: 'change', group: 'configImpact', title: `重新应用 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
+          }))
+        : !intent.apply && (evidence?.config?.affectedTargets.length ?? 0) > 0
+        ? evidence!.config!.affectedTargets.map((target): OperationReviewChange => ({
+            kind: 'warning', group: 'configImpact', title: `保存后需同步 ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}`,
           }))
         : [{ kind: 'keep' as const, group: 'configImpact' as const, title: '当前没有可见安装；只保存设置' }]),
       { kind: 'keep', group: 'preserved', title: '其他项目不会被自动扫描' },

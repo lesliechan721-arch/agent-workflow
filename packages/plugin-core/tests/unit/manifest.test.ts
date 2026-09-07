@@ -289,7 +289,42 @@ describe('plugin manifest v3 structure', () => {
     }, ['user']))).not.toThrow()
   })
 
-  it('rejects codex-native refresh keys that expose a sensitive scalar', () => {
+  it.each([
+    ['codex-native', {
+      id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+      delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+      states: ['present'], refreshKeys: ['secret'], skillKey: 'native-skill',
+    }, 'codexNativeRenderSensitiveRefreshKey'],
+    ['Codex AW extension', {
+      id: 'codex-skill', platform: 'codex', scopes: ['user'], target: 'codex.skill',
+      delivery: { mode: 'aw-extension' }, states: ['present'], refreshKeys: ['secret'],
+      skillKey: 'codex-skill',
+    }, 'skillRenderSensitiveRefreshKey'],
+    ['Claude', {
+      id: 'claude-skill', platform: 'claude', scopes: ['user'], target: 'claude.skill',
+      states: ['present'], refreshKeys: ['secret'], skillKey: 'claude-skill',
+    }, 'skillRenderSensitiveRefreshKey'],
+    ['portable', {
+      id: 'portable-skill', distribution: 'agent-skills', scopes: ['user'],
+      target: 'agent-skills.skill', states: ['present'], refreshKeys: ['secret'],
+      skillKey: 'portable-skill',
+    }, 'skillRenderSensitiveRefreshKey'],
+  ] as const)('rejects sensitive refresh keys for %s Skill targets', (_label, target, errorCode) => {
+    expect(() => validatePluginManifest('/tmp/plugin', manifest({
+      schemaVersion: 3,
+      marketplace: {
+        category: 'workflow', strict: true,
+        policy: {
+          installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX', 'CLAUDE'],
+        },
+      },
+      distributions: { agentSkills: { skills: './portable' } },
+      config: { fields: { secret: { type: 'string', sensitive: true } } },
+      artifacts: { targets: [target] },
+    }))).toThrow(new RegExp(`^${errorCode}:`, 'u'))
+  })
+
+  it('allows a non-Skill target to refresh from sensitive config', () => {
     expect(() => validatePluginManifest('/tmp/plugin', manifest({
       schemaVersion: 3,
       marketplace: {
@@ -298,11 +333,10 @@ describe('plugin manifest v3 structure', () => {
       },
       config: { fields: { secret: { type: 'string', sensitive: true } } },
       artifacts: { targets: [{
-        id: 'native-id', platform: 'codex', scopes: ['user'], target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-        states: ['present'], refreshKeys: ['secret'], skillKey: 'native-skill',
+        id: 'role-id', platform: 'codex', scopes: ['user'], target: 'codex.agentRole',
+        states: ['present'], refreshKeys: ['secret'], roleKey: 'sensitive-role',
       }] },
-    }))).toThrow(/^codexNativeRenderSensitiveRefreshKey:/u)
+    }))).not.toThrow()
   })
 
   it('requires all shared Codex native components to declare the same scope set', () => {

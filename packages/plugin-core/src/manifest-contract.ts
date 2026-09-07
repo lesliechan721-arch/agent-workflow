@@ -1740,19 +1740,25 @@ function configFieldContainsSensitiveValue(
   );
 }
 
-function assertCodexNativeRefreshKeysAreNotSensitive(options: {
+function assertSkillRefreshKeysAreNotSensitive(options: {
+  target: ArtifactTarget;
   delivery: PluginArtifactTargetDefinition['delivery'];
   refreshKeys: readonly string[];
   schema: PluginConfigSchema | undefined;
   fieldName: string;
 }): void {
-  if (options.delivery?.mode !== 'codex-native') return;
+  const skillTarget = options.target === 'codex.skill'
+    || options.target === 'claude.skill'
+    || options.target === 'agent-skills.skill';
+  if (!skillTarget) return;
   for (const [index, key] of options.refreshKeys.entries()) {
     const field = options.schema?.fields[key];
     if (field && configFieldContainsSensitiveValue(field)) {
+      const native = options.delivery?.mode === 'codex-native';
       throw new Error(
-        `codexNativeRenderSensitiveRefreshKey: Invalid ${options.fieldName}[${index}]: ` +
-          `codex-native renderers cannot read sensitive config field "${key}".`,
+        `${native ? 'codexNativeRenderSensitiveRefreshKey' : 'skillRenderSensitiveRefreshKey'}: ` +
+          `Invalid ${options.fieldName}[${index}]: ` +
+          `${native ? 'codex-native renderers' : 'Skill renderers'} cannot read sensitive config field "${key}".`,
       );
     }
   }
@@ -1969,7 +1975,8 @@ function normalizeArtifactTargetEntry(
     `${fieldName}.refreshKeys`,
     schema,
   );
-  assertCodexNativeRefreshKeysAreNotSensitive({
+  assertSkillRefreshKeysAreNotSensitive({
+    target,
     delivery,
     refreshKeys,
     schema,

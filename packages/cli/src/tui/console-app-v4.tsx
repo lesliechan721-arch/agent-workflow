@@ -3258,30 +3258,8 @@ export function ConsoleAppV4(props: {
       breadcrumb = `${plugin.displayName} / 依赖关系`;
       context = overview ? `${overview.summary.totalCount + 1} 个插件` : '只读';
       title = hasInstalledPlacement(plugin) ? '依赖与被使用情况' : '安装所需插件';
-      description = '依赖由同一来源快照解析；调整前会进入 Review。';
-      const installedTargets = plugin.installedPlacements.filter((placement): placement is Extract<PlatformPlacementSummary, { state: 'installed' }> =>
-        placement.state === 'installed');
+      description = '依赖由同一来源快照解析；安装时的依赖位置选择会进入 Review。';
       actions = [
-        ...(hasInstalledPlacement(plugin) && dependencyCount > 0 && installedTargets.length > 0 ? [{
-          label: '调整依赖位置…',
-          description: '按平台设置 project/user；不会自动清理所有项目内容',
-          run: async () => {
-            const rootScope: Scope = installedTargets.some((placement) =>
-              placement.desiredScopes?.includes('project') || placement.scope === 'project')
-              ? 'project' : 'user';
-            const platforms = [...new Set(installedTargets.map((placement) => placement.platform))];
-            setScope(rootScope);
-            setSelectedTargets(platforms);
-            props.controller.beginInstallFlow(plugin.pluginId, rootScope, { adjustingExisting: true });
-            props.controller.setInstallPlatforms(platforms);
-            const configurable = await props.controller.prepareInstallDependencyPlacement();
-            if (!configurable) {
-              setActionError('当前依赖位置都由约束固定，没有可调整项。');
-              return;
-            }
-            go({ name: 'dependencyPlacement', pluginId: plugin.pluginId });
-          },
-        }] : []),
         { label: '技术详情', description: '显示 canonical pluginId 和安全错误代码', run: () => toggleTechnical() },
       ];
       const rootStatus = plugin.aggregateStatus === 'installed' ? 'success' as const

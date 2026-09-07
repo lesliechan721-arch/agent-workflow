@@ -59,9 +59,21 @@ import {
 } from '../../src/utils/catalog-sources.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
-import { calculateCodexSharedNativePayloadDigest } from '../../src/utils/catalog-digests.js';
-import { CODEX_NATIVE_RENDER_RECEIPT_PATH } from '../../src/utils/codex-native-render-receipt.js';
+import {
+  calculateCodexNativeRenderPayloadDigest,
+  calculateCodexSharedNativePayloadDigest,
+} from '../../src/utils/catalog-digests.js';
+import {
+  CODEX_NATIVE_RENDER_RECEIPT_PATH,
+  createCodexNativeRenderReceipt,
+  parseCodexNativeRenderReceipt,
+} from '../../src/utils/codex-native-render-receipt.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
+import { createCodexSkillStagingTreeContentDigest } from '../../src/utils/codex-skill-staging.js';
+import {
+  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
+  readDynamicSkillTree,
+} from '../../src/utils/dynamic-skill-tree.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const TEST_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
@@ -2372,6 +2384,99 @@ describe('rebuild adapter integration', () => {
     },
   );
 
+  it('renders mixed Skill and sensitive non-Skill targets in exact isolated batches', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginRoot = path.join(isolation.layout.rootDir, 'mixed-sensitive-batches');
+    const callsPath = path.join(pluginRoot, 'renderer-calls.jsonl');
+    const plugin = {
+      sourceId: 'team',
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+      pluginId: 'team/mixed-sensitive-batches',
+      rootDir: pluginRoot,
+      manifestPath: path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
+      manifest: {
+        name: 'mixed-sensitive-batches',
+        version: '1.0.0',
+        description: 'Mixed sensitive request fixture.',
+        schemaVersion: 3,
+        marketplace: {
+          category: 'test',
+          strict: true,
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        },
+        config: { fields: { token: { type: 'string', sensitive: true } } },
+        scripts: { artifacts: { render: { runner: 'node', path: './render.mjs' } } },
+        artifacts: { targets: [
+          {
+            id: 'safe-skill', platform: 'codex', target: 'codex.skill',
+            delivery: { mode: 'aw-extension' }, scopes: ['user'], states: ['present'],
+            refreshKeys: [], skillKey: 'safe-skill',
+          },
+          {
+            id: 'sensitive-role', platform: 'codex', target: 'codex.agentRole',
+            scopes: ['user'], states: ['present'], refreshKeys: ['token'], roleKey: 'sensitive-role',
+          },
+        ] },
+      },
+    } as PluginMeta;
+    await fs.outputJson(plugin.manifestPath, plugin.manifest);
+    await fs.outputFile(path.join(pluginRoot, 'render.mjs'), [
+      "import fs from 'node:fs';",
+      'const context = JSON.parse(fs.readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      `fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ ids: context.requestedArtifactIds, config: context.config.values, previousArtifacts: context.previousArtifacts }) + "\\n");`,
+      'const artifacts = context.requestedArtifactIds.map((id) => id === "safe-skill" ? {',
+      '  id, kind: "skill", platform: "codex", target: "codex.skill", state: "present",',
+      '  skillKey: "safe-skill", refreshKeys: [], content: { files: {',
+      '    "SKILL.md": "---\\nname: safe-skill\\ndescription: Safe Skill.\\n---\\nBody.\\n",',
+      '    "README.md": "# Safe Skill\\n",',
+      '    "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n"',
+      '  } }',
+      '} : {',
+      '  id, kind: "codexRole", platform: "codex", target: "codex.agentRole", state: "present",',
+      '  roleKey: "sensitive-role", refreshKeys: ["token"], content: { roleFile: {',
+      '    name: "sensitive-role", developer_instructions: "Use a derived credential reference."',
+      '  }, registration: { description: "Sensitive role." } }',
+      '});',
+      'console.log(JSON.stringify({ version: 2, artifacts }));',
+    ].join('\n'));
+    await writePluginConfigStore({
+      sourceId: plugin.sourceId,
+      sourceIdentity: plugin.sourceIdentity,
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      values: { token: 'mixed-sensitive-secret' },
+    });
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => { throw new Error('AW-delivered artifacts must not call native CLI'); },
+      }),
+    });
+
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+    });
+    const calls = (await fs.readFile(callsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+
+    expect(calls).toEqual([
+      { ids: ['safe-skill'], config: {}, previousArtifacts: [] },
+      {
+        ids: ['sensitive-role'],
+        config: { token: 'mixed-sensitive-secret' },
+        previousArtifacts: [],
+      },
+    ]);
+    expect(target.artifacts.map((artifact) => artifact.target))
+      .toEqual(expect.arrayContaining(['codex.skill', 'codex.agentRole']));
+  });
+
   it.each([
     { platform: 'claude' as const, delivery: 'direct' as const, leak: 'path' as const },
     { platform: 'claude' as const, delivery: 'direct' as const, leak: 'content' as const },
@@ -2410,7 +2515,7 @@ describe('rebuild adapter integration', () => {
             : platform === 'codex' ? { delivery: { mode: 'aw-extension' } } : {}),
           scopes: ['user'],
           states: ['present'],
-          refreshKeys: ['token'],
+          refreshKeys: [],
           skillKey: 'dynamic-skill',
           sourceDirs: ['./skills/dynamic-skill'],
         }] },
@@ -2446,7 +2551,7 @@ describe('rebuild adapter integration', () => {
         'console.log(JSON.stringify({ version: 2, artifacts: [{',
         `  id: 'dynamic-skill', kind: 'skill', platform: ${JSON.stringify(platform)},`,
         `  target: ${JSON.stringify(targetName)}, state: 'present', skillKey: 'dynamic-skill',`,
-        "  refreshKeys: ['token'], content: { files: {} },",
+        '  refreshKeys: [], content: { files: {} },',
         '}] }));',
       ].join('\n'));
       const catalogRoot = await createSyntheticCatalog({
@@ -2975,6 +3080,17 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
         mode: 'bundle',
       });
+      plugin.manifest.config = { fields: { token: { type: 'string', sensitive: true } } };
+      await writePluginConfigStore({
+        sourceId: plugin.sourceId,
+        sourceIdentity: plugin.sourceIdentity,
+        logicalIdentity: plugin.catalogLogicalIdentity,
+        pluginName,
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        values: { token: `team/${pluginName}` },
+      });
       const dynamicTarget = plugin.manifest.artifacts?.targets.find((target) =>
         target.platform === 'codex'
         && target.target === 'codex.skill'
@@ -2992,13 +3108,15 @@ describe('rebuild adapter integration', () => {
         { name: plugin.manifest.name, version: plugin.manifest.version },
         plugin.manifest.requires?.aw.capabilities ?? [],
       ));
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const marketplaceName = 'aw-team';
       const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
       let installed = false;
       const runner: NativeCliRunner = async (invocation) => {
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
           await fs.outputFile(configPath, [
-            '[marketplaces.aw]',
-            `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+            `[marketplaces.${marketplaceName}]`,
+            `source = ${JSON.stringify(marketplaceRoot)}`,
             'source_type = "local"',
             '',
           ].join('\n'));
@@ -3006,17 +3124,17 @@ describe('rebuild adapter integration', () => {
         if (invocation.args[1] === 'add') {
           installed = true;
           await fs.appendFile(configPath, [
-            `[plugins."${pluginName}@aw"]`,
+            `[plugins."${pluginName}@${marketplaceName}"]`,
             'enabled = true',
             '',
           ].join('\n'));
           await fs.copy(
-            path.join(isolation.layout.awHomeDir, 'plugins', pluginName),
+            path.join(marketplaceRoot, 'plugins', pluginName),
             path.join(
               isolation.layout.codexHomeDir,
               'plugins',
               'cache',
-              'aw',
+              marketplaceName,
               pluginName,
               plugin.manifest.version,
             ),
@@ -3028,7 +3146,7 @@ describe('rebuild adapter integration', () => {
           stdout: invocation.args[1] === 'list' && invocation.args.includes('--json')
             ? JSON.stringify({
                 installed: installed ? [{
-                  pluginId: `${pluginName}@aw`,
+                  pluginId: `${pluginName}@${marketplaceName}`,
                   installed: true,
                   enabled: true,
                   version: plugin.manifest.version,
@@ -3074,6 +3192,11 @@ describe('rebuild adapter integration', () => {
         });
       }
       const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity: TEST_SOURCE_IDENTITY,
+        pluginId: `team/${pluginName}`,
+        marketplaceName,
+        marketplaceRoot,
         plugin,
         platform: 'codex',
         scope: 'user',
@@ -3095,7 +3218,7 @@ describe('rebuild adapter integration', () => {
         isolation.layout.codexHomeDir,
         'plugins',
         'cache',
-        'aw',
+        marketplaceName,
         pluginName,
         plugin.manifest.version,
       );
@@ -3120,6 +3243,91 @@ describe('rebuild adapter integration', () => {
             { id: 'codex-subagent-guide-skill', skillKey: 'codex-subagent-guide' },
           ],
         });
+      const activationTarget = {
+        ...target,
+        codexNativeObservationExpectation: undefined,
+        codexNativeSensitivePreflightRequired: true,
+      };
+      await expect(integration.driver.preflightMutation!(activationTarget)).resolves.toBeUndefined();
+      const canonicalPayloadRoot = path.join(
+        target.identity.marketplaceRoot!,
+        'plugins',
+        pluginName,
+      );
+      const canonicalReceiptPath = path.join(
+        canonicalPayloadRoot,
+        CODEX_NATIVE_RENDER_RECEIPT_PATH,
+      );
+      const currentSecret = 'current-sensitive-value';
+      await writePluginConfigStore({
+        sourceId: plugin.sourceId,
+        sourceIdentity: plugin.sourceIdentity,
+        logicalIdentity: plugin.catalogLogicalIdentity,
+        pluginName,
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        values: { token: currentSecret },
+      });
+      const oldVersion = '0.0.1';
+      const currentReceipt = await fs.readJson(canonicalReceiptPath);
+      const sourceManifestPath = path.join(canonicalPayloadRoot, '.agents-plugin', 'plugin.json');
+      const sourceManifest = await fs.readJson(sourceManifestPath);
+      sourceManifest.version = oldVersion;
+      await fs.outputJson(sourceManifestPath, sourceManifest);
+      for (const targetReceipt of currentReceipt.targets) {
+        const skillRoot = path.join(canonicalPayloadRoot, 'codex', 'skills', targetReceipt.skillKey);
+        const requirementsPath = path.join(skillRoot, AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH);
+        const requirements = await fs.readJson(requirementsPath);
+        requirements.plugin.version = oldVersion;
+        await fs.outputJson(requirementsPath, requirements);
+        const tree = await readDynamicSkillTree(skillRoot, 'codex.skill');
+        expect(tree).not.toBeNull();
+        targetReceipt.artifactDigest = createCodexSkillStagingTreeContentDigest(tree!);
+      }
+      const oldReceipt = createCodexNativeRenderReceipt({
+        logicalPluginId: currentReceipt.logicalPluginId,
+        sourceIdentity: currentReceipt.sourceIdentity,
+        pluginVersion: oldVersion,
+        rendererDigest: currentReceipt.rendererDigest,
+        targets: currentReceipt.targets,
+        payloadDigest: await calculateCodexNativeRenderPayloadDigest(canonicalPayloadRoot),
+      });
+      expect(parseCodexNativeRenderReceipt(oldReceipt)).toEqual(oldReceipt);
+      await fs.outputJson(canonicalReceiptPath, oldReceipt);
+      await expect(integration.driver.preflightMutation!(activationTarget)).resolves.toBeUndefined();
+
+      const forgedReceipt = { ...oldReceipt, payloadDigest: `sha256:${'0'.repeat(64)}` };
+      await fs.outputJson(canonicalReceiptPath, forgedReceipt);
+      await expect(integration.driver.preflightMutation!(activationTarget)).resolves.toBeUndefined();
+
+      await fs.outputFile(canonicalReceiptPath, 'invalid receipt');
+      await expect(integration.driver.preflightMutation!(activationTarget)).resolves.toBeUndefined();
+
+      await fs.outputFile(canonicalReceiptPath, `invalid receipt ${currentSecret}`);
+      const exposed = await integration.driver.preflightMutation!(activationTarget)
+        .catch((error: unknown) => error as Error);
+      expect(exposed.message).toContain('codexNativeRenderSensitiveValue');
+      expect(exposed.message).not.toContain(currentSecret);
+
+      if (process.platform !== 'win32') {
+        const foreignPayload = path.join(isolation.layout.fixtureCwd, 'foreign-native-payload');
+        const foreignReceiptPath = path.join(foreignPayload, CODEX_NATIVE_RENDER_RECEIPT_PATH);
+        await fs.outputFile(foreignReceiptPath, `external receipt ${currentSecret}`);
+        await fs.remove(canonicalPayloadRoot);
+        await fs.symlink(foreignPayload, canonicalPayloadRoot, 'dir');
+        const readFile = vi.spyOn(fs, 'readFile');
+        try {
+          const unsafe = await integration.driver.preflightMutation!(activationTarget)
+            .catch((error: unknown) => error as Error);
+
+          expect(unsafe.message).toContain('Codex native sensitive scan payload path is unsafe');
+          expect(readFile.mock.calls.some(([filePath]) =>
+            path.resolve(String(filePath)) === path.resolve(canonicalReceiptPath))).toBe(false);
+        } finally {
+          readFile.mockRestore();
+        }
+      }
     },
   );
 

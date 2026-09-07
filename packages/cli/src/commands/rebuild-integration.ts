@@ -44,6 +44,7 @@ import {
   createCodexSkillStagingTreeContentDigest,
 } from '../utils/codex-skill-staging.js';
 import {
+  AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
   readDynamicSkillTree,
@@ -92,9 +93,10 @@ import {
   validateArtifactPlan,
   type ValidatedArtifactPlanArtifact,
 } from '../utils/artifact-plan.js';
-import { resolveAwDeliveredArtifactIds } from '../utils/artifact-request.js';
+import { resolveAwDeliveredArtifactRequestBatches } from '../utils/artifact-request.js';
 import {
   createAwPluginRequirementsReceipt,
+  parseAwPluginRequirementsReceipt,
 } from '../utils/manifest.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
@@ -171,6 +173,28 @@ function requirementsReceipt(plugin: PluginMeta): Buffer {
     plugin.manifest.requires?.aw.capabilities ?? [],
   );
   return Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`, 'utf8');
+}
+
+function withoutVerifiedRequirementsReceipt(
+  plugin: PluginMeta,
+  files: Readonly<Record<string, Buffer>>,
+): Record<string, Buffer> {
+  const receipt = files[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
+  if (!receipt) return { ...files };
+  let actual: ReturnType<typeof parseAwPluginRequirementsReceipt>;
+  let expected: ReturnType<typeof parseAwPluginRequirementsReceipt>;
+  try {
+    actual = parseAwPluginRequirementsReceipt(JSON.parse(receipt.toString('utf8')));
+    expected = parseAwPluginRequirementsReceipt(JSON.parse(requirementsReceipt(plugin).toString('utf8')));
+  } catch {
+    return { ...files };
+  }
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    return { ...files };
+  }
+  const output = { ...files };
+  delete output[AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH];
+  return output;
 }
 
 interface PlannedWrite {
@@ -1403,25 +1427,29 @@ async function resolveDynamicArtifacts(options: {
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
   sensitiveValues: string[];
 }> {
-  const requestedArtifactIds = resolveAwDeliveredArtifactIds({
+  const requestBatches = resolveAwDeliveredArtifactRequestBatches({
     manifest: options.plugin.manifest,
     platform: options.platform,
     scope: options.scope,
   });
-  if (requestedArtifactIds.length === 0) {
+  if (requestBatches.length === 0) {
     return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
   }
-  const render = await runArtifactRenderer({
-    event: options.event,
-    plugin: options.plugin,
-    platform: options.platform,
-    scope: options.scope,
-    cwd: options.cwd,
-    commandEnv: options.env,
-    previousArtifacts: [...options.previousArtifacts],
-    requestedArtifactIds,
-    scriptTimeoutMs: options.scriptTimeoutMs,
-  });
+  const previousArtifacts = [...options.previousArtifacts];
+  const renders: Awaited<ReturnType<typeof runArtifactRenderer>>[] = [];
+  for (const requestedArtifactIds of requestBatches) {
+    renders.push(await runArtifactRenderer({
+      event: options.event,
+      plugin: options.plugin,
+      platform: options.platform,
+      scope: options.scope,
+      cwd: options.cwd,
+      commandEnv: options.env,
+      previousArtifacts,
+      requestedArtifactIds,
+      scriptTimeoutMs: options.scriptTimeoutMs,
+    }));
+  }
   const config = await resolveArtifactRenderConfig({
     sourceId: options.plugin.sourceId,
     sourceIdentity: options.plugin.sourceIdentity,
@@ -1432,20 +1460,26 @@ async function resolveDynamicArtifacts(options: {
     cwd: options.cwd,
     env: options.env,
   });
-  const artifacts = validateArtifactPlan({
-    manifest: options.plugin.manifest,
-    plan: render.plan,
-    platform: options.platform,
-    scope: options.scope,
-    requestedArtifactIds: render.context.requestedArtifactIds,
-    renderConfig: config,
-    rendererDigest: render.target.rendererDigest!,
-    manifestDigest: render.target.manifestDigest!,
-  }).artifacts;
+  const artifacts: ValidatedArtifactPlanArtifact[] = [];
+  const sourceDirsByArtifact = new Map<string, string[]>();
+  for (const render of renders) {
+    artifacts.push(...validateArtifactPlan({
+      manifest: options.plugin.manifest,
+      plan: render.plan,
+      platform: options.platform,
+      scope: options.scope,
+      requestedArtifactIds: render.context.requestedArtifactIds,
+      renderConfig: config,
+      rendererDigest: render.target.rendererDigest!,
+      manifestDigest: render.target.manifestDigest!,
+    }).artifacts);
+    for (const source of render.context.artifactSources) {
+      sourceDirsByArtifact.set(`${source.id}\0${source.target}`, source.sourceDirs);
+    }
+  }
   return {
     artifacts,
-    sourceDirs: (artifact) => render.context.artifactSources.find((entry) =>
-      entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [],
+    sourceDirs: (artifact) => sourceDirsByArtifact.get(`${artifact.id}\0${artifact.target}`) ?? [],
     sensitiveValues: collectSensitivePluginConfigValues(options.plugin.manifest, config.values),
   };
 }
@@ -1664,7 +1698,7 @@ async function buildClaudeWrites(options: {
       sourceRequirementsReceiptPolicy: 'allow',
     });
     assertNoSensitiveConfigInFiles(
-      tree.files,
+      withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
       'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
     );
@@ -1766,7 +1800,7 @@ async function buildCodexWrites(options: {
       sourceRequirementsReceiptPolicy: 'allow',
     });
     assertNoSensitiveConfigInFiles(
-      tree.files,
+      withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
       dynamic.sensitiveValues,
       'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
     );
@@ -2487,20 +2521,21 @@ function codexNativeRenderTargets(plugin: PluginMeta) {
 
 async function readCodexNativeRenderReceiptEvidence(payloadRoot: string): Promise<
   | { state: 'absent' }
-  | { state: 'unreadable' }
+  | { state: 'unsafe' }
+  | { state: 'invalid' }
   | { state: 'present'; receipt: CodexNativeRenderReceipt }
 > {
   const receiptPath = path.join(payloadRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
   const stats = await lstatIfPresent(receiptPath);
   if (!stats) return { state: 'absent' };
-  if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unreadable' };
+  if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unsafe' };
   try {
     return {
       state: 'present',
       receipt: parseCodexNativeRenderReceipt(await fs.readFile(receiptPath, 'utf8')),
     };
   } catch {
-    return { state: 'unreadable' };
+    return { state: 'invalid' };
   }
 }
 
@@ -2512,6 +2547,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
 }): Promise<{
   state: 'present';
   payloadDigest: string;
+  receipt: CodexNativeRenderReceipt;
   projection?: CodexNativeRenderProjection;
   sourceProjection: 'current' | 'drifted';
 } | {
@@ -2598,7 +2634,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   if (targets.length === 0
     || targets.length !== receipt.targets.length
     || targets.some((target) => receiptTargets.get(target.id)?.skillKey !== target.skillKey)) {
-    return { state: 'present', payloadDigest, sourceProjection: 'drifted' };
+    return { state: 'present', payloadDigest, receipt, sourceProjection: 'drifted' };
   }
   const renderer = await resolveArtifactRendererTarget(options.plugin);
   if (renderer.noOp || !renderer.rendererDigest) {
@@ -2632,7 +2668,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
           target: 'codex.skill',
           refreshKeys: target.refreshKeys,
         },
-        configValues: config.values,
+        renderConfig: config,
         digestSalt: renderer.rendererDigest!,
       }),
       artifactDigest: receiptTargets.get(target.id)!.artifactDigest,
@@ -2640,6 +2676,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   });
   return {
     state: 'present',
+    receipt,
     projection,
     payloadDigest,
     sourceProjection: codexNativeRenderProjectionsEqual(receipt, projection)
@@ -2651,6 +2688,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
 async function assertNoSensitiveValuesInCanonicalCodexNativePayload(options: {
   plugin: PluginMeta;
   marketplaceRoot: string;
+  marketplaceName: string;
   env: NodeJS.ProcessEnv;
   sensitiveValues: readonly string[];
 }): Promise<void> {
@@ -2673,11 +2711,31 @@ async function assertNoSensitiveValuesInCanonicalCodexNativePayload(options: {
     'plugins',
     options.plugin.manifest.name,
   );
+  if (!await codexPayloadPathSafe(payloadRoot, options.marketplaceRoot)) {
+    throw new Error('Codex native sensitive scan payload path is unsafe.');
+  }
+  const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
+  if (receiptEvidence.state === 'unsafe') {
+    throw new Error('codexNativeRenderReceiptInvalid: Codex native render receipt path is unsafe.');
+  }
+  let verifiedRenderReceipt: CodexNativeRenderReceipt | undefined;
+  if (receiptEvidence.state === 'present') {
+    const expected = await resolveCodexNativeRenderExpectedEvidence({
+      plugin: options.plugin,
+      marketplaceRoot: options.marketplaceRoot,
+      marketplaceName: options.marketplaceName,
+      env: options.env,
+    }).catch(() => undefined);
+    if (expected?.state === 'present' && expected.sourceProjection === 'current') {
+      verifiedRenderReceipt = expected.receipt;
+    }
+  }
   await assertNoSensitiveValuesInCodexNativePayload({
     plugin: options.plugin,
     payloadRoot,
     allowedRoot: options.marketplaceRoot,
     sensitiveValues: options.sensitiveValues,
+    verifiedRenderReceipt,
   });
 }
 
@@ -3324,6 +3382,7 @@ function createClaudeMarketplaceComponent(options: {
 interface StagedCodexNativeRender {
   payloadDigest: string;
   projection: CodexNativeRenderProjection;
+  receipt: CodexNativeRenderReceipt;
   presentSkillKeys: string[];
   targetSkillKeys: string[];
 }
@@ -3398,6 +3457,7 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
   payloadRoot: string;
   allowedRoot?: string;
   sensitiveValues: readonly string[];
+  verifiedRenderReceipt?: CodexNativeRenderReceipt;
 }): Promise<void> {
   if (options.sensitiveValues.length === 0) return;
   if (!await codexPayloadPathSafe(options.payloadRoot, options.allowedRoot)) {
@@ -3437,7 +3497,10 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
       }
       const tree = await readDynamicSkillTree(skillRoot, 'codex.skill');
       if (!tree) continue;
-      const leakedPath = findSensitiveTokenPath(tree.files, options.sensitiveValues);
+      const leakedPath = findSensitiveTokenPath(
+        withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
+        options.sensitiveValues,
+      );
       if (leakedPath) {
         throw new Error(
           `codexNativeRenderSensitiveValue: Codex native Skill "${entry.name}" exposes ` +
@@ -3452,15 +3515,26 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
     if (!receiptStats.isFile()) {
       throw new Error('Codex native sensitive scan render receipt path is unsafe.');
     }
-    const receiptLeak = findSensitiveTokenPath(
-      { [CODEX_NATIVE_RENDER_RECEIPT_PATH]: await fs.readFile(receiptPath) },
-      options.sensitiveValues,
-    );
-    if (receiptLeak) {
-      throw new Error(
-        `codexNativeRenderSensitiveValue: Codex native render receipt exposes sensitive config in ` +
-          `"${receiptLeak}".`,
+    const receiptContent = await fs.readFile(receiptPath);
+    let actualReceipt: CodexNativeRenderReceipt | undefined;
+    try {
+      actualReceipt = parseCodexNativeRenderReceipt(receiptContent.toString('utf8'));
+    } catch {
+      actualReceipt = undefined;
+    }
+    const verified = options.verifiedRenderReceipt
+      && JSON.stringify(actualReceipt) === JSON.stringify(options.verifiedRenderReceipt);
+    if (!verified) {
+      const receiptLeak = findSensitiveTokenPath(
+        { [CODEX_NATIVE_RENDER_RECEIPT_PATH]: receiptContent },
+        options.sensitiveValues,
       );
+      if (receiptLeak) {
+        throw new Error(
+          `codexNativeRenderSensitiveValue: Codex native render receipt exposes sensitive config in ` +
+            `"${receiptLeak}".`,
+        );
+      }
     }
   }
 }
@@ -3524,7 +3598,7 @@ async function prepareCodexNativeRender(options: {
         sourceRequirementsReceiptPolicy: 'allow',
       });
       assertNoSensitiveConfigInFiles(
-        tree.files,
+        withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
         collectSensitivePluginConfigValues(
           options.plugin.manifest,
           rendered.context.config.values,
@@ -3649,6 +3723,7 @@ async function materializeCodexNativeRender(options: {
   return {
     payloadDigest,
     projection: options.prepared.projection,
+    receipt,
     presentSkillKeys: options.prepared.presentSkillKeys,
     targetSkillKeys: options.prepared.targetSkillKeys,
   };
@@ -4106,6 +4181,7 @@ function createNativeDriver(options: {
                     candidate.plugin,
                     options.context.env,
                   ),
+                  ...(nativeRender ? { verifiedRenderReceipt: nativeRender.receipt } : {}),
                 });
               }
             }
@@ -4517,6 +4593,7 @@ function createNativeDriver(options: {
         await assertNoSensitiveValuesInCanonicalCodexNativePayload({
           plugin: target.plugin,
           marketplaceRoot: target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
+          marketplaceName: target.identity.marketplaceName ?? MARKETPLACE_NAME,
           env: options.context.env,
           sensitiveValues,
         });
