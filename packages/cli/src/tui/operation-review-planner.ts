@@ -208,6 +208,12 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       cleanup: ['清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。', true],
       sync: ['同步插件', '按已保存使用设置修复当前使用位置。', false],
     };
+    if (intent.expectedUpdate) return {
+      title: `更新到 ${intent.expectedUpdate.activeVersion}`,
+      description: `使用当前启用目录中已确认的 ${intent.expectedUpdate.activeVersion} 同步所选安装。`,
+      primaryLabel: `更新到 ${intent.expectedUpdate.activeVersion}`,
+      destructive: false,
+    };
     const [title, description, destructive] = labels[intent.action];
     return { title, description, primaryLabel: title, destructive };
   }

@@ -49,6 +49,8 @@ import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 import { projectCatalogSourceState } from './catalog-sources/projection.js';
 import { projectLifecycleActionView } from './lifecycle-action-view.js';
+import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
+import { formatPluginId } from '../utils/multi-source-catalog.js';
 
 export type SourceHealthState = 'ready' | 'unavailable';
 
@@ -106,7 +108,15 @@ export type PluginMenuAction =
       description: string;
     }
   | { id: 'platform' | 'scopeConflict'; platform: PlatformName }
-  | { id: 'refreshAndSync'; platform: PlatformName; scope: Scope; availableVersion: string }
+  | {
+      id: 'refreshAndSync';
+      platform: PlatformName;
+      scope: Scope;
+      availableVersion: string;
+      installedVersion: string;
+      sourceIdentity: string;
+      generationKey: string;
+    }
   | { id: 'reinstall' | 'remove' | 'cleanup'; platform: PlatformName; scope: Scope };
 
 export interface PluginListItemViewModel {
@@ -141,6 +151,168 @@ export interface PluginListItemViewModel {
     state: StatusV7Component['state'];
     errorCode?: string;
   }>;
+  update: PluginUpdateSummary;
+}
+
+export type PluginUpdateState = 'notChecked' | 'currentAgainstCatalog' | 'available'
+  | 'sourceChangedUnverified' | 'blocked' | 'unknown';
+
+export interface PluginUpdateTargetSummary {
+  platform: PlatformName;
+  scope: Scope;
+  installedVersion?: string;
+  activeVersion?: string;
+  candidateVersion?: string;
+  availableVersion?: string;
+  candidateEvidence?: string;
+  missingCapabilities?: string[];
+  eligibility: 'allowed' | 'needsRepair' | 'incompatible' | 'unverified';
+  requiresCatalogActivation?: true;
+}
+
+export interface PluginUpdateSummary {
+  pluginId: string;
+  state: PluginUpdateState;
+  checkedAt?: string;
+  lastSuccessful?: true;
+  sourceIdentity?: string;
+  generationKey?: string;
+  targets: PluginUpdateTargetSummary[];
+}
+
+function candidateForPlugin(
+  pluginId: string,
+  sourceId: string,
+  freshness: CatalogSourceFreshnessViewModel | undefined,
+): NonNullable<CatalogSourceFreshnessViewModel['candidatePlugins']>[number] | undefined {
+  return freshness?.candidatePlugins?.find((entry) => formatPluginId({
+    sourceId,
+    pluginName: entry.name,
+  }) === pluginId);
+}
+
+export function buildPluginUpdateSummary(options: {
+  pluginId: string;
+  sourceId: string;
+  targetRevisions: StatusTargetRevision[];
+  targets: StatusV7Target[];
+  freshness?: CatalogSourceFreshnessViewModel;
+  sourceIdentity?: string;
+  generationKey?: string;
+}): PluginUpdateSummary {
+  const candidate = candidateForPlugin(options.pluginId, options.sourceId, options.freshness);
+  let sameVersionCandidateChange = false;
+  let blockedCandidate = Boolean(options.freshness?.candidate
+    && options.freshness.candidatePlugins && !candidate);
+  const targets = options.targetRevisions
+    .filter((entry) => entry.pluginId === options.pluginId)
+    .map((entry): PluginUpdateTargetSummary => {
+      const installedVersion = entry.revision.installedVersion;
+      const activeVersion = entry.revision.availableVersion;
+      const liveTarget = options.targets.find((target) => target.pluginId === entry.pluginId
+        && target.platform === entry.platform && target.scope === entry.scope);
+      const needsRepair = liveTarget !== undefined && liveTarget.state !== 'ready';
+      const installedValid = installedVersion !== undefined && tryParseStrictSemVer(installedVersion) !== null;
+      const activeValid = activeVersion !== undefined && tryParseStrictSemVer(activeVersion) !== null;
+      const candidateValid = candidate !== undefined && tryParseStrictSemVer(candidate.version) !== null;
+      const candidateCompatible = (candidate?.missingCapabilities.length ?? 0) === 0;
+      let targetCandidateBlocked = false;
+      const candidateEvidence = candidate && options.freshness?.candidate
+        ? [options.sourceId, options.freshness.candidate.sourceIdentity,
+            options.freshness.candidate.snapshotDigest,
+            candidate.manifestDigest, candidate.contentDigest].join(':')
+        : undefined;
+      if (!installedValid) {
+        return {
+          platform: entry.platform,
+          scope: entry.scope,
+          ...(installedVersion ? { installedVersion } : {}),
+          ...(activeVersion ? { activeVersion } : {}),
+          ...(candidate ? { candidateVersion: candidate.version } : {}),
+          ...(candidateEvidence ? { candidateEvidence } : {}),
+          eligibility: 'unverified',
+        };
+      }
+      if (entry.revision.state === 'upgradeAvailable' && activeValid) {
+        return {
+          platform: entry.platform,
+          scope: entry.scope,
+          installedVersion,
+          activeVersion,
+          ...(candidate ? { candidateVersion: candidate.version } : {}),
+          availableVersion: activeVersion,
+          ...(candidateEvidence ? { candidateEvidence } : {}),
+          eligibility: needsRepair ? 'needsRepair' : 'allowed',
+        };
+      }
+      if (candidateValid) {
+        const candidateRelation = compareStrictSemVer(installedVersion, candidate.version);
+        const candidateUsable = candidateCompatible
+          && options.freshness?.state !== 'incompatible'
+          && options.freshness?.state !== 'rollbackDetected'
+          && options.freshness?.state !== 'versionConflict';
+        if (candidateRelation < 0 && candidateUsable) {
+          return {
+            platform: entry.platform,
+            scope: entry.scope,
+            installedVersion,
+            ...(activeVersion ? { activeVersion } : {}),
+            candidateVersion: candidate.version,
+            availableVersion: candidate.version,
+            ...(candidateEvidence ? { candidateEvidence } : {}),
+            ...(candidate.missingCapabilities.length > 0
+              ? { missingCapabilities: [...candidate.missingCapabilities] }
+              : {}),
+            eligibility: needsRepair ? 'needsRepair' : 'allowed',
+            requiresCatalogActivation: true,
+          };
+        }
+        if (candidateRelation < 0 || candidateRelation > 0) {
+          blockedCandidate = true;
+          targetCandidateBlocked = true;
+        }
+        if (candidateRelation === 0 && activeVersion === candidate.version
+          && options.freshness?.state !== 'current') sameVersionCandidateChange = true;
+      }
+      const activeDowngrade = activeValid
+        && compareStrictSemVer(installedVersion, activeVersion) > 0;
+      return {
+        platform: entry.platform,
+        scope: entry.scope,
+        installedVersion,
+        ...(activeVersion ? { activeVersion } : {}),
+        ...(candidate ? { candidateVersion: candidate.version } : {}),
+        ...(candidateEvidence ? { candidateEvidence } : {}),
+        ...(candidate && candidate.missingCapabilities.length > 0
+          ? { missingCapabilities: [...candidate.missingCapabilities] }
+          : {}),
+        eligibility: activeDowngrade || targetCandidateBlocked ? 'incompatible'
+          : needsRepair ? 'needsRepair' : activeValid ? 'allowed' : 'unverified',
+      };
+    })
+    .sort((left, right) => `${left.platform}\0${left.scope}`.localeCompare(
+      `${right.platform}\0${right.scope}`, 'en',
+    ));
+  const hasAvailable = targets.some((target) => target.availableVersion !== undefined);
+  const hasInstalledVersion = targets.some((target) => target.installedVersion !== undefined);
+  const allCurrent = targets.length > 0 && targets.every((target) => target.activeVersion !== undefined
+    && target.installedVersion !== undefined
+    && tryParseStrictSemVer(target.activeVersion) !== null
+    && tryParseStrictSemVer(target.installedVersion) !== null
+    && compareStrictSemVer(target.installedVersion, target.activeVersion) === 0);
+  return {
+    pluginId: options.pluginId,
+    state: hasAvailable ? 'available'
+      : sameVersionCandidateChange ? 'sourceChangedUnverified'
+        : blockedCandidate || targets.some((target) => target.eligibility === 'incompatible') ? 'blocked'
+          : allCurrent ? 'currentAgainstCatalog'
+            : hasInstalledVersion ? 'unknown' : 'notChecked',
+    ...(options.freshness?.checkedAt ? { checkedAt: options.freshness.checkedAt } : {}),
+    ...(options.freshness?.lastSuccessful ? { lastSuccessful: true } : {}),
+    ...(options.sourceIdentity ? { sourceIdentity: options.sourceIdentity } : {}),
+    ...(options.generationKey ? { generationKey: options.generationKey } : {}),
+    targets,
+  };
 }
 
 export interface PluginDependencySummaryViewModel {
@@ -253,6 +425,8 @@ export interface HomeSummaryViewModel {
   catalogUpdateCount: number;
   catalogRecoveryCount: number;
   catalogCheckingCount: number;
+  pluginUpdateCount: number;
+  directPluginUpdateCount: number;
 }
 
 export interface ConfigFieldViewModel {
@@ -811,6 +985,21 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
     ];
   }
   return [
+    ...(plugin.update?.targets ?? []).flatMap((target): PluginMenuAction[] =>
+      target.availableVersion !== undefined && target.installedVersion !== undefined
+        && plugin.update.sourceIdentity !== undefined && plugin.update.generationKey !== undefined
+        && target.requiresCatalogActivation !== true
+        && target.eligibility === 'allowed'
+        ? [{
+            id: 'refreshAndSync',
+            platform: target.platform,
+            scope: target.scope,
+            availableVersion: target.availableVersion,
+            installedVersion: target.installedVersion,
+            sourceIdentity: plugin.update.sourceIdentity,
+            generationKey: plugin.update.generationKey,
+          }]
+        : []),
     ...plugin.installedPlacements.flatMap((placement): PluginMenuAction[] => [
       ...(placement.state === 'installed' ? scopeConflictRecoveryMenuActions(placement) : []),
       placement.state === 'scopeConflict'
@@ -857,12 +1046,22 @@ export function buildPlatformActions(
     revision: placement.revision,
   }).flatMap((action): PluginMenuAction[] => {
     if (action.id === 'install') return [{ id: 'add' }];
-    if (action.id === 'refreshAndSync') return [{
-      id: 'refreshAndSync',
-      platform: action.platform,
-      scope: action.scope,
-      availableVersion: action.availableVersion!,
-    }];
+    if (action.id === 'refreshAndSync') {
+      const updateTarget = plugin.update?.targets.find((target) =>
+        target.platform === action.platform && target.scope === action.scope
+        && target.availableVersion === action.availableVersion);
+      return updateTarget?.installedVersion && plugin.update.sourceIdentity && plugin.update.generationKey
+        ? [{
+            id: 'refreshAndSync',
+            platform: action.platform,
+            scope: action.scope,
+            availableVersion: action.availableVersion!,
+            installedVersion: updateTarget.installedVersion,
+            sourceIdentity: plugin.update.sourceIdentity,
+            generationKey: plugin.update.generationKey,
+          }]
+        : [];
+    }
     if (action.id === 'sync') return [{ id: 'sync' }];
     if (action.id === 'reinstall') return [{ id: 'reinstall', platform: action.platform, scope: action.scope }];
     if (action.id === 'uninstall') return [{ id: 'remove', platform: action.platform, scope: action.scope }];
@@ -1689,6 +1888,15 @@ export function buildTuiViewModel(options: {
     const capabilityRecovery = capabilityTargets.flatMap((target) => target.recoveryActions)
       .find((action) => action.command === 'manual')?.description;
     const unavailable = sourceUnavailable || capabilityUnsupported || configOnly;
+    const update = buildPluginUpdateSummary({
+      pluginId,
+      sourceId,
+      targetRevisions: options.targetRevisions ?? [],
+      targets,
+      freshness: options.catalogFreshness?.get(sourceId),
+      sourceIdentity: sourceById.get(sourceId)?.identity,
+      generationKey: options.catalogGenerations?.get(sourceId)?.active?.storeKey,
+    });
     return {
       pluginId,
       sourceId,
@@ -1741,6 +1949,7 @@ export function buildTuiViewModel(options: {
           ? { errorCode: component.metadata.errorCode }
           : {}),
       }))),
+      update,
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
     || compareText(left.sourceId, right.sourceId));
@@ -1827,6 +2036,10 @@ export function buildTuiViewModel(options: {
       catalogRecoveryCount: sourceTabs.filter((source) => source.state === 'recovery'
         || source.state === 'error').length,
       catalogCheckingCount: sourceTabs.filter((source) => source.state === 'checking').length,
+      pluginUpdateCount: pluginsWithAttention.filter((plugin) => plugin.update.state === 'available').length,
+      directPluginUpdateCount: pluginsWithAttention.filter((plugin) => plugin.update.targets.some((target) =>
+        target.availableVersion !== undefined && target.requiresCatalogActivation !== true
+        && target.eligibility === 'allowed')).length,
     },
   };
 }

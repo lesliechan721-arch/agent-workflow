@@ -2485,7 +2485,7 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('刷新并同步到 0.5.0…');
+    expect(instance.lastFrame()).toContain('更新到 0.5.0…');
     expect(instance.lastFrame()).toContain('已安装版本 0.4.2');
   });
 
@@ -2504,7 +2504,7 @@ describe('ConsoleAppV4', () => {
 
     await value.load();
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('刷新并同步到 0.3.0…');
+    expect(instance.lastFrame()).toContain('更新到 0.3.0…');
     expect(instance.lastFrame()).toContain('› 查看安装详情');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
 
@@ -2524,7 +2524,7 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'platform', pluginId: 'official/review-gate', platform: 'codex' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('› 刷新并同步到 0.3.0…');
+    expect(instance.lastFrame()).toContain('› 更新到 0.3.0…');
 
     await value.load();
     await nextTurn(2);

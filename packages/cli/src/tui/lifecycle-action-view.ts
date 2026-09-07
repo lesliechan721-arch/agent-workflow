@@ -17,8 +17,10 @@ export function projectLifecycleActionView(
     description: '按已保存使用设置修复当前使用位置。',
   };
   if (action.id === 'refreshAndSync') return {
-    label: '刷新并同步',
-    description: '刷新相关来源后，使用新的当前启用版本同步。',
+    label: action.availableVersion ? `更新到 ${action.availableVersion}` : '刷新并同步',
+    description: action.availableVersion
+      ? `使用当前启用目录中已确认的 ${action.availableVersion} 同步。`
+      : '刷新相关来源后，使用新的当前启用版本同步。',
   };
   if (action.id === 'reinstall') return {
     label: '重新安装',

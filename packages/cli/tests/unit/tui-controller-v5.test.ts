@@ -802,6 +802,21 @@ describe('TUI v4 router and ViewModel', () => {
       installedPlacements: [{
         platform: 'codex', state: 'installed', scope: 'user', health: 'ready', revision,
       }],
+      update: {
+        pluginId: 'official/demo',
+        state: revision.state === 'upgradeAvailable' ? 'available' : 'currentAgainstCatalog',
+        sourceIdentity: 'identity:official',
+        generationKey: 'official-active',
+        targets: [{
+          platform: 'codex', scope: 'user',
+          ...(revision.installedVersion ? { installedVersion: revision.installedVersion } : {}),
+          ...(revision.availableVersion ? { activeVersion: revision.availableVersion } : {}),
+          ...(revision.state === 'upgradeAvailable' && revision.availableVersion
+            ? { availableVersion: revision.availableVersion }
+            : {}),
+          eligibility: revision.state === 'upgradeAvailable' ? 'allowed' : 'unverified',
+        }],
+      },
     });
 
     expect(buildPlatformActions(ready({

@@ -1882,6 +1882,23 @@ export function createTuiControllerDependencies(
             };
           },
         });
+    if (intent.kind === 'pluginWrite' && intent.expectedUpdate) {
+      const revision = status.targetRevisions.find((entry) =>
+        entry.pluginId === intent.pluginId && entry.platform === intent.platform
+        && entry.scope === intent.scope);
+      const generation = catalogOperation?.generationSet.sources.find((entry) =>
+        entry.sourceId === selected.source.sourceId);
+      if (intent.action !== 'sync'
+        || !('pluginVersion' in selected.source)
+        || selected.source.sourceIdentity !== intent.expectedUpdate.sourceIdentity
+        || selected.source.pluginVersion !== intent.expectedUpdate.activeVersion
+        || generation?.storeKey !== intent.expectedUpdate.generationKey
+        || revision?.revision.installedVersion !== intent.expectedUpdate.installedVersion
+        || revision?.revision.availableVersion !== intent.expectedUpdate.activeVersion
+        || revision.revision.state !== 'upgradeAvailable') {
+        throw operationReviewStale('插件更新版本或 Active Catalog 证据已变化。');
+      }
+    }
     let codexManager: OperationEvidence['codexManager'];
     let resolvedCodexManager: CodexManager | undefined;
     const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>

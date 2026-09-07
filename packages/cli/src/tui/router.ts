@@ -7,7 +7,7 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
-export type PluginInstallFilter = 'all' | 'uninstalled';
+export type PluginInstallFilter = 'all' | 'uninstalled' | 'updateAvailable';
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';

@@ -31,7 +31,11 @@ import {
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import {
+  createCatalogStoreKey,
+  readCatalogSnapshotLogicalIdentity,
+} from '../../src/utils/catalog-generation-store.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import {
   resolvePluginConfigStorePath,
@@ -1884,6 +1888,89 @@ describe('TUI controller runtime scope conflict validation', () => {
       source: { sourceId: 'team', pluginVersion: '1.0.0' },
       preparationWarnings: [expect.stringContaining('catalogSourceRefreshFailed: team:')],
     });
+  });
+
+  it('prepares an Active update without following a newer source and rejects an Active version change', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-active-update-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active two\n', (manifest) => {
+      manifest.version = '2.0.0';
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const activeBefore = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    const activeStoreKey = createCatalogStoreKey(
+      activeBefore.logicalIdentity,
+      activeBefore.snapshotDigest,
+    );
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'remote three\n', (manifest) => {
+      manifest.version = '3.0.0';
+    });
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        catalog: { configDigest: configured.digest, compositeDigest: 'sha256:composite' },
+        targets: [{
+          ...target('user', 'present'), pluginId: 'team/demo', sourceId: 'team',
+          sourceIdentity: activeBefore.sourceIdentity, version: '2.0.0', cwd: isolation.layout.fixtureCwd,
+        }],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
+        sourceIdentity: activeBefore.sourceIdentity, dependencyDirectCount: 0, dependencyTotalCount: 0,
+      }],
+      targetRevisions: [{
+        pluginId: 'team/demo', platform: 'codex', scope: 'user',
+        revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'sync' as const,
+      pluginId: 'team/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+      expectedUpdate: {
+        installedVersion: '1.0.0',
+        activeVersion: '2.0.0',
+        sourceIdentity: activeBefore.sourceIdentity,
+        generationKey: activeStoreKey,
+      },
+    };
+    const stages: string[] = [];
+
+    const evidence = await dependencies.prepareReviewEvidence!(
+      intent,
+      new AbortController().signal,
+      (stage) => { stages.push(stage); },
+    );
+    expect(evidence.source?.pluginVersion).toBe('2.0.0');
+    expect(stages).not.toContain('refresh');
+    const activeAfterReview = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    expect(createCatalogStoreKey(activeAfterReview.logicalIdentity, activeAfterReview.snapshotDigest))
+      .toBe(activeStoreKey);
+    runtimeMocks.installWriteCommand.mockClear();
+
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, confirmImpact: true,
+    });
+    await expect(dependencies.executeIntent(intent, evidence)).rejects.toMatchObject({
+      code: 'operationReviewStale',
+    });
+    expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
   });
 
   it('passes overrides through Phase3 and persists a user-to-project adjustment without cleanup', async () => {

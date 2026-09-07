@@ -329,6 +329,15 @@ function batchActionLabel(action: BatchPluginWriteAction): string {
 
 function statusText(plugin: PluginListItemViewModel): string {
   if (plugin.configOnly) return '已保存设置';
+  const updateTargets = (plugin.update?.targets ?? []).filter((target) => target.availableVersion !== undefined);
+  if (updateTargets.length === 1) {
+    const target = updateTargets[0]!;
+    return `可更新 ${target.installedVersion ?? '待确认'} → ${target.availableVersion}${target.requiresCatalogActivation ? '（需先更新来源）' : ''}`;
+  }
+  if (updateTargets.length > 1) return `${updateTargets.length} 个位置可更新`;
+  const incompatibleCandidate = plugin.update?.targets.find((target) =>
+    target.candidateVersion !== undefined && (target.missingCapabilities?.length ?? 0) > 0);
+  if (incompatibleCandidate) return `新版 ${incompatibleCandidate.candidateVersion} 暂不可用`;
   return {
     available: '未添加',
     installed: '可用',
@@ -337,6 +346,23 @@ function statusText(plugin: PluginListItemViewModel): string {
       ? '需要升级 AW CLI'
       : '来源不可用',
   }[plugin.aggregateStatus];
+}
+
+function pluginUpdateDescription(plugin: PluginListItemViewModel): string | undefined {
+  const targets = (plugin.update?.targets ?? []).filter((target) => target.availableVersion !== undefined);
+  if (targets.length === 0) {
+    const incompatibleCandidate = plugin.update?.targets.find((target) =>
+      target.candidateVersion !== undefined && (target.missingCapabilities?.length ?? 0) > 0);
+    return incompatibleCandidate
+      ? `候选版本缺少 ${incompatibleCandidate.missingCapabilities!.length} 项 AW 功能支持；当前启用版本可继续使用。`
+      : undefined;
+  }
+  if (targets.some((target) => target.requiresCatalogActivation)) {
+    return plugin.update?.lastSuccessful
+      ? `上次成功检查：${plugin.update.checkedAt ? new Date(plugin.update.checkedAt).toLocaleString('zh-CN', { hour12: false }) : '时间未知'}；需先更新来源目录。`
+      : '已验证待检查版本；需先更新来源目录。';
+  }
+  return '当前启用目录已验证；可直接进入更新确认。';
 }
 
 function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
@@ -2615,7 +2641,7 @@ export function ConsoleAppV4(props: {
     context = '当前项目';
     actions = [
       { label: '添加插件', description: '浏览多个来源中的 Agent 能力', meta: String(home.availablePlugins), run: () => go({ name: 'pluginList', mode: 'browse' }) },
-      { label: '我的插件', description: '查看状态、设置和移除已添加插件', meta: String(home.installedPlugins), run: () => go({ name: 'pluginList', mode: 'installed' }) },
+      { label: '我的插件', description: '查看状态、设置和移除已添加插件', meta: home.pluginUpdateCount > 0 ? `${home.installedPlugins} · ${home.pluginUpdateCount} 可更新` : String(home.installedPlugins), status: home.pluginUpdateCount > 0 ? 'warning' : undefined, run: () => go({ name: 'pluginList', mode: 'installed' }) },
       { label: '需要处理', description: '解决安装、来源或设置问题', meta: String(home.issueCount), status: 'warning', run: () => go({ name: 'issueList' }) },
       {
         label: '插件来源',
@@ -2640,6 +2666,7 @@ export function ConsoleAppV4(props: {
         {home.unavailableSourceCount > 0 ? <ResultRow title={`${home.unavailableSourceCount} 个来源不可用`} status="error" /> : null}
         {home.catalogCheckingCount > 0 ? <ResultRow title={`${home.catalogCheckingCount} 个插件来源正在检查`} status="muted" /> : null}
         {home.catalogUpdateCount > 0 ? <ResultRow title={`${home.catalogUpdateCount} 个插件来源有更新`} status="warning" /> : null}
+        {home.pluginUpdateCount > 0 ? <ResultRow title={`${home.pluginUpdateCount} 个插件可更新${home.directPluginUpdateCount < home.pluginUpdateCount ? `；${home.directPluginUpdateCount} 个可直接确认` : ''}`} status="warning" /> : null}
         {home.catalogRecoveryCount > 0 ? <ResultRow title={`${home.catalogRecoveryCount} 个插件来源需要检查或恢复`} status="warning" /> : null}
       </StatusCard>
       <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} />
@@ -2658,13 +2685,19 @@ export function ConsoleAppV4(props: {
       ...(query ? { query } : {}),
       installFilter: 'uninstalled',
     }).length;
+    const updateCount = props.controller.listPlugins({
+      mode: route.mode,
+      ...(sourceId !== 'all' ? { sourceId } : {}),
+      ...(query ? { query } : {}),
+      installFilter: 'updateAvailable',
+    }).length;
     breadcrumb = route.mode === 'browse' ? '添加插件' : '我的插件';
     title = breadcrumb;
     description = route.mode === 'browse'
       ? '选择插件；列表末尾可进入批量添加。'
       : '查看状态；列表末尾可进入批量操作和项目同步。';
     context = `${items.length} 个插件`;
-    help = `↑↓ 移动 · Enter 查看 · m 批量${route.mode === 'installed' ? ' · a 项目全同步' : ''} · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
+    help = `↑↓ 移动 · Enter 查看 · m 批量${route.mode === 'installed' ? ' · a 项目全同步 · f 可更新' : ''} · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
     const sourceError = sourceId !== 'all'
       && props.controller.getSourceOverview(sourceId).health?.state === 'unavailable';
     actions = sourceError
@@ -2718,7 +2751,19 @@ export function ConsoleAppV4(props: {
         });
       }
     }
-    if (route.mode === 'installed' && items.length === 0 && !sourceError) {
+    if (route.mode === 'installed' && installFilter === 'updateAvailable'
+      && items.length === 0 && !sourceError) {
+      title = '没有可更新插件';
+      description = '当前筛选范围内没有经过版本证据确认的更新。';
+      actions = [{
+        label: '查看全部我的插件',
+        description: '按 f 返回完整列表',
+        run: () => {
+          setInstallFilter('all');
+          props.controller.updatePageContext({ installFilter: 'all' });
+        },
+      }];
+    } else if (route.mode === 'installed' && items.length === 0 && !sourceError) {
       title = '还没有添加插件';
       description = `从已配置的 ${props.controller.listSources().length} 个来源中浏览可用能力。`;
       actions = [{ label: '浏览插件', description: '开始添加第一个插件', run: () => go({ name: 'pluginList', mode: 'browse' }) }];
@@ -2731,7 +2776,7 @@ export function ConsoleAppV4(props: {
         disabled: '没有可打开的插件',
       }];
     }
-    const pluginListStaticRows = route.mode === 'browse' ? 3 : 2;
+    const pluginListStaticRows = 3;
     const viewport = sourceError || pluginRows.length === 0
       ? actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(pluginListStaticRows))
       : rowViewport({
@@ -2761,11 +2806,13 @@ export function ConsoleAppV4(props: {
           : <>{query || '搜索名称、用途或来源…'}{query ? '    / 编辑' : ''}</>}</Text>
         {route.mode === 'browse'
           ? <Text color={tuiTheme.colors.muted}>状态  <Text color={installFilter === 'all' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'all' ? '[全部]' : '全部'}</Text>  <Text color={installFilter === 'uninstalled' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'uninstalled' ? '[未安装]' : '未安装'} {uninstalledCount}</Text>                         f 切换</Text>
-          : null}
+          : <Text color={tuiTheme.colors.muted}>状态  <Text color={installFilter === 'all' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'all' ? '[全部]' : '全部'}</Text>  <Text color={installFilter === 'updateAvailable' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'updateAvailable' ? '[可更新]' : '可更新'} {updateCount}</Text>                         f 切换</Text>}
         {sourceError
           ? <Callout status="error" title={`${sourceId} 暂时无法提供插件`} description="当前不能浏览这个来源。" />
           : route.mode === 'installed' && items.length === 0
-            ? <Callout title="开始添加第一个插件" description="插件可以安装到 Codex、Claude Code 或两者。" />
+            ? installFilter === 'updateAvailable'
+              ? <Callout title="没有可更新插件" description="当前筛选范围内没有经过版本证据确认的更新。" />
+              : <Callout title="开始添加第一个插件" description="插件可以安装到 Codex、Claude Code 或两者。" />
             : null}
         {pluginRows.length > 0
           ? <PluginRows rows={pluginRows} focus={focus} viewport={viewport} />
@@ -3577,6 +3624,7 @@ export function ConsoleAppV4(props: {
     title = plugin.displayName;
     description = plugin.description;
     const dependencySummary = plugin.dependencySummary;
+    const updateDescription = pluginUpdateDescription(plugin);
     const detailMenu = dynamicMenu!;
     actions = plugin.configOnly ? detailMenu.map((action): ActionItem => {
       if (action.id === 'settings') return {
@@ -3600,6 +3648,24 @@ export function ConsoleAppV4(props: {
         run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
       };
     }) : detailMenu.map((action): ActionItem => {
+      if (action.id === 'refreshAndSync') return {
+        label: `更新到 ${action.availableVersion}`,
+        description: '目标版本来自当前启用目录和已安装版本的严格比较。',
+        status: 'warning',
+        run: () => beginReview({
+          kind: 'pluginWrite',
+          action: 'sync',
+          pluginId: plugin.pluginId,
+          platform: action.platform,
+          scope: action.scope,
+          expectedUpdate: {
+            installedVersion: action.installedVersion,
+            activeVersion: action.availableVersion,
+            sourceIdentity: action.sourceIdentity,
+            generationKey: action.generationKey,
+          },
+        }),
+      };
       if (action.id === 'resolveScopeConflict') return {
         label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
         description: action.description,
@@ -3648,7 +3714,10 @@ export function ConsoleAppV4(props: {
       return { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
     });
     const detailViewport = actionViewport(actions, policy.mode === 'compact', effectiveFocus, scrollOffset, pageActionBudget(4));
-    content = <SectionCard title="插件操作"><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>;
+    content = <Box flexDirection="column">
+      {updateDescription ? <Callout status="warning" title={statusText(plugin)} description={updateDescription} /> : null}
+      <SectionCard title="插件操作"><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>
+    </Box>;
   } else if (route.name === 'platform' && plugin) {
     const placement = props.controller.getPlatformPlacement(plugin.pluginId, route.platform);
     const platformMenu = dynamicMenu!;
@@ -3717,7 +3786,20 @@ export function ConsoleAppV4(props: {
         status: 'error',
         run: () => beginScopeConflictRecovery(action),
       };
-      if (action.id === 'refreshAndSync') return { label: `刷新并同步到 ${action.availableVersion}…`, description: '先刷新相关来源，再确认新的目录内容', run: () => beginReview({ kind: 'pluginWrite', action: 'refreshAndSync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'refreshAndSync') return {
+        label: `更新到 ${action.availableVersion}…`,
+        description: '使用当前启用目录中的已确认版本',
+        run: () => beginReview({
+          kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId,
+          platform: action.platform, scope: action.scope,
+          expectedUpdate: {
+            installedVersion: action.installedVersion,
+            activeVersion: action.availableVersion,
+            sourceIdentity: action.sourceIdentity,
+            generationKey: action.generationKey,
+          },
+        }),
+      };
       if (action.id === 'sync') return {
         label: '同步已保存的使用位置…',
         description: placement?.state === 'installed'
@@ -6787,9 +6869,11 @@ export function ConsoleAppV4(props: {
       } else back();
     } else if (route.name === 'pluginList' && input === '/') {
       setSearchFocus(true);
-    } else if (route.name === 'pluginList' && route.mode === 'browse' && input.toLowerCase() === 'f') {
+    } else if (route.name === 'pluginList' && input.toLowerCase() === 'f') {
       const selectedPluginId = pluginRows[focus]?.pluginId;
-      const nextFilter = installFilter === 'all' ? 'uninstalled' : 'all';
+      const nextFilter = installFilter === 'all'
+        ? route.mode === 'browse' ? 'uninstalled' : 'updateAvailable'
+        : 'all';
       const nextItems = props.controller.listPlugins({
         mode: route.mode,
         ...(route.sourceId ? { sourceId: route.sourceId } : {}),

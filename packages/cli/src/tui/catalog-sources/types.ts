@@ -39,6 +39,16 @@ export interface CatalogSourceFreshnessViewModel {
   errorCode?: string;
   requiredCapabilities?: string[];
   missingCapabilities?: string[];
+  checkedAt?: string;
+  lastSuccessful?: true;
+  candidatePlugins?: Array<{
+    name: string;
+    version: string;
+    manifestDigest: string;
+    contentDigest: string;
+    requiredCapabilities: string[];
+    missingCapabilities: string[];
+  }>;
 }
 
 export interface CatalogSessionReusableCandidate extends CatalogGenerationReusableCandidate {

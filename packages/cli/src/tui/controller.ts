@@ -182,6 +182,12 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
+      expectedUpdate?: {
+        installedVersion: string;
+        activeVersion: string;
+        sourceIdentity: string;
+        generationKey: string;
+      };
       recoveryDescription?: string;
       force?: boolean;
       scriptTimeoutMs?: number;
@@ -1123,6 +1129,7 @@ export class TuiController {
       onError: (error, code) => {
         void this.#logErrorSafe(error, code);
       },
+      now: this.dependencies.now,
     });
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
@@ -2408,6 +2415,7 @@ export class TuiController {
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.mode === 'browse' || hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
+      && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 
