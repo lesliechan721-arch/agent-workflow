@@ -278,13 +278,22 @@ describe('TUI plugin update evidence', () => {
     expect(instance.lastFrame()).toContain('更新到 2.0.0');
     instance.stdin.write('\r');
     await nextTurn();
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
+      targetKeys: ['official/demo\0codex\0user'],
+      versionEvidence: { 'official/demo\0codex\0user': '2.0.0' },
+    });
+    instance.stdin.write('\r');
+    await nextTurn();
     expect(controllerDependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWrite', action: 'sync', pluginId: 'official/demo',
-      platform: 'codex', scope: 'user',
-      expectedUpdate: {
-        installedVersion: '1.0.0', activeVersion: '2.0.0',
-        sourceIdentity: 'identity:official', generationKey: 'official/active',
-      },
+      kind: 'pluginWriteTask', goal: 'update', executionPolicy: 'all',
+      targets: [{
+        pluginId: 'official/demo', platform: 'codex', scope: 'user',
+        expectedUpdate: {
+          installedVersion: '1.0.0', activeVersion: '2.0.0',
+          sourceIdentity: 'identity:official', generationKey: 'official/active',
+        },
+      }],
     }), expect.any(AbortSignal));
     controller.dispose();
   });

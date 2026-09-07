@@ -67,6 +67,8 @@ import type {
   OperationIntent,
   OperationReviewChange,
   OperationResultSummary,
+  PluginWriteTaskCandidate,
+  PluginWriteTaskGoal,
   TuiController,
   TuiControllerSnapshot,
 } from './controller.js';
@@ -325,6 +327,45 @@ function batchActionLabel(action: BatchPluginWriteAction): string {
     uninstall: '卸载',
     cleanup: '清理',
   }[action];
+}
+
+function pluginWriteTaskLabel(goal: PluginWriteTaskGoal): string {
+  return goal === 'update' ? '更新' : '恢复';
+}
+
+function pluginWriteTaskBlockLabel(reason: PluginWriteTaskCandidate['blockReason']): string {
+  return {
+    catalogActivationRequired: '需要先更新并启用来源目录',
+    updateEvidenceIncomplete: '更新版本证据不完整',
+    updateIncompatible: '候选版本与当前 AW 不兼容',
+    restoreVersionChanged: '恢复会改变版本，需要单独决定',
+    restoreVersionUnverified: '当前安装版本无法验证',
+    manualRecoveryRequired: '需要选择手动处理方式',
+    taskActionConflict: '同一根因需要不同处理方式',
+    targetUnavailable: '这个安装位置已不可用',
+  }[reason ?? 'targetUnavailable'];
+}
+
+function pluginWriteTaskMethodLabel(method: PluginWriteTaskCandidate['recommendedMethod']): string {
+  return method === 'reinstall' ? '重新生成缺失内容' : '同步当前使用位置';
+}
+
+function pluginWriteTaskTargetKey(candidate: PluginWriteTaskCandidate): string {
+  const { pluginId, platform, scope } = candidate.target;
+  return [pluginId, platform, scope].join('\0');
+}
+
+function pluginWriteTaskVersionEvidence(
+  plugin: PluginListItemViewModel,
+  candidates: PluginWriteTaskCandidate[],
+): Record<string, string> {
+  return Object.fromEntries(candidates.flatMap((candidate) => {
+    const update = plugin.update.targets.find((target) =>
+      target.platform === candidate.target.platform && target.scope === candidate.target.scope);
+    const version = candidate.target.expectedUpdate?.activeVersion
+      ?? update?.candidateVersion ?? update?.availableVersion;
+    return version ? [[pluginWriteTaskTargetKey(candidate), version]] : [];
+  }));
 }
 
 function statusText(plugin: PluginListItemViewModel): string {
@@ -1736,9 +1777,7 @@ export function ConsoleAppV4(props: {
   let activeConfigTabId: string | undefined;
   const dynamicMenu = plugin && route.name === 'pluginPreview'
     ? buildPluginPreviewActions(plugin)
-    : plugin && route.name === 'pluginDetail'
-      ? buildPluginDetailActions(plugin)
-      : plugin && route.name === 'platform'
+    : plugin && route.name === 'platform'
         ? buildPlatformActions(plugin, route.platform)
         : undefined;
   const dynamicActionIds = dynamicMenu?.map(pluginMenuActionId);
@@ -1884,6 +1923,7 @@ export function ConsoleAppV4(props: {
         || intent.action === 'refreshAndSync' || intent.action === 'reinstall')
       || intent.kind === 'pluginWriteBatch'
         && (intent.action === 'install' || intent.action === 'sync' || intent.action === 'reinstall')
+      || intent.kind === 'pluginWriteTask'
       || intent.kind === 'configSave' && intent.apply;
     const pendingIntent = supportsScriptTimeout ? intent : undefined;
     pendingReviewIntentRef.current = pendingIntent;
@@ -3618,6 +3658,105 @@ export function ConsoleAppV4(props: {
       <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
     </Box>;
     help = '↑↓ 移动 · Enter 选择 · Esc 返回';
+  } else if (route.name === 'pluginWriteTask' && plugin) {
+    const retainedTargetKeys = route.targetKeys ? new Set(route.targetKeys) : undefined;
+    const candidates: PluginWriteTaskCandidate[] = props.controller.listPluginWriteTaskCandidates(route.goal)
+      .filter((candidate) => candidate.target.pluginId === route.pluginId
+        && (!retainedTargetKeys || retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate))));
+    const executable = candidates.filter((candidate) => candidate.eligible);
+    const blockedCandidates = candidates.filter((candidate) => !candidate.eligible);
+    const currentVersionEvidence = pluginWriteTaskVersionEvidence(plugin, candidates);
+    const versionEvidenceChanged = route.goal === 'update' && route.versionEvidence !== undefined
+      && (Object.entries(currentVersionEvidence).some(([key, version]) => route.versionEvidence?.[key] !== version)
+        || Object.keys(route.versionEvidence).some((key) => currentVersionEvidence[key] === undefined));
+    const activationSources = [...new Set(blockedCandidates
+      .filter((candidate) => candidate.blockReason === 'catalogActivationRequired')
+      .map((candidate) => candidate.sourceId))];
+    const taskLabel = pluginWriteTaskLabel(route.goal);
+    const startTaskReview = (executionPolicy: 'all' | 'executableSubset'): void => {
+      props.controller.startPluginWriteTaskReview({
+        kind: 'pluginWriteTask',
+        goal: route.goal,
+        targets: candidates.map((candidate) => candidate.target),
+        executionPolicy,
+      }, route);
+      setFocus(0);
+      setScrollOffset(0);
+    };
+    breadcrumb = `我的插件 / ${plugin.displayName} / ${taskLabel}`;
+    context = '只读准备';
+    title = `${taskLabel} ${plugin.displayName}`;
+    description = route.goal === 'update'
+      ? '只使用已验证的插件版本和精确安装位置。来源目录不会在准备时自动启用。'
+      : '根据当前问题选择最小恢复方法，不自动改版本、位置或来源。';
+    help = candidates.length > (policy.mode === 'compact' ? 3 : 6)
+      ? 'PgUp/PgDn 查看全部位置 · ↑↓ 移动 · Enter 选择 · Esc 返回'
+      : '↑↓ 移动 · Enter 选择 · Esc 返回';
+    actions = [
+      ...(!versionEvidenceChanged && blockedCandidates.length === 0 && executable.length > 0 ? [{
+        label: `确认${taskLabel} ${executable.length} 个位置…`,
+        description: '进入统一影响确认；执行前再次检查当前证据',
+        status: 'success' as const,
+        run: () => startTaskReview('all'),
+      }] : []),
+      ...(!versionEvidenceChanged && blockedCandidates.length > 0 && executable.length > 0 ? [{
+        label: `先处理可执行的 ${executable.length} 个位置…`,
+        description: `${blockedCandidates.length} 个受阻位置保留，不会无声跳过`,
+        status: 'warning' as const,
+        run: () => startTaskReview('executableSubset'),
+      }] : []),
+      ...activationSources.map((sourceId) => ({
+        label: `先更新来源目录 ${sourceId}…`,
+        description: '先单独确认目录变更；启用完成后重新准备插件更新',
+        status: 'warning' as const,
+        run: () => beginReview({ kind: 'catalogGeneration', action: 'update', sourceId }),
+      })),
+      ...(versionEvidenceChanged ? [{
+        label: '使用当前版本重新准备…',
+        description: '来源启用后的插件版本与先前候选不同；先明确采用当前版本',
+        status: 'warning' as const,
+        run: () => {
+          props.controller.replace({ ...route, versionEvidence: currentVersionEvidence });
+          setFocus(0);
+          setScrollOffset(0);
+        },
+      }] : []),
+      { label: '返回插件详情', run: back },
+    ];
+    const taskTargetLimit = policy.mode === 'compact' ? 3 : 6;
+    const taskTargetOffset = Math.min(batchTargetOffset, Math.max(0, candidates.length - 1));
+    const visibleTaskCandidates = candidates.slice(taskTargetOffset, taskTargetOffset + taskTargetLimit);
+    const targetRows = visibleTaskCandidates.map((candidate) => {
+      const target = candidate.target;
+      const version = target.expectedUpdate
+        ? `${target.expectedUpdate.installedVersion} → ${target.expectedUpdate.activeVersion}`
+        : '保持当前版本';
+      return <StaticRow
+        key={`${target.pluginId}:${target.platform}:${target.scope}`}
+        title={`${platformLabel(target.platform)} · ${scopeLabel(target.scope)}${!candidate.eligible && policy.mode === 'compact'
+          ? ` · ${pluginWriteTaskBlockLabel(candidate.blockReason)}` : ''}`}
+        description={candidate.eligible
+          ? pluginWriteTaskMethodLabel(candidate.recommendedMethod)
+          : pluginWriteTaskBlockLabel(candidate.blockReason)}
+        meta={candidate.eligible ? version : '需要决定'}
+        status={candidate.eligible ? 'success' : 'warning'}
+        compact={policy.mode === 'compact'}
+      />;
+    });
+    const taskViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
+      pageActionBudget(Math.min(candidates.length, policy.mode === 'compact' ? 3 : 6) + 2));
+    content = <Box flexDirection="column">
+      <SectionCard title="处理范围" meta={`${executable.length} 个可执行 · ${blockedCandidates.length} 个需决定`} compact={policy.mode === 'compact'}>
+        {taskTargetOffset > 0 ? <StaticRow title={`↑ 前面还有 ${taskTargetOffset} 个位置`} status="muted" compact /> : null}
+        {targetRows.length > 0 ? targetRows
+          : <StaticRow title="当前没有可执行目标" status="muted" compact />}
+        {candidates.length > taskTargetOffset + targetRows.length
+          ? <StaticRow title={`↓ 后面还有 ${candidates.length - taskTargetOffset - targetRows.length} 个位置`} status="muted" compact /> : null}
+      </SectionCard>
+      {blockedCandidates.length > 0 ? <Callout status="warning" title={`${blockedCandidates.length} 个位置需要先处理或决定`} description="只有选择“先处理可执行项”才会建立子集 Review。" compact={policy.mode === 'compact'} /> : null}
+      {versionEvidenceChanged ? <Callout status="warning" title="插件目标版本已变化" description="不会沿用来源启用前的版本证据，也不会自动执行新版本。" compact={policy.mode === 'compact'} /> : null}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={taskViewport.offset} limit={taskViewport.limit} />
+    </Box>;
   } else if (route.name === 'pluginDetail' && plugin) {
     breadcrumb = `我的插件 / ${plugin.displayName}`;
     context = `${plugin.sourceLabel}${plugin.version ? ` · ${plugin.version}` : ''}`;
@@ -3625,7 +3764,13 @@ export function ConsoleAppV4(props: {
     description = plugin.description;
     const dependencySummary = plugin.dependencySummary;
     const updateDescription = pluginUpdateDescription(plugin);
-    const detailMenu = dynamicMenu!;
+    const detailMenu = buildPluginDetailActions(plugin);
+    const updateTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly ? []
+      : props.controller.listPluginWriteTaskCandidates('update')
+        .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
+    const restoreTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly ? []
+      : props.controller.listPluginWriteTaskCandidates('restore')
+        .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
     actions = plugin.configOnly ? detailMenu.map((action): ActionItem => {
       if (action.id === 'settings') return {
         label: '查看已保存设置',
@@ -3647,25 +3792,8 @@ export function ConsoleAppV4(props: {
         description: '查看保存设置和来源的安全摘要',
         run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
       };
-    }) : detailMenu.map((action): ActionItem => {
-      if (action.id === 'refreshAndSync') return {
-        label: `更新到 ${action.availableVersion}`,
-        description: '目标版本来自当前启用目录和已安装版本的严格比较。',
-        status: 'warning',
-        run: () => beginReview({
-          kind: 'pluginWrite',
-          action: 'sync',
-          pluginId: plugin.pluginId,
-          platform: action.platform,
-          scope: action.scope,
-          expectedUpdate: {
-            installedVersion: action.installedVersion,
-            activeVersion: action.availableVersion,
-            sourceIdentity: action.sourceIdentity,
-            generationKey: action.generationKey,
-          },
-        }),
-      };
+    }) : [
+      ...detailMenu.filter((action) => action.id !== 'refreshAndSync').map((action): ActionItem => {
       if (action.id === 'resolveScopeConflict') return {
         label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
         description: action.description,
@@ -3712,11 +3840,39 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
       return { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
-    });
-    const detailViewport = actionViewport(actions, policy.mode === 'compact', effectiveFocus, scrollOffset, pageActionBudget(4));
+      }),
+    ];
+    if (!plugin.configOnly) {
+      const updateActionIndex = detailMenu.findIndex((action) => action.id === 'refreshAndSync');
+      if (updateTaskCandidates.length > 0) actions.splice(Math.max(0, updateActionIndex), 0, {
+        label: updateTaskCandidates.length === 1 && updateTaskCandidates[0]?.target.expectedUpdate
+          ? `更新到 ${updateTaskCandidates[0].target.expectedUpdate.activeVersion}…`
+          : updateTaskCandidates.some((candidate) => candidate.target.expectedUpdate)
+            ? `更新 ${plugin.displayName}…` : '准备插件更新…',
+        description: updateTaskCandidates.some((candidate) => candidate.blockReason === 'catalogActivationRequired')
+          ? '需要先单独确认来源目录变更' : '使用精确版本和现有安装位置',
+        status: 'warning',
+        run: () => go({
+          name: 'pluginWriteTask', pluginId: plugin.pluginId, goal: 'update',
+          targetKeys: updateTaskCandidates.map(pluginWriteTaskTargetKey),
+          versionEvidence: pluginWriteTaskVersionEvidence(plugin, updateTaskCandidates),
+        }),
+      });
+      const executableRestoreCandidates = restoreTaskCandidates.filter((candidate) => candidate.eligible);
+      if (executableRestoreCandidates.length > 0) actions.push({
+        label: '恢复正常…',
+        description: `${restoreTaskCandidates.length} 个现有位置需要检查`,
+        status: 'warning',
+        run: () => go({
+          name: 'pluginWriteTask', pluginId: plugin.pluginId, goal: 'restore',
+          targetKeys: restoreTaskCandidates.map(pluginWriteTaskTargetKey),
+        }),
+      });
+    }
+    const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(4));
     content = <Box flexDirection="column">
       {updateDescription ? <Callout status="warning" title={statusText(plugin)} description={updateDescription} /> : null}
-      <SectionCard title="插件操作"><SemanticRows actions={actions} focus={effectiveFocus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>
+      <SectionCard title="插件操作"><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>
     </Box>;
   } else if (route.name === 'platform' && plugin) {
     const placement = props.controller.getPlatformPlacement(plugin.pluginId, route.platform);
@@ -5243,7 +5399,9 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'reviewPreparing' && snapshot.reviewPreparation) {
     const preparation = snapshot.reviewPreparation;
-    const labels = preparation.operationKind === 'portableInstall'
+    const labels = preparation.operationKind === 'pluginWriteTask'
+      ? ['插件任务', '正在准备任务影响确认']
+      : preparation.operationKind === 'portableInstall'
       ? ['通用 Skills / 安装', '正在准备通用 Skills 安装确认']
       : preparation.operationKind === 'configSave' || preparation.operationKind === 'configReset'
         ? ['设置', '正在准备设置确认']
@@ -5293,14 +5451,19 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     const batchReview = review.operationKind === 'pluginWriteBatch';
+    const taskReview = review.operationKind === 'pluginWriteTask';
     const sharedImpactConfirmed = !review.requiresConfirmation
       || confirmedSharedReviewToken === review.reviewToken;
     breadcrumb = `${review.subject.name} / ${review.title}`;
-    title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}${review.operationKind === 'portableInstall' ? review.title : `确认${review.title}`} ${review.subject.name}`;
+    title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}${review.operationKind === 'portableInstall' || taskReview
+      ? review.title : `确认${review.title}`} ${review.subject.name}`;
     description = snapshot.result?.state === 'stale'
       ? '当前状态已变化。请检查新的变化后再次确认。'
       : review.requiresConfirmation ? '' : review.description;
-    if (batchReview) {
+    if (taskReview) {
+      context = '精确目标 · 用户任务';
+      help = 'PgUp/PgDn 查看全部影响 · ↑↓ 移动 · Enter 选择 · Esc 返回';
+    } else if (batchReview) {
       context = `${review.batch?.requestedPluginIds.length ?? 0} 个根插件 · ${review.batch?.groupCount ?? 0} 组`;
       help = 'PgUp/PgDn 查看全部根插件和依赖 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
@@ -5333,6 +5496,7 @@ export function ConsoleAppV4(props: {
           && (pendingReviewIntent.action === 'install'
             || pendingReviewIntent.action === 'sync'
             || pendingReviewIntent.action === 'reinstall')
+        || pendingReviewIntent?.kind === 'pluginWriteTask'
         || pendingReviewIntent?.kind === 'configSave' && pendingReviewIntent.apply) ? [{
         label: '高级选项：脚本超时',
         description: `${pendingReviewIntent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒`,
@@ -5494,6 +5658,7 @@ export function ConsoleAppV4(props: {
     }
     content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! 需要确认共享影响" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
+    const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configReset';
@@ -5501,12 +5666,12 @@ export function ConsoleAppV4(props: {
       || snapshot.activeReview?.operationKind === 'catalogGeneration'
       || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     const issueOperation = snapshot.activeReview?.originIssue;
-    breadcrumb = portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    breadcrumb = taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
     const configApply = snapshot.activeReview?.operationKind === 'configSave'
       && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
     const catalogGenerationOperation = snapshot.activeReview?.operationKind === 'catalogGeneration';
     const catalogSourcesRecovery = snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
-    title = portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题'
+    title = taskOperation ? '正在执行插件任务' : portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题'
       : catalogGenerationOperation ? '正在验证并启用目录版本'
         : catalogSourcesRecovery ? '正在恢复插件来源配置'
         : sourceOperation ? '正在保存来源配置'
@@ -5518,7 +5683,7 @@ export function ConsoleAppV4(props: {
         : sourceOperation ? '只原子保存来源配置，不访问网络。'
           : configOperation ? configApply ? '先保存所选层，再重新应用当前可见安装位置。' : '只保存所选设置层。'
             : '请勿关闭当前终端。';
-    const batchProgress = snapshot.activeReview?.operationKind === 'pluginWriteBatch';
+    const batchProgress = snapshot.activeReview?.operationKind === 'pluginWriteBatch' || taskOperation;
     const progress = snapshot.progress;
     const elapsedSeconds = Math.max(0, Math.floor(((progress.elapsedMs
       ?? (progress.startedAtMs === undefined ? 0 : Date.now() - progress.startedAtMs))) / 1_000));
@@ -5659,6 +5824,22 @@ export function ConsoleAppV4(props: {
       : result.state === 'blocked' ? result.summary : undefined;
     const action = resultSummary?.action;
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
+    const taskOperation = operationKind === 'pluginWriteTask';
+    const taskSummary = resultSummary?.task;
+    const taskBlockedCount = taskSummary?.blockedTargets.length ?? 0;
+    const taskReturnRoute: TuiRoute | undefined = taskSummary?.requestedTargets[0] ? {
+      name: 'pluginWriteTask',
+      pluginId: taskSummary.requestedTargets[0].pluginId,
+      goal: taskSummary.goal,
+      targetKeys: taskSummary.requestedTargets.map((target) =>
+        [target.pluginId, target.platform, target.scope].join('\0')),
+      ...(taskSummary.goal === 'update' ? {
+        versionEvidence: Object.fromEntries(taskSummary.requestedTargets.flatMap((target) =>
+          target.expectedUpdate
+            ? [[[target.pluginId, target.platform, target.scope].join('\0'), target.expectedUpdate.activeVersion]]
+            : [])),
+      } : {}),
+    } : undefined;
     const batchOperation = operationKind === 'pluginWriteBatch';
     const portableOperation = operationKind === 'portableInstall';
     const portableReceipt = result.state === 'succeeded' || result.state === 'partial'
@@ -5682,7 +5863,11 @@ export function ConsoleAppV4(props: {
       cleanup: '✓ 插件清理完成',
       sync: '✓ 插件同步完成',
     }[action ?? 'install'];
-    title = batchOperation
+    title = taskOperation
+      ? blocked ? `× 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}没有完成`
+        : partial ? `! 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}只完成了一部分`
+          : `✓ 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}完成`
+      : batchOperation
       ? blocked ? '× 批量操作没有完成'
         : partial ? '! 批量操作只完成了一部分' : `✓ 批量${batchActionLabel(action as BatchPluginWriteAction)}完成`
       : portableOperation
@@ -5714,7 +5899,11 @@ export function ConsoleAppV4(props: {
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
           : completedTitle;
-    description = batchOperation
+    description = taskOperation
+      ? blocked ? '任务被安全阻止。已完成和未完成目标按实际结果保留。'
+        : partial ? `${taskSummary?.retryTargets?.length ?? 0} 个失败目标可重试 · ${taskBlockedCount} 个目标需要决定。`
+          : `${taskSummary?.rootResults.length ?? 0} 个根插件已完成。`
+      : batchOperation
       ? blocked
         ? '批量写入被阻止。已完成和未完成目标按实际结果保留。'
         : partial
@@ -5806,6 +5995,7 @@ export function ConsoleAppV4(props: {
     const retryAction = failedPluginId && failedTarget && failedTargetState
       ? selectLifecycleRetryAction({
           operationKind: operationKind === 'catalogSourcesRecovery' || operationKind === 'pluginWriteBatch'
+            || operationKind === 'pluginWriteTask'
             ? undefined : operationKind,
           originalAction: action,
           target: {
@@ -5826,7 +6016,28 @@ export function ConsoleAppV4(props: {
         && (candidate.platform ?? failedIssue.platform) === failedTarget?.platform
         && (candidate.scope ?? failedIssue.scope) === failedTarget?.scope)
       : undefined;
-    actions = batchOperation
+    actions = taskOperation
+      ? [
+          ...((partial || blocked) && (taskSummary?.retryTargets?.length ?? 0) > 0 ? [{
+            label: `继续处理剩余 ${taskSummary!.retryTargets!.length} 项…`,
+            description: '重新检查失败的精确目标和必要依赖，并进入新的确认页',
+            run: () => {
+              props.controller.retryFailedPluginWriteTask();
+              setFocus(0);
+              setScrollOffset(0);
+            },
+          }] : []),
+          ...(taskBlockedCount > 0 && taskReturnRoute ? [{
+            label: `返回任务处理 ${taskBlockedCount} 个需决定项`,
+            description: '受阻目标没有加入失败重试；返回后可查看原因和可用的下一步',
+            status: 'warning' as const,
+            run: () => leaveResult(taskReturnRoute),
+          }] : []),
+          { label: '完成，返回我的插件', run: () => leaveResult({ name: 'pluginList', mode: 'installed' }) },
+          { label: '查看本次记录', run: () => result.operationRecordId
+            && go({ name: 'operationDiagnostic', recordId: result.operationRecordId }) },
+        ]
+      : batchOperation
       ? [
           ...((partial || blocked) && (resultSummary?.batch?.retryTargets?.length ?? 0) > 0 ? [{
             label: '仅重试失败目标…',
@@ -5911,7 +6122,11 @@ export function ConsoleAppV4(props: {
             { label: '返回首页', run: () => requestSessionNavigation('home') },
           ]
       : sourceOperation
-      ? [{ label: blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源', run: () => blocked ? props.controller.resumeResultDraft() : leaveResult() }, { label: '返回首页', run: () => requestSessionNavigation('home') }]
+      ? [{
+          label: !blocked && 'returnRoute' in result && result.returnRoute?.name === 'pluginWriteTask'
+            ? '重新准备插件更新' : blocked ? '返回修改' : partial ? '现在启用 / 重试' : '查看来源',
+          run: () => blocked ? props.controller.resumeResultDraft() : leaveResult(),
+        }, { label: '返回首页', run: () => requestSessionNavigation('home') }]
       : configOperation && partial
       ? [
           ...(configRetryAvailable ? [{
@@ -6045,11 +6260,76 @@ export function ConsoleAppV4(props: {
           : resultSummary?.resetDisposition === 'quarantinedDirectory'
             ? `设置路径是目录；已隔离为 ${resultSummary.quarantineBasename ?? '安全隔离目录'}`
             : undefined;
-    if (batchOperation || resultTargets.length > resultTargetLimit
+    const taskRootResults = taskSummary?.rootResults ?? [];
+    const blockedTaskTargets = new Map((taskSummary?.blockedTargets ?? []).map((entry) => [
+      [entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0'), entry,
+    ]));
+    const taskRootState = (state: typeof taskRootResults[number]['state']): {
+      label: string;
+      status: NonNullable<ActionItem['status']>;
+    } => {
+      if (state === 'completed') return { label: '完成', status: 'success' };
+      if (state === 'kept') return { label: '无需更改', status: 'success' };
+      if (state === 'partial') return { label: '部分完成', status: 'warning' };
+      if (state === 'failed') return { label: '失败', status: 'error' };
+      if (state === 'notStarted') return { label: '未开始', status: 'muted' };
+      return { label: '待确认', status: 'warning' };
+    };
+    const taskResultRows = taskRootResults.flatMap((root) => {
+      const rootState = taskRootState(root.state);
+      const rootName = props.controller.getPluginOverview(root.pluginId)?.displayName
+        ?? root.pluginId.split('/').at(-1)!;
+      const requestedTargets = taskSummary?.requestedTargets.filter((target) =>
+        target.pluginId === root.pluginId) ?? [];
+      return [
+        <ResultRow
+          key={`root:${root.pluginId}`}
+          title={rootName}
+          description={`${requestedTargets.length} 个精确安装位置`}
+          meta={rootState.label}
+          status={rootState.status}
+          compact
+        />,
+        ...requestedTargets.map((target) => {
+          const key = [target.pluginId, target.platform, target.scope].join('\0');
+          const blockedTarget = blockedTaskTargets.get(key);
+          const targetResult = root.targets.find((entry) =>
+            entry.pluginId === target.pluginId && entry.platform === target.platform
+            && entry.scope === target.scope);
+          const targetState = blockedTarget ? { label: '待确认', status: 'warning' as const }
+            : targetResult?.state === 'completed' ? { label: '完成', status: 'success' as const }
+              : targetResult?.state === 'kept' ? { label: '无需更改', status: 'success' as const }
+                : targetResult?.state === 'failed' ? { label: '失败', status: 'error' as const }
+                  : { label: '未开始', status: 'muted' as const };
+          return <ResultRow
+            key={`target:${key}`}
+            title={`${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
+            description={blockedTarget
+              ? pluginWriteTaskBlockLabel(blockedTarget.reason)
+              : targetResult?.errorCode}
+            meta={targetState.label}
+            status={targetState.status}
+            compact={!blockedTarget}
+          />;
+        }),
+      ];
+    });
+    const taskResultLimit = Math.max(1, pageActionBudget(5) - resultActionViewport.limit);
+    const taskResultOffset = Math.min(batchTargetOffset, Math.max(0, taskResultRows.length - 1));
+    const visibleTaskResultRows = taskResultRows.slice(taskResultOffset, taskResultOffset + taskResultLimit);
+    if (taskOperation || batchOperation || resultTargets.length > resultTargetLimit
       || prioritizedPortableSkills.length > portableSkillLimit) {
       help = 'PgUp/PgDn 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = portableOperation ? <Box flexDirection="column">
+    content = taskOperation ? <Box flexDirection="column">
+      <ResultCard status={resultStatus} title="根插件结果">
+        {taskResultOffset > 0 ? <StaticRow title={`↑ 前面还有 ${taskResultOffset} 项`} status="muted" compact /> : null}
+        {visibleTaskResultRows}
+        {taskResultRows.length > taskResultOffset + visibleTaskResultRows.length
+          ? <StaticRow title="↓ 后面还有" meta={`${taskResultRows.length - taskResultOffset - visibleTaskResultRows.length} 项`} status="muted" compact /> : null}
+      </ResultCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
+    </Box> : portableOperation ? <Box flexDirection="column">
       {portableTechnicalSummary ? <>
         {portableSkillOffset > 0 ? <StaticRow title={`↑ 前面还有 ${portableSkillOffset} 个 Skills`} status="muted" compact /> : null}
         {portableRows}
@@ -6135,7 +6415,7 @@ export function ConsoleAppV4(props: {
     switch (route.name) {
       case 'pluginPreview': case 'pluginDependencies': case 'installPlacement':
       case 'installTargets': case 'dependencyPlacement': case 'dependencyPlacementEditor':
-      case 'pluginDetail': case 'platform': case 'pluginAbout': case 'pluginTechnical':
+      case 'pluginWriteTask': case 'pluginDetail': case 'platform': case 'pluginAbout': case 'pluginTechnical':
       case 'configLayer':
         unavailable = missingPlugin ? 'plugin' : 'flow';
         break;
@@ -6454,6 +6734,17 @@ export function ConsoleAppV4(props: {
       return;
     }
     if ((key.pageUp || key.pageDown)
+      && route.name === 'pluginWriteTask') {
+      const total = props.controller.listPluginWriteTaskCandidates(route.goal)
+        .filter((candidate) => candidate.target.pluginId === route.pluginId
+          && (!route.targetKeys || route.targetKeys.includes(pluginWriteTaskTargetKey(candidate)))).length;
+      setBatchTargetOffset((value) => Math.min(
+        Math.max(0, total - 1),
+        Math.max(0, value + (key.pageUp ? -1 : 1)),
+      ));
+      return;
+    }
+    if ((key.pageUp || key.pageDown)
       && route.name === 'review'
       && snapshot.activeReview) {
       const total = Math.max(
@@ -6473,6 +6764,7 @@ export function ConsoleAppV4(props: {
       const total = 'summary' in snapshot.result
         ? Math.max(
             snapshot.result.summary?.targets?.length ?? 0,
+            snapshot.result.summary?.task?.rootResults.length ?? 0,
             snapshot.result.operationKind === 'portableInstall'
               ? snapshot.portableResultSkills?.length ?? 0
               : 0,

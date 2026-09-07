@@ -43,6 +43,13 @@ export type ConfigResumeRoute =
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
+  | {
+      name: 'pluginWriteTask';
+      pluginId: string;
+      goal: 'restore' | 'update';
+      targetKeys?: string[];
+      versionEvidence?: Record<string, string>;
+    }
   | { name: 'batchSelection' }
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
@@ -164,7 +171,7 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite';
+  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask';
 
 export interface TuiFlowScope {
   id: string;

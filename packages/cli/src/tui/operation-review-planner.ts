@@ -7,6 +7,8 @@ import type {
   PluginWriteBatchEvidence,
   PluginWriteBatchGroupEvidence,
   PluginWriteOperation,
+  PluginWriteTaskEvidence,
+  PluginWriteTaskSourceEvidence,
 } from './controller.js';
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
@@ -30,7 +32,9 @@ function pluginNameFromId(pluginId: string): string {
 
 function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] {
   let configuredTimeoutMs: number | undefined;
-  if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
+  if (intent.kind === 'pluginWriteTask') {
+    configuredTimeoutMs = intent.scriptTimeoutMs;
+  } else if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
@@ -173,6 +177,19 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       primaryLabel: title,
       destructive: intent.action === 'reinstall' || intent.action === 'uninstall'
         || intent.action === 'cleanup',
+    };
+  }
+  if (intent.kind === 'pluginWriteTask') {
+    const targetVersions = [...new Set(intent.targets.flatMap((target) =>
+      target.expectedUpdate ? [target.expectedUpdate.activeVersion] : []))];
+    const updateVersion = targetVersions.length === 1 ? `到 ${targetVersions[0]}` : '';
+    return {
+      title: intent.goal === 'update' ? `确认更新${updateVersion}` : '确认恢复所选插件',
+      description: intent.goal === 'update'
+        ? '使用当前已启用目录中的已确认版本更新所选安装位置。'
+        : '按已确认根因恢复所选安装位置，并保持已安装版本。',
+      primaryLabel: intent.goal === 'update' ? '开始更新' : '开始恢复',
+      destructive: false,
     };
   }
   if (intent.kind === 'pluginWrite') {
@@ -756,6 +773,86 @@ function batchGroupEvidence(
   };
 }
 
+function taskSourceEvidence(
+  evidence: PluginWriteTaskEvidence,
+  source: PluginWriteTaskSourceEvidence,
+): OperationEvidence {
+  return {
+    catalog: evidence.catalog,
+    ...(source.preview.dependencyPlan ? { dependencyPlan: source.preview.dependencyPlan } : {}),
+    ...(source.preview.codexReconcilePlans
+      ? { codexReconcilePlans: source.preview.codexReconcilePlans } : {}),
+    ...(source.preview.operationPlan ? { operationPlan: source.preview.operationPlan } : {}),
+  };
+}
+
+function taskReviewChanges(
+  intent: Extract<OperationIntent, { kind: 'pluginWriteTask' }>,
+  evidence: PluginWriteTaskEvidence,
+): OperationReviewChange[] {
+  const requested = evidence.taskPlan.executableTargets.map((target): OperationReviewChange => ({
+    kind: 'change',
+    group: 'requested',
+    pluginId: target.pluginId,
+    sourceId: target.pluginId.slice(0, target.pluginId.indexOf('/')),
+    relation: 'requested',
+    title: pluginNameFromId(target.pluginId),
+    description: `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`
+      + (target.expectedUpdate
+        ? ` · ${target.expectedUpdate.installedVersion} → ${target.expectedUpdate.activeVersion}`
+        : ' · 保持已安装版本'),
+  }));
+  const causes = evidence.taskPlan.causes.map((cause): OperationReviewChange => ({
+    kind: 'change',
+    group: 'dependencies',
+    pluginId: cause.repairTarget.pluginId,
+    sourceId: cause.sourceId,
+    relation: cause.consumers.some((consumer) =>
+      consumer.pluginId === cause.repairTarget.pluginId
+      && consumer.platform === cause.repairTarget.platform
+      && consumer.scope === cause.repairTarget.scope) ? 'requested' : 'direct',
+    title: pluginNameFromId(cause.repairTarget.pluginId),
+    description: `${cause.method === 'reinstall' ? '重新安装' : '同步'} · `
+      + `${platformLabel(cause.repairTarget.platform)} · ${scopeLabel(cause.repairTarget.scope)}`
+      + (cause.restoreVersionEvidence?.state === 'preserved'
+        ? ` · 保持 ${cause.restoreVersionEvidence.installedVersion}`
+        : cause.restoreVersionEvidence?.state === 'absent'
+          ? ` · 补齐 ${cause.restoreVersionEvidence.activeVersion}` : '')
+      + ` · 影响 ${cause.consumers.length} 个所选安装位置`,
+  }));
+  const runtime = evidence.taskPlan.sources.flatMap((source) =>
+    preApplyScopeChanges(operationPreApplyTargets(taskSourceEvidence(evidence, source))));
+  const blocked = evidence.taskPlan.blockedTargets.map((target): OperationReviewChange => ({
+    kind: 'warning',
+    group: 'portableWarnings',
+    pluginId: target.target.pluginId,
+    relation: 'requested',
+    title: `${pluginNameFromId(target.target.pluginId)} 不在本次执行中`,
+    description: `${platformLabel(target.target.platform)} · ${scopeLabel(target.target.scope)}`
+      + (target.errorCodes?.length ? ` · ${target.errorCodes.join('、')}` : ''),
+  }));
+  return [
+    ...scriptTimeoutChanges(intent),
+    ...requested,
+    ...causes,
+    ...runtime,
+    ...blocked,
+    ...(evidence.taskPlan.blockedTargets.length > 0 ? [{
+      kind: 'warning' as const,
+      group: 'portableWarnings' as const,
+      title: `${evidence.taskPlan.blockedTargets.length} 个目标不在本次执行中`,
+      description: '用户已明确选择先处理可执行子集；阻止项保持不变。',
+    }] : []),
+    ...(evidence.taskPlan.executableTargets.some((target) => target.scope === 'user') ? [{
+      kind: 'warning' as const,
+      group: 'requested' as const,
+      title: '包含所有项目安装位置',
+      description: '这些写入可能影响当前项目之外的使用位置。',
+    }] : []),
+    { kind: 'keep', group: 'preserved', title: '插件设置保持不变' },
+  ];
+}
+
 function batchReviewChanges(
   intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>,
   evidence: PluginWriteBatchEvidence,
@@ -835,6 +932,15 @@ function technicalDetails(evidence: OperationEvidence): string[] {
       );
     }
   }
+  if ('taskPlan' in evidence) {
+    const task = evidence as PluginWriteTaskEvidence;
+    details.push(`任务目标：${task.taskPlan.requestedTargets.length} 个`);
+    details.push(`可执行目标：${task.taskPlan.executableTargets.length} 个`);
+    details.push(`共享根因：${task.taskPlan.causes.length} 个`);
+    for (const source of task.taskPlan.sources) {
+      details.push(`任务来源：${source.sourceId} · ${source.requestedTargets.length} 个目标 · 计划 ${short(source.preview.operationPlan!.planFingerprint)}`);
+    }
+  }
   if (evidence.catalog.generationSetDigest) {
     details.push(`Catalog generation：${short(evidence.catalog.generationSetDigest)}`);
   }
@@ -899,10 +1005,16 @@ export function buildOperationReviewProjection(options: {
   const batchEvidence = intent.kind === 'pluginWriteBatch'
     ? evidence as PluginWriteBatchEvidence
     : undefined;
+  const taskEvidence = intent.kind === 'pluginWriteTask'
+    ? evidence as PluginWriteTaskEvidence
+    : undefined;
   const labels = operationLabels(intent, evidence);
   const hasPreApply = intent.kind === 'pluginWriteBatch'
     ? Boolean(batchEvidence?.groups.some((group) =>
         operationPreApplyTargets(batchGroupEvidence(batchEvidence, group)).length > 0))
+    : intent.kind === 'pluginWriteTask'
+      ? Boolean(taskEvidence?.taskPlan.sources.some((source) =>
+          operationPreApplyTargets(taskSourceEvidence(taskEvidence, source)).length > 0))
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
   const sharedNativeConfigApply = intent.kind === 'configSave'
@@ -912,6 +1024,8 @@ export function buildOperationReviewProjection(options: {
   const requiresConfirmation = sharedNativeConfigApply
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
+    || Boolean(taskEvidence?.taskPlan.sources.some((source) =>
+      (source.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
@@ -924,6 +1038,8 @@ export function buildOperationReviewProjection(options: {
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
     plan.review.sharedImpact.warning)?.review.sharedImpact.warning
     ?? batchEvidence?.groups.flatMap((group) => group.preview.codexReconcilePlans ?? [])
+      .find((plan) => plan.review.sharedImpact.warning)?.review.sharedImpact.warning
+    ?? taskEvidence?.taskPlan.sources.flatMap((source) => source.preview.codexReconcilePlans ?? [])
       .find((plan) => plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
     kind: 'warning',
@@ -938,6 +1054,8 @@ export function buildOperationReviewProjection(options: {
       ...preparationWarnings,
       ...(intent.kind === 'pluginWriteBatch'
         ? batchReviewChanges(intent, batchEvidence!)
+        : intent.kind === 'pluginWriteTask'
+          ? taskReviewChanges(intent, taskEvidence!)
         : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
     technicalDetails: technicalDetails(evidence),
@@ -946,6 +1064,8 @@ export function buildOperationReviewProjection(options: {
       : {}),
     primaryLabel: intent.kind === 'pluginWriteBatch'
       ? `${labels.primaryLabel} ${batchEvidence!.requestedPluginIds.length} 个插件`
+      : intent.kind === 'pluginWriteTask'
+        ? `${labels.primaryLabel} ${taskEvidence!.taskPlan.executableTargets.length} 个安装位置`
       : intent.kind === 'pluginWrite' && evidence.dependencyPlan
       ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
       : labels.primaryLabel,
@@ -957,6 +1077,9 @@ export function buildOperationReviewProjection(options: {
           plan.review.sharedImpact.pluginIds),
         ...(batchEvidence?.groups.flatMap((group) =>
           (group.preview.codexReconcilePlans ?? []).flatMap((plan) =>
+            plan.review.sharedImpact.pluginIds)) ?? []),
+        ...(taskEvidence?.taskPlan.sources.flatMap((source) =>
+          (source.preview.codexReconcilePlans ?? []).flatMap((plan) =>
             plan.review.sharedImpact.pluginIds)) ?? []),
         ...(evidence.sourceWrite?.impact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),

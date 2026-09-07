@@ -34,6 +34,9 @@ describe('TUI route registry', () => {
     expect(routeDefinition({ name: 'operationDiagnostic', recordId: 'record-1' }))
       .toMatchObject({ entity: 'historyRecord', rendererFamily: 'history' });
     expect(TUI_ROUTE_DEFINITIONS.result.rendererFamily).toBe('operation');
+    expect(routeDefinition({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
+    })).toMatchObject({ entity: 'plugin', rendererFamily: 'task', keymap: 'menu' });
     expect(new Set(TUI_SCREEN_IDS).size).toBe(TUI_SCREEN_IDS.length);
     expect(TUI_SCREEN_IDS).not.toEqual(expect.arrayContaining([
       'C11', 'S02', 'K01', 'K03', 'K04', 'K05', 'K06', 'K07',
@@ -58,6 +61,8 @@ describe('TUI route registry', () => {
     const routes: Array<[TuiRoute, TuiRoute]> = [
       [{ name: 'pluginList', mode: 'browse', sourceId: 'gone' }, { name: 'pluginList', mode: 'browse' }],
       [{ name: 'configFieldAction', pluginId: 'gone', layer: { scope: 'user' }, fieldKey: 'mode' },
+        { name: 'pluginList', mode: 'installed' }],
+      [{ name: 'pluginWriteTask', pluginId: 'gone', goal: 'update' },
         { name: 'pluginList', mode: 'installed' }],
       [{ name: 'configSave', pluginId: 'gone', layer: { scope: 'project' } },
         { name: 'pluginList', mode: 'installed' }],

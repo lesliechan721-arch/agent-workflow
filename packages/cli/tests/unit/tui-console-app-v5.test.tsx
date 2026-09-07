@@ -846,8 +846,8 @@ async function chooseSourceSave(
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(106);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 106);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(111);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 111);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -864,6 +864,7 @@ describe('ConsoleAppV4', () => {
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
       'K02',
       'B01', 'B02',
+      'T01', 'T02', 'T03', 'T04', 'T05',
     ]);
   });
 

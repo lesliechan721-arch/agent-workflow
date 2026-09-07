@@ -17,6 +17,7 @@ export const TUI_SCREEN_IDS = [
   'D18', 'D19', 'D20',
   'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
   'K02', 'B01', 'B02',
+  'T01', 'T02', 'T03', 'T04', 'T05',
 ] as const;
 
 export type TuiScreenId = typeof TUI_SCREEN_IDS[number];
@@ -24,7 +25,7 @@ export type TuiRouteName = TuiRoute['name'];
 export type TuiRouteEntity = 'none' | 'plugin' | 'source' | 'issue' | 'historyRecord' | 'activeOperation';
 export type TuiRendererFamily =
   | 'home' | 'pluginList' | 'batch' | 'plugin' | 'portable' | 'dependency'
-  | 'config' | 'source' | 'issue' | 'operation' | 'history';
+  | 'config' | 'source' | 'issue' | 'operation' | 'history' | 'task';
 export type TuiRouteKeymap = 'menu' | 'menuOrTextInput';
 
 export interface RouteEntityState {
@@ -80,6 +81,7 @@ const fixed = <Name extends TuiRouteName>(id: TuiScreenId) =>
 
 function reviewScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'pluginWriteTask') return 'T02';
   if (review?.originIssue) return 'I10';
   const dependencyOperation = review?.operationKind === 'pluginWrite'
     && review.changes.some((change) => change.relation === 'direct'
@@ -102,6 +104,7 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
 
 function progressScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'pluginWriteTask') return 'T03';
   if (context.snapshot.progressTargets.length > 0) return 'D06';
   if (review?.originIssue) return 'I11';
   if (review?.operationKind === 'sourceMutation' || review?.operationKind === 'catalogGeneration'
@@ -112,6 +115,9 @@ function progressScreen(context: RouteScreenContext): TuiScreenId {
 
 function resultScreen(context: RouteScreenContext): TuiScreenId {
   const result = context.snapshot.result;
+  if (result?.operationKind === 'pluginWriteTask') {
+    return result.state === 'succeeded' ? 'T04' : 'T05';
+  }
   if (result) {
     const dependencyTargets = result.state === 'succeeded' || result.state === 'partial'
       ? result.summary.targets
@@ -141,6 +147,7 @@ export const TUI_ROUTE_DEFINITIONS = {
     if (route.sourceId && controller.getSourceOverview(route.sourceId).health?.state === 'unavailable') return 'P03';
     return route.mode === 'installed' ? 'P11' : searchMode ? 'P02' : 'P01';
   } },
+  pluginWriteTask: { entity: 'plugin', rendererFamily: 'task', keymap: 'menu', normalize: plugin, screenId: fixed('T01') },
   batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B01') },
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
   pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>

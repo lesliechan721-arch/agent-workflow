@@ -87,6 +87,26 @@ import {
   catalogSourceAutoCheckOnlyValue,
   projectCatalogSourceMutationWarnings,
 } from './catalog-sources/review.js';
+import {
+  buildPluginWriteTaskCandidates,
+  pluginWriteTaskTargetKey,
+  type PluginWriteTaskBlockedTarget,
+  type PluginWriteTaskCandidate,
+  type PluginWriteTaskCause,
+  type PluginWriteTaskGoal,
+  type PluginWriteTaskIntent,
+  type PluginWriteTaskTarget,
+} from './plugin-write-task.js';
+
+export type {
+  PluginWriteTaskBlockReason,
+  PluginWriteTaskCandidate,
+  PluginWriteTaskExpectedUpdate,
+  PluginWriteTaskGoal,
+  PluginWriteTaskIntent,
+  PluginWriteTaskMethod,
+  PluginWriteTaskTarget,
+} from './plugin-write-task.js';
 
 type CatalogActivationBlockReason =
   | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
@@ -157,6 +177,40 @@ export interface PluginWriteBatchExecutionResult extends RebuildCommandResult {
   groupResults: PluginWriteBatchGroupResult[];
 }
 
+export interface PluginWriteTaskSourceEvidence {
+  sourceId: string;
+  sourceIdentity: string;
+  requestedTargets: PluginWriteTaskTarget[];
+  causes: PluginWriteTaskCause[];
+  preview: RebuildCommandResult;
+  executable: boolean;
+}
+
+export interface PluginWriteTaskEvidence extends OperationEvidence {
+  taskPlan: {
+    goal: PluginWriteTaskGoal;
+    requestedTargets: PluginWriteTaskTarget[];
+    executableTargets: PluginWriteTaskTarget[];
+    causes: PluginWriteTaskCause[];
+    blockedTargets: PluginWriteTaskBlockedTarget[];
+    sources: PluginWriteTaskSourceEvidence[];
+    targetFingerprint: string;
+    planFingerprint: string;
+  };
+}
+
+export interface PluginWriteTaskSourceResult {
+  sourceId: string;
+  sourceIdentity: string;
+  requestedTargets: PluginWriteTaskTarget[];
+  result: RebuildCommandResult;
+}
+
+export interface PluginWriteTaskExecutionResult extends RebuildCommandResult {
+  taskPlan: PluginWriteTaskEvidence['taskPlan'];
+  sourceResults: PluginWriteTaskSourceResult[];
+}
+
 export type OperationKind = OperationIntent['kind'];
 
 export interface IssueOrigin {
@@ -194,6 +248,7 @@ export type OperationIntent =
       originIssue?: IssueOrigin;
     }
   | PluginWriteBatchIntent
+  | PluginWriteTaskIntent
   | {
       kind: 'portableInstall';
       pluginId: string;
@@ -358,6 +413,7 @@ export interface OperationReviewModel {
   operationKind: OperationKind;
   sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
   pluginAction?: PluginWriteOperation;
+  taskGoal?: PluginWriteTaskGoal;
   originIssue?: IssueOrigin;
   title: string;
   description: string;
@@ -386,6 +442,13 @@ export interface OperationReviewModel {
     requestedPluginIds: string[];
     groupCount: number;
     executableGroupCount: number;
+  };
+  task?: {
+    goal: PluginWriteTaskGoal;
+    requestedTargetCount: number;
+    executableTargetCount: number;
+    blockedTargetCount: number;
+    causeCount: number;
   };
 }
 
@@ -507,6 +570,13 @@ export interface OperationResultSummary {
     retryTargets?: PluginWriteBatchTarget[];
     groupCount: number;
   };
+  task?: {
+    goal: PluginWriteTaskGoal;
+    requestedTargets: PluginWriteTaskTarget[];
+    rootResults: PluginWriteTaskRootResult[];
+    retryTargets?: PluginWriteTaskTarget[];
+    blockedTargets: PluginWriteTaskBlockedTarget[];
+  };
   portable?: {
     selectedSkills: string[];
     agentMode: 'automatic' | 'explicit';
@@ -529,6 +599,20 @@ export interface OperationResultSummary {
     errorCode?: string;
     diagnosticIds?: string[];
     effects?: OperationEffectFacts;
+  }>;
+}
+
+export interface PluginWriteTaskRootResult {
+  pluginId: string;
+  state: 'completed' | 'kept' | 'partial' | 'failed' | 'notStarted' | 'blocked';
+  causeKeys: string[];
+  targets: Array<{
+    pluginId?: string;
+    platform: PlatformName;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    relation?: 'requested' | 'direct' | 'transitive';
+    errorCode?: string;
   }>;
 }
 
@@ -743,9 +827,20 @@ function canonicalBatchTargets(targets: readonly PluginWriteBatchTarget[]): Plug
       .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
 }
 
+function canonicalPluginWriteTaskTargets(
+  targets: readonly PluginWriteTaskTarget[],
+): PluginWriteTaskTarget[] {
+  return [...new Map(targets.map((target) => [pluginWriteTaskTargetKey(target), target])).values()]
+    .sort((left, right) => pluginWriteTaskTargetKey(left)
+      .localeCompare(pluginWriteTaskTargetKey(right), 'en'));
+}
+
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
   if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
     return { ...intent, apply: true };
+  }
+  if (intent.kind === 'pluginWriteTask') {
+    return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
   if (intent.selection.kind === 'targets') {
@@ -762,6 +857,54 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
       pluginIds: canonicalPluginIds(intent.selection.pluginIds),
     },
   };
+}
+
+function assertPluginWriteTaskEvidence(
+  intent: PluginWriteTaskIntent,
+  evidence: OperationEvidence,
+): asserts evidence is PluginWriteTaskEvidence {
+  const candidate = evidence as Partial<PluginWriteTaskEvidence>;
+  const plan = candidate.taskPlan;
+  if (!plan || plan.goal !== intent.goal || !Array.isArray(plan.requestedTargets)
+    || !Array.isArray(plan.executableTargets) || !Array.isArray(plan.blockedTargets)
+    || !Array.isArray(plan.causes) || !Array.isArray(plan.sources)
+    || typeof plan.targetFingerprint !== 'string' || typeof plan.planFingerprint !== 'string'
+    || JSON.stringify(plan.requestedTargets) !== JSON.stringify(intent.targets)
+    || plan.executableTargets.length === 0) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务确认信息不完整。');
+  }
+  if (plan.planFingerprint !== operationEvidenceFingerprint(evidence)) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务确认指纹无效。');
+  }
+  if (intent.executionPolicy === 'all' && plan.blockedTargets.length > 0) {
+    throw new TuiOperationBlockedError('taskHasBlockedTargets', '部分目标需要先处理，不能作为完整任务执行。');
+  }
+  const requested = new Set(plan.requestedTargets.map(pluginWriteTaskTargetKey));
+  const executable = new Set(plan.executableTargets.map(pluginWriteTaskTargetKey));
+  const blocked = new Set(plan.blockedTargets.map((target) => pluginWriteTaskTargetKey(target.target)));
+  if (executable.size !== plan.executableTargets.length || blocked.size !== plan.blockedTargets.length
+    || [...executable].some((key) => !requested.has(key) || blocked.has(key))
+    || [...blocked].some((key) => !requested.has(key))
+    || [...requested].some((key) => !executable.has(key) && !blocked.has(key))) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务目标分区无效。');
+  }
+  const grouped = new Set<string>();
+  for (const source of plan.sources) {
+    if (!source.sourceId || !source.sourceIdentity || source.requestedTargets.length === 0
+      || source.executable !== Boolean(source.preview.operationPlan)
+      || source.requestedTargets.some((target) =>
+        !executable.has(pluginWriteTaskTargetKey(target))
+        || sourceIdFromPluginId(target.pluginId) !== source.sourceId)
+      || source.causes.some((cause) => cause.sourceId !== source.sourceId
+        || cause.sourceIdentity !== source.sourceIdentity
+        || cause.consumers.some((consumer) => !executable.has(pluginWriteTaskTargetKey(consumer))))) {
+      throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务来源计划无效。');
+    }
+    source.requestedTargets.forEach((target) => grouped.add(pluginWriteTaskTargetKey(target)));
+  }
+  if ([...executable].some((key) => !grouped.has(key))) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务来源计划缺少可执行目标。');
+  }
 }
 
 function assertPluginWriteBatchEvidence(
@@ -873,6 +1016,53 @@ export function pluginWriteBatchFailedRequestedPluginIds(
     .map((target) => target.pluginId));
 }
 
+export function pluginWriteTaskFailedRequestedTargets(
+  execution: PluginWriteTaskExecutionResult,
+): PluginWriteTaskTarget[] {
+  const requested = new Map(execution.taskPlan.requestedTargets.map((target) => [
+    pluginWriteTaskTargetKey(target), target,
+  ]));
+  const failed = new Set<string>();
+  const succeeded = new Set<string>();
+  for (const source of execution.sourceResults) {
+    const sourceRequested = new Set(source.requestedTargets.map(pluginWriteTaskTargetKey));
+    if (source.result.targetResults.length === 0 && source.result.overallState !== 'succeeded') {
+      sourceRequested.forEach((key) => failed.add(key));
+      continue;
+    }
+    for (const result of source.result.targetResults) {
+      const pluginId = result.target.pluginId;
+      if (!pluginId) continue;
+      const exactKey = pluginWriteTaskTargetKey({
+        pluginId,
+        platform: result.target.platform,
+        scope: result.target.scope,
+      });
+      if (sourceRequested.has(exactKey)) {
+        if (result.state === 'failed' || result.action === 'skipped') failed.add(exactKey);
+        else succeeded.add(exactKey);
+      }
+      if (result.state !== 'failed' && result.action !== 'skipped') continue;
+      for (const cause of source.requestedTargets.length > 0
+        ? execution.taskPlan.causes.filter((cause) => cause.sourceId === source.sourceId) : []) {
+        if (pluginWriteTaskTargetKey(cause.repairTarget) !== exactKey) continue;
+        cause.consumers.forEach((consumer) => failed.add(pluginWriteTaskTargetKey(consumer)));
+      }
+      const placement = source.result.dependencyPlan?.targets.find((target) =>
+        target.pluginId === pluginId && target.platform === result.target.platform
+        && (target.requestedScope ?? target.resolvedScope) === result.target.scope);
+      for (const consumer of placement?.requiredByTargets ?? []) {
+        failed.add(pluginWriteTaskTargetKey(consumer));
+      }
+    }
+  }
+  for (const key of succeeded) failed.delete(key);
+  return canonicalPluginWriteTaskTargets([...failed].flatMap((key) => {
+    const target = requested.get(key);
+    return target ? [target] : [];
+  }));
+}
+
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
   if (intent.kind !== 'configSave') return [];
   const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
@@ -921,6 +1111,37 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if ('taskPlan' in evidence) {
+    const task = (evidence as PluginWriteTaskEvidence).taskPlan;
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        catalog: evidence.catalog,
+        goal: task.goal,
+        requestedTargets: task.requestedTargets,
+        executableTargets: task.executableTargets,
+        causes: task.causes,
+        blockedTargets: task.blockedTargets,
+        targetFingerprint: task.targetFingerprint,
+        sources: task.sources.map((source) => ({
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
+          requestedTargets: source.requestedTargets,
+          causes: source.causes,
+          executable: source.executable,
+          planFingerprint: source.preview.operationPlan?.planFingerprint,
+          targetResults: source.preview.targetResults.map((target) => ({
+            pluginId: target.target.pluginId,
+            platform: target.target.platform,
+            scope: target.target.scope,
+            state: target.state,
+            action: target.action,
+            errorCode: target.errorCode,
+            requiredBy: target.requiredBy,
+          })),
+        })),
+      })))
+      .digest('hex');
+  }
   if ('groups' in evidence && 'requestedPluginIds' in evidence) {
     const batch = evidence as PluginWriteBatchEvidence;
     return crypto.createHash('sha256')
@@ -1097,6 +1318,7 @@ export class TuiController {
   #retiring = false;
   #externalDrafts: ExternalDraftState[] = [];
   #batchRetryIntent?: PluginWriteBatchIntent;
+  #taskRetryIntent?: PluginWriteTaskIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
   #lastRecordedResultId?: string;
@@ -1341,6 +1563,7 @@ export class TuiController {
     this.#installPlacementDraft = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#batchRetryIntent = undefined;
+    this.#taskRetryIntent = undefined;
     this.#externalDrafts = [];
     this.#result = undefined;
     this.#resultAnchor = undefined;
@@ -1508,6 +1731,11 @@ export class TuiController {
 
   #ensureOperationFlow(intent: OperationIntent): void {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWriteTask') {
+      if (active?.kind === 'pluginWriteTask') return;
+      this.#router.beginFlow('pluginWriteTask', this.#router.snapshot.current.route);
+      return;
+    }
     if (intent.kind === 'pluginWriteBatch') {
       if (active?.kind === 'batchWrite') return;
       this.#router.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' });
@@ -1550,7 +1778,9 @@ export class TuiController {
         : intent.kind === 'sourceMutation' && intent.action !== 'remove'
         ? { name: 'sourceDetail', sourceId: intent.sourceId }
         : intent.kind === 'catalogGeneration'
-          ? { name: 'sourceDetail', sourceId: intent.sourceId }
+          ? this.#router.snapshot.current.route.name === 'pluginWriteTask'
+            ? this.#router.snapshot.current.route
+            : { name: 'sourceDetail', sourceId: intent.sourceId }
           : { name: 'sourceList' },
     );
   }
@@ -1567,6 +1797,7 @@ export class TuiController {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
     if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
+    if (intent.kind === 'pluginWriteTask') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
@@ -1574,6 +1805,9 @@ export class TuiController {
       return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
     }
     if (intent.kind === 'catalogGeneration') {
+      if ('returnRoute' in result && result.returnRoute?.name === 'pluginWriteTask') {
+        return this.#normalizeRoute(result.returnRoute);
+      }
       return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
     }
     return { name: 'sourceList' };
@@ -1613,6 +1847,20 @@ export class TuiController {
             kind: 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
+      }
+      : undefined;
+    this.#taskRetryIntent = intent.kind === 'pluginWriteTask'
+      && 'summary' in result
+      && result.summary?.task
+      && (result.summary.task.retryTargets?.length ?? 0) > 0
+      ? {
+          ...structuredClone(intent),
+          targets: result.summary.task.retryTargets!.map((target) => {
+            const current = this.listPluginWriteTaskCandidates(intent.goal).find((candidate) =>
+              pluginWriteTaskTargetKey(candidate.target) === pluginWriteTaskTargetKey(target));
+            return structuredClone(current?.eligible ? current.target : target);
+          }),
+          executionPolicy: 'all',
         }
       : undefined;
     if (!this.#router.finishFlow(target, terminal)) this.#router.replace(terminal);
@@ -2605,10 +2853,24 @@ export class TuiController {
     return this.startReviewPreparation(intent, { name: 'batchPlacement' });
   }
 
+  startPluginWriteTaskReview(
+    intent: PluginWriteTaskIntent,
+    returnRoute?: TuiRoute,
+  ): ReviewPreparationSnapshot {
+    return this.startReviewPreparation(intent, returnRoute);
+  }
+
   retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {
     if (!this.#batchRetryIntent) return undefined;
     const intent = structuredClone(this.#batchRetryIntent);
     this.#batchRetryIntent = undefined;
+    return this.startReviewPreparation(intent, { name: 'pluginList', mode: 'installed' });
+  }
+
+  retryFailedPluginWriteTask(): ReviewPreparationSnapshot | undefined {
+    if (!this.#taskRetryIntent) return undefined;
+    const intent = structuredClone(this.#taskRetryIntent);
+    this.#taskRetryIntent = undefined;
     return this.startReviewPreparation(intent, { name: 'pluginList', mode: 'installed' });
   }
 
@@ -2734,6 +2996,12 @@ export class TuiController {
     return cloneFrozen(this.#viewModel?.issues ?? []);
   }
 
+  listPluginWriteTaskCandidates(goal: PluginWriteTaskGoal): PluginWriteTaskCandidate[] {
+    return cloneFrozen(this.#viewModel
+      ? buildPluginWriteTaskCandidates(this.#viewModel, goal)
+      : []);
+  }
+
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     this.#assertAcceptingActions();
     intent = normalizeOperationIntent(intent);
@@ -2825,6 +3093,20 @@ export class TuiController {
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
+    if (intent.kind === 'pluginWriteTask') {
+      if (intent.targets.length === 0
+        || JSON.stringify(intent.targets) !== JSON.stringify(canonicalPluginWriteTaskTargets(intent.targets))) {
+        throw new TuiOperationBlockedError('taskSelectionInvalid', '任务目标必须是非空精确目标集合。');
+      }
+      for (const target of intent.targets) {
+        sourceIdFromPluginId(target.pluginId);
+        if ((target.platform !== 'codex' && target.platform !== 'claude')
+          || (target.scope !== 'user' && target.scope !== 'project')
+          || (intent.goal === 'update') !== Boolean(target.expectedUpdate)) {
+          throw new TuiOperationBlockedError('taskSelectionInvalid', '任务目标或版本证据无效。');
+        }
+      }
+    }
     if (intent.kind === 'pluginWriteBatch') {
       if (intent.selection.kind === 'currentProjectIntentRoots'
         && (intent.action !== 'sync' || intent.scope !== 'project')) {
@@ -2853,6 +3135,7 @@ export class TuiController {
 
   #reviewPreparationLabel(intent: OperationIntent): string {
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
+    if (intent.kind === 'pluginWriteTask') return `${intent.targets.length} 个安装位置`;
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
         ? `${intent.selection.pluginIds.length} 个插件`
@@ -2906,9 +3189,10 @@ export class TuiController {
         stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
       this.#publish();
       const returnRoute = structuredClone(preparation.returnRoute);
+      this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
       this.#reviewPreparationIntents.delete(preparation.snapshot.id);
       this.#reviewPreparation = undefined;
-      this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
+      this.#publish();
     } catch (error) {
       if (!this.#reviewPreparationIsCurrent(token)) return;
       const code = issueCode(error);
@@ -3034,6 +3318,7 @@ export class TuiController {
   ): OperationReviewModel {
     this.#ensureOperationFlow(intent);
     if (intent.kind === 'pluginWriteBatch') assertPluginWriteBatchEvidence(evidence);
+    if (intent.kind === 'pluginWriteTask') assertPluginWriteTaskEvidence(intent, evidence);
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
     const projection = buildOperationReviewProjection({
       intent,
@@ -3052,6 +3337,8 @@ export class TuiController {
       : 'sourceId' in intent ? intent.sourceId
         : intent.kind === 'pluginWriteBatch'
           ? `${(evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : intent.kind === 'pluginWriteTask'
+            ? `${(evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets.length} 个安装位置`
           : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent
@@ -3068,6 +3355,7 @@ export class TuiController {
           ? { sourceAction: intent.sourceMutation.action } : {}),
       ...(intent.kind === 'pluginWrite' ? { pluginAction: intent.action } : {}),
       ...(intent.kind === 'pluginWriteBatch' ? { pluginAction: intent.action } : {}),
+      ...(intent.kind === 'pluginWriteTask' ? { taskGoal: intent.goal } : {}),
       ...(intent.kind === 'pluginWrite' && intent.originIssue
         ? { originIssue: intent.originIssue }
         : {}),
@@ -3086,6 +3374,15 @@ export class TuiController {
           groupCount: (evidence as PluginWriteBatchEvidence).groups.length,
           executableGroupCount: (evidence as PluginWriteBatchEvidence).groups
             .filter((group) => group.executable).length,
+        },
+      } : {}),
+      ...(intent.kind === 'pluginWriteTask' ? {
+        task: {
+          goal: intent.goal,
+          requestedTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets.length,
+          executableTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length,
+          blockedTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.blockedTargets.length,
+          causeCount: (evidence as PluginWriteTaskEvidence).taskPlan.causes.length,
         },
       } : {}),
       ...(evidence.source && 'catalogVersion' in evidence.source
@@ -3156,6 +3453,9 @@ export class TuiController {
     const dependencyTargets = ticket.intent.kind === 'pluginWriteBatch'
       ? (ticket.evidence as PluginWriteBatchEvidence).groups.flatMap((group) =>
           group.preview.dependencyPlan?.targets ?? [])
+      : ticket.intent.kind === 'pluginWriteTask'
+        ? (ticket.evidence as PluginWriteTaskEvidence).taskPlan.sources.flatMap((source) =>
+            source.preview.dependencyPlan?.targets ?? [])
       : ticket.evidence.dependencyPlan?.targets ?? [];
     this.#progressTargets = dependencyTargets.map((target) => ({
       pluginId: target.pluginId,
@@ -3174,6 +3474,8 @@ export class TuiController {
       current: {
         target: ticket.intent.kind === 'pluginWriteBatch'
           ? `${(ticket.evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : ticket.intent.kind === 'pluginWriteTask'
+            ? `${(ticket.evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length} 个安装位置`
           : 'pluginId' in ticket.intent ? ticket.intent.pluginId
           : 'sourceId' in ticket.intent ? ticket.intent.sourceId : 'Catalog 来源配置',
         phase: '验证当前状态',
@@ -3182,7 +3484,8 @@ export class TuiController {
     this.#router.replace({ name: 'progress', operationId });
     this.#publish();
     try {
-      if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch') {
+      if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch'
+        && ticket.intent.kind !== 'pluginWriteTask') {
         await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
       }
     } catch (error) {
@@ -3207,6 +3510,7 @@ export class TuiController {
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch'
+      && ticket.intent.kind !== 'pluginWriteTask'
       && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
@@ -3355,6 +3659,7 @@ export class TuiController {
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         || ticket.intent.kind === 'pluginWriteBatch'
+        || ticket.intent.kind === 'pluginWriteTask'
         ? operationResultSummary(ticket.intent, execution)
         : undefined;
       const hasFailedDependencyTarget = pluginSummary?.targets?.some((target) =>
@@ -3399,9 +3704,10 @@ export class TuiController {
           intent: ticket.intent,
           navigation: 'result',
           returnRoute: ticket.returnRoute,
-          ...(ticket.intent.kind === 'pluginWriteBatch' || dependencyFailure || dependencyStillRequired
+          ...(ticket.intent.kind === 'pluginWriteBatch' || ticket.intent.kind === 'pluginWriteTask'
+            || dependencyFailure || dependencyStillRequired
             ? { summary: pluginSummary } : {}),
-          ...(ticket.intent.kind !== 'pluginWriteBatch'
+          ...(ticket.intent.kind !== 'pluginWriteBatch' && ticket.intent.kind !== 'pluginWriteTask'
             && !dependencyFailure && !dependencyStillRequired && ['started', 'partial', 'completed', 'failed', 'unknown'].includes(
             this.#operationDiagnostics.get(operationId)?.effects.awWrite ?? 'unknown',
           ) ? { writeMayHaveCompleted: true } : {}),
@@ -3482,7 +3788,9 @@ export class TuiController {
             : ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update'
               ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
               : ticket.intent.kind === 'catalogGeneration'
-                ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
+                ? ticket.returnRoute.name === 'pluginWriteTask'
+                  ? ticket.returnRoute
+                  : { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
               : ticket.returnRoute,
         )),
       };
@@ -3864,6 +4172,140 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         ...(receipt.failures[0]?.recovery ? { recovery: receipt.failures[0].recovery } : {}),
         ...(receipt.failures[0]?.code ? { failureCode: receipt.failures[0].code } : {}),
       },
+    };
+  }
+  if (intent.kind === 'pluginWriteTask') {
+    const taskExecution = execution as PluginWriteTaskExecutionResult;
+    const failedTargets = pluginWriteTaskFailedRequestedTargets(taskExecution);
+    const failedKeys = new Set(failedTargets.map(pluginWriteTaskTargetKey));
+    const technicalTargets = taskExecution.targetResults.map((entry) => {
+      const placement = taskExecution.dependencyPlan?.targets.find((target) =>
+        target.pluginId === entry.target.pluginId && target.platform === entry.target.platform
+        && (target.requestedScope ?? target.resolvedScope) === entry.target.scope);
+      return {
+        pluginId: entry.target.pluginId,
+        platform: entry.target.platform,
+        scope: entry.target.scope,
+        state: entry.action === 'skipped' ? 'skipped' as const
+          : entry.state === 'failed' ? 'failed' as const
+            : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+        relation: entry.relation === 'requested' ? 'requested' as const
+          : placement?.depth === 1 ? 'direct' as const : 'transitive' as const,
+        requiredBy: entry.requiredBy,
+        ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
+      };
+    });
+    const blocked = new Map(taskExecution.taskPlan.blockedTargets.map((entry) => [
+      pluginWriteTaskTargetKey(entry.target), entry,
+    ]));
+    const relatedResults = (target: PluginWriteTaskTarget) => {
+      const key = pluginWriteTaskTargetKey(target);
+      const source = taskExecution.sourceResults.find((candidate) =>
+        candidate.requestedTargets.some((requested) => pluginWriteTaskTargetKey(requested) === key));
+      const related = source?.result.targetResults.filter((entry) => {
+        const pluginId = entry.target.pluginId;
+        if (!pluginId) return false;
+        const executionKey = pluginWriteTaskTargetKey({
+          pluginId,
+          platform: entry.target.platform,
+          scope: entry.target.scope,
+        });
+        if (executionKey === key) return true;
+        if (taskExecution.taskPlan.causes.some((cause) =>
+          pluginWriteTaskTargetKey(cause.repairTarget) === executionKey
+          && cause.consumers.some((consumer) => pluginWriteTaskTargetKey(consumer) === key))) return true;
+        const placement = source.result.dependencyPlan?.targets.find((candidate) =>
+          candidate.pluginId === pluginId && candidate.platform === entry.target.platform
+          && (candidate.requestedScope ?? candidate.resolvedScope) === entry.target.scope);
+        return placement?.requiredByTargets?.some((consumer) =>
+          pluginWriteTaskTargetKey(consumer) === key) ?? false;
+      }) ?? [];
+      const targetResults: PluginWriteTaskRootResult['targets'] = related.map((entry) => {
+        const placement = source?.result.dependencyPlan?.targets.find((candidate) =>
+          candidate.pluginId === entry.target.pluginId
+          && candidate.platform === entry.target.platform
+          && (candidate.requestedScope ?? candidate.resolvedScope) === entry.target.scope);
+        return {
+          pluginId: entry.target.pluginId,
+          platform: entry.target.platform,
+          scope: entry.target.scope,
+          state: entry.action === 'skipped' ? 'skipped' as const
+            : entry.state === 'failed' ? 'failed' as const
+              : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+          relation: entry.relation === 'requested' ? 'requested' as const
+            : placement?.depth === 1 ? 'direct' as const : 'transitive' as const,
+          ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
+        };
+      });
+      if (blocked.has(key) && !targetResults.some((entry) =>
+        entry.pluginId === target.pluginId && entry.platform === target.platform
+        && entry.scope === target.scope)) {
+        targetResults.unshift({
+          pluginId: target.pluginId,
+          platform: target.platform,
+          scope: target.scope,
+          state: 'skipped',
+          relation: 'requested',
+        });
+      }
+      const hasFailed = targetResults.some((entry) => entry.state === 'failed' || entry.state === 'skipped');
+      const hasCompleted = targetResults.some((entry) => entry.state === 'completed' || entry.state === 'kept');
+      const state: PluginWriteTaskRootResult['state'] = blocked.has(key) ? 'blocked'
+        : !source ? 'notStarted'
+          : hasFailed && hasCompleted ? 'partial'
+            : hasFailed || failedKeys.has(key) ? 'failed'
+              : targetResults.length > 0 && targetResults.every((entry) => entry.state === 'kept')
+                ? 'kept' : targetResults.length > 0 ? 'completed' : 'notStarted';
+      return { state, targets: targetResults };
+    };
+    const roots: PluginWriteTaskRootResult[] = [...new Set(taskExecution.taskPlan.requestedTargets
+      .map((target) => target.pluginId))].map((pluginId) => {
+      const requestedTargets = taskExecution.taskPlan.requestedTargets.filter((target) =>
+        target.pluginId === pluginId);
+      const positions = requestedTargets.map((target) => relatedResults(target));
+      const successfulPositions = positions.filter((position) =>
+        position.state === 'completed' || position.state === 'kept');
+      const state: PluginWriteTaskRootResult['state'] = successfulPositions.length > 0
+        ? successfulPositions.length === positions.length
+          ? positions.every((position) => position.state === 'kept') ? 'kept' : 'completed'
+          : 'partial'
+        : positions.some((position) => position.state === 'failed' || position.state === 'partial')
+          ? 'failed'
+          : positions.some((position) => position.state === 'notStarted') ? 'notStarted' : 'blocked';
+      const targets = [...new Map(positions.flatMap((position) => position.targets).map((target) => [[
+        target.pluginId ?? '', target.platform, target.scope,
+      ].join('\0'), target] as const)).values()];
+      const causeKeys = [...new Set(taskExecution.taskPlan.causes.filter((cause) =>
+        cause.consumers.some((consumer) => consumer.pluginId === pluginId))
+        .map((cause) => cause.causeKey))];
+      return { pluginId, state, causeKeys, targets };
+    });
+    const retryTargets = canonicalPluginWriteTaskTargets(roots.flatMap((root) =>
+      root.state === 'failed' || root.state === 'partial' || root.state === 'notStarted'
+        ? failedTargets.filter((target) => target.pluginId === root.pluginId) : []));
+    const completedCount = roots.filter((root) => root.state === 'completed'
+      || root.state === 'kept' || root.state === 'partial').length;
+    const failedCount = roots.filter((root) => root.state === 'failed' || root.state === 'partial'
+      || root.state === 'notStarted' || root.state === 'blocked').length;
+    const code = failedCount === 0 ? 'operationSucceeded' as const
+      : completedCount > 0 ? 'operationPartial' as const : 'operationFailed' as const;
+    return {
+      code,
+      message: code === 'operationSucceeded' ? '任务已完成。'
+        : code === 'operationPartial' ? '任务只完成了一部分。' : '任务没有完成。',
+      warnings: taskExecution.warnings,
+      recoveryActions: [...new Set(taskExecution.targetResults.flatMap((entry) =>
+        entry.recoveryActions ?? []))],
+      ...(taskExecution.operationPlan?.planFingerprint
+        ? { planFingerprint: taskExecution.operationPlan.planFingerprint } : {}),
+      task: {
+        goal: intent.goal,
+        requestedTargets: taskExecution.taskPlan.requestedTargets,
+        rootResults: roots,
+        ...(retryTargets.length > 0 ? { retryTargets } : {}),
+        blockedTargets: taskExecution.taskPlan.blockedTargets,
+      },
+      targets: technicalTargets,
     };
   }
   if (intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch') {

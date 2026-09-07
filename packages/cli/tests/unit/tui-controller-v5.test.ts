@@ -5801,4 +5801,27 @@ describe('TUI v4 Review safety', () => {
       context: { focusIndex: 2 },
     });
   });
+
+  it('keeps preparation failure state when storing the prepared review throws', async () => {
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(baseEvidence),
+    }));
+    await controller.load();
+    controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
+
+    controller.startReviewPreparation({
+      kind: 'pluginWriteTask', goal: 'restore', executionPolicy: 'all',
+      targets: [{ pluginId: 'official/demo', platform: 'codex', scope: 'user' }],
+    });
+    await nextTurn();
+
+    expect(controller.snapshot.router.current.route.name).toBe('reviewPreparing');
+    expect(controller.snapshot.reviewPreparation).toMatchObject({
+      state: 'failed',
+      operationKind: 'pluginWriteTask',
+      code: 'reviewPreparationFailed',
+      message: '无法准备确认信息。请返回检查选择，或重试。',
+    });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+  });
 });

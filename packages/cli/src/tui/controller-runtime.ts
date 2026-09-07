@@ -25,6 +25,7 @@ import {
   mergeWriteCommandResults,
   reinstallWriteCommand,
   syncWriteCommand,
+  taskWriteCommand,
   uninstallWriteCommand,
 } from '../commands/write-commands.js';
 import { resolveSyncIntentSelection } from '../commands/sync-command.js';
@@ -90,6 +91,11 @@ import {
   type PluginWriteBatchEvidence,
   type PluginWriteBatchExecutionResult,
   type PluginWriteBatchGroupEvidence,
+  type PluginWriteTaskCandidate,
+  type PluginWriteTaskEvidence,
+  type PluginWriteTaskExecutionResult,
+  type PluginWriteTaskSourceEvidence,
+  type PluginWriteTaskSourceResult,
   type ReviewPreparationStageId,
   type TuiControllerDependencies,
 } from './controller.js';
@@ -97,11 +103,19 @@ import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js
 import {
   buildConfigGroups,
   buildConfigPage,
+  buildTuiViewModel,
   projectPlatformPlacement,
   type DependencyPlacementReferenceViewModel,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
 } from './model.js';
+import {
+  buildPluginWriteTaskCandidates,
+  buildPluginWriteTaskDraft,
+  evaluatePluginWriteTaskRestoreVersion,
+  pluginWriteTaskTargetKey,
+  type PluginWriteTaskTarget,
+} from './plugin-write-task.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   calculateCatalogSourceConfigFingerprint,
@@ -401,6 +415,9 @@ function pluginIntent(intent: OperationIntent): intent is Extract<OperationInten
 }
 
 function reviewedScriptTimeoutMs(intent: OperationIntent): number | undefined {
+  if (intent.kind === 'pluginWriteTask') {
+    return parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS);
+  }
   if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
@@ -850,6 +867,10 @@ export function createTuiControllerDependencies(
     };
   };
   const catalogOperationByEvidence = new WeakMap<OperationEvidence, CatalogOperationContext>();
+  const taskCatalogOperationsByEvidence = new WeakMap<
+    OperationEvidence,
+    Map<string, CatalogOperationContext>
+  >();
   const codexManagerByEvidence = new WeakMap<OperationEvidence, CodexManager>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
   let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV7>> | undefined;
@@ -1449,10 +1470,419 @@ export function createTuiControllerDependencies(
       }
       return evidence;
     }
-    if (!pluginIntent(intent) && intent.kind !== 'pluginWriteBatch') {
+    if (!pluginIntent(intent) && intent.kind !== 'pluginWriteBatch'
+      && intent.kind !== 'pluginWriteTask') {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
     }
     signal?.throwIfAborted();
+    if (intent.kind === 'pluginWriteTask') {
+      await preparation?.reporter.emit('status');
+      const packageInfo = await readCliPackageInfo();
+      const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
+      const requestedBySource = new Map<string, PluginWriteTaskTarget[]>();
+      for (const target of intent.targets) {
+        const parsed = parsePluginId(target.pluginId);
+        if (!parsed.sourceId || formatPluginId({
+          sourceId: parsed.sourceId,
+          pluginName: parsed.pluginName,
+        }) !== target.pluginId) {
+          throw new TuiOperationBlockedError('invalidPluginId', '任务目标必须使用 canonical pluginId。');
+        }
+        requestedBySource.set(parsed.sourceId, [
+          ...(requestedBySource.get(parsed.sourceId) ?? []),
+          target,
+        ]);
+      }
+      const sources: PluginWriteTaskSourceEvidence[] = [];
+      const executableTargets: PluginWriteTaskTarget[] = [];
+      const causes: PluginWriteTaskEvidence['taskPlan']['causes'] = [];
+      const blockedTargets: PluginWriteTaskEvidence['taskPlan']['blockedTargets'] = [];
+      const observedTargets: StatusV7Target[] = [];
+      const observedRevisions: StatusTargetRevision[] = [];
+      const operationContexts = new Map<string, CatalogOperationContext>();
+      await preparation?.reporter.emit('catalog');
+      for (const [sourceId, requestedTargets] of [...requestedBySource.entries()]
+        .sort(([left], [right]) => left.localeCompare(right, 'en'))) {
+        signal?.throwIfAborted();
+        let catalogOperation: CatalogOperationContext | undefined;
+        try {
+          catalogOperation = !freshCatalog && sessionCatalogOperationContext
+            ? selectCatalogOperationContext(sessionCatalogOperationContext, [sourceId])
+            : await resolveCatalogOperationContext({
+                sourceIds: [sourceId],
+                env: context.env,
+                ...(!freshCatalog ? { validatedStoreEntries, validatingStoreEntries } : {}),
+                ...(signal ? { signal } : {}),
+              });
+        } catch {
+          blockedTargets.push(...requestedTargets.map((target) => ({
+            target,
+            reason: 'targetUnavailable' as const,
+            issueIds: [],
+          })));
+          continue;
+        }
+        operationContexts.set(sourceId, catalogOperation);
+        const status = await statusCommandV7({
+          plugins: [...new Set(requestedTargets.map((target) => target.pluginId))],
+          cwd: context.cwd,
+          env: context.env,
+          cliVersion: packageInfo.version,
+          catalogOperationContext: catalogOperation,
+          inventoryCatalogSourceReferences: operationInventory,
+        });
+        observedTargets.push(...status.payload.targets);
+        observedRevisions.push(...status.targetRevisions);
+        const model = buildTuiViewModel({
+          status: status.payload,
+          pluginSummaries: status.pluginSummaries,
+          targetRevisions: status.targetRevisions,
+        });
+        const runtimeCandidates: PluginWriteTaskCandidate[] = intent.goal === 'restore'
+          ? buildPluginWriteTaskCandidates(model, 'restore')
+          : requestedTargets.map((target): PluginWriteTaskCandidate => {
+              const expected = target.expectedUpdate;
+              const revision = status.targetRevisions.find((entry) =>
+                entry.pluginId === target.pluginId && entry.platform === target.platform
+                && entry.scope === target.scope);
+              const live = status.payload.targets.find((entry) => {
+                if (entry.pluginId !== target.pluginId || entry.platform !== target.platform) return false;
+                const desired = statusTargetIntent(entry);
+                return entry.scope === target.scope || desired.scopes.includes(target.scope);
+              });
+              const generation = catalogOperation.generationSet.sources.find((entry) =>
+                entry.sourceId === sourceId);
+              const eligible = Boolean(expected && live && revision
+                && live.sourceIdentity === expected.sourceIdentity
+                && generation?.storeKey === expected.generationKey
+                && revision.revision.installedVersion === expected.installedVersion
+                && revision.revision.availableVersion === expected.activeVersion
+                && revision.revision.state === 'upgradeAvailable');
+              return {
+                target,
+                displayName: model.plugins.find((plugin) => plugin.pluginId === target.pluginId)
+                  ?.displayName ?? parsePluginId(target.pluginId).pluginName,
+                sourceId,
+                eligible,
+                ...(!eligible ? { blockReason: 'updateEvidenceIncomplete' as const } : {}),
+                recommendedMethod: live?.state === 'ready' ? 'sync' : 'reinstall',
+                issueIds: [],
+              };
+            });
+        const draft = buildPluginWriteTaskDraft({ ...intent, targets: requestedTargets }, model,
+          runtimeCandidates);
+        blockedTargets.push(...draft.blockedTargets);
+        if (draft.executableTargets.length === 0) continue;
+        const methodsByTarget = new Map<string, Set<'sync' | 'reinstall'>>();
+        for (const cause of draft.causes) {
+          const key = pluginWriteTaskTargetKey(cause.repairTarget);
+          const methods = methodsByTarget.get(key) ?? new Set();
+          methods.add(cause.method);
+          methodsByTarget.set(key, methods);
+        }
+        const conflicted = new Set([...methodsByTarget].filter(([, methods]) => methods.size > 1)
+          .map(([key]) => key));
+        if (conflicted.size > 0) {
+          const blockedKeys = new Set(draft.causes.filter((cause) =>
+            conflicted.has(pluginWriteTaskTargetKey(cause.repairTarget)))
+            .flatMap((cause) => cause.consumers.map(pluginWriteTaskTargetKey)));
+          blockedTargets.push(...draft.executableTargets.filter((target) =>
+            blockedKeys.has(pluginWriteTaskTargetKey(target))).map((target) => ({
+            target,
+            reason: 'taskActionConflict' as const,
+            issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
+              pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
+              .map((cause) => cause.issueId),
+          })));
+          draft.executableTargets = draft.executableTargets.filter((target) =>
+            !blockedKeys.has(pluginWriteTaskTargetKey(target)));
+          draft.causes = draft.causes.filter((cause) => cause.consumers.some((consumer) =>
+            !blockedKeys.has(pluginWriteTaskTargetKey(consumer))));
+        }
+        if (draft.executableTargets.length === 0) continue;
+        const taskTargets = () => draft.executableTargets.map((target) => {
+          const direct = draft.causes.filter((cause) =>
+            pluginWriteTaskTargetKey(cause.repairTarget) === pluginWriteTaskTargetKey(target));
+          return {
+            pluginId: target.pluginId,
+            platform: target.platform,
+            scope: target.scope,
+            method: direct.some((cause) => cause.method === 'reinstall')
+              ? 'reinstall' as const : 'sync' as const,
+          };
+        });
+        const repairTargets = () => [...new Map(draft.causes.map((cause) => [
+          pluginWriteTaskTargetKey(cause.repairTarget),
+          { ...cause.repairTarget, method: cause.method },
+        ])).values()];
+        let preview: RebuildCommandResult | undefined;
+        while (draft.executableTargets.length > 0) {
+          preview = await taskWriteCommand(taskTargets(), {
+            cwd: context.cwd,
+            repairTargets: repairTargets(),
+            ...(reviewedScriptTimeoutMs(intent) === undefined
+              ? {} : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
+          }, {
+            ...context,
+            catalogOperationContext: catalogOperation,
+            expectedGenerationSetDigest: catalogOperation.generationSetDigest,
+            expectedCatalogConfigDigest: configSnapshot.digest,
+            inventoryCatalogSourceReferences: operationInventory,
+            previewOperationPlan: true,
+            ...(codexObservationSession ? { codexObservationSession } : {}),
+            ...(preparation ? {
+              onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+                stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+            } : {}),
+          });
+          if (!preview.operationPlan) {
+            blockedTargets.push(...draft.executableTargets.map((target) => ({
+              target,
+              reason: 'targetUnavailable' as const,
+              issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
+                pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
+                .map((cause) => cause.issueId),
+            })));
+            draft.executableTargets = [];
+            draft.causes = [];
+            break;
+          }
+          if (intent.goal === 'restore') {
+            const grouped = new Map<string, {
+              cause: (typeof draft.causes)[number];
+              issueIds: Set<string>;
+              methods: Set<'sync' | 'reinstall'>;
+            }>();
+            const blockedByVersion = new Map<string, {
+              reason: 'restoreVersionChanged' | 'restoreVersionUnverified' | 'taskActionConflict';
+              issueIds: Set<string>;
+            }>();
+            for (const cause of draft.causes) {
+              const placements = (preview.dependencyPlan?.targets ?? []).filter((target) =>
+                target.pluginId === cause.repairTarget.pluginId
+                && target.platform === cause.repairTarget.platform);
+              const placement = placements.find((target) =>
+                target.requestedScope === cause.repairTarget.scope)
+                ?? (placements.length === 1 ? placements[0] : undefined);
+              if (!placement) {
+                throw new TuiOperationBlockedError(
+                  'taskRepairPlacementMissing',
+                  '任务修复目标无法绑定到依赖位置。',
+                );
+              }
+              const repairTarget = {
+                pluginId: cause.repairTarget.pluginId,
+                platform: cause.repairTarget.platform,
+                scope: placement.requestedScope ?? placement.resolvedScope,
+              };
+              const version = evaluatePluginWriteTaskRestoreVersion(
+                repairTarget,
+                cause.restoreVersionEvidence?.state === 'absent',
+                model,
+              );
+              if (!version.evidence || version.blockReason) {
+                for (const consumer of cause.consumers) {
+                  const key = pluginWriteTaskTargetKey(consumer);
+                  const current = blockedByVersion.get(key) ?? {
+                    reason: version.blockReason ?? 'restoreVersionUnverified',
+                    issueIds: new Set<string>(),
+                  };
+                  if (version.blockReason === 'restoreVersionChanged') {
+                    current.reason = version.blockReason;
+                  }
+                  current.issueIds.add(cause.issueId);
+                  blockedByVersion.set(key, current);
+                }
+                continue;
+              }
+              const causeKey = ['restore', cause.sourceIdentity,
+                pluginWriteTaskTargetKey(repairTarget)].join('\0');
+              const current = grouped.get(causeKey);
+              grouped.set(causeKey, {
+                cause: {
+                  ...cause,
+                  causeKey,
+                  issueId: [cause.issueId, ...(current?.issueIds ?? [])]
+                    .sort((left, right) => left.localeCompare(right, 'en'))[0]!,
+                  repairTarget,
+                  consumers: [...new Map([
+                    ...(current?.cause.consumers ?? []),
+                    ...cause.consumers,
+                  ].map((consumer) => [pluginWriteTaskTargetKey(consumer), consumer])).values()]
+                    .sort((left, right) => pluginWriteTaskTargetKey(left)
+                      .localeCompare(pluginWriteTaskTargetKey(right), 'en')),
+                  restoreVersionEvidence: version.evidence,
+                },
+                issueIds: new Set([...(current?.issueIds ?? []), cause.issueId]),
+                methods: new Set([...(current?.methods ?? []), cause.method]),
+              });
+            }
+            for (const group of grouped.values()) {
+              if (group.methods.size < 2) continue;
+              for (const consumer of group.cause.consumers) {
+                const key = pluginWriteTaskTargetKey(consumer);
+                const current = blockedByVersion.get(key) ?? {
+                  reason: 'taskActionConflict' as const,
+                  issueIds: new Set<string>(),
+                };
+                group.issueIds.forEach((issueId) => current.issueIds.add(issueId));
+                blockedByVersion.set(key, current);
+              }
+            }
+            const newlyBlockedKeys = new Set(blockedByVersion.keys());
+            blockedTargets.push(...draft.executableTargets.flatMap((target) => {
+              const blocked = blockedByVersion.get(pluginWriteTaskTargetKey(target));
+              return blocked ? [{
+                target,
+                reason: blocked.reason,
+                issueIds: [...blocked.issueIds].sort((left, right) => left.localeCompare(right, 'en')),
+              }] : [];
+            }));
+            const normalizedCauses = [...grouped.values()]
+              .filter((group) => group.methods.size === 1)
+              .map((group) => ({
+                ...group.cause,
+                consumers: group.cause.consumers.filter((consumer) =>
+                  !newlyBlockedKeys.has(pluginWriteTaskTargetKey(consumer))),
+              }))
+              .filter((cause) => cause.consumers.length > 0)
+              .sort((left, right) => left.causeKey.localeCompare(right.causeKey, 'en'));
+            const normalizedTargets = draft.executableTargets.filter((target) =>
+              !newlyBlockedKeys.has(pluginWriteTaskTargetKey(target)));
+            const changed = JSON.stringify(normalizedCauses) !== JSON.stringify(draft.causes)
+              || JSON.stringify(normalizedTargets) !== JSON.stringify(draft.executableTargets);
+            draft.causes = normalizedCauses;
+            draft.executableTargets = normalizedTargets;
+            if (changed) continue;
+          }
+          const blockedPlanTargets = (preview.dependencyPlan?.targets ?? []).filter((target) =>
+            target.action === 'block' || target.errorCode !== undefined);
+          if (blockedPlanTargets.length === 0) break;
+          const requestedKeys = new Set(draft.executableTargets.map(pluginWriteTaskTargetKey));
+          const errorCodesByRoot = new Map<string, Set<string>>();
+          for (const blockedPlanTarget of blockedPlanTargets) {
+            const pending = [blockedPlanTarget];
+            const visited = new Set<string>();
+            const mappedRoots = new Set<string>();
+            const repairKey = pluginWriteTaskTargetKey({
+              pluginId: blockedPlanTarget.pluginId,
+              platform: blockedPlanTarget.platform,
+              scope: blockedPlanTarget.requestedScope ?? blockedPlanTarget.resolvedScope,
+            });
+            for (const cause of draft.causes) {
+              if (pluginWriteTaskTargetKey(cause.repairTarget) !== repairKey) continue;
+              cause.consumers.forEach((consumer) => mappedRoots.add(pluginWriteTaskTargetKey(consumer)));
+            }
+            while (pending.length > 0) {
+              const current = pending.shift()!;
+              const currentKey = pluginWriteTaskTargetKey({
+                pluginId: current.pluginId,
+                platform: current.platform,
+                scope: current.requestedScope ?? current.resolvedScope,
+              });
+              if (visited.has(currentKey)) continue;
+              visited.add(currentKey);
+              if (current.relation === 'requested' && requestedKeys.has(currentKey)) {
+                mappedRoots.add(currentKey);
+              }
+              for (const consumer of current.requiredByTargets ?? []) {
+                const consumerKey = pluginWriteTaskTargetKey(consumer);
+                if (requestedKeys.has(consumerKey)) {
+                  mappedRoots.add(consumerKey);
+                  continue;
+                }
+                const placement = preview.dependencyPlan?.targets.find((target) =>
+                  target.pluginId === consumer.pluginId && target.platform === consumer.platform
+                  && (target.requestedScope ?? target.resolvedScope) === consumer.scope);
+                if (placement) pending.push(placement);
+              }
+            }
+            if (mappedRoots.size === 0) {
+              throw new TuiOperationBlockedError(
+                'taskPlanConsumerMissing',
+                '任务计划中的阻止项无法映射到请求目标。',
+              );
+            }
+            for (const key of mappedRoots) {
+              const codes = errorCodesByRoot.get(key) ?? new Set<string>();
+              codes.add(blockedPlanTarget.errorCode ?? 'writePlanBlocked');
+              errorCodesByRoot.set(key, codes);
+            }
+          }
+          blockedTargets.push(...draft.executableTargets.flatMap((target) => {
+            const codes = errorCodesByRoot.get(pluginWriteTaskTargetKey(target));
+            return codes ? [{
+              target,
+              reason: 'targetUnavailable' as const,
+              issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
+                pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
+                .map((cause) => cause.issueId),
+              errorCodes: [...codes].sort((left, right) => left.localeCompare(right, 'en')),
+            }] : [];
+          }));
+          draft.executableTargets = draft.executableTargets.filter((target) =>
+            !errorCodesByRoot.has(pluginWriteTaskTargetKey(target)));
+          draft.causes = draft.causes.map((cause) => ({
+            ...cause,
+            consumers: cause.consumers.filter((consumer) =>
+              !errorCodesByRoot.has(pluginWriteTaskTargetKey(consumer))),
+          })).filter((cause) => cause.consumers.length > 0);
+        }
+        if (!preview?.operationPlan || draft.executableTargets.length === 0) continue;
+        const sourceIdentity = draft.causes[0]?.sourceIdentity
+          ?? status.payload.catalog.sources.find((source) => source.id === sourceId)?.identity;
+        if (!sourceIdentity) {
+          throw new TuiOperationBlockedError('taskSourceIdentityMissing', '任务来源身份不可验证。');
+        }
+        const sourceEvidence: PluginWriteTaskSourceEvidence = {
+          sourceId,
+          sourceIdentity,
+          requestedTargets: draft.executableTargets,
+          causes: draft.causes,
+          preview,
+          executable: true,
+        };
+        sources.push(sourceEvidence);
+        executableTargets.push(...draft.executableTargets);
+        causes.push(...draft.causes);
+      }
+      const canonicalBlocked = [...new Map(blockedTargets.map((target) => [
+        pluginWriteTaskTargetKey(target.target), target,
+      ])).values()].sort((left, right) => pluginWriteTaskTargetKey(left.target)
+        .localeCompare(pluginWriteTaskTargetKey(right.target), 'en'));
+      if (executableTargets.length === 0) {
+        throw new TuiOperationBlockedError('taskNoExecutableTargets', '任务没有可安全执行的目标。');
+      }
+      if (intent.executionPolicy === 'all' && canonicalBlocked.length > 0) {
+        throw new TuiOperationBlockedError('taskHasBlockedTargets', '部分目标需要先处理。请调整选择。');
+      }
+      await preparation?.reporter.emit('evidence');
+      const evidence: PluginWriteTaskEvidence = {
+        catalog: {
+          configDigest: configSnapshot.digest,
+          compositeDigest: digest(sources.map((source) => [
+            source.sourceId,
+            source.sourceIdentity,
+            source.preview.operationPlan?.planFingerprint,
+          ])),
+        },
+        taskPlan: {
+          goal: intent.goal,
+          requestedTargets: intent.targets,
+          executableTargets: [...executableTargets].sort((left, right) =>
+            pluginWriteTaskTargetKey(left).localeCompare(pluginWriteTaskTargetKey(right), 'en')),
+          causes: [...new Map(causes.map((cause) => [cause.causeKey, cause])).values()]
+            .sort((left, right) => left.causeKey.localeCompare(right.causeKey, 'en')),
+          blockedTargets: canonicalBlocked,
+          sources,
+          targetFingerprint: statusTargetFingerprint(observedTargets, observedRevisions),
+          planFingerprint: '',
+        },
+      };
+      evidence.taskPlan.planFingerprint = operationEvidenceFingerprint(evidence);
+      taskCatalogOperationsByEvidence.set(evidence, operationContexts);
+      return evidence;
+    }
     if (intent.kind === 'pluginWriteBatch') {
       await preparation?.reporter.emit('status');
       const selection = await resolveBatchGroups(
@@ -2153,11 +2583,24 @@ export function createTuiControllerDependencies(
           validatedStoreEntries.clear();
           validatingStoreEntries.clear();
         }
-        const evidence = await captureEvidence(intent, signal, {
-          reporter,
-          validateIntent: true,
-        }, createOperationInventoryReader(), intent.kind === 'pluginWrite'
-          && intent.action === 'refreshAndSync', reusableCandidate);
+        const taskObservationSession = intent.kind === 'pluginWriteTask'
+          && intent.targets.some((target) => target.platform === 'codex')
+          ? await createCodexNativeObservationSession({
+              exactCwd: context.cwd,
+              env: context.env,
+              runner: context.nativeCliRunner,
+            })
+          : undefined;
+        let evidence: OperationEvidence;
+        try {
+          evidence = await captureEvidence(intent, signal, {
+            reporter,
+            validateIntent: true,
+          }, createOperationInventoryReader(), intent.kind === 'pluginWrite'
+            && intent.action === 'refreshAndSync', reusableCandidate, taskObservationSession);
+        } finally {
+          await taskObservationSession?.dispose();
+        }
         if (preparationWarnings.length > 0) evidence.preparationWarnings = preparationWarnings;
         return evidence;
       } finally {
@@ -2672,6 +3115,7 @@ export function createTuiControllerDependencies(
       }
       const codexObservationSession = intent.kind === 'pluginWrite'
         || intent.kind === 'pluginWriteBatch'
+        || intent.kind === 'pluginWriteTask'
         ? await createCodexNativeObservationSession({
             exactCwd: context.cwd,
             env: context.env,
@@ -2684,18 +3128,28 @@ export function createTuiControllerDependencies(
         action: async (awHomeMutationToken) => {
           await tuiControllerRuntimeTestHooks?.beforeMutationEvidenceCapture?.();
           const operationInventory = createOperationInventoryReader();
-          const currentEvidence = await captureEvidence(
-            intent,
-            undefined,
-            undefined,
-            operationInventory,
-            true,
-            undefined,
-            codexObservationSession,
-            intent.kind === 'pluginWriteBatch'
-              ? expectedEvidence as PluginWriteBatchEvidence
-              : undefined,
-          );
+          let currentEvidence: OperationEvidence;
+          try {
+            currentEvidence = await captureEvidence(
+              intent,
+              undefined,
+              undefined,
+              operationInventory,
+              true,
+              undefined,
+              codexObservationSession,
+              intent.kind === 'pluginWriteBatch'
+                ? expectedEvidence as PluginWriteBatchEvidence
+                : undefined,
+            );
+          } catch (error) {
+            const code = error instanceof TuiOperationBlockedError ? error.code : undefined;
+            if (intent.kind === 'pluginWriteTask'
+              && (code === 'taskHasBlockedTargets' || code === 'taskNoExecutableTargets')) {
+              throw operationReviewStale('确认后任务可执行目标发生变化。');
+            }
+            throw error;
+          }
           if (intent.kind === 'pluginWriteBatch') {
             const expectedBatch = expectedEvidence as PluginWriteBatchEvidence;
             const currentBatch = currentEvidence as PluginWriteBatchEvidence;
@@ -2853,6 +3307,150 @@ export function createTuiControllerDependencies(
               requestedPluginIds: expectedBatch.requestedPluginIds,
               groupResults,
             } satisfies PluginWriteBatchExecutionResult;
+          }
+          if (intent.kind === 'pluginWriteTask') {
+            const expectedTask = expectedEvidence as PluginWriteTaskEvidence;
+            const currentTask = currentEvidence as PluginWriteTaskEvidence;
+            if (!operationEvidenceMatches(expectedTask, currentTask)) {
+              throw operationReviewStale('确认后任务目标、根因、版本或写入计划发生变化。');
+            }
+            await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
+            const operationContexts = taskCatalogOperationsByEvidence.get(currentEvidence)
+              ?? new Map<string, CatalogOperationContext>();
+            const sourceResults: PluginWriteTaskSourceResult[] = [];
+            const completedTargetKeys = new Set<string>();
+            const preApplyExecutionCache = new Map<string, Promise<void>>();
+            const commandTargets = (source: PluginWriteTaskSourceEvidence) =>
+              source.requestedTargets.map((target) => {
+                const direct = source.causes.filter((cause) =>
+                  pluginWriteTaskTargetKey(cause.repairTarget) === pluginWriteTaskTargetKey(target));
+                return {
+                  pluginId: target.pluginId,
+                  platform: target.platform,
+                  scope: target.scope,
+                  method: direct.some((cause) => cause.method === 'reinstall')
+                    ? 'reinstall' as const : 'sync' as const,
+                };
+              });
+            const repairTargets = (source: PluginWriteTaskSourceEvidence) =>
+              [...new Map(source.causes.map((cause) => [
+                pluginWriteTaskTargetKey(cause.repairTarget),
+                { ...cause.repairTarget, method: cause.method },
+              ])).values()];
+            const stoppedResult = (
+              source: PluginWriteTaskSourceEvidence,
+              error: TuiOperationBlockedError,
+            ): RebuildCommandResult => mergeWriteCommandResults(source.requestedTargets.map((target) =>
+              failedWriteCommandResult('sync', [target.pluginId], {
+                cwd: context.cwd,
+                platform: target.platform,
+                scope: target.scope,
+              }, error)));
+            const appendStoppedSources = (startIndex: number, message: string): void => {
+              for (const [offset, source] of expectedTask.taskPlan.sources.slice(startIndex).entries()) {
+                sourceResults.push({
+                  sourceId: source.sourceId,
+                  sourceIdentity: source.sourceIdentity,
+                  requestedTargets: source.requestedTargets,
+                  result: stoppedResult(source, offset === 0
+                    ? new TuiOperationBlockedError('operationReviewStale', message)
+                    : new TuiOperationBlockedError(
+                        'taskNotStarted',
+                        '前一个来源计划已变化，因此这个来源没有开始。',
+                      )),
+                });
+              }
+            };
+            for (const [sourceIndex, reviewed] of expectedTask.taskPlan.sources.entries()) {
+              const current = currentTask.taskPlan.sources.find((source) =>
+                source.sourceId === reviewed.sourceId);
+              const catalogOperation = operationContexts.get(reviewed.sourceId);
+              if (!current || !catalogOperation || current.sourceIdentity !== reviewed.sourceIdentity) {
+                if (sourceResults.length === 0) {
+                  throw operationReviewStale('确认后任务来源身份发生变化。');
+                }
+                appendStoppedSources(sourceIndex, '确认后任务来源身份发生变化。');
+                break;
+              }
+              const sourceInventory = sourceResults.length === 0
+                ? operationInventory : createOperationInventoryReader();
+              let executionPreview = current.preview;
+              if (completedTargetKeys.size > 0) {
+                executionPreview = await taskWriteCommand(commandTargets(current), {
+                  cwd: context.cwd,
+                  repairTargets: repairTargets(current),
+                  ...(reviewedScriptTimeoutMs(intent) === undefined
+                    ? {} : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
+                }, {
+                  ...context,
+                  awHomeMutationToken,
+                  catalogOperationContext: catalogOperation,
+                  expectedGenerationSetDigest: catalogOperation.generationSetDigest,
+                  expectedCatalogConfigDigest: expectedTask.catalog.configDigest,
+                  inventoryCatalogSourceReferences: sourceInventory,
+                  previewOperationPlan: true,
+                  preApplyExecutionCache,
+                  ...(codexObservationSession ? { codexObservationSession } : {}),
+                });
+                if (!reviewed.preview.operationPlan || !executionPreview.operationPlan
+                  || createBatchIntentCompatiblePlanFingerprint(
+                    reviewed.preview.operationPlan,
+                    completedTargetKeys,
+                  ) !== createBatchIntentCompatiblePlanFingerprint(
+                    executionPreview.operationPlan,
+                    completedTargetKeys,
+                  )) {
+                  appendStoppedSources(sourceIndex, '前序结果改变了这个来源的实际写入计划。');
+                  break;
+                }
+              }
+              const requiresManagedCodex = reviewed.preview.codexManagerPreview?.state === 'requires-install';
+              const result = await taskWriteCommand(commandTargets(current), {
+                cwd: context.cwd,
+                repairTargets: repairTargets(current),
+                ...(reviewedScriptTimeoutMs(intent) === undefined
+                  ? {} : { scriptTimeoutMs: reviewedScriptTimeoutMs(intent) }),
+              }, {
+                ...context,
+                awHomeMutationToken,
+                catalogOperationContext: catalogOperation,
+                expectedGenerationSetDigest: catalogOperation.generationSetDigest,
+                expectedCatalogConfigDigest: expectedTask.catalog.configDigest,
+                inventoryCatalogSourceReferences: sourceInventory,
+                preApplyConfirmed: true,
+                preApplyExecutionCache,
+                ...(executionPreview.operationPlan
+                  ? { expectedPlanFingerprint: executionPreview.operationPlan.planFingerprint } : {}),
+                ...(requiresManagedCodex ? { managedCodexAuthorizer: async () => true } : {}),
+                ...(codexObservationSession ? { codexObservationSession } : {}),
+              });
+              if (writeReviewIsStale(result)) {
+                if (sourceResults.length === 0) throwIfWriteReviewStale(result);
+                appendStoppedSources(sourceIndex, '这个来源的实际写入计划发生变化。');
+                break;
+              }
+              for (const target of result.targetResults) {
+                if (target.state === 'completed') {
+                  completedTargetKeys.add([
+                    target.target.pluginId,
+                    target.target.platform,
+                    target.target.scope,
+                  ].join('\0'));
+                }
+              }
+              sourceResults.push({
+                sourceId: reviewed.sourceId,
+                sourceIdentity: reviewed.sourceIdentity,
+                requestedTargets: reviewed.requestedTargets,
+                result,
+              });
+            }
+            const merged = mergeWriteCommandResults(sourceResults.map((source) => source.result));
+            return {
+              ...merged,
+              taskPlan: expectedTask.taskPlan,
+              sourceResults,
+            } satisfies PluginWriteTaskExecutionResult;
           }
           if (intent.kind !== 'pluginWrite'
             && !operationEvidenceMatches(expectedEvidence, currentEvidence)) {

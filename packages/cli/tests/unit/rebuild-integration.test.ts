@@ -15,6 +15,7 @@ import { projectTargetRevision, statusCommandV7 } from '../../src/commands/statu
 import {
   executeRebuildOperation,
 } from '../../src/commands/rebuild-operations.js';
+import { taskWriteCommand } from '../../src/commands/write-commands.js';
 import { createCommandExecutionContext as createBaseCommandExecutionContext } from '../../src/commands/runtime.js';
 import type { CatalogResolution, PluginMeta } from '../../src/types.js';
 import {
@@ -57,6 +58,8 @@ import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 import {
@@ -4290,6 +4293,29 @@ describe('rebuild adapter integration', () => {
     const pluginC = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
       mode: 'bundle',
     });
+    await fs.outputJson(path.join(catalogRoot, '.aw-generated.json'), {
+      schemaVersion: 1,
+      kind: 'catalog',
+      workspaceIdentity: `fixture:${crypto.createHash('sha256').update(catalogRoot).digest('hex')}`,
+      sourceIdentity: TEST_SOURCE_IDENTITY,
+    });
+    const sourceConfig = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: catalogRoot }],
+      },
+      expectedDigest: sourceConfig.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', impactConfirmed: true, env: isolation.env,
+    });
+    const activeSource = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    for (const plugin of [pluginA, pluginB, pluginC]) {
+      plugin.sourceIdentity = activeSource.sourceIdentity;
+      plugin.catalogLogicalIdentity = activeSource.logicalIdentity;
+    }
     const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
     await fs.ensureDir(path.dirname(marketplaceRoot));
     const installed = new Map<string, string>();
@@ -4368,6 +4394,20 @@ describe('rebuild adapter integration', () => {
 
     const second = await install(pluginB);
     expect(second.status, JSON.stringify(second.failures)).toBe('succeeded');
+    await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
+    await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
+
+    const taskResult = await taskWriteCommand([{
+      pluginId: pluginB.pluginId!, platform: 'codex', scope: 'user', method: 'reinstall',
+    }], {
+      cwd: isolation.layout.fixtureCwd, allowManagedCodexInstall: true,
+    }, { env: isolation.env, nativeCliRunner: runner });
+    expect(taskResult.targetResults, JSON.stringify(taskResult.targetResults)).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: pluginB.pluginId, scope: 'user' }),
+        state: 'completed',
+      }),
+    ]);
     await expect(fs.readFile(receiptPath, 'utf8')).resolves.toBe(receiptContent);
     await expect(fs.readFile(retainedSkillPath, 'utf8')).resolves.toBe(retainedSkillContent);
 
