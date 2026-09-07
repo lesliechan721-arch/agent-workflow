@@ -35,8 +35,7 @@ const EXPECTED_PLUGIN_PLATFORMS = {
   'aw-skill-eval-runner': ['claude', 'codex'],
   'agent-skill-toolkit': ['claude', 'codex'],
   'ask-me': ['claude', 'codex'],
-  'aw-catalog-development': ['claude', 'codex'],
-  'aw-plugin-development': ['claude', 'codex'],
+  'aw-development-toolkit': ['claude', 'codex'],
   'codex-enhance': ['codex'],
   'dev-workflow': ['claude', 'codex'],
   'git-toolkit': ['claude', 'codex'],
@@ -105,6 +104,10 @@ describe('build smoke', () => {
       'SKILL.md',
       'agents/openai.yaml',
       'aw-plugin-requirements.json',
+      'assets/eval-audit-template.json',
+      'references/aw-eval-profile.md',
+      'references/execution-and-safety.md',
+      'scripts/validate-eval-cases.mjs',
     ]));
     expect(() => assertCompatibleRuntimeVersion({
       packageVersion: '0.1.0',
@@ -314,6 +317,26 @@ describe('build smoke', () => {
         fs.pathExists(path.join(outputRoot, 'plugins', pluginName, 'evals')),
       ).resolves.toBe(false);
     }
+    const { validateRuntimeSkillClosuresRoot } = await importSmokeSnapshotModule<{
+      validateRuntimeSkillClosuresRoot: (skillsRoot: string) => Promise<void>;
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'runtime-skill-closure.js'));
+    for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
+      for (const platform of platforms) {
+        const skillsRoot = path.join(
+          outputRoot,
+          'plugins',
+          pluginName,
+          platform,
+          'skills',
+        );
+        if (await fs.pathExists(skillsRoot)) {
+          await expect(
+            validateRuntimeSkillClosuresRoot(skillsRoot),
+            `${pluginName}/${platform}`,
+          ).resolves.toBeUndefined();
+        }
+      }
+    }
     for (const [pluginName, skillName] of [
       ['ask-me', 'decision-grill'],
       ['git-toolkit', 'git-commit'],
@@ -381,8 +404,7 @@ describe('build smoke', () => {
       'agent-content-toolkit',
       'agent-skill-toolkit',
       'ask-me',
-      'aw-catalog-development',
-      'aw-plugin-development',
+      'aw-development-toolkit',
       'aw-skill-eval-runner',
       'dev-workflow',
       'git-toolkit',
@@ -391,8 +413,7 @@ describe('build smoke', () => {
       'agent-content-toolkit',
       'agent-skill-toolkit',
       'ask-me',
-      'aw-catalog-development',
-      'aw-plugin-development',
+      'aw-development-toolkit',
       'aw-skill-eval-runner',
       'codex-enhance',
       'dev-workflow',

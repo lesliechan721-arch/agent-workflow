@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "publish-aw-catalog",
+    "participants": [
+      "develop-aw",
+      "review-aw"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "implicit_publish",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把这个 AW Catalog 发布到 remote staging 的 catalogs/team 分支。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "manual-only 不由普通文本自动激活；不测后续用户宏。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "用户用客户端真正的显式宏注入时才可加载。"
+      }
+    },
+    {
+      "id": "development",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "完成当前 Catalog 开发和本地验证，不要发布。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "开发不意味着 publication 授权。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "用户显式调用宏并请求生成 publication plan 时可进入；未指定目标由 CLI 解析默认值。"
+      }
+    },
+    {
+      "id": "review_release",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "审核发布准备情况，不执行远端操作。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "Review 不等于显式 macro。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "客户端注入 Publisher 且请求生成 plan 时才进入。"
+      }
+    },
+    {
+      "id": "mention_name",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "解释 publish-aw-catalog 的用途，不执行它。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "提及不是用户宏调用。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "实际原生宏注入另用集成测试。"
+      }
+    }
+  ]
+}

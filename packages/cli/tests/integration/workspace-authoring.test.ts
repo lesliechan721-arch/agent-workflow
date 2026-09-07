@@ -1,8 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,7 +8,6 @@ import { runCli } from '../../src/index.js';
 import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
 
 const roots: string[] = [];
-const execFileAsync = promisify(execFile);
 const placeholderPlanDigest = `sha256:${'0'.repeat(64)}`;
 
 async function createRoot(): Promise<string> {
@@ -38,36 +34,10 @@ function capture() {
 }
 
 describe('public Catalog Workspace authoring commands', () => {
-  it('creates context for an absent canonical root before public plugin init', async () => {
+  it('creates an absent canonical root through public plugin init', async () => {
     const root = await createRoot();
     await runCli(['catalog', 'init', '--workspace-root', root], { cwd: root, io: capture().io });
     const pluginRoot = path.join(root, 'plugins', 'context-create');
-    const componentsPath = path.join(root, 'components.json');
-    await fs.writeJson(componentsPath, [{
-      id: 'manifest',
-      type: 'manifest',
-      operation: 'create',
-      paths: ['.agents-plugin/plugin.json'],
-      profiles: ['CODEX', 'CLAUDE'],
-    }]);
-    const prepare = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      '../../../../plugins/aw-plugin-development/skills/author-aw-plugin/scripts/prepare-aw-authoring-context.mjs',
-    );
-    await expect(fs.pathExists(pluginRoot)).resolves.toBe(false);
-    const context = JSON.parse((await execFileAsync(process.execPath, [
-      prepare,
-      pluginRoot,
-      '--mode', 'create',
-      '--plugin', 'context-create',
-      '--workspace-root', root,
-      '--components', componentsPath,
-    ], { cwd: os.tmpdir(), encoding: 'utf8' })).stdout);
-    expect(context).toMatchObject({
-      plugin: 'context-create',
-      pluginRoot,
-      changeMode: 'create',
-    });
     await expect(fs.pathExists(pluginRoot)).resolves.toBe(false);
 
     expect(await runCli([

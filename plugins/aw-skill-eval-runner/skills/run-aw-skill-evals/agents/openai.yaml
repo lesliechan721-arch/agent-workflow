@@ -1,7 +1,7 @@
 interface:
   display_name: "Run AW Skill Evals"
-  short_description: "准备、独立审核并执行 AW Agent Skill Eval，验证结果并按需归因异常"
-  default_prompt: "使用 $run-aw-skill-evals 准备或验证 EvalSpec，复用或取得独立 EvalAudit，只从 validated Spec/cases 披露调用与副作用，按成本门禁执行并验证 EvalResult。普通成功路径不要运行 doctor；仅在安装或升级、用户明确请求诊断或模型已启动后的执行失败时进入高级诊断，并仅在异常或将修改 Skill 时 triage。"
+  short_description: "准备、审核、执行并验证 AW Skill Eval"
+  default_prompt: "使用 $run-aw-skill-evals 处理当前 AW Skill Eval 请求。"
 
 policy:
   allow_implicit_invocation: true

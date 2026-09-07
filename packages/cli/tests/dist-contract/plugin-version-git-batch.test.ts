@@ -62,7 +62,7 @@ describe('built Git cat-file batch validation', () => {
     const startedAt = Date.now();
     const validation = execFileAsync(process.execPath, [
       validatePluginScriptPath(),
-      path.join(repoRoot(), 'plugins', 'aw-plugin-development'),
+      path.join(repoRoot(), 'plugins', 'aw-development-toolkit'),
       '--workspace-root',
       repoRoot(),
       '--json',
@@ -114,7 +114,7 @@ describe('built Git cat-file batch validation', () => {
 
     await execFileAsync(process.execPath, [
       validatePluginScriptPath(),
-      path.join(repoRoot(), 'plugins', 'aw-plugin-development'),
+      path.join(repoRoot(), 'plugins', 'aw-development-toolkit'),
       '--workspace-root',
       repoRoot(),
       '--json',

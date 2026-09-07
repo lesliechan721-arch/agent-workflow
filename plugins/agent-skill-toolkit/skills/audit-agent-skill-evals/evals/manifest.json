@@ -6,8 +6,7 @@
       "scope": "project",
       "plugins": {
         "agent-content-toolkit": {},
-        "agent-skill-toolkit": {},
-        "aw-skill-eval-runner": {}
+        "agent-skill-toolkit": {}
       }
     }
   },
@@ -33,9 +32,12 @@
       "profiles": [
         "project-default"
       ],
-      "runs": 1,
-      "timeoutMs": 300000,
-      "requiredForRelease": false
+      "runs": 3,
+      "timeoutMs": 600000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

@@ -73,10 +73,10 @@ aw status
 
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
-| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写或评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
-| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审 Agent Skill，设计或审核 Skill Eval；人工依赖 `agent-content-toolkit` | Codex / Claude Code |
-| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在既有 Catalog Workspace 中创建、维护、安全删除或评审单个 AW Plugin Source；依赖前两个通用工具插件 | Codex / Claude Code |
-| [`aw-catalog-development`](plugins/aw-catalog-development/) | 维护、编排安全删除或只读评审 Catalog Workspace，并通过显式精确授权发布；依赖 `aw-plugin-development` | Codex / Claude Code |
+| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、整理或只读评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
+| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审或简化 Agent Skill；设计 Eval 用例、审核 Eval，或评审跨 Skill 架构；依赖 `agent-content-toolkit` | Codex / Claude Code |
+| [`aw-development-toolkit`](plugins/aw-development-toolkit/) | 创建或维护 AW Catalog 与 Plugin Source，并只读评审 AW Plugin、Catalog、workflow 或 portfolio；Catalog 发布只由手动入口执行 | Codex / Claude Code |
+| [`aw-skill-eval-runner`](plugins/aw-skill-eval-runner/) | 准备、独立审核并按授权执行 AW Skill Eval，验证结果并按需归因异常 | Codex / Claude Code |
 
 ## 使用示例
 
@@ -126,7 +126,7 @@ aw status
 为这项重复工作设计一个 Agent Skill，并准备可验证的触发用例。
 ```
 
-`agent-skill-toolkit` 组合 `agent-content-toolkit`，把 Agent-facing 内容、Skill 作者、Skill 评审、Eval 设计和 Eval 审核保持为独立能力。
+`agent-content` 处理 Agent-facing 正文。`agent-skill-toolkit` 在此基础上提供 Skill 作者、评审、简化、Eval 用例设计与独立审核，以及跨 Skill 架构评审。AW 格式的 Eval 准备、执行和结果验证由 `aw-skill-eval-runner` 负责。
 
 ## Skill 如何触发
 
@@ -263,13 +263,13 @@ Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native p
 
 ### 第三方 Catalog 与 Plugin 作者
 
-第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。安装 `aw-catalog-development` 会解析完整作者工具依赖：
+第三方作者只需要 Node.js 22+ 和已安装的 `aw` CLI，不需要 clone 本仓库、`pnpm` monorepo 或官方 release 脚本。安装 `aw-development-toolkit` 会解析完整作者工具依赖：
 
 ```bash
-aw install aw-catalog-development -p both
+aw install aw-development-toolkit -p both
 ```
 
-使用 `author-aw-catalog` 建立或维护 Workspace；单个 canonical Plugin Source 交给 `author-aw-plugin`。删除由 Catalog Author 确认 Workspace、插件名、inventory 和反向依赖后交给 Plugin Author 的公开 `aw plugin remove` 分支；receipt 返回后 Catalog Author 验证剩余 inventory，空 inventory 不验证已删除对象。删除不会自动 publish。Workspace、聚合验证、publish plan/apply 和失败恢复的唯一作者流程见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
+使用 `develop-aw` 建立或维护 Workspace 和其中的 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。`review-aw` 默认只读，不 build 或 test 被审对象。远端发布只由手动调用的 `publish-aw-catalog` 执行；它使用 CLI 的 Workspace、remote 和 branch 默认解析，并且只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply 和失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
 当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync。activate 影响现有引用或影响未知时使用 `--yes`；deactivate 检测到 installation、lifecycle、config 或 marketplace 引用，或 inventory 不完整时也使用 `--yes`，其 schema 4 receipt 返回脱敏的 inventory v2 `impact`。
 
@@ -281,7 +281,7 @@ Skill-local Eval 作者合同使用 Manifest v1。`aw skill eval prepare` 按 pl
 
 本官方仓库本身也是普通 Catalog Workspace，使用与第三方相同的 marker、metadata、inventory、Core validator、publish plan/apply、publisher 和 publication journal 合同。以下 `pnpm` 命令只面向本 monorepo 维护者，用于编排 CLI/Core/npm/Product Release；它们不是第二套 Catalog contract：
 
-新 Review archive 只在用户明确要求时使用：本次请求的顶层 Reviewer 产出 `report.md` 并用 `aw review publish` 归档；下层 Reviewer 只返回材料。它只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。Quality Review 不计算发布准备度；独立的机器 `release-check.json` 只能作为可选附件。
+Review 默认只交付人读 `report.md`。用户明确要求归档时，本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。归档只写不可变的 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`，不重新评审、不运行或封存 Eval、也不更新 README。完整参数以 `aw review publish --help` 为准；workflow publication 还必须传入其 `scope.json`。只有用户明确要求且环境提供兼容的 AW-owned Release Checker 时，才生成独立的机器 `release-check.json`；它只是可选附件。
 
 ```bash
 make install

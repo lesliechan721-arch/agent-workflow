@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "review-aw",
+    "participants": [
+      "agent-content",
+      "review-agent-skill",
+      "review-agent-architecture",
+      "audit-agent-skill-evals",
+      "develop-aw"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "plugin_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读评审这个 AW 插件的 manifest 与已有 materialized profiles，不重建。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW evidence adapter。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求修复则 develop-aw。"
+      }
+    },
+    {
+      "id": "catalog_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读检查 AW Catalog inventory、依赖和 snapshot currentness，别联网或 build。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "Catalog review 分支。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "普通 package.json 校验不使用。"
+      }
+    },
+    {
+      "id": "workflow_review",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "审核两个 AW 插件之间的运行时引用和 Skill 交接，不修改。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 发现加通用架构。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "与 AW 无关的 Skill portfolio 用通用 Reviewer。"
+      }
+    },
+    {
+      "id": "release_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "根据现有 AW Review 和 Eval 证据检查发布准备状态，不补跑或发布。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "显式机器 readiness 请求。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只写新插件由 develop。"
+      }
+    },
+    {
+      "id": "develop_request",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "创建并构建 AW 插件，不进行独立 Review。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "不强制 author 自带 review。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "已有插件只读评审时使用。"
+      }
+    },
+    {
+      "id": "single_portable",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只审查这份可移植 Agent Skill，明确不涉及 AW packaging 或 profiles。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "单 Skill 足够。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "明确包装与物化差异时使用。"
+      }
+    },
+    {
+      "id": "eval_execution",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只执行已有 Spec 并返回运行结果，不做 AW 质量评审。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "Runner 独立。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "需要据证据评价 AW 配置时可使用。"
+      }
+    },
+    {
+      "id": "ordinary_toml",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解析普通 TOML 看语法，不是 AW 配置。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "不属于 AW review。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "AW 目标结构和行为判断时使用。"
+      }
+    }
+  ]
+}

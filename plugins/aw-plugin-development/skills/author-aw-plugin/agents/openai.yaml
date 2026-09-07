@@ -1,7 +1,0 @@
-interface:
-  display_name: "Author AW Plugin"
-  short_description: "创建或维护 AW 插件并组合通用 Skill 作者与 Eval 设计能力"
-  default_prompt: "使用 $author-aw-plugin 处理当前请求。"
-
-policy:
-  allow_implicit_invocation: true

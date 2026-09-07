@@ -782,9 +782,9 @@ describe('authoring tools', () => {
     const evalCaseValidatorPath = path.join(
       repoRoot(),
       'plugins',
-      'agent-skill-toolkit',
+      'aw-skill-eval-runner',
       'skills',
-      'audit-agent-skill-evals',
+      'run-aw-skill-evals',
       'scripts',
       'validate-eval-cases.mjs',
     );
@@ -798,7 +798,6 @@ describe('authoring tools', () => {
         valid: true,
         summary: {
           errors: 0,
-          warnings: 0,
         },
       });
     }

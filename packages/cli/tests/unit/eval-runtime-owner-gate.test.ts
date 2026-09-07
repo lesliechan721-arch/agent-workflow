@@ -20,7 +20,7 @@ async function writeRunnerSkill(commands: string | string[]): Promise<string> {
     'description: Run one audited Agent Skill EvalSpec.',
     '---',
     '',
-    'Requires @lesliechan721/agent-skill-eval >= 0.1.0.',
+    'Requires @lesliechan721/agent-skill-eval >=0.1.0.',
     '',
     '```sh',
     ...commandLines,
@@ -67,6 +67,18 @@ describe('Eval runtime owner gate', () => {
   })
 
   it.each([
+    'aw-skill-eval spec validate <spec>',
+    'aw-skill-eval audit validate <audit> --spec <spec>',
+    'aw-skill-eval run <spec> --audit <audit>',
+    'aw-skill-eval result validate <result> --spec <spec> --audit <audit>',
+    'aw-skill-eval inspect-result <result> --spec <spec> --audit <audit>',
+  ])('accepts the documented Runner validation command: %s', async (command) => {
+    const root = await writeRunnerSkill(command)
+
+    await expect(assertRunnerSkillBundle(root)).resolves.toBeDefined()
+  })
+
+  it.each([
     ['npm wrapper', 'npx aw-skill-eval capabilities --json'],
     ['Node wrapper', 'node scripts/run-evals.mjs'],
     ['bundled script', './scripts/run-evals'],
@@ -78,10 +90,24 @@ describe('Eval runtime owner gate', () => {
     )
   })
 
-  it('rejects a bundled executable even when SKILL.md does not reference it', async () => {
+  it('allows only the documented Runner format helper', async () => {
     const root = await writeRunnerSkill('aw-skill-eval run <spec.json> --audit <audit.json>')
-    await fs.outputFile(path.join(root, 'scripts', 'run-evals'), '#!/bin/sh\n')
+    await fs.outputJson(path.join(root, 'assets', 'eval-audit-template.json'), { version: 1 })
+    await fs.outputFile(path.join(root, 'references', 'aw-eval-profile.md'), '# Profile\n')
+    await fs.outputFile(path.join(root, 'references', 'execution-and-safety.md'), '# Safety\n')
+    await fs.outputFile(path.join(root, 'scripts', 'validate-eval-cases.mjs'), 'export {}\n')
+    await fs.appendFile(
+      path.join(root, 'SKILL.md'),
+      '\nUse `scripts/validate-eval-cases.mjs` with the documented template.\n',
+    )
 
-    await expect(assertRunnerSkillBundle(root)).rejects.toThrow('unexpected directory: scripts')
+    await expect(assertRunnerSkillBundle(root)).resolves.toBeDefined()
+  })
+
+  it.each(['assets/other.json', 'scripts/run-evals'])('rejects an unapproved Runner file: %s', async (file) => {
+    const root = await writeRunnerSkill('aw-skill-eval run <spec.json> --audit <audit.json>')
+    await fs.outputFile(path.join(root, file), '#!/bin/sh\n')
+
+    await expect(assertRunnerSkillBundle(root)).rejects.toThrow(`unexpected file: ${file}`)
   })
 })

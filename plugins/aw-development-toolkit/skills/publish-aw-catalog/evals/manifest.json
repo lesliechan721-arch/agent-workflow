@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "defaults": {},
+  "profiles": {
+    "project-default": {
+      "scope": "project",
+      "plugins": {
+        "agent-content-toolkit": {},
+        "agent-skill-toolkit": {},
+        "aw-development-toolkit": {}
+      }
+    }
+  },
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "cases": "trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": true,
+      "releaseSplits": [
+        "validation"
+      ]
+    }
+  ]
+}

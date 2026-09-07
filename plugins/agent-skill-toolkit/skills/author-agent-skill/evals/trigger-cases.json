@@ -4,171 +4,151 @@
     "kind": "trigger",
     "unitUnderTest": "author-agent-skill",
     "participants": [
-      "write-agent-content",
-      "review-agent-content",
+      "agent-content",
       "review-agent-skill",
-      "design-agent-skill-evals",
-      "audit-agent-skill-evals",
-      "run-aw-skill-evals"
+      "simplify-agent-skill",
+      "audit-agent-skill-evals"
     ],
     "policy": {
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏触发或误触发会改变权限、上下文或交付 owner。"
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
     },
     "runtime": {
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
+      "strictNegativeSplits": [],
       "forbidMultipleSkillLoads": false
     }
   },
   "cases": [
     {
-      "id": "create",
+      "id": "create_package",
       "split": "train",
       "tags": [
         "representative"
       ],
       "input": {
-        "query": "从零创建 Agent Skill，包含 description、references 和脚本。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "change",
-      "split": "train",
-      "tags": [
-        "representative"
-      ],
-      "input": {
-        "query": "重构现有 Skill，拆掉作者和 reviewer 混合职责。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "workflow",
-      "split": "train",
-      "tags": [
-        "representative"
-      ],
-      "input": {
-        "query": "修改 SKILL.md 的触发和工作流，并补作者期 eval strategy。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "skill_with_eval",
-      "split": "validation",
-      "tags": [
-        "representative",
-        "release-critical"
-      ],
-      "input": {
-        "query": "创建 Skill 并设计必要的 trigger/behavior eval，由独立阶段审核 Oracle。",
+        "query": "创建一个从用户给定日志提取错误摘要的 Agent Skill，默认不写脚本。",
         "expectedLoad": true
       },
       "audit": {
-        "errorCost": "high"
+        "rationale": "创建完整包。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只评价已有 Skill 而不修改时交给 Reviewer。"
       }
     },
     {
-      "id": "package_script",
-      "split": "validation",
+      "id": "change_description",
+      "split": "train",
       "tags": [
-        "representative",
-        "release-critical"
+        "representative"
       ],
       "input": {
-        "query": "为 Skill 新增非交互 validator 和 asset。",
+        "query": "修改这个 Skill 的 description，让单文件定向读取不再被误路由为全仓探索。",
         "expectedLoad": true
       },
       "audit": {
-        "errorCost": "high"
+        "rationale": "Skill 调用行为变更属于作者。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "仅诊断触发问题、不改文件时是 Review。"
       }
     },
     {
-      "id": "review",
+      "id": "design_cases",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "为已有 Skill 补真实的正负触发用例，输出当前项目支持的 case 文件，但不要运行。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "Eval 设计已合并为作者分支。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只审核现有 Oracle 而不修改则是 Auditor。"
+      }
+    },
+    {
+      "id": "fix_skill_typo",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "将 skills/summary/SKILL.md 的一个错别字修正，其他内容不动。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "局部 Skill 修正属于轻量 author 路径。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只问错别字是否影响质量不要求修正时不需 author。"
+      }
+    },
+    {
+      "id": "readonly_review",
       "split": "train",
       "tags": [
         "boundary"
       ],
       "input": {
-        "query": "只读评审 Skill，给 finding 和发布结论。",
+        "query": "只读评审一个现有 Skill 的复杂度和结构，不修改文件。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由相邻能力拥有。",
-        "minimalCounterexample": "改变主要交付后标签翻转。"
+        "rationale": "只读裁决不能转为写入。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "明确要求按已确认建议修改时才进入 author。"
       }
     },
     {
-      "id": "eval_only",
+      "id": "audit_cases",
       "split": "train",
       "tags": [
         "boundary"
       ],
       "input": {
-        "query": "只创建十条 trigger eval，不改 Skill。",
+        "query": "独立检查已有 Eval 标签和 fixture 是否成立，不修改案例。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由相邻能力拥有。",
-        "minimalCounterexample": "改变主要交付后标签翻转。"
+        "rationale": "独立 Oracle 审核不归作者。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "明确要修订 case 文件且不给独立 pass 时才使用。"
       }
     },
     {
-      "id": "content_only",
+      "id": "execute_evals",
       "split": "validation",
       "tags": [
-        "boundary",
-        "release-critical"
+        "boundary"
       ],
       "input": {
-        "query": "只改独立 AGENTS.md，不是 Skill 包。",
+        "query": "执行已有 Spec，不要改 Skill 或用例；先说明成本。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由相邻能力拥有。",
-        "minimalCounterexample": "改变主要交付后标签翻转。",
-        "errorCost": "high"
+        "rationale": "模型运行属于 Runner。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "变为仅创建 case 时使用作者。"
       }
     },
     {
-      "id": "aw_project",
+      "id": "explain_package",
       "split": "validation",
       "tags": [
-        "boundary",
-        "release-critical"
+        "boundary"
       ],
       "input": {
-        "query": "在产品插件工作区新增 Skill，并同步 manifest、构建和物化。",
+        "query": "解释这个 Skill 的使用方式，不评价也不变更。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由相邻能力拥有。",
-        "minimalCounterexample": "改变主要交付后标签翻转。",
-        "errorCost": "high"
-      }
-    },
-    {
-      "id": "run_eval",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "release-critical"
-      ],
-      "input": {
-        "query": "运行已有 Eval plan，不修改 Skill。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "请求由相邻能力拥有。",
-        "minimalCounterexample": "改变主要交付后标签翻转。",
-        "errorCost": "high"
+        "rationale": "纯解释不是包作者工作。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求更改使用方式或正文时使用。"
       }
     }
   ]

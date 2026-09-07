@@ -1,6 +1,6 @@
 # AW Plugin Source 作者指南
 
-本指南面向在既有合法 [Catalog Workspace](catalog-authoring.md) 中维护单个 Plugin Source 的作者。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 manifest、bundle 和 validator 的机器真值；`aw-plugin-development` 只帮助 Agent 使用这些公开合同。
+本指南面向在既有合法 [Catalog Workspace](catalog-authoring.md) 中维护单个 Plugin Source 的作者。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 manifest、bundle 和 validator 的机器真值；`aw-development-toolkit` 只帮助 Agent 使用这些公开合同。
 
 ## Plugin Source 边界
 
@@ -79,7 +79,7 @@ aw plugin status "$plugin" --workspace-root "$workspace" --json
 
 只读 Review 使用 `aw review inspect <plugin-path> --json`。该入口读取 source、已有 Catalog snapshot 和显式 `--materialization <receipt>`，不执行被审插件代码。`plugin validate` 可能运行 renderer fixture，`plugin status` 可能准备 bundle，因此不能替代只读取证。缺少当前 final 时，inspection 返回源码事实和证据缺口；质量判断由 Reviewer 完成。
 
-`author-aw-plugin` 修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它只负责一个 Plugin Source，不维护 Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 或远端 publication。
+`develop-aw` 的 Plugin 分支修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它处理一个 Plugin Source 的内部内容；Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 由它的 Catalog 分支处理，远端 publication 仍由手动 `publish-aw-catalog` 负责。
 
 作者工具以 best-effort 方式检查 `extensions.hooks`、`extensions.nativeHooks` 和 MCP stdio server 的 executable。静态 `aw <group> <command> ...` 会进入 detected requirements；`node`、`sh`、`bash` 或 `pwsh` 后的插件相对脚本会作为生产入口扫描，其中 Node 包含相对 import closure，shell 只包含指定入口。该检查不是通用 shell parser。变量、动态 argv、引号、转义、缺少可映射 argv 或不安全脚本路径只产生非阻断 observation；此时必须在 `requires.aw.capabilities` 显式声明真实要求。静态未知 AW command 会阻止验证；`echo`、`python` 等静态 foreign executable 不产生 AW requirement。
 

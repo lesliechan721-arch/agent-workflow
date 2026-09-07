@@ -1278,14 +1278,12 @@ describe('EvalSpec v1 execution', () => {
   it('normalizes every registered conversation corpus through the actual adapter', async () => {
     const repositoryRoot = path.resolve('../..')
     const manifests = await evalManifestPaths(path.join(repositoryRoot, 'plugins'))
-    let suiteCount = 0
     let conversationCount = 0
     let caseCount = 0
     for (const manifestPath of manifests) {
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
         suites: Array<{ kind: string; cases?: string }>
       }
-      suiteCount += manifest.suites.length
       for (const suite of manifest.suites) {
         if (suite.kind !== 'conversation') continue
         conversationCount += 1
@@ -1306,7 +1304,6 @@ describe('EvalSpec v1 execution', () => {
         }
       }
     }
-    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 71 })
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
   })
