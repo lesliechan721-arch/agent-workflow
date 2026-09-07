@@ -354,6 +354,32 @@ describe('TUI Catalog management v7', () => {
     expect(publishInstance.lastFrame()).toContain('已输入远程目标');
   });
 
+  it('clears the consumed Workspace draft after successful creation', async () => {
+    const { value, service } = catalogController();
+    service.getWorkspace = vi.fn(async () => ({
+      ...workspace(), state: 'missing', catalog: {
+        version: null, channel: null, ownerName: null, ownerUrl: null, displayName: null,
+      }, plugins: [], identity: null,
+    }));
+    await value.load();
+    value.push({ name: 'catalogWorkspace', view: 'overview' });
+    const navigate = vi.fn().mockResolvedValue('completed');
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={navigate} />);
+    await nextTurn(5);
+
+    await input(instance, '\u001B[B', '\r', 'team-owner', '\r',
+      'https://example.test/team', '\r', 'Team Catalog', '\r', '\r');
+    await waitFor(() => value.snapshot.router.current.route.name === 'review');
+    await confirmReview(instance, value);
+    await waitFor(() => value.snapshot.result?.state === 'succeeded');
+
+    expect(value.hasSessionDraft).toBe(false);
+    await input(instance, '\r', 'h');
+    expect(navigate).toHaveBeenCalledWith('home', { discardDrafts: false });
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改');
+  });
+
   it('paginates a narrow Store, then reviews and reports only actual prune effects', async () => {
     const { value, executeIntent } = catalogController();
     await value.load();
@@ -511,6 +537,7 @@ describe('TUI Catalog management v7', () => {
       kind: 'catalogManagement', action: 'publishApply', expectedPlanDigest: planDigest,
       remoteUrl, branch: 'catalog/release',
     }), expect.anything());
+    expect(value.hasSessionDraft).toBe(false);
   });
 
   it('keeps source type selection separate from the automatic-check setting', async () => {

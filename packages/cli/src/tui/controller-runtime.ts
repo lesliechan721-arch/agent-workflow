@@ -458,9 +458,9 @@ function selectedBatchGroups(intent: Extract<OperationIntent, { kind: 'pluginWri
       }));
   const normalizedTargets = rawTargets.map((target) => {
     if ((target.platform !== 'codex' && target.platform !== 'claude' && target.platform !== 'both')
-      || target.scope !== intent.scope
+      || (target.scope !== 'project' && target.scope !== 'user')
       || (intent.selection.kind === 'targets' && target.platform === 'both')) {
-      throw new TuiOperationBlockedError('batchTargetInvalid', '批量精确目标必须使用共同 scope 和单个平台。');
+      throw new TuiOperationBlockedError('batchTargetInvalid', '批量精确目标必须使用有效 scope 和单个平台。');
     }
     const pluginId = target.pluginId;
     const parsed = parsePluginId(pluginId);
@@ -1673,7 +1673,8 @@ export function createTuiControllerDependencies(
               methods: Set<'sync' | 'reinstall'>;
             }>();
             const blockedByVersion = new Map<string, {
-              reason: 'restoreVersionChanged' | 'restoreVersionUnverified' | 'taskActionConflict';
+              reason: 'restoreVersionChanged' | 'restoreVersionUnverified'
+                | 'manualRecoveryRequired' | 'taskActionConflict';
               issueIds: Set<string>;
             }>();
             for (const cause of draft.causes) {

@@ -248,6 +248,57 @@ describe('TUI plugin write batches', () => {
     ]));
   });
 
+  it('uses each exact target scope in a mixed-scope batch Review', () => {
+    const preview = (pluginId: string, platform: 'codex' | 'claude', scope: 'project' | 'user') => ({
+      platforms: [platform], plugins: [pluginId], warnings: [], rebuildResults: [],
+      targetResults: [{
+        target: { pluginId, pluginName: pluginId.split('/')[1]!, platform, scope },
+        action: 'uninstall', state: 'completed', requiredBy: [],
+      }],
+      overallState: 'succeeded', receiptTargets: [],
+      operationPlan: { planFingerprint: `sha256:${platform}-${scope}` },
+    } as unknown as PluginWriteBatchEvidence['groups'][number]['preview']);
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/project-root', 'official/user-root'],
+      groups: [
+        {
+          groupId: 'official\0codex\0project', sourceId: 'official', platform: 'codex',
+          scope: 'project', requestedPluginIds: ['official/project-root'],
+          preview: preview('official/project-root', 'codex', 'project'), executable: true,
+        },
+        {
+          groupId: 'official\0claude\0user', sourceId: 'official', platform: 'claude',
+          scope: 'user', requestedPluginIds: ['official/user-root'],
+          preview: preview('official/user-root', 'claude', 'user'), executable: true,
+        },
+      ],
+    };
+    const review = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWriteBatch', action: 'uninstall',
+        selection: {
+          kind: 'targets',
+          targets: [
+            { pluginId: 'official/project-root', platform: 'codex', scope: 'project' },
+            { pluginId: 'official/user-root', platform: 'claude', scope: 'user' },
+          ],
+        },
+        platform: 'codex', scope: 'project',
+      },
+      evidence,
+    });
+
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'official/project-root', description: 'official · Codex · 当前项目',
+      }),
+      expect.objectContaining({
+        pluginId: 'official/user-root', description: 'official · Claude Code · 所有项目',
+      }),
+    ]));
+  });
+
   it('shows the preApply plugin identity in a normal write Review', () => {
     const review = buildOperationReviewProjection({
       intent: {
@@ -422,7 +473,13 @@ describe('TUI plugin write batches', () => {
     const result = await controller.executeOperation(review.reviewToken);
     expect(result).toMatchObject({
       state: 'partial',
-      summary: { batch: { failedRequestedPluginIds: ['team/root-b'] } },
+      summary: { batch: {
+        failedRequestedPluginIds: ['team/root-b'],
+        rootResults: [
+          expect.objectContaining({ pluginId: 'official/root-a', state: 'completed' }),
+          expect.objectContaining({ pluginId: 'team/root-b', state: 'failed' }),
+        ],
+      } },
     });
     const history = controller.listOperationHistory();
     expect(history).toHaveLength(1);
@@ -447,6 +504,72 @@ describe('TUI plugin write batches', () => {
       },
     });
     expect(controller.snapshot.activeReview?.operationId).not.toBe(review.operationId);
+  });
+
+  it('counts one canonical failed root with two exact failed targets', async () => {
+    const failedTarget = (platform: 'codex' | 'claude') => ({
+      target: {
+        pluginId: 'official/root', pluginName: 'root', platform, scope: 'project' as const,
+      },
+      action: 'sync', state: 'failed' as const, requiredBy: [], errorCode: 'preApplyFailed',
+    });
+    const groupResult = (platform: 'codex' | 'claude') => ({
+      platforms: [platform], plugins: [], warnings: [], rebuildResults: [],
+      targetResults: [failedTarget(platform)], overallState: 'failed', receiptTargets: [],
+    } as unknown as PluginWriteBatchExecutionResult['groupResults'][number]['result']);
+    const execution = {
+      ...groupResult('codex'),
+      targetResults: [failedTarget('codex'), failedTarget('claude')],
+      requestedPluginIds: ['official/root'],
+      groupResults: (['codex', 'claude'] as const).map((platform) => ({
+        groupId: `official\0${platform}\0project`, sourceId: 'official', platform,
+        scope: 'project' as const, requestedPluginIds: ['official/root'],
+        result: groupResult(platform),
+      })),
+    } as unknown as PluginWriteBatchExecutionResult;
+    const preview = groupResult('codex');
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/root'],
+      groups: (['codex', 'claude'] as const).map((platform) => ({
+        groupId: `official\0${platform}\0project`, sourceId: 'official', platform,
+        scope: 'project', requestedPluginIds: ['official/root'], preview, executable: false,
+      })),
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+      executeIntent: vi.fn().mockResolvedValue(execution),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWriteBatch', action: 'sync',
+      selection: {
+        kind: 'targets',
+        targets: [
+          { pluginId: 'official/root', platform: 'codex', scope: 'project' },
+          { pluginId: 'official/root', platform: 'claude', scope: 'project' },
+        ],
+      },
+      platform: 'codex', scope: 'project',
+    });
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      summary: { batch: {
+        failedRequestedPluginIds: ['official/root'],
+        retryTargets: [
+          { pluginId: 'official/root', platform: 'claude', scope: 'project' },
+          { pluginId: 'official/root', platform: 'codex', scope: 'project' },
+        ],
+        rootResults: [{
+          pluginId: 'official/root', state: 'failed',
+          targets: [
+            expect.objectContaining({ platform: 'claude', scope: 'project', state: 'failed' }),
+            expect.objectContaining({ platform: 'codex', scope: 'project', state: 'failed' }),
+          ],
+        }],
+      } },
+    });
   });
 });
 

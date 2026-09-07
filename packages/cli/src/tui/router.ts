@@ -49,6 +49,7 @@ export type TuiRoute =
       goal: 'restore' | 'update';
       targetKeys?: string[];
       versionEvidence?: Record<string, string>;
+      batchOrigin?: { flowId: string; owner: 'batch-write' };
     }
   | { name: 'batchSelection' }
   | { name: 'batchPlacement' }

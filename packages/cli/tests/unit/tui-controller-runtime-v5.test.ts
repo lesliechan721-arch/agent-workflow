@@ -371,6 +371,75 @@ describe('TUI batch write runtime', () => {
     );
   });
 
+  it.each([
+    ['uninstall', 'uninstallWriteCommand'],
+    ['reinstall', 'reinstallWriteCommand'],
+  ] as const)('executes mixed-scope exact targets for %s', async (action, mockName) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, `batch-mixed-${action}`);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const command = runtimeMocks[mockName];
+    command.mockImplementation(async (pluginIds, options) => {
+      const platform = options.platform as 'codex' | 'claude';
+      const scope = options.scope as 'project' | 'user';
+      const target = {
+        pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', platform, scope,
+      };
+      return {
+        platforms: [platform], plugins: pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [{ target, action, state: 'completed', requiredBy: [] }],
+        overallState: 'succeeded', receiptTargets: [target],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [`${platform}:${scope}`], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action,
+      selection: {
+        kind: 'targets' as const,
+        targets: [
+          { pluginId: 'team/demo', platform: 'codex' as const, scope: 'project' as const },
+          { pluginId: 'team/demo', platform: 'claude' as const, scope: 'user' as const },
+        ],
+      },
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence).toMatchObject({
+      groups: expect.arrayContaining([
+        expect.objectContaining({ platform: 'codex', scope: 'project' }),
+        expect.objectContaining({ platform: 'claude', scope: 'user' }),
+      ]),
+    });
+    await dependencies.executeIntent(intent, evidence);
+
+    const actualCalls = command.mock.calls.filter((call) => call[2]?.previewOperationPlan !== true);
+    expect(actualCalls.map((call) => [call[1].platform, call[1].scope])).toEqual([
+      ['claude', 'user'],
+      ['codex', 'project'],
+    ]);
+  });
+
   it('retries only the failed actual platform after a project-all sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-project-all-retry');

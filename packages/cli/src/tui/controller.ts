@@ -598,6 +598,7 @@ export interface OperationResultSummary {
   batch?: {
     requestedPluginIds: string[];
     failedRequestedPluginIds: string[];
+    rootResults: PluginWriteBatchRootResult[];
     retryTargets?: PluginWriteBatchTarget[];
     groupCount: number;
   };
@@ -643,6 +644,19 @@ export interface PluginWriteTaskRootResult {
     scope: Scope;
     state: 'completed' | 'kept' | 'failed' | 'skipped';
     relation?: 'requested' | 'direct' | 'transitive';
+    errorCode?: string;
+  }>;
+}
+
+export interface PluginWriteBatchRootResult {
+  pluginId: string;
+  state: 'completed' | 'kept' | 'partial' | 'failed' | 'notStarted';
+  targets: Array<{
+    pluginId: string;
+    platform: PlatformName;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    relation: 'requested';
     errorCode?: string;
   }>;
 }
@@ -2973,12 +2987,29 @@ export class TuiController {
     return undefined;
   }
 
-  catalogSourceRecoveryBlockReason(): CatalogActivationBlockReason | undefined {
+  catalogSourceRecoveryBlockReason(
+    intent?: Extract<OperationIntent, { kind: 'catalogGeneration' }>,
+  ): CatalogActivationBlockReason | undefined {
     const activeFlow = this.#router.activeFlow();
+    const route = this.#router.snapshot.current.route;
+    const ownedFrozenBatchTask = intent !== undefined
+      && route.name === 'pluginWriteTask'
+      && route.targetKeys !== undefined
+      && route.targetKeys.length > 0
+      && route.batchOrigin !== undefined
+      && activeFlow?.id === route.batchOrigin.flowId
+      && this.listPluginWriteTaskCandidates(route.goal).some((candidate) =>
+        candidate.sourceId === intent.sourceId
+        && candidate.blockReason === 'catalogActivationRequired'
+        && route.targetKeys!.includes(pluginWriteTaskTargetKey(candidate.target)));
     const blockingExternalDraft = this.#externalDrafts.find((draft) =>
       !(draft.kind === 'configDraft'
         && activeFlow?.kind === 'sourceRecovery'
-        && activeFlow.parentFlowId !== undefined));
+        && activeFlow.parentFlowId !== undefined)
+      && !(ownedFrozenBatchTask
+        && draft.kind === 'batchDraft'
+        && draft.owner === route.batchOrigin?.owner
+        && draft.flowId === route.batchOrigin.flowId));
     if (blockingExternalDraft) return blockingExternalDraft.kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
@@ -3207,7 +3238,7 @@ export class TuiController {
     this.#assertAcceptingActions();
     intent = normalizeOperationIntent(intent);
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
-      const blockReason = this.catalogSourceRecoveryBlockReason();
+      const blockReason = this.catalogSourceRecoveryBlockReason(intent);
       if (blockReason) {
         throw new TuiOperationBlockedError(
           'catalogActivationBlocked',
@@ -4690,6 +4721,54 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       ? pluginWriteBatchFailedRequestedTargets(execution as PluginWriteBatchExecutionResult)
       : [];
     const failedRequestedPluginIds = canonicalPluginIds(retryTargets.map((target) => target.pluginId));
+    const requestedTargetKeys = intent.kind === 'pluginWriteBatch'
+      ? new Set((execution as PluginWriteBatchExecutionResult).groupResults.flatMap((group) => {
+          const roots = new Set(group.requestedPluginIds);
+          return group.result.targetResults.flatMap((entry) => entry.target.pluginId
+            && roots.has(entry.target.pluginId)
+            && entry.target.scope === group.scope
+            && (group.platform === 'both' || entry.target.platform === group.platform)
+            ? [[entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0')]
+            : []);
+        }))
+      : new Set<string>();
+    const rootResults: PluginWriteBatchRootResult[] = intent.kind === 'pluginWriteBatch'
+      ? requestedPluginIds.map((pluginId) => {
+          const observed = (result.targetResults ?? []).flatMap((entry) =>
+            entry.target.pluginId === pluginId
+              && requestedTargetKeys.has([
+                pluginId, entry.target.platform, entry.target.scope,
+              ].join('\0')) ? [{
+              pluginId,
+              platform: entry.target.platform,
+              scope: entry.target.scope,
+              state: entry.action === 'skipped' ? 'skipped' as const
+                : entry.state === 'failed' ? 'failed' as const
+                  : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+              relation: 'requested' as const,
+              ...(entry.errorCode
+                ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') }
+                : {}),
+            }] : []);
+          const targets = [...new Map([
+            ...retryTargets.filter((target) => target.pluginId === pluginId).map((target) => ({
+              ...target,
+              state: 'skipped' as const,
+              relation: 'requested' as const,
+            })),
+            ...observed,
+          ].map((target) => [[target.pluginId, target.platform, target.scope].join('\0'), target]))
+            .values()];
+          const completed = targets.filter((target) =>
+            target.state === 'completed' || target.state === 'kept').length;
+          const failed = targets.length - completed;
+          const state: PluginWriteBatchRootResult['state'] = completed > 0
+            ? failed > 0 ? 'partial'
+              : targets.every((target) => target.state === 'kept') ? 'kept' : 'completed'
+            : failed > 0 ? 'failed' : 'notStarted';
+          return { pluginId, state, targets };
+        })
+      : [];
     return {
       code: result.state === 'succeeded' ? 'operationSucceeded'
         : result.state === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -4712,6 +4791,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         batch: {
           requestedPluginIds,
           failedRequestedPluginIds,
+          rootResults,
           retryTargets,
           groupCount: (execution as PluginWriteBatchExecutionResult).groupResults.length,
         },

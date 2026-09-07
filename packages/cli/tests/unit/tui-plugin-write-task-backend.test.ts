@@ -19,6 +19,7 @@ import type {
 import {
   buildPluginWriteTaskCandidates,
   buildPluginWriteTaskDraft,
+  evaluatePluginWriteTaskRestoreVersion,
 } from '../../src/tui/plugin-write-task.js';
 
 function plugin(
@@ -68,6 +69,44 @@ function sharedMissingDependencyIssue(): UserIssueViewModel {
 }
 
 describe('plugin write task planning', () => {
+  it('blocks an absent target when another scope has an older installed version', () => {
+    const shared = plugin('shared', '');
+    shared.update.targets.push({
+      platform: 'codex', scope: 'user', installedVersion: '0.9.0',
+      activeVersion: '1.0.0', eligibility: 'allowed',
+    });
+
+    expect(evaluatePluginWriteTaskRestoreVersion({
+      pluginId: 'official/shared', platform: 'codex', scope: 'project',
+    }, true, { plugins: [shared] })).toEqual({ blockReason: 'restoreVersionChanged' });
+  });
+
+  it('requires a placement decision when another scope has the same installed version', () => {
+    const shared = plugin('shared', '');
+    shared.update.targets.push({
+      platform: 'codex', scope: 'user', installedVersion: '1.0.0',
+      activeVersion: '1.0.0', eligibility: 'allowed',
+    });
+
+    expect(evaluatePluginWriteTaskRestoreVersion({
+      pluginId: 'official/shared', platform: 'codex', scope: 'project',
+    }, true, { plugins: [shared] })).toEqual({ blockReason: 'manualRecoveryRequired' });
+  });
+
+  it('preserves an installed target even when another scope has different evidence', () => {
+    const shared = plugin('shared');
+    shared.update.targets.push({
+      platform: 'codex', scope: 'user', installedVersion: '0.9.0',
+      activeVersion: '1.0.0', eligibility: 'allowed',
+    });
+
+    expect(evaluatePluginWriteTaskRestoreVersion({
+      pluginId: 'official/shared', platform: 'codex', scope: 'project',
+    }, true, { plugins: [shared] })).toEqual({
+      evidence: { state: 'preserved', installedVersion: '1.0.0', activeVersion: '1.0.0' },
+    });
+  });
+
   it('deduplicates one missing dependency cause across installed root consumers', () => {
     const model: Pick<TuiViewModel, 'plugins' | 'issues'> = {
       plugins: [plugin('root-a'), plugin('root-b'), plugin('shared', '')],

@@ -248,6 +248,7 @@ interface SourceDraft {
 }
 
 interface BatchDraft {
+  flowId: string;
   action?: BatchPluginWriteAction;
   mode: 'browse' | 'installed';
   stage: 'select' | 'task' | 'maintenance';
@@ -1431,6 +1432,34 @@ export function ConsoleAppV4(props: {
     setDirty(false);
   }, [route.name, snapshot.result?.operationKind]);
   useEffect(() => {
+    if (route.name !== 'result'
+      || snapshot.result?.state !== 'succeeded'
+      || snapshot.result.operationKind !== 'pluginWriteTask'
+      || !('returnRoute' in snapshot.result)
+      || snapshot.result.returnRoute?.name !== 'pluginWriteTask'
+      || snapshot.result.returnRoute.batchOrigin?.owner !== 'batch-write'
+      || snapshot.result.returnRoute.batchOrigin.flowId
+        !== batchDraft?.flowId) return;
+    setBatchDraft(undefined);
+    setDirty(false);
+  }, [batchDraft?.flowId, route.name, snapshot.result]);
+  useEffect(() => {
+    if (route.name !== 'result'
+      || snapshot.result?.state !== 'succeeded'
+      || snapshot.result.operationKind !== 'catalogManagement') return;
+    const action = snapshot.result.summary.catalogManagement?.action;
+    if (action === 'workspaceInit') {
+      setCatalogInput('');
+      setCatalogWorkspaceDraft({
+        ownerName: '', ownerUrl: '', displayName: '', catalogVersion: '0.1.0',
+      });
+    }
+    if (action === 'publishApply') {
+      setCatalogInput('');
+      setCatalogPublishDraft({ targetKind: 'remote', target: '', branch: 'catalog' });
+    }
+  }, [route.name, snapshot.result]);
+  useEffect(() => {
     if (!batchDraft || (route.name !== 'batchSelection' && route.name !== 'batchPlacement')) return;
     setDirty(true);
   }, [batchDraft, route.name]);
@@ -1549,7 +1578,6 @@ export function ConsoleAppV4(props: {
       externalDraftFlowIds.current.set(configRouteOwner, currentFlowId);
     }
     if (currentFlowId && sourceDraft) externalDraftFlowIds.current.set(sourceDraft.owner, currentFlowId);
-    if (currentFlowId && batchDraft) externalDraftFlowIds.current.set('batch-write', currentFlowId);
     const drafts: ExternalDraftState[] = [];
     if ((dirty || changedObjectDraftKeys.length > 0) && draftOwner) {
       const flowId = externalDraftFlowIds.current.get(draftOwner);
@@ -1566,10 +1594,9 @@ export function ConsoleAppV4(props: {
       });
     }
     if (batchDraft) {
-      const flowId = externalDraftFlowIds.current.get('batch-write');
       drafts.push({
         kind: 'batchDraft', owner: 'batch-write', revision: externalDraftRevision.current.batch,
-        ...(flowId ? { flowId } : {}),
+        flowId: batchDraft.flowId,
       });
     }
     const catalogWorkspaceDirty = catalogWorkspaceDraft.ownerName !== ''
@@ -2166,7 +2193,10 @@ export function ConsoleAppV4(props: {
       focusedEntityId: route.name === 'pluginList' ? pluginRows[focus]?.pluginId : undefined,
     });
     props.controller.beginPluginWriteBatch();
+    const flowId = props.controller.snapshot.router.currentFlowId;
+    if (!flowId) throw new Error('批量插件流程缺少 flowId。');
     setBatchDraft({
+      flowId,
       ...(action ? { action } : {}),
       mode: route.name === 'pluginList' ? route.mode : action === 'install' ? 'browse' : 'installed',
       stage: 'select',
@@ -2245,6 +2275,9 @@ export function ConsoleAppV4(props: {
       pluginId: first.target.pluginId,
       goal,
       targetKeys: candidates.map(pluginWriteTaskTargetKey),
+      ...(batchDraft ? {
+        batchOrigin: { flowId: batchDraft.flowId, owner: 'batch-write' as const },
+      } : {}),
       ...(goal === 'update'
         ? { versionEvidence: Object.fromEntries(candidates.flatMap((candidate) =>
             candidate.target.expectedUpdate
@@ -6821,12 +6854,16 @@ export function ConsoleAppV4(props: {
     const taskOperation = operationKind === 'pluginWriteTask';
     const taskSummary = resultSummary?.task;
     const taskBlockedCount = taskSummary?.blockedTargets.length ?? 0;
+    const taskBatchOrigin = 'returnRoute' in result
+      && result.returnRoute?.name === 'pluginWriteTask'
+      ? result.returnRoute.batchOrigin : undefined;
     const taskReturnRoute: TuiRoute | undefined = taskSummary?.requestedTargets[0] ? {
       name: 'pluginWriteTask',
       pluginId: taskSummary.requestedTargets[0].pluginId,
       goal: taskSummary.goal,
       targetKeys: taskSummary.requestedTargets.map((target) =>
         [target.pluginId, target.platform, target.scope].join('\0')),
+      ...(taskBatchOrigin ? { batchOrigin: taskBatchOrigin } : {}),
       ...(taskSummary.goal === 'update' ? {
         versionEvidence: Object.fromEntries(taskSummary.requestedTargets.flatMap((target) =>
           target.expectedUpdate
@@ -6911,7 +6948,7 @@ export function ConsoleAppV4(props: {
         ? '批量写入被阻止。已完成和未完成目标按实际结果保留。'
         : partial
           ? (resultSummary?.batch?.retryTargets?.length ?? 0) > 0
-            ? `${resultSummary?.batch?.retryTargets?.length ?? 0} 个根目标失败。成功目标不会重放。`
+            ? `${resultSummary?.batch?.failedRequestedPluginIds.length ?? 0} 个根插件失败，涉及 ${resultSummary?.batch?.retryTargets?.length ?? 0} 个位置。成功目标不会重放。`
             : '失败目标无法精确定位。请查看本次记录后重新操作。'
           : `${resultSummary?.batch?.requestedPluginIds.length ?? 0} 个根插件已完成。`
       : portableOperation
@@ -7072,7 +7109,14 @@ export function ConsoleAppV4(props: {
             status: 'warning' as const,
             run: () => leaveResult(taskReturnRoute),
           }] : []),
-          { label: '完成，返回我的插件', run: () => leaveResult({ name: 'pluginList', mode: 'installed' }) },
+          { label: '完成，返回我的插件', run: () => {
+            if (taskBatchOrigin?.owner === 'batch-write'
+              && taskBatchOrigin.flowId === batchDraft?.flowId) {
+              setBatchDraft(undefined);
+              setDirty(false);
+            }
+            leaveResult({ name: 'pluginList', mode: 'installed' });
+          } },
           { label: '查看本次记录', run: () => result.operationRecordId
             && go({ name: 'operationDiagnostic', recordId: result.operationRecordId }) },
         ]
@@ -7353,9 +7397,36 @@ export function ConsoleAppV4(props: {
         }),
       ];
     });
+    const batchResultRows = (resultSummary?.batch?.rootResults ?? []).map((root) => {
+      const rootState = taskRootState(root.state);
+      const rootName = props.controller.getPluginOverview(root.pluginId)?.displayName
+        ?? root.pluginId.split('/').at(-1)!;
+      return <ResultRow
+        key={`batch-root:${root.pluginId}`}
+        title={rootName}
+        description={`${root.targets.length} 个精确安装位置`}
+        meta={rootState.label}
+        status={rootState.status}
+        compact
+      />;
+    }).concat(prioritizedTargets.map((target) => {
+      const state = operationTargetStateLabel(target.state);
+      const relation = target.relation === 'requested' ? '你选择的插件'
+        : target.relation === 'direct' ? '直接依赖'
+          : target.relation === 'transitive' ? '间接依赖' : undefined;
+      return <ResultRow
+        key={`batch-target:${target.pluginId ?? ''}:${target.platform}:${target.scope}`}
+        title={`${resultTargetName(target)} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
+        description={relation}
+        meta={state.label}
+        status={state.status ?? 'muted'}
+        compact
+      />;
+    }));
     const taskResultLimit = Math.max(1, pageActionBudget(5) - resultActionViewport.limit);
-    const taskResultOffset = Math.min(batchTargetOffset, Math.max(0, taskResultRows.length - 1));
-    const visibleTaskResultRows = taskResultRows.slice(taskResultOffset, taskResultOffset + taskResultLimit);
+    const rootResultRows = taskOperation ? taskResultRows : batchResultRows;
+    const taskResultOffset = Math.min(batchTargetOffset, Math.max(0, rootResultRows.length - 1));
+    const visibleTaskResultRows = rootResultRows.slice(taskResultOffset, taskResultOffset + taskResultLimit);
     if (taskOperation || batchOperation || resultTargets.length > resultTargetLimit
       || prioritizedPortableSkills.length > portableSkillLimit) {
       help = 'PgUp/PgDn 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
@@ -7375,12 +7446,12 @@ export function ConsoleAppV4(props: {
         {visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}
       </ResultCard>
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : taskOperation ? <Box flexDirection="column">
-      <ResultCard status={resultStatus} title="根插件结果">
+    </Box> : taskOperation || batchOperation ? <Box flexDirection="column">
+      <ResultCard status={resultStatus} title={batchOperation ? '根插件与目标结果' : '根插件结果'}>
         {taskResultOffset > 0 ? <StaticRow title={`↑ 前面还有 ${taskResultOffset} 项`} status="muted" compact /> : null}
         {visibleTaskResultRows}
-        {taskResultRows.length > taskResultOffset + visibleTaskResultRows.length
-          ? <StaticRow title="↓ 后面还有" meta={`${taskResultRows.length - taskResultOffset - visibleTaskResultRows.length} 项`} status="muted" compact /> : null}
+        {rootResultRows.length > taskResultOffset + visibleTaskResultRows.length
+          ? <StaticRow title="↓ 后面还有" meta={`${rootResultRows.length - taskResultOffset - visibleTaskResultRows.length} 项`} status="muted" compact /> : null}
       </ResultCard>
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
     </Box> : portableOperation ? <Box flexDirection="column">
@@ -7820,10 +7891,15 @@ export function ConsoleAppV4(props: {
     if ((key.pageUp || key.pageDown)
       && route.name === 'result'
       && snapshot.result) {
-      const total = 'summary' in snapshot.result
+      const pageSummary = 'summary' in snapshot.result ? snapshot.result.summary : undefined;
+      const total = pageSummary
         ? Math.max(
-            snapshot.result.summary?.targets?.length ?? 0,
-            snapshot.result.summary?.task?.rootResults.length ?? 0,
+            pageSummary.targets?.length ?? 0,
+            pageSummary.task?.rootResults.reduce((count, root) =>
+              count + 1 + pageSummary.task!.requestedTargets.filter((target) =>
+                target.pluginId === root.pluginId).length, 0) ?? 0,
+            (pageSummary.batch?.rootResults.length ?? 0)
+              + (pageSummary.targets?.length ?? 0),
             snapshot.result.operationKind === 'portableInstall'
               ? snapshot.portableResultSkills?.length ?? 0
               : 0,

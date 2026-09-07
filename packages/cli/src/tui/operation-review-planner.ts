@@ -982,7 +982,7 @@ function batchReviewChanges(
       action: intent.action,
       pluginId: representative,
       platform: group.platform,
-      scope: intent.scope,
+      scope: group.scope,
       ...(intent.scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs: intent.scriptTimeoutMs }),
     }, groupEvidence);
     const targetChanges = group.preview.targetResults.map((target): OperationReviewChange => {

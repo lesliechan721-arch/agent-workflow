@@ -139,21 +139,20 @@ export function evaluatePluginWriteTaskRestoreVersion(
   model: Pick<TuiViewModel, 'plugins'>,
 ): {
   evidence?: PluginWriteTaskCause['restoreVersionEvidence'];
-  blockReason?: 'restoreVersionChanged' | 'restoreVersionUnverified';
+  blockReason?: 'restoreVersionChanged' | 'restoreVersionUnverified' | 'manualRecoveryRequired';
 } {
   const plugin = model.plugins.find((candidate) => candidate.pluginId === target.pluginId);
   const revision = plugin?.update.targets.find((candidate) =>
     candidate.platform === target.platform && candidate.scope === target.scope);
-  if (revision?.installedVersion && revision.activeVersion
-    && revision.installedVersion !== revision.activeVersion) {
-    return { blockReason: 'restoreVersionChanged' };
-  }
-  if (!revision?.activeVersion) {
-    return allowAbsent && plugin?.version
-      ? { evidence: { state: 'absent', activeVersion: plugin.version } }
-      : { blockReason: 'restoreVersionUnverified' };
-  }
-  if (revision.installedVersion) {
+  const installedInOtherScope = plugin?.update.targets.find((candidate) =>
+    candidate.platform === target.platform
+    && candidate.scope !== target.scope
+    && candidate.installedVersion !== undefined);
+  if (revision?.installedVersion) {
+    if (!revision.activeVersion) return { blockReason: 'restoreVersionUnverified' };
+    if (revision.installedVersion !== revision.activeVersion) {
+      return { blockReason: 'restoreVersionChanged' };
+    }
     return {
       evidence: {
           state: 'preserved',
@@ -162,8 +161,15 @@ export function evaluatePluginWriteTaskRestoreVersion(
       },
     };
   }
-  return allowAbsent
-    ? { evidence: { state: 'absent', activeVersion: revision.activeVersion } }
+  if (installedInOtherScope) {
+    const activeVersion = revision?.activeVersion ?? plugin?.version;
+    return activeVersion && installedInOtherScope.installedVersion !== activeVersion
+      ? { blockReason: 'restoreVersionChanged' }
+      : { blockReason: 'manualRecoveryRequired' };
+  }
+  const activeVersion = revision?.activeVersion ?? plugin?.version;
+  return allowAbsent && activeVersion
+    ? { evidence: { state: 'absent', activeVersion } }
     : { blockReason: 'restoreVersionUnverified' };
 }
 

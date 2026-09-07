@@ -270,7 +270,7 @@ Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层�
 
 ### TUI 批量插件写入
 
-TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action、scope 和 platform 选择，并建立一张 Review ticket。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
+TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action 并建立一张 Review ticket；`selected` 选择使用共同 scope 和 platform，`targets` 选择沿用每个精确目标自己的 scope 和单个平台。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
 
 普通批次按 source 分组，同一 source 的所有根插件通过一次 typed write 解析依赖和构建目标，因此共享依赖和 native projection 只处理一次。不同 source 独立执行；一个分组失败不回滚或阻止其它分组。当前项目的 sync-all 在准备 Review 时读取 Intent roots，并冻结规范化的 requested plugin IDs 和 source/platform 分组。确认后，executor 在现有单一 `AW_HOME` mutation lock 内重新读取 Intent，并用已冻结 ID 作为 selectors、`all:false` 重新解析；完整根集合或分组变化时返回 typed stale，不能把后来新增的 root 自动加入本次写入。
 

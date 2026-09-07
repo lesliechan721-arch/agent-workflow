@@ -7,6 +7,7 @@ import {
   createDependencyPlacementPlan,
   type DependencyOperationPlan,
 } from '../../src/commands/dependency-operation-plan.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   CONSOLE_V4_SCREEN_IDS,
@@ -17,10 +18,13 @@ import {
 import {
   TuiConfigInvalidStoreError,
   TuiController,
+  operationEvidenceFingerprint,
   userIssueKey,
   type OperationEvidence,
   type OperationIntent,
   type PluginWriteBatchExecutionResult,
+  type PluginWriteTaskEvidence,
+  type PluginWriteTaskExecutionResult,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -610,6 +614,106 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
   const loadStatus = dependencies.loadStatus;
   dependencies.loadStatus = async (...args) => bridgeStatusV7Fixtures(await loadStatus(...args));
   return new TuiController(dependencies);
+}
+
+function pluginWriteTaskExecution(
+  evidence: PluginWriteTaskEvidence,
+  failedKeys: ReadonlySet<string> = new Set(),
+): PluginWriteTaskExecutionResult {
+  const sourceResults = evidence.taskPlan.sources.map((source) => {
+    const targetResults = source.requestedTargets.map((target) => {
+      const failed = failedKeys.has([target.pluginId, target.platform, target.scope].join('\0'));
+      return {
+        target: {
+          pluginId: target.pluginId,
+          pluginName: target.pluginId.split('/').at(-1)!,
+          sourceId: source.sourceId,
+          platform: target.platform,
+          scope: target.scope,
+        },
+        action: 'sync',
+        state: failed ? 'failed' as const : 'completed' as const,
+        requiredBy: [],
+        ...(failed ? { errorCode: 'preApplyExited' } : {}),
+      };
+    });
+    return {
+      sourceId: source.sourceId,
+      sourceIdentity: source.sourceIdentity,
+      requestedTargets: source.requestedTargets,
+      result: {
+        ...source.preview,
+        targetResults,
+        overallState: targetResults.some((target) => target.state === 'failed')
+          ? targetResults.some((target) => target.state === 'completed') ? 'partial' as const : 'failed' as const
+          : 'succeeded' as const,
+      },
+    };
+  });
+  const targetResults = sourceResults.flatMap((source) => source.result.targetResults);
+  return {
+    ...(evidence.taskPlan.sources[0]?.preview ?? {
+      platforms: [], plugins: [], warnings: [], rebuildResults: [], receiptTargets: [],
+    }),
+    taskPlan: evidence.taskPlan,
+    sourceResults,
+    targetResults,
+    overallState: targetResults.some((target) => target.state === 'failed')
+      ? targetResults.some((target) => target.state === 'completed') ? 'partial' : 'failed'
+      : 'succeeded',
+  } as PluginWriteTaskExecutionResult;
+}
+
+function pluginWriteTaskEvidence(
+  intent: Extract<OperationIntent, { kind: 'pluginWriteTask' }>,
+): PluginWriteTaskEvidence {
+  const sources = [...new Set(intent.targets.map((target) => target.pluginId.split('/')[0]!))]
+    .map((sourceId) => {
+      const requestedTargets = intent.targets.filter((target) => target.pluginId.startsWith(`${sourceId}/`));
+      const receiptTargets = requestedTargets.map((target) => ({
+        pluginName: target.pluginId.split('/').at(-1)!, sourceId, ...target,
+      }));
+      const preview = {
+        platforms: [...new Set(requestedTargets.map((target) => target.platform))],
+        plugins: [...new Set(requestedTargets.map((target) => target.pluginId))],
+        warnings: [], rebuildResults: [], receiptTargets,
+        targetResults: receiptTargets.map((target) => ({
+          target, action: 'sync', state: 'completed' as const,
+          relation: 'requested' as const, requiredBy: [],
+        })),
+        overallState: 'succeeded' as const,
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: ['selected task targets'], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId, digest: 'sha256:catalog' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+      return {
+        sourceId,
+        sourceIdentity: `identity:${sourceId}`,
+        requestedTargets,
+        causes: [],
+        preview,
+        executable: true,
+      };
+    });
+  const evidence: PluginWriteTaskEvidence = {
+    catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
+    taskPlan: {
+      goal: intent.goal,
+      requestedTargets: intent.targets,
+      executableTargets: intent.targets,
+      causes: [],
+      blockedTargets: [],
+      sources,
+      targetFingerprint: 'sha256:selected-targets',
+      planFingerprint: '',
+    },
+  };
+  evidence.taskPlan.planFingerprint = operationEvidenceFingerprint(evidence);
+  return evidence;
 }
 
 function platformLoadResult(
@@ -1508,6 +1612,198 @@ describe('ConsoleAppV4', () => {
     }), expect.any(AbortSignal));
   });
 
+  it('completes a real select-many update and removes only its parent batch draft', async () => {
+    const loaded = loadResult();
+    const roots = ['official/review-gate', 'team-tools/review-gate'];
+    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
+      && entry.platform === 'codex' && entry.scope === 'user'
+      ? {
+          ...entry, state: 'ready' as const,
+          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
+          errors: [],
+        }
+      : { ...entry, state: 'absent' as const, errors: [] });
+    loaded.targetRevisions = roots.map((pluginId) => ({
+      pluginId, platform: 'codex' as const, scope: 'user' as const,
+      revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
+    }));
+    const executeIntent = vi.fn(async (intent: OperationIntent, operationEvidence: OperationEvidence) =>
+      intent.kind === 'pluginWriteTask'
+        ? pluginWriteTaskExecution(operationEvidence as PluginWriteTaskEvidence)
+        : { overallState: 'succeeded', targetResults: [] });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteTask'
+        ? pluginWriteTaskEvidence(intent) : evidenceForIntent(intent)),
+      executeIntent,
+    });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const navigate = vi.fn().mockResolvedValue('completed');
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
+      onSessionNavigation={navigate} />);
+    await nextTurn(3);
+
+    await input(instance, 'm', 'a', 'c', '\r', '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.result).toBeDefined());
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'pluginWriteTask' });
+    await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+
+    await input(instance, '\r', 'h');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(navigate).toHaveBeenCalledWith('home', { discardDrafts: false });
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改');
+  });
+
+  it('keeps a select-many task draft for retry and clears it only when partial work is finished', async () => {
+    const loaded = loadResult();
+    const roots = ['official/review-gate', 'team-tools/review-gate'];
+    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
+      && entry.platform === 'codex' && entry.scope === 'user'
+      ? {
+          ...entry, state: 'ready' as const,
+          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
+          errors: [],
+        }
+      : { ...entry, state: 'absent' as const, errors: [] });
+    loaded.targetRevisions = roots.map((pluginId) => ({
+      pluginId, platform: 'codex' as const, scope: 'user' as const,
+      revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
+    }));
+    const failedKey = 'team-tools/review-gate\0codex\0user';
+    const executeIntent = vi.fn(async (intent: OperationIntent, operationEvidence: OperationEvidence) =>
+      intent.kind === 'pluginWriteTask'
+        ? pluginWriteTaskExecution(operationEvidence as PluginWriteTaskEvidence, new Set([failedKey]))
+        : { overallState: 'succeeded', targetResults: [] });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteTask'
+        ? pluginWriteTaskEvidence(intent) : evidenceForIntent(intent)),
+      executeIntent,
+    });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, 'm', 'a', 'c', '\r', '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.result).toBeDefined());
+    expect(value.snapshot.result).toMatchObject({ state: 'partial', operationKind: 'pluginWriteTask' });
+    expect(value.hasSessionDraft).toBe(true);
+    expect(instance.lastFrame()).toContain('继续处理剩余 1 项');
+
+    await input(instance, '\u001B[B', '\r');
+    await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+  });
+
+  it('activates a selected candidate source only for its owned frozen batch task', async () => {
+    const loaded = loadResult();
+    const roots = ['official/review-gate', 'team-tools/review-gate'];
+    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
+      && entry.platform === 'codex' && entry.scope === 'user'
+      ? {
+          ...entry, state: 'ready' as const,
+          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
+          errors: [],
+        }
+      : { ...entry, state: 'absent' as const, errors: [] });
+    loaded.targetRevisions = roots.map((pluginId) => ({
+      pluginId, platform: 'codex' as const, scope: 'user' as const,
+      revision: {
+        state: 'current' as const,
+        installedVersion: pluginId.startsWith('official/') ? '0.2.1' : '0.4.2',
+        availableVersion: pluginId.startsWith('official/') ? '0.2.1' : '0.4.2',
+      },
+    }));
+    const candidateFor = (sourceId: string) => {
+      const official = sourceId === 'official';
+      const candidate = {
+        sourceConfigFingerprint: `sha256:${sourceId}`,
+        sourceIdentity: `identity:${sourceId}`,
+        logicalIdentity: `workspace:${sourceId}`,
+        requestedRef: official ? 'path' : 'catalog/stable',
+        resolvedCommit: official ? 'path-next' : 'def456',
+        catalogVersion: official ? '1.1.0' : '2.5.0',
+        channel: 'latest' as const,
+        manifestDigest: `sha256:${official ? 'b' : 'c'}`,
+        snapshotDigest: `sha256:${official ? 'd' : 'e'}`,
+      };
+      return {
+        sourceId,
+        state: 'updateAvailable' as const,
+        activeVersion: official ? '1.0.0' : '2.4.0',
+        candidate,
+        reusableCandidate: {
+          sourceConfigFingerprint: candidate.sourceConfigFingerprint,
+          activeStoreKey: official ? 'official-active' : 'team-tools-active',
+          probe: {
+            sourceId,
+            candidate,
+            manifest: {
+              requires: { aw: { capabilities: [] } },
+              entries: [{
+                name: 'review-gate',
+                version: official ? '0.3.0' : '0.5.0',
+                manifestDigest: `sha256:${official ? 'f' : '1'}`,
+                contentDigest: `sha256:${official ? '2' : '3'}`,
+                requires: { aw: { capabilities: [] } },
+              }],
+            },
+          },
+        },
+      };
+    };
+    const executeIntent = vi.fn().mockResolvedValue({ status: 'succeeded' });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn(async (sourceId: string) => candidateFor(sourceId)),
+      executeIntent,
+    });
+    await value.load();
+    await vi.waitFor(() => expect(value.listPluginWriteTaskCandidates('update')
+      .filter((candidate) => roots.includes(candidate.target.pluginId)
+        && candidate.blockReason === 'catalogActivationRequired')).toHaveLength(2));
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, 'm', 'a', 'c', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask',
+      targetKeys: expect.arrayContaining([
+        'official/review-gate\0codex\0user',
+        'team-tools/review-gate\0codex\0user',
+      ]),
+      batchOrigin: { owner: 'batch-write', flowId: expect.any(String) },
+    });
+    expect(instance.lastFrame()).toContain('先更新来源目录');
+
+    value.setExternalDraftState([
+      ...value.externalDrafts,
+      { kind: 'configDraft', owner: 'unrelated\0user', revision: 1 },
+    ]);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('operationDiagnostic');
+    expect(executeIntent).not.toHaveBeenCalled();
+
+    await input(instance, 'b');
+    await nextTurn(3);
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.result).toBeDefined());
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'catalogGeneration' });
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    expect(value.hasSessionDraft).toBe(true);
+  });
+
   it('keeps the recommended project recovery task on project targets for a mixed-scope root', async () => {
     const loaded = loadResult();
     loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
@@ -1880,13 +2176,15 @@ describe('ConsoleAppV4', () => {
     const root = 'team-tools/review-gate';
     const targetResults = Array.from({ length: 100 }, (_, index) => ({
       target: {
-        pluginName: `target-${String(index).padStart(3, '0')}`,
-        pluginId: index === 0 ? root : `team-tools/target-${String(index).padStart(3, '0')}`,
-        sourceId: 'team-tools', platform: 'codex' as const, scope: 'project' as const,
+        pluginName: index < 2 ? 'Review Gate' : `target-${String(index).padStart(3, '0')}`,
+        pluginId: index < 2 ? root : `team-tools/target-${String(index).padStart(3, '0')}`,
+        sourceId: 'team-tools',
+        platform: index === 1 ? 'claude' as const : 'codex' as const,
+        scope: index === 1 ? 'user' as const : 'project' as const,
       },
       state: 'completed' as const,
-      relation: index === 0 ? 'requested' as const : 'transitive' as const,
-      ...(index === 0 ? {} : { requiredBy: [root] }),
+      relation: index < 2 ? 'requested' as const : 'transitive' as const,
+      ...(index < 2 ? {} : { requiredBy: [root] }),
     }));
     const rebuild = {
       platforms: ['codex'], plugins: [root], warnings: [], rebuildResults: [], receiptTargets: [],
@@ -1928,6 +2226,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
 
     expect(instance.lastFrame()).toContain('Review Gate');
+    expect(instance.lastFrame()).toContain('Review Gate · Codex · 当前项目');
+    expect(instance.lastFrame()).toContain('Review Gate · Claude Code · 所有项目');
     expect(instance.lastFrame()).toContain('↓ 后面还有');
     await input(instance, ...Array.from({ length: 110 }, () => '\u001B[6~'));
     expect(instance.lastFrame()).toContain('target-099');

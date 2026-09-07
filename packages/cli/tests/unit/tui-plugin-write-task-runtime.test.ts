@@ -433,6 +433,32 @@ describe('plugin write task runtime', () => {
     ]);
   });
 
+  it('does not restore a user dependency over an older project installation', async () => {
+    const catalog = await configureCatalog();
+    const current = sharedDependencyRestoreStatus(catalog);
+    const projectDependency = current.payload.targets.find((target) =>
+      target.pluginId === 'team/beta' && target.scope === 'project')!;
+    projectDependency.state = 'ready';
+    projectDependency.components = [{ kind: 'ownership', key: 'beta-project', state: 'present' }];
+    const projectRevision = current.targetRevisions!.find((target) =>
+      target.pluginId === 'team/beta' && target.scope === 'project')!;
+    projectRevision.revision = {
+      state: 'upgradeAvailable', installedVersion: '0.9.0', availableVersion: '1.0.0',
+    };
+    runtimeMocks.statusCommandV7.mockResolvedValue(current);
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+
+    await expect(dependencies.captureEvidence({
+      kind: 'pluginWriteTask', goal: 'restore', executionPolicy: 'all',
+      targets: [{ pluginId: 'team/alpha', platform: 'claude', scope: 'user' }],
+    }, new AbortController().signal)).rejects.toMatchObject({ code: 'taskNoExecutableTargets' });
+    expect(runtimeMocks.taskWriteCommand).not.toHaveBeenCalled();
+  });
+
   it('normalizes two missing dependency scopes to one promoted repair target', async () => {
     const catalog = await configureCatalog();
     runtimeMocks.statusCommandV7.mockImplementation(async () =>
