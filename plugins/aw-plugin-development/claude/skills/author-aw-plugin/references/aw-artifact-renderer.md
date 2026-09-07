@@ -1,12 +1,16 @@
 # Dynamic Artifact Renderer
 
-先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。`artifacts.targets` 是静态能力真值；renderer 只根据当前 context 返回 `ArtifactPlan`，plan 由 `aw plugin validate` 验证，不直接写平台文件。
+本 reference 只用于 `author-aw-plugin` 的 dynamic artifact branch。先读取 `aw plugin capabilities --json` receipt；只有 receipt 含所需领域时，才查询该领域。当前 CLI/Core 和 `aw plugin validate` 是字段及行为真值。`artifacts.targets` 是静态能力真值；renderer 只根据当前 context 返回 `ArtifactPlan`，不直接写平台文件。
 
-renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。`requestedArtifactIds` 是非空、无重复且按 manifest 顺序规范化的本次请求；renderer 只对这些 ID 各返回一个 artifact。context 的 config 和 changed keys 只包含本次 target 的 `refreshKeys` 并集，不提供 config store 路径。三个 context home 和进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都是请求级临时路径；这是输入隔离，不是 OS sandbox。同一 surface 与 scope 内的 target ID 必须唯一；不同 surface 或不重叠 scope 可复用 ID。例外是 `codex-native` shared projection：其 target ID 与 Skill key 在整个 projection 内分别全局唯一。user target 使用按 `default < user` 合并并验证的有效配置；project target 使用按 `default < user < project` 合并并验证的有效配置。敏感标量或 object child 不能进入输出或诊断。
+renderer 从 `AW_PLUGIN_CONTEXT` 读取 platform、scope、已验证 config、`requestedArtifactIds`、`artifactSources`、changed keys 和前一状态。`requestedArtifactIds` 是非空、无重复且按 manifest 顺序规范化的本次请求；renderer 只对这些 ID 各返回一个 artifact。context 的 config 和 changed keys 只包含本次 target 的 `refreshKeys` 并集，不提供 config store 路径。三个 context home 和进程的 `AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME` 都是请求级临时路径；这是输入隔离，不是 OS sandbox。同一 surface 与 scope 内的 target ID 必须唯一；不同 surface 或不重叠 scope 可复用 ID。例外是 `codex-native` shared projection：其 target ID 与 Skill key 在整个 projection 内分别全局唯一。user target 使用按 `default < user` 合并并验证的有效配置；project target 使用按 `default < user < project` 合并并验证的有效配置。
+
+Config v2 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` target 的 `refreshKeys` 都不得包含 sensitive 字段；非 Skill target 可以读取 sensitive 字段。同一 surface/scope 同时有 Skill target 和读取 sensitive 字段的非 Skill target 时，AW 把它们分成两个请求。两个请求使用相同且不可变的 `previousArtifacts`；每个 context 只含该批 target 的 config，renderer 返回的 `ArtifactPlan` 也必须精确匹配该批 ID。
 
 Skill target 先合并声明的 `sourceDirs`，再用 `content.files` 覆盖安全的 UTF-8 相对文件。最终 tree 必须保留平台原生调用元数据和 README。role、instruction 和 Skill 的静态 key 必须与 plan 一致。
 
-`codex.skill` target 按 live capability receipt 显式选择 delivery。native delivery 的 refresh key 只能引用 user-only、非 sensitive config field，且不能引用含 sensitive fixed/KV child 的 object。native dynamic Skill 不能与静态 Skill 同名。同一插件的所有 native target 必须使用完全相同的 scopes；存在静态 Codex Skill、MCP、Hook 或 App 时，该 scopes 必须是 `{project,user}`。其它 target 不声明 delivery。AW 在任何 live native 写入前检查最终 Skill tree 和 receipt 中的 sensitive 明文，但 renderer 仍负责不生成该内容。
+`codex.skill` target 按 live capability receipt 显式选择 delivery。native delivery 的 refresh key 只能引用 user-only、非 sensitive config field。native dynamic Skill 不能与静态 Skill 同名。同一插件的所有 native target 必须使用完全相同的 scopes；存在静态 Codex Skill、MCP、Hook 或 App 时，该 scopes 必须是 `{project,user}`。其它 target 不声明 delivery。
+
+AW 在 staging 或 live 写入前扫描产物。只要 sensitive string 至少有 8 个 Unicode code point，原文或 JSON 转义形态命中都会阻断；该阈值用于减少短值误报，不表示 secret 强度。stdout、stderr、日志和诊断仍脱敏所有长度的 sensitive 值。只有 AW 已生成或已按内容验证的 receipt 才能从其精确路径的扫描中排除；不得按 basename 或通配符排除同名文件。renderer 不生成、复制或修改保留 receipt。
 
 renderer stdout 只包含 JSON plan；诊断写 stderr，且不得泄露敏感值。相同输入必须产生相同 plan。缺失声明 target、额外 target、路径逃逸、直接写盘或部分输出都必须失败。
 
