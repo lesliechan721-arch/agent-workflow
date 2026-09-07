@@ -182,6 +182,71 @@ describe('Catalog immutable store maintenance', () => {
     }));
   });
 
+  it('only deletes Review-authorized exact items across formal and temporary categories', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-authorized-items');
+    const env = await configureSource(root);
+    const inactive = (await sync(root, env)).active!;
+    const active = (await sync(root, env, 'second\n')).active!;
+    const inactiveLocation = resolveCatalogStoreLocation({
+      logicalIdentity: inactive.logicalIdentity,
+      snapshotDigest: inactive.snapshotDigest,
+      env,
+    });
+    const activeLocation = resolveCatalogStoreLocation({
+      logicalIdentity: active.logicalIdentity,
+      snapshotDigest: active.snapshotDigest,
+      env,
+    });
+    const identitySegment = inactiveLocation.storeKey.split('/')[0]!;
+    const names = {
+      staging: '.staging-11111111-1111-4111-8111-111111111111.tmp',
+      quarantine: '.quarantine-22222222-2222-4222-8222-222222222222.tmp',
+      deleteClaim: '.delete-33333333-3333-4333-8333-333333333333.tmp',
+      addedAfterReview: '.replacement-44444444-4444-4444-8444-444444444444.tmp',
+    };
+    const reviewedPaths = [names.staging, names.quarantine, names.deleteClaim]
+      .map((name) => path.join(activeLocation.logicalIdentityDirectory, name));
+    for (const target of reviewedPaths) await fs.copy(activeLocation.entryDir, target);
+    await setTreeTime(inactiveLocation.entryDir, OLD_FORMAL);
+    await Promise.all(reviewedPaths.map((target) => setTreeTime(target, OLD_TEMP)));
+
+    const review = await catalogStorePrune({ env, now: NOW });
+    const authorizedItems = review.entries
+      .filter((entry) => entry.status === 'reclaimable')
+      .map(({ storeKey, category }) => ({ storeKey, category }));
+    expect(new Set(authorizedItems.map((item) => item.category)))
+      .toEqual(new Set(['entry', 'staging', 'quarantine', 'deleteClaim']));
+
+    const addedAfterReviewPath = path.join(
+      activeLocation.logicalIdentityDirectory,
+      names.addedAfterReview,
+    );
+    await fs.copy(activeLocation.entryDir, addedAfterReviewPath);
+    await setTreeTime(addedAfterReviewPath, OLD_TEMP);
+    const addedAfterReviewKey = `${identitySegment}/${names.addedAfterReview}`;
+
+    const pruned = await catalogStorePrune({
+      dryRun: false,
+      env,
+      now: NOW,
+      authorizedItems: [
+        ...authorizedItems,
+        { storeKey: addedAfterReviewKey, category: 'staging' },
+      ],
+    });
+
+    expect(new Set(pruned.deleted.map((entry) => entry.storeKey)))
+      .toEqual(new Set(authorizedItems.map((item) => item.storeKey)));
+    expect(pruned.retained).toContainEqual({
+      storeKey: addedAfterReviewKey,
+      reason: 'temporaryOlderThan24Hours',
+    });
+    await expect(fs.pathExists(inactiveLocation.entryDir)).resolves.toBe(false);
+    for (const target of reviewedPaths) await expect(fs.pathExists(target)).resolves.toBe(false);
+    await expect(fs.pathExists(addedAfterReviewPath)).resolves.toBe(true);
+  });
+
   it('deletes a safe old entry but reports partial when an unsafe entry cannot be inspected', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-unsafe');
@@ -556,7 +621,7 @@ describe('Catalog immutable store maintenance', () => {
     await expect(fs.pathExists(locations[2]!.entryDir)).resolves.toBe(true);
   });
 
-  it('retains an entry that becomes Active after initial inspection', async () => {
+  it('rechecks an authorized entry that becomes Active after initial inspection', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const root = path.join(isolation.layout.fixtureCwd, 'catalog-store-active-recheck');
     const env = await configureSource(root);
@@ -567,10 +632,16 @@ describe('Catalog immutable store maintenance', () => {
     });
     await setTreeTime(firstLocation.entryDir, OLD_FORMAL);
 
+    const review = await catalogStorePrune({ env, now: NOW });
+    const authorizedItems = review.entries
+      .filter((entry) => entry.storeKey === firstLocation.storeKey)
+      .map(({ storeKey, category }) => ({ storeKey, category }));
+
     const result = await catalogStorePrune({
       dryRun: false,
       env,
       now: NOW,
+      authorizedItems,
       runtime: {
         afterInitialInspection: async () => {
           const state = await readCatalogGenerationState(env);

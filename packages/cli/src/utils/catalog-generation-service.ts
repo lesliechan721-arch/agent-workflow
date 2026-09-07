@@ -1414,6 +1414,10 @@ export async function syncCatalogSourceGeneration(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
+  expectedCandidate?: CatalogGenerationCandidateEvidence;
+  expectedActive?: CatalogGenerationActiveV1 | null;
+  expectedConfigDigest?: string;
+  expectedImpactDigest?: string;
 }): Promise<CatalogGenerationSyncResult> {
   const env = options.env ?? process.env;
   if (!options.check) {

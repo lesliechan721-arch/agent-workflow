@@ -870,15 +870,15 @@ async function chooseSourceSave(
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(112);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 112);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(127);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 127);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
       'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21', 'P22',
       'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
       'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
-      'S01', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
+      'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
       'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
       'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
       'I10', 'I11', 'I12', 'I13',
@@ -886,7 +886,8 @@ describe('ConsoleAppV4', () => {
       'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
       'D18', 'D19', 'D20',
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
-      'K02',
+      'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07', 'K08', 'K09', 'K10', 'K11',
+      'K12', 'K13', 'K14', 'K15',
       'B01', 'B02',
       'T01', 'T02', 'T03', 'T04', 'T05',
     ]);
@@ -2457,7 +2458,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r',
+      '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('operationDiagnostic');
     const detail = value.getOperationDiagnostic(
@@ -2474,16 +2476,17 @@ describe('ConsoleAppV4', () => {
     value.replace({ name: 'sourceDetail', sourceId: 'team-tools' });
     recheck.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
     await nextTurn(2);
-    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r',
+      '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn(2);
     expect(value.listOperationHistory()).toHaveLength(recordCount);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
 
     recheck.mockImplementationOnce(() => { throw new DOMException('cancelled', 'AbortError'); });
     await input(instance, '\r');
     await nextTurn(2);
     expect(value.listOperationHistory()).toHaveLength(recordCount);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
     instance.unmount();
   });
 
@@ -3230,7 +3233,8 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    await input(instance, ...Array.from({ length: 4 }, () => '\u001B[B'));
+    await input(instance, '\u001B[B', '\u001B[B', '\r',
+      '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B');
     expect(instance.lastFrame()).toContain('› 技术详情');
     expect(instance.lastFrame()).toContain('↑↓ 移动');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
@@ -3266,7 +3270,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
-    for (const [index, label] of ['重新检查', '编辑来源…', '设为主来源…', '移除来源…', '技术详情'].entries()) {
+    for (const [index, label] of ['重新检查', '编辑来源…', '更多处理方式…'].entries()) {
       if (index > 0) await input(instance, '\u001B[B');
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
@@ -3275,6 +3279,15 @@ describe('ConsoleAppV4', () => {
       expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
     }
 
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
+    for (const [index, label] of ['设为主来源…', '移除来源…', '重新检查', '完整验证', '技术详情'].entries()) {
+      if (index > 0) await input(instance, '\u001B[B');
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toContain(`› ${label}`);
+      expect(frame.match(/›/gu)).toHaveLength(1);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+    }
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'team-tools' });
   });
@@ -3315,7 +3328,8 @@ describe('ConsoleAppV4', () => {
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {
       expect(unavailableDefault).not.toContain(privateText);
     }
-    await input(unavailableInstance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    await input(unavailableInstance, '\u001B[B', '\u001B[B', '\r',
+      ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
     expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'research' });
     const unavailableTechnical = unavailableInstance.lastFrame() ?? '';
     expect(unavailableTechnical).toContain('catalogGenerationUnavailable');
@@ -3328,7 +3342,7 @@ describe('ConsoleAppV4', () => {
       expect(unavailableTechnical).not.toContain(privateText);
     }
     await input(unavailableInstance, '\r');
-    expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'research' });
+    expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'research' });
   });
 
   it('opens source editing from the unavailable source issue edit action', async () => {
@@ -6661,7 +6675,8 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('https://example.test/team.git');
     expect(instance.lastFrame()).not.toContain(secretPath);
     expect(instance.lastFrame()).not.toContain(secretUrl);
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r',
+      '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     expect(screens).toContain('S03');
     expect(instance.lastFrame()).toContain('catalogSourceReady');
     expect(instance.lastFrame()).toContain('requested ref');
@@ -6694,7 +6709,7 @@ describe('ConsoleAppV4', () => {
     expect(detail).toContain('当前 AW 缺少 2 项待检查版本所需功能');
     expect(detail).toContain('当前目录版本 2.4.0 仍可浏览和使用');
     expect(detail).not.toContain('更新到候选版本');
-    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
+    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\u001B[B');
     expect(instance.lastFrame()).toContain('› 重新检查');
     await input(instance, '\u001B[B');
     expect(instance.lastFrame()).toContain('› 完整验证');
@@ -6832,7 +6847,7 @@ describe('ConsoleAppV4', () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(5);
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
     await nextTurn(3);
     expect(screens).toContain('S18');
     expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
@@ -6959,9 +6974,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(5);
     expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
-    expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本');
 
-    await input(instance, '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
     await nextTurn(3);
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'catalogGeneration', action: 'replaceDamaged', sourceId: 'team-tools',
@@ -6998,7 +7012,7 @@ describe('ConsoleAppV4', () => {
     const primaryScreens = new Set<ConsoleV4ScreenId>();
     const primaryView = render(<ConsoleAppV4 controller={primary} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => primaryScreens.add(screen)} />);
     await nextTurn(5);
-    await input(primaryView, '\u001B[B', '\u001B[B', '\r');
+    await input(primaryView, '\u001B[B', '\u001B[B', '\r', '\r');
     await nextTurn(3);
     expect(primaryScreens).toContain('S16');
     cleanup();
@@ -7008,7 +7022,7 @@ describe('ConsoleAppV4', () => {
     const removalScreens = new Set<ConsoleV4ScreenId>();
     const removalView = render(<ConsoleAppV4 controller={removal} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => removalScreens.add(screen)} />);
     await nextTurn(5);
-    await input(removalView, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(removalView, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
     await nextTurn(3);
     expect(removalScreens).toContain('S18');
   });

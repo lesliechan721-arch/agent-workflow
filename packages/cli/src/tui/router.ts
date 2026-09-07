@@ -139,6 +139,7 @@ export type TuiRoute =
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
+  | { name: 'sourceMore'; sourceId: string }
   | { name: 'sourceTechnical'; sourceId: string }
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
@@ -146,6 +147,15 @@ export type TuiRoute =
   | { name: 'configSave'; pluginId: string; layer: { scope: Scope } }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
+  | { name: 'catalogManagement' }
+  | {
+      name: 'catalogWorkspace';
+      view: 'overview' | 'select' | 'create' | 'version';
+      step?: 'ownerName' | 'ownerUrl' | 'displayName' | 'catalogVersion';
+    }
+  | { name: 'catalogDev'; step?: 'overview' | 'sourceId' | 'replacementPrimary' }
+  | { name: 'catalogStore' }
+  | { name: 'catalogPublish'; step: 'overview' | 'target' | 'branch' }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'operationHistory' }
@@ -179,7 +189,8 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask';
+  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask'
+  | 'catalogManagement';
 
 export interface TuiFlowScope {
   id: string;

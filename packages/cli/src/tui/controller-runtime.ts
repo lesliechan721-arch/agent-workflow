@@ -116,6 +116,10 @@ import {
   pluginWriteTaskTargetKey,
   type PluginWriteTaskTarget,
 } from './plugin-write-task.js';
+import {
+  createCatalogManagementService,
+  type CatalogManagementProgressStage,
+} from './catalog-management.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   calculateCatalogSourceConfigFingerprint,
@@ -831,6 +835,7 @@ export function createTuiControllerDependencies(
     catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   } = {},
 ): TuiControllerDependencies {
+  const catalogManagement = createCatalogManagementService(context);
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   const validatedStoreEntries = new Map<string, CatalogStoreEntry>();
@@ -1068,6 +1073,20 @@ export function createTuiControllerDependencies(
     frozenBatchEvidence?: PluginWriteBatchEvidence,
   ): Promise<OperationEvidence> => {
     reviewedScriptTimeoutMs(intent);
+    if (intent.kind === 'catalogManagement') {
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('validate');
+      const managementEvidence = await catalogManagement.captureEvidence(intent);
+      signal?.throwIfAborted();
+      await preparation?.reporter.emit('evidence');
+      return {
+        catalog: {
+          configDigest: managementEvidence.workspaceBinding ?? 'catalog-store',
+          compositeDigest: managementEvidence.evidenceDigest,
+        },
+        catalogManagement: managementEvidence,
+      };
+    }
     if (intent.kind === 'configReset') {
       const parsed = parsePluginId(intent.pluginId);
       if (!parsed.sourceId || !parsed.pluginName) {
@@ -2507,6 +2526,7 @@ export function createTuiControllerDependencies(
   };
 
   const dependencies: TuiControllerDependencies = {
+    catalogManagement,
     beginCatalogSession(sessionOptions) {
       sessionCatalogOperationContext = undefined;
       if (sessionOptions?.reuseValidatedGenerations !== true) {
@@ -2612,6 +2632,10 @@ export function createTuiControllerDependencies(
       return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
+      if (intent.kind === 'catalogManagement') {
+        signal.throwIfAborted();
+        return;
+      }
       if (intent.kind === 'catalogSourcesRecovery') {
         signal.throwIfAborted();
         return;
@@ -2860,6 +2884,31 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence, signal) {
+      if (intent.kind === 'catalogManagement') {
+        signal?.throwIfAborted();
+        if (!expectedEvidence.catalogManagement) {
+          throw new TuiOperationBlockedError(
+            'operationReviewStale',
+            'Catalog management Review evidence is missing.',
+          );
+        }
+        const progressLabels: Record<CatalogManagementProgressStage, string> = {
+          validate: '验证 Catalog 状态',
+          build: '构建 Catalog snapshot',
+          source: '更新开发来源',
+          sync: '同步开发来源',
+          prune: '清理 Catalog store',
+          prepare: '准备发布计划',
+          remote: '写入 Catalog 远端',
+          verify: '验证操作结果',
+        };
+        return catalogManagement.execute(intent, expectedEvidence.catalogManagement, (stage) => {
+          progressFeed?.setCurrent(
+            { target: 'Catalog 管理', phase: progressLabels[stage] },
+            `Catalog 管理：${progressLabels[stage]}`,
+          );
+        });
+      }
       if (intent.kind === 'catalogSourcesRecovery') {
         signal?.throwIfAborted();
         return recoverInvalidCatalogSourcesConfig({ env: context.env });

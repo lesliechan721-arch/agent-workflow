@@ -125,6 +125,15 @@ interface CatalogStorePruneRuntime {
   afterDeleteClaim?(options: { storeKey: string; claimPath: string }): Promise<void> | void;
 }
 
+export interface CatalogStorePruneItemKey {
+  storeKey: string;
+  category: CatalogStoreEntryCategory;
+}
+
+function catalogStorePruneItemKey(item: CatalogStorePruneItemKey): string {
+  return `${item.category}\u0000${item.storeKey}`;
+}
+
 const CATALOG_STORE_APPLICATION_ERROR_CODES = new Set([
   'invalidArguments',
   'catalogStoreInspectionFailed',
@@ -676,6 +685,7 @@ async function executePrune(options: {
   env: NodeJS.ProcessEnv;
   nowMs: number;
   dryRun: boolean;
+  authorizedItems?: readonly CatalogStorePruneItemKey[];
   remove: (target: string) => Promise<void>;
   runtime?: CatalogStorePruneRuntime;
 }): Promise<CatalogStorePruneResult> {
@@ -684,10 +694,23 @@ async function executePrune(options: {
   const deleteErrors: CatalogStorePruneResult['errors'] = [];
   const retainedAfterError = new Set<string>();
   const retainedReasons = new Map<string, string>();
+  const authorizedItemKeys = options.authorizedItems === undefined
+    ? undefined
+    : new Set(options.authorizedItems.map(catalogStorePruneItemKey));
+  const unauthorizedReclaimable = new Set<string>();
   if (!options.dryRun) {
+    for (const entry of inspected) {
+      if (entry.status === 'reclaimable'
+        && authorizedItemKeys !== undefined
+        && !authorizedItemKeys.has(catalogStorePruneItemKey(entry))) {
+        unauthorizedReclaimable.add(catalogStorePruneItemKey(entry));
+      }
+    }
     const candidates = inspected
       .map((entry, index) => ({ entry, index }))
-      .filter(({ entry }) => entry.status === 'reclaimable');
+      .filter(({ entry }) => entry.status === 'reclaimable'
+        && (authorizedItemKeys === undefined
+          || authorizedItemKeys.has(catalogStorePruneItemKey(entry))));
     await options.runtime?.afterInitialInspection?.(publicEntries(inspected));
     for (const { entry: initial, index } of candidates) {
       let current: InternalInspectionEntry | undefined;
@@ -790,6 +813,7 @@ async function executePrune(options: {
     .filter((entry) => !deletedKeys.has(entry.storeKey)
       && (options.dryRun
         || entry.status !== 'reclaimable'
+        || unauthorizedReclaimable.has(catalogStorePruneItemKey(entry))
         || retainedAfterError.has(entry.storeKey)
         || retainedReasons.has(entry.storeKey)))
     .map((entry) => ({
@@ -815,6 +839,7 @@ export async function catalogStorePrune(options: {
   dryRun?: boolean;
   env?: NodeJS.ProcessEnv;
   now?: Date;
+  authorizedItems?: readonly CatalogStorePruneItemKey[];
   remove?: (target: string) => Promise<void>;
   runtime?: CatalogStorePruneRuntime;
 } = {}): Promise<CatalogStorePruneResult> {
@@ -825,6 +850,7 @@ export async function catalogStorePrune(options: {
     env,
     nowMs,
     dryRun,
+    authorizedItems: options.authorizedItems,
     remove: options.remove ?? ((target) => fs.remove(target)),
     runtime: options.runtime,
   });

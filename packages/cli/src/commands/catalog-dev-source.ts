@@ -8,17 +8,33 @@ import {
 } from '@lesliechan721/aw-plugin-core';
 
 import { runCatalogBuildCommand } from '../authoring/workspace-commands.js';
-import type { CatalogSource, PathCatalogSource } from '../types.js';
+import type {
+  CatalogGenerationActiveV1,
+  CatalogGenerationCandidateEvidence,
+  CatalogSource,
+  CatalogSourceImpact,
+  PathCatalogSource,
+} from '../types.js';
 import {
+  probeCatalogSourceGeneration,
   readCatalogGenerationStatus,
   type CatalogGenerationStatusEntry,
 } from '../utils/catalog-generation-service.js';
+import { readCatalogGenerationState } from '../utils/catalog-generation-state.js';
+import {
+  calculateCatalogSourceImpactDigest,
+  inspectCatalogSourceImpact,
+} from '../utils/catalog-source-impact.js';
 import { CLI_RESERVED_IMPORTS } from '../utils/manifest.js';
 import {
   CATALOG_SOURCE_ID_PATTERN,
+  addCatalogSource,
+  calculateCatalogSourcesConfigDigest,
   CatalogSourcesConfigConflictError,
   isDefaultOfficialCatalogSource,
   readCatalogSourcesConfigSnapshot,
+  setPrimaryCatalogSource,
+  updateCatalogSource,
 } from '../utils/catalog-sources.js';
 import {
   addCatalogSourceCommand,
@@ -46,6 +62,28 @@ export interface CatalogDevActivateReceipt {
   active: { ready: boolean; snapshotDigest: string | null };
   recovery: string[];
   errors: Array<{ code: string; message: string }>;
+}
+
+export interface CatalogDevActivationReviewEvidence {
+  workspaceIdentity: string;
+  snapshotDigest: string;
+  sourceId: string;
+  initialConfigDigest: string;
+  finalConfigDigest: string;
+  sourceMutation?: {
+    proposedConfigDigest: string;
+    impactDigest: string;
+  };
+  primaryImpactDigest?: string;
+  candidate: CatalogGenerationCandidateEvidence;
+  active: CatalogGenerationActiveV1 | null;
+  generationImpactDigest: string;
+}
+
+export interface CatalogDevActivationPreflight {
+  review: CatalogDevActivationReviewEvidence;
+  impacts: CatalogSourceImpact[];
+  sourceImpact?: CatalogSourcePreflightInventory;
 }
 
 export interface CatalogDevStatusReceipt {
@@ -228,6 +266,149 @@ export function catalogDevSourceError(error: unknown, fallbackCode = 'catalogDev
   return codedFailure(error, fallbackCode);
 }
 
+export async function preflightCatalogDevSourceActivation(options: {
+  cwd: string;
+  workspaceRoot?: string;
+  sourceId?: string;
+  primary?: boolean;
+  forceBuild?: boolean;
+  cliVersion: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<CatalogDevActivationPreflight> {
+  const { workspace } = await resolveWorkspace(options.cwd, options.workspaceRoot);
+  const status = await getCatalogStatus({
+    cwd: options.cwd,
+    workspaceRoot: workspace.workspaceRoot,
+    env: options.env,
+  });
+  if (options.forceBuild === true || status.snapshot.state !== 'current'
+    || status.snapshot.snapshotDigest === null) {
+    throw new CatalogDevSourceError(
+      'catalogDevBuildRequired',
+      'Build and Review the current Catalog snapshot before activating the development source.',
+    );
+  }
+
+  const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+  const owned = managedSources(configSnapshot.config.sources, workspace.workspaceIdentity);
+  if (owned.length > 1) {
+    throw new CatalogDevSourceError('multipleManagedSources', 'Workspace owns multiple development sources.');
+  }
+  const existing = owned[0];
+  let sourceId = options.sourceId ?? suggestedCatalogDevSourceId(
+    workspace.workspaceRoot,
+    workspace.workspaceIdentity,
+    configSnapshot.config.sources.map((source) => source.id),
+  );
+  if (options.sourceId !== undefined) {
+    assertExplicitSourceId(options.sourceId);
+    if (existing && existing.id !== options.sourceId) {
+      throw new CatalogDevSourceError('sourceIdConflict', 'Workspace already owns another development source.');
+    }
+    const collision = configSnapshot.config.sources.find((source) => source.id === options.sourceId);
+    if (collision && collision !== existing) {
+      throw new CatalogDevSourceError('sourceIdConflict', 'The selected source ID is already in use.');
+    }
+  }
+  if (existing) sourceId = existing.id;
+
+  const snapshotPath = path.join(workspace.workspaceRoot, DEFAULT_CATALOG_OUTPUT_PATH);
+  let proposedConfig = configSnapshot.config;
+  let sourceMutation: CatalogDevActivationReviewEvidence['sourceMutation'];
+  let sourceImpact: CatalogSourcePreflightInventory | undefined;
+  const impacts: CatalogSourceImpact[] = [];
+  if (!existing) {
+    const source: PathCatalogSource = {
+      id: sourceId,
+      type: 'path',
+      path: snapshotPath,
+      primary: false,
+      managedBy: { kind: 'catalog-workspace', workspaceIdentity: workspace.workspaceIdentity },
+    };
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'add', source },
+      cwd: workspace.workspaceRoot,
+      env: options.env,
+      managedByWorkspaceIdentity: workspace.workspaceIdentity,
+    });
+    proposedConfig = await addCatalogSource(configSnapshot.config, source, workspace.workspaceRoot);
+    sourceMutation = {
+      proposedConfigDigest: preview.proposedConfigDigest,
+      impactDigest: preview.impactDigest,
+    };
+    sourceImpact = preview.references;
+  } else if (existing.path !== snapshotPath) {
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'update', sourceId, update: { type: 'path', path: snapshotPath } },
+      cwd: workspace.workspaceRoot,
+      env: options.env,
+      managedByWorkspaceIdentity: workspace.workspaceIdentity,
+    });
+    proposedConfig = await updateCatalogSource(
+      configSnapshot.config,
+      sourceId,
+      { type: 'path', path: snapshotPath },
+      workspace.workspaceRoot,
+    );
+    sourceMutation = {
+      proposedConfigDigest: preview.proposedConfigDigest,
+      impactDigest: preview.impactDigest,
+    };
+    sourceImpact = preview.references;
+  }
+
+  let primaryImpactDigest: string | undefined;
+  const configured = proposedConfig.sources.find((source) => source.id === sourceId)!;
+  if (options.primary === true && !configured.primary) {
+    const fromSourceId = proposedConfig.sources.find((source) => source.primary)?.id;
+    if (!fromSourceId) throw new CatalogDevSourceError('sourceConfigInvalid', 'Catalog primary source is missing.');
+    const primaryImpact = await inspectCatalogSourceImpact({
+      sourceId,
+      cwd: workspace.workspaceRoot,
+      env: options.env,
+      primaryChange: { fromSourceId, toSourceId: sourceId },
+      mode: 'none',
+    });
+    impacts.push(primaryImpact);
+    primaryImpactDigest = calculateCatalogSourceImpactDigest(primaryImpact);
+    proposedConfig = setPrimaryCatalogSource(proposedConfig, sourceId);
+  }
+
+  const intendedSource = proposedConfig.sources.find((source) => source.id === sourceId)!;
+  const probe = await probeCatalogSourceGeneration({
+    sourceId,
+    source: intendedSource,
+    cliVersion: options.cliVersion,
+    env: options.env,
+  });
+  const generationImpact = await inspectCatalogSourceImpact({
+    sourceId,
+    cwd: workspace.workspaceRoot,
+    env: options.env,
+    sourcePrimary: intendedSource.primary,
+    mode: 'generation',
+    candidateManifest: probe.manifest,
+  });
+  impacts.push(generationImpact);
+  const active = (await readCatalogGenerationState(options.env)).sources[sourceId]?.active ?? null;
+  return {
+    review: {
+      workspaceIdentity: workspace.workspaceIdentity,
+      snapshotDigest: status.snapshot.snapshotDigest,
+      sourceId,
+      initialConfigDigest: configSnapshot.digest,
+      finalConfigDigest: calculateCatalogSourcesConfigDigest(proposedConfig),
+      ...(sourceMutation ? { sourceMutation } : {}),
+      ...(primaryImpactDigest ? { primaryImpactDigest } : {}),
+      candidate: probe.candidate,
+      active,
+      generationImpactDigest: calculateCatalogSourceImpactDigest(generationImpact),
+    },
+    impacts,
+    ...(sourceImpact ? { sourceImpact } : {}),
+  };
+}
+
 export async function activateCatalogDevSource(options: {
   cwd: string;
   workspaceRoot?: string;
@@ -237,6 +418,7 @@ export async function activateCatalogDevSource(options: {
   yes?: boolean;
   cliVersion: string;
   env: NodeJS.ProcessEnv;
+  expectedReview?: CatalogDevActivationReviewEvidence;
   runtime?: CatalogDevSourceRuntime;
 }): Promise<CatalogDevActivateReceipt> {
   const { resolved, workspace } = await resolveWorkspace(options.cwd, options.workspaceRoot);
@@ -246,6 +428,17 @@ export async function activateCatalogDevSource(options: {
   });
   let snapshotAction: 'reused' | 'built' = 'reused';
   let snapshotDigest = staticStatus.snapshot.snapshotDigest;
+  if (options.expectedReview) {
+    if (options.forceBuild === true
+      || staticStatus.snapshot.state !== 'current'
+      || snapshotDigest !== options.expectedReview.snapshotDigest
+      || workspace.workspaceIdentity !== options.expectedReview.workspaceIdentity) {
+      throw new CatalogDevSourceError(
+        'operationReviewStale',
+        'Catalog Workspace snapshot changed after Review. Review it again.',
+      );
+    }
+  }
   if (options.forceBuild === true || staticStatus.snapshot.state !== 'current') {
     try {
       await runCatalogBuildCommand({
@@ -274,6 +467,12 @@ export async function activateCatalogDevSource(options: {
   let sourceCommitted = false;
   try {
     const configSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+    if (options.expectedReview && configSnapshot.digest !== options.expectedReview.initialConfigDigest) {
+      throw new CatalogDevSourceError(
+        'operationReviewStale',
+        'Catalog source configuration changed after Review. Review it again.',
+      );
+    }
     const owned = managedSources(configSnapshot.config.sources, workspace.workspaceIdentity);
     if (owned.length > 1) {
       throw new CatalogDevSourceError('multipleManagedSources', 'Workspace owns multiple development sources.');
@@ -295,9 +494,16 @@ export async function activateCatalogDevSource(options: {
       }
     }
     if (existing) selectedId = existing.id;
+    if (options.expectedReview && selectedId !== options.expectedReview.sourceId) {
+      throw new CatalogDevSourceError(
+        'operationReviewStale',
+        'Catalog development source selection changed after Review.',
+      );
+    }
+    let currentConfigDigest = configSnapshot.digest;
     if (!existing) {
       sourceAction = 'added';
-      await addCatalogSourceCommand({
+      const mutation = await addCatalogSourceCommand({
         source: {
           id: selectedId, type: 'path', path: snapshotPath, primary: false,
           managedBy: { kind: 'catalog-workspace', workspaceIdentity: workspace.workspaceIdentity },
@@ -305,28 +511,49 @@ export async function activateCatalogDevSource(options: {
         cliVersion: options.cliVersion, cwd: workspace.workspaceRoot, env: options.env,
         runtime: options.runtime?.sourceRuntime,
         managedByWorkspaceIdentity: workspace.workspaceIdentity,
+        expectedConfigDigest: options.expectedReview?.initialConfigDigest,
+        expectedProposedConfigDigest: options.expectedReview?.sourceMutation?.proposedConfigDigest,
+        expectedImpactDigest: options.expectedReview?.sourceMutation?.impactDigest,
       });
+      currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
       sourceCommitted = true;
     } else if (existing.path !== snapshotPath) {
       sourceAction = 'updated';
-      await updateCatalogSourceCommand({
+      const mutation = await updateCatalogSourceCommand({
         sourceId: existing.id, update: { type: 'path', path: snapshotPath },
         cliVersion: options.cliVersion, cwd: workspace.workspaceRoot, env: options.env,
         runtime: options.runtime?.sourceRuntime,
         managedByWorkspaceIdentity: workspace.workspaceIdentity,
+        expectedConfigDigest: options.expectedReview?.initialConfigDigest,
+        expectedProposedConfigDigest: options.expectedReview?.sourceMutation?.proposedConfigDigest,
+        expectedImpactDigest: options.expectedReview?.sourceMutation?.impactDigest,
+        ...(options.expectedReview ? {
+          requireIdentityChangeConfirmation: true,
+          confirmIdentityChange: options.yes === true,
+        } : {}),
       });
+      currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
       sourceCommitted = true;
     }
     const current = (await readCatalogSourcesConfigSnapshot(options.env)).config.sources
       .find((source) => source.id === selectedId)!;
     if (options.primary === true && !current.primary) {
-      await setPrimaryCatalogSourceCommand({
+      const mutation = await setPrimaryCatalogSourceCommand({
         sourceId: selectedId, cwd: workspace.workspaceRoot, env: options.env,
         runtime: options.runtime?.sourceRuntime,
         requireImpactConfirmation: true,
         confirmImpact: options.yes === true,
+        expectedConfigDigest: options.expectedReview ? currentConfigDigest : undefined,
+        expectedImpactDigest: options.expectedReview?.primaryImpactDigest,
       });
+      currentConfigDigest = mutation.configDigest ?? currentConfigDigest;
       sourceCommitted = true;
+    }
+    if (options.expectedReview && currentConfigDigest !== options.expectedReview.finalConfigDigest) {
+      throw new CatalogDevSourceError(
+        'operationReviewStale',
+        'Catalog source configuration no longer matches Review.',
+      );
     }
     await options.runtime?.beforeSync?.();
     await syncCatalogSourceCommand({
@@ -335,6 +562,10 @@ export async function activateCatalogDevSource(options: {
       cwd: workspace.workspaceRoot,
       impactConfirmed: options.yes === true,
       env: options.env,
+      expectedCandidate: options.expectedReview?.candidate,
+      expectedActive: options.expectedReview?.active,
+      expectedConfigDigest: options.expectedReview?.finalConfigDigest,
+      expectedImpactDigest: options.expectedReview?.generationImpactDigest,
     });
     await options.runtime?.afterSync?.();
     const finalStatus = await getCatalogDevSourceStatus({

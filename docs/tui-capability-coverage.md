@@ -23,6 +23,19 @@
 | 调整安装前脚本超时 | `--script-timeout` | 会执行脚本的单插件、批量和配置应用确认页 → 高级选项。编辑后重新生成票据，执行使用确认值。 |
 | 有限所有权修复 | `cleanup --force` | 单目标受限清理检查 → 新确认。必须有唯一、精确、非空的专属内容证据；没有批量强制清理或绕过依赖保护入口。 |
 
+## Catalog 全生命周期
+
+目录管理页按需读取所选 Workspace、本地 Store、开发来源和发布记录。普通首页和插件来源页不扫描 Workspace、Store 或远端。
+
+| 用户任务 | CLI | TUI 入口和恢复路径 |
+| --- | --- | --- |
+| 选择或创建 Catalog Workspace | `catalog status`、`catalog init` | 插件来源 → 目录管理 → Catalog 工作区 → 选择目录或创建；路径输入只在本地草稿中显示脱敏摘要，写入前进入确认。 |
+| 查看状态、修改版本、构建和完整验证 | `catalog status/version/build/validate` | Catalog 工作区 → 状态、版本、构建或完整验证。构建明确写入 `.aw/catalog`；强制构建只替换已证明为生成物的输出。每个写动作有独立确认和结果。 |
+| 启用、停用和检查开发来源 | `catalog dev activate/status/deactivate` | 目录管理 → 开发来源。snapshot 未就绪时，先进入独立构建确认；构建成功并返回后，才可进入启用影响确认。停用保留引用影响检查和主来源替换确认。 |
+| 检查和清理本地 Catalog Store | `catalog store status/prune` | 目录管理 → 本地存储 → 清理预览 → 确认 → 实际结果。结果分别报告 deleted 与 retained；确认后新增的可清理项不进入本次删除集合。 |
+| 准备 Catalog 发布计划 | `catalog publish plan` | 目录管理 → 发布 → 输入 remote 或 remote URL 与 branch → 独立确认。页面明确此动作会写 version-scoped journal 和隔离发布仓库；取消确认不写 journal。 |
+| 应用或恢复待发布计划 | `catalog publish apply` | 发布计划结果或已有可信 `prepared/uncertain` 记录 → 独立应用确认 → 远端结果。恢复只使用现有 plan digest；journal 未保存 direct remote URL 时，TUI 要求重新输入原 remote 名称或 URL，并由后端核对目标身份。损坏或缺失记录停止并提示提高 Catalog 版本。取消应用确认不写远端。 |
+
 ## 会话导航
 
 `h` 返回唯一首页并保留当前快照；`H` 在保护草稿和等待执行安全结束后重建会话。它们不安装插件、不清理磁盘，也不自动启用目录更新。执行中的导航待办可以撤销；失败、部分成功和结果未确认时保留结果页。字段输入和搜索优先接收普通字符。
@@ -38,8 +51,8 @@
 | JSON、stdin 精确值、debug、日志路径、非交互授权与自动化参数 | 保留 CLI。这些是脚本和机器接口；TUI 提供相同用户任务的交互入口及安全诊断报告，不模拟机器输出模式。 |
 | 任意目录的 Skill materialize、validate 和 Eval | 保留 CLI 作者工具，不属于将插件安装到 Agent 的消费流程。 |
 | 插件 init、add-skill、validate、test、build、requirements | 明确不建设 TUI 作者工作区。开发者通过开发技能，由 Agent 调用 CLI 完成这些作者操作。 |
-| Catalog Workspace、开发源启停、构建和发布 | 明确不建设 TUI 开发工作区。开发者通过开发技能，由 Agent 调用 CLI；消费端来源配置、检查和恢复仍由 TUI 提供。发布、不可变版本与恢复 journal 的既有合同不变。 |
-| Catalog store 检查与 prune、自描述和底层维护 | 保留 CLI。普通来源恢复和插件清理在 TUI 内可达；存储维护不混入日常安装动作。 |
+| Catalog 插件作者 init/add-skill/test/requirements 与 CLI npm 发布 | 保留开发技能和 CLI。TUI 只覆盖 Catalog Workspace 的目录级管理、Store、开发来源与 Catalog 发布；不纳入单插件作者流程或 CLI npm 发布。 |
+| 自描述和底层维护 | 保留 CLI。TUI 不复制机器输出或任意文件维护接口。 |
 | 全部个人使用设置的单步 `sync --all --scope user` | 独立一键入口延期，本轮不开发。TUI 可选择多个插件并使用个人位置同步；项目 clone 恢复的一键流程优先。 |
 
 ## 变更检查
