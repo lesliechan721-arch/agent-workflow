@@ -7,6 +7,12 @@
       "platforms": [
         "codex"
       ]
+    },
+    {
+      "pluginId": "official/aw-skill-eval-runner",
+      "platforms": [
+        "codex"
+      ]
     }
   ],
   "dependencyScopeOverrides": []

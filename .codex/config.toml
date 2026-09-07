@@ -6,3 +6,6 @@ enabled = true
 
 [plugins."aw-plugin-development@aw"]
 enabled = true
+
+[plugins."aw-skill-eval-runner@aw"]
+enabled = true
