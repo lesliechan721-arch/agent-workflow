@@ -15,6 +15,12 @@ export type DependencyAssignmentSource =
   | 'consumerPromotion'
   | 'platformRequirement';
 
+export interface DependencyPlacementReference {
+  pluginId: string;
+  platform: PlatformName;
+  scope: Scope;
+}
+
 export interface DependencyPlacementTarget {
   pluginId: string;
   pluginName: string;
@@ -22,6 +28,8 @@ export interface DependencyPlacementTarget {
   relation: 'requested' | 'dependency';
   depth: number;
   requiredBy: string[];
+  requiredByTargets?: DependencyPlacementReference[];
+  requestedScope?: Scope;
   rootScope: Scope;
   minimumScope: Scope;
   resolvedScope: Scope;
@@ -74,6 +82,10 @@ function compareText(left: string, right: string): number {
 
 function targetKey(pluginId: string, platform: PlatformName): string {
   return `${pluginId}\0${platform}`;
+}
+
+function rootKey(root: DependencyPlacementRootInput): string {
+  return `${targetKey(root.pluginId, root.platform)}\0${root.scope}`;
 }
 
 function compareScope(left: Scope, right: Scope): number {
@@ -208,13 +220,18 @@ export function createDependencyPlacementPlan(
     nodesByKey.set(key, { ...node, allowedScopes });
   }
 
-  const rootsByKey = new Map<string, DependencyPlacementRootInput>();
+  const rootsByKey = new Map<string, DependencyPlacementRootInput[]>();
+  const rootKeys = new Set<string>();
   for (const root of input.roots) {
     const key = targetKey(root.pluginId, root.platform);
-    if (rootsByKey.has(key)) {
-      throw new Error(`dependencyPlacementDuplicateRoot: ${root.pluginId}#${root.platform}`);
+    const exactKey = rootKey(root);
+    if (rootKeys.has(exactKey)) {
+      throw new Error(
+        `dependencyPlacementDuplicateRoot: ${root.pluginId}#${root.platform}#${root.scope}`,
+      );
     }
-    rootsByKey.set(key, root);
+    rootKeys.add(exactKey);
+    rootsByKey.set(key, [...(rootsByKey.get(key) ?? []), root]);
   }
   for (const [key] of rootsByKey) {
     if (!nodesByKey.has(key)) throw new Error(`dependencyPlacementRootOutsideClosure: ${key}`);
@@ -244,10 +261,13 @@ export function createDependencyPlacementPlan(
 
   const placements = new Map<string, MutablePlacement>();
   for (const [key, node] of nodesByKey) {
-    const root = rootsByKey.get(key);
+    const roots = rootsByKey.get(key) ?? [];
+    const rootScope = roots.reduce<Scope>(
+      (scope, root) => widerScope(scope, root.scope),
+      'project',
+    );
     const override = overrideByKey.get(key);
     const allowedScopes = node.allowedScopes;
-    let rootScope = root?.scope ?? 'project';
     let minimumScope = rootScope;
     let resolvedScope: Scope;
     let assignmentSource: DependencyAssignmentSource;
@@ -255,8 +275,8 @@ export function createDependencyPlacementPlan(
     let lockReason: string | undefined;
     let placementErrorCode: string | undefined;
 
-    if (root) {
-      resolvedScope = root.scope;
+    if (roots.length > 0) {
+      resolvedScope = rootScope;
       assignmentSource = 'root';
       locked = true;
       lockReason = 'requestedRootScope';
@@ -280,7 +300,7 @@ export function createDependencyPlacementPlan(
       lockReason = 'platformRequirement';
     }
     if (!allowedScopes.includes(resolvedScope)) {
-      placementErrorCode = root
+      placementErrorCode = roots.length > 0
         ? 'dependencyRootScopeUnsupported'
         : override ? 'dependencyScopeOverrideUnsupported' : 'dependencyTargetUnsupported';
     }
@@ -339,34 +359,60 @@ export function createDependencyPlacementPlan(
   }
 
   const requiredByByKey = new Map<string, string[]>();
+  const requiredByTargetsByKey = new Map<string, DependencyPlacementReference[]>();
   for (const edge of edges) {
     const key = targetKey(edge.to, edge.platform);
     requiredByByKey.set(key, [...(requiredByByKey.get(key) ?? []), edge.from]);
+    const consumerKey = targetKey(edge.from, edge.platform);
+    const consumer = placements.get(consumerKey)!;
+    const consumerScopes = (rootsByKey.get(consumerKey) ?? []).map((root) => root.scope);
+    if (consumerScopes.length === 0) consumerScopes.push(consumer.resolvedScope);
+    requiredByTargetsByKey.set(key, [
+      ...(requiredByTargetsByKey.get(key) ?? []),
+      ...canonicalScopes(consumerScopes).map((scope) => ({
+        pluginId: edge.from,
+        platform: edge.platform,
+        scope,
+      })),
+    ]);
   }
-  const targets = [...placements.values()].map((placement): DependencyPlacementTarget => ({
-    pluginId: placement.node.pluginId,
-    pluginName: placement.node.pluginName,
-    platform: placement.node.platform,
-    relation: placement.node.relation,
-    depth: placement.node.depth,
-    requiredBy: requiredByByKey.get(targetKey(
-      placement.node.pluginId,
-      placement.node.platform,
-    )) ?? [],
-    rootScope: placement.rootScope,
-    minimumScope: placement.minimumScope,
-    resolvedScope: placement.resolvedScope,
-    allowedScopes: placement.node.allowedScopes,
-    assignmentSource: placement.assignmentSource,
-    locked: placement.locked,
-    ...(placement.lockReason ? { lockReason: placement.lockReason } : {}),
-    affectsOtherProjects: placement.resolvedScope === 'user',
-    ...(placement.placementErrorCode
-      ? { placementErrorCode: placement.placementErrorCode }
-      : {}),
-  })).sort((left, right) => left.depth - right.depth || compareText(
-    targetKey(left.pluginId, left.platform),
-    targetKey(right.pluginId, right.platform),
+  const targets = [...placements.entries()].flatMap(([key, placement]) => {
+    const roots = rootsByKey.get(key) ?? [];
+    const scopes = roots.length > 0
+      ? canonicalScopes(roots.map((root) => root.scope))
+      : [placement.resolvedScope];
+    return scopes.map((scope): DependencyPlacementTarget => {
+      const requestedScope = roots.length > 0 ? scope : undefined;
+      const resolvedScope = requestedScope ?? placement.resolvedScope;
+      const placementErrorCode = requestedScope
+        && !placement.node.allowedScopes.includes(requestedScope)
+        ? 'dependencyRootScopeUnsupported'
+        : placement.placementErrorCode;
+      return {
+        pluginId: placement.node.pluginId,
+        pluginName: placement.node.pluginName,
+        platform: placement.node.platform,
+        relation: placement.node.relation,
+        depth: placement.node.depth,
+        requiredBy: requiredByByKey.get(key) ?? [],
+        requiredByTargets: requiredByTargetsByKey.get(key) ?? [],
+        ...(requestedScope ? { requestedScope } : {}),
+        rootScope: requestedScope ?? placement.rootScope,
+        minimumScope: requestedScope ?? placement.minimumScope,
+        resolvedScope,
+        allowedScopes: placement.node.allowedScopes,
+        assignmentSource: requestedScope ? 'root' : placement.assignmentSource,
+        locked: requestedScope ? true : placement.locked,
+        ...(requestedScope
+          ? { lockReason: 'requestedRootScope' }
+          : placement.lockReason ? { lockReason: placement.lockReason } : {}),
+        affectsOtherProjects: resolvedScope === 'user',
+        ...(placementErrorCode ? { placementErrorCode } : {}),
+      };
+    });
+  }).sort((left, right) => left.depth - right.depth || compareText(
+    `${targetKey(left.pluginId, left.platform)}\0${left.requestedScope ?? left.resolvedScope}`,
+    `${targetKey(right.pluginId, right.platform)}\0${right.requestedScope ?? right.resolvedScope}`,
   ));
 
   return {

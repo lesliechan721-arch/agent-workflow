@@ -1,5 +1,16 @@
 import crypto from 'node:crypto';
 
+import {
+  CatalogManagementError,
+  type CatalogDevManagementViewModel,
+  type CatalogManagementIntent,
+  type CatalogManagementReviewEvidence,
+  type CatalogManagementService,
+  type CatalogPublicationManagementViewModel,
+  type CatalogStoreManagementViewModel,
+  type CatalogValidationViewModel,
+  type CatalogWorkspaceManagementViewModel,
+} from './catalog-management.js';
 import type {
   CatalogActivationMode,
   CatalogSource,
@@ -87,13 +98,33 @@ import {
   catalogSourceAutoCheckOnlyValue,
   projectCatalogSourceMutationWarnings,
 } from './catalog-sources/review.js';
+import {
+  buildPluginWriteTaskCandidates,
+  pluginWriteTaskTargetKey,
+  type PluginWriteTaskBlockedTarget,
+  type PluginWriteTaskCandidate,
+  type PluginWriteTaskCause,
+  type PluginWriteTaskGoal,
+  type PluginWriteTaskIntent,
+  type PluginWriteTaskTarget,
+} from './plugin-write-task.js';
+
+export type {
+  PluginWriteTaskBlockReason,
+  PluginWriteTaskCandidate,
+  PluginWriteTaskExpectedUpdate,
+  PluginWriteTaskGoal,
+  PluginWriteTaskIntent,
+  PluginWriteTaskMethod,
+  PluginWriteTaskTarget,
+} from './plugin-write-task.js';
 
 type CatalogActivationBlockReason =
-  | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
+  | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'catalogDraft' | 'portableDraft'
   | 'activeReview' | 'reviewPreparation' | 'writeProgress';
 
 export interface ExternalDraftState {
-  kind: 'configDraft' | 'sourceDraft' | 'batchDraft';
+  kind: 'configDraft' | 'sourceDraft' | 'batchDraft' | 'catalogDraft';
   owner: string;
   flowId?: string;
   revision: number;
@@ -157,6 +188,40 @@ export interface PluginWriteBatchExecutionResult extends RebuildCommandResult {
   groupResults: PluginWriteBatchGroupResult[];
 }
 
+export interface PluginWriteTaskSourceEvidence {
+  sourceId: string;
+  sourceIdentity: string;
+  requestedTargets: PluginWriteTaskTarget[];
+  causes: PluginWriteTaskCause[];
+  preview: RebuildCommandResult;
+  executable: boolean;
+}
+
+export interface PluginWriteTaskEvidence extends OperationEvidence {
+  taskPlan: {
+    goal: PluginWriteTaskGoal;
+    requestedTargets: PluginWriteTaskTarget[];
+    executableTargets: PluginWriteTaskTarget[];
+    causes: PluginWriteTaskCause[];
+    blockedTargets: PluginWriteTaskBlockedTarget[];
+    sources: PluginWriteTaskSourceEvidence[];
+    targetFingerprint: string;
+    planFingerprint: string;
+  };
+}
+
+export interface PluginWriteTaskSourceResult {
+  sourceId: string;
+  sourceIdentity: string;
+  requestedTargets: PluginWriteTaskTarget[];
+  result: RebuildCommandResult;
+}
+
+export interface PluginWriteTaskExecutionResult extends RebuildCommandResult {
+  taskPlan: PluginWriteTaskEvidence['taskPlan'];
+  sourceResults: PluginWriteTaskSourceResult[];
+}
+
 export type OperationKind = OperationIntent['kind'];
 
 export interface IssueOrigin {
@@ -182,12 +247,19 @@ export type OperationIntent =
       platform: PlatformName | 'both';
       scope: Scope;
       dependencyScopeOverrides?: DependencyScopeOverride[];
+      expectedUpdate?: {
+        installedVersion: string;
+        activeVersion: string;
+        sourceIdentity: string;
+        generationKey: string;
+      };
       recoveryDescription?: string;
       force?: boolean;
       scriptTimeoutMs?: number;
       originIssue?: IssueOrigin;
     }
   | PluginWriteBatchIntent
+  | PluginWriteTaskIntent
   | {
       kind: 'portableInstall';
       pluginId: string;
@@ -247,6 +319,7 @@ export type OperationIntent =
   | {
       kind: 'catalogSourcesRecovery';
     }
+  | CatalogManagementIntent
   ;
 
 export interface OperationEvidence {
@@ -328,6 +401,7 @@ export interface OperationEvidence {
     sourceMutation?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation'];
     setPrimaryAfterActivation?: boolean;
   };
+  catalogManagement?: CatalogManagementReviewEvidence;
   portable?: PortableReview;
 }
 
@@ -352,6 +426,7 @@ export interface OperationReviewModel {
   operationKind: OperationKind;
   sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
   pluginAction?: PluginWriteOperation;
+  taskGoal?: PluginWriteTaskGoal;
   originIssue?: IssueOrigin;
   title: string;
   description: string;
@@ -380,6 +455,13 @@ export interface OperationReviewModel {
     requestedPluginIds: string[];
     groupCount: number;
     executableGroupCount: number;
+  };
+  task?: {
+    goal: PluginWriteTaskGoal;
+    requestedTargetCount: number;
+    executableTargetCount: number;
+    blockedTargetCount: number;
+    causeCount: number;
   };
 }
 
@@ -479,6 +561,24 @@ export interface OperationResultSummary {
   pluginId?: string;
   action?: PluginWriteOperation;
   catalogAction?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
+  catalogManagement?: {
+    action: CatalogManagementIntent['action'];
+    state: 'succeeded' | 'partial';
+    catalogVersion?: string;
+    planDigest?: string;
+    store?: {
+      deletedEntries: number;
+      deletedBytes: number;
+      retainedEntries: number;
+    };
+    publication?: {
+      catalogVersion: string;
+      planDigest: string;
+      state: 'prepared' | 'uncertain' | 'published';
+      remote: string;
+      branch: string;
+    };
+  };
   catalogGeneration?: Pick<CatalogGenerationSyncResult,
     'activeChanged' | 'outcome'> & { catalogVersion: string };
   elapsedMs?: number;
@@ -498,8 +598,16 @@ export interface OperationResultSummary {
   batch?: {
     requestedPluginIds: string[];
     failedRequestedPluginIds: string[];
+    rootResults: PluginWriteBatchRootResult[];
     retryTargets?: PluginWriteBatchTarget[];
     groupCount: number;
+  };
+  task?: {
+    goal: PluginWriteTaskGoal;
+    requestedTargets: PluginWriteTaskTarget[];
+    rootResults: PluginWriteTaskRootResult[];
+    retryTargets?: PluginWriteTaskTarget[];
+    blockedTargets: PluginWriteTaskBlockedTarget[];
   };
   portable?: {
     selectedSkills: string[];
@@ -523,6 +631,33 @@ export interface OperationResultSummary {
     errorCode?: string;
     diagnosticIds?: string[];
     effects?: OperationEffectFacts;
+  }>;
+}
+
+export interface PluginWriteTaskRootResult {
+  pluginId: string;
+  state: 'completed' | 'kept' | 'partial' | 'failed' | 'notStarted' | 'blocked';
+  causeKeys: string[];
+  targets: Array<{
+    pluginId?: string;
+    platform: PlatformName;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    relation?: 'requested' | 'direct' | 'transitive';
+    errorCode?: string;
+  }>;
+}
+
+export interface PluginWriteBatchRootResult {
+  pluginId: string;
+  state: 'completed' | 'kept' | 'partial' | 'failed' | 'notStarted';
+  targets: Array<{
+    pluginId: string;
+    platform: PlatformName;
+    scope: Scope;
+    state: 'completed' | 'kept' | 'failed' | 'skipped';
+    relation: 'requested';
+    errorCode?: string;
   }>;
 }
 
@@ -577,6 +712,7 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
+  catalogManagement?: CatalogManagementService;
   beginCatalogSession?: (options?: {
     reuseValidatedGenerations?: boolean;
   }) => void;
@@ -737,9 +873,31 @@ function canonicalBatchTargets(targets: readonly PluginWriteBatchTarget[]): Plug
       .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
 }
 
+function canonicalPluginWriteTaskTargets(
+  targets: readonly PluginWriteTaskTarget[],
+): PluginWriteTaskTarget[] {
+  return [...new Map(targets.map((target) => [pluginWriteTaskTargetKey(target), target])).values()]
+    .sort((left, right) => pluginWriteTaskTargetKey(left)
+      .localeCompare(pluginWriteTaskTargetKey(right), 'en'));
+}
+
 function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
   if (intent.kind === 'configSave' && intent.retryApply && !intent.apply) {
     return { ...intent, apply: true };
+  }
+  if (intent.kind === 'pluginWriteTask') {
+    return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
+  }
+  if (intent.kind === 'catalogManagement' && intent.action === 'storePrune') {
+    const items = [...new Map(intent.items.map((item) => [
+      `${item.category}\0${item.storeKey}`,
+      item,
+    ])).values()].sort((left, right) =>
+      `${left.category}\0${left.storeKey}`.localeCompare(
+        `${right.category}\0${right.storeKey}`,
+        'en',
+      ));
+    return { ...intent, items };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
   if (intent.selection.kind === 'targets') {
@@ -756,6 +914,54 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
       pluginIds: canonicalPluginIds(intent.selection.pluginIds),
     },
   };
+}
+
+function assertPluginWriteTaskEvidence(
+  intent: PluginWriteTaskIntent,
+  evidence: OperationEvidence,
+): asserts evidence is PluginWriteTaskEvidence {
+  const candidate = evidence as Partial<PluginWriteTaskEvidence>;
+  const plan = candidate.taskPlan;
+  if (!plan || plan.goal !== intent.goal || !Array.isArray(plan.requestedTargets)
+    || !Array.isArray(plan.executableTargets) || !Array.isArray(plan.blockedTargets)
+    || !Array.isArray(plan.causes) || !Array.isArray(plan.sources)
+    || typeof plan.targetFingerprint !== 'string' || typeof plan.planFingerprint !== 'string'
+    || JSON.stringify(plan.requestedTargets) !== JSON.stringify(intent.targets)
+    || plan.executableTargets.length === 0) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务确认信息不完整。');
+  }
+  if (plan.planFingerprint !== operationEvidenceFingerprint(evidence)) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务确认指纹无效。');
+  }
+  if (intent.executionPolicy === 'all' && plan.blockedTargets.length > 0) {
+    throw new TuiOperationBlockedError('taskHasBlockedTargets', '部分目标需要先处理，不能作为完整任务执行。');
+  }
+  const requested = new Set(plan.requestedTargets.map(pluginWriteTaskTargetKey));
+  const executable = new Set(plan.executableTargets.map(pluginWriteTaskTargetKey));
+  const blocked = new Set(plan.blockedTargets.map((target) => pluginWriteTaskTargetKey(target.target)));
+  if (executable.size !== plan.executableTargets.length || blocked.size !== plan.blockedTargets.length
+    || [...executable].some((key) => !requested.has(key) || blocked.has(key))
+    || [...blocked].some((key) => !requested.has(key))
+    || [...requested].some((key) => !executable.has(key) && !blocked.has(key))) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务目标分区无效。');
+  }
+  const grouped = new Set<string>();
+  for (const source of plan.sources) {
+    if (!source.sourceId || !source.sourceIdentity || source.requestedTargets.length === 0
+      || source.executable !== Boolean(source.preview.operationPlan)
+      || source.requestedTargets.some((target) =>
+        !executable.has(pluginWriteTaskTargetKey(target))
+        || sourceIdFromPluginId(target.pluginId) !== source.sourceId)
+      || source.causes.some((cause) => cause.sourceId !== source.sourceId
+        || cause.sourceIdentity !== source.sourceIdentity
+        || cause.consumers.some((consumer) => !executable.has(pluginWriteTaskTargetKey(consumer))))) {
+      throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务来源计划无效。');
+    }
+    source.requestedTargets.forEach((target) => grouped.add(pluginWriteTaskTargetKey(target)));
+  }
+  if ([...executable].some((key) => !grouped.has(key))) {
+    throw new TuiOperationBlockedError('taskEvidenceInvalid', '任务来源计划缺少可执行目标。');
+  }
 }
 
 function assertPluginWriteBatchEvidence(
@@ -867,7 +1073,60 @@ export function pluginWriteBatchFailedRequestedPluginIds(
     .map((target) => target.pluginId));
 }
 
+export function pluginWriteTaskFailedRequestedTargets(
+  execution: PluginWriteTaskExecutionResult,
+): PluginWriteTaskTarget[] {
+  const requested = new Map(execution.taskPlan.requestedTargets.map((target) => [
+    pluginWriteTaskTargetKey(target), target,
+  ]));
+  const failed = new Set<string>();
+  const succeeded = new Set<string>();
+  for (const source of execution.sourceResults) {
+    const sourceRequested = new Set(source.requestedTargets.map(pluginWriteTaskTargetKey));
+    if (source.result.targetResults.length === 0 && source.result.overallState !== 'succeeded') {
+      sourceRequested.forEach((key) => failed.add(key));
+      continue;
+    }
+    for (const result of source.result.targetResults) {
+      const pluginId = result.target.pluginId;
+      if (!pluginId) continue;
+      const exactKey = pluginWriteTaskTargetKey({
+        pluginId,
+        platform: result.target.platform,
+        scope: result.target.scope,
+      });
+      if (sourceRequested.has(exactKey)) {
+        if (result.state === 'failed' || result.action === 'skipped') failed.add(exactKey);
+        else succeeded.add(exactKey);
+      }
+      if (result.state !== 'failed' && result.action !== 'skipped') continue;
+      for (const cause of source.requestedTargets.length > 0
+        ? execution.taskPlan.causes.filter((cause) => cause.sourceId === source.sourceId) : []) {
+        if (pluginWriteTaskTargetKey(cause.repairTarget) !== exactKey) continue;
+        cause.consumers.forEach((consumer) => failed.add(pluginWriteTaskTargetKey(consumer)));
+      }
+      const placement = source.result.dependencyPlan?.targets.find((target) =>
+        target.pluginId === pluginId && target.platform === result.target.platform
+        && (target.requestedScope ?? target.resolvedScope) === result.target.scope);
+      for (const consumer of placement?.requiredByTargets ?? []) {
+        failed.add(pluginWriteTaskTargetKey(consumer));
+      }
+    }
+  }
+  for (const key of succeeded) failed.delete(key);
+  return canonicalPluginWriteTaskTargets([...failed].flatMap((key) => {
+    const target = requested.get(key);
+    return target ? [target] : [];
+  }));
+}
+
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
+  if (intent.kind === 'catalogManagement') {
+    return [
+      ...('ownerUrl' in intent && intent.ownerUrl ? [intent.ownerUrl] : []),
+      ...('remoteUrl' in intent && intent.remoteUrl ? [intent.remoteUrl] : []),
+    ];
+  }
   if (intent.kind !== 'configSave') return [];
   const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const values: string[] = [];
@@ -915,6 +1174,53 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if (evidence.catalogManagement) {
+    const management = evidence.catalogManagement;
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue(management.action === 'storePrune'
+        ? {
+            action: management.action,
+            workspaceBinding: management.workspaceBinding,
+            authorizedStoreItems: management.authorizedStoreItems,
+          }
+        : {
+            action: management.action,
+            workspaceBinding: management.workspaceBinding,
+            evidenceDigest: management.evidenceDigest,
+          })))
+      .digest('hex');
+  }
+  if ('taskPlan' in evidence) {
+    const task = (evidence as PluginWriteTaskEvidence).taskPlan;
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        catalog: evidence.catalog,
+        goal: task.goal,
+        requestedTargets: task.requestedTargets,
+        executableTargets: task.executableTargets,
+        causes: task.causes,
+        blockedTargets: task.blockedTargets,
+        targetFingerprint: task.targetFingerprint,
+        sources: task.sources.map((source) => ({
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
+          requestedTargets: source.requestedTargets,
+          causes: source.causes,
+          executable: source.executable,
+          planFingerprint: source.preview.operationPlan?.planFingerprint,
+          targetResults: source.preview.targetResults.map((target) => ({
+            pluginId: target.target.pluginId,
+            platform: target.target.platform,
+            scope: target.target.scope,
+            state: target.state,
+            action: target.action,
+            errorCode: target.errorCode,
+            requiredBy: target.requiredBy,
+          })),
+        })),
+      })))
+      .digest('hex');
+  }
   if ('groups' in evidence && 'requestedPluginIds' in evidence) {
     const batch = evidence as PluginWriteBatchEvidence;
     return crypto.createHash('sha256')
@@ -1015,6 +1321,7 @@ function issueCode(error: unknown): string {
   const safeOperationError = readSafeOperationError(error);
   if (safeOperationError) return safeDiagnosticCode(safeOperationError.code, 'operationBlocked');
   if (error instanceof TuiOperationBlockedError) return error.code;
+  if (error instanceof CatalogManagementError) return error.code;
   if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
     return 'operationReviewStale';
@@ -1091,6 +1398,7 @@ export class TuiController {
   #retiring = false;
   #externalDrafts: ExternalDraftState[] = [];
   #batchRetryIntent?: PluginWriteBatchIntent;
+  #taskRetryIntent?: PluginWriteTaskIntent;
   #operationHistory = new OperationHistoryStore();
   #sessionEpoch = 0;
   #lastRecordedResultId?: string;
@@ -1123,6 +1431,7 @@ export class TuiController {
       onError: (error, code) => {
         void this.#logErrorSafe(error, code);
       },
+      now: this.dependencies.now,
     });
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
@@ -1334,6 +1643,7 @@ export class TuiController {
     this.#installPlacementDraft = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#batchRetryIntent = undefined;
+    this.#taskRetryIntent = undefined;
     this.#externalDrafts = [];
     this.#result = undefined;
     this.#resultAnchor = undefined;
@@ -1501,6 +1811,16 @@ export class TuiController {
 
   #ensureOperationFlow(intent: OperationIntent): void {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'catalogManagement') {
+      if (active?.kind === 'catalogManagement') return;
+      this.#router.beginFlow('catalogManagement', this.#router.snapshot.current.route);
+      return;
+    }
+    if (intent.kind === 'pluginWriteTask') {
+      if (active?.kind === 'pluginWriteTask') return;
+      this.#router.beginFlow('pluginWriteTask', this.#router.snapshot.current.route);
+      return;
+    }
     if (intent.kind === 'pluginWriteBatch') {
       if (active?.kind === 'batchWrite') return;
       this.#router.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' });
@@ -1543,7 +1863,9 @@ export class TuiController {
         : intent.kind === 'sourceMutation' && intent.action !== 'remove'
         ? { name: 'sourceDetail', sourceId: intent.sourceId }
         : intent.kind === 'catalogGeneration'
-          ? { name: 'sourceDetail', sourceId: intent.sourceId }
+          ? this.#router.snapshot.current.route.name === 'pluginWriteTask'
+            ? this.#router.snapshot.current.route
+            : { name: 'sourceDetail', sourceId: intent.sourceId }
           : { name: 'sourceList' },
     );
   }
@@ -1560,6 +1882,7 @@ export class TuiController {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
     if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
+    if (intent.kind === 'pluginWriteTask') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'portableInstall' || intent.kind === 'configSave' || intent.kind === 'configReset') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
@@ -1567,7 +1890,20 @@ export class TuiController {
       return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
     }
     if (intent.kind === 'catalogGeneration') {
+      if ('returnRoute' in result && result.returnRoute?.name === 'pluginWriteTask') {
+        return this.#normalizeRoute(result.returnRoute);
+      }
       return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
+    }
+    if (intent.kind === 'catalogManagement') {
+      if (intent.action === 'devActivate' || intent.action === 'devDeactivate') {
+        return { name: 'catalogDev', step: 'overview' };
+      }
+      if (intent.action === 'storePrune') return { name: 'catalogStore' };
+      if (intent.action === 'publishPlan' || intent.action === 'publishApply') {
+        return { name: 'catalogPublish', step: 'overview' };
+      }
+      return { name: 'catalogWorkspace', view: 'overview' };
     }
     return { name: 'sourceList' };
   }
@@ -1606,6 +1942,20 @@ export class TuiController {
             kind: 'targets',
             targets: structuredClone(result.summary.batch.retryTargets!),
           },
+      }
+      : undefined;
+    this.#taskRetryIntent = intent.kind === 'pluginWriteTask'
+      && 'summary' in result
+      && result.summary?.task
+      && (result.summary.task.retryTargets?.length ?? 0) > 0
+      ? {
+          ...structuredClone(intent),
+          targets: result.summary.task.retryTargets!.map((target) => {
+            const current = this.listPluginWriteTaskCandidates(intent.goal).find((candidate) =>
+              pluginWriteTaskTargetKey(candidate.target) === pluginWriteTaskTargetKey(target));
+            return structuredClone(current?.eligible ? current.target : target);
+          }),
+          executionPolicy: 'all',
         }
       : undefined;
     if (!this.#router.finishFlow(target, terminal)) this.#router.replace(terminal);
@@ -1647,14 +1997,18 @@ export class TuiController {
     this.#catalogSourcesSession.configure(status.payload.catalog.sources.map((source) => {
       const generation = this.#catalogGenerations.get(source.id);
       const detail = details.get(source.id);
+      const probeFingerprint = JSON.stringify({
+        sourceIdentity: source.identity,
+        requestedRef: source.requestedRef,
+      });
       return {
         sourceId: source.id,
         primary: source.primary,
         autoCheck: this.dependencies.probeCatalogFreshness !== undefined
           && (detail?.autoCheck ?? true),
+        probeFingerprint,
         fingerprint: JSON.stringify({
-          sourceIdentity: source.identity,
-          requestedRef: source.requestedRef,
+          probeFingerprint,
           activeStoreKey: generation?.active?.storeKey,
           generationState: generation?.state,
           generationErrorCode: generation?.errorCode,
@@ -2408,6 +2762,7 @@ export class TuiController {
       (!options.sourceId || plugin.sourceId === options.sourceId)
       && (options.mode === 'browse' || hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
+      && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 
@@ -2419,6 +2774,10 @@ export class TuiController {
   getPluginDependencyOverview(pluginId: string): PluginDependencyOverviewViewModel | undefined {
     const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
     return overview ? cloneFrozen(overview) : undefined;
+  }
+
+  listPluginDependencyOverviews(): PluginDependencyOverviewViewModel[] {
+    return cloneFrozen(this.#viewModel?.dependencyOverviews ?? []);
   }
 
   getBlockingDependents(
@@ -2580,7 +2939,7 @@ export class TuiController {
   }
 
   setExternalDraftState(states: ExternalDraftState[] = []): void {
-    const priority = { sourceDraft: 0, batchDraft: 1, configDraft: 2 } as const;
+    const priority = { sourceDraft: 0, batchDraft: 1, catalogDraft: 2, configDraft: 3 } as const;
     this.#externalDrafts = structuredClone(states).sort((left, right) =>
       priority[left.kind] - priority[right.kind] || left.owner.localeCompare(right.owner, 'en'));
     this.#publish();
@@ -2597,10 +2956,24 @@ export class TuiController {
     return this.startReviewPreparation(intent, { name: 'batchPlacement' });
   }
 
+  startPluginWriteTaskReview(
+    intent: PluginWriteTaskIntent,
+    returnRoute?: TuiRoute,
+  ): ReviewPreparationSnapshot {
+    return this.startReviewPreparation(intent, returnRoute);
+  }
+
   retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {
     if (!this.#batchRetryIntent) return undefined;
     const intent = structuredClone(this.#batchRetryIntent);
     this.#batchRetryIntent = undefined;
+    return this.startReviewPreparation(intent, { name: 'pluginList', mode: 'installed' });
+  }
+
+  retryFailedPluginWriteTask(): ReviewPreparationSnapshot | undefined {
+    if (!this.#taskRetryIntent) return undefined;
+    const intent = structuredClone(this.#taskRetryIntent);
+    this.#taskRetryIntent = undefined;
     return this.startReviewPreparation(intent, { name: 'pluginList', mode: 'installed' });
   }
 
@@ -2614,12 +2987,29 @@ export class TuiController {
     return undefined;
   }
 
-  catalogSourceRecoveryBlockReason(): CatalogActivationBlockReason | undefined {
+  catalogSourceRecoveryBlockReason(
+    intent?: Extract<OperationIntent, { kind: 'catalogGeneration' }>,
+  ): CatalogActivationBlockReason | undefined {
     const activeFlow = this.#router.activeFlow();
+    const route = this.#router.snapshot.current.route;
+    const ownedFrozenBatchTask = intent !== undefined
+      && route.name === 'pluginWriteTask'
+      && route.targetKeys !== undefined
+      && route.targetKeys.length > 0
+      && route.batchOrigin !== undefined
+      && activeFlow?.id === route.batchOrigin.flowId
+      && this.listPluginWriteTaskCandidates(route.goal).some((candidate) =>
+        candidate.sourceId === intent.sourceId
+        && candidate.blockReason === 'catalogActivationRequired'
+        && route.targetKeys!.includes(pluginWriteTaskTargetKey(candidate.target)));
     const blockingExternalDraft = this.#externalDrafts.find((draft) =>
       !(draft.kind === 'configDraft'
         && activeFlow?.kind === 'sourceRecovery'
-        && activeFlow.parentFlowId !== undefined));
+        && activeFlow.parentFlowId !== undefined)
+      && !(ownedFrozenBatchTask
+        && draft.kind === 'batchDraft'
+        && draft.owner === route.batchOrigin?.owner
+        && draft.flowId === route.batchOrigin.flowId));
     if (blockingExternalDraft) return blockingExternalDraft.kind;
     if (this.#portableDraft) return 'portableDraft';
     if (this.#reviewPreparation) return 'reviewPreparation';
@@ -2704,6 +3094,97 @@ export class TuiController {
     )));
   }
 
+  async selectCatalogWorkspace(
+    workspaceRoot?: string,
+  ): Promise<CatalogWorkspaceManagementViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.catalogManagement.selectWorkspace(workspaceRoot),
+    ));
+  }
+
+  async getCatalogWorkspaceManagement(): Promise<CatalogWorkspaceManagementViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getWorkspace()));
+  }
+
+  async validateCatalogWorkspace(): Promise<CatalogValidationViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.catalogManagement.validateWorkspace(),
+    ));
+  }
+
+  async getCatalogDevManagement(): Promise<CatalogDevManagementViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getDev()));
+  }
+
+  async getCatalogStoreManagement(): Promise<CatalogStoreManagementViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getStore()));
+  }
+
+  async getCatalogPublicationManagement(): Promise<CatalogPublicationManagementViewModel> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.catalogManagement) {
+      throw new TuiOperationBlockedError(
+        'catalogManagementUnavailable',
+        'Catalog management is unavailable.',
+      );
+    }
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.catalogManagement.getPublication(),
+    ));
+  }
+
+  async previewConfigSaveImpact(
+    intent: Extract<OperationIntent, { kind: 'configSave' }>,
+    signal?: AbortSignal,
+  ): Promise<NonNullable<OperationEvidence['config']>> {
+    this.#assertAcceptingActions();
+    const normalized = normalizeOperationIntent(intent) as Extract<OperationIntent, { kind: 'configSave' }>;
+    this.#validateReviewIntent(normalized);
+    const combined = signal
+      ? AbortSignal.any([this.#abort.signal, signal])
+      : this.#abort.signal;
+    const evidence = await this.#trackRead(this.#prepareReviewEvidence(normalized, combined));
+    if (!evidence.config) {
+      throw new TuiOperationBlockedError('configImpactUnavailable', '无法确定设置修改的应用影响。');
+    }
+    return cloneFrozen(evidence.config);
+  }
+
   async getConfigResetAvailability(
     pluginId: string,
     layer: { scope: Scope },
@@ -2724,6 +3205,12 @@ export class TuiController {
 
   listUserIssues(): UserIssueViewModel[] {
     return cloneFrozen(this.#viewModel?.issues ?? []);
+  }
+
+  listPluginWriteTaskCandidates(goal: PluginWriteTaskGoal): PluginWriteTaskCandidate[] {
+    return cloneFrozen(this.#viewModel
+      ? buildPluginWriteTaskCandidates(this.#viewModel, goal)
+      : []);
   }
 
   async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
@@ -2751,7 +3238,7 @@ export class TuiController {
     this.#assertAcceptingActions();
     intent = normalizeOperationIntent(intent);
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
-      const blockReason = this.catalogSourceRecoveryBlockReason();
+      const blockReason = this.catalogSourceRecoveryBlockReason(intent);
       if (blockReason) {
         throw new TuiOperationBlockedError(
           'catalogActivationBlocked',
@@ -2817,6 +3304,49 @@ export class TuiController {
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
+    if (intent.kind === 'catalogManagement') {
+      if (intent.action === 'storePrune' && intent.items.length === 0) {
+        throw new TuiOperationBlockedError(
+          'catalogStoreSelectionInvalid',
+          'Select at least one reclaimable Catalog store item.',
+        );
+      }
+      if (intent.action === 'workspaceVersion'
+        && (intent.version === undefined) === (intent.bump === undefined)) {
+        throw new TuiOperationBlockedError(
+          'catalogVersionSelectionInvalid',
+          'Select exactly one Catalog version or bump level.',
+        );
+      }
+      if ((intent.action === 'publishPlan' || intent.action === 'publishApply')
+        && intent.remote !== undefined && intent.remoteUrl !== undefined) {
+        throw new TuiOperationBlockedError(
+          'catalogPublicationTargetInvalid',
+          'Select a Git remote name or one direct remote URL.',
+        );
+      }
+      if (intent.action === 'publishApply'
+        && !/^sha256:[0-9a-f]{64}$/u.test(intent.expectedPlanDigest)) {
+        throw new TuiOperationBlockedError(
+          'catalogPublicationPlanInvalid',
+          'Select an exact prepared Catalog publication plan.',
+        );
+      }
+    }
+    if (intent.kind === 'pluginWriteTask') {
+      if (intent.targets.length === 0
+        || JSON.stringify(intent.targets) !== JSON.stringify(canonicalPluginWriteTaskTargets(intent.targets))) {
+        throw new TuiOperationBlockedError('taskSelectionInvalid', '任务目标必须是非空精确目标集合。');
+      }
+      for (const target of intent.targets) {
+        sourceIdFromPluginId(target.pluginId);
+        if ((target.platform !== 'codex' && target.platform !== 'claude')
+          || (target.scope !== 'user' && target.scope !== 'project')
+          || (intent.goal === 'update') !== Boolean(target.expectedUpdate)) {
+          throw new TuiOperationBlockedError('taskSelectionInvalid', '任务目标或版本证据无效。');
+        }
+      }
+    }
     if (intent.kind === 'pluginWriteBatch') {
       if (intent.selection.kind === 'currentProjectIntentRoots'
         && (intent.action !== 'sync' || intent.scope !== 'project')) {
@@ -2844,7 +3374,9 @@ export class TuiController {
   }
 
   #reviewPreparationLabel(intent: OperationIntent): string {
+    if (intent.kind === 'catalogManagement') return 'Catalog 管理';
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
+    if (intent.kind === 'pluginWriteTask') return `${intent.targets.length} 个安装位置`;
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
         ? `${intent.selection.pluginIds.length} 个插件`
@@ -2898,9 +3430,10 @@ export class TuiController {
         stage.state === 'running' ? { ...stage, state: 'completed' } : stage);
       this.#publish();
       const returnRoute = structuredClone(preparation.returnRoute);
+      this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
       this.#reviewPreparationIntents.delete(preparation.snapshot.id);
       this.#reviewPreparation = undefined;
-      this.#storeOperationReview(intent, evidence, 'replace', returnRoute);
+      this.#publish();
     } catch (error) {
       if (!this.#reviewPreparationIsCurrent(token)) return;
       const code = issueCode(error);
@@ -3026,6 +3559,7 @@ export class TuiController {
   ): OperationReviewModel {
     this.#ensureOperationFlow(intent);
     if (intent.kind === 'pluginWriteBatch') assertPluginWriteBatchEvidence(evidence);
+    if (intent.kind === 'pluginWriteTask') assertPluginWriteTaskEvidence(intent, evidence);
     if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
     const projection = buildOperationReviewProjection({
       intent,
@@ -3041,9 +3575,11 @@ export class TuiController {
     const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
     const pluginId = 'pluginId' in intent ? intent.pluginId
-      : 'sourceId' in intent ? intent.sourceId
+      : 'sourceId' in intent ? intent.sourceId ?? 'Catalog 管理'
         : intent.kind === 'pluginWriteBatch'
           ? `${(evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : intent.kind === 'pluginWriteTask'
+            ? `${(evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets.length} 个安装位置`
           : 'Catalog 来源配置';
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const pluginVersion = 'pluginId' in intent
@@ -3060,6 +3596,7 @@ export class TuiController {
           ? { sourceAction: intent.sourceMutation.action } : {}),
       ...(intent.kind === 'pluginWrite' ? { pluginAction: intent.action } : {}),
       ...(intent.kind === 'pluginWriteBatch' ? { pluginAction: intent.action } : {}),
+      ...(intent.kind === 'pluginWriteTask' ? { taskGoal: intent.goal } : {}),
       ...(intent.kind === 'pluginWrite' && intent.originIssue
         ? { originIssue: intent.originIssue }
         : {}),
@@ -3078,6 +3615,15 @@ export class TuiController {
           groupCount: (evidence as PluginWriteBatchEvidence).groups.length,
           executableGroupCount: (evidence as PluginWriteBatchEvidence).groups
             .filter((group) => group.executable).length,
+        },
+      } : {}),
+      ...(intent.kind === 'pluginWriteTask' ? {
+        task: {
+          goal: intent.goal,
+          requestedTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.requestedTargets.length,
+          executableTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length,
+          blockedTargetCount: (evidence as PluginWriteTaskEvidence).taskPlan.blockedTargets.length,
+          causeCount: (evidence as PluginWriteTaskEvidence).taskPlan.causes.length,
         },
       } : {}),
       ...(evidence.source && 'catalogVersion' in evidence.source
@@ -3148,6 +3694,9 @@ export class TuiController {
     const dependencyTargets = ticket.intent.kind === 'pluginWriteBatch'
       ? (ticket.evidence as PluginWriteBatchEvidence).groups.flatMap((group) =>
           group.preview.dependencyPlan?.targets ?? [])
+      : ticket.intent.kind === 'pluginWriteTask'
+        ? (ticket.evidence as PluginWriteTaskEvidence).taskPlan.sources.flatMap((source) =>
+            source.preview.dependencyPlan?.targets ?? [])
       : ticket.evidence.dependencyPlan?.targets ?? [];
     this.#progressTargets = dependencyTargets.map((target) => ({
       pluginId: target.pluginId,
@@ -3166,15 +3715,18 @@ export class TuiController {
       current: {
         target: ticket.intent.kind === 'pluginWriteBatch'
           ? `${(ticket.evidence as PluginWriteBatchEvidence).requestedPluginIds.length} 个插件`
+          : ticket.intent.kind === 'pluginWriteTask'
+            ? `${(ticket.evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length} 个安装位置`
           : 'pluginId' in ticket.intent ? ticket.intent.pluginId
-          : 'sourceId' in ticket.intent ? ticket.intent.sourceId : 'Catalog 来源配置',
+          : 'sourceId' in ticket.intent ? ticket.intent.sourceId ?? 'Catalog 管理' : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
     };
     this.#router.replace({ name: 'progress', operationId });
     this.#publish();
     try {
-      if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch') {
+      if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch'
+        && ticket.intent.kind !== 'pluginWriteTask') {
         await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
       }
     } catch (error) {
@@ -3199,6 +3751,7 @@ export class TuiController {
     }
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     if (ticket.intent.kind !== 'pluginWrite' && ticket.intent.kind !== 'pluginWriteBatch'
+      && ticket.intent.kind !== 'pluginWriteTask'
       && ticket.intent.kind !== 'catalogGeneration') {
       let current: OperationEvidence;
       try {
@@ -3240,6 +3793,65 @@ export class TuiController {
         ...executionProjection,
         sensitiveValues: collectOperationSensitiveValues(ticket.intent),
       });
+      if (ticket.intent.kind === 'catalogManagement') {
+        if (ticket.intent.action === 'devActivate' || ticket.intent.action === 'devDeactivate') {
+          this.dependencies.beginCatalogSession?.();
+          generation = ++this.#generation;
+          try {
+            const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
+            if (!this.#operationIsCurrent(generation)) {
+              return this.#detachedBlocked(operationId, ticket.intent);
+            }
+            this.#applyStatus(refreshed);
+          } catch (reloadError) {
+            if (!this.#operationIsCurrent(generation)) {
+              return this.#detachedBlocked(operationId, ticket.intent);
+            }
+            await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
+              privateConfigOperation: true,
+            });
+            this.#status = undefined;
+            this.#viewModel = undefined;
+            this.#phase = 'error';
+            this.#loadError = {
+              code: 'tuiStateReloadFailed',
+              message: 'Catalog 来源已变更，但插件状态刷新失败。请重新加载后再继续操作。',
+            };
+            return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
+              intent: ticket.intent,
+              navigation: 'result',
+              returnRoute: ticket.returnRoute,
+              writeMayHaveCompleted: true,
+            });
+          }
+        }
+        const baseSummary = operationResultSummary(ticket.intent, execution);
+        const summary: OperationResultSummary = {
+          ...baseSummary,
+          elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
+          messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8)
+            .map((message) => sanitizeDiagnosticText(
+              message,
+              [],
+              collectOperationSensitiveValues(ticket.intent),
+            )),
+        };
+        const projection = this.#operationDiagnostics.get(operationId);
+        if (projection) projection.effects.finalVerification = 'completed';
+        this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
+        const result: OperationExecuteResult = {
+          state: summary.code === 'operationPartial' ? 'partial' : 'succeeded',
+          operationId,
+          summary,
+          operationKind: ticket.intent.kind,
+          returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
+        };
+        this.#result = result;
+        this.#activeReview = undefined;
+        this.#showResult(result, ticket.intent);
+        this.#publish();
+        return cloneFrozen(result);
+      }
       if (ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update') {
         const confirmedAutoCheck = catalogSourceAutoCheckOnlyValue(ticket.intent.update);
         if (confirmedAutoCheck !== undefined) {
@@ -3337,6 +3949,17 @@ export class TuiController {
       }
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#applyStatus(refreshed);
+      if (ticket.intent.kind === 'catalogGeneration') {
+        const completed = typeof execution === 'object' && execution !== null
+          ? (execution as { generation?: CatalogGenerationSyncResult }).generation
+          : undefined;
+        const active = this.#catalogGenerations.get(ticket.intent.sourceId)?.active;
+        if (completed && active
+          && active.catalogVersion === completed.resolution.catalogVersion
+          && active.resolvedCommit === completed.resolution.resolvedCommit) {
+          this.#catalogSourcesSession.recordVerifiedGeneration(ticket.intent.sourceId, active);
+        }
+      }
       const verifiedProjection = this.#operationDiagnostics.get(operationId);
       if (verifiedProjection && verifiedProjection.effects.finalVerification !== 'failed') {
         verifiedProjection.effects.finalVerification = 'completed';
@@ -3347,6 +3970,7 @@ export class TuiController {
       }
       const pluginSummary = ticket.intent.kind === 'pluginWrite'
         || ticket.intent.kind === 'pluginWriteBatch'
+        || ticket.intent.kind === 'pluginWriteTask'
         ? operationResultSummary(ticket.intent, execution)
         : undefined;
       const hasFailedDependencyTarget = pluginSummary?.targets?.some((target) =>
@@ -3391,9 +4015,10 @@ export class TuiController {
           intent: ticket.intent,
           navigation: 'result',
           returnRoute: ticket.returnRoute,
-          ...(ticket.intent.kind === 'pluginWriteBatch' || dependencyFailure || dependencyStillRequired
+          ...(ticket.intent.kind === 'pluginWriteBatch' || ticket.intent.kind === 'pluginWriteTask'
+            || dependencyFailure || dependencyStillRequired
             ? { summary: pluginSummary } : {}),
-          ...(ticket.intent.kind !== 'pluginWriteBatch'
+          ...(ticket.intent.kind !== 'pluginWriteBatch' && ticket.intent.kind !== 'pluginWriteTask'
             && !dependencyFailure && !dependencyStillRequired && ['started', 'partial', 'completed', 'failed', 'unknown'].includes(
             this.#operationDiagnostics.get(operationId)?.effects.awWrite ?? 'unknown',
           ) ? { writeMayHaveCompleted: true } : {}),
@@ -3474,7 +4099,9 @@ export class TuiController {
             : ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update'
               ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
               : ticket.intent.kind === 'catalogGeneration'
-                ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
+                ? ticket.returnRoute.name === 'pluginWriteTask'
+                  ? ticket.returnRoute
+                  : { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
               : ticket.returnRoute,
         )),
       };
@@ -3512,6 +4139,14 @@ export class TuiController {
       if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
         this.#operationDiagnostics.delete(operationId);
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
+      }
+      if (ticket.intent.kind === 'catalogManagement') {
+        return this.#setBlocked(operationId, code, {
+          intent: ticket.intent,
+          navigation: 'result',
+          returnRoute: ticket.returnRoute,
+          writeMayHaveCompleted: true,
+        });
       }
       generation = ++this.#generation;
       let finalVerification: OperationEffectFacts['finalVerification'] = 'completed';
@@ -3618,6 +4253,37 @@ export class TuiController {
     currentEvidence?: OperationEvidence,
     generation = this.#generation,
   ): Promise<OperationExecuteResult> {
+    if (ticket.intent.kind === 'catalogManagement') {
+      let evidence = currentEvidence;
+      try {
+        evidence ??= await this.dependencies.captureEvidence(
+          structuredClone(ticket.intent),
+          this.#abort.signal,
+        );
+      } catch (error) {
+        const code = issueCode(error);
+        await this.#logOperationError(error, code, ticket.intent);
+        return this.#setBlocked(operationId, code, {
+          intent: ticket.intent,
+          returnRoute: ticket.returnRoute,
+        });
+      }
+      const review = this.#storeOperationReview(
+        ticket.intent,
+        evidence,
+        'replace',
+        ticket.returnRoute,
+      );
+      const result: OperationExecuteResult = {
+        state: 'stale',
+        operationId,
+        review,
+        ...this.#operationIdentity(ticket.intent),
+      };
+      this.#result = result;
+      this.#publish();
+      return cloneFrozen(result);
+    }
     this.dependencies.beginCatalogSession?.();
     generation = ++this.#generation;
     try {
@@ -3775,6 +4441,22 @@ export class TuiController {
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogManagement') {
+    const result = execution as import('./catalog-management.js').CatalogManagementExecutionResult;
+    return {
+      code: result.state === 'partial' ? 'operationPartial' : 'operationSucceeded',
+      message: result.message,
+      messages: result.messages,
+      catalogManagement: {
+        action: result.action,
+        state: result.state,
+        ...(result.catalogVersion ? { catalogVersion: result.catalogVersion } : {}),
+        ...(result.planDigest ? { planDigest: result.planDigest } : {}),
+        ...(result.store ? { store: structuredClone(result.store) } : {}),
+        ...(result.publication ? { publication: structuredClone(result.publication) } : {}),
+      },
+    };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     const result = execution as { backupPath: string };
     return {
@@ -3858,6 +4540,140 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       },
     };
   }
+  if (intent.kind === 'pluginWriteTask') {
+    const taskExecution = execution as PluginWriteTaskExecutionResult;
+    const failedTargets = pluginWriteTaskFailedRequestedTargets(taskExecution);
+    const failedKeys = new Set(failedTargets.map(pluginWriteTaskTargetKey));
+    const technicalTargets = taskExecution.targetResults.map((entry) => {
+      const placement = taskExecution.dependencyPlan?.targets.find((target) =>
+        target.pluginId === entry.target.pluginId && target.platform === entry.target.platform
+        && (target.requestedScope ?? target.resolvedScope) === entry.target.scope);
+      return {
+        pluginId: entry.target.pluginId,
+        platform: entry.target.platform,
+        scope: entry.target.scope,
+        state: entry.action === 'skipped' ? 'skipped' as const
+          : entry.state === 'failed' ? 'failed' as const
+            : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+        relation: entry.relation === 'requested' ? 'requested' as const
+          : placement?.depth === 1 ? 'direct' as const : 'transitive' as const,
+        requiredBy: entry.requiredBy,
+        ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
+      };
+    });
+    const blocked = new Map(taskExecution.taskPlan.blockedTargets.map((entry) => [
+      pluginWriteTaskTargetKey(entry.target), entry,
+    ]));
+    const relatedResults = (target: PluginWriteTaskTarget) => {
+      const key = pluginWriteTaskTargetKey(target);
+      const source = taskExecution.sourceResults.find((candidate) =>
+        candidate.requestedTargets.some((requested) => pluginWriteTaskTargetKey(requested) === key));
+      const related = source?.result.targetResults.filter((entry) => {
+        const pluginId = entry.target.pluginId;
+        if (!pluginId) return false;
+        const executionKey = pluginWriteTaskTargetKey({
+          pluginId,
+          platform: entry.target.platform,
+          scope: entry.target.scope,
+        });
+        if (executionKey === key) return true;
+        if (taskExecution.taskPlan.causes.some((cause) =>
+          pluginWriteTaskTargetKey(cause.repairTarget) === executionKey
+          && cause.consumers.some((consumer) => pluginWriteTaskTargetKey(consumer) === key))) return true;
+        const placement = source.result.dependencyPlan?.targets.find((candidate) =>
+          candidate.pluginId === pluginId && candidate.platform === entry.target.platform
+          && (candidate.requestedScope ?? candidate.resolvedScope) === entry.target.scope);
+        return placement?.requiredByTargets?.some((consumer) =>
+          pluginWriteTaskTargetKey(consumer) === key) ?? false;
+      }) ?? [];
+      const targetResults: PluginWriteTaskRootResult['targets'] = related.map((entry) => {
+        const placement = source?.result.dependencyPlan?.targets.find((candidate) =>
+          candidate.pluginId === entry.target.pluginId
+          && candidate.platform === entry.target.platform
+          && (candidate.requestedScope ?? candidate.resolvedScope) === entry.target.scope);
+        return {
+          pluginId: entry.target.pluginId,
+          platform: entry.target.platform,
+          scope: entry.target.scope,
+          state: entry.action === 'skipped' ? 'skipped' as const
+            : entry.state === 'failed' ? 'failed' as const
+              : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+          relation: entry.relation === 'requested' ? 'requested' as const
+            : placement?.depth === 1 ? 'direct' as const : 'transitive' as const,
+          ...(entry.errorCode ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') } : {}),
+        };
+      });
+      if (blocked.has(key) && !targetResults.some((entry) =>
+        entry.pluginId === target.pluginId && entry.platform === target.platform
+        && entry.scope === target.scope)) {
+        targetResults.unshift({
+          pluginId: target.pluginId,
+          platform: target.platform,
+          scope: target.scope,
+          state: 'skipped',
+          relation: 'requested',
+        });
+      }
+      const hasFailed = targetResults.some((entry) => entry.state === 'failed' || entry.state === 'skipped');
+      const hasCompleted = targetResults.some((entry) => entry.state === 'completed' || entry.state === 'kept');
+      const state: PluginWriteTaskRootResult['state'] = blocked.has(key) ? 'blocked'
+        : !source ? 'notStarted'
+          : hasFailed && hasCompleted ? 'partial'
+            : hasFailed || failedKeys.has(key) ? 'failed'
+              : targetResults.length > 0 && targetResults.every((entry) => entry.state === 'kept')
+                ? 'kept' : targetResults.length > 0 ? 'completed' : 'notStarted';
+      return { state, targets: targetResults };
+    };
+    const roots: PluginWriteTaskRootResult[] = [...new Set(taskExecution.taskPlan.requestedTargets
+      .map((target) => target.pluginId))].map((pluginId) => {
+      const requestedTargets = taskExecution.taskPlan.requestedTargets.filter((target) =>
+        target.pluginId === pluginId);
+      const positions = requestedTargets.map((target) => relatedResults(target));
+      const successfulPositions = positions.filter((position) =>
+        position.state === 'completed' || position.state === 'kept');
+      const state: PluginWriteTaskRootResult['state'] = successfulPositions.length > 0
+        ? successfulPositions.length === positions.length
+          ? positions.every((position) => position.state === 'kept') ? 'kept' : 'completed'
+          : 'partial'
+        : positions.some((position) => position.state === 'failed' || position.state === 'partial')
+          ? 'failed'
+          : positions.some((position) => position.state === 'notStarted') ? 'notStarted' : 'blocked';
+      const targets = [...new Map(positions.flatMap((position) => position.targets).map((target) => [[
+        target.pluginId ?? '', target.platform, target.scope,
+      ].join('\0'), target] as const)).values()];
+      const causeKeys = [...new Set(taskExecution.taskPlan.causes.filter((cause) =>
+        cause.consumers.some((consumer) => consumer.pluginId === pluginId))
+        .map((cause) => cause.causeKey))];
+      return { pluginId, state, causeKeys, targets };
+    });
+    const retryTargets = canonicalPluginWriteTaskTargets(roots.flatMap((root) =>
+      root.state === 'failed' || root.state === 'partial' || root.state === 'notStarted'
+        ? failedTargets.filter((target) => target.pluginId === root.pluginId) : []));
+    const completedCount = roots.filter((root) => root.state === 'completed'
+      || root.state === 'kept' || root.state === 'partial').length;
+    const failedCount = roots.filter((root) => root.state === 'failed' || root.state === 'partial'
+      || root.state === 'notStarted' || root.state === 'blocked').length;
+    const code = failedCount === 0 ? 'operationSucceeded' as const
+      : completedCount > 0 ? 'operationPartial' as const : 'operationFailed' as const;
+    return {
+      code,
+      message: code === 'operationSucceeded' ? '任务已完成。'
+        : code === 'operationPartial' ? '任务只完成了一部分。' : '任务没有完成。',
+      warnings: taskExecution.warnings,
+      recoveryActions: [...new Set(taskExecution.targetResults.flatMap((entry) =>
+        entry.recoveryActions ?? []))],
+      ...(taskExecution.operationPlan?.planFingerprint
+        ? { planFingerprint: taskExecution.operationPlan.planFingerprint } : {}),
+      task: {
+        goal: intent.goal,
+        requestedTargets: taskExecution.taskPlan.requestedTargets,
+        rootResults: roots,
+        ...(retryTargets.length > 0 ? { retryTargets } : {}),
+        blockedTargets: taskExecution.taskPlan.blockedTargets,
+      },
+      targets: technicalTargets,
+    };
+  }
   if (intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch') {
     const command = intent.action === 'refreshAndSync' ? 'sync' : intent.action;
     const rawExecution = typeof execution === 'object' && execution !== null
@@ -3905,6 +4721,54 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
       ? pluginWriteBatchFailedRequestedTargets(execution as PluginWriteBatchExecutionResult)
       : [];
     const failedRequestedPluginIds = canonicalPluginIds(retryTargets.map((target) => target.pluginId));
+    const requestedTargetKeys = intent.kind === 'pluginWriteBatch'
+      ? new Set((execution as PluginWriteBatchExecutionResult).groupResults.flatMap((group) => {
+          const roots = new Set(group.requestedPluginIds);
+          return group.result.targetResults.flatMap((entry) => entry.target.pluginId
+            && roots.has(entry.target.pluginId)
+            && entry.target.scope === group.scope
+            && (group.platform === 'both' || entry.target.platform === group.platform)
+            ? [[entry.target.pluginId, entry.target.platform, entry.target.scope].join('\0')]
+            : []);
+        }))
+      : new Set<string>();
+    const rootResults: PluginWriteBatchRootResult[] = intent.kind === 'pluginWriteBatch'
+      ? requestedPluginIds.map((pluginId) => {
+          const observed = (result.targetResults ?? []).flatMap((entry) =>
+            entry.target.pluginId === pluginId
+              && requestedTargetKeys.has([
+                pluginId, entry.target.platform, entry.target.scope,
+              ].join('\0')) ? [{
+              pluginId,
+              platform: entry.target.platform,
+              scope: entry.target.scope,
+              state: entry.action === 'skipped' ? 'skipped' as const
+                : entry.state === 'failed' ? 'failed' as const
+                  : entry.action === 'keep' ? 'kept' as const : 'completed' as const,
+              relation: 'requested' as const,
+              ...(entry.errorCode
+                ? { errorCode: safeDiagnosticCode(entry.errorCode, 'writeFailed') }
+                : {}),
+            }] : []);
+          const targets = [...new Map([
+            ...retryTargets.filter((target) => target.pluginId === pluginId).map((target) => ({
+              ...target,
+              state: 'skipped' as const,
+              relation: 'requested' as const,
+            })),
+            ...observed,
+          ].map((target) => [[target.pluginId, target.platform, target.scope].join('\0'), target]))
+            .values()];
+          const completed = targets.filter((target) =>
+            target.state === 'completed' || target.state === 'kept').length;
+          const failed = targets.length - completed;
+          const state: PluginWriteBatchRootResult['state'] = completed > 0
+            ? failed > 0 ? 'partial'
+              : targets.every((target) => target.state === 'kept') ? 'kept' : 'completed'
+            : failed > 0 ? 'failed' : 'notStarted';
+          return { pluginId, state, targets };
+        })
+      : [];
     return {
       code: result.state === 'succeeded' ? 'operationSucceeded'
         : result.state === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -3927,6 +4791,7 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         batch: {
           requestedPluginIds,
           failedRequestedPluginIds,
+          rootResults,
           retryTargets,
           groupCount: (execution as PluginWriteBatchExecutionResult).groupResults.length,
         },

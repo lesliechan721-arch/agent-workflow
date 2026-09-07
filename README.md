@@ -221,7 +221,7 @@ Codex static Skill、MCP、Hook 和 App 只存在于一份 user-level shared nat
 
 TUI 安装流程依次选择 root scope、目标平台，并只在存在可配置依赖时编辑 dependency placement；随后进入 `ReviewPreparing`、Review 和写入 Progress。普通 `ReviewPreparing` 只读；显式“刷新并同步”会在建立 Review 前更新相关来源的可重建 Active 弱状态。Windows native 行为必须在 Windows 上运行 qualification 才能形成证据；macOS 的成功报告不能替代 Windows 证据。
 
-TUI 的日常入口是添加插件、我的插件、需要处理和插件来源。我的插件提供批量管理及当前项目全部同步；来源草稿明确选择只保存或保存并启用。`h` 返回首页，`H` 安全重载会话；未保存草稿和执行中的操作有对应保护。完整入口、恢复路径和当前 CLI 范围见 [CLI/TUI 能力覆盖](docs/tui-capability-coverage.md)。
+TUI 的日常入口是添加插件、我的插件、需要处理和插件来源。我的插件提供批量管理、当前项目全部同步和已验证版本的插件更新；来源中的目录管理提供 Catalog Workspace、Store、开发来源与 Catalog 发布计划/应用。来源草稿明确选择只保存或保存并启用。`h` 返回首页，`H` 安全重载会话；未保存草稿和执行中的操作有对应保护。完整入口、确认边界、恢复路径和当前 CLI 范围见 [CLI/TUI 能力覆盖](docs/tui-capability-coverage.md)。
 
 Portable 命令必须显式传 `--scope project|user`。`aw skill install` 使用 PATH 中 `skills >=1.5.23 <2.0.0`：project scope 使用当前项目根，user scope 使用 Skills CLI 的 global 模式。Agent 默认使用 Skills CLI 的自动选择；命令行可传 `--agent <id...>`，TUI 也可改为显式 Agent。`--skill` 只筛选最终安装项；验证仍覆盖完整 plugin dependency closure。外部安装允许部分成功，不做补偿回滚；失败后可重跑命令，或按 receipt 提示使用外部 `skills remove`。
 

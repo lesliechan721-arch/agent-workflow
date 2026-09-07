@@ -4,6 +4,7 @@ import {
   createDependencyPlacementPlan,
   type DependencyPlacementPlanInput,
 } from '../../src/commands/dependency-operation-plan.js';
+import { createReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
 
 function graph(): DependencyPlacementPlanInput {
   return {
@@ -41,6 +42,39 @@ function target(
 }
 
 describe('dependency placement plan v2', () => {
+  it('preserves two exact requested roots for the same plugin and platform', () => {
+    const input = graph();
+    input.nodes = input.nodes.filter((node) => node.platform === 'codex');
+    input.roots = [
+      { pluginId: 'team/root', platform: 'codex', scope: 'project' },
+      { pluginId: 'team/root', platform: 'codex', scope: 'user' },
+    ];
+    input.dependencyEdges = input.dependencyEdges.filter((edge) => edge.platform === 'codex');
+    input.scopeOverrides = [];
+
+    const plan = createDependencyPlacementPlan(input);
+    expect(plan.targets.filter((entry) => entry.pluginId === 'team/root')).toMatchObject([
+      { requestedScope: 'project', resolvedScope: 'project', rootScope: 'project' },
+      { requestedScope: 'user', resolvedScope: 'user', rootScope: 'user' },
+    ]);
+    expect(target(plan, 'team/middle', 'codex')).toMatchObject({
+      resolvedScope: 'user',
+      minimumScope: 'user',
+      assignmentSource: 'consumerPromotion',
+      requiredBy: ['team/root'],
+      requiredByTargets: [
+        { pluginId: 'team/root', platform: 'codex', scope: 'project' },
+        { pluginId: 'team/root', platform: 'codex', scope: 'user' },
+      ],
+    });
+    expect(target(plan, 'team/leaf', 'codex')).toMatchObject({
+      resolvedScope: 'user',
+      requiredByTargets: [
+        { pluginId: 'team/middle', platform: 'codex', scope: 'user' },
+      ],
+    });
+  });
+
   it('keeps platform assignments independent and propagates widening to a fixed point', () => {
     const plan = createDependencyPlacementPlan(graph());
 
@@ -134,10 +168,10 @@ describe('dependency placement plan v2', () => {
     })).toThrow('dependencyScopeOverrideOutsideClosure');
   });
 
-  it('rejects duplicate root targets independent of root input order', () => {
+  it('rejects duplicate exact root targets independent of root input order', () => {
     const duplicates = [
       { pluginId: 'team/root', platform: 'codex' as const, scope: 'project' as const },
-      { pluginId: 'team/root', platform: 'codex' as const, scope: 'user' as const },
+      { pluginId: 'team/root', platform: 'codex' as const, scope: 'project' as const },
     ];
     for (const roots of [duplicates, [...duplicates].reverse(), [duplicates[0]!, duplicates[0]!]]) {
       expect(() => createDependencyPlacementPlan({ ...graph(), roots }))
@@ -183,5 +217,70 @@ describe('dependency placement plan v2', () => {
 
     expect(second).toEqual(first);
     expect(first).not.toHaveProperty('dependencyPlanDigest');
+  });
+
+  it('reconciles exact scoped roots and keeps a legacy single-scope actual target compatible', () => {
+    const input = graph();
+    input.nodes = input.nodes.filter((node) => node.platform === 'codex');
+    input.roots = [
+      { pluginId: 'team/root', platform: 'codex', scope: 'project' },
+      { pluginId: 'team/root', platform: 'codex', scope: 'user' },
+    ];
+    input.dependencyEdges = [];
+    input.nodes = input.nodes.filter((node) => node.pluginId === 'team/root');
+    input.scopeOverrides = [];
+    const placement = createDependencyPlacementPlan(input);
+
+    const reconciled = createReconcileOperationPlan({
+      placement,
+      actual: [
+        {
+          pluginId: 'team/root', platform: 'codex', scope: 'project',
+          state: 'present', action: 'keep', order: 0,
+        },
+        {
+          pluginId: 'team/root', platform: 'codex', scope: 'user',
+          state: 'absent', action: 'install', order: 1,
+        },
+      ],
+    });
+    expect(reconciled.targets.map((entry) => ({
+      scope: entry.requestedScope,
+      state: entry.state,
+      action: entry.action,
+    }))).toEqual([
+      { scope: 'project', state: 'present', action: 'keep' },
+      { scope: 'user', state: 'absent', action: 'install' },
+    ]);
+
+    const singleScopePlacement = createDependencyPlacementPlan({
+      ...input,
+      roots: [input.roots[0]!],
+    });
+    expect(createReconcileOperationPlan({
+      placement: singleScopePlacement,
+      actual: [{
+        pluginId: 'team/root', platform: 'codex', state: 'present', action: 'keep', order: 0,
+      }],
+    }).targets[0]).toMatchObject({ state: 'present', action: 'keep' });
+  });
+
+  it('blocks ambiguous legacy actual lookup for two scoped roots', () => {
+    const input = graph();
+    input.nodes = input.nodes.filter((node) =>
+      node.platform === 'codex' && node.pluginId === 'team/root');
+    input.roots = [
+      { pluginId: 'team/root', platform: 'codex', scope: 'project' },
+      { pluginId: 'team/root', platform: 'codex', scope: 'user' },
+    ];
+    input.dependencyEdges = [];
+    input.scopeOverrides = [];
+
+    expect(() => createReconcileOperationPlan({
+      placement: createDependencyPlacementPlan(input),
+      actual: [{
+        pluginId: 'team/root', platform: 'codex', state: 'present', action: 'keep', order: 0,
+      }],
+    })).toThrow('reconcileTargetAmbiguous: team/root#codex');
   });
 });

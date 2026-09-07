@@ -8,6 +8,8 @@ import type {
   CatalogSessionReusableCandidate,
   CatalogSourceSessionDescriptor,
 } from './types.js';
+import { checkAwCapabilitySupport } from '../../utils/manifest.js';
+import { IMPLEMENTED_AW_CAPABILITIES } from '../../commands/aw-capabilities.js';
 
 export interface CatalogSourcesSessionOptions {
   probe: (
@@ -18,6 +20,7 @@ export interface CatalogSourcesSessionOptions {
   onChange: (sourceId: string, freshness: CatalogSourceFreshnessViewModel) => void;
   onError?: (error: unknown, code: string) => void;
   parentSignal: AbortSignal;
+  now?: () => number;
 }
 
 interface RunningProbe {
@@ -40,6 +43,7 @@ export class CatalogSourcesSession {
   readonly #running = new Map<string, RunningProbe>();
   readonly #tokens = new Map<string, number>();
   readonly #reusableCandidates = new Map<string, ReusableCandidateEntry>();
+  readonly #lastSuccessful = new Map<string, CatalogSourceFreshnessViewModel>();
   readonly #pending = new Set<Promise<void>>();
   #disposed = false;
   #drainScheduled = false;
@@ -53,14 +57,18 @@ export class CatalogSourcesSession {
       if (nextIds.has(sourceId)) continue;
       this.#cancel(sourceId);
       this.#reusableCandidates.delete(sourceId);
+      this.#lastSuccessful.delete(sourceId);
       this.#sources.delete(sourceId);
     }
     for (const source of sources) {
       const previous = this.#sources.get(source.sourceId);
       this.#sources.set(source.sourceId, source);
       if (previous && previous.fingerprint !== source.fingerprint) {
+        const probeChanged = previous.probeFingerprint !== source.probeFingerprint;
         this.#cancel(source.sourceId);
         this.#reusableCandidates.delete(source.sourceId);
+        this.#lastSuccessful.delete(source.sourceId);
+        if (probeChanged) this.#attempted.delete(source.sourceId);
         this.options.onChange(source.sourceId, { sourceId: source.sourceId, state: 'notChecked' });
       }
       if (source.fixedCommit) {
@@ -126,6 +134,25 @@ export class CatalogSourcesSession {
       || entry.token !== this.#tokens.get(sourceId)
       || entry.fingerprint !== source.fingerprint) return undefined;
     return structuredClone(entry.candidate);
+  }
+
+  recordVerifiedGeneration(
+    sourceId: string,
+    active: { catalogVersion: string; resolvedCommit: string },
+  ): void {
+    if (this.#disposed || !this.#sources.has(sourceId)) return;
+    this.#removeQueued(sourceId);
+    this.#cancel(sourceId);
+    this.#attempted.add(sourceId);
+    const freshness: CatalogSourceFreshnessViewModel = {
+      sourceId,
+      state: 'current',
+      activeVersion: active.catalogVersion,
+      activeResolvedCommit: active.resolvedCommit,
+      checkedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
+    };
+    this.#lastSuccessful.set(sourceId, freshness);
+    this.options.onChange(sourceId, structuredClone(freshness));
   }
 
   refresh(sourceId: string, fullValidation: boolean): Promise<void> {
@@ -211,16 +238,43 @@ export class CatalogSourcesSession {
         } else {
           this.#reusableCandidates.delete(sourceId);
         }
-        this.options.onChange(sourceId, structuredClone(freshness));
+        const successful: CatalogSourceFreshnessViewModel = {
+          ...structuredClone(freshness),
+          checkedAt: new Date(this.options.now?.() ?? Date.now()).toISOString(),
+          ...(reusableCandidate && Array.isArray(reusableCandidate.probe.manifest.entries) ? {
+            candidatePlugins: reusableCandidate.probe.manifest.entries.map((entry) => {
+              const requiredCapabilities = [...new Set([
+                ...(reusableCandidate.probe.manifest.requires.aw.capabilities ?? []),
+                ...(entry.requires.aw.capabilities ?? []),
+              ])];
+              return {
+                name: entry.name,
+                version: entry.version,
+                manifestDigest: entry.manifestDigest,
+                contentDigest: entry.contentDigest,
+                requiredCapabilities,
+                missingCapabilities: checkAwCapabilitySupport(
+                  requiredCapabilities,
+                  IMPLEMENTED_AW_CAPABILITIES,
+                ).missing,
+              };
+            }),
+          } : {}),
+        };
+        this.#lastSuccessful.set(sourceId, successful);
+        this.options.onChange(sourceId, structuredClone(successful));
       }
     } catch (error) {
       if (this.#isCurrent(source, token, signal)) {
         const code = catalogSourceErrorCode(error);
         this.#reusableCandidates.delete(sourceId);
+        const previous = this.#lastSuccessful.get(sourceId);
         this.options.onChange(sourceId, {
+          ...(previous ? structuredClone(previous) : {}),
           sourceId,
           state: code === 'awCapabilityUnsupported' ? 'incompatible' : 'checkFailed',
           errorCode: code,
+          ...(previous ? { lastSuccessful: true } : {}),
           ...(error instanceof CatalogProviderCompatibilityError ? {
             requiredCapabilities: [...error.requiredCapabilities],
             missingCapabilities: [...error.missingCapabilities],

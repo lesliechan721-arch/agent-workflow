@@ -7,7 +7,7 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
-export type PluginInstallFilter = 'all' | 'uninstalled';
+export type PluginInstallFilter = 'all' | 'uninstalled' | 'updateAvailable';
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
@@ -43,6 +43,14 @@ export type ConfigResumeRoute =
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
+  | {
+      name: 'pluginWriteTask';
+      pluginId: string;
+      goal: 'restore' | 'update';
+      targetKeys?: string[];
+      versionEvidence?: Record<string, string>;
+      batchOrigin?: { flowId: string; owner: 'batch-write' };
+    }
   | { name: 'batchSelection' }
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
@@ -56,8 +64,15 @@ export type TuiRoute =
       name: 'pluginDependencies';
       pluginId: string;
       view?: 'relations' | 'removeBlocked';
+      direction?: 'dependencies' | 'dependents';
       platform?: PlatformName;
       scope?: Scope;
+    }
+  | {
+      name: 'pluginDependencyNode';
+      pluginId: string;
+      nodePluginId: string;
+      direction: 'dependencies' | 'dependents';
     }
   | { name: 'installPlacement'; pluginId: string }
   | {
@@ -73,6 +88,7 @@ export type TuiRoute =
       platform: PlatformName;
     }
   | { name: 'pluginDetail'; pluginId: string }
+  | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
   | { name: 'pluginTechnical'; pluginId: string }
@@ -124,6 +140,7 @@ export type TuiRoute =
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
+  | { name: 'sourceMore'; sourceId: string }
   | { name: 'sourceTechnical'; sourceId: string }
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
@@ -131,6 +148,15 @@ export type TuiRoute =
   | { name: 'configSave'; pluginId: string; layer: { scope: Scope } }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
+  | { name: 'catalogManagement' }
+  | {
+      name: 'catalogWorkspace';
+      view: 'overview' | 'select' | 'create' | 'version';
+      step?: 'ownerName' | 'ownerUrl' | 'displayName' | 'catalogVersion';
+    }
+  | { name: 'catalogDev'; step?: 'overview' | 'sourceId' | 'replacementPrimary' }
+  | { name: 'catalogStore' }
+  | { name: 'catalogPublish'; step: 'overview' | 'target' | 'branch' }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'operationHistory' }
@@ -164,7 +190,8 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite';
+  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask'
+  | 'catalogManagement';
 
 export interface TuiFlowScope {
   id: string;
