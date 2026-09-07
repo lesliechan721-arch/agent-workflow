@@ -48,6 +48,40 @@ function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] 
   }];
 }
 
+function preApplyScopeChanges(
+  targets: ReadonlyArray<{
+    pluginId: string;
+    platform: PlatformName;
+    scope: 'project' | 'user';
+    relation?: 'requested' | 'direct' | 'transitive';
+  }>,
+): OperationReviewChange[] {
+  return [...new Map(targets.map((target) => [[
+    target.pluginId,
+    target.platform,
+    target.scope,
+  ].join('\0'), target] as const)).values()].map((target) => ({
+    kind: 'change',
+    group: 'runtime',
+    pluginId: target.pluginId,
+    ...(target.relation ? { relation: target.relation } : {}),
+    title: `运行 ${target.pluginId} preApply`,
+    description: `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
+  }));
+}
+
+function operationPreApplyTargets(evidence?: OperationEvidence) {
+  return (evidence?.operationPlan?.actions ?? []).flatMap((action) =>
+    action.kind === 'runPreApply'
+      ? [{
+          ...action,
+          ...(evidence?.dependencyPlan
+            ? { relation: dependencyRelation(evidence.dependencyPlan, action.pluginId) }
+            : {}),
+        }]
+      : []);
+}
+
 function sourceMutationReviewChanges(
   mutation: NonNullable<Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation']>,
 ): OperationReviewChange[] {
@@ -312,6 +346,7 @@ function reviewChanges(
     );
     const runtimeChanges: OperationReviewChange[] = [
       ...scriptTimeoutChanges(intent),
+      ...preApplyScopeChanges(operationPreApplyTargets(evidence)),
       ...(evidence?.codexManager
       ? [{
           kind: evidence.codexManager.state === 'requires-install' ? 'add' : 'keep',
@@ -588,6 +623,7 @@ function reviewChanges(
   if (intent.retryApply) {
     return [
       ...scriptTimeoutChanges(intent),
+      ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
       ...(evidence?.config?.affectedTargets.map((target): OperationReviewChange => ({
         kind: 'change',
         group: 'configImpact',
@@ -627,6 +663,7 @@ function reviewChanges(
           ];
     return [
       ...scriptTimeoutChanges(intent),
+      ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
       ...(evidence?.config?.shareability === 'unverified' ? [{
         kind: 'warning' as const,
         group: 'configImpact' as const,
@@ -662,6 +699,7 @@ function reviewChanges(
   const updateKeys = Object.keys(intent.updates ?? {});
   return [
     ...scriptTimeoutChanges(intent),
+    ...preApplyScopeChanges(evidence?.config?.preApplyAuthorization ?? []),
     ...updateKeys.map((key): OperationReviewChange => ({
       kind: 'change',
       title: key,
@@ -841,6 +879,11 @@ export function buildOperationReviewProjection(options: {
     ? evidence as PluginWriteBatchEvidence
     : undefined;
   const labels = operationLabels(intent, evidence);
+  const hasPreApply = intent.kind === 'pluginWriteBatch'
+    ? Boolean(batchEvidence?.groups.some((group) =>
+        operationPreApplyTargets(batchGroupEvidence(batchEvidence, group)).length > 0))
+    : operationPreApplyTargets(evidence).length > 0
+      || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
   const sharedNativeConfigApply = intent.kind === 'configSave'
     && intent.apply
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
@@ -878,7 +921,7 @@ export function buildOperationReviewProjection(options: {
     ],
     technicalDetails: technicalDetails(evidence),
     ...(intent.kind === 'pluginWrite'
-      ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation ? ' --yes' : ''}` }
+      ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation || hasPreApply ? ' --yes' : ''}` }
       : {}),
     primaryLabel: intent.kind === 'pluginWriteBatch'
       ? `${labels.primaryLabel} ${batchEvidence!.requestedPluginIds.length} 个插件`

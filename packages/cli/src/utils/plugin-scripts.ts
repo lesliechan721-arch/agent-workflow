@@ -16,6 +16,7 @@ import { resolveAwHome } from './paths.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import { attachSafeOperationError } from './safe-operation-diagnostic.js';
+import { collectSensitiveTokenRepresentations } from './sensitive-content.js';
 export { calculateFileDigest } from './bundle-integrity.js';
 
 export const PLUGIN_SCRIPT_TIMEOUT_DEFAULT_MS = 300_000;
@@ -134,11 +135,8 @@ export function assertNoSensitiveConfigValues(
     }
   };
   visit(value);
-  for (const sensitiveValue of new Set(sensitiveValues)) {
-    if (sensitiveValue === '') continue;
-    const encoded = JSON.stringify(sensitiveValue).slice(1, -1);
-    if (strings.some((entry) => entry.includes(sensitiveValue)
-      || (encoded !== sensitiveValue && entry.includes(encoded)))) throw new Error(message);
+  for (const representation of collectSensitiveTokenRepresentations(sensitiveValues)) {
+    if (strings.some((entry) => entry.includes(representation))) throw new Error(message);
   }
 }
 
@@ -157,7 +155,7 @@ export function assertNoSensitiveConfigInFiles(
   );
 }
 
-interface SensitiveTokenMatch { start: number; end: number }
+interface SensitiveTokenMatch { start: number; end: number; replacement?: string }
 
 function findSensitiveTokenMatches(value: string, sensitiveValue: string, startLimit: number): SensitiveTokenMatch[] {
   if (sensitiveValue === '') return [];
@@ -169,9 +167,8 @@ function findSensitiveTokenMatches(value: string, sensitiveValue: string, startL
 }
 
 function collectMergedSensitiveTokenMatches(value: string, sensitiveValues: readonly string[], startLimit: number): SensitiveTokenMatch[] {
-  const matches = [...new Set(sensitiveValues)]
-    .filter((sensitiveValue) => sensitiveValue !== '')
-    .flatMap((sensitiveValue) => findSensitiveTokenMatches(value, sensitiveValue, startLimit))
+  const matches = collectSensitiveTokenRepresentations(sensitiveValues)
+    .flatMap((representation) => findSensitiveTokenMatches(value, representation, startLimit))
     .sort((left, right) => left.start - right.start || right.end - left.end);
   const merged: SensitiveTokenMatch[] = [];
   for (const match of matches) {
@@ -212,9 +209,15 @@ export function summarizePluginScriptOutput(value: string, sensitiveValues: read
 
 function summarizePreApplyFailureOutput(
   value: string,
+  roots: ReadonlyArray<{ root: string; replacement: string }>,
   sensitiveValues: readonly string[],
 ): string {
-  const summary = summarizePluginScriptOutput(value, sensitiveValues);
+  const summary = redactString(sanitizePreApplyErrorMessage(
+    value,
+    roots,
+    sensitiveValues,
+    Math.min(value.length, OUTPUT_LIMIT),
+  )).trim();
   const lines = summary.split('\n').map((line) => line.trim()).filter(Boolean);
   const includesRuntimeStack = lines.some((line) =>
     line.startsWith('file://')
@@ -225,43 +228,55 @@ function summarizePreApplyFailureOutput(
 }
 
 function resolveOutputCaptureLimit(sensitiveValues: readonly string[]): number {
-  const maxSensitiveTokenLength = sensitiveValues.reduce(
+  const maxSensitiveTokenLength = collectSensitiveTokenRepresentations(sensitiveValues).reduce(
     (maximum, value) => Math.max(maximum, value.length),
     0,
   );
   return OUTPUT_LIMIT + maxSensitiveTokenLength;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}
-
-function replacePrivateRoot(value: string, root: string, replacement: string): string {
+function privateRootVariants(root: string): string[] {
   const normalized = path.resolve(root);
-  const variants = new Set([
+  return [...new Set([
     normalized,
     normalized.replaceAll('\\', '/'),
     ...(normalized.startsWith('/var/') ? [`/private${normalized}`] : []),
     ...(normalized.startsWith('/private/var/') ? [normalized.slice('/private'.length)] : []),
-  ]);
-  let output = value;
-  for (const variant of variants) {
-    output = output.replace(new RegExp(escapeRegExp(variant), 'gu'), replacement);
-  }
-  return output;
+  ])];
 }
 
 function sanitizePreApplyErrorMessage(
   value: string,
   roots: ReadonlyArray<{ root: string; replacement: string }>,
+  sensitiveValues: readonly string[],
+  windowEnd: number = value.length,
 ): string {
-  let output = value;
-  for (const { root, replacement } of [...roots]
-    .filter(({ root }) => root.trim() !== '')
-    .sort((left, right) => path.resolve(right.root).length - path.resolve(left.root).length)) {
-    output = replacePrivateRoot(output, root, replacement);
+  const matches = [
+    ...roots
+      .filter(({ root }) => root.trim() !== '')
+      .flatMap(({ root, replacement }) => privateRootVariants(root)
+        .flatMap((variant) => findSensitiveTokenMatches(value, variant, windowEnd)
+          .map((match) => ({ ...match, replacement })))),
+    ...collectSensitiveTokenRepresentations(sensitiveValues)
+      .flatMap((representation) => findSensitiveTokenMatches(value, representation, windowEnd)
+        .map((match) => ({ ...match, replacement: '[REDACTED]' }))),
+  ].sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged: Required<SensitiveTokenMatch>[] = [];
+  for (const match of matches) {
+    const previous = merged.at(-1);
+    if (previous && match.start < previous.end) {
+      previous.end = Math.max(previous.end, match.end);
+    } else {
+      merged.push({ ...match, replacement: match.replacement ?? '[REDACTED]' });
+    }
   }
-  return output;
+  let output = '';
+  let offset = 0;
+  for (const match of merged) {
+    output += `${value.slice(offset, match.start)}${match.replacement}`;
+    offset = Math.min(match.end, windowEnd);
+  }
+  return output + value.slice(offset, windowEnd);
 }
 
 export function createDefaultPluginProcessRunner(
@@ -423,6 +438,7 @@ export async function runPreApplyScript(options: {
   let tempDir: string | undefined;
   let interruptSignal: 'SIGINT' | 'SIGTERM' | undefined;
   let interruptReason: Error | undefined;
+  let sensitiveValues: string[] = [];
   let runnerCleanupConfirmed = false;
   let removeInterruptListeners: (() => void) | undefined;
   const privateRoots = (): Array<{ root: string; replacement: string }> => [
@@ -453,7 +469,7 @@ export async function runPreApplyScript(options: {
     tempDir = await fs.mkdtemp(path.join(tempRoot, 'plugin-pre-apply-'));
     await fs.ensureDir(path.join(tempDir, 'home')); await fs.ensureDir(path.join(tempDir, 'tmp'));
     const env = buildPluginScriptSpawnEnv({ commandEnv: options.context.env, contextPath: '', tempDir, plugin: payload.plugin, event: 'preApply', platform: options.platform, scope: options.scope, bundleRoot: options.plugin.rootDir }); delete env.AW_PLUGIN_CONTEXT;
-    const sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
+    sensitiveValues = collectSensitivePluginConfigValues(options.plugin.manifest, effective.values);
     const invocation = buildNodeScriptInvocation({ entryPath, cwd: options.plugin.rootDir, env, stdin: `${JSON.stringify(payload)}\n` });
     const runOptions = { timeoutMs: resolvePluginScriptTimeoutMs({ cliTimeoutMs: options.scriptTimeoutMs, manifestTimeoutMs: declaration.timeoutMs }) };
     const interruptController = new AbortController();
@@ -507,11 +523,13 @@ export async function runPreApplyScript(options: {
     }
     if (!result) return;
     const stdout = summarizePreApplyFailureOutput(
-      sanitizePreApplyErrorMessage(result.stdout, privateRoots()),
+      result.stdout,
+      privateRoots(),
       sensitiveValues,
     );
     const stderr = summarizePreApplyFailureOutput(
-      sanitizePreApplyErrorMessage(result.stderr, privateRoots()),
+      result.stderr,
+      privateRoots(),
       sensitiveValues,
     );
     const output = [
@@ -540,7 +558,9 @@ export async function runPreApplyScript(options: {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failure = new Error(sanitizePreApplyErrorMessage(message, privateRoots()));
+    const failure = new Error(redactString(sanitizePreApplyErrorMessage(
+      message, privateRoots(), sensitiveValues,
+    )));
     const diagnostic = error && typeof error === 'object' && 'operationDiagnostic' in error
       ? (error as { operationDiagnostic?: unknown }).operationDiagnostic
       : undefined;

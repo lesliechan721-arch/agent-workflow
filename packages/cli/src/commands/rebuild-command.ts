@@ -186,6 +186,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
     Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>
   >;
   previewOperationPlan?: boolean;
+  resolvePreApplyAuthorization?: boolean;
+  preApplyConfirmed?: boolean;
   scriptTimeoutMs?: number;
   directCli?: boolean;
   managedCodexAuthorizer?: ManagedCodexAuthorizer;
@@ -264,6 +266,17 @@ export interface RebuildCommandResult {
   operationPlan?: OperationPlan;
   codexManagerPreview?: CodexManagerPreview;
   offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
+  preApplyAuthorization?: PreApplyAuthorizationTarget[];
+}
+
+export interface PreApplyAuthorizationTarget {
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  platform: PlatformName;
+  scope: Scope;
+  relation: 'requested' | 'direct' | 'transitive';
 }
 
 export interface RebuildCommandTestHooks {
@@ -686,6 +699,7 @@ async function runSingleSourceRebuildCommand(options: {
     preparationError?: unknown;
     reviewCompleted?: boolean;
     targetHookCompleted?: boolean;
+    skipPreApply?: boolean;
   };
 }): Promise<RebuildCommandResult> {
   const runtime: RebuildExecutionContext = {
@@ -697,6 +711,7 @@ async function runSingleSourceRebuildCommand(options: {
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
     codexUserActivationDesired: options.runtime?.codexUserActivationDesired,
     codexObservationSession: options.runtime?.codexObservationSession,
+    preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
   };
   const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
@@ -848,12 +863,31 @@ async function runSingleSourceRebuildCommand(options: {
           });
         }
         const driver = integration.driver;
+        let operationPreparation = options.execution?.operationPreparation;
+        if (options.execution?.skipPreApply
+          && !operationPreparation
+          && (options.command === 'install'
+            || options.command === 'sync'
+            || options.command === 'reinstall')) {
+          const prepared = await prepareRebuildOperation({
+            command: options.command,
+            target,
+            driver,
+            skipPreApply: true,
+            onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
+          });
+          if (prepared.status === 'failed') {
+            results.push(prepared.result);
+            continue;
+          }
+          operationPreparation = prepared.preparation;
+        }
         result = await executeRebuildOperation({
           command: options.command,
           target,
           driver,
-          ...(options.execution?.operationPreparation
-            ? { preparation: options.execution.operationPreparation }
+          ...(operationPreparation
+            ? { preparation: operationPreparation }
             : {}),
           onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
@@ -2515,6 +2549,7 @@ async function runRebuildCommandInSession(options: {
         expectedCatalogConfigDigest: catalog.configDigest,
         codexObservationSession: options.runtime?.codexObservationSession,
         codexObservationScopeByMarketplace,
+        preApplyExecutionCache: options.runtime?.preApplyExecutionCache,
       };
       const inspection = createRebuildIntegration({
         context: executionContext,
@@ -2617,6 +2652,7 @@ async function runRebuildCommandInSession(options: {
       const createPlan = async (
         inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>,
         codexManager?: CodexManager,
+        planOptions?: { skipConfigValidation?: boolean },
       ): Promise<ReconcileOperationPlan> => {
         plannedCodexRegistrations = new Map();
         plannedOwnedTextTargets = new Map();
@@ -2918,7 +2954,8 @@ async function runRebuildCommandInSession(options: {
             state = resolvedInspection.state;
             errorCode ??= 'dependencyNotReady';
           }
-          if (entry.plugin.manifest.config?.fields
+          if (!planOptions?.skipConfigValidation
+            && entry.plugin.manifest.config?.fields
             && (action === 'install' || action === 'reinstall')) {
             const effective = resolvedScope === 'project'
               ? await resolveArtifactRenderConfig({
@@ -3649,6 +3686,42 @@ async function runRebuildCommandInSession(options: {
           configDigests,
         };
       };
+      if (options.runtime?.resolvePreApplyAuthorization) {
+        const authorizationPlan = await measureCommandPerformanceStage(
+          options.runtime,
+          'dependency.plan',
+          () => createPlan(stateInventory, undefined, { skipConfigValidation: true }),
+        );
+        assertWriteInventoryComplete(
+          stateInventory,
+          exactOwnedTextTargets(authorizationPlan),
+          exactSkillMarkerTargets(authorizationPlan),
+        );
+        const preview = mergeRebuildCommandResults([]);
+        preview.dependencyPlan = authorizationPlan;
+        preview.preApplyAuthorization = executionSelections.flatMap(({ entry, platform }) => {
+          const planned = authorizationPlan.targets.find((target) =>
+            target.pluginId === entry.pluginId && target.platform === platform);
+          if (!planned || planned.action === 'block' || !entry.plugin.manifest.scripts?.preApply) {
+            return [];
+          }
+          const relation = planned.relation === 'requested'
+            ? 'requested' as const
+            : planned.requiredBy.some((pluginId) => selectedIds.has(pluginId))
+              ? 'direct' as const
+              : 'transitive' as const;
+          return [{
+            pluginId: entry.pluginId,
+            pluginName: entry.plugin.manifest.name,
+            sourceId: entry.source.sourceId,
+            sourceIdentity: entry.source.sourceIdentity,
+            platform,
+            scope: planned.resolvedScope,
+            relation,
+          }];
+        });
+        return preview;
+      }
       if (options.runtime?.previewOperationPlan) {
         await options.runtime.onPreviewStage?.('dependencyPlan');
         const initialPlan = await measureCommandPerformanceStage(
@@ -3759,6 +3832,23 @@ async function runRebuildCommandInSession(options: {
           exactOwnedTextTargets(lockedPlan),
           exactSkillMarkerTargets(lockedPlan),
         );
+        const lifecycleCommand = options.command === 'install'
+          || options.command === 'sync'
+          || options.command === 'reinstall';
+        const preApplyRequired = lifecycleCommand && executionSelections.some(({ entry, platform }) =>
+          entry.plugin.manifest.scripts?.preApply !== undefined
+          && lockedPlan.targets.some((target) =>
+            target.pluginId === entry.pluginId
+            && target.platform === platform
+            && target.action !== 'block'));
+        if (preApplyRequired
+          && options.commandOptions.yes !== true
+          && options.runtime?.preApplyConfirmed !== true) {
+          throw namespacedPreflightError(
+            'preApplyAuthorizationRequired: Running plugin preApply requires --yes or an accepted Review.',
+            preflightTargets,
+          );
+        }
         const provisionalLockedCodexPlans = await createCodexPlans(lockedPlan);
         const codexManagerRequired = provisionalLockedCodexPlans.some((plan) =>
           plan.sharedNativeActions.some((action) =>
@@ -3794,27 +3884,18 @@ async function runRebuildCommandInSession(options: {
         }
         if (options.runtime?.directCli
           && options.commandOptions.yes !== true
-          && (options.command === 'install'
-            || options.command === 'sync'
-            || options.command === 'reinstall')) {
+          && lifecycleCommand) {
           const sharedNativeImpact = lockedCodexPlans.some((plan) =>
             plan.review.requiresConfirmation);
-          const preApplyRequired = executionSelections.some(({ entry }) =>
-            entry.plugin.manifest.scripts?.preApply !== undefined);
-          if (preApplyRequired || sharedNativeImpact) {
+          if (sharedNativeImpact) {
             throw namespacedPreflightError(
-              preApplyRequired
-                ? 'preApplyAuthorizationRequired: Running plugin preApply requires --yes.'
-                : 'sharedNativeImpactAuthorizationRequired: Replacing or force-reinstalling shared Codex native state requires --yes.',
+              'sharedNativeImpactAuthorizationRequired: Replacing or force-reinstalling shared Codex native state requires --yes.',
               preflightTargets,
             );
           }
         }
         const operationPreparations = new Map<string, PreparedRebuildOperation>();
         const operationPreparationFailures = new Map<string, RebuildResult>();
-        const lifecycleCommand = options.command === 'install'
-          || options.command === 'sync'
-          || options.command === 'reinstall';
         const executionCommandFor = (
           entry: (typeof executionSelections)[number]['entry'],
           platform: PlatformName,
@@ -4657,6 +4738,7 @@ async function runRebuildCommandInSession(options: {
             operationPreparation: operationPreparations.get(`${entry.pluginId}\0${platform}`),
             integration: lockedPreparation.integration,
             preparationError: preparedTargetErrors.get(`${entry.pluginId}\0${platform}`),
+            skipPreApply: reconcileDesiredCleanup,
           },
         });
         if (reconcileDesiredCleanup) {

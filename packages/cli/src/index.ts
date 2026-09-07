@@ -1051,6 +1051,7 @@ async function executeWriteCommand(
   const runtime = {
     ...context,
     directCli,
+    preApplyConfirmed: rawOptions.yes === true,
     ...(managedCodexAuthorizer ? { managedCodexAuthorizer } : {}),
   };
   switch (command) {
@@ -1282,8 +1283,34 @@ function writeConfigApplyNotice(
     overallState: RebuildReceiptOverallState;
     apply: import('./types.js').ConfigApplyResult;
     otherProjectsMayRequireSync: boolean;
+    warnings: string[];
   },
 ): void {
+  const sanitizeMessage = (message: string): string => redactString(message)
+    .replace(/https?:\/\/\S+/giu, '[REDACTED URL]')
+    .replace(/(?:file:\/\/)?(?:\/[\w.@+-]+){2,}/gu, '[REDACTED PATH]')
+    .replace(/[A-Za-z]:\\(?:[^\s\\]+\\)+[^\s\\]*/gu, '[REDACTED PATH]');
+  const writeTargetFailures = (): void => {
+    for (const entry of receipt.apply.targetResults.filter((target) =>
+      target.state === 'failed' || target.state === 'skipped')) {
+      const reason = entry.message
+        ? `${entry.errorCode ? `[${entry.errorCode}] ` : ''}${sanitizeMessage(entry.message)}`
+        : entry.errorCode
+          ? `失败原因：${entry.errorCode}。`
+          : '未提供安全失败原因。';
+      const command = `aw reinstall ${receipt.plugin} -p ${entry.target.platform} -s ${entry.target.scope}`;
+      const recovery = entry.errorCode === 'invalidConfig'
+        ? ' 请修复无效配置后运行 aw sync。'
+        : entry.errorCode === 'preApplyAuthorizationRequired'
+          || entry.errorCode === 'sharedNativeConfigApplyConfirmationRequired'
+          || entry.errorCode === 'sharedNativeImpactAuthorizationRequired'
+          ? ` 请运行 ${command} --yes 重试。`
+          : entry.state === 'failed'
+            ? ` 请在解决失败原因后运行 ${command}。`
+            : '';
+      writeLine(write, `${entry.target.platform}/${entry.target.scope}：${reason}${recovery}`);
+    }
+  };
   const targetResults = receipt.apply.targetResults;
   if (receipt.apply.state === 'skipped') {
     const message = receipt.apply.reason === 'noConfigChange'
@@ -1295,26 +1322,33 @@ function writeConfigApplyNotice(
         : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
     writeLine(write, message);
   } else if (receipt.apply.state === 'unavailable') {
-    const message = receipt.apply.reason === 'invalidConfig'
-      ? '配置已保存，但可见目标的配置无效，因此没有应用。请先修复无效字段。'
-      : '配置已保存，但当前无法应用配置。请修复报告的问题后运行 aw sync。';
-    writeLine(write, message);
+    const fallbackMessages: Record<typeof receipt.apply.reason, string> = {
+      invalidConfig: '可见目标的有效配置无效。',
+      schemaUnavailable: '配置 schema 不可用。',
+      sourceUnavailable: '插件来源不可用。',
+      effectiveConfigUnavailable: '无法读取有效配置。',
+      targetDiscoveryFailed: '无法发现可应用配置的目标。',
+    };
+    const detail = receipt.apply.error
+      ? `${receipt.apply.error.code}：${sanitizeMessage(receipt.apply.error.message)}`
+      : `${receipt.apply.reason}：${fallbackMessages[receipt.apply.reason]}`;
+    const recovery = receipt.apply.reason === 'invalidConfig'
+      ? '请修复无效配置后运行 aw sync。'
+      : receipt.apply.reason === 'effectiveConfigUnavailable'
+        ? '请修复配置后运行 aw sync。'
+        : receipt.apply.reason === 'schemaUnavailable' || receipt.apply.reason === 'sourceUnavailable'
+          ? '请修复插件来源或配置后运行 aw sync。'
+          : '请修复来源或配置后运行 aw sync。';
+    writeLine(write, `配置已保存，但当前无法应用配置。${detail} ${recovery}`);
+    writeTargetFailures();
   } else {
     const completed = targetResults.filter((entry) => entry.state === 'completed').length;
-    const failed = targetResults.filter((entry) => entry.state === 'failed');
+    const failed = targetResults.filter((entry) => entry.state === 'failed').length;
     const skipped = targetResults.filter((entry) => entry.state === 'skipped').length;
-    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个；跳过 ${skipped} 个。`);
-    for (const entry of failed) {
-      writeLine(
-        write,
-        `${entry.target.platform}/${entry.target.scope}：${entry.message ?? 'reinstall 失败。'} `
-        + `请重试 aw reinstall ${receipt.plugin} -p ${entry.target.platform} -s ${entry.target.scope}。`,
-      );
-    }
+    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed} 个；跳过 ${skipped} 个。`);
+    writeTargetFailures();
   }
-  if (receipt.otherProjectsMayRequireSync) {
-    writeLine(write, '其它项目没有被扫描，可能需要在对应项目目录中运行 aw sync。');
-  }
+  writeWarnings(write, receipt.warnings);
 }
 
 function renderConfigFieldState(field: ConfigFieldEntry): string {
@@ -3471,6 +3505,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
           sharedNativeApplyConfirmed: rawOptions.yes === true,
+          preApplyConfirmed: rawOptions.yes === true,
         });
         return buildConfigMutationReceipt('config:set', {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3566,6 +3601,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
           apply: rawOptions.apply === true,
           sharedNativeApplyConfirmed: confirmed,
+          preApplyConfirmed: rawOptions.yes === true,
         });
         return buildConfigMutationReceipt('config:unset', {
           ok: writeReceipt.overallState === 'succeeded',
@@ -3648,7 +3684,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('--apply', 'apply the saved config to visible desired placements', false)
     .option('--script-timeout <ms>', 'override plugin preApply script timeout in milliseconds')
-    .option('-y, --yes', 'confirm destructive reset', false)
+    .option('-y, --yes', 'confirm destructive reset and preApply/shared Codex native config apply', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3703,6 +3739,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
               apply: rawOptions.apply === true,
               rebuildRuntime: scriptTimeoutMs === undefined ? undefined : { scriptTimeoutMs },
               sharedNativeApplyConfirmed: confirmed,
+              preApplyConfirmed: rawOptions.yes === true,
             });
             return buildConfigMutationReceipt('config:reset', {
               ok: resetReceipt.overallState === 'succeeded',

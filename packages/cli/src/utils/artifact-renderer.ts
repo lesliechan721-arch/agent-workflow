@@ -34,6 +34,7 @@ import {
   defaultPluginProcessRunner,
   resolveBundledPluginFilePath,
   resolvePluginScriptTimeoutMs,
+  redactPluginScriptOutput,
   summarizePluginScriptOutput,
   truncatePluginScriptOutput,
   type PluginProcessRunner,
@@ -651,6 +652,11 @@ export async function runArtifactRenderer(options: {
       stderr: stderrSummary,
       timedOut: result.timedOut,
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const redacted = redactPluginScriptOutput(message, writtenContext.sensitiveValues);
+    if (redacted === message) throw error;
+    throw new Error(redacted);
   } finally {
     await writtenContext.cleanup();
   }

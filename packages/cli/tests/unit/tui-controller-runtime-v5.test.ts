@@ -71,6 +71,7 @@ const runtimeMocks = vi.hoisted(() => ({
   applyPluginConfigWrite: vi.fn(),
   replayConfigRuntimeWrites: vi.fn(),
   resetPluginConfigWithHelper: vi.fn(),
+  resolveConfigPreApplyAuthorization: vi.fn(),
 }));
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
@@ -108,6 +109,7 @@ vi.mock('../../src/utils/plugin-config-write.js', () => ({
   applyPluginConfigWrite: runtimeMocks.applyPluginConfigWrite,
   replayConfigRuntimeWrites: runtimeMocks.replayConfigRuntimeWrites,
   resetPluginConfigWithHelper: runtimeMocks.resetPluginConfigWithHelper,
+  resolveConfigPreApplyAuthorization: runtimeMocks.resolveConfigPreApplyAuthorization,
 }));
 
 function target(
@@ -315,6 +317,9 @@ describe('TUI config affected targets', () => {
 describe('TUI batch write runtime', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeMocks.resolveConfigPreApplyAuthorization.mockResolvedValue({
+      targets: [], availableApplyTargets: [], unavailableTargetResults: [],
+    });
   });
 
   it('previews same-source selected roots in one typed command call', async () => {
@@ -569,6 +574,7 @@ describe('TUI batch write runtime', () => {
     expect(runtimeMocks.installWriteCommand.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
       expectedPlanFingerprint: expect.any(String),
       awHomeMutationToken: expect.any(Object),
+      preApplyConfirmed: true,
     }));
   });
 
@@ -763,6 +769,9 @@ describe('TUI controller runtime scope conflict validation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    runtimeMocks.resolveConfigPreApplyAuthorization.mockResolvedValue({
+      targets: [], availableApplyTargets: [], unavailableTargetResults: [],
+    });
   });
 
   it.each([
@@ -1143,6 +1152,19 @@ describe('TUI controller runtime scope conflict validation', () => {
         targetResults: options.applyTargets.map((entry) => ({ target: entry, action: 'reinstall', state: 'completed' })),
       },
     }));
+    runtimeMocks.resolveConfigPreApplyAuthorization.mockResolvedValue({
+      targets: [{
+        pluginId: 'team/dependency',
+        pluginName: 'dependency',
+        sourceId: 'team',
+        sourceIdentity: 'identity:team',
+        platform: 'codex',
+        scope: 'user',
+        relation: 'direct',
+      }],
+      availableApplyTargets: [],
+      unavailableTargetResults: [],
+    });
     const createController = async (targets: StatusV7Payload['targets']) => {
       runtimeMocks.statusCommandV7.mockResolvedValue(statusResult(targets));
       const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
@@ -1166,12 +1188,21 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(userReview.changes).toContainEqual(expect.objectContaining({
       title: 'preApply 脚本超时', description: '18000 ms',
     }));
+    expect(userReview.changes).toContainEqual(expect.objectContaining({
+      title: '运行 team/dependency preApply',
+      pluginId: 'team/dependency',
+      relation: 'direct',
+    }));
     expect(impactTitles(userReview)).toEqual([
       '重新应用 Claude Code · 当前项目', '重新应用 Codex · 所有项目',
     ]);
     await expect(both.executeOperation(userReview.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.applyPluginConfigWrite).toHaveBeenLastCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
+      preApplyConfirmed: true,
+      preApplyAuthorizedTargets: [expect.objectContaining({
+        pluginId: 'team/dependency', platform: 'codex', scope: 'user',
+      })],
       rebuildRuntime: expect.objectContaining({ scriptTimeoutMs: 18_000 }),
       applyTargets: [
         expect.objectContaining({ platform: 'claude', scope: 'project' }),
@@ -1235,6 +1266,10 @@ describe('TUI controller runtime scope conflict validation', () => {
       .resolves.toMatchObject({ state: 'succeeded' });
     expect(runtimeMocks.replayConfigRuntimeWrites).toHaveBeenCalledWith(expect.objectContaining({
       sharedNativeApplyConfirmed: true,
+      preApplyConfirmed: true,
+      preApplyAuthorizedTargets: [expect.objectContaining({
+        pluginId: 'team/dependency', platform: 'codex', scope: 'user',
+      })],
       applyTargets: [
         expect.objectContaining({ platform: 'claude', scope: 'project' }),
         expect.objectContaining({ platform: 'codex', scope: 'user' }),
@@ -1865,6 +1900,8 @@ describe('TUI controller runtime scope conflict validation', () => {
         expectedPlanFingerprint: expect.anything(),
       }),
     );
+    expect(runtimeMocks.installWriteCommand.mock.calls.at(-1)?.[2])
+      .toEqual(expect.objectContaining({ preApplyConfirmed: true }));
 
     const projectPlan: ReconcileOperationPlan = {
       ...plan,

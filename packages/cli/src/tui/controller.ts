@@ -287,6 +287,7 @@ export interface OperationEvidence {
     affectedTargets: Array<{ platform: PlatformName; scope: Scope }>;
     shareability?: 'verified' | 'unverified';
     sharedNativeRenderTargets?: Array<{ id: string; skillKey: string; refreshKeys: string[] }>;
+    preApplyAuthorization?: import('../commands/rebuild-command.js').PreApplyAuthorizationTarget[];
   };
   resetTarget?: {
     sourceId: string;

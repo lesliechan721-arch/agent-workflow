@@ -1573,6 +1573,18 @@ export async function coercePluginConfigValue(options: {
   return coerceConfigValue(options.key, options.field, options.value);
 }
 
+function validateConfigReadValue(
+  key: string,
+  field: PluginConfigSchemaField,
+  value: unknown,
+): PluginConfigValue {
+  const issues = validateCorePluginConfigValue(field, value, key);
+  if (issues.length > 0) {
+    throw new Error(formatPluginConfigIssue(issues[0]!));
+  }
+  return value as PluginConfigValue;
+}
+
 function redactValue(
   field: PluginConfigSchemaField,
   value: PluginConfigValue,
@@ -1882,13 +1894,9 @@ async function resolveRedactedLayerValue(options: {
   issue?: PluginConfigIssue;
 }> {
   try {
-    const coerced = await coercePluginConfigValue({
-      key: options.key,
-      field: options.field,
-      value: options.value,
-    });
+    const value = validateConfigReadValue(options.key, options.field, options.value);
     return {
-      value: redactValue(options.field, coerced),
+      value: redactValue(options.field, value),
     };
   } catch (error) {
     return {
@@ -2176,11 +2184,7 @@ async function buildManifestFieldEntries(options: {
     if (options.scope === 'user') {
       if (Object.hasOwn(userPlainEntries, key)) {
         try {
-          const value = await coercePluginConfigValue({
-            key,
-            field,
-            value: userPlainEntries[key],
-          });
+          const value = validateConfigReadValue(key, field, userPlainEntries[key]);
           fields.push({
             ...base,
             valueState: 'configured',
@@ -2195,6 +2199,7 @@ async function buildManifestFieldEntries(options: {
             ...base,
             valueState: 'invalid',
             sourceLayer: 'user',
+            source: 'user',
             storedSourceLayer: 'user',
             valid: false,
             issues: [{ type: 'invalid-config', key, source: 'user' }],
@@ -2204,11 +2209,7 @@ async function buildManifestFieldEntries(options: {
       }
       if (field.default !== undefined) {
         try {
-          const value = await coercePluginConfigValue({
-            key,
-            field,
-            value: field.default,
-          });
+          const value = validateConfigReadValue(key, field, field.default);
           fields.push({
             ...base,
             effectiveValue: redactValue(field, value),
@@ -2237,11 +2238,7 @@ async function buildManifestFieldEntries(options: {
     } | undefined;
     if (options.scope === 'project' && Object.hasOwn(projectPlainEntries, key)) {
       try {
-        const value = await coercePluginConfigValue({
-          key,
-          field,
-          value: projectPlainEntries[key],
-        });
+        const value = validateConfigReadValue(key, field, projectPlainEntries[key]);
         storedProjectValue = {
           storedValue: redactValue(field, value),
           storedSourceLayer: 'project',

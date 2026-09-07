@@ -62,6 +62,7 @@ import { readPluginIntentState } from '../utils/plugin-intent-state.js';
 import {
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
+  resolveConfigPreApplyAuthorization,
   resetPluginConfigWithHelper,
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
@@ -287,6 +288,16 @@ function configSharedNativeRenderTargets(
         : target.refreshKeys.length > 0)
       ? [{ id: target.id, skillKey: target.skillKey, refreshKeys: [...target.refreshKeys] }]
       : []);
+}
+
+function configIntentRequestsApply(
+  intent: Extract<OperationIntent, { kind: 'configSave' }>,
+): boolean {
+  if (!intent.apply) return false;
+  if (intent.retryApply === true) return true;
+  if (intent.changes) return intent.changes.length > 0;
+  return Object.keys(intent.updates ?? {}).length > 0
+    || (intent.removeKeys?.length ?? 0) > 0;
 }
 
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
@@ -1570,12 +1581,18 @@ export function createTuiControllerDependencies(
       if (configSnapshot.digest !== sessionStatusResult.payload.catalog.configDigest) {
         throw operationReviewStale('准备设置确认期间来源配置发生变化。');
       }
+      const relevantTargets = configAffectedStatusTargets(
+        sessionStatusResult.payload.targets,
+        intent.pluginId,
+        intent.scope,
+      );
+      const preparedCatalogOperation = catalogOperation;
       const selected = await withResolvedCatalogPlugin({
         selector: intent.pluginId,
         cliVersion: packageInfo.version,
         configSnapshot,
         env: context.env,
-        ...(catalogOperation ? { operationContext: catalogOperation } : {}),
+        operationContext: preparedCatalogOperation,
         ...(signal ? { signal } : {}),
         consume: async ({ plugin, source }) => {
           if (!plugin.manifest.config) {
@@ -1596,6 +1613,25 @@ export function createTuiControllerDependencies(
           return {
             pluginName: plugin.manifest.name,
             source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+            preApplyAuthorization: configIntentRequestsApply(intent)
+              ? (await resolveConfigPreApplyAuthorization({
+                  plugin,
+                  scope: intent.scope,
+                  cwd: context.cwd,
+                  env: context.env,
+                  applyTargets: relevantTargets.map((target) => ({
+                    pluginName: plugin.manifest.name,
+                    platform: target.platform,
+                    scope: target.scope,
+                  })),
+                  nativeCliRunner: context.nativeCliRunner,
+                  rebuildRuntime: {
+                    catalogOperationContext: preparedCatalogOperation,
+                    expectedGenerationSetDigest: preparedCatalogOperation.generationSetDigest,
+                    inventoryCatalogSourceReferences: operationInventory,
+                  },
+                })).targets
+              : [],
             sharedNativeRenderTargets: intent.kind === 'configSave'
               ? configSharedNativeRenderTargets(plugin, intent.retryApply
                   ? undefined
@@ -1621,11 +1657,6 @@ export function createTuiControllerDependencies(
         env: context.env,
       });
       signal?.throwIfAborted();
-      const relevantTargets = configAffectedStatusTargets(
-        sessionStatusResult.payload.targets,
-        intent.pluginId,
-        intent.scope,
-      );
       const relevantRevisions = (sessionStatusResult.targetRevisions ?? []).filter((revision) =>
         relevantTargets.some((target) => target.platform === revision.platform
           && target.scope === revision.scope
@@ -1644,6 +1675,9 @@ export function createTuiControllerDependencies(
           ...(selected.source?.manifestDigest ? { schemaIdentity: selected.source.manifestDigest } : {}),
           storeDigest: digest({ exists: store.exists, rawDigest: store.rawDigest }),
           affectedTargets: relevantTargets.map(({ platform, scope }) => ({ platform, scope })),
+          ...(selected.preApplyAuthorization.length > 0
+            ? { preApplyAuthorization: selected.preApplyAuthorization }
+            : {}),
           ...(selected.sharedNativeRenderTargets.length > 0
             ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
             : {}),
@@ -1759,6 +1793,32 @@ export function createTuiControllerDependencies(
             return {
               pluginName: plugin.manifest.name,
               source: sourceEvidenceForPlugin(source, plugin.manifest.name),
+              preApplyAuthorization: intent.kind === 'configSave'
+                && configIntentRequestsApply(intent)
+                ? (await resolveConfigPreApplyAuthorization({
+                    plugin,
+                    scope: intent.scope,
+                    cwd: context.cwd,
+                    env: context.env,
+                    applyTargets: configAffectedStatusTargets(
+                      status.payload.targets,
+                      intent.pluginId,
+                      intent.scope,
+                    ).map((target) => ({
+                      pluginName: plugin.manifest.name,
+                      platform: target.platform,
+                      scope: target.scope,
+                    })),
+                    nativeCliRunner: context.nativeCliRunner,
+                    rebuildRuntime: {
+                      ...(catalogOperation ? { catalogOperationContext: catalogOperation } : {}),
+                      ...(catalogOperation?.generationSetDigest
+                        ? { expectedGenerationSetDigest: catalogOperation.generationSetDigest }
+                        : {}),
+                      inventoryCatalogSourceReferences: operationInventory,
+                    },
+                  })).targets
+                : [],
               sharedNativeRenderTargets: intent.kind === 'configSave'
                 ? configSharedNativeRenderTargets(plugin, intent.retryApply
                     ? undefined
@@ -1930,6 +1990,10 @@ export function createTuiControllerDependencies(
         ...('sharedNativeRenderTargets' in selected
           && selected.sharedNativeRenderTargets.length > 0
           ? { sharedNativeRenderTargets: selected.sharedNativeRenderTargets }
+          : {}),
+        ...('preApplyAuthorization' in selected
+          && selected.preApplyAuthorization.length > 0
+          ? { preApplyAuthorization: selected.preApplyAuthorization }
           : {}),
       };
     }
@@ -2673,6 +2737,7 @@ export function createTuiControllerDependencies(
                 runtime: {
                   ...context,
                   awHomeMutationToken,
+                  preApplyConfirmed: true,
                   inventoryCatalogSourceReferences: groupInventory,
                   expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
                   ...(executionPreview.operationPlan ? {
@@ -2768,6 +2833,7 @@ export function createTuiControllerDependencies(
               ...context,
               ...(codexObservationSession ? { codexObservationSession } : {}),
               awHomeMutationToken,
+              preApplyConfirmed: true,
               inventoryCatalogSourceReferences: operationInventory,
               ...(expectedEvidence.operationPlan
                 ? { expectedPlanFingerprint: expectedEvidence.operationPlan.planFingerprint }
@@ -2857,6 +2923,9 @@ export function createTuiControllerDependencies(
                         awHomeMutationToken,
                         applyTargets,
                         sharedNativeApplyConfirmed: true,
+                        preApplyConfirmed: true,
+                        preApplyAuthorizedTargets:
+                          expectedEvidence.config?.preApplyAuthorization ?? [],
                       })
                     : await applyPluginConfigWrite({
                       plugin,
@@ -2881,6 +2950,9 @@ export function createTuiControllerDependencies(
                       applyTargets,
                       request: { updates: intent.updates, removeKeys: intent.removeKeys },
                       sharedNativeApplyConfirmed: true,
+                      preApplyConfirmed: true,
+                      preApplyAuthorizedTargets:
+                        expectedEvidence.config?.preApplyAuthorization ?? [],
                       });
                 return { ...result, operationRebuildResults };
               },

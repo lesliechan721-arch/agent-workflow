@@ -67,11 +67,29 @@ function relativePath(repoRoot: string, targetPath: string): string {
   return path.relative(path.resolve(repoRoot), path.resolve(targetPath)).split(path.sep).join('/');
 }
 
-async function inspectGitIgnore(
+async function checkGitIgnore(
   repoRoot: string,
   targetRelativePath: string,
   env?: NodeJS.ProcessEnv,
-): Promise<GitIgnoreMatch | null | undefined> {
+): Promise<'ignored' | 'visible' | 'unverified'> {
+  try {
+    await execFileAsync('git', ['check-ignore', '-q', targetRelativePath], {
+      cwd: repoRoot,
+      ...(env ? { env } : {}),
+    });
+    return 'ignored';
+  } catch (error) {
+    const code = String((error as NodeJS.ErrnoException & { code?: number | string }).code);
+    if (code === '1') return 'visible';
+    return 'unverified';
+  }
+}
+
+async function inspectGitIgnoreExplanation(
+  repoRoot: string,
+  targetRelativePath: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<GitIgnoreMatch | undefined> {
   try {
     const result = await execFileAsync('git', ['check-ignore', '-v', targetRelativePath], {
       cwd: repoRoot,
@@ -80,9 +98,7 @@ async function inspectGitIgnore(
     const line = result.stdout.split(/\r?\n/u).find((entry) => entry.trim() !== '');
     const match = line ? /^(.*?):(\d+):([^\t]+)\t(.+)$/u.exec(line) : null;
     return match ? { pattern: match[3] } : undefined;
-  } catch (error) {
-    const code = String((error as NodeJS.ErrnoException & { code?: number | string }).code);
-    if (code === '1') return null;
+  } catch {
     return undefined;
   }
 }
@@ -94,14 +110,15 @@ export async function assertProjectSharedConfigPathVisible(options: {
 }): Promise<ProjectSharedConfigVisibility> {
   const repoRoot = resolveAwProjectRoot(options.cwd);
   const targetRelativePath = relativePath(repoRoot, options.targetPath);
-  const match = await inspectGitIgnore(repoRoot, targetRelativePath, options.env);
-  if (match?.pattern) {
+  const ignoreState = await checkGitIgnore(repoRoot, targetRelativePath, options.env);
+  if (ignoreState === 'ignored') {
+    const match = await inspectGitIgnoreExplanation(repoRoot, targetRelativePath, options.env);
     const error = new Error(
-      `projectConfigIgnored: Project shared state path ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match.pattern)} 排除。写入前必须修正规则。`,
+      `projectConfigIgnored: Project shared state path ${targetRelativePath} 被 ignore 规则 ${JSON.stringify(match?.pattern ?? '<unavailable>')} 排除。写入前必须修正规则。`,
     ) as Error & { code: string };
     error.code = 'projectConfigIgnored';
     throw error;
   }
-  if (match === undefined) return { state: 'unverified' };
+  if (ignoreState === 'unverified') return { state: 'unverified' };
   return { state: 'visible' };
 }

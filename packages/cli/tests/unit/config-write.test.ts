@@ -193,6 +193,29 @@ function createReinstallMock(options: {
   });
 }
 
+function createPreApplyAuthorizationMock(unavailable = false) {
+  return vi.fn(async (pluginNames, rawOptions, runtime: RebuildCommandRuntime) => {
+    const target: ReceiptTargetIdentity = {
+      pluginName: pluginNames[0]!,
+      platform: rawOptions.platform as PlatformName,
+      scope: rawOptions.scope as Scope,
+    };
+    const result = rebuildResult(target, unavailable ? 'failed' : 'succeeded');
+    if (runtime.resolvePreApplyAuthorization && !unavailable) {
+      result.preApplyAuthorization = [{
+        pluginId: 'fixture/dependency',
+        pluginName: 'dependency',
+        sourceId: 'fixture',
+        sourceIdentity: 'identity:fixture',
+        platform: target.platform,
+        scope: target.scope,
+        relation: 'direct',
+      }];
+    }
+    return result;
+  });
+}
+
 beforeEach(() => {
   mocks.visible.clear();
   mocks.states.clear();
@@ -833,6 +856,236 @@ describe('config write full reinstall apply', () => {
       env: fixture.env,
     })).exists).toBe(false);
   });
+
+  it.each(['set', 'unset', 'reset'] as const)(
+    'requires explicit preApply authorization before %s runtime writes',
+    async (action) => {
+      const fixture = await createFixture();
+      fixture.plugin.manifest.dependencies = ['dependency'];
+      const storeOptions = {
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user' as const,
+        cwd: fixture.cwd,
+        env: fixture.env,
+      };
+      if (action === 'unset' || action === 'reset') {
+        await writePluginConfigStore({ ...storeOptions, values: { mode: 'safe' } });
+      }
+      const reinstall = createPreApplyAuthorizationMock();
+      const applyTargets: ReceiptTargetIdentity[] = [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }];
+      const operation = action === 'reset'
+        ? resetPluginConfigWithHelper({
+            ...storeOptions,
+            plugin: fixture.plugin,
+            applyTargets,
+            reinstallCommandImpl: reinstall,
+          })
+        : applyPluginConfigWrite({
+              ...storeOptions,
+              plugin: fixture.plugin,
+              applyTargets,
+              request: action === 'set'
+                ? { updates: { mode: 'fast' } }
+                : { removeKeys: ['mode'] },
+              reinstallCommandImpl: reinstall,
+            });
+
+      await expect(operation).rejects.toMatchObject({ code: 'preApplyAuthorizationRequired' });
+      expect(reinstall).toHaveBeenCalledOnce();
+      expect(reinstall.mock.calls[0]![2]).toMatchObject({ resolvePreApplyAuthorization: true });
+      expect((await readPluginConfigStore(storeOptions)).values).toEqual(
+        action === 'unset' || action === 'reset' ? { mode: 'safe' } : {},
+      );
+    },
+  );
+
+  it('preserves the saved-config fact when replay lacks preApply authorization', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.dependencies = ['dependency'];
+    const reinstall = createPreApplyAuthorizationMock();
+    const receipt = await replayConfigRuntimeWrites({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }],
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        state: 'partial',
+        targetResults: [expect.objectContaining({
+          errorCode: 'preApplyAuthorizationRequired',
+          state: 'failed',
+        })],
+      },
+    });
+    expect(reinstall).toHaveBeenCalledOnce();
+  });
+
+  it('applies healthy targets when another preApply authorization scope is unavailable', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.dependencies = ['dependency'];
+    const reinstall = vi.fn(async (
+      pluginNames: string[],
+      rawOptions: { platform: PlatformName | 'both'; scope: Scope },
+      runtime: RebuildCommandRuntime,
+    ) => {
+      const target: ReceiptTargetIdentity = {
+        pluginName: pluginNames[0]!,
+        platform: rawOptions.platform === 'both' ? 'codex' : rawOptions.platform,
+        scope: rawOptions.scope,
+      };
+      if (runtime.resolvePreApplyAuthorization) {
+        const result = rebuildResult(target, rawOptions.platform === 'claude'
+          || rawOptions.platform === 'both' ? 'failed' : 'succeeded');
+        if (rawOptions.platform === 'codex') {
+          result.preApplyAuthorization = [{
+            pluginId: 'fixture/dependency',
+            pluginName: 'dependency',
+            sourceId: 'fixture',
+            sourceIdentity: 'identity:fixture',
+            platform: 'codex',
+            scope: rawOptions.scope,
+            relation: 'direct',
+          }];
+        }
+        return result;
+      }
+      return rebuildResult(target, 'succeeded');
+    });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [
+        { pluginName: fixture.plugin.manifest.name, platform: 'codex', scope: 'user' },
+        { pluginName: fixture.plugin.manifest.name, platform: 'claude', scope: 'user' },
+      ],
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+      preApplyConfirmed: true,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'partial',
+      apply: {
+        state: 'partial',
+        targetResults: expect.arrayContaining([
+          expect.objectContaining({
+            target: expect.objectContaining({ platform: 'codex' }),
+            state: 'completed',
+          }),
+          expect.objectContaining({
+            target: expect.objectContaining({ platform: 'claude' }),
+            errorCode: 'sourceUnavailable',
+          }),
+        ]),
+      },
+    });
+    expect(reinstall.mock.calls.map((call) => call[1].platform))
+      .toEqual(['both', 'codex', 'claude', 'codex']);
+  });
+
+  it('does not treat an empty reviewed preApply scope as general authorization', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.dependencies = ['dependency'];
+    const reinstall = createPreApplyAuthorizationMock();
+
+    await expect(applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }],
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+      preApplyConfirmed: true,
+      preApplyAuthorizedTargets: [],
+    })).rejects.toMatchObject({ code: 'preApplyAuthorizationRequired' });
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
+  });
+
+  it.each(['set', 'reset', 'replay'] as const)(
+    'keeps config state and returns typed unavailable when %s authorization scope is unknown',
+    async (action) => {
+      const fixture = await createFixture();
+      fixture.plugin.manifest.dependencies = ['dependency'];
+      const storeOptions = {
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user' as const,
+        cwd: fixture.cwd,
+        env: fixture.env,
+      };
+      if (action === 'reset') {
+        await writePluginConfigStore({ ...storeOptions, values: { mode: 'safe' } });
+      }
+      const reinstall = createPreApplyAuthorizationMock(true);
+      const applyTargets: ReceiptTargetIdentity[] = [{
+        pluginName: fixture.plugin.manifest.name,
+        platform: 'codex',
+        scope: 'user',
+      }];
+      const receipt = action === 'reset'
+        ? await resetPluginConfigWithHelper({
+            ...storeOptions,
+            plugin: fixture.plugin,
+            applyTargets,
+            reinstallCommandImpl: reinstall,
+          })
+        : action === 'replay'
+          ? await replayConfigRuntimeWrites({
+              ...storeOptions,
+              plugin: fixture.plugin,
+              applyTargets,
+              reinstallCommandImpl: reinstall,
+            })
+          : await applyPluginConfigWrite({
+              ...storeOptions,
+              plugin: fixture.plugin,
+              applyTargets,
+              request: { updates: { mode: 'fast' } },
+              reinstallCommandImpl: reinstall,
+            });
+
+      expect(receipt).toMatchObject({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        apply: { state: 'unavailable', reason: 'sourceUnavailable' },
+      });
+      expect(reinstall).toHaveBeenCalledOnce();
+      expect(reinstall.mock.calls[0]![2]).toMatchObject({ resolvePreApplyAuthorization: true });
+      if (action === 'set') {
+        expect((await readPluginConfigStore(storeOptions)).values).toEqual({ mode: 'fast' });
+      }
+      if (action === 'reset') {
+        expect((await readPluginConfigStore(storeOptions)).exists).toBe(false);
+      }
+    },
+  );
 
   it('rejects a sensitive project update in the writer before creating the project store', async () => {
     const fixture = await createFixture();

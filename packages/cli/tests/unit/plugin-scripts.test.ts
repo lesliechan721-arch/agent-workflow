@@ -473,6 +473,16 @@ describe('preApply script', () => {
     );
   });
 
+  it('redacts raw and JSON-escaped forms of quotes, newlines, and backslashes', () => {
+    const secret = 'quote" newline\n slash\\';
+    const escaped = JSON.stringify(secret).slice(1, -1);
+
+    expect(redactPluginScriptOutput(
+      `raw=${secret} escaped=${escaped}`,
+      [secret],
+    )).toBe('raw=[REDACTED] escaped=[REDACTED]');
+  });
+
   it('keeps generic credential redaction in plugin script summaries', () => {
     expect(summarizePluginScriptOutput(
       'authorization=Bearer bearer-secret token=token-secret',
@@ -519,7 +529,7 @@ describe('preApply script', () => {
     );
   });
 
-  it('does not expose overlap text when overlapping tokens cross the raw output window', () => {
+  it('does not expose output beyond the raw window after overlapping replacements', () => {
     const firstSecret = `§${'a'.repeat(39)}`;
     const secondSecret = `${'a'.repeat(20)}${'b'.repeat(30)}`;
     const summary = summarizePluginScriptOutput(
@@ -543,21 +553,22 @@ describe('preApply script', () => {
     expect(summary).not.toContain('tail');
   });
 
-  it.skipIf(!hostProcessInspectionAvailable)(
-    'redacts a sensitive token split across the output limit by the default runner', async () => {
-    const secret = '§pre-apply-cross-boundary-sensitive-token';
+  it.skipIf(!hostProcessInspectionAvailable).each(['exit', 'timeout'] as const)(
+    'redacts a JSON-escaped sensitive token split across the output limit on %s', async (mode) => {
+    const secret = '§pre-apply "cross-boundary"\nsensitive\\token';
+    const escaped = JSON.stringify(secret).slice(1, -1);
     const plugin = await createPlugin({ sensitiveDefault: secret });
     await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
       'let input = "";',
       'process.stdin.setEncoding("utf8");',
       'process.stdin.on("data", (chunk) => { input += chunk; });',
       'process.stdin.on("end", () => {',
-      '  const token = JSON.parse(input).config.values.token;',
+      '  const token = JSON.stringify(JSON.parse(input).config.values.token).slice(1, -1);',
       '  const splitAt = 12;',
       `  const first = "x".repeat(${OUTPUT_LIMIT} - splitAt) + token.slice(0, splitAt);`,
       '  process.stderr.write(first, () => {',
       '    setTimeout(() => {',
-      '      process.stderr.write(token.slice(splitAt), () => { process.exitCode = 7; });',
+      `      process.stderr.write(token.slice(splitAt), () => { ${mode === 'exit' ? 'process.exitCode = 7;' : 'setInterval(() => {}, 1000);'} });`,
       '    }, 20);',
       '  });',
       '});',
@@ -569,12 +580,47 @@ describe('preApply script', () => {
       scope: 'user',
       cwd: plugin.rootDir,
       context: createCommandExecutionContext({ env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') } }),
+      ...(mode === 'timeout' ? { scriptTimeoutMs: 1_000 } : {}),
     }).catch((failure: unknown) => failure as Error);
 
     expect(error.message).toContain('[REDACTED]');
-    for (let prefixLength = 1; prefixLength <= secret.length; prefixLength += 1) {
-      expect(error.message).not.toContain(secret.slice(0, prefixLength));
+    for (let prefixLength = 1; prefixLength <= escaped.length; prefixLength += 1) {
+      expect(error.message).not.toContain(escaped.slice(0, prefixLength));
     }
+    },
+  );
+
+  it.skipIf(!hostProcessInspectionAvailable)(
+    'does not pull a partial token at the capture limit into a summary after repeated redaction', async () => {
+    const secret = 'SENSITIVE_"capture"\nedge\\token';
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    const plugin = await createPlugin({ sensitiveDefault: secret });
+    await fs.outputFile(path.join(plugin.rootDir, 'scripts', 'preApply.mjs'), [
+      'let input = "";',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdin.on("data", (chunk) => { input += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  const token = JSON.stringify(JSON.parse(input).config.values.token).slice(1, -1);',
+      '  const repeated = token.repeat(100);',
+      `  const finalStart = ${OUTPUT_LIMIT} + token.length - 5;`,
+      '  const output = repeated + "x".repeat(finalStart - repeated.length) + token;',
+      '  process.stderr.write(output, () => { process.exitCode = 7; });',
+      '});',
+    ].join('\n'));
+
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({
+        env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') },
+      }),
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).not.toContain(escaped);
+    expect(error.message).not.toContain('SENSI');
     },
   );
 
@@ -683,10 +729,12 @@ describe('preApply script', () => {
   });
 
   it('reports timeout and redacts sensitive stderr', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const secret = 'secret "value"\npath\\tail';
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    const plugin = await createPlugin({ sensitiveDefault: secret });
     const runner: PluginProcessRunner = {
       async run() {
-        return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: 'secret-value', timedOut: true };
+        return { exitCode: null, signal: 'SIGKILL', stdout: '', stderr: escaped, timedOut: true };
       },
     };
     await expect(runPreApplyScript({
@@ -700,7 +748,9 @@ describe('preApply script', () => {
   });
 
   it('redacts stdout and stderr in a non-zero failure', async () => {
-    const plugin = await createPlugin({ sensitiveDefault: 'secret-value' });
+    const secret = 'secret "value"\npath\\tail';
+    const escaped = JSON.stringify(secret).slice(1, -1);
+    const plugin = await createPlugin({ sensitiveDefault: secret });
     await expect(runPreApplyScript({
       plugin,
       platform: 'claude',
@@ -711,8 +761,8 @@ describe('preApply script', () => {
         return {
           exitCode: 7,
           signal: null,
-          stdout: 'stdout secret-value',
-          stderr: 'stderr secret-value',
+          stdout: `stdout ${escaped}`,
+          stderr: `stderr ${escaped}`,
           timedOut: false,
         };
       } },
@@ -784,6 +834,36 @@ describe('preApply script', () => {
     for (const privateValue of ['abc', plugin.rootDir, cwd, awHome]) {
       expect(serialized).not.toContain(privateValue);
     }
+  });
+
+  it('redacts a sensitive value that contains a private root as one overlapping range', async () => {
+    const plugin = await createPlugin();
+    const secret = `credential-part${plugin.rootDir}`;
+    plugin.manifest.config = {
+      fields: { token: { type: 'string', sensitive: true, default: secret } },
+    };
+    const error = await runPreApplyScript({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: plugin.rootDir,
+      context: createCommandExecutionContext({
+        env: { AW_HOME: path.join(plugin.rootDir, 'aw-home') },
+      }),
+      runner: { async run() {
+        return {
+          exitCode: 7,
+          signal: null,
+          stdout: '',
+          stderr: `prefix${secret}Suffix ordinary`,
+          timedOut: false,
+        };
+      } },
+    }).catch((failure: unknown) => failure as Error);
+
+    expect(error.message).toContain('prefix[REDACTED]Suffix ordinary');
+    expect(error.message).not.toContain('credential-part');
+    expect(error.message).not.toContain(plugin.rootDir);
   });
 
   it('reports a stable spawn failure without exposing runner diagnostics', async () => {
