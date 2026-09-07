@@ -1,3 +1,6 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,7 +11,11 @@ import {
   type DependencyOperationPlan,
 } from '../../src/commands/dependency-operation-plan.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
+import {
+  createTuiControllerDependencies,
+} from '../../src/tui/controller-runtime.js';
 import {
   CONSOLE_V4_SCREEN_IDS,
   ConsoleAppV4,
@@ -34,7 +41,22 @@ import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.j
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  createEmptyPluginIntentState,
+  readPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 afterEach(() => cleanup());
 
@@ -1730,8 +1752,8 @@ describe('ConsoleAppV4', () => {
         resolvedCommit: official ? 'path-next' : 'def456',
         catalogVersion: official ? '1.1.0' : '2.5.0',
         channel: 'latest' as const,
-        manifestDigest: `sha256:${official ? 'b' : 'c'}`,
-        snapshotDigest: `sha256:${official ? 'd' : 'e'}`,
+        manifestDigest: `sha256:${(official ? 'b' : 'c').repeat(64)}`,
+        snapshotDigest: `sha256:${(official ? 'd' : 'e').repeat(64)}`,
       };
       return {
         sourceId,
@@ -1804,41 +1826,106 @@ describe('ConsoleAppV4', () => {
     expect(value.hasSessionDraft).toBe(true);
   });
 
-  it('keeps the recommended project recovery task on project targets for a mixed-scope root', async () => {
-    const loaded = loadResult();
-    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex' && (entry.scope === 'user' || entry.scope === 'project')
-      ? {
-          ...entry,
-          state: 'needsSync' as const,
-          errors: [{ code: 'componentMissing', message: 'safe missing component', severity: 'warning' as const }],
-          recoveryActions: [{ command: 'sync' as const, description: '同步已保存使用设置' }],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
-    loaded.targetRevisions = (['user', 'project'] as const).map((scope) => ({
-      pluginId: 'team-tools/review-gate', platform: 'codex' as const, scope,
-      revision: { state: 'current' as const, installedVersion: '0.4.2', availableVersion: '0.4.2' },
+  it('opens a Review for a new clone from the saved project roots without adding user targets', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'new-clone-review-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'review-gate', 'apps.json'), { apps: {} });
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'review-gate', 'codex', 'apps.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'review-gate', [], 'review gate\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './apps.json';
+    });
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'review-gate');
+    const platformManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    await fs.writeJson(platformManifestPath, {
+      ...await fs.readJson(platformManifestPath), apps: './codex/apps.json',
+    }, { spaces: 2 });
+    const catalogManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
+    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), {
+      ...catalogManifest, entries: [await createCatalogManifestV7Entry(plugin, pluginRoot)],
+    }, { spaces: 2 });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team-tools', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team-tools', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team-tools/review-gate', platforms: ['codex'],
     }));
-    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const userIntentBefore = await readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const systemRoot = path.join(isolation.layout.fixtureCwd, 'system-codex');
+    const binRoot = path.join(systemRoot, 'bin');
+    const packageRoot = path.join(systemRoot, 'lib', 'node_modules', '@openai', 'codex');
+    const launcher = path.join(packageRoot, 'bin', 'codex.js');
+    await Promise.all([
+      fs.outputJson(path.join(packageRoot, 'package.json'), {
+        name: '@openai/codex', version: '0.151.0', bin: { codex: 'bin/codex.js' },
+      }),
+      fs.outputFile(launcher, '#!/usr/bin/env node\n'),
+    ]);
+    await fs.chmod(launcher, 0o755);
+    await fs.ensureDir(binRoot);
+    await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
+    const env = { ...isolation.env, PATH: `${binRoot}:${isolation.env.PATH ?? ''}` };
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ installed: [], available: [] }),
+      stderr: '',
+    }));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env,
+      interactive: false,
+      nativeCliRunner,
+    }));
+    const captureEvidence = vi.fn(dependencies.captureEvidence);
+    const value = new TuiController({
+      ...dependencies, prepareReviewEvidence: undefined, captureEvidence,
+    });
     await value.load();
     value.push({ name: 'pluginList', mode: 'installed' }, { focusIndex: 0 });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    expect(instance.lastFrame()).toContain('› 恢复本项目…');
+    expect(instance.lastFrame()).toContain('› 按项目清单准备…');
     await input(instance, '\r');
-    const task = instance.lastFrame() ?? '';
-    expect(task).toContain('当前项目');
-    expect(task).not.toContain('所有项目');
-    await input(instance, '\r');
-    await nextTurn(4);
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'team-tools/review-gate',
+        description: expect.stringContaining('新增当前项目安装'),
+      }),
+    ]));
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWriteTask',
-      targets: [expect.objectContaining({
-        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
-      })],
+      kind: 'pluginWriteBatch', action: 'sync', scope: 'project', platform: 'both',
+      selection: { kind: 'currentProjectIntentRoots' },
     }), expect.any(AbortSignal));
+    await expect(captureEvidence.mock.results[0]!.value).resolves.toMatchObject({
+      groups: [{
+        platform: 'codex', scope: 'project', executable: true,
+        preview: { overallState: 'succeeded', targetResults: [] },
+      }],
+      targetVersions: [{
+        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
+        presence: 'new', availableVersion: '1.0.0',
+      }],
+    });
+    expect(nativeCliRunner).toHaveBeenCalled();
+    expect(await readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env,
+    })).toEqual(userIntentBefore);
   });
 
   it.each([[60, 18], [80, 24]] as const)(
@@ -2060,26 +2147,30 @@ describe('ConsoleAppV4', () => {
         : intent.selection.kind === 'targets'
           ? [...new Set(intent.selection.targets.map((target) => target.pluginId))]
           : [];
-      const preview = {
-        platforms: ['codex'], plugins: pluginIds, warnings: [], rebuildResults: [],
-        targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
-        operationPlan: {
-          schemaVersion: 1 as const,
-          kind: 'aw-operation-plan' as const,
-          operation: 'sync' as const,
-          planFingerprint: 'sha256:batch',
-          target: { pluginId: pluginIds[0]!, platform: 'codex' as const, scope: 'project' as const },
-          changes: [],
-        },
-      };
+      const targets = intent.selection.kind === 'targets' ? intent.selection.targets : [];
       return {
         ...evidence,
         requestedPluginIds: pluginIds,
-        groups: [{
-          groupId: 'official:codex', sourceId: 'official', platform: 'codex' as const,
-          scope: 'project' as const,
-          requestedPluginIds: pluginIds, preview, executable: true,
-        }],
+        groups: targets.map((target) => ({
+          groupId: [target.pluginId, target.platform, target.scope].join('\0'),
+          sourceId: target.pluginId.split('/')[0]!,
+          platform: target.platform,
+          scope: target.scope,
+          requestedPluginIds: [target.pluginId],
+          executable: true,
+          preview: {
+            platforms: [target.platform], plugins: [target.pluginId], warnings: [],
+            rebuildResults: [], targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
+            operationPlan: {
+              schemaVersion: 1 as const,
+              kind: 'aw-operation-plan' as const,
+              operation: 'sync' as const,
+              planFingerprint: `sha256:${target.platform}:${target.scope}`,
+              target,
+              changes: [],
+            },
+          },
+        })),
       };
     });
     const loaded = loadResult();
@@ -2089,7 +2180,17 @@ describe('ConsoleAppV4', () => {
       && entry.scope === 'project');
     expect(secondRoot).toBeDefined();
     secondRoot!.state = 'ready';
-    secondRoot!.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    secondRoot!.components = [
+      { kind: 'ownership', key: 'fixture', state: 'present' },
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['project', 'user'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+    ];
+    loaded.payload.targets.push(target({
+      pluginName: 'review-gate', platform: 'claude', scope: 'project', state: 'present',
+    }));
     const executeIntent = vi.fn().mockResolvedValue({
       platforms: ['codex'], plugins: ['official/review-gate', 'team-tools/review-gate'],
       warnings: [], rebuildResults: [], targetResults: [], receiptTargets: [],
@@ -2128,6 +2229,22 @@ describe('ConsoleAppV4', () => {
     });
     expect(batchIntent.selection.targets.map((target: { pluginId: string }) => target.pluginId))
       .toEqual(expect.arrayContaining(['official/review-gate', 'team-tools/review-gate']));
+    expect(batchIntent.selection.targets.filter((target: { pluginId: string }) =>
+      target.pluginId === 'official/review-gate')).toEqual([
+      { pluginId: 'official/review-gate', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/review-gate', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/review-gate', platform: 'codex', scope: 'user' },
+    ]);
+    const reviewEvidence = await captureEvidence.mock.results.at(-1)!.value as {
+      groups: Array<{ groupId: string; requestedPluginIds: string[] }>;
+    };
+    expect(reviewEvidence.groups.filter((group: { requestedPluginIds: string[] }) =>
+      group.requestedPluginIds.includes('official/review-gate')).map((group: { groupId: string }) =>
+      group.groupId)).toEqual([
+      'official/review-gate\0claude\0project',
+      'official/review-gate\0codex\0project',
+      'official/review-gate\0codex\0user',
+    ]);
     expect(value.snapshot.router.current.route.name).toBe('review');
     const oldReviewToken = value.snapshot.activeReview!.reviewToken;
 

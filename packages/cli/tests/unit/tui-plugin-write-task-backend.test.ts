@@ -20,6 +20,7 @@ import {
   buildPluginWriteTaskCandidates,
   buildPluginWriteTaskDraft,
   evaluatePluginWriteTaskRestoreVersion,
+  pluginWriteTaskVersionEvidence,
 } from '../../src/tui/plugin-write-task.js';
 
 function plugin(
@@ -69,6 +70,41 @@ function sharedMissingDependencyIssue(): UserIssueViewModel {
 }
 
 describe('plugin write task planning', () => {
+  it('keeps the same candidate binding across activation and detects changed source content', () => {
+    const candidatePlugin = plugin('demo');
+    candidatePlugin.update = {
+      pluginId: candidatePlugin.pluginId,
+      state: 'available',
+      sourceIdentity: 'identity:official',
+      generationKey: 'old/active',
+      targets: [{
+        platform: 'codex', scope: 'project', installedVersion: '1.0.0',
+        activeVersion: '1.0.0', candidateVersion: '2.0.0', availableVersion: '2.0.0',
+        candidateEvidence: 'logical/snapshot-a',
+        eligibility: 'allowed', requiresCatalogActivation: true,
+      }],
+    };
+    const before = buildPluginWriteTaskCandidates({ plugins: [candidatePlugin], issues: [] }, 'update');
+    const beforeEvidence = pluginWriteTaskVersionEvidence(candidatePlugin, before);
+
+    const activatedPlugin = structuredClone(candidatePlugin);
+    activatedPlugin.update.generationKey = 'logical/snapshot-a';
+    Object.assign(activatedPlugin.update.targets[0]!, {
+      activeVersion: '2.0.0', availableVersion: '2.0.0',
+    });
+    delete activatedPlugin.update.targets[0]!.candidateVersion;
+    delete activatedPlugin.update.targets[0]!.candidateEvidence;
+    delete activatedPlugin.update.targets[0]!.requiresCatalogActivation;
+    const after = buildPluginWriteTaskCandidates({ plugins: [activatedPlugin], issues: [] }, 'update');
+    expect(pluginWriteTaskVersionEvidence(activatedPlugin, after)).toEqual(beforeEvidence);
+
+    activatedPlugin.update.generationKey = 'logical/snapshot-b';
+    expect(pluginWriteTaskVersionEvidence(activatedPlugin, after)).not.toEqual(beforeEvidence);
+    activatedPlugin.update.generationKey = 'logical/snapshot-a';
+    activatedPlugin.update.sourceIdentity = 'identity:changed';
+    expect(pluginWriteTaskVersionEvidence(activatedPlugin, after)).not.toEqual(beforeEvidence);
+  });
+
   it('blocks an absent target when another scope has an older installed version', () => {
     const shared = plugin('shared', '');
     shared.update.targets.push({

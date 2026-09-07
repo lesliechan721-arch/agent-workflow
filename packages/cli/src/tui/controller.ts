@@ -33,7 +33,13 @@ import type {
 import type {
   StatusV7Payload,
   StatusV7PluginSummary,
+  StatusV7Target,
   StatusTargetRevision,
+} from '../commands/status-v6.js';
+import {
+  statusTargetActivation,
+  statusTargetIntent,
+  statusTargetOwnershipState,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { RebuildCommandResult } from '../commands/rebuild-command.js';
@@ -150,6 +156,52 @@ export interface PluginWriteBatchTarget {
   scope: Scope;
 }
 
+export function pluginWriteBatchTargets(
+  action: Exclude<BatchPluginWriteAction, 'install'>,
+  pluginIds: readonly string[],
+  statusTargets: readonly StatusV7Target[],
+): PluginWriteBatchTarget[] {
+  const selected = new Set(pluginIds);
+  const targets: PluginWriteBatchTarget[] = [];
+  const add = (target: StatusV7Target, scope: Scope): void => {
+    targets.push({ pluginId: target.pluginId, platform: target.platform, scope });
+  };
+  for (const target of statusTargets) {
+    if (!selected.has(target.pluginId)) continue;
+    const intent = statusTargetIntent(target);
+    const ownership = statusTargetOwnershipState(target);
+    const activation = statusTargetActivation(target);
+    const observedActivation = activation?.evidence === 'observed' ? activation : undefined;
+    const hasManagedOutput = ownership !== 'absent';
+    const hasCleanupEvidence = ownership === 'present' || ownership === 'partial'
+      || intent.relation === 'managed';
+    if (action === 'sync' || action === 'reinstall') {
+      intent.scopes.forEach((scope) => add(target, scope));
+      if (hasManagedOutput) add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (observedActivation?.user === true) add(target, 'user');
+        if (observedActivation?.project === true) add(target, 'project');
+      }
+    } else if (action === 'uninstall') {
+      if (hasManagedOutput) add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (observedActivation?.user === true) add(target, 'user');
+        if (observedActivation?.project === true) add(target, 'project');
+      }
+    } else if (hasCleanupEvidence) {
+      add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (observedActivation?.user === true) add(target, 'user');
+        if (observedActivation?.project === true) add(target, 'project');
+      }
+    }
+  }
+  return [...new Map(targets.map((target) => [
+    [target.pluginId, target.platform, target.scope].join('\0'), target,
+  ])).values()].sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+    .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
+}
+
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
   action: BatchPluginWriteAction;
@@ -172,6 +224,11 @@ export interface PluginWriteBatchGroupEvidence {
 export interface PluginWriteBatchEvidence extends OperationEvidence {
   requestedPluginIds: string[];
   groups: PluginWriteBatchGroupEvidence[];
+  targetVersions?: Array<PluginWriteBatchTarget & {
+    presence: 'new' | 'installed' | 'unknown';
+    installedVersion?: string;
+    availableVersion?: string;
+  }>;
 }
 
 export interface PluginWriteBatchGroupResult {
@@ -2769,6 +2826,25 @@ export class TuiController {
   getPluginOverview(pluginId: string): PluginListItemViewModel | undefined {
     const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
     return plugin ? cloneFrozen(plugin) : undefined;
+  }
+
+  listCurrentProjectIntentRoots(): string[] {
+    return cloneFrozen([...new Set((this.#status?.payload.targets ?? []).flatMap((target) => {
+      const intent = statusTargetIntent(target);
+      return intent.relation === 'root' && intent.scopes.includes('project')
+        ? [target.pluginId] : [];
+    }))].sort((left, right) => left.localeCompare(right, 'en')));
+  }
+
+  listPluginWriteBatchTargets(
+    action: Exclude<BatchPluginWriteAction, 'install'>,
+    pluginIds: readonly string[],
+  ): PluginWriteBatchTarget[] {
+    return cloneFrozen(pluginWriteBatchTargets(
+      action,
+      pluginIds,
+      this.#status?.payload.targets ?? [],
+    ));
   }
 
   getPluginDependencyOverview(pluginId: string): PluginDependencyOverviewViewModel | undefined {

@@ -168,7 +168,9 @@ describe('TUI plugin write task', () => {
       expect(value.snapshot.router.current.route).toEqual({
         name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
         targetKeys: ['official/demo\0codex\0user'],
-        versionEvidence: { 'official/demo\0codex\0user': '2.0.0' },
+        versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
+          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+        }) },
       });
       expect(instance.lastFrame()).toContain('Codex · 所有项目');
       expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
@@ -468,7 +470,9 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'pluginWriteTask',
-      versionEvidence: { 'official/demo\0codex\0user': '3.0.0' },
+      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
+        version: '3.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+      }) },
     });
     expect(instance.lastFrame()).toContain('确认更新 1 个位置');
     value.dispose();

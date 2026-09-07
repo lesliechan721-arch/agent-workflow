@@ -5,7 +5,9 @@ import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogSourceResolution, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
 import {
   statusCommandV7,
+  statusTargetActivation,
   statusTargetIntent,
+  statusTargetOwnershipState,
   type StatusTargetRevision,
   type StatusV7Target,
 } from '../commands/status-v6.js';
@@ -963,6 +965,7 @@ export function createTuiControllerDependencies(
       const result = await statusCommandV7({
         cwd: context.cwd,
         env: context.env,
+        nativeCliRunner: context.nativeCliRunner,
         cliVersion: packageInfo.version,
         verbose: context.diagnostics.verbose,
         ...(catalogOperationContext ? { catalogOperationContext } : {}),
@@ -1546,6 +1549,7 @@ export function createTuiControllerDependencies(
           plugins: [...new Set(requestedTargets.map((target) => target.pluginId))],
           cwd: context.cwd,
           env: context.env,
+          nativeCliRunner: context.nativeCliRunner,
           cliVersion: packageInfo.version,
           catalogOperationContext: catalogOperation,
           inventoryCatalogSourceReferences: operationInventory,
@@ -1979,6 +1983,36 @@ export function createTuiControllerDependencies(
       await preparation?.reporter.emit('evidence');
       signal?.throwIfAborted();
       const merged = mergeWriteCommandResults(groups.map((group) => group.preview));
+      const targetVersions = groups.flatMap((group) => {
+        if (group.platform === 'both') return [];
+        const platform = group.platform;
+        return group.requestedPluginIds.map((pluginId) => {
+          const live = sessionStatusResult?.payload.targets.find((target) =>
+            target.pluginId === pluginId && target.platform === platform
+            && (target.scope === group.scope || statusTargetIntent(target).scopes.includes(group.scope)
+              || platform === 'codex' && statusTargetActivation(target)?.evidence === 'observed'
+                && statusTargetActivation(target)?.[group.scope] === true));
+          const revision = sessionStatusResult?.targetRevisions?.find((target) =>
+            target.pluginId === pluginId && target.platform === platform
+            && target.scope === group.scope)?.revision;
+          const activation = live ? statusTargetActivation(live) : undefined;
+          const ownership = live && live.scope === group.scope
+            ? statusTargetOwnershipState(live) : 'absent';
+          const present = ownership === 'present' || ownership === 'partial'
+            || platform === 'codex' && activation?.evidence === 'observed'
+              && activation[group.scope] === true;
+          const planned = live ? statusTargetIntent(live).scopes.includes(group.scope) : false;
+          return {
+            pluginId,
+            platform,
+            scope: group.scope,
+            presence: present ? 'installed' as const
+              : ownership === 'absent' && planned ? 'new' as const : 'unknown' as const,
+            ...(revision?.installedVersion ? { installedVersion: revision.installedVersion } : {}),
+            ...(revision?.availableVersion ? { availableVersion: revision.availableVersion } : {}),
+          };
+        });
+      });
       const evidence: PluginWriteBatchEvidence = {
         catalog: {
           configDigest: configSnapshot.digest,
@@ -1987,6 +2021,13 @@ export function createTuiControllerDependencies(
         },
         requestedPluginIds: selection.requestedPluginIds,
         groups,
+        targetVersions: [...new Map(targetVersions.map((target) => [[
+          target.pluginId, target.platform, target.scope,
+        ].join('\0'), target])).values()].sort((left, right) => [
+          left.pluginId, left.platform, left.scope,
+        ].join('\0').localeCompare([
+          right.pluginId, right.platform, right.scope,
+        ].join('\0'), 'en')),
         ...(merged.dependencyPlan ? { dependencyPlan: merged.dependencyPlan } : {}),
         ...(merged.codexReconcilePlans ? { codexReconcilePlans: merged.codexReconcilePlans } : {}),
         ...(merged.operationPlan ? { operationPlan: merged.operationPlan } : {}),
@@ -2190,6 +2231,7 @@ export function createTuiControllerDependencies(
         : {}),
       cwd: context.cwd,
       env: context.env,
+      nativeCliRunner: context.nativeCliRunner,
       cliVersion: packageInfo.version,
       ...(statusCatalogOperation ? { catalogOperationContext: statusCatalogOperation } : {}),
       inventoryCatalogSourceReferences: operationInventory,

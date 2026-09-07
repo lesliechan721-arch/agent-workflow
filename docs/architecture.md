@@ -272,6 +272,8 @@ Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层�
 
 TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action 并建立一张 Review ticket；`selected` 选择使用共同 scope 和 platform，`targets` 选择沿用每个精确目标自己的 scope 和单个平台。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
 
+“按项目清单准备”使用当前项目的 sync-all 合同，允许准备尚未安装的已保存根；“修复异常”使用有版本证据的精确恢复任务，不能把未知版本的已有目标当成未安装。手动批量维护由 Controller 按动作和精确 status target 枚举位置，不从平台展示摘要反推 scope，也不按 supported scopes 扩张目标。合法的 Codex native 双位置启用保留两个请求位置；共享内容的写入影响仍由原 planner 在 Review 中说明。
+
 普通批次按 source 分组，同一 source 的所有根插件通过一次 typed write 解析依赖和构建目标，因此共享依赖和 native projection 只处理一次。不同 source 独立执行；一个分组失败不回滚或阻止其它分组。当前项目的 sync-all 在准备 Review 时读取 Intent roots，并冻结规范化的 requested plugin IDs 和 source/platform 分组。确认后，executor 在现有单一 `AW_HOME` mutation lock 内重新读取 Intent，并用已冻结 ID 作为 selectors、`all:false` 重新解析；完整根集合或分组变化时返回 typed stale，不能把后来新增的 root 自动加入本次写入。
 
 每个可执行分组分别绑定其 `operationPlan.planFingerprint`。锁内首次复核按去除全局 Intent digest 的分组计划语义比较；前序分组完成后，后续分组重新预览，只忽略已完成 target 和对应 Intent digest 的预期变化，再把当前完整 fingerprint 交给 typed writer。没有 operation plan 的预览失败分组也进入同一 Review，但标记为不可执行；确认固定保留已审核的失败结果。即使该来源在确认后恢复，也不能重新求值后开始写入，且不能阻止其它已审核分组继续。部分失败后的 retry 只从能恢复精确 `(pluginId, platform, scope)` 的失败 requested target，或失败 dependency 的 `requiredBy` 根计算新的 selected targets；无法细分到精确 target 的失败分组不提供重试。retry 必须重新读取 status、Intent、Catalog 和依赖，建立新的 preparation、evidence、fingerprint 和 Review ticket，不能复用旧计划。

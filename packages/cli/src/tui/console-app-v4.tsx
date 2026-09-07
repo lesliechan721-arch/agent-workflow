@@ -87,6 +87,7 @@ import {
 import type { CatalogSourceGenerationViewModel } from './catalog-generation.js';
 import type { SessionNavigation, SessionNavigationResult } from './session-host.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
+import { pluginWriteTaskVersionEvidence } from './plugin-write-task.js';
 import {
   catalogSourceFreshnessLabel,
   catalogSourceListPresentation,
@@ -399,19 +400,6 @@ function pluginWriteTaskMethodLabel(method: PluginWriteTaskCandidate['recommende
 function pluginWriteTaskTargetKey(candidate: PluginWriteTaskCandidate): string {
   const { pluginId, platform, scope } = candidate.target;
   return [pluginId, platform, scope].join('\0');
-}
-
-function pluginWriteTaskVersionEvidence(
-  plugin: PluginListItemViewModel,
-  candidates: PluginWriteTaskCandidate[],
-): Record<string, string> {
-  return Object.fromEntries(candidates.flatMap((candidate) => {
-    const update = plugin.update.targets.find((target) =>
-      target.platform === candidate.target.platform && target.scope === candidate.target.scope);
-    const version = candidate.target.expectedUpdate?.activeVersion
-      ?? update?.candidateVersion ?? update?.availableVersion;
-    return version ? [[pluginWriteTaskTargetKey(candidate), version]] : [];
-  }));
 }
 
 function statusText(plugin: PluginListItemViewModel): string {
@@ -1806,6 +1794,7 @@ export function ConsoleAppV4(props: {
       const menuCount = itemCount > 0 && !query ? 1
         + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('update')
           .some((candidate) => candidate.eligible && listed.has(candidate.target.pluginId)))
+        + Number(route.mode === 'installed' && props.controller.listCurrentProjectIntentRoots().length > 0)
         + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('restore')
           .some((candidate) => candidate.target.scope === 'project')) : 0;
       count = itemCount + menuCount || 1;
@@ -1852,6 +1841,7 @@ export function ConsoleAppV4(props: {
     const menuCount = query ? 0 : 1
       + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('update')
         .some((candidate) => candidate.eligible && listed.has(candidate.target.pluginId)))
+      + Number(route.mode === 'installed' && props.controller.listCurrentProjectIntentRoots().length > 0)
       + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('restore')
         .some((candidate) => candidate.target.scope === 'project'));
     setFocus(menuCount);
@@ -2047,6 +2037,7 @@ export function ConsoleAppV4(props: {
     return 1
       + Number(mode === 'installed' && props.controller.listPluginWriteTaskCandidates('update')
         .some((candidate) => candidate.eligible && listed.has(candidate.target.pluginId)))
+      + Number(mode === 'installed' && props.controller.listCurrentProjectIntentRoots().length > 0)
       + Number(mode === 'installed' && props.controller.listPluginWriteTaskCandidates('restore')
         .some((candidate) => candidate.target.scope === 'project'));
   };
@@ -2244,16 +2235,19 @@ export function ConsoleAppV4(props: {
         : [...current.selectedPluginIds, pluginId],
     } : current);
   };
-  const existingBatchTargets = (pluginIds: string[]): Array<{
-    pluginId: string; platform: PlatformName; scope: Scope;
-  }> => pluginIds.flatMap((pluginId) => props.controller.getPluginOverview(pluginId)
-    ?.installedPlacements.flatMap((placement) => placement.state === 'installed'
-      ? [{ pluginId, platform: placement.platform, scope: placement.scope }]
-      : placement.state === 'scopeConflict'
-        ? placement.placements.map(({ scope: targetScope }) => ({
-            pluginId, platform: placement.platform, scope: targetScope,
-          }))
-        : []) ?? []);
+  const prepareCurrentProjectPlugins = (): void => {
+    if (props.controller.listCurrentProjectIntentRoots().length === 0) {
+      setActionError('当前项目没有已保存的插件清单。');
+      return;
+    }
+    beginReview({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      selection: { kind: 'currentProjectIntentRoots' },
+      platform: 'both',
+      scope: 'project',
+    });
+  };
   const openSelectedPluginTask = (
     goal: PluginWriteTaskGoal,
     pluginIds: string[],
@@ -2279,10 +2273,13 @@ export function ConsoleAppV4(props: {
         batchOrigin: { flowId: batchDraft.flowId, owner: 'batch-write' as const },
       } : {}),
       ...(goal === 'update'
-        ? { versionEvidence: Object.fromEntries(candidates.flatMap((candidate) =>
-            candidate.target.expectedUpdate
-              ? [[pluginWriteTaskTargetKey(candidate), candidate.target.expectedUpdate.activeVersion]]
-              : [])) }
+        ? { versionEvidence: Object.assign({}, ...[...selected].map((pluginId) => {
+            const candidatePlugin = props.controller.getPluginOverview(pluginId);
+            return candidatePlugin ? pluginWriteTaskVersionEvidence(
+              candidatePlugin,
+              candidates.filter((candidate) => candidate.target.pluginId === pluginId),
+            ) : {};
+          })) }
         : {}),
     });
   };
@@ -3088,7 +3085,7 @@ export function ConsoleAppV4(props: {
       ? '选择一个插件，或从列表前部选择多个。'
       : '先处理推荐任务，或查看一个插件。';
     context = `${items.length} 个插件`;
-    help = `↑↓ 移动 · Enter 查看 · m 批量${route.mode === 'installed' ? ' · a 项目全同步 · f 可更新' : ''} · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
+    help = `↑↓ 移动 · Enter 查看 · m 批量${route.mode === 'installed' ? ' · a 按项目清单准备 · f 可更新' : ''} · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
     const sourceError = sourceId !== 'all'
       && props.controller.getSourceOverview(sourceId).health?.state === 'unavailable';
     actions = sourceError
@@ -3101,6 +3098,7 @@ export function ConsoleAppV4(props: {
       .map((candidate) => candidate.target.pluginId))];
     const projectRestoreCandidates = props.controller.listPluginWriteTaskCandidates('restore')
       .filter((candidate) => candidate.target.scope === 'project');
+    const projectIntentRoots = props.controller.listCurrentProjectIntentRoots();
     const menuRows: PluginListRowViewModel[] = sourceError || items.length === 0 || query ? [] : [
       ...(route.mode === 'installed' && recommendedUpdatePluginIds.length > 0 ? [{
         pluginId: '@menu:update',
@@ -3112,11 +3110,21 @@ export function ConsoleAppV4(props: {
         status: 'warning' as const,
         menuAction: () => openSelectedPluginTask('update', recommendedUpdatePluginIds),
       }] : []),
-      ...(route.mode === 'installed' && projectRestoreCandidates.length > 0 ? [{
+      ...(route.mode === 'installed' && projectIntentRoots.length > 0 ? [{
         pluginId: '@menu:restore-project',
-        name: '恢复本项目…',
+        name: '按项目清单准备…',
         sourceLabel: '',
-        description: '只处理当前项目已保存且需要恢复的插件位置',
+        description: `${projectIntentRoots.length} 个已保存根插件；允许补齐当前项目缺少的安装`,
+        placementSummary: '',
+        statusLabel: '项目',
+        status: 'info' as const,
+        menuAction: prepareCurrentProjectPlugins,
+      }] : []),
+      ...(route.mode === 'installed' && projectRestoreCandidates.length > 0 ? [{
+        pluginId: '@menu:repair-project',
+        name: '修复本项目异常…',
+        sourceLabel: '',
+        description: '严格按已确认的现有版本修复异常，不改变插件版本',
         placementSummary: '',
         statusLabel: '推荐',
         status: 'warning' as const,
@@ -3325,8 +3333,8 @@ export function ConsoleAppV4(props: {
         return props.controller.listPluginWriteTaskCandidates(goal)
           .filter((candidate) => selected.has(candidate.target.pluginId));
       };
-      const exactTargets = existingBatchTargets(selectedIds);
       const startExistingBatch = (action: 'sync' | 'reinstall' | 'uninstall' | 'cleanup'): void => {
+        const exactTargets = props.controller.listPluginWriteBatchTargets(action, selectedIds);
         if (exactTargets.length === 0) {
           setActionError('所选插件没有可用的已有安装位置。');
           return;
@@ -3338,11 +3346,13 @@ export function ConsoleAppV4(props: {
           scope: exactTargets[0]!.scope,
         });
       };
+      const syncTargets = props.controller.listPluginWriteBatchTargets('sync', selectedIds);
+      const uninstallTargets = props.controller.listPluginWriteBatchTargets('uninstall', selectedIds);
       if (batchDraft.stage === 'maintenance') {
         actions = [
-          { label: '同步已保存使用设置…', description: '重新应用所选已有位置', run: () => startExistingBatch('sync') },
-          { label: '重新安装…', description: '重新生成所选已有位置的安装内容', run: () => startExistingBatch('reinstall') },
-          { label: '清理遗留内容…', description: '普通清理；保留 foreign 和 shared 内容', run: () => startExistingBatch('cleanup') },
+          { label: '同步已保存使用设置…', description: `重新应用 ${syncTargets.length} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
+          { label: '重新安装…', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
+          { label: '清理遗留内容…', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个有受管证据的位置；保留 foreign 和 shared 内容`, run: () => startExistingBatch('cleanup') },
           {
             label: '返回任务选择',
             run: () => {
@@ -3370,7 +3380,7 @@ export function ConsoleAppV4(props: {
             status: 'warning' as const,
             run: () => openSelectedPluginTask('restore', selectedIds),
           }] : []),
-          { label: '移除所选插件…', description: `${exactTargets.length} 个已有位置；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
+          { label: '移除所选插件…', description: `${uninstallTargets.length} 个现场目标；执行前检查所有权；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
           {
             label: '其他维护方式…',
             description: '同步、重新安装和普通清理',
@@ -3383,7 +3393,7 @@ export function ConsoleAppV4(props: {
           { label: '返回调整选择', run: () => setBatchDraft((current) => current ? { ...current, stage: 'select' } : current) },
         ];
       }
-      context = `${selectedIds.length} 个插件 · ${exactTargets.length} 个已有位置`;
+      context = `${selectedIds.length} 个插件 · ${syncTargets.length} 个已保存或现场目标`;
       help = '↑↓ 移动 · Enter 选择 · Esc 返回修改';
       const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(1));
       content = <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
@@ -6865,10 +6875,18 @@ export function ConsoleAppV4(props: {
         [target.pluginId, target.platform, target.scope].join('\0')),
       ...(taskBatchOrigin ? { batchOrigin: taskBatchOrigin } : {}),
       ...(taskSummary.goal === 'update' ? {
-        versionEvidence: Object.fromEntries(taskSummary.requestedTargets.flatMap((target) =>
-          target.expectedUpdate
-            ? [[[target.pluginId, target.platform, target.scope].join('\0'), target.expectedUpdate.activeVersion]]
-            : [])),
+        versionEvidence: 'returnRoute' in result
+          && result.returnRoute?.name === 'pluginWriteTask'
+          && result.returnRoute.versionEvidence
+          ? result.returnRoute.versionEvidence
+          : Object.fromEntries(taskSummary.requestedTargets.flatMap((target) =>
+              target.expectedUpdate
+                ? [[[target.pluginId, target.platform, target.scope].join('\0'), JSON.stringify({
+                    version: target.expectedUpdate.activeVersion,
+                    sourceIdentity: target.expectedUpdate.sourceIdentity,
+                    binding: target.expectedUpdate.generationKey,
+                  })]]
+                : [])),
       } : {}),
     } : undefined;
     const batchOperation = operationKind === 'pluginWriteBatch';
@@ -8507,10 +8525,7 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'pluginList' && input.toLowerCase() === 'm') {
       openBatchSelection(route.mode === 'browse' ? 'install' : undefined);
     } else if (route.name === 'pluginList' && route.mode === 'installed' && input.toLowerCase() === 'a') {
-      const projectRoots = [...new Set(props.controller.listPluginWriteTaskCandidates('restore')
-        .filter((candidate) => candidate.target.scope === 'project')
-        .map((candidate) => candidate.target.pluginId))];
-      openSelectedPluginTask('restore', projectRoots, 'project');
+      prepareCurrentProjectPlugins();
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'a') {
       const candidates = batchCandidates(batchDraft)
         .filter((candidate) => batchCandidateBlockReason(batchDraft, candidate) === undefined);

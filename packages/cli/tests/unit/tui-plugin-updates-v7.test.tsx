@@ -284,7 +284,9 @@ describe('TUI plugin update evidence', () => {
     expect(controller.snapshot.router.current.route).toEqual({
       name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
       targetKeys: ['official/demo\0codex\0user'],
-      versionEvidence: { 'official/demo\0codex\0user': '2.0.0' },
+      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
+        version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+      }) },
     });
     detail.stdin.write('\r');
     await nextTurn();
