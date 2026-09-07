@@ -93,6 +93,10 @@ import {
   OperationReportPreviewScreen,
 } from './operation-diagnostic-screens.js';
 import { resolveTuiSizePolicy } from './layout.js';
+import {
+  buildDependencyGraphProjection,
+  type DependencyGraphRow,
+} from './dependency-graph.js';
 import { platformLabel, scopeLabel } from './glossary.js';
 import { InputDisplay, removeLastGrapheme } from './input-display.js';
 import { catalogRefPolicyForPreset } from './source-ref-presets.js';
@@ -1123,6 +1127,17 @@ function dependencySummaryText(summary: NonNullable<PluginListItemViewModel['dep
   return `${summary.directCount} 个直接 · ${summary.totalCount} 个总计`;
 }
 
+function dependencyGraphRowStatus(row: DependencyGraphRow): {
+  value: string;
+  status: ActionItem['status'];
+} {
+  if (row.nodeState === 'ready') return { value: '正常', status: 'success' };
+  if (row.nodeState === 'missing') return { value: '缺失', status: 'error' };
+  if (row.nodeState === 'needsAttention') return { value: '待恢复', status: 'warning' };
+  if (row.nodeState === 'unavailable') return { value: '不可用', status: 'error' };
+  return { value: '未检查', status: 'muted' };
+}
+
 function isCatalogSourcesBootstrapFlow(snapshot: TuiControllerSnapshot): boolean {
   const route = snapshot.router.current.route;
   if (route.name === 'reviewPreparing') {
@@ -1230,6 +1245,9 @@ export function ConsoleAppV4(props: {
   const [dirty, setDirty] = useState(false);
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
   const [configLayerCounts, setConfigLayerCounts] = useState<Record<string, number>>({});
+  const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<Scope, ConfigPageViewModel>>>({});
+  const [configSaveImpact, setConfigSaveImpact] = useState<Awaited<ReturnType<TuiController['previewConfigSaveImpact']>>>();
+  const [configSaveImpactError, setConfigSaveImpactError] = useState(false);
   const [draftUpdates, setDraftUpdates] = useState<Record<string, PluginConfigValue>>({});
   const [draftRemoves, setDraftRemoves] = useState<string[]>([]);
   const [objectDrafts, setObjectDrafts] = useState<Record<string, PluginConfigObject>>({});
@@ -1246,6 +1264,7 @@ export function ConsoleAppV4(props: {
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
   const [batchDraft, setBatchDraft] = useState<BatchDraft>();
   const [batchTargetOffset, setBatchTargetOffset] = useState(0);
+  const [expandedDependencyPluginIds, setExpandedDependencyPluginIds] = useState<Set<string>>();
   const [sourceInput, setSourceInput] = useState('');
   const [sourceInputError, setSourceInputError] = useState<string>();
   const [pendingReviewIntent, setPendingReviewIntent] = useState<OperationIntent>();
@@ -1479,17 +1498,20 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     if (route.name !== 'configLayer') return;
     const abort = new AbortController();
+    setConfigLayerPages({});
     const layers = [
       { key: 'user', layer: { scope: 'user' as const } },
       { key: 'project', layer: { scope: 'project' as const } },
     ];
     void Promise.allSettled(layers.map(async ({ key, layer }) => ({
       key,
-      count: (await props.controller.getConfigPage(route.pluginId, layer, abort.signal)).storedCount,
+      page: await props.controller.getConfigPage(route.pluginId, layer, abort.signal),
     }))).then((results) => {
       if (abort.signal.aborted) return;
       setConfigLayerCounts(Object.fromEntries(results.flatMap((result) =>
-        result.status === 'fulfilled' ? [[result.value.key, result.value.count]] : [])));
+        result.status === 'fulfilled' ? [[result.value.key, result.value.page.storedCount]] : [])));
+      setConfigLayerPages(Object.fromEntries(results.flatMap((result) =>
+        result.status === 'fulfilled' ? [[result.value.key, result.value.page]] : [])));
     });
     return () => abort.abort();
   }, [props.controller, route.name, route.name === 'configLayer' ? route.pluginId : '']);
@@ -1650,6 +1672,16 @@ export function ConsoleAppV4(props: {
     if (route.name !== 'operationReportPreview') return;
     setScrollOffset(0);
   }, [route.name, route.name === 'operationReportPreview' ? route.recordId : '']);
+  useEffect(() => {
+    if (route.name !== 'pluginDependencies') return;
+    setExpandedDependencyPluginIds(undefined);
+    setFocus(0);
+    setScrollOffset(0);
+  }, [
+    route.name,
+    route.name === 'pluginDependencies' ? route.pluginId : '',
+    route.name === 'pluginDependencies' ? route.direction ?? 'dependencies' : '',
+  ]);
   useEffect(() => {
     if (route.name !== 'pluginList' || snapshot.phase !== 'ready'
       || snapshot.router.current.context.focusIndex !== undefined) return;
@@ -2100,11 +2132,7 @@ export function ConsoleAppV4(props: {
       props.controller.beginInstallFlow(candidate.pluginId, scope);
     }
     props.controller.setInstallPlatforms(targets);
-    const hasConfigurableDependencies = await props.controller.prepareInstallDependencyPlacement();
-    if (hasConfigurableDependencies) {
-      go({ name: 'dependencyPlacement', pluginId: candidate.pluginId });
-      return;
-    }
+    await props.controller.prepareInstallDependencyPlacement();
     beginReview(props.controller.installPlacementIntent());
   };
   const beginPortable = async (pluginId: string): Promise<void> => {
@@ -2705,26 +2733,33 @@ export function ConsoleAppV4(props: {
     setObjectError(undefined);
     setConfigActionError(undefined);
   };
-  const beginConfigSave = async (apply: boolean): Promise<void> => {
+  const configSaveIntent = (
+    apply: boolean,
+  ): Extract<OperationIntent, { kind: 'configSave' }> | undefined => {
     if (!configRoute || configRoute.layer.scope === 'effective' || !currentConfigPage || !dirty) return;
+    const fields = currentConfigPage.groups.flatMap((group) => group.fields);
+    return {
+      kind: 'configSave',
+      pluginId: configRoute.pluginId,
+      scope: configRoute.layer.scope,
+      apply,
+      updates: draftUpdates,
+      removeKeys: draftRemoves,
+      sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
+      privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
+        .map((field) => field.key),
+      changes: configChanges(),
+    };
+  };
+  const beginConfigSave = async (apply: boolean): Promise<void> => {
     if (configDraftIssues.length > 0) {
       setConfigActionError('字段已变化。请先放弃失效草稿，或返回继续检查来源。');
       return;
     }
-    const fields = currentConfigPage.groups.flatMap((group) => group.fields);
+    const intent = configSaveIntent(apply);
+    if (!intent) return;
     try {
-      await beginReview({
-        kind: 'configSave',
-        pluginId: configRoute.pluginId,
-        scope: configRoute.layer.scope,
-        apply,
-        updates: draftUpdates,
-        removeKeys: draftRemoves,
-        sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
-        privateKeys: fields.filter((field) => configObjectHasSensitiveChild(field.definition))
-          .map((field) => field.key),
-        changes: configChanges(),
-      });
+      await beginReview(intent);
       setConfigActionError(undefined);
     } catch (error) {
       props.controller.recordUiFailure(error, { code: 'tuiConfigReviewFailed', stage: 'config-review' });
@@ -2771,6 +2806,32 @@ export function ConsoleAppV4(props: {
     if (route.name === 'configFields' && route.layer.scope !== 'effective') return;
     setPendingPresetId(undefined);
   }, [pendingPresetId, route.name, route.name === 'configFields' ? route.layer.scope : '']);
+  useEffect(() => {
+    if (route.name !== 'configSave') {
+      setConfigSaveImpact(undefined);
+      setConfigSaveImpactError(false);
+      return;
+    }
+    const intent = configSaveIntent(false);
+    if (!intent) return;
+    const abort = new AbortController();
+    setConfigSaveImpact(undefined);
+    setConfigSaveImpactError(false);
+    void props.controller.previewConfigSaveImpact(intent, abort.signal)
+      .then((impact) => {
+        if (!abort.signal.aborted) setConfigSaveImpact(impact);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setConfigSaveImpactError(true);
+      });
+    return () => abort.abort();
+  }, [
+    props.controller,
+    route.name,
+    route.name === 'configSave' ? `${route.pluginId}:${route.layer.scope}` : '',
+    draftRemoves,
+    draftUpdates,
+  ]);
 
   if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
     && !isOperationHistoryRoute(route)) {
@@ -3554,9 +3615,6 @@ export function ConsoleAppV4(props: {
       : overview?.dependents ?? [];
     const dependencyCount = overview?.dependencies.length ?? 0;
     const dependentCount = visibleDependents.length;
-    const dependencyLimit = policy.mode === 'compact'
-      ? dependentCount > 0 ? 1 : 2
-      : dependentCount > 0 ? 3 : 5;
     const dependentLimit = responsiveBudget(2, 4);
     const dependencyRows = (entries: PluginDependencyItemViewModel[], limit: number, dependent = false, offset = 0): React.ReactNode => {
       const safeOffset = Math.min(offset, Math.max(0, entries.length - 1));
@@ -3608,97 +3666,123 @@ export function ConsoleAppV4(props: {
       </Box>;
     } else {
       breadcrumb = `${plugin.displayName} / 依赖关系`;
-      context = overview ? `${overview.summary.totalCount + 1} 个插件` : '只读';
+      const direction = route.direction ?? 'dependencies';
+      const projection = buildDependencyGraphProjection({
+        overviews: props.controller.listPluginDependencyOverviews(),
+        rootPluginId: plugin.pluginId,
+        direction,
+        ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
+      });
+      const visibleRows = projection.rows;
+      context = direction === 'dependencies' ? '它需要的' : '谁在使用它';
       title = hasInstalledPlacement(plugin) ? '依赖与被使用情况' : '安装所需插件';
-      description = '依赖由同一来源快照解析；安装时的依赖位置选择会进入 Review。';
+      description = direction === 'dependencies'
+        ? '当前方向：它需要的。缩进表示上一层需要它。'
+        : '当前方向：谁在使用它。只显示已知的实际引用。';
+      const rowActions: ActionItem[] = visibleRows.map((row) => {
+        const state = row.depth === 0
+          ? { value: statusText(plugin), status: plugin.aggregateStatus === 'needsAttention'
+            ? 'warning' as const : plugin.aggregateStatus === 'unavailable' ? 'error' as const : 'success' as const }
+          : dependencyGraphRowStatus(row);
+        const branch = row.depth === 0 ? ''
+          : `${row.ancestorHasNextSibling.map((next) => next ? '│ ' : '  ').join('')}${row.lastChild ? '└─' : '├─'} `;
+        const compactBranch = policy.mode === 'compact' && row.depth > 2 ? '… └─ ' : branch;
+        return {
+          label: row.depth === 0
+            ? `根插件 · ${row.label}（当前插件）`
+            : `${compactBranch}${direction === 'dependencies' ? '必需依赖 · ' : '实际使用者 · '}${row.label}${row.sharedWithRowId ? ' ↗ [same]' : ''}`,
+          description: row.hiddenDescendantCount > 0
+            ? `另有 ${row.hiddenDescendantCount} 个${direction === 'dependencies' ? '所需插件' : '实际使用者'}`
+            : row.depth === 0 ? '当前插件' : undefined,
+          meta: state.value,
+          status: state.status,
+          run: () => go({
+            name: 'pluginDependencyNode',
+            pluginId: plugin.pluginId,
+            nodePluginId: row.pluginId,
+            direction,
+          }),
+        };
+      });
       actions = [
-        { label: '技术详情', description: '显示 canonical pluginId 和安全错误代码', run: () => toggleTechnical() },
+        ...rowActions,
+        {
+          label: direction === 'dependencies' ? '切换到“谁在使用它”' : '切换到“它需要的”',
+          description: '切换关系方向',
+          run: () => props.controller.replace({
+            name: 'pluginDependencies',
+            pluginId: plugin.pluginId,
+            direction: direction === 'dependencies' ? 'dependents' : 'dependencies',
+          }),
+        },
+        { label: showTechnical ? '隐藏检查详情' : '查看检查详情', run: () => toggleTechnical() },
       ];
-      const rootStatus = plugin.aggregateStatus === 'installed' ? 'success' as const
-        : plugin.aggregateStatus === 'needsAttention' ? 'warning' as const
-          : plugin.aggregateStatus === 'unavailable' ? 'error' as const : 'muted' as const;
-      const dependencyActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
-      const blockerCount = overview?.blockers.length ?? 0;
-      const useBudgetedRelations = policy.mode === 'compact'
-        || showTechnical
-        || dependencyCount + dependentCount + blockerCount > 7;
-      const relationCategories = [
-        ...(blockerCount > 0 ? [{ key: 'blocker' as const, count: blockerCount }] : []),
-        ...(dependencyCount > 0 ? [{ key: 'dependency' as const, count: dependencyCount }] : []),
-        ...(dependentCount > 0 ? [{ key: 'dependent' as const, count: dependentCount }] : []),
-      ];
-      const technicalLineBudget = showTechnical ? 4 : 0;
-      const relationItemBudget = Math.max(
-        relationCategories.length,
-        size.rows - 6 - 1 - technicalLineBudget - 4,
-      );
-      const prioritizedRelations = (entries: PluginDependencyItemViewModel[]): PluginDependencyItemViewModel[] =>
-        [...entries].sort((left, right) => {
-          const priority = (entry: PluginDependencyItemViewModel): number => {
-            const status = dependencyStatus(entry).status;
-            return status === 'error' ? 0 : status === 'warning' ? 1 : 2;
-          };
-          return priority(left) - priority(right);
-        });
-      const allRelationRows = [
-        ...(overview?.blockers ?? []).map((blocker) => <StaticRow
-          key={`blocker:${blocker.code}`}
-          title={`阻塞 · ${blocker.title}`}
-          description={blocker.explanation}
-          status="error"
-          compact
-        />),
-        ...prioritizedRelations(overview?.dependencies ?? []).map((entry) => {
-          const state = dependencyStatus(entry);
-          return <StaticRow key={`dependency:${entry.pluginId}`} title={`必需依赖 · ${entry.displayName}`}
-            description={dependencyRelationDescription(entry)} meta={dependencyPlacementLabel(entry)}
-            status={state.status} compact />;
-        }),
-        ...prioritizedRelations(visibleDependents).map((entry) => {
-          const state = dependencyStatus(entry);
-          return <StaticRow key={`dependent:${entry.pluginId}`} title={`被依赖 · ${entry.displayName}`}
-            description={dependencyRelationDescription(entry)} meta={dependentTargetLabel(entry)}
-            status={state.status} compact />;
-        }),
-      ];
-      const relationLimit = Math.max(1, Math.min(
-        relationItemBudget,
-        showTechnical ? responsiveBudget(1, 6) : responsiveBudget(3, 7),
-      ));
-      const relationOffset = Math.min(batchTargetOffset, Math.max(0, allRelationRows.length - 1));
-      const visibleRelationRows = allRelationRows.slice(relationOffset, relationOffset + relationLimit);
-      const hiddenRelationRows = Math.max(0,
-        allRelationRows.length - relationOffset - visibleRelationRows.length);
-      if (useBudgetedRelations && allRelationRows.length > relationLimit) {
-        help = 'PgUp/PgDn 查看全部依赖关系 · ↑↓ 移动 · Enter 选择 · Esc 返回';
-      }
+      const scopeText = projection.scopeSummary.references.length > 0
+        ? projection.scopeSummary.references.map((entry) =>
+            `${platformLabel(entry.platform)} · ${scopeLabel(entry.scope)}`).join('；')
+        : '当前加载范围；其他项目引用未检查';
+      const relationViewport = actionViewport(actions, policy.mode === 'compact', focus,
+        scrollOffset, showTechnical ? responsiveBudget(3, 6) : responsiveBudget(7, 11));
+      help = '↑↓ 选择 · → 展开 · ← 收起 · Enter 节点详情 · Esc 返回';
       content = <Box flexDirection="column">
-        {useBudgetedRelations ? <SectionCard title="依赖关系" compact>
-          <StaticRow title={`根插件 · ${plugin.displayName}`} meta={statusText(plugin)} status={rootStatus} compact />
-          {relationOffset > 0 ? <StaticRow title={`↑ 前面还有 ${relationOffset} 项`} status="muted" compact /> : null}
-          {visibleRelationRows}
-          {hiddenRelationRows > 0 ? <StaticRow title={`↓ 后面还有 ${hiddenRelationRows} 项`} status="muted" compact /> : null}
-          {dependencyCount + dependentCount + blockerCount === 0 ? <StaticRow title="没有可显示的依赖关系" status="muted" compact /> : null}
-        </SectionCard> : <>
-          <SectionCard title="你选择的插件" meta="根节点"><StaticRow title={plugin.displayName} meta={statusText(plugin)} status={rootStatus} /></SectionCard>
-          {dependencyCount > 0 ? <SectionCard title="必需依赖" meta="依赖优先">{dependencyRows(overview?.dependencies ?? [], dependencyLimit)}</SectionCard> : null}
-          {dependentCount > 0 ? <SectionCard title="使用它的插件" meta="反向引用">{dependencyRows(visibleDependents, dependentLimit, true)}</SectionCard> : null}
-          {overview?.blockers.map((blocker) => <Callout key={blocker.code} status="error" title={blocker.title} description={blocker.explanation} />)}
-          {dependencyCount + dependentCount + blockerCount === 0 ? <Callout status="muted" title="没有可显示的依赖关系" /> : null}
-        </>}
-        <SemanticRows actions={actions} focus={focus} kind="action" compact={useBudgetedRelations} offset={dependencyActionViewport.offset} limit={dependencyActionViewport.limit} />
+        <StaticRow title={`当前检查范围 · ${scopeText}`} status="muted" compact />
+        {projection.status.state === 'invalid'
+          ? <Callout status="error" title="依赖关系无效" description={projection.status.message} /> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact
+          offset={relationViewport.offset} limit={relationViewport.limit} />
         {showTechnical ? <TechnicalDetails>
-          <StaticRow title={`${dependencyCount} 依赖 · ${dependentCount} 被依赖 · 已折叠`} meta={plugin.pluginId} compact />
+          <StaticRow title={`${dependencyCount} 个依赖 · ${dependentCount} 个实际使用者`} meta={plugin.pluginId} compact />
+          <StaticRow title={`未知引用 · ${projection.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
         </TechnicalDetails> : null}
       </Box>;
     }
+  } else if (route.name === 'pluginDependencyNode' && plugin) {
+    const node = props.controller.getPluginOverview(route.nodePluginId);
+    const overview = dependencyOverview(plugin);
+    const item = route.nodePluginId === plugin.pluginId ? undefined
+      : route.direction === 'dependencies'
+        ? overview?.dependencies.find((entry) => entry.pluginId === route.nodePluginId)
+        : overview?.dependents.find((entry) => entry.pluginId === route.nodePluginId);
+    const state = item ? dependencyStatus(item) : undefined;
+    breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId}`;
+    context = route.direction === 'dependencies' ? '它需要的' : '谁在使用它';
+    title = node?.displayName ?? route.nodePluginId;
+    description = route.nodePluginId === plugin.pluginId
+      ? '这是当前关系图的根插件。'
+      : route.direction === 'dependencies'
+        ? `${item?.requiredBy.map((entry) => entry.displayName).join('、') || plugin.displayName} 需要这个插件。`
+        : `${node?.displayName ?? route.nodePluginId} 的已安装位置实际引用当前插件。`;
+    actions = [
+      ...(route.nodePluginId !== plugin.pluginId ? [{
+        label: '以此节点查看关系',
+        description: '打开局部子树；面包屑保留来路',
+        run: () => go({
+          name: 'pluginDependencies',
+          pluginId: route.nodePluginId,
+          direction: route.direction,
+        }),
+      }] : []),
+      { label: '返回关系图', run: back },
+    ];
+    content = <Box flexDirection="column">
+      <SectionCard title="节点状态">
+        <StaticRow title={node?.displayName ?? route.nodePluginId}
+          meta={state?.value ?? (node ? statusText(node) : '未检查')} status={state?.status ?? 'muted'} compact />
+        <StaticRow title={route.nodePluginId} description="canonical pluginId" status="muted" compact />
+        {item?.placementReferences?.slice(0, responsiveBudget(1, 3)).map((reference) =>
+          <StaticRow key={`${reference.consumer.pluginId}:${reference.consumer.platform}:${reference.consumer.scope}`}
+            title={`${platformLabel(reference.consumer.platform)} · ${scopeLabel(reference.consumer.scope)}`}
+            description={`${reference.consumer.pluginId} → ${reference.dependency.pluginId}`} compact />)}
+      </SectionCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box>;
   } else if (route.name === 'installPlacement' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加`;
     context = '第 1 步，共 2 步';
     title = `你希望在哪里使用 ${plugin.displayName}？`;
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '这里只选择根插件位置。依赖可以在下一步单独调整；依赖不能比根插件位置更窄。'
+      ? '这里只选择根插件位置。依赖将采用 planner 推荐位置，并在 Review 中显示。'
       : '选择位置后，再选择一个或多个目标平台。';
     const availableScopes = (['user', 'project'] as const).filter((candidateScope) =>
       props.controller.listInstallTargets(plugin.pluginId, candidateScope)
@@ -3708,8 +3792,8 @@ export function ConsoleAppV4(props: {
         label: scopeLabel(candidateScope),
         selected: candidateScope === scope,
         description: candidateScope === 'user'
-          ? hasDependencies ? '根插件在任意项目中可用；依赖位置下一步确认' : '在任意项目中可使用，适合个人常用能力'
-          : hasDependencies ? '根插件只在当前项目使用；依赖可单独调整为所有项目' : '仅在当前项目中使用，适合团队共享',
+          ? hasDependencies ? '根插件在任意项目中可用；依赖位置自动计算' : '在任意项目中可使用，适合个人常用能力'
+          : hasDependencies ? '根插件只在当前项目使用；Review 会说明更宽的依赖位置' : '仅在当前项目中使用，适合团队共享',
         meta: candidateScope === 'user' ? '推荐' : undefined,
         run: () => {
           const choices = props.controller.listInstallTargets(plugin.pluginId, candidateScope);
@@ -3734,7 +3818,7 @@ export function ConsoleAppV4(props: {
     ];
     content = <Box flexDirection="column">
       <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
-      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将在下一步单独确认`} status="info" /></SectionCard> : null}
+      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将采用推荐位置`} description="Review 中可查看或调整" status="info" /></SectionCard> : null}
     </Box>;
   } else if (route.name === 'installTargets' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
@@ -3742,7 +3826,7 @@ export function ConsoleAppV4(props: {
     title = '选择目标平台';
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '根插件必须支持所选位置；每个依赖必须至少有一个合法位置。'
+      ? '根插件必须支持所选位置；确认后会自动规划依赖并进入 Review。'
       : '目标平台按所选位置验证；仅含平台共享内容的插件可同时启用两个位置。';
     const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
     const validSelectedTargets = selectedTargets.filter((platform) =>
@@ -4125,9 +4209,22 @@ export function ConsoleAppV4(props: {
         run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
       },
     ];
+    const dependencyOverviewForDetail = dependencyOverview(plugin);
+    const dependencyIssue = dependencyOverviewForDetail?.dependencies.find((entry) =>
+      entry.aggregateStatus !== 'ready');
+    const dependencyDetailText = dependencyIssue
+      ? `${dependencyIssue.aggregateStatus === 'notInstalled' ? '缺少' : '异常'} ${dependencyIssue.displayName}，${plugin.displayName} 暂时不可用。恢复会一并处理。`
+      : dependencyOverviewForDetail && dependencyOverviewForDetail.summary.totalCount > 0
+        ? `自动使用 ${dependencyOverviewForDetail.summary.totalCount} 个所需插件，全部就绪。查看关系…`
+        : undefined;
     const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(4));
     content = <Box flexDirection="column">
       {updateDescription ? <Callout status="warning" title={statusText(plugin)} description={updateDescription} /> : null}
+      {dependencyDetailText ? <StaticRow
+        title={dependencyDetailText}
+        status={dependencyIssue ? 'warning' : 'success'}
+        compact
+      /> : null}
       <SectionCard title="插件操作"><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>
     </Box>;
   } else if (route.name === 'pluginMore' && plugin) {
@@ -4465,11 +4562,50 @@ export function ConsoleAppV4(props: {
       ? `当前：${effectiveFieldDisplay(selectedField)} · ${selectedField.effectiveSourceLabel}。选择保存位置后直接编辑。`
       : selectedPreset ? '选择保存位置后，方案会应用到该位置的草稿。' : '选择修改保存到哪里。';
     help = '↑↓ 移动 · Enter 打开 · Esc 返回';
+    const canUseLayer = (scope: Scope): boolean => {
+      const page = configLayerPages[scope];
+      if (!page) {
+        if (scope === 'user') return true;
+        if (selectedField) return !selectedField.sensitive && !selectedField.sharedNativeRender;
+        if (selectedPreset && configPage) {
+          const effectiveFields = configPage.groups.flatMap((group) => group.fields);
+          return Object.keys(selectedPreset.values).some((key) => {
+            const field = effectiveFields.find((candidate) => candidate.key === key);
+            return Boolean(field && !field.sensitive && !field.sharedNativeRender);
+          });
+        }
+        return true;
+      }
+      const fields = page.groups.flatMap((group) => group.fields);
+      if (route.fieldKey) {
+        const field = fields.find((candidate) => candidate.key === route.fieldKey);
+        return Boolean(field && (configFieldCanSet(field) || configFieldCanUnset(field)));
+      }
+      if (selectedPreset) {
+        return Object.keys(selectedPreset.values).some((key) => {
+          const field = fields.find((candidate) => candidate.key === key);
+          return Boolean(field && configFieldCanSet(field));
+        });
+      }
+      return fields.some((field) => configFieldCanSet(field) || configFieldCanUnset(field));
+    };
     actions = [
-      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => openConfigLayerTarget({ scope: 'user' }) },
-      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => openConfigLayerTarget({ scope: 'project' }) },
+      ...(canUseLayer('user') ? [{
+        label: '个人默认',
+        description: '影响个人的所有项目；项目设置仍可覆盖',
+        meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`,
+        run: () => openConfigLayerTarget({ scope: 'user' }),
+      }] : []),
+      ...(canUseLayer('project') ? [{
+        label: '当前项目',
+        description: '修改仅对当前项目生效；适合随仓库共享的约定',
+        meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`,
+        run: () => openConfigLayerTarget({ scope: 'project' }),
+      }] : []),
     ];
-    content = <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />;
+    content = actions.length > 0
+      ? <SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
+      : <StatusCard status="info" title="正在检查可用保存位置" />;
   } else if (route.name === 'configFields' && plugin) {
     const readonly = route.layer.scope === 'effective';
     breadcrumb = readonly ? `${plugin.displayName} / 设置` : `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
@@ -4658,19 +4794,36 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'configSave' && plugin && currentConfigPage) {
     const changes = configChanges();
-    const sharedNative = route.layer.scope === 'user'
-      && [...Object.keys(draftUpdates), ...draftRemoves].some((key) =>
-        currentConfigPage.groups.flatMap((group) => group.fields)
-          .some((field) => field.key === key && field.sharedNativeRender));
+    const affectedTargets = configSaveImpact?.affectedTargets ?? [];
+    const hasConsumers = configSaveImpact?.impactState === 'known' && affectedTargets.length > 0;
+    const targetSummary = affectedTargets
+      .map((target) => `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`)
+      .join('、');
     breadcrumb = `${plugin.displayName} / 设置 / 保存汇总`;
     context = `${changes.length} 项未保存`;
     title = `保存 ${changes.length} 项设置修改？`;
-    description = '保存后可选择是否立即应用到当前可见安装。';
-    actions = [
-      { label: '保存并应用', description: sharedNative ? '保存并重新生成 Codex 平台共享 Skill；影响所有启用项目' : '保存设置并同步当前可见安装', status: 'success', run: () => beginConfigSave(true) },
-      { label: '只保存', description: sharedNative ? '只保存个人默认；平台共享 Skill 将等待同步' : '只保存所选设置层，不应用当前安装', run: () => beginConfigSave(false) },
+    description = route.layer.scope === 'project'
+      ? '修改将保存到当前项目。'
+      : '修改将保存为个人默认，并影响个人的所有项目；项目设置仍可覆盖。';
+    actions = configSaveImpact ? [
+      hasConsumers ? {
+        label: '保存并生效',
+        description: `保存设置，并重新应用：${targetSummary}`,
+        status: 'success',
+        run: () => beginConfigSave(true),
+      } : {
+        label: '保存设置',
+        description: '当前修改没有需要重新应用的已安装目标',
+        status: 'success',
+        run: () => beginConfigSave(false),
+      },
+      ...(hasConsumers ? [{
+        label: '只保存，稍后应用',
+        description: '保存所选设置层，不重新应用当前目标',
+        run: () => beginConfigSave(false),
+      }] : []),
       { label: '返回修改', run: back },
-    ];
+    ] : [{ label: '返回修改', run: back }];
     content = <Box flexDirection="column"><SectionCard title="设置变更" compact={policy.mode === 'compact'}>
       {changes.map((change) => <ReviewChangeRow
         key={change.key}
@@ -4679,7 +4832,23 @@ export function ConsoleAppV4(props: {
         compact={policy.mode === 'compact'}
       />)}
     </SectionCard><SectionCard title="应用影响" compact={policy.mode === 'compact'}>
-      <StaticRow title="保存并应用只处理当前可见安装；其他项目不会被自动扫描" compact />
+      {!configSaveImpact && !configSaveImpactError
+        ? <ProgressRow title="分析实际配置消费者" state="active" />
+        : hasConsumers
+          ? affectedTargets.map((target) => <StaticRow
+              key={`${target.platform}:${target.scope}`}
+              title={`${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
+              meta="需要重新应用"
+              status="warning"
+              compact
+            />)
+          : <StaticRow
+              title={configSaveImpactError || configSaveImpact?.impactState === 'unknown'
+                ? '无法确认需要重新应用的目标；本次仅保存设置'
+                : '没有需要重新应用的已安装目标'}
+              status={configSaveImpactError || configSaveImpact?.impactState === 'unknown' ? 'warning' : 'success'}
+              compact
+            />}
       <StaticRow title="其他设置层保持不变" status="success" compact />
     </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'configFieldAction' && plugin && activeField) {
@@ -5800,6 +5969,10 @@ export function ConsoleAppV4(props: {
     </Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
+    const installReviewPluginId = pendingReviewIntent?.kind === 'pluginWrite'
+      && pendingReviewIntent.action === 'install'
+      ? pendingReviewIntent.pluginId
+      : review.pluginAction === 'install' ? snapshot.installPlacementDraft?.pluginId : undefined;
     const batchReview = review.operationKind === 'pluginWriteBatch';
     const taskReview = review.operationKind === 'pluginWriteTask';
     const sharedImpactConfirmed = !review.requiresConfirmation
@@ -5837,6 +6010,19 @@ export function ConsoleAppV4(props: {
           operationBusy.current = false;
         });
       } },
+      ...(installReviewPluginId
+        && (snapshot.installPlacementDraft?.targets.length ?? 0) > 0 ? [{
+          label: '查看/调整依赖位置',
+          description: '当前已采用 planner 推荐位置；调整后会重新建立 Review',
+          run: () => {
+            props.controller.push({
+              name: 'dependencyPlacement',
+              pluginId: installReviewPluginId,
+            });
+            setFocus(0);
+            setScrollOffset(0);
+          },
+        }] : []),
       ...(sharedImpactConfirmed && (pendingReviewIntent?.kind === 'pluginWrite'
         && (pendingReviewIntent.action === 'install'
           || pendingReviewIntent.action === 'refreshAndSync'
@@ -6002,11 +6188,26 @@ export function ConsoleAppV4(props: {
       />;
     });
     const showEquivalentCommand = Boolean(review.equivalentCommand && showTechnical && !review.requiresConfirmation);
+    const installDependencyTargets = installReviewPluginId
+      ? snapshot.installPlacementDraft?.targets ?? [] : [];
+    const installDependencyPluginIds = new Set(installDependencyTargets.map((target) => target.pluginId));
+    const reusedDependencyPluginIds = new Set(installDependencyTargets
+      .filter((target) => target.action === 'keep')
+      .map((target) => target.pluginId));
+    const newDependencyCount = [...installDependencyPluginIds]
+      .filter((pluginId) => !reusedDependencyPluginIds.has(pluginId)).length;
+    const widenedDependencyCount = new Set(installDependencyTargets
+      .filter((target) => target.affectsOtherProjects && target.action !== 'keep')
+      .map((target) => target.pluginId)).size;
     if (review.changes.length > staticRowBudget || showTechnical
       && (review.changes.length > technicalChangeBudget || technicalDetails.length > technicalDetailLimit)) {
       help = 'PgUp/PgDn 查看全部确认信息 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! 需要确认共享影响" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{installDependencyPluginIds.size > 0 ? <><StaticRow
+      title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
+      status="info" compact /><StaticRow
+      title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
+      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! 需要确认共享影响" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
@@ -6763,7 +6964,7 @@ export function ConsoleAppV4(props: {
       && activeField === undefined;
     let unavailable: 'plugin' | 'issue' | 'config' | 'flow' | undefined;
     switch (route.name) {
-      case 'pluginPreview': case 'pluginDependencies': case 'installPlacement':
+      case 'pluginPreview': case 'pluginDependencies': case 'pluginDependencyNode': case 'installPlacement':
       case 'installTargets': case 'dependencyPlacement': case 'dependencyPlacementEditor':
       case 'pluginWriteTask': case 'pluginDetail': case 'pluginMore': case 'platform': case 'pluginAbout': case 'pluginTechnical':
       case 'configLayer':
@@ -7486,6 +7687,23 @@ export function ConsoleAppV4(props: {
       || route.name === 'configFields'
       || route.name === 'configFieldEditor'
       || route.name === 'configObjectPropertyEditor')) {
+      return;
+    }
+    if (route.name === 'pluginDependencies' && route.view !== 'removeBlocked'
+      && (key.leftArrow || key.rightArrow)) {
+      const projection = buildDependencyGraphProjection({
+        overviews: props.controller.listPluginDependencyOverviews(),
+        rootPluginId: route.pluginId,
+        direction: route.direction ?? 'dependencies',
+        ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
+      });
+      const row = projection.rows[focus];
+      if (!row) return;
+      const next = new Set(expandedDependencyPluginIds ?? projection.defaultExpandedPluginIds);
+      if (key.rightArrow && row.canExpand) next.add(row.pluginId);
+      if (key.leftArrow && row.canExpand) next.delete(row.pluginId);
+      setExpandedDependencyPluginIds(next);
+      setScrollOffset(0);
       return;
     }
     const sessionNavigation = resolveTuiSessionNavigationKey(

@@ -165,6 +165,7 @@ export const TUI_ROUTE_DEFINITIONS = {
     const item = controller.getPluginOverview(route.pluginId);
     return item && hasInstalledPlacement(item) ? 'D10' : 'D02';
   } },
+  pluginDependencyNode: { entity: 'plugin', rendererFamily: 'dependency', keymap: 'menu', normalize: plugin, screenId: fixed('D10') },
   installPlacement: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D03' : 'P05' },
   installTargets: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>

@@ -63,8 +63,15 @@ export type TuiRoute =
       name: 'pluginDependencies';
       pluginId: string;
       view?: 'relations' | 'removeBlocked';
+      direction?: 'dependencies' | 'dependents';
       platform?: PlatformName;
       scope?: Scope;
+    }
+  | {
+      name: 'pluginDependencyNode';
+      pluginId: string;
+      nodePluginId: string;
+      direction: 'dependencies' | 'dependents';
     }
   | { name: 'installPlacement'; pluginId: string }
   | {

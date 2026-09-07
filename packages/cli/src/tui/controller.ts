@@ -2677,6 +2677,10 @@ export class TuiController {
     return overview ? cloneFrozen(overview) : undefined;
   }
 
+  listPluginDependencyOverviews(): PluginDependencyOverviewViewModel[] {
+    return cloneFrozen(this.#viewModel?.dependencyOverviews ?? []);
+  }
+
   getBlockingDependents(
     pluginId: string,
     platform: PlatformName,
@@ -2972,6 +2976,23 @@ export class TuiController {
       structuredClone(layer),
       combined,
     )));
+  }
+
+  async previewConfigSaveImpact(
+    intent: Extract<OperationIntent, { kind: 'configSave' }>,
+    signal?: AbortSignal,
+  ): Promise<NonNullable<OperationEvidence['config']>> {
+    this.#assertAcceptingActions();
+    const normalized = normalizeOperationIntent(intent) as Extract<OperationIntent, { kind: 'configSave' }>;
+    this.#validateReviewIntent(normalized);
+    const combined = signal
+      ? AbortSignal.any([this.#abort.signal, signal])
+      : this.#abort.signal;
+    const evidence = await this.#trackRead(this.#prepareReviewEvidence(normalized, combined));
+    if (!evidence.config) {
+      throw new TuiOperationBlockedError('configImpactUnavailable', '无法确定设置修改的应用影响。');
+    }
+    return cloneFrozen(evidence.config);
   }
 
   async getConfigResetAvailability(
