@@ -97,6 +97,7 @@ import { resolveAwDeliveredArtifactRequestBatches } from '../utils/artifact-requ
 import {
   createAwPluginRequirementsReceipt,
   parseAwPluginRequirementsReceipt,
+  tryParseStrictSemVer,
 } from '../utils/manifest.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import {
@@ -120,6 +121,7 @@ import {
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import {
   getNamespacedMarketplaceName,
+  MarketplaceRootValidationError,
   projectMarketplaceManifestForPlatform,
   readStrictNamespacedMarketplaceRoot,
   replayNamespacedCodexNativeRenderProjections,
@@ -141,6 +143,7 @@ import {
 } from '../utils/codex-native-render-receipt.js';
 import {
   inspectCodexSharedNative,
+  type CodexSharedNativeDiagnostic,
   type CodexSharedNativeInspection,
 } from '../utils/codex-shared-native.js';
 import { calculateCodexNativeRenderPayloadDigest } from '../utils/catalog-digests.js';
@@ -2488,6 +2491,8 @@ async function codexPayloadPathSafe(
   return true;
 }
 
+class CodexNativeProjectionUnsafeError extends Error {}
+
 async function resolveCodexSkillsRoot(
   payloadRoot: string,
   rawSkillsRoot: string,
@@ -2500,11 +2505,15 @@ async function resolveCodexSkillsRoot(
     || relativeRoot.startsWith('../')
     || path.posix.isAbsolute(normalizedSeparators)
     || path.win32.isAbsolute(rawSkillsRoot)) {
-    throw new Error('codexNativeSkillsRootInvalid: Codex native Skills root is invalid.');
+    throw new CodexNativeProjectionUnsafeError(
+      'codexNativeSkillsRootInvalid: Codex native Skills root is invalid.',
+    );
   }
   const root = path.join(payloadRoot, ...relativeRoot.split('/'));
   if (!await codexReadPathSafe(payloadRoot, root)) {
-    throw new Error('codexNativeSkillsRootInvalid: Codex native Skills root is unsafe.');
+    throw new CodexNativeProjectionUnsafeError(
+      'codexNativeSkillsRootInvalid: Codex native Skills root is unsafe.',
+    );
   }
   return { relativeRoot, root };
 }
@@ -2524,19 +2533,67 @@ async function readCodexNativeRenderReceiptEvidence(payloadRoot: string): Promis
   | { state: 'absent' }
   | { state: 'unsafe' }
   | { state: 'invalid' }
+  | { state: 'unreadable' }
   | { state: 'present'; receipt: CodexNativeRenderReceipt }
 > {
   const receiptPath = path.join(payloadRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH);
   const stats = await lstatIfPresent(receiptPath);
   if (!stats) return { state: 'absent' };
   if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unsafe' };
+  let content: string;
   try {
-    return {
-      state: 'present',
-      receipt: parseCodexNativeRenderReceipt(await fs.readFile(receiptPath, 'utf8')),
-    };
+    content = await fs.readFile(receiptPath, 'utf8');
+  } catch {
+    return { state: 'unreadable' };
+  }
+  try {
+    return { state: 'present', receipt: parseCodexNativeRenderReceipt(content) };
   } catch {
     return { state: 'invalid' };
+  }
+}
+
+type CodexNativeRenderExpectedEvidence = {
+  state: 'present';
+  payloadDigest: string;
+  receipt: CodexNativeRenderReceipt;
+  projection?: CodexNativeRenderProjection;
+  sourceProjection: 'current' | 'drifted';
+} | {
+  state: 'issue';
+  reason: 'damaged' | 'foreign' | 'unreadable';
+  diagnostic: CodexSharedNativeDiagnostic;
+};
+
+function codexNativeRenderEvidenceIssue(
+  reason: 'damaged' | 'foreign' | 'unreadable',
+  diagnostic: CodexSharedNativeDiagnostic,
+): CodexNativeRenderExpectedEvidence {
+  return { state: 'issue', reason, diagnostic };
+}
+
+type CodexNativeProjectionManifestEvidence =
+  | { state: 'present'; value: Record<string, unknown> }
+  | { state: 'missing' | 'invalid' | 'unsafe' | 'unreadable' };
+
+async function readCodexNativeProjectionManifest(
+  manifestPath: string,
+): Promise<CodexNativeProjectionManifestEvidence> {
+  let stats: fs.Stats | null;
+  try {
+    stats = await lstatIfPresent(manifestPath);
+  } catch {
+    return { state: 'unreadable' };
+  }
+  if (!stats) return { state: 'missing' };
+  if (!stats.isFile() || stats.isSymbolicLink()) return { state: 'unsafe' };
+  try {
+    const value = await fs.readJson(manifestPath) as unknown;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? { state: 'present', value: value as Record<string, unknown> }
+      : { state: 'invalid' };
+  } catch (error) {
+    return { state: error instanceof SyntaxError ? 'invalid' : 'unreadable' };
   }
 }
 
@@ -2545,15 +2602,7 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   marketplaceRoot: string;
   marketplaceName: string;
   env: NodeJS.ProcessEnv;
-}): Promise<{
-  state: 'present';
-  payloadDigest: string;
-  receipt: CodexNativeRenderReceipt;
-  projection?: CodexNativeRenderProjection;
-  sourceProjection: 'current' | 'drifted';
-} | {
-  state: 'foreign';
-}> {
+}): Promise<CodexNativeRenderExpectedEvidence> {
   const logicalPluginId = options.plugin.pluginId
     ?? (options.plugin.sourceId ? `${options.plugin.sourceId}/${options.plugin.manifest.name}` : undefined);
   if (!logicalPluginId || !options.plugin.sourceId || !options.plugin.sourceIdentity) {
@@ -2562,49 +2611,65 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   const marketplace = await readStrictNamespacedMarketplaceRoot({
     trustedMarketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces'),
     rootDir: options.marketplaceRoot,
-    sourceId: options.plugin.sourceId,
-    marketplaceName: options.marketplaceName,
   });
   if (!marketplace) {
-    throw new Error('Codex native render canonical marketplace generation is missing.');
+    return codexNativeRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
   }
-  if (marketplace.config.sourceIdentity !== options.plugin.sourceIdentity) {
-    return { state: 'foreign' };
+  if (marketplace.config.sourceId !== options.plugin.sourceId
+    || marketplace.config.sourceIdentity !== options.plugin.sourceIdentity
+    || marketplace.config.marketplaceName !== options.marketplaceName) {
+    return codexNativeRenderEvidenceIssue('foreign', 'projectionReceiptIdentityMismatch');
   }
   const payloadRoot = path.join(options.marketplaceRoot, 'plugins', options.plugin.manifest.name);
+  const payloadStats = await lstatIfPresent(payloadRoot);
+  if (!payloadStats) {
+    return codexNativeRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
+  }
+  if (!payloadStats.isDirectory() || payloadStats.isSymbolicLink()) {
+    return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+  }
   if (!await codexPayloadPathSafe(payloadRoot, options.marketplaceRoot)) {
-    throw new Error('Codex native render canonical marketplace payload path is unsafe.');
-  }
-  const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
-  if (receiptEvidence.state !== 'present') {
-    throw new Error('Codex native render canonical marketplace receipt is missing or unreadable.');
-  }
-  const receipt = receiptEvidence.receipt;
-  if (receipt.logicalPluginId !== logicalPluginId
-    || receipt.strategy !== 'shared-user'
-    || receipt.sourceIdentity !== marketplace.config.sourceIdentity) {
-    throw new Error('Codex native render canonical marketplace receipt identity is invalid.');
-  }
-  const payloadDigest = await calculateCodexNativeRenderPayloadDigest(payloadRoot);
-  if (payloadDigest !== receipt.payloadDigest) {
-    throw new Error('Codex native render canonical marketplace payload does not match its receipt.');
-  }
-  const sourceManifestPath = path.join(payloadRoot, '.agents-plugin', 'plugin.json');
-  const sourceManifestStats = await lstatIfPresent(sourceManifestPath);
-  const sourceManifest = sourceManifestStats?.isFile() && !sourceManifestStats.isSymbolicLink()
-    ? await fs.readJson(sourceManifestPath).catch(() => null) as Record<string, unknown> | null
-    : null;
-  if (sourceManifest?.name !== options.plugin.manifest.name
-    || sourceManifest.version !== receipt.pluginVersion) {
-    throw new Error('Codex native render canonical marketplace plugin identity is invalid.');
+    return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
   }
   const codexManifestPath = path.join(payloadRoot, '.codex-plugin', 'plugin.json');
-  const codexManifestStats = await lstatIfPresent(codexManifestPath);
-  const codexManifest = codexManifestStats?.isFile() && !codexManifestStats.isSymbolicLink()
-    ? await fs.readJson(codexManifestPath).catch(() => null) as Record<string, unknown> | null
-    : null;
-  if (!codexManifest) {
-    throw new Error('Codex native render canonical marketplace manifest is invalid.');
+  const [sourceManifestEvidence, codexManifestEvidence] = await Promise.all([
+    readCodexNativeProjectionManifest(path.join(payloadRoot, '.agents-plugin', 'plugin.json')),
+    readCodexNativeProjectionManifest(codexManifestPath),
+  ]);
+  if (sourceManifestEvidence.state === 'unsafe'
+    || codexManifestEvidence.state === 'unsafe') {
+    return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+  }
+  if ((sourceManifestEvidence.state === 'present'
+      && sourceManifestEvidence.value.name !== options.plugin.manifest.name)
+    || (codexManifestEvidence.state === 'present'
+      && codexManifestEvidence.value.name !== options.plugin.manifest.name)
+    || (sourceManifestEvidence.state === 'present'
+      && codexManifestEvidence.state === 'present'
+      && sourceManifestEvidence.value.version !== codexManifestEvidence.value.version)) {
+    return codexNativeRenderEvidenceIssue('foreign', 'manifestIdentityMismatch');
+  }
+  if (sourceManifestEvidence.state === 'unreadable'
+    || codexManifestEvidence.state === 'unreadable') {
+    return codexNativeRenderEvidenceIssue('unreadable', 'manifestUnreadable');
+  }
+  if (sourceManifestEvidence.state === 'missing'
+    || codexManifestEvidence.state === 'missing') {
+    return codexNativeRenderEvidenceIssue('damaged', 'manifestMissing');
+  }
+  if (sourceManifestEvidence.state === 'invalid'
+    || codexManifestEvidence.state === 'invalid') {
+    return codexNativeRenderEvidenceIssue('damaged', 'manifestUnreadable');
+  }
+  if (sourceManifestEvidence.state !== 'present'
+    || codexManifestEvidence.state !== 'present') {
+    return codexNativeRenderEvidenceIssue('damaged', 'manifestUnreadable');
+  }
+  const sourceManifest = sourceManifestEvidence.value;
+  const codexManifest = codexManifestEvidence.value;
+  if (typeof sourceManifest.version !== 'string'
+    || !tryParseStrictSemVer(sourceManifest.version)) {
+    return codexNativeRenderEvidenceIssue('damaged', 'manifestVersionInvalid');
   }
   const rawSkillsRoot = typeof codexManifest.skills === 'string' && codexManifest.skills.trim() !== ''
     ? codexManifest.skills
@@ -2613,6 +2678,43 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
     payloadRoot,
     rawSkillsRoot,
   );
+  const skillsRoot = path.join(payloadRoot, ...skillsRelativeRoot.split('/'));
+  const skillsRootStats = await lstatIfPresent(skillsRoot);
+  if (skillsRootStats && (!skillsRootStats.isDirectory() || skillsRootStats.isSymbolicLink())) {
+    return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+  }
+  if (skillsRootStats) {
+    for (const skillEntry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
+      if (!skillEntry.isDirectory()) continue;
+      if (await lstatIfPresent(path.join(
+        skillsRoot,
+        skillEntry.name,
+        '.agent-workflows-owner.json',
+      ))) {
+        return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+      }
+    }
+  }
+  const receiptEvidence = await readCodexNativeRenderReceiptEvidence(payloadRoot);
+  if (receiptEvidence.state === 'absent') {
+    return codexNativeRenderEvidenceIssue('damaged', 'projectionReceiptMissing');
+  }
+  if (receiptEvidence.state === 'unsafe') {
+    return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+  }
+  if (receiptEvidence.state === 'invalid') {
+    return codexNativeRenderEvidenceIssue('damaged', 'projectionReceiptUnreadable');
+  }
+  if (receiptEvidence.state === 'unreadable') {
+    return codexNativeRenderEvidenceIssue('unreadable', 'projectionReceiptUnreadable');
+  }
+  const receipt = receiptEvidence.receipt;
+  if (receipt.logicalPluginId !== logicalPluginId
+    || receipt.strategy !== 'shared-user'
+    || receipt.sourceIdentity !== marketplace.config.sourceIdentity
+    || receipt.pluginVersion !== sourceManifest.version) {
+    return codexNativeRenderEvidenceIssue('foreign', 'projectionReceiptIdentityMismatch');
+  }
   const emptyArtifactDigest = createCodexSkillStagingTreeContentDigest({
     skillKey: 'empty',
     files: {},
@@ -2620,15 +2722,33 @@ async function resolveCodexNativeRenderExpectedEvidence(options: {
   for (const receiptTarget of receipt.targets) {
     const skillRoot = path.join(payloadRoot, ...skillsRelativeRoot.split('/'), receiptTarget.skillKey);
     if (await lstatIfPresent(path.join(skillRoot, '.agent-workflows-owner.json'))) {
-      throw new Error('Codex native render canonical marketplace Skill has an AW owner marker.');
+      return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
     }
-    const tree = await readDynamicSkillTree(skillRoot, 'codex.skill');
+    const skillStats = await lstatIfPresent(skillRoot);
+    if (skillStats && (!skillStats.isDirectory() || skillStats.isSymbolicLink())) {
+      return codexNativeRenderEvidenceIssue('foreign', 'payloadPathUnsafe');
+    }
+    let tree: DynamicSkillTree | null;
+    try {
+      tree = skillStats ? await readDynamicSkillTree(skillRoot, 'codex.skill') : null;
+    } catch (error) {
+      return codexNativeRenderEvidenceIssue(
+        error instanceof Error && typeof (error as NodeJS.ErrnoException).code !== 'string'
+          ? 'damaged'
+          : 'unreadable',
+        'projectionPayloadDigestMismatch',
+      );
+    }
     const artifactDigest = tree
       ? createCodexSkillStagingTreeContentDigest(tree)
       : emptyArtifactDigest;
     if (artifactDigest !== receiptTarget.artifactDigest) {
-      throw new Error('Codex native render canonical marketplace Skill does not match its receipt.');
+      return codexNativeRenderEvidenceIssue('damaged', 'projectionPayloadDigestMismatch');
     }
+  }
+  const payloadDigest = await calculateCodexNativeRenderPayloadDigest(payloadRoot);
+  if (payloadDigest !== receipt.payloadDigest) {
+    return codexNativeRenderEvidenceIssue('damaged', 'projectionPayloadDigestMismatch');
   }
   const targets = codexNativeRenderTargets(options.plugin);
   const receiptTargets = new Map(receipt.targets.map((target) => [target.id, target]));
@@ -2868,7 +2988,10 @@ export async function inspectCodexSharedNativeLive(options: {
   });
   let expectedPayloadDigest = dynamicProjectionExpected ? undefined : options.expectedPayloadDigest;
   let sourceProjection: 'current' | 'drifted' | undefined;
-  let expectedMarketplaceForeign = false;
+  let sourceProjectionIssue: {
+    reason: 'damaged' | 'foreign' | 'unreadable';
+    diagnostic: CodexSharedNativeDiagnostic;
+  } | undefined;
   const installed = pluginList.observation.state === 'observed'
     && pluginList.observation.value === 'installed';
   if (installed && dynamicProjectionExpected && options.nativeRenderPlugin) {
@@ -2879,19 +3002,33 @@ export async function inspectCodexSharedNativeLive(options: {
         marketplaceName,
         env: options.env,
       });
-      if (expected.state === 'foreign') {
-        expectedMarketplaceForeign = true;
+      if (expected.state === 'issue') {
+        sourceProjectionIssue = expected;
       } else {
         expectedPayloadDigest = expected.payloadDigest;
         sourceProjection = expected.sourceProjection;
       }
-    } catch {
-      sourceProjection = 'drifted';
+    } catch (error) {
+      if (error instanceof MarketplaceRootValidationError) {
+        sourceProjectionIssue = {
+          reason: error.reason === 'unsafe'
+            ? 'foreign'
+            : error.reason === 'invalid' ? 'damaged' : 'unreadable',
+          diagnostic: error.reason === 'unsafe'
+            ? 'payloadPathUnsafe'
+            : 'projectionReceiptUnreadable',
+        };
+      } else {
+        sourceProjectionIssue = {
+          reason: error instanceof CodexNativeProjectionUnsafeError ? 'foreign' : 'unreadable',
+          diagnostic: error instanceof CodexNativeProjectionUnsafeError
+            ? 'payloadPathUnsafe'
+            : 'projectionReceiptUnreadable',
+        };
+      }
     }
   }
-  const sharedNative: CodexSharedNativeInspection = expectedMarketplaceForeign
-    ? { state: 'blocked', reason: 'foreign', diagnostic: 'marketplaceRegistrationForeign' }
-    : inspectCodexSharedNative({
+  const sharedNative: CodexSharedNativeInspection = inspectCodexSharedNative({
     pluginName: options.pluginName,
     pluginId,
     marketplaceName,
@@ -2902,6 +3039,7 @@ export async function inspectCodexSharedNativeLive(options: {
     marketplacePathSafe,
     observation: pluginList.observation,
     ...(sourceProjection ? { sourceProjection } : {}),
+    ...(sourceProjectionIssue ? { sourceProjectionIssue } : {}),
   });
   return {
     sharedNative,

@@ -937,6 +937,35 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
+    ['codexSharedNativeCorrupt', 'Codex 平台共享生成内容缺失或损坏。'],
+    ['codexSharedNativeRenderDrift', 'Codex 平台共享生成内容与当前渲染输入不一致。'],
+  ] as const)('shows typed shared-native reason %s in a mounted issue page', async (
+    code,
+    explanation,
+  ) => {
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.pluginSummaries = [loaded.pluginSummaries[1]!];
+    loaded.payload.targets = [{
+      ...target({
+        pluginName: 'review-gate', platform: 'codex', scope: 'project', state: 'partial',
+      }),
+      reasons: [{ code, message: 'stable detail', severity: 'warning' }],
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues()[0]!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain(explanation);
+    expect(instance.lastFrame()).toContain('运行同步可重新生成平台共享 Skill。');
+    expect(instance.lastFrame()).not.toContain('个人默认已变化');
+    expect(instance.lastFrame()).not.toContain('这不是缓存损坏');
+  });
+
+  it.each([
     ['shortcut', 80, 24],
     ['action', 80, 24],
     ['shortcut', 60, 18],

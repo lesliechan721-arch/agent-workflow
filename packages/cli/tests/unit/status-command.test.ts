@@ -290,7 +290,20 @@ describe('status v7 current behavior', () => {
       diagnostic: 'projectionRenderDrift',
     })).toEqual([{
       code: 'codexSharedNativeRenderDrift',
-      message: 'codexSharedNativeRenderDrift: demo@aw-local render inputs changed and the shared native projection can be replaced.',
+      message: 'codexSharedNativeRenderDrift: demo@aw-local shared generated content does not match the current render inputs and can be replaced.',
+      severity: 'warning',
+    }]);
+  });
+
+  it('reports damaged shared generated content separately from render drift', () => {
+    expect(projectStatusSharedNativeReasons({
+      pluginId: 'demo@aw-local',
+      state: 'replaceable',
+      reason: 'damaged',
+      diagnostic: 'projectionReceiptMissing',
+    })).toEqual([{
+      code: 'codexSharedNativeCorrupt',
+      message: 'codexSharedNativeCorrupt: demo@aw-local shared generated content is missing or damaged and can be replaced.',
       severity: 'warning',
     }]);
   });

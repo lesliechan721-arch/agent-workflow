@@ -1996,14 +1996,37 @@ describe('TUI v4 router and ViewModel', () => {
     const issue = view.issues[0]!;
     expect(issue).toMatchObject({
       title: expect.stringContaining('平台共享内容待同步'),
-      explanation: expect.stringContaining('个人默认已变化'),
-      impact: [expect.stringContaining('不是缓存损坏')],
+      explanation: 'Codex 平台共享生成内容与当前渲染输入不一致。',
+      impact: ['运行同步可重新生成平台共享 Skill。'],
       technicalDetails: [{
         code: 'codexSharedNativeRenderDrift',
         message: '状态检查报告了这个安全错误代码。',
       }],
     });
     expect(JSON.stringify(issue)).not.toContain('corrupt');
+  });
+
+  it('presents damaged shared generated content without claiming config drift', () => {
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [target({
+          scope: 'project',
+          state: 'partial',
+          errors: [{
+            code: 'codexSharedNativeCorrupt',
+            message: 'stable technical detail',
+            severity: 'warning',
+          }],
+        })],
+      }),
+      pluginSummaries: summaries(['official', 'demo']),
+    });
+
+    expect(view.issues[0]).toMatchObject({
+      title: expect.stringContaining('平台共享内容待同步'),
+      explanation: 'Codex 平台共享生成内容缺失或损坏。',
+      impact: ['运行同步可重新生成平台共享 Skill。'],
+    });
   });
 
   it('classifies issue routes from typed status and config evidence without message matching', () => {
