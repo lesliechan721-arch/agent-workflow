@@ -171,7 +171,6 @@ export function pluginWriteBatchTargets(
     const intent = statusTargetIntent(target);
     const ownership = statusTargetOwnershipState(target);
     const activation = statusTargetActivation(target);
-    const observedActivation = activation?.evidence === 'observed' ? activation : undefined;
     const hasManagedOutput = ownership !== 'absent';
     const hasCleanupEvidence = ownership === 'present' || ownership === 'partial'
       || intent.relation === 'managed';
@@ -179,20 +178,20 @@ export function pluginWriteBatchTargets(
       intent.scopes.forEach((scope) => add(target, scope));
       if (hasManagedOutput) add(target, target.scope);
       if (target.platform === 'codex') {
-        if (observedActivation?.user === true) add(target, 'user');
-        if (observedActivation?.project === true) add(target, 'project');
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
       }
     } else if (action === 'uninstall') {
       if (hasManagedOutput) add(target, target.scope);
       if (target.platform === 'codex') {
-        if (observedActivation?.user === true) add(target, 'user');
-        if (observedActivation?.project === true) add(target, 'project');
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
       }
     } else if (hasCleanupEvidence) {
       add(target, target.scope);
       if (target.platform === 'codex') {
-        if (observedActivation?.user === true) add(target, 'user');
-        if (observedActivation?.project === true) add(target, 'project');
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
       }
     }
   }
@@ -2422,8 +2421,11 @@ export class TuiController {
     if (origin) return origin;
     if (this.#router.snapshot.current.route.name === 'result'
       && this.#resultAnchor
-      && (this.#resultAnchor.name === 'pluginPreview' || this.#resultAnchor.name === 'pluginDetail')
-      && this.#resultAnchor.pluginId === pluginId) {
+      && (this.#resultAnchor.name === 'pluginPreview' || this.#resultAnchor.name === 'pluginDetail'
+        || this.#resultAnchor.name === 'pluginWriteTask')
+      && (this.#resultAnchor.pluginId === pluginId
+        || this.#resultAnchor.name === 'pluginWriteTask'
+          && this.#resultAnchor.targetKeys?.some((key) => key.startsWith(`${pluginId}\0`)))) {
       return structuredClone(this.#resultAnchor);
     }
     return undefined;
@@ -3039,6 +3041,25 @@ export class TuiController {
     return this.startReviewPreparation(intent, returnRoute);
   }
 
+  beginNestedPluginWriteTask(route: Extract<TuiRoute, { name: 'pluginWriteTask' }>): void {
+    this.#assertAcceptingActions();
+    const current = this.#router.snapshot.current.route;
+    if (current.name !== 'pluginWriteTask') {
+      throw new TuiOperationBlockedError('taskOriginUnavailable', '嵌套任务缺少父任务。');
+    }
+    this.#router.beginFlow('pluginWriteTask', current);
+    this.#router.push(route);
+    this.#publish();
+  }
+
+  pluginWriteTaskReturnRoute(route: Extract<TuiRoute, { name: 'pluginWriteTask' }>): TuiRoute {
+    const active = this.#router.activeFlow();
+    return structuredClone(active?.kind === 'pluginWriteTask'
+      && active.returnTarget.name === 'pluginWriteTask'
+      ? active.returnTarget
+      : route);
+  }
+
   retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {
     if (!this.#batchRetryIntent) return undefined;
     const intent = structuredClone(this.#batchRetryIntent);
@@ -3073,7 +3094,8 @@ export class TuiController {
       && route.targetKeys !== undefined
       && route.targetKeys.length > 0
       && route.batchOrigin !== undefined
-      && activeFlow?.id === route.batchOrigin.flowId
+      && (activeFlow?.id === route.batchOrigin.flowId
+        || activeFlow?.parentFlowId === route.batchOrigin.flowId)
       && this.listPluginWriteTaskCandidates(route.goal).some((candidate) =>
         candidate.sourceId === intent.sourceId
         && candidate.blockReason === 'catalogActivationRequired'

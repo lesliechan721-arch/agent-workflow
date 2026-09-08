@@ -1425,9 +1425,9 @@ export function ConsoleAppV4(props: {
       || snapshot.result.operationKind !== 'pluginWriteTask'
       || !('returnRoute' in snapshot.result)
       || snapshot.result.returnRoute?.name !== 'pluginWriteTask'
+      || snapshot.result.returnRoute.goal !== snapshot.result.summary.task?.goal
       || snapshot.result.returnRoute.batchOrigin?.owner !== 'batch-write'
-      || snapshot.result.returnRoute.batchOrigin.flowId
-        !== batchDraft?.flowId) return;
+      || snapshot.result.returnRoute.batchOrigin.flowId !== batchDraft?.flowId) return;
     setBatchDraft(undefined);
     setDirty(false);
   }, [batchDraft?.flowId, route.name, snapshot.result]);
@@ -2782,18 +2782,19 @@ export function ConsoleAppV4(props: {
     layer: { scope: Scope },
   ): void => {
     if (route.name !== 'configLayer') return;
-    const field = route.fieldKey && configPage
-      ? configPage.groups.flatMap((group) => group.fields).find((candidate) => candidate.key === route.fieldKey)
+    const definitionPage = configPage ?? configLayerPages.user ?? configLayerPages.project;
+    const field = route.fieldKey && definitionPage
+      ? definitionPage.groups.flatMap((group) => group.fields).find((candidate) => candidate.key === route.fieldKey)
       : undefined;
-    const fieldTarget = configPage ? configFieldTarget(configPage, route.fieldKey) : undefined;
-    const preset = route.presetId && configPage
-      ? configPage.presets.find((candidate) => candidate.id === route.presetId)
+    const fieldTarget = definitionPage ? configFieldTarget(definitionPage, route.fieldKey) : undefined;
+    const preset = route.presetId && definitionPage
+      ? definitionPage.presets.find((candidate) => candidate.id === route.presetId)
       : undefined;
     const presetTarget = preset
-      ? configFieldTarget(configPage!, Object.keys(preset.values)[0])
+      ? configFieldTarget(definitionPage!, Object.keys(preset.values)[0])
       : undefined;
     const target = fieldTarget ?? (route.groupId ? { groupId: route.groupId, focusIndex: 0 } : undefined) ?? presetTarget
-      ?? (configPage?.groups[0] ? { groupId: configPage.groups[0].id, focusIndex: 0 } : undefined);
+      ?? (definitionPage?.groups[0] ? { groupId: definitionPage.groups[0].id, focusIndex: 0 } : undefined);
     const context = target
       ? { configGroupId: target.groupId, focusIndex: target.focusIndex, scrollOffset: 0 }
       : {};
@@ -3876,8 +3877,26 @@ export function ConsoleAppV4(props: {
           }),
         };
       });
+      const unverifiedConsumerActions: ActionItem[] = direction === 'dependents'
+        ? projection.scopeSummary.unknownConsumerPluginIds.map((pluginId) => {
+            const declared = overview?.dependents.find((entry) => entry.pluginId === pluginId);
+            return {
+              label: `未验证声明者 · ${declared?.displayName ?? pluginId}`,
+              description: '目录声明它依赖当前插件，但当前没有实际引用证据',
+              meta: declared?.aggregateStatus === 'notInstalled' ? '未安装' : '未验证',
+              status: 'muted' as const,
+              run: () => go({
+                name: 'pluginDependencyNode',
+                pluginId: plugin.pluginId,
+                nodePluginId: pluginId,
+                direction,
+              }),
+            };
+          })
+        : [];
       actions = [
         ...rowActions,
+        ...unverifiedConsumerActions,
         {
           label: direction === 'dependencies' ? '切换到“谁在使用它”' : '切换到“它需要的”',
           description: '切换关系方向',
@@ -3900,11 +3919,14 @@ export function ConsoleAppV4(props: {
         <StaticRow title={`当前检查范围 · ${scopeText}`} status="muted" compact />
         {projection.status.state === 'invalid'
           ? <Callout status="error" title="依赖关系无效" description={projection.status.message} /> : null}
+        {unverifiedConsumerActions.length > 0
+          ? <StaticRow title={`未验证声明者 · ${unverifiedConsumerActions.length} 个`} description="以下声明者不计入实际使用者" status="muted" compact />
+          : null}
         <SemanticRows actions={actions} focus={focus} kind="action" compact
           offset={relationViewport.offset} limit={relationViewport.limit} />
         {showTechnical ? <TechnicalDetails>
-          <StaticRow title={`${dependencyCount} 个依赖 · ${dependentCount} 个实际使用者`} meta={plugin.pluginId} compact />
-          <StaticRow title={`未知引用 · ${projection.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
+          <StaticRow title={`${dependencyCount} 个依赖 · ${projection.scopeSummary.actualConsumerPluginIds.length} 个实际使用者`} meta={plugin.pluginId} compact />
+          <StaticRow title={`未验证声明者 · ${projection.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
         </TechnicalDetails> : null}
       </Box>;
     }
@@ -3915,6 +3937,8 @@ export function ConsoleAppV4(props: {
       : route.direction === 'dependencies'
         ? overview?.dependencies.find((entry) => entry.pluginId === route.nodePluginId)
         : overview?.dependents.find((entry) => entry.pluginId === route.nodePluginId);
+    const verifiedDependent = route.direction !== 'dependents'
+      || (item?.placementReferences?.length ?? 0) > 0;
     const state = item ? dependencyStatus(item) : undefined;
     breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId}`;
     context = route.direction === 'dependencies' ? '它需要的' : '谁在使用它';
@@ -3923,7 +3947,9 @@ export function ConsoleAppV4(props: {
       ? '这是当前关系图的根插件。'
       : route.direction === 'dependencies'
         ? `${item?.requiredBy.map((entry) => entry.displayName).join('、') || plugin.displayName} 需要这个插件。`
-        : `${node?.displayName ?? route.nodePluginId} 的已安装位置实际引用当前插件。`;
+        : verifiedDependent
+          ? `${node?.displayName ?? route.nodePluginId} 的已安装位置实际引用当前插件。`
+          : `${item?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前没有实际引用证据。`;
     actions = [
       ...(route.nodePluginId !== plugin.pluginId ? [{
         label: '以此节点查看关系',
@@ -4201,6 +4227,122 @@ export function ConsoleAppV4(props: {
     const activationSources = [...new Set(blockedCandidates
       .filter((candidate) => candidate.blockReason === 'catalogActivationRequired')
       .map((candidate) => candidate.sourceId))];
+    const taskIssues = new Map(props.controller.listUserIssues().map((issue) => [issue.issueId, issue]));
+    const recoveryActions = [...new Map(blockedCandidates.flatMap((candidate): Array<[string, ActionItem]> => {
+      if (candidate.blockReason === 'catalogActivationRequired') return [];
+      const target = candidate.target;
+      const targetLabel = `${candidate.displayName} · ${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
+      const linkedIssue = candidate.issueIds.map((issueId) => taskIssues.get(issueId)).find(Boolean);
+      const sourceIssue = linkedIssue && (linkedIssue.group === 'sourceRemoved'
+        || linkedIssue.group === 'sourceUnavailable')
+        ? linkedIssue
+        : [...taskIssues.values()].find((entry) =>
+            (entry.category === 'sourceUnavailable' || entry.category === 'sourceMissing'
+              || entry.category === 'sourceIdentityChanged')
+            && (entry.sourceId === candidate.sourceId || entry.pluginId === target.pluginId));
+      const issue = linkedIssue ?? sourceIssue;
+      const candidatePlugin = props.controller.getPluginOverview(target.pluginId);
+      const configField = issue?.requiredFields?.[0];
+      if (issue?.group === 'config' || configField) {
+        const fieldKey = configField?.key;
+        return [[`config:${target.pluginId}:${fieldKey ?? ''}`, {
+          label: fieldKey ? `完成设置：${configField?.title ?? fieldKey}` : `检查 ${candidate.displayName} 的设置`,
+          description: `${targetLabel}；保存后返回任务重新读取当前证据`,
+          status: 'warning',
+          run: () => {
+            beginConfigFlow(target.pluginId);
+            props.controller.replace({
+              name: 'configLayer',
+              pluginId: target.pluginId,
+              ...(fieldKey ? { fieldKey } : {}),
+            });
+          },
+        }]];
+      }
+      if (candidate.blockReason === 'restoreVersionChanged') {
+        const updateCandidates = props.controller.listPluginWriteTaskCandidates('update')
+          .filter((entry) => pluginWriteTaskTargetKey(entry) === pluginWriteTaskTargetKey(candidate));
+        const updatePlugin = props.controller.getPluginOverview(target.pluginId);
+        if (updateCandidates.length > 0 && updatePlugin) {
+          return [[`update:${pluginWriteTaskTargetKey(candidate)}`, {
+            label: `更新并恢复 ${targetLabel}…`,
+            description: '改用当前候选版本建立新任务；进入 Review 前仍会重新检查证据',
+            status: 'warning',
+            run: () => props.controller.beginNestedPluginWriteTask({
+              name: 'pluginWriteTask',
+              pluginId: target.pluginId,
+              goal: 'update',
+              targetKeys: updateCandidates.map(pluginWriteTaskTargetKey),
+              ...(route.batchOrigin ? { batchOrigin: route.batchOrigin } : {}),
+              versionEvidence: pluginWriteTaskVersionEvidence(updatePlugin, updateCandidates),
+            }),
+          }]];
+        }
+      }
+      if (sourceIssue || candidatePlugin?.sourceUnavailable) {
+        const sourceId = sourceIssue?.sourceId ?? candidate.sourceId;
+        const sourceNeedsIssue = sourceIssue?.category === 'sourceMissing'
+          || sourceIssue?.category === 'sourceIdentityChanged'
+          || sourceIssue?.group === 'sourceRemoved';
+        if (sourceNeedsIssue && sourceIssue) {
+          return [[`source-issue:${sourceIssue.issueId}`, {
+            label: sourceIssue.category === 'sourceMissing'
+              ? `重新添加来源 ${sourceId}` : `核对来源身份 ${sourceId}`,
+            description: `${targetLabel}；先查看来源问题的安全恢复选择`,
+            status: 'warning',
+            run: () => go({ name: 'issueDetail', issueId: sourceIssue.issueId }),
+          }]];
+        }
+        return [[`source:${sourceId}`, {
+          label: `核对来源 ${sourceId}`,
+          description: `${targetLabel}；修复或重新检查后返回任务`,
+          status: 'warning',
+          run: () => go({ name: 'sourceDetail', sourceId }),
+        }]];
+      }
+      if (candidate.blockReason === 'restoreVersionUnverified'
+        || candidate.blockReason === 'updateEvidenceIncomplete') {
+        return [
+          [`reload:${pluginWriteTaskTargetKey(candidate)}`, {
+            label: `重新检查 ${targetLabel}`,
+            description: '重新读取安装、版本、来源和受管内容证据',
+            run: async () => {
+              await props.controller.load();
+              setFocus(0);
+              setScrollOffset(0);
+            },
+          }],
+          [`diagnostic:${pluginWriteTaskTargetKey(candidate)}`, {
+            label: `查看 ${targetLabel} 的诊断`,
+            description: '版本仍无法确认时查看组件状态和安全恢复方向',
+            run: () => go({ name: 'pluginTechnical', pluginId: target.pluginId }),
+          }],
+        ];
+      }
+      if (issue) {
+        return [[`issue:${issue.issueId}`, {
+          label: `处理问题：${issue.title}`,
+          description: `${targetLabel}；只提供该问题允许的恢复动作`,
+          status: 'warning',
+          run: () => go({ name: 'issueDetail', issueId: issue.issueId }),
+        }]];
+      }
+      if (candidate.blockReason === 'targetUnavailable'
+        || candidate.blockReason === 'manualRecoveryRequired'
+        || candidate.blockReason === 'taskActionConflict') {
+        return [[`maintenance:${pluginWriteTaskTargetKey(candidate)}`, {
+          label: `维护 ${targetLabel}`,
+          description: '检查这个精确平台位置可用的安全维护动作',
+          status: 'warning',
+          run: () => go({ name: 'platform', pluginId: target.pluginId, platform: target.platform }),
+        }]];
+      }
+      return [[`diagnostic:${target.pluginId}`, {
+        label: `查看 ${candidate.displayName} 的诊断`,
+        description: `${pluginWriteTaskBlockLabel(candidate.blockReason)}；当前没有可安全自动执行的动作`,
+        run: () => go({ name: 'pluginTechnical', pluginId: target.pluginId }),
+      }]];
+    })).values()];
     const taskLabel = pluginWriteTaskLabel(route.goal);
     const startTaskReview = (executionPolicy: 'all' | 'executableSubset'): void => {
       props.controller.startPluginWriteTaskReview({
@@ -4208,7 +4350,7 @@ export function ConsoleAppV4(props: {
         goal: route.goal,
         targets: candidates.map((candidate) => candidate.target),
         executionPolicy,
-      }, route);
+      }, props.controller.pluginWriteTaskReturnRoute(route));
       setFocus(0);
       setScrollOffset(0);
     };
@@ -4244,6 +4386,7 @@ export function ConsoleAppV4(props: {
         status: 'warning' as const,
         run: () => beginReview({ kind: 'catalogGeneration', action: 'update', sourceId }),
       })),
+      ...recoveryActions,
       ...(versionEvidenceChanged ? [{
         label: '使用当前版本重新准备…',
         description: '来源启用后的插件版本与先前候选不同；先明确采用当前版本',
@@ -4286,7 +4429,9 @@ export function ConsoleAppV4(props: {
         {candidates.length > taskTargetOffset + targetRows.length
           ? <StaticRow title={`↓ 后面还有 ${candidates.length - taskTargetOffset - targetRows.length} 个位置`} status="muted" compact /> : null}
       </SectionCard>
-      {blockedCandidates.length > 0 ? <Callout status="warning" title={`${blockedCandidates.length} 个位置需要先处理或决定`} description="只有选择“先处理可执行项”才会建立子集 Review。" compact={policy.mode === 'compact'} /> : null}
+      {blockedCandidates.length > 0 ? <Callout status="warning" title={`${blockedCandidates.length} 个位置需要先处理或决定`} description={executable.length > 0
+        ? '可以先处理可执行项，或进入下方对应入口处理受阻位置。'
+        : '请进入下方对应入口处理；返回后会重新读取当前证据。'} compact={policy.mode === 'compact'} /> : null}
       {versionEvidenceChanged ? <Callout status="warning" title="插件目标版本已变化" description="不会沿用来源启用前的版本证据，也不会自动执行新版本。" compact={policy.mode === 'compact'} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={taskViewport.offset} limit={taskViewport.limit} />
     </Box>;
@@ -4722,11 +4867,12 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'configLayer' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置`;
-    const selectedField = route.fieldKey && configPage
-      ? configPage.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
+    const configLayerDefinitionPage = configPage ?? configLayerPages.user ?? configLayerPages.project;
+    const selectedField = route.fieldKey && configLayerDefinitionPage
+      ? configLayerDefinitionPage.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
       : undefined;
-    const selectedPreset = route.presetId && configPage
-      ? configPage.presets.find((preset) => preset.id === route.presetId)
+    const selectedPreset = route.presetId && configLayerDefinitionPage
+      ? configLayerDefinitionPage.presets.find((preset) => preset.id === route.presetId)
       : undefined;
     title = selectedField ? `修改“${selectedField.title}”`
       : selectedPreset ? `应用“${selectedPreset.title}”` : `修改 ${plugin.displayName} 设置`;
@@ -4739,8 +4885,8 @@ export function ConsoleAppV4(props: {
       if (!page) {
         if (scope === 'user') return true;
         if (selectedField) return !selectedField.sensitive && !selectedField.sharedNativeRender;
-        if (selectedPreset && configPage) {
-          const effectiveFields = configPage.groups.flatMap((group) => group.fields);
+        if (selectedPreset && configLayerDefinitionPage) {
+          const effectiveFields = configLayerDefinitionPage.groups.flatMap((group) => group.fields);
           return Object.keys(selectedPreset.values).some((key) => {
             const field = effectiveFields.find((candidate) => candidate.key === key);
             return Boolean(field && !field.sensitive && !field.sharedNativeRender);
@@ -6864,10 +7010,16 @@ export function ConsoleAppV4(props: {
     const taskOperation = operationKind === 'pluginWriteTask';
     const taskSummary = resultSummary?.task;
     const taskBlockedCount = taskSummary?.blockedTargets.length ?? 0;
-    const taskBatchOrigin = 'returnRoute' in result
+    const frozenTaskReturnRoute = 'returnRoute' in result
       && result.returnRoute?.name === 'pluginWriteTask'
-      ? result.returnRoute.batchOrigin : undefined;
-    const taskReturnRoute: TuiRoute | undefined = taskSummary?.requestedTargets[0] ? {
+      ? result.returnRoute : undefined;
+    const nestedTaskReturn = frozenTaskReturnRoute !== undefined
+      && taskSummary !== undefined
+      && frozenTaskReturnRoute.goal !== taskSummary.goal;
+    const taskBatchOrigin = frozenTaskReturnRoute?.batchOrigin;
+    const taskReturnRoute: TuiRoute | undefined = nestedTaskReturn
+      ? frozenTaskReturnRoute
+      : taskSummary?.requestedTargets[0] ? {
       name: 'pluginWriteTask',
       pluginId: taskSummary.requestedTargets[0].pluginId,
       goal: taskSummary.goal,
@@ -7112,6 +7264,12 @@ export function ConsoleAppV4(props: {
         ]
       : taskOperation
       ? [
+          ...(nestedTaskReturn && taskReturnRoute ? [{
+            label: '返回剩余恢复任务',
+            description: '保留父任务的冻结目标；返回后重新读取当前证据',
+            status: 'success' as const,
+            run: () => leaveResult(taskReturnRoute),
+          }] : []),
           ...((partial || blocked) && (taskSummary?.retryTargets?.length ?? 0) > 0 ? [{
             label: `继续处理剩余 ${taskSummary!.retryTargets!.length} 项…`,
             description: '重新检查失败的精确目标和必要依赖，并进入新的确认页',
@@ -7127,14 +7285,14 @@ export function ConsoleAppV4(props: {
             status: 'warning' as const,
             run: () => leaveResult(taskReturnRoute),
           }] : []),
-          { label: '完成，返回我的插件', run: () => {
+          ...(!nestedTaskReturn ? [{ label: '完成，返回我的插件', run: () => {
             if (taskBatchOrigin?.owner === 'batch-write'
               && taskBatchOrigin.flowId === batchDraft?.flowId) {
               setBatchDraft(undefined);
               setDirty(false);
             }
             leaveResult({ name: 'pluginList', mode: 'installed' });
-          } },
+          } }] : []),
           { label: '查看本次记录', run: () => result.operationRecordId
             && go({ name: 'operationDiagnostic', recordId: result.operationRecordId }) },
         ]
@@ -7251,7 +7409,8 @@ export function ConsoleAppV4(props: {
           { label: '返回首页', run: () => requestSessionNavigation('home') },
         ]
       : [{ label: partial || blockedDependencyFailure ? '查看失败项' : successfulConfigOperation && configOrigin
-        ? configOrigin?.name === 'pluginPreview' ? '返回插件预览' : '返回插件详情'
+        ? configOrigin.name === 'pluginPreview' ? '返回插件预览'
+          : configOrigin.name === 'pluginWriteTask' ? '返回恢复任务' : '返回插件详情'
         : configOperation ? '查看插件'
           : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
       if (successfulConfigOperation && configOrigin) {

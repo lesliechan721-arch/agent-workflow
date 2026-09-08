@@ -149,6 +149,20 @@ describe('TUI plugin write batches', () => {
     ]);
   });
 
+  it('keeps both configured Codex activations when the system probe is unavailable', () => {
+    const codex = target({ pluginName: 'native', platform: 'codex', scope: 'user', state: 'present' });
+    codex.components.push(
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'assumed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'assumed' } },
+      { kind: 'sharedNative', key: 'native@aw-official', state: 'usable' },
+    );
+
+    expect(pluginWriteBatchTargets('cleanup', ['official/native'], [codex])).toEqual([
+      { pluginId: 'official/native', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'user' },
+    ]);
+  });
+
   function failedBatchResult(
     targetResults: Array<Record<string, unknown>>,
   ): PluginWriteBatchExecutionResult {

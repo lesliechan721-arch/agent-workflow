@@ -107,7 +107,6 @@ import {
   buildConfigPage,
   buildTuiViewModel,
   projectPlatformPlacement,
-  type DependencyPlacementReferenceViewModel,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
 } from './model.js';
@@ -624,39 +623,6 @@ async function loadDependencyOverviews(options: {
   const unsupportedPluginIds = new Set(options.status.pluginSummaries
     .filter((summary) => (summary.missingCapabilities?.length ?? 0) > 0)
     .map((summary) => summary.pluginId));
-  const placementReferences = new Map<string, DependencyPlacementReferenceViewModel[]>();
-  for (const consumer of options.status.payload.targets.filter((target) => target.state !== 'absent')) {
-    const consumerNode = nodes.get(consumer.pluginId);
-    if (!consumerNode) continue;
-    for (const dependencyPluginId of consumerNode.dependencies) {
-      const dependencyTargets = (targetsByPlugin.get(dependencyPluginId) ?? [])
-        .filter((target) => target.platform === consumer.platform);
-      const projectTarget = dependencyTargets.find((target) => target.scope === 'project');
-      const userTarget = dependencyTargets.find((target) => target.scope === 'user');
-      const dependencyScope = consumer.scope === 'user'
-        ? 'user'
-        : userTarget && (!projectTarget
-          || (userTarget.state !== 'absent' && projectTarget.state === 'absent'))
-          ? 'user'
-          : 'project';
-      const reference: DependencyPlacementReferenceViewModel = {
-        consumer: {
-          pluginId: consumer.pluginId,
-          platform: consumer.platform,
-          scope: consumer.scope,
-          project: consumer.scope === 'project' ? 'current' : null,
-        },
-        dependency: {
-          pluginId: dependencyPluginId,
-          platform: consumer.platform,
-          scope: dependencyScope,
-          project: dependencyScope === 'project' ? 'current' : null,
-        },
-      };
-      const key = `${consumer.pluginId}\0${dependencyPluginId}`;
-      placementReferences.set(key, [...(placementReferences.get(key) ?? []), reference]);
-    }
-  }
   const placementsFor = (pluginId: string): PlatformPlacementSummary[] => {
     const targets = targetsByPlugin.get(pluginId) ?? [];
     if (targets.length > 0) {
@@ -726,7 +692,7 @@ async function loadDependencyOverviews(options: {
         })),
         placements,
         aggregateStatus: aggregateFor(dependency.pluginId, placements),
-        placementReferences: placementReferences.get(`${pluginId}\0${dependency.pluginId}`) ?? [],
+        placementReferences: [],
       };
     });
     const dependentIds = [...new Set(reverse.get(pluginId) ?? [])].sort();
@@ -740,7 +706,7 @@ async function loadDependencyOverviews(options: {
         requiredBy: [],
         placements,
         aggregateStatus: aggregateFor(dependentId, placements),
-        placementReferences: placementReferences.get(`${dependentId}\0${pluginId}`) ?? [],
+        placementReferences: [],
       };
     });
     const targetBlockers = (targetsByPlugin.get(pluginId) ?? []).flatMap((target) =>
@@ -1990,8 +1956,7 @@ export function createTuiControllerDependencies(
           const live = sessionStatusResult?.payload.targets.find((target) =>
             target.pluginId === pluginId && target.platform === platform
             && (target.scope === group.scope || statusTargetIntent(target).scopes.includes(group.scope)
-              || platform === 'codex' && statusTargetActivation(target)?.evidence === 'observed'
-                && statusTargetActivation(target)?.[group.scope] === true));
+              || platform === 'codex' && statusTargetActivation(target)?.[group.scope] === true));
           const revision = sessionStatusResult?.targetRevisions?.find((target) =>
             target.pluginId === pluginId && target.platform === platform
             && target.scope === group.scope)?.revision;
@@ -1999,8 +1964,7 @@ export function createTuiControllerDependencies(
           const ownership = live && live.scope === group.scope
             ? statusTargetOwnershipState(live) : 'absent';
           const present = ownership === 'present' || ownership === 'partial'
-            || platform === 'codex' && activation?.evidence === 'observed'
-              && activation[group.scope] === true;
+            || platform === 'codex' && activation?.[group.scope] === true;
           const planned = live ? statusTargetIntent(live).scopes.includes(group.scope) : false;
           return {
             pluginId,

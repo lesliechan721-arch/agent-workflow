@@ -201,8 +201,42 @@ describe('dependency graph v7', () => {
       expect(controller.route).toMatchObject({ name: 'pluginDependencies', direction: 'dependents' });
       expect(instance.lastFrame()).toContain('当前方向：谁在使用它');
       expect(instance.lastFrame()).toContain('实际使用者');
-      expect(instance.lastFrame()).not.toContain('未安装声明者');
+      expect(instance.lastFrame()).toContain('未验证声明者 · 1 个');
+      expect(instance.lastFrame()).toContain('未验证声明者 · 未安装声明者');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+
+      await input(instance, '\u001b[B', '\u001b[B', '\r');
+      expect(controller.route).toMatchObject({
+        name: 'pluginDependencyNode', nodePluginId: 'official/not-installed',
+      });
+      expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前没有实际引用证据');
+      expect(instance.lastFrame()).not.toContain('已安装位置实际引用当前插件');
     },
   );
+
+  it('keeps every unverified declarer accessible without counting it as an actual consumer', async () => {
+    const controller = new DependencyControllerStub();
+    controller.dependencies[0]!.dependents.forEach((dependent) => {
+      dependent.placementReferences = [];
+    });
+    controller.route = {
+      name: 'pluginDependencies', pluginId: 'official/root', direction: 'dependents',
+    };
+    const instance = render(<ConsoleAppV4
+      controller={controller as unknown as TuiController}
+      size={{ columns: 60, rows: 18 }}
+    />);
+    await input(instance, '', '', '');
+
+    expect(instance.lastFrame()).toContain('未验证声明者 · 2 个');
+    expect(instance.lastFrame()).not.toContain('└─ 实际使用者');
+    await input(instance, 'd');
+    expect(instance.lastFrame()).toContain('0 个实际使用者');
+    await input(instance, '\u001b[B', '\r');
+    expect(controller.route).toMatchObject({
+      name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
+    });
+    expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前没有实际引用证据');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+  });
 });

@@ -246,6 +246,8 @@ ownership health 只表示当前 live 组件是否完整。Status v7 的 shared 
 
 TUI 的 `PluginUpdateProjection` 把 runtime 的 target revision 与当前 session 的已验证 Catalog candidate 合并为插件级更新事实，并与 health 分开显示。它只在 installed version、目标 Active 或 candidate version、source identity、generation key、manifest/content evidence 和 capability compatibility 都可验证时提供“更新到 X”；Catalog version、ref commit 或未验证 candidate 本身都不能作为插件更新。candidate 需要切换 Active 时，来源切换 Review 与重新规划后的精确插件更新 Review 是两个确认边界。来源切换成功只说明 Active 已改变；插件写入失败仍单独报告。更新 intent 绑定 installed/active version、source identity 和 generation key；锁内任一项改变时返回 stale，不得无声跟随新 candidate。该 projection 和 candidate overlay 都是 session-private 数据，不改变 Status v7 JSON。
 
+TUI 依赖关系区分当前 Catalog 声明与已确认的现场引用。dependency readiness 只说明当前声明要求的依赖是否就绪，owner、激活或版本相等均不能单独证明该依赖边及位置已应用。当前 runtime 缺少这类绑定证据，不生成实际 placement reference；声明者保留在可访问的未验证分组，不计入实际使用者。图的证据分类不放宽锁内写入与依赖删除保护，不增加持久依赖记录或额外现场扫描。
+
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v7 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
 
 配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用 namespaced schemaVersion 4 envelope，并通过原子替换写入。user binding 严格绑定当前 source identity。project binding 只绑定从已验证 Active 或候选证据明确传入的 Catalog logical identity，不绑定 Git URL、SSH/HTTPS transport、本地 path 或 source identity；因此同一 source ID 和 logical identity 在 transport 改变后仍可共享读取。缺少 logical identity 证据时 project 读写 fail closed，不从 URL 或 path 推导。project 写入在 Review 和现有 AW_HOME mutation lock 内的最终提交前，以项目根相对 path 运行 `git check-ignore -q`：退出码 `0` 以 `projectConfigIgnored` 阻止写入且不改 store，`1`（包括已跟踪文件和有效 `!` 例外）允许写入，其它结果允许写入并产生 `projectConfigShareabilityUnverified` warning。只有已确认 ignore 后才运行 `-v` 读取解释；解释失败不推翻 ignore，且检查不使用 `--no-index`。Config Mutation Receipt v7 与 TUI 的安全 Review/结果投影显示该 warning。reset 不经过 Git visibility 门禁。
@@ -285,6 +287,8 @@ TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup�
 普通消费任务、恢复入口和明确保留的 CLI 范围由 [CLI/TUI 能力覆盖](tui-capability-coverage.md) 记录。新增能力必须同步入口或缺口理由；作者工作流与机器接口分别说明，不以“高级排障”代替覆盖决定。
 
 TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配置、来源恢复和 Portable 安装流程记录自己的 flow ID、父 flow、稳定起点帧和返回目标。Flow 只管理导航归属和内存草稿引用；它不保存执行计划，不替代 Review ticket，也不是持久状态。
+
+冻结的插件恢复任务可以作为设置编辑或显式更新的起点。嵌套流程保留父任务的精确目标和批量草稿归属，完成后返回父任务并重新取证；普通详情入口没有外层 flow 时也遵守同一返回合同。嵌套更新完成不清除仍有剩余目标的外层批量草稿。来源问题优先进入对应恢复入口，不被版本未知的通用重检入口遮蔽。
 
 操作进入结果页前，Controller 必须删除该 flow 的选择、输入、准备、Review 和 Progress 帧。插件安装把原预览锚点更新为插件详情，再追加只读 Result。因此关闭 Result 后先到插件详情，再返回保留 query、来源、焦点实体和滚动位置的原列表。回首页必须把历史重置为唯一根帧。确认前返回会撤销旧 Review ticket，并保留所属 flow 的草稿；再次确认必须重新准备证据。执行后的重试也必须建立新 attempt 并重新读取证据。
 
