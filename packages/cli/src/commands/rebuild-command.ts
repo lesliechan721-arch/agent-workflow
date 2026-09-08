@@ -435,10 +435,7 @@ function selectCodexActivationPlans(
     if (pluginIds.size === 0) return [];
     const includesActivationAction = (
       action: CodexReconcilePlan['activationActions'][Scope][number],
-    ) => includesScope(action.pluginId, action.scope)
-      || !(action.scope === plan.requirement.scope
-        ? plan.managedInventory.desired
-        : plan.managedInventory.related.desired).includes(action.codexPluginId);
+    ) => includesScope(action.pluginId, action.scope) || !action.desired;
     const sharedNativeActions = plan.sharedNativeActions.filter((action) =>
       pluginIds.has(action.pluginId));
     const userActions = plan.activationActions.user.filter((action) =>
@@ -605,7 +602,9 @@ function deriveDesiredIntentState(options: {
   let next = options.state;
   if (options.command === 'install') {
     for (const root of options.selectedRoots) next = mergePluginIntentRootPlatforms(next, root);
-    next = updateIntentOverrides({ state: next, plan: options.plan });
+    if (options.selectedRoots.length > 0) {
+      next = updateIntentOverrides({ state: next, plan: options.plan });
+    }
   } else if (options.command === 'uninstall' || options.command === 'cleanup') {
     for (const root of options.selectedRoots) next = removePluginIntentRootPlatforms(next, root);
     if (options.command === 'uninstall') {

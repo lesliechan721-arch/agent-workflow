@@ -3026,6 +3026,9 @@ describe('five namespaced write commands', () => {
     }, runtime);
     expect(userInstalled.overallState, JSON.stringify(userInstalled.rebuildResults))
       .toBe('succeeded');
+    expect((await readCodexConfigFile(path.join(
+      isolation.layout.fixtureCwd, '.codex', 'config.toml',
+    ))).snapshot.plugins['leaf@aw']?.enabled, JSON.stringify(userInstalled.codexReconcilePlans)).toBe(true);
 
     const stalePostcheckRunner = vi.fn(async (invocation: NativeCliInvocation) => {
       if (invocation.args.includes('list') && invocation.args.includes('--json')) {
@@ -5733,6 +5736,47 @@ describe('five namespaced write commands', () => {
     );
   });
 
+  it('removes stale project activation when reinstalling a user dependency of a project root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'stale-project-activation-source');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'official', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, yes: true };
+    await expect(installWriteCommand(['official/leaf'], {
+      ...options, scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await expect(installWriteCommand(['official/root'], {
+      ...options, scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
+    await applyCodexConfigTransactionFile(projectConfigPath, {
+      upsertPluginActivations: { 'leaf@aw': true },
+    });
+
+    const result = await reinstallWriteCommand(['official/leaf'], {
+      ...options, scope: 'user',
+    }, runtime);
+
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    const project = await readCodexConfigFile(projectConfigPath);
+    expect(project.snapshot.plugins['leaf@aw']).toBeUndefined();
+    expect(project.snapshot.plugins['root@aw']?.enabled).toBe(true);
+    const user = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    expect(user.snapshot.plugins['leaf@aw']?.enabled).toBe(true);
+  });
+
   it('repairs a missing user extension in an installed native dependency during project sync', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'native-dependency-extension-repair-source');
@@ -8259,6 +8303,47 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ errorCode: 'catalogSourceUnavailable' }),
     ]);
   }, 30_000);
+
+  it('clears removed native plugin errors after cleanup disables its shared user activation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'removed-native-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'demo' }, { name: 'other' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'official', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    await expect(installWriteCommand(['official/demo'], options, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'other' }]);
+    await fs.remove(path.join(sourceRoot, 'plugins', 'demo'));
+    await syncCatalogSourceGeneration({
+      sourceId: 'official', cliVersion: '1.0.0', env: isolation.env, impactConfirmed: true,
+    });
+    const before = await statusCommandV7({
+      ...options, plugins: ['demo'], env: isolation.env,
+    });
+    expect(before.payload.errors).toEqual([]);
+    expect(before.payload.targets).toEqual([expect.objectContaining({
+      state: 'blocked', reasons: expect.arrayContaining([expect.objectContaining({ code: 'bundleUnavailable' })]),
+    })]);
+    await expect(cleanupWriteCommand(['official/demo'], options, runtime))
+      .resolves.toMatchObject({ overallState: 'succeeded' });
+    const config = await readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'));
+    expect(config.snapshot.plugins['demo@aw']?.enabled).toBe(false);
+    const after = await statusCommandV7({
+      ...options, plugins: ['demo'], env: isolation.env,
+    });
+    expect(after.hasErrors).toBe(false);
+    expect(after.payload.errors).toEqual([]);
+    expect(after.payload.targets).toEqual([expect.objectContaining({ state: 'absent', reasons: [] })]);
+  });
 
   it.each([
     { mode: 'owned-normal', force: false, intentOnly: false },

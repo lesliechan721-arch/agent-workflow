@@ -3933,10 +3933,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.hasErrors ? 1 : 0;
       writeLine(io.stdout, result.output);
       for (const source of result.payload.catalog.sources) {
-        if (source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
+        if (rawOptions.json && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
       }
       for (const error of result.payload.errors) {
-        if (error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
+        if (rawOptions.json && error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
           writeLine(io.stderr, error.message);
         }
       }
