@@ -355,14 +355,14 @@ describe('phase 3B namespaced runtime stores', () => {
 
   it('preserves owned output added after cleanup evidence capture', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
-    const skillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
     const reviewedRoot = path.join(skillsRoot, 'reviewed-output');
     const addedRoot = path.join(skillsRoot, 'added-after-review');
     const owner: OwnerIdentity = {
       owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
       pluginId: 'team/demo', plugin: 'demo', artifactKey: 'reviewed-output',
-      platform: 'codex', scope: 'user',
+      platform: 'codex', scope: 'project',
     };
     await writePluginIntentState(location, {
       schemaVersion: 2, kind: 'aw-plugin-intents',
@@ -381,7 +381,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       inventoryCatalogSourceReferences: async () => capturedInventory,
     };
-    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'project' as const };
     const preview = await cleanupWriteCommand(['team/demo'], options, {
       ...runtime, previewOperationPlan: true,
     });
@@ -405,6 +405,50 @@ describe('phase 3B namespaced runtime stores', () => {
       status: 'failed',
       residual: expect.arrayContaining(['added-after-review']),
     });
+  });
+
+  it('includes an existing project Skill owner marker in force cleanup Review evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'project' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'project-force-output');
+    await writePluginIntentState(location, {
+      schemaVersion: 2, kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+    });
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), 'project force output\n');
+    await writeSkillOwnerMarker({
+      skillRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+        pluginId: 'team/demo', plugin: 'demo', artifactKey: 'project-force-output',
+        platform: 'codex', scope: 'project',
+      },
+    });
+    const options = {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      force: true,
+    };
+    const preview = await cleanupWriteCommand(['team/demo'], options, {
+      env: isolation.env, previewOperationPlan: true,
+    });
+
+    expect(preview.operationPlan?.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'removeOwnedArtifact', path: skillRoot }),
+    ]));
+    const result = await cleanupWriteCommand(['team/demo'], options, {
+      env: isolation.env,
+      expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+      expectedOfflineCleanupEvidence: preview.offlineCleanupPlans![0],
+    });
+
+    expect(result.overallState).toBe('succeeded');
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
+    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
   });
 
   it('keeps the Intent cancellation and reports partial when output cleanup fails', async () => {

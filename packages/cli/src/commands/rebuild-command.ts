@@ -382,6 +382,41 @@ function selectedPlatforms(selection: CommandOptions['platform']): PlatformName[
   return selection === 'both' ? ['codex', 'claude'] : [selection];
 }
 
+async function selectedProjectCodexSkillReferences(options: {
+  cwd: string;
+}): Promise<CatalogSourceReferenceInventory['references']> {
+  const skillsRoot = path.join(resolveRepoRootSync(options.cwd), '.agents', 'skills');
+  const entries = await fs.readdir(skillsRoot, { withFileTypes: true }).catch((error: unknown) => {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+    throw error;
+  });
+  const references: CatalogSourceReferenceInventory['references'] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const skillRoot = path.join(skillsRoot, entry.name);
+    const marker = await readSkillOwnerMarker({ skillRoot, allowedRoot: skillsRoot }).catch(() => null);
+    if (!marker?.sourceId
+      || marker.pluginId !== `${marker.sourceId}/${marker.plugin}`
+      || marker.platform !== 'codex'
+      || marker.scope !== 'project') continue;
+    references.push({
+      kind: 'namespacedOwner',
+      location: path.join(skillRoot, SKILL_OWNER_MARKER),
+      sourceId: marker.sourceId,
+      pluginName: marker.plugin,
+      platform: marker.platform,
+      scope: marker.scope,
+    });
+  }
+  return references;
+}
+
+const cleanupProjectSkillsByInventory = new WeakMap<
+CatalogSourceReferenceInventory,
+CatalogSourceReferenceInventory['references']
+>();
+
 function selectCodexActivationPlans(
   plans: readonly CodexReconcilePlan[],
   targetScopes: ReadonlySet<string>,
@@ -2074,14 +2109,39 @@ async function runRebuildCommandInSession(
     ?? inventoryCatalogSourceReferences;
   let ordinaryInventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>> | undefined;
   const readOrdinaryInventory = async () => {
-    ordinaryInventory ??= await measureCommandPerformanceStage(
-      options.runtime,
-      'inventory',
-      () => readInventory({
+    ordinaryInventory ??= await measureCommandPerformanceStage(options.runtime, 'inventory', async () => {
+      const inventory = await readInventory({
         cwd: options.commandOptions.cwd,
         env: runtimeEnv,
-      }),
-    );
+      });
+      if (options.command !== 'cleanup'
+        || options.commandOptions.scope !== 'project'
+        || !selectedPlatforms(options.commandOptions.platform).includes('codex')) return inventory;
+      let projectSkills = cleanupProjectSkillsByInventory.get(inventory);
+      if (!projectSkills) {
+        projectSkills = await selectedProjectCodexSkillReferences({
+          cwd: options.commandOptions.cwd,
+        });
+        cleanupProjectSkillsByInventory.set(inventory, projectSkills);
+      }
+      const selectors = options.pluginNames.map(parsePluginId);
+      const selectedProjectSkills = options.all === true
+        ? projectSkills
+        : projectSkills.filter((reference) => selectors.some((selector) =>
+            selector.pluginName === reference.pluginName
+            && (selector.sourceId === undefined || selector.sourceId === reference.sourceId)));
+      return {
+        ...inventory,
+        references: [...new Map([...inventory.references, ...selectedProjectSkills].map((reference) => [[
+          reference.kind,
+          reference.location,
+          reference.sourceId ?? '',
+          reference.pluginName ?? '',
+          reference.platform ?? '',
+          reference.scope ?? '',
+        ].join('\0'), reference])).values()],
+      };
+    });
     return ordinaryInventory;
   };
   let requestedPluginNames = options.pluginNames;
