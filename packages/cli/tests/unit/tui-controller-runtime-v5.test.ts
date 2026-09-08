@@ -372,6 +372,61 @@ describe('TUI batch write runtime', () => {
     );
   });
 
+  it('executes only the missing exact install target without inferring an existing platform', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-exact-install-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    runtimeMocks.installWriteCommand.mockImplementation(async (pluginIds, options) => {
+      const platform = options.platform as 'codex' | 'claude';
+      const scope = options.scope as 'project' | 'user';
+      const writtenTarget = {
+        pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', platform, scope,
+      };
+      return {
+        platforms: [platform], plugins: pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [{ target: writtenTarget, action: 'install', state: 'completed' as const, requiredBy: [] }],
+        overallState: 'succeeded' as const, receiptTargets: [writtenTarget],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [`${platform}:${scope}`], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action: 'install' as const,
+      selection: {
+        kind: 'targets' as const,
+        targets: [{ pluginId: 'team/demo', platform: 'claude' as const, scope: 'project' as const }],
+      },
+      platform: 'both' as const,
+      scope: 'project' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    await dependencies.executeIntent(intent, evidence);
+
+    const writes = runtimeMocks.installWriteCommand.mock.calls
+      .filter((call) => call[2]?.previewOperationPlan !== true);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.[1]).toMatchObject({ platform: 'claude', scope: 'project' });
+  });
+
   it('treats configured Codex activation as existing when system CLI evidence is assumed', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-assumed-activation-source');

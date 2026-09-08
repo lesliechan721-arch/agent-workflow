@@ -29,6 +29,7 @@ import {
   userIssueKey,
   type OperationEvidence,
   type OperationIntent,
+  type PluginWriteBatchEvidence,
   type PluginWriteBatchExecutionResult,
   type PluginWriteTaskEvidence,
   type PluginWriteTaskExecutionResult,
@@ -113,6 +114,39 @@ function evidenceForIntent(intent: OperationIntent): OperationEvidence {
       proposedConfigDigest: 'sha256:proposed-config',
       ...(intent.sourceMutation ? { sourceMutation: intent.sourceMutation } : {}),
     },
+  };
+}
+
+function batchEvidenceForIntent(intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>): PluginWriteBatchEvidence {
+  const targets = intent.selection.kind === 'targets' ? intent.selection.targets : [];
+  const groups = new Map<string, typeof targets>();
+  for (const target of targets) {
+    const key = [target.pluginId.split('/')[0], target.platform, target.scope].join('\0');
+    groups.set(key, [...(groups.get(key) ?? []), target]);
+  }
+  return {
+    ...evidence,
+    requestedPluginIds: [...new Set(targets.map((target) => target.pluginId))],
+    groups: [...groups.entries()].map(([groupId, groupTargets]) => ({
+      groupId,
+      sourceId: groupTargets[0]!.pluginId.split('/')[0]!,
+      platform: groupTargets[0]!.platform,
+      scope: groupTargets[0]!.scope,
+      requestedPluginIds: groupTargets.map((target) => target.pluginId),
+      executable: true,
+      preview: {
+        platforms: [groupTargets[0]!.platform],
+        plugins: groupTargets.map((target) => target.pluginId),
+        warnings: [], rebuildResults: [], targetResults: [], receiptTargets: [], overallState: 'succeeded',
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [],
+          changes: groupTargets.map((target) =>
+            `${target.pluginId}:${target.platform}:${target.scope}:${intent.action}`),
+          warnings: [],
+          evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
+        }),
+      },
+    })),
   };
 }
 
@@ -956,7 +990,8 @@ async function focusAction(
   limit = 24,
 ): Promise<void> {
   for (let index = 0; index < limit; index += 1) {
-    if (instance.lastFrame()?.includes(`› ${label}`)) return;
+    const frame = instance.lastFrame();
+    if (frame?.includes(`› ${label}`) || frame?.includes(`› ○ ${label}`) || frame?.includes(`› ● ${label}`)) return;
     await input(instance, '\u001B[B');
   }
   throw new Error(`Action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
@@ -2206,14 +2241,20 @@ describe('ConsoleAppV4', () => {
   });
 
   it('keeps an ineligible add candidate focusable for its reason and prevents Space selection', async () => {
-    const value = controller();
+    const loaded = loadResult();
+    for (const target of loaded.payload.targets.filter((target) =>
+      target.pluginId === 'team-tools/review-gate')) {
+      target.state = 'ready';
+      target.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginList', mode: 'browse', sourceId: 'team-tools' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
     await input(instance, 'm');
-    expect(instance.lastFrame()).toContain('不可选择：这个插件已经添加');
+    expect(instance.lastFrame()).toContain('不可选择：没有可信且兼容的缺失位置');
     await input(instance, ' ');
     expect(instance.lastFrame()).toContain('查看确认（0）');
     await input(instance, '\r');
@@ -4361,6 +4402,224 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('[未安装]');
     expect(instance.lastFrame()).toContain('/ review');
     expect(instance.lastFrame()).toContain('› Review Gate');
+  });
+
+  it('keeps search results multi-selectable from the shared plugin row sequence', async () => {
+    const value = controller();
+    value.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, '/', 'review');
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('选择多个当前结果…');
+    expect(instance.lastFrame()).toContain('› Review Gate');
+    await input(instance, '\u001B[A', '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('/ review');
+  });
+
+  it('adds only missing exact targets and requires an explicit executable subset choice', async () => {
+    const loaded = loadResult();
+    const codex = loaded.payload.targets.find((target) =>
+      target.pluginId === 'official/agent-lab'
+      && target.platform === 'codex' && target.scope === 'project')!;
+    codex.state = 'ready';
+    codex.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => {
+      if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'targets') return evidence;
+      const requestedPluginIds = [...new Set(intent.selection.targets.map((target) => target.pluginId))];
+      return {
+        ...evidence,
+        requestedPluginIds,
+        groups: intent.selection.targets.map((target) => ({
+          groupId: [target.pluginId.split('/')[0], target.platform, target.scope].join('\0'),
+          sourceId: target.pluginId.split('/')[0]!,
+          platform: target.platform,
+          scope: target.scope,
+          requestedPluginIds: [target.pluginId],
+          executable: true,
+          preview: {
+            platforms: [target.platform], plugins: [target.pluginId], warnings: [],
+            rebuildResults: [], targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
+            operationPlan: createOperationPlan({
+              intentChanges: [], actions: [], changes: [`${target.pluginId}:${target.platform}:${target.scope}:install`],
+              warnings: [], evidence: { catalogDigests: [], intentDigests: [], configDigests: [], targetOwnerFingerprints: [] },
+            }),
+          },
+        })),
+      };
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', '\u001B[B', ' ', 'c');
+    let frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('查看全部位置和受阻原因…');
+    expect(frame).toContain('仅添加可执行的 2 个位置');
+
+    await focusAction(instance, '查看全部位置和受阻原因…');
+    await input(instance, '\r');
+    frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('official/agent-lab · Codex');
+    expect(frame).toContain('已有，不重复添加');
+    await focusAction(instance, 'official/review-gate · Claude Code · 当前项目');
+    frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('受阻：插件不支持所选工具或位置');
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('仅添加可执行的 2 个位置');
+
+    await input(instance, '\u001B[B', '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: 'pluginWriteBatch',
+      selection: { kind: 'targets', targets: expect.arrayContaining([
+        { pluginId: 'official/agent-lab', platform: 'claude', scope: 'project' },
+        { pluginId: 'official/review-gate', platform: 'codex', scope: 'project' },
+      ]) },
+    });
+    const installIntent = captureEvidence.mock.calls.at(-1)?.[0];
+    expect(installIntent && installIntent.kind === 'pluginWriteBatch'
+      && installIntent.selection.kind === 'targets'
+      ? installIntent.selection.targets : []).not.toContainEqual({
+      pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+  });
+
+  it('keeps every batch placement result reachable at 60 x 18', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = Array.from({ length: 30 }, (_, index): StatusV7PluginSummary => {
+      const pluginName = `plugin-${String(index).padStart(2, '0')}`;
+      return {
+        pluginName,
+        pluginId: `official/${pluginName}`,
+        displayName: `Plugin ${String(index).padStart(2, '0')}`,
+        description: `批量位置测试插件 ${index}`,
+        version: '1.0.0',
+        supportedTargets: {
+          codex: ['project'],
+          claude: index % 2 === 0 ? ['project'] : [],
+        },
+        configFieldCount: 0,
+      };
+    });
+    loaded.payload.targets = loaded.pluginSummaries.flatMap((summary) =>
+      (['codex', 'claude'] as const).flatMap((platform) =>
+        (summary.supportedTargets?.[platform] ?? []).map((scope) => target({
+          pluginName: summary.pluginName,
+          platform,
+          scope,
+          state: 'absent',
+        }))),
+    );
+    loaded.sourceDetails = loaded.sourceDetails.map((source) => ({
+      ...source,
+      pluginCount: source.id === 'official' ? loaded.pluginSummaries.length : 0,
+    }));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', 'a', 'c');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
+    expect(instance.lastFrame()).toContain('↑↓ 移动 · Enter 选择 · Esc 返回修改');
+    await focusAction(instance, '查看全部位置和受阻原因…');
+    await nextTurn(3);
+    await input(instance, '\r');
+    await focusAction(instance, 'official/plugin-29 · Claude Code · 当前项目', 100);
+    expect(instance.lastFrame()).toContain('受阻：插件不支持所选工具或位置');
+    expect(instance.lastFrame()).toContain('↑↓ 查看全部位置 · Esc 返回位置选择');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
+
+    await focusAction(instance, '返回位置选择', 100);
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('30 个插件');
+    expect(instance.lastFrame()).toContain('仅添加可执行的 45 个位置');
+    expect(instance.lastFrame()).toContain('↑↓ 移动 · Enter 选择 · Esc 返回修改');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it.each([
+    ['来源不可用', 'sourceUnavailable'],
+    ['能力不足', 'capabilityUnsupported'],
+  ] as const)('allows an installed plugin with %s to reach maintenance Review', async (_label, condition) => {
+    const loaded = loadResult();
+    if (condition === 'sourceUnavailable') {
+      const source = loaded.payload.catalog.sources.find((entry) => entry.id === 'team-tools')!;
+      source.error = 'unavailable';
+      source.errorCode = 'catalogSourceUnavailable';
+    } else {
+      const summary = loaded.pluginSummaries.find((entry) => entry.pluginId === 'team-tools/review-gate')!;
+      summary.missingCapabilities = ['aw.future-feature.v1'];
+    }
+    const captureEvidence = vi.fn(async (intent: OperationIntent) =>
+      intent.kind === 'pluginWriteBatch' ? batchEvidenceForIntent(intent) : evidenceForIntent(intent));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', 'c');
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    await focusAction(instance, '其他维护方式…');
+    await input(instance, '\r');
+    await focusAction(instance, '同步已保存使用设置…');
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      selection: { kind: 'targets' },
+    });
+  });
+
+  it('distinguishes global, source, query, and update empty plugin lists', async () => {
+    const emptyInstalled = loadResult();
+    for (const target of emptyInstalled.payload.targets) {
+      target.state = 'absent';
+      target.components = [{ kind: 'ownership', key: 'fixture', state: 'absent' }];
+    }
+    const globalValue = controller({ loadStatus: vi.fn().mockResolvedValue(emptyInstalled) });
+    await globalValue.load();
+    globalValue.push({ name: 'pluginList', mode: 'installed' });
+    const globalScreen = render(<ConsoleAppV4 controller={globalValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(globalScreen.lastFrame()).toContain('还没有添加插件');
+    globalScreen.unmount();
+
+    const sourceValue = controller();
+    await sourceValue.load();
+    sourceValue.push({ name: 'pluginList', mode: 'installed', sourceId: 'official' });
+    const sourceScreen = render(<ConsoleAppV4 controller={sourceValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(sourceScreen.lastFrame()).toContain('当前来源没有已添加插件');
+    expect(sourceScreen.lastFrame()).toContain('查看全部来源');
+    sourceScreen.unmount();
+
+    const queryValue = controller();
+    await queryValue.load();
+    queryValue.push({ name: 'pluginList', mode: 'browse' }, { query: 'no-such-plugin' });
+    const queryScreen = render(<ConsoleAppV4 controller={queryValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(queryScreen.lastFrame()).toContain('搜索没有匹配插件');
+    expect(queryScreen.lastFrame()).toContain('清除搜索');
+    queryScreen.unmount();
+
+    const updateValue = controller();
+    await updateValue.load();
+    updateValue.push({ name: 'pluginList', mode: 'installed' }, { installFilter: 'updateAvailable' });
+    const updateScreen = render(<ConsoleAppV4 controller={updateValue} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(updateScreen.lastFrame()).toContain('没有可更新插件');
   });
 
   it('treats search shortcut letters as query text and keeps the query after Esc', async () => {

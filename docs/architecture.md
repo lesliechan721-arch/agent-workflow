@@ -268,11 +268,15 @@ TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分�
 
 控制台搜索把 query 与输入焦点分开；退出输入后 query 继续参与来源和安装状态筛选。所有字符输入显示静态光标，并按 grapheme cluster 和终端显示宽度保留输入尾部。当前设置层已有字段值时，字段动作先说明当前值、实际来源和删除后的继承结果；字段删除和整层删除都只进入草稿与 Review。Config Review preparation 复用本次 TUI session 的 Active snapshot、目标 fingerprint、Catalog operation context 和所选 config store digest，不重新运行完整 status 或访问 Catalog remote；需要 apply 时只读解析 dependency preApply 范围，并显示每个脚本 plugin 的身份和目标范围。执行只授权 Review 中以 source identity、platform 和 scope 绑定的脚本范围；空范围不提供通用脚本授权。user 变更可重新应用当前目录中已安装的 user 与 project 目标；project 变更只重新应用当前 project 目标。Review、stale fingerprint 和实际 writer 使用同一目标集合。
 
+插件列表的工具行和插件行使用同一行序列完成渲染、焦点恢复、筛选和来源切换。搜索结果保留可聚焦的“选择多个当前结果”工具行。空列表分别说明全局没有安装、当前来源没有安装、query 没有匹配或更新筛选为空，并提供清除 query、查看全部来源或恢复完整筛选的对应动作。
+
 Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
 
 ### TUI 批量插件写入
 
 TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action 并建立一张 Review ticket；`selected` 选择使用共同 scope 和 platform，`targets` 选择沿用每个精确目标自己的 scope 和单个平台。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
+
+批量添加允许选择已有部分安装的插件，但至少要有一个可信、兼容且缺失的位置；“未安装”筛选仍只包含整个插件没有安装的位置。来源不可用、能力不足和 config-only 等新增选择门禁只适用于 browse 添加；installed 清单必须继续提供移除、同步和 cleanup 恢复入口。选择工具和 scope 后，TUI 把目标分成可添加、已有和受阻；只有可添加的精确单平台目标进入 `targets`，已有位置不重装。存在受阻目标时，TUI 必须显示每个原因，并要求用户显式选择只添加可执行子集或返回调整。位置摘要和可分页的完整位置明细使用同一草稿；窄屏必须能聚焦每个结果并返回原选择。
 
 “按项目清单准备”使用当前项目的 sync-all 合同，允许准备尚未安装的已保存根；“修复异常”使用有版本证据的精确恢复任务，不能把未知版本的已有目标当成未安装。手动批量维护由 Controller 按动作和精确 status target 枚举位置，不从平台展示摘要反推 scope，也不按 supported scopes 扩张目标。合法的 Codex native 双位置启用保留两个请求位置；共享内容的写入影响仍由原 planner 在 Review 中说明。
 

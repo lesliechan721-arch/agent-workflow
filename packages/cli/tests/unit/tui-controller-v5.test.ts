@@ -1290,6 +1290,31 @@ describe('TUI v4 router and ViewModel', () => {
     ]);
   });
 
+  it('classifies only missing compatible batch install targets as writable', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [
+          target({ platform: 'codex', scope: 'project', state: 'present' }),
+          target({ platform: 'claude', scope: 'project', state: 'absent' }),
+        ] }),
+        pluginSummaries: [{
+          ...summaries(['official', 'demo'])[0]!,
+          supportedTargets: { codex: ['project'], claude: ['project'] },
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/demo'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/demo', platform: 'claude', scope: 'project', state: 'add' },
+      { pluginId: 'official/demo', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.pluginHasInstallableTarget('official/demo')).toBe(true);
+    expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
+  });
+
   it('keeps a typed per-platform placement draft and delegates scope legality to the preview plan', async () => {
     const previewDependencyPlacement = vi.fn(async (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): Promise<DependencyOperationPlan> => {
       const platforms = intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform];

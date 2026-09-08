@@ -156,6 +156,11 @@ export interface PluginWriteBatchTarget {
   scope: Scope;
 }
 
+export interface PluginInstallBatchTarget extends PluginWriteBatchTarget {
+  state: 'add' | 'existing' | 'blocked';
+  reason?: string;
+}
+
 export function pluginWriteBatchTargets(
   action: Exclude<BatchPluginWriteAction, 'install'>,
   pluginIds: readonly string[],
@@ -2949,6 +2954,53 @@ export class TuiController {
       pluginIds,
       this.#status?.payload.targets ?? [],
     ));
+  }
+
+  listPluginInstallBatchTargets(
+    pluginIds: readonly string[],
+    platform: PlatformName | 'both',
+    scope: Scope,
+  ): PluginInstallBatchTarget[] {
+    const platforms = platform === 'both' ? ['codex', 'claude'] as const : [platform];
+    return cloneFrozen([...new Set(pluginIds)].flatMap((pluginId) => {
+      const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
+      return platforms.map((targetPlatform): PluginInstallBatchTarget => {
+        const target = { pluginId, platform: targetPlatform, scope };
+        if (!plugin) return { ...target, state: 'blocked', reason: '插件已不在当前状态中' };
+        if (plugin.configOnly) {
+          return { ...target, state: 'blocked', reason: '来源中没有可信插件定义' };
+        }
+        if (plugin.sourceUnavailable) {
+          return { ...target, state: 'blocked', reason: '插件来源不可用' };
+        }
+        if (plugin.capabilityUnsupported) {
+          return { ...target, state: 'blocked', reason: '当前 AW CLI 不支持插件所需功能' };
+        }
+        const option = this.listInstallTargets(pluginId, scope)
+          .find((entry) => entry.platform === targetPlatform);
+        if (!option?.compatible) {
+          return { ...target, state: 'blocked', reason: option?.disabled ?? '插件不支持所选工具或位置' };
+        }
+        const statusTargets = this.#status?.payload.targets.filter((entry) =>
+          entry.pluginId === pluginId && entry.platform === targetPlatform) ?? [];
+        const exactTarget = statusTargets.find((entry) => entry.scope === scope);
+        const alreadyConfigured = statusTargets.some((entry) =>
+          statusTargetIntent(entry).scopes.includes(scope)
+          || (targetPlatform === 'codex' && statusTargetActivation(entry)?.[scope] === true));
+        if (alreadyConfigured
+          || exactTarget && statusTargetOwnershipState(exactTarget) !== 'absent') {
+          return { ...target, state: 'existing' };
+        }
+        return { ...target, state: 'add' };
+      });
+    }).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+      .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')));
+  }
+
+  pluginHasInstallableTarget(pluginId: string): boolean {
+    return (['project', 'user'] as const).some((scope) =>
+      this.listPluginInstallBatchTargets([pluginId], 'both', scope)
+        .some((target) => target.state === 'add'));
   }
 
   getPluginDependencyOverview(pluginId: string): PluginDependencyOverviewViewModel | undefined {
