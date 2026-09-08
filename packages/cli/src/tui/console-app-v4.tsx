@@ -5320,7 +5320,6 @@ export function ConsoleAppV4(props: {
         title={hasUnavailablePlacement ? '部分使用位置暂时不可用'
           : hasUncertainPlacement ? '部分使用位置需要处理'
             : confirmedAvailablePlacements.length > 0 ? '已确认的使用位置可用' : '尚未确认使用位置'}
-        description="以下结论来自每个平台的当前状态。"
       >
         {placementConclusions.map((placement) => <StaticRow
           key={placement.platform}
@@ -6999,7 +6998,7 @@ export function ConsoleAppV4(props: {
     ];
     content = <Box flexDirection="column"><SectionCard title="当前设置" compact={policy.mode === 'compact'}>
       <StaticRow title="来源类型" meta={(draft?.type ?? detail?.type) === 'git' ? 'Git 仓库' : '本地目录'} compact />
-    </SectionCard><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} /></Box>;
+    </SectionCard><SemanticRows actions={actions} focus={sourceTransportOverlay ? -1 : focus} kind="section" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceSave' && sourceDraft?.owner === route.owner) {
     const changes = sourceDraftChanges(sourceDraft);
     const savedSource = props.controller.getConfiguredSource(sourceDraft.sourceId);
@@ -7751,7 +7750,7 @@ export function ConsoleAppV4(props: {
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
-      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={catalogManagementReview ? '! 需要确认本次写入' : '! 需要确认共享影响'} meta={!catalogManagementReview && review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={catalogManagementReview ? review.description : review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={catalogManagementReview ? '! 需要确认本次写入' : '! 需要确认共享影响'} meta={!catalogManagementReview && review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={catalogManagementReview ? review.description : review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const catalogManagementOperation = snapshot.activeReview?.operationKind === 'catalogManagement';

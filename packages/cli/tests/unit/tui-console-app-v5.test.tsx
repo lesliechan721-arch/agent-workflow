@@ -978,6 +978,42 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
+interface AcceptanceTraceStep {
+  label: string;
+  size: { columns: number; rows: number };
+  inputs: string[];
+  frame: string;
+}
+
+function acceptanceTraceStep(
+  instance: ReturnType<typeof render>,
+  size: { columns: number; rows: number },
+  label: string,
+  inputs: string[] = [],
+): AcceptanceTraceStep {
+  const frame = instance.lastFrame() ?? '';
+  expect(frame.split('\n').length).toBeLessThanOrEqual(size.rows);
+  expect(Math.max(...frame.split('\n').map(stringWidth))).toBeLessThanOrEqual(size.columns);
+  expect(frame).not.toMatch(/\u001B\[[0-9;]*m/u);
+  const focusCount = frame.match(/›/gu)?.length ?? 0;
+  if (focusCount !== 1) throw new Error(`Expected one visible focus, got ${focusCount}:\n${frame}`);
+  return { label, size, inputs, frame };
+}
+
+async function writeAcceptanceTrace(
+  fixtureId: string,
+  steps: AcceptanceTraceStep[],
+): Promise<void> {
+  const outputDir = process.env.AW_TUI_ACCEPTANCE_TRACE_DIR;
+  if (!outputDir) return;
+  await fs.outputJson(path.join(outputDir, `${fixtureId.replaceAll('/', '__')}.json`), {
+    schemaVersion: 1,
+    fixtureId,
+    synthetic: true,
+    steps,
+  }, { spaces: 2 });
+}
+
 async function escape(instance: ReturnType<typeof render>): Promise<void> {
   instance.stdin.write('\u001B');
   await new Promise((resolve) => setTimeout(resolve, 550));
@@ -2238,7 +2274,7 @@ describe('ConsoleAppV4', () => {
     instance.unmount();
   });
 
-  it('keeps canonical selections across source and query changes and exposes the complete selected set', async () => {
+  it('[batch-selection/update-hidden-selected] keeps canonical selections across source and query changes and exposes the complete selected set', async () => {
     const loaded = loadResult();
     loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
       ? {
@@ -2253,13 +2289,21 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'pluginList', mode: 'browse', sourceId: 'official' }, {
       query: 'review', installFilter: 'all', sourceTabId: 'official',
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const standardSize = { columns: 80, rows: 24 };
+    const compactSize = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={value} size={standardSize} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(3);
 
     await input(instance, 'm');
     expect(instance.lastFrame()).toContain('/ review');
+    trace.push(acceptanceTraceStep(instance, standardSize, '批量选择已打开', ['m']));
     await input(instance, ' ', '\u001B[C');
     expect(instance.lastFrame()).toContain('隐藏 1 个');
+    instance.rerender(<ConsoleAppV4 controller={value} size={compactSize} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('隐藏 1 个');
+    trace.push(acceptanceTraceStep(instance, compactSize, '缩窄后保留隐藏选择', ['Space', 'ArrowRight', 'resize 60x18']));
     await input(instance, ' ');
     expect(instance.lastFrame()).toContain('已选 2 个');
 
@@ -2273,6 +2317,12 @@ describe('ConsoleAppV4', () => {
     expect(selectedFrame).toContain('Review Gate');
     expect(selectedFrame.match(/Review Gate/gu)?.length).toBeGreaterThanOrEqual(2);
     expect(selectedFrame.split('\n').length).toBeLessThanOrEqual(18);
+    trace.push(acceptanceTraceStep(instance, compactSize, '工具动作打开完整已选集合', ['/', 'Ctrl-U', 'nomatch', 'Esc', 'ArrowDown', 'ArrowDown', 'Enter']));
+    instance.rerender(<ConsoleAppV4 controller={value} size={standardSize} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Review Gate');
+    trace.push(acceptanceTraceStep(instance, standardSize, '恢复宽屏后保留集合和焦点', ['resize 80x24']));
+    await writeAcceptanceTrace('batch-selection/update-hidden-selected', trace);
   });
 
   it('lets each selected plugin be removed after it becomes ineligible or disappears', async () => {
@@ -7727,7 +7777,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
   });
 
-  it('reviews an official HTTPS to SSH transport switch before any source write', async () => {
+  it('[source-edit/official/https] reviews an official HTTPS to SSH transport switch before any source write', async () => {
     const loaded = loadResult();
     loaded.payload.catalog.sources[0] = {
       id: 'official',
@@ -7762,33 +7812,43 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn().mockResolvedValue({ ok: true });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), executeIntent });
     value.push({ name: 'sourceEdit', sourceId: 'official' });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const standardSize = { columns: 80, rows: 24 };
+    const compactSize = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={value} size={standardSize} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(5);
 
     expect(instance.lastFrame()).toContain('下载方式');
     expect(instance.lastFrame()).toContain('HTTPS');
     expect(instance.lastFrame()).not.toContain('○ SSH');
+    trace.push(acceptanceTraceStep(instance, standardSize, '官方下载方式草稿', []));
     await input(instance, '\r', '\u001B[B');
     expect(instance.lastFrame()).toContain('SSH');
     expect(instance.lastFrame()).toContain('适合已配置 GitHub SSH 访问的用户');
-    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    trace.push(acceptanceTraceStep(instance, standardSize, '打开局部选择并聚焦 SSH', ['Enter', 'ArrowDown']));
+    instance.rerender(<ConsoleAppV4 controller={value} size={compactSize} />);
     await nextTurn(2);
     expect(instance.lastFrame()).toContain('默认方式；无需预先配置 SSH 密钥');
     expect(instance.lastFrame()).toContain('适合已配置 GitHub SSH 访问的用户');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
-    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    trace.push(acceptanceTraceStep(instance, compactSize, '缩窄后选择说明完整', ['resize 60x18']));
+    instance.rerender(<ConsoleAppV4 controller={value} size={standardSize} />);
     await nextTurn(2);
     await escape(instance);
     expect(instance.lastFrame()).toContain('HTTPS');
     expect(instance.lastFrame()).not.toContain('○ SSH');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     await input(instance, '\r', '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('SSH');
+    trace.push(acceptanceTraceStep(instance, standardSize, '取消不改草稿，确认后只改草稿', ['resize 80x24', 'Esc', 'Enter', 'ArrowDown', 'Enter']));
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('review');
     expect(executeIntent).not.toHaveBeenCalled();
     expect(instance.lastFrame()).toContain('Git 仓库地址');
     expect(instance.lastFrame()).not.toContain('http://');
+    trace.push(acceptanceTraceStep(instance, standardSize, '进入 Review 且尚未执行写入', ['ArrowDown × 4', 'Enter', 'Enter']));
+    await writeAcceptanceTrace('source-edit/official/https', trace);
   });
 
   it('keeps a custom official mirror as an editable address', async () => {
@@ -9094,7 +9154,7 @@ describe('ConsoleAppV4', () => {
     }), expect.anything());
   });
 
-  it('invalidates an open risk confirmation when a new Review token replaces it', async () => {
+  it('[review/shared-risk/stale] invalidates an open risk confirmation when a new Review token replaces it', async () => {
     const intent = {
       kind: 'configSave' as const,
       pluginId: 'official/enhance',
@@ -9118,8 +9178,24 @@ describe('ConsoleAppV4', () => {
     });
     await value.buildOperationReview(intent);
     const firstToken = value.snapshot.activeReview!.reviewToken;
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const standardSize = { columns: 80, rows: 24 };
+    const compactSize = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={value} size={standardSize} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(2);
+    trace.push(acceptanceTraceStep(instance, standardSize, '共享风险 Review', []));
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('返回检查');
+    trace.push(acceptanceTraceStep(instance, standardSize, '风险弹窗默认安全焦点', ['Enter']));
+
+    instance.rerender(<ConsoleAppV4 controller={value} size={compactSize} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('返回检查');
+    trace.push(acceptanceTraceStep(instance, compactSize, '缩窄后风险与安全焦点保留', ['resize 60x18']));
+
+    await escape(instance);
+    expect(instance.lastFrame()).not.toContain('返回检查');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('返回检查');
 
@@ -9127,8 +9203,13 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(value.snapshot.activeReview!.reviewToken).not.toBe(firstToken);
     expect(instance.lastFrame()).not.toContain('独立授权');
+    instance.rerender(<ConsoleAppV4 controller={value} size={standardSize} />);
+    await nextTurn(2);
+    trace.push(acceptanceTraceStep(instance, standardSize, '新证据撤销旧弹窗并恢复宽屏', ['new review token', 'resize 80x24']));
     await input(instance, '\r');
     expect(executeIntent).not.toHaveBeenCalled();
+    trace.push(acceptanceTraceStep(instance, standardSize, '新 Review 需要重新确认', ['Enter']));
+    await writeAcceptanceTrace('review/shared-risk/stale', trace);
   });
 
   it('executes an ordinary config retry without shared confirmation', async () => {

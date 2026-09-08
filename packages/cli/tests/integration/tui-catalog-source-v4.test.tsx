@@ -751,7 +751,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('待检查版本 2.0.0');
+    expect(instance.lastFrame()).toContain('本地内容有变化');
     expect(instance.lastFrame()).toContain('应用本地内容变化');
     expect((await readCatalogGenerationState(isolation.env)).sources.local!.active).toEqual(before);
 
@@ -1124,7 +1124,7 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.dispose();
   });
 
-  it('shows the in-TUI exact repair action for a damaged Active entry', async () => {
+  it('shows the default recovery action and keeps exact repair in its Review for a damaged Active entry', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const { controller } = await configuredController('..');
     const active = (await readCatalogGenerationState(isolation.env)).sources.local!.active!;
@@ -1147,8 +1147,9 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     const frame = instance.lastFrame() ?? '';
     const compactFrame = frame.replace(/\s+/gu, '');
-    expect(frame).toContain('重新下载旧版本并精确修复');
-    expect(frame).toContain('编辑来源…');
+    expect(frame).toContain('恢复来源');
+    expect(frame).toContain('优先取得当前版本并精确修复；不会自动切换版本');
+    expect(frame).toContain('来源设置');
     expect(compactFrame).not.toContain('awcatalogsourcesynclocal');
     expect(frame).not.toContain(isolation.env.AW_HOME!);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
@@ -1222,7 +1223,8 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.getCatalogGeneration('local')).toMatchObject({ state: 'stateInvalid' });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('恢复状态并启用');
+    expect(instance.lastFrame()).toContain('恢复来源');
+    expect(instance.lastFrame()).toContain('取得并验证可用目录后再启用');
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'state recovery Review');
@@ -1268,7 +1270,8 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'local' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('恢复来源');
+    expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
     await input(instance, '\u001B[B', '\u001B[B', '\r');
     expect(controller.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'local' });
     expect(instance.lastFrame()).toContain('使用待检查版本替换损坏版本…');
@@ -1341,8 +1344,9 @@ describe('TUI v4 real catalog source boundary', () => {
     });
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
-    expect(instance.lastFrame()).toContain('编辑来源');
+    expect(instance.lastFrame()).toContain('恢复来源');
+    expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
+    expect(instance.lastFrame()).toContain('来源设置');
 
     await input(instance, '\r');
     await waitFor(() => controller.snapshot.activeReview?.operationKind === 'catalogGeneration', 'exact Git repair Review');
@@ -1396,7 +1400,8 @@ describe('TUI v4 real catalog source boundary', () => {
     controller.push({ name: 'sourceDetail', sourceId: 'git-local' });
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('重新下载旧版本并精确修复');
+    expect(instance.lastFrame()).toContain('恢复来源');
+    expect(instance.lastFrame()).toContain('优先取得当前版本并精确修复；不会自动切换版本');
     expect(instance.lastFrame()).not.toContain('使用当前候选替换损坏的 Active');
     await input(instance, '\r');
     await waitFor(
