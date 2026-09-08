@@ -665,6 +665,7 @@ function finalizeTargetError(
   return {
     ...error,
     severity: error.code === 'artifactCollision'
+      || error.code === 'dependencyGraphInvalid'
       || (targetState === 'error'
         && error.dependencyPluginId === undefined)
       ? 'blocking'
@@ -875,13 +876,15 @@ function projectDependencyClosureForTarget(options: {
   return closure;
 }
 
-function statusRecovery(options: {
+export function statusRecovery(options: {
   state: StatusV8State;
   desired: DesiredTargetState;
   platform: PlatformName;
   pluginId: string;
   dependencyMoves?: Array<{ pluginId: string; fromScope: Scope; toScope: Scope }>;
   sharedNative?: StatusSharedNativeProjection;
+  scope?: Scope;
+  actualEnabled?: boolean;
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
 }): StatusV8RecoveryAction[] {
@@ -900,7 +903,28 @@ function statusRecovery(options: {
       description: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
     }];
   }
+  if (options.errorCodes?.includes('dependencyGraphInvalid')) {
+    return [{
+      command: 'manual',
+      description: '修复 Catalog 中的插件依赖循环后重试。',
+    }];
+  }
   if (options.state === 'ready' || options.state === 'absent') return [];
+  if (options.desired.scopes.length === 0
+    && options.sharedNative?.state === 'replaceable'
+    && options.sharedNative.reason === 'damaged') {
+    return [
+      ...(options.actualEnabled ? [{
+        command: 'cleanup' as const,
+        ...(options.scope ? { scope: options.scope } : {}),
+        description: `仅清理 ${options.scope ?? '当前'} scope 的激活；不会修复或删除损坏的共享内容。`,
+      }] : []),
+      {
+        command: 'manual',
+        description: `共享内容已损坏。先明确选择 user 或 project 使用范围，再运行 aw install ${options.pluginId} --platform codex --scope <user|project> 重建。`,
+      },
+    ];
+  }
   if (options.state === 'orphaned') {
     return [{ command: 'cleanup', description: '清理可证明属于 AW 的遗留输出。' }];
   }
@@ -1052,6 +1076,23 @@ function renderStatusV8(payload: StatusV8Payload, verbose: boolean): string {
       lines.push(`${target.pluginId} ${target.platform} (${target.scope}): ${target.state}${reasons}`);
     } else {
       lines.push(`${target.pluginId} ${target.platform}: ${target.state}${reasons}`);
+      const desiredScopes = target.placements.filter((placement) =>
+        placement.components.some((component) =>
+          component.kind === 'intent' && component.metadata?.enabled === true))
+        .map((placement) => placement.scope);
+      const actualScopes = target.placements.filter((placement) =>
+        placement.components.some((component) =>
+          component.kind === 'activation'
+          && component.key === placement.scope
+          && component.state === 'enabled'))
+        .map((placement) => placement.scope);
+      const usage = (scopes: Scope[]): string => scopes.length === 0
+        ? 'disabled'
+        : scopes.length === 2 ? 'user+project' : scopes[0]!;
+      lines.push(`  desired use: ${usage(desiredScopes)}`);
+      lines.push(`  actual use: ${usage(actualScopes)}`);
+      const shared = target.components.find((component) => component.kind === 'sharedNative');
+      if (shared) lines.push(`  shared content: ${shared.state} (${shared.key})`);
       for (const placement of target.placements) {
         lines.push(`  ${placement.scope}: ${placement.state}`);
       }
@@ -1131,8 +1172,12 @@ async function statusCommandV8InSession(options: {
     string,
     Promise<{
       state: StatusV8DependencyReadinessState;
+      dependencyScope: Scope;
       rootIssueId?: string;
       rootIssueCode?: string;
+      issuePluginId?: string;
+      issueScope?: Scope;
+      missingCapabilities?: string[];
     }>
   >();
   const cliVersion = options.cliVersion ?? assertStrictSemVer(
@@ -1282,13 +1327,11 @@ async function statusCommandV8InSession(options: {
             if (!userCodexConfig || (probe.scope === 'project' && !projectCodexConfig)) {
               return 'partial' as const;
             }
-            const configEnabled = userCodexConfig.snapshot.plugins[
-              `${probe.pluginName}@${probe.marketplaceName}`
-            ]?.enabled === true
-              || (probe.scope === 'project'
-                && projectCodexConfig?.snapshot.plugins[
-                  `${probe.pluginName}@${probe.marketplaceName}`
-                ]?.enabled === true);
+            const configEnabled = (probe.scope === 'user'
+              ? userCodexConfig
+              : projectCodexConfig)?.snapshot.plugins[
+                `${probe.pluginName}@${probe.marketplaceName}`
+              ]?.enabled === true;
             return configEnabled
               ? 'present' as const
               : 'partial' as const;
@@ -1423,6 +1466,32 @@ async function statusCommandV8InSession(options: {
           };
         }
         try {
+          const catalogEntriesByName = new Map(item.resolution!.manifest.entries.map((entry) => [
+            entry.name,
+            entry,
+          ]));
+          const cyclicDependencyPluginNames = new Set<string>();
+          const dependencyVisitState = new Map<string, 'visiting' | 'visited'>();
+          const dependencyVisitStack: string[] = [];
+          const visitDependencyGraph = (pluginName: string): void => {
+            const state = dependencyVisitState.get(pluginName);
+            if (state === 'visited') return;
+            if (state === 'visiting') {
+              const cycleStart = dependencyVisitStack.lastIndexOf(pluginName);
+              for (const name of dependencyVisitStack.slice(cycleStart)) {
+                cyclicDependencyPluginNames.add(name);
+              }
+              return;
+            }
+            dependencyVisitState.set(pluginName, 'visiting');
+            dependencyVisitStack.push(pluginName);
+            for (const dependencyName of catalogEntriesByName.get(pluginName)?.dependencies ?? []) {
+              if (catalogEntriesByName.has(dependencyName)) visitDependencyGraph(dependencyName);
+            }
+            dependencyVisitStack.pop();
+            dependencyVisitState.set(pluginName, 'visited');
+          };
+          for (const pluginName of catalogEntriesByName.keys()) visitDependencyGraph(pluginName);
           const placementEntries = item.resolution!.manifest.entries.map((entry) => {
             const supportedPlatforms = resolveCatalogEntrySupportedPlatforms(entry.policy);
             return {
@@ -1703,8 +1772,245 @@ async function statusCommandV8InSession(options: {
                     const dependencyErrors: StatusV8Reason[] = [];
                     const dependencyReadiness: StatusV8DependencyReadiness[] = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
+                    const desiredInScope = sourceDesired.get(desiredTargetKey(
+                      plugin.pluginId,
+                      platform,
+                    ))?.scopes.includes(scope) === true;
+                    const codexPluginId = `${entry.name}@${marketplaceName}`;
+                    const actualCodexActivation = platform === 'codex'
+                      && (scope === 'user' ? userCodexConfig : projectCodexConfig)
+                        ?.snapshot.plugins[codexPluginId]?.enabled === true;
+                    const hasScopedExtensionResidue = platform === 'codex'
+                      && inspected.inspection.components.some((component) =>
+                        component.component.kind !== 'native-plugin'
+                        && !component.component.identity.artifactKey.startsWith('activation-')
+                        && !component.component.identity.artifactKey.startsWith('marketplace-')
+                        && (component.state !== 'absent' || component.collision !== undefined));
+                    type DependencyInspectionResult = Awaited<
+                      ReturnType<typeof inspectDependencyAtScope>
+                    >;
+                    const dependencyPriority: Record<StatusV8DependencyReadinessState, number> = {
+                      ready: 5,
+                      blockedByCollision: 4,
+                      incomplete: 3,
+                      error: 2,
+                      absent: 1,
+                    };
+                    function dependencyPlacementsFor(
+                      dependencyId: string,
+                      consumerScope: Scope,
+                    ): Scope[] {
+                      const dependencyOverride = (consumerScope === 'project'
+                        ? projectIntent
+                        : userIntent).dependencyScopeOverrides.find((override) =>
+                          override.pluginId === dependencyId
+                          && (override.platform === undefined || override.platform === platform));
+                      return dependencyOverride
+                        ? [dependencyOverride.scope]
+                        : consumerScope === 'project' ? ['project', 'user'] : ['user'];
+                    }
+                    async function inspectDependencyAtScope(
+                      dependencyName: string,
+                      dependencyScope: Scope,
+                    ): Promise<{
+                      state: StatusV8DependencyReadinessState;
+                      dependencyScope: Scope;
+                      rootIssueId?: string;
+                      rootIssueCode?: string;
+                      issuePluginId?: string;
+                      issueScope?: Scope;
+                      missingCapabilities?: string[];
+                    }> {
+                      const dependencyId = formatPluginId({
+                        sourceId: item.resolution!.sourceId,
+                        pluginName: dependencyName,
+                      });
+                      const inspectionCacheKey = [
+                        item.resolution!.sourceIdentity,
+                        dependencyId,
+                        platform,
+                        dependencyScope,
+                        dependencyScope === 'project' ? currentProjectKey : '',
+                      ].join('\0');
+                      if (cyclicDependencyPluginNames.has(dependencyName)) {
+                        return {
+                          state: 'error',
+                          dependencyScope,
+                          rootIssueId: `dependencyGraphInvalid:${dependencyId}`,
+                          rootIssueCode: 'dependencyGraphInvalid',
+                          issuePluginId: dependencyId,
+                          issueScope: dependencyScope,
+                        };
+                      }
+                      const cached = dependencyInspectionCache.get(inspectionCacheKey);
+                      if (cached) return cached;
+                      const inspection = (async () => {
+                        const dependencyEntry = item.resolution!.manifest.entries.find((candidate) =>
+                          candidate.name === dependencyName);
+                        if (!dependencyEntry) {
+                          return {
+                            state: 'absent' as const,
+                            dependencyScope,
+                            rootIssueId: `dependencyMissing:${dependencyId}:${platform}:${dependencyScope}`,
+                            rootIssueCode: 'dependencyMissing',
+                            issuePluginId: dependencyId,
+                            issueScope: dependencyScope,
+                          };
+                        }
+                        const dependencySupport = checkAwCapabilitySupport(
+                          dependencyEntry.requires.aw.capabilities ?? [],
+                          IMPLEMENTED_AW_CAPABILITIES,
+                        );
+                        if (!dependencySupport.supported) {
+                          return {
+                            state: 'error' as const,
+                            dependencyScope,
+                            rootIssueId: `awCapabilityUnsupported:${dependencyId}`,
+                            rootIssueCode: 'awCapabilityUnsupported',
+                            issuePluginId: dependencyId,
+                            issueScope: dependencyScope,
+                            missingCapabilities: dependencySupport.missing,
+                          };
+                        }
+                        const pluginCacheKey = [item.resolution!.sourceIdentity, dependencyId].join('\0');
+                        let dependencyPluginPromise = dependencyPluginCache.get(pluginCacheKey);
+                        if (!dependencyPluginPromise) {
+                          dependencyPluginPromise = readPluginManifest(
+                            path.join(item.resolution!.rootDir, 'plugins', dependencyName),
+                            { mode: 'bundle' },
+                          ).then((dependencyPlugin) => {
+                            dependencyPlugin.sourceId = item.resolution!.sourceId;
+                            dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
+                            dependencyPlugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
+                            dependencyPlugin.pluginId = dependencyId;
+                            return dependencyPlugin;
+                          });
+                          dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
+                        }
+                        const dependencyPlugin = await dependencyPluginPromise;
+                        dependencyInspectionHookForTests?.();
+                        const dependencyMarketplaceName = marketplaceNameFor(
+                          dependencyName,
+                          platform,
+                          dependencyScope,
+                        );
+                        const dependencyInspected = await inspectRebuildTarget({
+                          sourceId: item.resolution!.sourceId,
+                          sourceIdentity: item.resolution!.sourceIdentity,
+                          pluginId: dependencyId,
+                          marketplaceName: dependencyMarketplaceName,
+                          marketplaceRoot,
+                          plugin: dependencyPlugin,
+                          platform,
+                          scope: dependencyScope,
+                          cwd: options.cwd,
+                          catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
+                          context: {
+                            env,
+                            nativeCliRunner,
+                            reporter: createNoopReporter(),
+                            debugLogger: createNoopDebugLogger(),
+                            codexObservationSession: options.codexObservationSession,
+                          },
+                          userActivationDesired: codexDesiredUserActivationIds,
+                          nativeProbe: readOnlyNativeProbe({
+                            pluginName: dependencyName,
+                            sourceId: item.resolution!.sourceId,
+                            sourceIdentity: item.resolution!.sourceIdentity,
+                            platform,
+                            scope: dependencyScope,
+                            marketplaceName: dependencyMarketplaceName,
+                            marketplaceRoot,
+                            desired: sourceDesired.get(desiredTargetKey(dependencyId, platform))
+                              ?.scopes.includes(dependencyScope) === true,
+                          }),
+                          shallow: true,
+                        });
+                        const dependencyLiveState = projectedLiveState({
+                          inspection: dependencyInspected.inspection,
+                          required: dependencyInspected.target.desiredOwnedComponents
+                            ?? dependencyInspected.target.ownedComponents,
+                          optional: dependencyInspected.target.optionalOwnedComponents ?? [],
+                        });
+                        const collision = dependencyInspected.inspection.components.find(
+                          (component) => component.collision,
+                        )?.collision;
+                        if (collision) {
+                          return {
+                            state: 'blockedByCollision' as const,
+                            dependencyScope,
+                            rootIssueId: collisionRootIssueId({
+                              pluginId: dependencyId,
+                              platform,
+                              scope: dependencyScope,
+                              collision,
+                            }),
+                            rootIssueCode: 'artifactCollision',
+                            issuePluginId: dependencyId,
+                            issueScope: dependencyScope,
+                          };
+                        }
+                        if (dependencyLiveState !== 'present') {
+                          const state = dependencyLiveState === 'absent' ? 'absent' as const
+                            : dependencyLiveState === 'partial' ? 'incomplete' as const
+                              : 'error' as const;
+                          return {
+                            state,
+                            dependencyScope,
+                            rootIssueId: state === 'absent'
+                              ? `dependencyMissing:${dependencyId}:${platform}:${dependencyScope}`
+                              : state === 'incomplete'
+                                ? `incompleteInstallation:${dependencyId}:${platform}:${dependencyScope}`
+                                : `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
+                            rootIssueCode: state === 'absent' ? 'dependencyMissing'
+                              : state === 'incomplete' ? 'incompleteInstallation' : 'diagnostic',
+                            issuePluginId: dependencyId,
+                            issueScope: dependencyScope,
+                          };
+                        }
+                        for (const childName of dependencyPlugin.manifest.dependencies ?? []) {
+                          const childId = formatPluginId({
+                            sourceId: item.resolution!.sourceId,
+                            pluginName: childName,
+                          });
+                          let childResult: DependencyInspectionResult | undefined;
+                          for (const childScope of dependencyPlacementsFor(childId, dependencyScope)) {
+                            const candidate = await inspectDependencyAtScope(childName, childScope);
+                            if (candidate.state === 'ready') {
+                              childResult = candidate;
+                              break;
+                            }
+                            if (!childResult
+                              || dependencyPriority[candidate.state]
+                                > dependencyPriority[childResult.state]) {
+                              childResult = candidate;
+                            }
+                          }
+                          if (childResult?.state !== 'ready') {
+                            return {
+                              ...childResult!,
+                              dependencyScope,
+                            };
+                          }
+                        }
+                        return { state: 'ready' as const, dependencyScope };
+                      })().catch(() => ({
+                        state: 'error' as const,
+                        dependencyScope,
+                        rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
+                        rootIssueCode: 'diagnostic',
+                        issuePluginId: dependencyId,
+                        issueScope: dependencyScope,
+                      }));
+                      dependencyInspectionCache.set(inspectionCacheKey, inspection);
+                      return inspection;
+                    }
                     if (directDependencies.length > 0
-                      && (liveState === 'present' || liveState === 'partial')) {
+                      && (desiredInScope
+                        || actualCodexActivation
+                        || hasScopedExtensionResidue
+                        || (platform !== 'codex'
+                          && (liveState === 'present' || liveState === 'partial')))) {
                       for (const dependencyName of directDependencies) {
                         const dependencyId = formatPluginId({
                           sourceId: item.resolution!.sourceId,
@@ -1762,135 +2068,23 @@ async function statusCommandV8InSession(options: {
                           }, 'partial'));
                           continue;
                         }
-                        const pluginCacheKey = [item.resolution!.sourceIdentity, dependencyId].join('\0');
-                        let dependencyPluginPromise = dependencyPluginCache.get(pluginCacheKey);
-                        if (!dependencyPluginPromise) {
-                          dependencyPluginPromise = readPluginManifest(
-                            path.join(item.resolution!.rootDir, 'plugins', dependencyName),
-                            { mode: 'bundle' },
-                          ).then((dependencyPlugin) => {
-                            dependencyPlugin.sourceId = item.resolution!.sourceId;
-                            dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
-                            dependencyPlugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
-                            dependencyPlugin.pluginId = dependencyId;
-                            return dependencyPlugin;
-                          });
-                          dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
-                        }
-                        const dependencyOverride = (scope === 'project'
-                          ? projectIntent
-                          : userIntent).dependencyScopeOverrides.find((override) =>
-                            override.pluginId === dependencyId
-                            && (override.platform === undefined || override.platform === platform));
-                        const placements: Scope[] = dependencyOverride
-                          ? [dependencyOverride.scope]
-                          : scope === 'project' ? ['project', 'user'] : ['user'];
+                        const placements = dependencyPlacementsFor(dependencyId, scope);
                         let dependencyResult: {
                           state: StatusV8DependencyReadinessState;
                           dependencyScope?: Scope;
                           rootIssueId?: string;
                           rootIssueCode?: string;
+                          issuePluginId?: string;
+                          issueScope?: Scope;
+                          missingCapabilities?: string[];
                         } = {
                           state: 'absent',
                         };
                         for (const dependencyScope of placements) {
-                          const inspectionCacheKey = [
-                            item.resolution!.sourceIdentity,
-                            dependencyId,
-                            platform,
+                          const candidate = await inspectDependencyAtScope(
+                            dependencyName,
                             dependencyScope,
-                            dependencyScope === 'project' ? currentProjectKey : '',
-                          ].join('\0');
-                          let dependencyInspection = dependencyInspectionCache.get(inspectionCacheKey);
-                          if (!dependencyInspection) {
-                            dependencyInspection = dependencyPluginPromise.then(async (dependencyPlugin) => {
-                              dependencyInspectionHookForTests?.();
-                              const dependencyMarketplaceName = marketplaceNameFor(
-                                dependencyName,
-                                platform,
-                                dependencyScope,
-                              );
-                              const dependencyInspected = await inspectRebuildTarget({
-                                sourceId: item.resolution!.sourceId,
-                                sourceIdentity: item.resolution!.sourceIdentity,
-                                pluginId: dependencyId,
-                                marketplaceName: dependencyMarketplaceName,
-                                marketplaceRoot,
-                                plugin: dependencyPlugin,
-                                platform,
-                                scope: dependencyScope,
-                                cwd: options.cwd,
-                                catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
-                                context: {
-                                  env,
-                                  nativeCliRunner,
-                                  reporter: createNoopReporter(),
-                                  debugLogger: createNoopDebugLogger(),
-                                  codexObservationSession: options.codexObservationSession,
-                                },
-                                userActivationDesired: codexDesiredUserActivationIds,
-                                nativeProbe: readOnlyNativeProbe({
-                                  pluginName: dependencyName,
-                                  sourceId: item.resolution!.sourceId,
-                                  sourceIdentity: item.resolution!.sourceIdentity,
-                                  platform,
-                                  scope: dependencyScope,
-                                  marketplaceName: dependencyMarketplaceName,
-                                  marketplaceRoot,
-                                  desired: sourceDesired.get(desiredTargetKey(dependencyId, platform))
-                                    ?.scopes.includes(dependencyScope) === true,
-                                }),
-                                shallow: true,
-                              });
-                              const dependencyLiveState = projectedLiveState({
-                                inspection: dependencyInspected.inspection,
-                                required: dependencyInspected.target.desiredOwnedComponents
-                                  ?? dependencyInspected.target.ownedComponents,
-                                optional: dependencyInspected.target.optionalOwnedComponents ?? [],
-                              });
-                              const collision = dependencyInspected.inspection.components.find(
-                                (component) => component.collision,
-                              )?.collision;
-                              if (collision) {
-                                return {
-                                  state: 'blockedByCollision' as const,
-                                  dependencyScope,
-                                  rootIssueId: collisionRootIssueId({
-                                    pluginId: dependencyId,
-                                    platform,
-                                    scope: dependencyScope,
-                                    collision,
-                                  }),
-                                  rootIssueCode: 'artifactCollision',
-                                };
-                              }
-                              return {
-                                state: dependencyLiveState === 'present' ? 'ready' as const
-                                  : dependencyLiveState === 'absent' ? 'absent' as const
-                                    : dependencyLiveState === 'partial' ? 'incomplete' as const
-                                      : 'error' as const,
-                                dependencyScope,
-                                ...(dependencyLiveState === 'partial'
-                                  ? {
-                                      rootIssueId: `incompleteInstallation:${dependencyId}:${platform}:${dependencyScope}`,
-                                      rootIssueCode: 'incompleteInstallation',
-                                    }
-                                  : dependencyLiveState === 'error'
-                                    ? {
-                                        rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
-                                        rootIssueCode: 'diagnostic',
-                                      }
-                                    : {}),
-                              };
-                            }).catch(() => ({
-                              state: 'error' as const,
-                              dependencyScope,
-                              rootIssueId: `diagnostic:${dependencyId}:${platform}:${dependencyScope}`,
-                              rootIssueCode: 'diagnostic',
-                            }));
-                            dependencyInspectionCache.set(inspectionCacheKey, dependencyInspection);
-                          }
-                          const candidate = await dependencyInspection;
+                          );
                           if (candidate.state === 'ready') {
                             dependencyResult = candidate;
                             break;
@@ -1906,7 +2100,7 @@ async function statusCommandV8InSession(options: {
                             dependencyResult = candidate;
                           }
                         }
-                        if (dependencyResult.state === 'absent') {
+                        if (dependencyResult.state === 'absent' && !dependencyResult.rootIssueId) {
                           const dependencyScope = dependencyResult.dependencyScope ?? placements[0]!;
                           dependencyResult = {
                             state: 'absent',
@@ -1921,27 +2115,45 @@ async function statusCommandV8InSession(options: {
                           dependencyPlatform: platform,
                           dependencyScope,
                           dependencyProject: dependencyScope === 'project' ? 'current' : null,
-                          ...dependencyResult,
+                          state: dependencyResult.state,
+                          ...(dependencyResult.rootIssueId
+                            ? { rootIssueId: dependencyResult.rootIssueId }
+                            : {}),
+                          ...(dependencyResult.rootIssueCode
+                            ? { rootIssueCode: dependencyResult.rootIssueCode }
+                            : {}),
                         });
+                        const issuePluginId = dependencyResult.issuePluginId ?? dependencyId;
+                        const issueScope = dependencyResult.issueScope ?? dependencyScope;
                         if (dependencyResult.state === 'absent') {
                           dependencyErrors.push(finalizeTargetError({
                             code: 'dependencyMissing',
-                            message: `dependencyMissing: ${dependencyId} is absent from its required live placement.`,
-                            dependencyPluginId: dependencyId,
+                            message: `dependencyMissing: ${issuePluginId} is absent from its required live placement.`,
+                            dependencyPluginId: issuePluginId,
                             dependencyPlatform: platform,
-                            dependencyScope,
-                            dependencyProject: dependencyScope === 'project' ? 'current' : null,
+                            dependencyScope: issueScope,
+                            dependencyProject: issueScope === 'project' ? 'current' : null,
                             rootIssueId: dependencyResult.rootIssueId,
                             rootIssueCode: dependencyResult.rootIssueCode,
                           }, 'partial'));
                         } else if (dependencyResult.state !== 'ready') {
+                          const code = dependencyResult.rootIssueCode === 'awCapabilityUnsupported'
+                            ? 'awCapabilityUnsupported'
+                            : dependencyResult.rootIssueCode === 'dependencyGraphInvalid'
+                              ? 'dependencyGraphInvalid'
+                              : 'dependencyNotReady';
+                          const message = code === 'awCapabilityUnsupported'
+                            ? `${code}: ${issuePluginId} requires unsupported AW capabilities: ${(dependencyResult.missingCapabilities ?? []).join(', ')}.`
+                            : code === 'dependencyGraphInvalid'
+                              ? `${code}: dependency cycle includes ${issuePluginId}.`
+                              : `${code}: ${issuePluginId} is not ready at its required live placement.`;
                           dependencyErrors.push(finalizeTargetError({
-                            code: 'dependencyNotReady',
-                            message: `dependencyNotReady: ${dependencyId} is not ready at its required live placement.`,
-                            dependencyPluginId: dependencyId,
+                            code,
+                            message,
+                            dependencyPluginId: issuePluginId,
                             dependencyPlatform: platform,
-                            dependencyScope,
-                            dependencyProject: dependencyScope === 'project' ? 'current' : null,
+                            dependencyScope: issueScope,
+                            dependencyProject: issueScope === 'project' ? 'current' : null,
                             ...(dependencyResult.rootIssueId
                               ? { rootIssueId: dependencyResult.rootIssueId }
                               : {}),
@@ -2587,6 +2799,8 @@ async function statusCommandV8InSession(options: {
           : sharedNative?.staleCacheObserved
             ? 'partial' as const
             : 'absent' as const;
+    const actualScopeEnabled = target.platform === 'codex'
+      && baseActivation?.[target.scope] === true;
     const hasSourceError = observedTargets.some((candidate) => candidate.errors.some((error) =>
       error.code === 'sourceMissing'
       || error.code === 'catalogSourceUnavailable'
@@ -2608,6 +2822,8 @@ async function statusCommandV8InSession(options: {
         && !component.key.startsWith('activation-')
         && !component.key.startsWith('marketplace-'),
     );
+    const hasScopedExtensionResidue = extensionComponents.some((component) =>
+      component.state !== 'absent' || component.error !== undefined);
     const extensions: StatusExtensionProjection | undefined = target.platform !== 'codex'
       || (codex?.extensionKinds.length ?? 0) === 0
       ? undefined
@@ -2671,6 +2887,9 @@ async function statusCommandV8InSession(options: {
     const hasBlockingBaseReason = baseTargetErrors.some((reason) => reason.severity === 'blocking');
     const capabilityUnsupported = baseTargetErrors.some((reason) =>
       reason.code === 'awCapabilityUnsupported');
+    const dependencyNotReady = (target.dependencyReadiness ?? []).some(
+      (dependency) => dependency.state !== 'ready',
+    );
     const state: StatusV8State = hasSourceError && desiredEnabled
       ? 'blocked'
       : consumerBlocking && desiredEnabled
@@ -2679,11 +2898,18 @@ async function statusCommandV8InSession(options: {
           ? 'blocked'
           : sharedNative?.state === 'blocked' || hasBlockingBaseReason || capabilityUnsupported
             ? 'blocked'
+          : sharedNative?.state === 'replaceable' && sharedNative.reason === 'damaged'
+            ? 'needsSync'
           : !desiredEnabled
-            ? ownershipState !== 'absent' || desired.relation === 'managed'
+            ? (target.platform === 'codex'
+                ? actualScopeEnabled || hasScopedExtensionResidue
+                : ownershipState !== 'absent')
+              || desired.relation === 'managed'
               ? 'orphaned'
               : 'absent'
             : dependencyMoves.length > 0
+              ? 'needsSync'
+            : dependencyNotReady
               ? 'needsSync'
             : sharedNative?.state === 'missing'
               || sharedNative?.state === 'replaceable'
@@ -2691,7 +2917,8 @@ async function statusCommandV8InSession(options: {
                   ? 'needsSync'
                   : activationDrift || extensions?.state === 'drifted'
                     ? 'needsSync'
-                    : extensions?.state === 'missing' || ownershipState === 'absent'
+                    : extensions?.state === 'missing'
+                      || (target.platform !== 'codex' && ownershipState === 'absent')
                       ? 'needsSync'
                       : ownershipState === 'partial' || ownershipState === 'error'
                         ? 'needsSync'
@@ -2847,6 +3074,8 @@ async function statusCommandV8InSession(options: {
         pluginId: target.pluginId,
         ...(dependencyMoves.length > 0 ? { dependencyMoves } : {}),
         ...(sharedNative ? { sharedNative } : {}),
+        scope: target.scope,
+        actualEnabled: actualScopeEnabled,
         conflictRoots: rootIntentsForTarget({
           pluginId: target.pluginId,
           platform: target.platform,

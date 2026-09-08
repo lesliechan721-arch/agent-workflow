@@ -78,6 +78,7 @@ export type PlatformPlacementSummary =
       health: 'ready' | 'incomplete' | 'error';
       revision: TargetRevisionState;
       desiredScopes?: Scope[];
+      actualScopes?: Scope[];
       relation?: StatusIntentProjection['relation'];
       actualState?: StatusScopedTarget['state'];
       activation?: StatusActivationProjection;
@@ -742,10 +743,38 @@ function missingPureNativeScopes(
     !placement.desiredScopes?.includes(scope) && placement.activation?.[scope] !== true);
 }
 
+function hasScopedExtensionOwnership(target: StatusScopedTarget): boolean {
+  return target.components.some((component) =>
+    component.kind === 'ownership'
+      && component.key !== 'native'
+      && !component.key.startsWith('activation-')
+      && !component.key.startsWith('marketplace-')
+      && (component.state === 'present' || component.state === 'partial'));
+}
+
 function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
+  const activation = statusTargetActivation(target);
+  const extensions = statusTargetExtensions(target);
   return statusTargetIntent(target).enabled
-    || statusTargetOwnershipState(target) === 'present'
-    || statusTargetOwnershipState(target) === 'partial';
+    || target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
+      || statusTargetOwnershipState(target) === 'partial')
+    || target.platform === 'codex' && hasScopedExtensionOwnership(target)
+    || activation?.[target.scope] === true
+    || extensions?.state === 'ready'
+    || extensions?.state === 'drifted'
+    || extensions?.state === 'conflict';
+}
+
+function hasActualScopeEvidence(target: StatusScopedTarget): boolean {
+  const activation = statusTargetActivation(target);
+  const extensions = statusTargetExtensions(target);
+  return target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
+      || statusTargetOwnershipState(target) === 'partial')
+    || target.platform === 'codex' && hasScopedExtensionOwnership(target)
+    || activation?.[target.scope] === true
+    || extensions?.state === 'ready'
+    || extensions?.state === 'drifted'
+    || extensions?.state === 'conflict';
 }
 
 function dependencyAssignmentExplanation(
@@ -905,6 +934,8 @@ export function projectPlatformPlacement(
       })),
       desiredScopes: [...new Set(projected.flatMap((placement) =>
         placement.desiredScopes ?? []))].sort(compareText),
+      actualScopes: [...new Set(installed.filter(hasActualScopeEvidence)
+        .map((target) => target.scope))].sort(compareText),
     };
   }
   const target = installed.find((candidate) => candidate.state === 'blocked')
@@ -926,6 +957,7 @@ export function projectPlatformPlacement(
     health: targetHealth(target),
     revision: revisionFor(target),
     desiredScopes: [...intent.scopes],
+    actualScopes: hasActualScopeEvidence(target) ? [target.scope] : [],
     relation: intent.relation,
     actualState: target.state,
     ...(activation ? { activation } : {}),
@@ -1284,15 +1316,14 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
         : codes.has('codexSharedNativeUnobserved')
           ? { title: '状态未确认', explanation: '未取得有效的 Codex 共享内容状态证据。' }
           : { title: '平台共享内容待同步', explanation: 'Codex 平台共享内容缺失、损坏或与当前渲染输入不一致。' };
-    const recoveryActions = target.recoveryActions.flatMap((recovery) => recovery.scope
-      ? lifecycleIssueActions({
-          pluginId: target.pluginId,
-          platform: target.platform,
-          scope: recovery.scope,
-          state: target.state,
-          recoveryActions: [recovery],
-        })
-      : []);
+    const recoveryActions = target.recoveryActions.flatMap((recovery) => {
+      if (!recovery.scope) return [];
+      const scopedTarget = statusTargets.find((candidate) => candidate.pluginId === target.pluginId
+        && candidate.platform === target.platform && candidate.scope === recovery.scope);
+      return scopedTarget && isInstalledScopeEvidence(scopedTarget)
+        ? lifecycleIssueActions({ ...scopedTarget, recoveryActions: [recovery] })
+        : [];
+    });
     issues.push({
       issueId: `sharedNative:${target.pluginId}`,
       category: target.state === 'blocked' ? 'diagnostic' : 'incompleteInstallation',
@@ -1437,37 +1468,35 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
       const dependencyScope = rootError?.dependencyScope;
       const dependencyProject = rootError?.dependencyProject;
       const dependencyCategory = root.category.startsWith('dependency');
-      const dependencyTarget = dependencyPluginId && dependencyPlatform && dependencyScope
-        ? statusTargets.find((candidate) => candidate.pluginId === dependencyPluginId
-          && candidate.platform === dependencyPlatform && candidate.scope === dependencyScope)
-        : undefined;
-      const dependencyLifecycleActions = dependencyPluginId && dependencyPlatform && dependencyScope
-        ? lifecycleIssueActions(dependencyTarget ?? {
-            pluginId: dependencyPluginId,
-            platform: dependencyPlatform,
-            scope: dependencyScope,
-            state: 'absent',
-            recoveryActions: [],
-          }, { dependency: true, project: dependencyProject })
-        : [];
-      const directLifecycleActions = dependencyCategory ? [] : lifecycleIssueActions(target);
+      const directLifecycleActions = lifecycleIssueActions(target);
+      const desiredConsumer = statusTargetIntent(target).enabled
+        && statusTargetIntent(target).scopes.includes(target.scope);
+      const consumerRecoveryActions = dependencyCategory
+        ? directLifecycleActions.filter((action) => desiredConsumer
+          ? action.id === 'sync' || action.id === 'reinstall' || action.id === 'refreshAndSync'
+          : action.id === 'cleanup')
+        : directLifecycleActions;
       const actions: UserIssueActionViewModel[] = root.category === 'dependencyMissing'
         ? [
-            ...dependencyLifecycleActions,
+            ...consumerRecoveryActions,
+            ...(dependencyPluginId ? [
+              { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
+            ] : []),
             { id: 'viewDependencies', label: '查看依赖关系' },
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'dependencyNotReady'
           ? [
+              ...consumerRecoveryActions,
               ...(dependencyPluginId ? [
                 { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
               ] : []),
-              ...dependencyLifecycleActions.filter((action) => action.id === 'reinstallDependency'),
               { id: 'viewDependencies', label: '查看依赖关系' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
           : dependencyCategory
             ? [
+                ...consumerRecoveryActions,
                 { id: 'viewDependencies', label: '查看依赖关系' },
                 { id: 'viewTechnical', label: '技术详情' },
               ]
@@ -1478,12 +1507,12 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
                 ]
               : root.category === 'incompleteInstallation'
         ? [
-            ...directLifecycleActions,
+            ...consumerRecoveryActions,
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'sourceMissing'
           ? [
-              ...directLifecycleActions,
+              ...consumerRecoveryActions,
               { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
@@ -1494,7 +1523,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
               ]
               : root.category === 'sourceUnavailable'
               ? [
-                  ...directLifecycleActions.filter((action) => action.id === 'cleanup'),
+                  ...consumerRecoveryActions.filter((action) => action.id === 'cleanup'),
                   { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable'
                     ? '检查当前插件目录或稍后重试'
                     : root.code === 'codexIntentSourceUnavailable'
@@ -1502,7 +1531,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
                       : '修复来源配置或稍后重试' },
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
-              : [...directLifecycleActions,
+              : [...consumerRecoveryActions,
                   { id: 'viewTechnical', label: '技术详情' },
                   { id: 'retryLater', label: '稍后重试' }];
       const bundleUnavailable = root.code === 'bundleUnavailable';
@@ -1541,7 +1570,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1552,8 +1581,10 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
           ? dependencyPluginId
-            ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
-            : '当前依赖检查不能安全通过。'
+            ? `依赖 ${dependencyPluginId}${dependencyPlatform && dependencyScope
+              ? `（${dependencyPlatform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyScope === 'user' ? '所有项目' : '当前项目'}）`
+              : ''}未就绪；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
+            : `依赖检查未通过；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
           : sharedNativeDamaged
           ? 'Codex 平台共享生成内容缺失或损坏。'
           : sharedNativeRenderDrift
@@ -1956,6 +1987,13 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
       impact: [...new Set(ordered.flatMap((issue) => issue.impact))],
       technicalDetails: [...new Map(ordered.flatMap((issue) => issue.technicalDetails)
         .map((detail) => [`${detail.code}\0${detail.message}`, detail])).values()],
+      actions: [...new Map(ordered.flatMap((issue) => issue.actions)
+        .map((action) => [[
+          action.id,
+          action.pluginId ?? '',
+          action.platform ?? '',
+          action.scope ?? '',
+        ].join('\0'), action])).values()],
     };
   });
 }

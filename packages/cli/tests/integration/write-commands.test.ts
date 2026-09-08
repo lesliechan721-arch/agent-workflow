@@ -10950,7 +10950,7 @@ describe('five namespaced write commands', () => {
     },
   );
 
-  it('keeps a healthy consumer present when its live dependency is missing', async () => {
+  it('keeps a healthy consumer from becoming ready when its live dependency is missing', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-status-source');
     const agentPlugin = (name: string) => ({
@@ -11020,8 +11020,10 @@ describe('five namespaced write commands', () => {
     await expect(status()).resolves.toMatchObject({
       hasErrors: false,
       payload: { targets: [expect.objectContaining({
+        state: 'needsSync',
         placements: [expect.objectContaining({
           scope: 'project',
+          state: 'needsSync',
           components: expect.arrayContaining([expect.objectContaining({
             kind: 'dependency',
             key: 'team/leaf',
@@ -11061,9 +11063,10 @@ describe('five namespaced write commands', () => {
     });
     expect(missingIssue?.actions).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        id: 'reinstallDependency', pluginId: 'team/leaf', platform: 'codex',
-        scope: 'project', project: 'current', writeAction: 'sync',
+        id: 'sync', pluginId: 'team/root', platform: 'codex',
+        scope: 'project', writeAction: 'sync',
       }),
+      expect.objectContaining({ id: 'viewDependencyIssue', pluginId: 'team/leaf' }),
     ]));
     missingController.dispose();
 

@@ -2146,6 +2146,11 @@ describe('TUI v4 router and ViewModel', () => {
 
   it('projects typed dependency issue actions to the canonical dependency target', () => {
     const missing = target({ pluginName: 'root', scope: 'project', state: 'partial' });
+    if (missing.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    missing.placements[0]!.components.push({
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+    });
     missing.placements[0]!.reasons = [{
       code: 'dependencyMissing',
       message: 'dependencyMissing: official/toolkit is absent at its recorded target.',
@@ -2155,7 +2160,11 @@ describe('TUI v4 router and ViewModel', () => {
       dependencyScope: 'user',
       dependencyProject: null,
     }];
+    missing.placements[0]!.recoveryActions = [{
+      command: 'sync', scope: 'project', description: 'Sync the complete root dependency plan.',
+    }];
     missing.reasons = missing.placements[0]!.reasons;
+    missing.recoveryActions = missing.placements[0]!.recoveryActions;
     const view = buildTuiViewModel({
       status: status({ targets: [missing] }),
       pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
@@ -2181,13 +2190,206 @@ describe('TUI v4 router and ViewModel', () => {
       platform: 'codex',
       scope: 'project',
       actions: expect.arrayContaining([expect.objectContaining({
-        id: 'installDependency',
-        pluginId: 'official/toolkit',
-        writeAction: 'install',
+        id: 'sync',
+        pluginId: 'official/root',
+        writeAction: 'sync',
         platform: 'codex',
-        scope: 'user',
+        scope: 'project',
       })]),
     }));
+    expect(view.issues[0]?.actions.some((action) => action.id === 'installDependency')).toBe(false);
+  });
+
+  it('keeps usable shared Codex content out of installed and attention lists without scope evidence', () => {
+    // Risk: aggregate shared content can survive after the last consumer is disabled.
+    const inactive = target({ pluginName: 'inactive', scope: 'user', state: 'absent' });
+    if (inactive.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    inactive.components.push({
+      kind: 'sharedNative', key: 'inactive@aw-official', state: 'usable', metadata: { shared: true },
+    });
+    inactive.placements[0]!.components = [
+      { kind: 'ownership', key: 'native', state: 'partial' },
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'extension', key: 'aw', state: 'missing', metadata: { kinds: [] } },
+    ];
+
+    const view = buildTuiViewModel({
+      status: status({ targets: [inactive] }),
+      pluginSummaries: summaries(['official', 'inactive']),
+    });
+
+    expect(view.plugins[0]).toMatchObject({
+      aggregateStatus: 'available',
+      installedPlacements: [{ platform: 'codex', state: 'notInstalled' }],
+    });
+    expect(view.home.installedPlugins).toBe(0);
+    expect(view.home.issueCount).toBe(0);
+  });
+
+  it('does not derive a write action from damaged shared content without a consumer scope', () => {
+    // Risk: a shared recovery hint must not create intent or target an inactive scope.
+    const inactive = target({ pluginName: 'inactive', scope: 'user', state: 'absent' });
+    if (inactive.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    inactive.state = 'needsSync';
+    inactive.components.push({
+      kind: 'sharedNative', key: 'inactive@aw-official', state: 'replaceable',
+      metadata: { shared: true, reason: 'damaged' },
+    });
+    inactive.reasons = [{
+      code: 'codexSharedNativeCorrupt', message: 'safe damaged evidence', severity: 'warning',
+    }];
+    inactive.recoveryActions = [{
+      command: 'manual', scope: 'user', description: '选择使用位置后重新安装。',
+    }];
+
+    const view = buildTuiViewModel({
+      status: status({ targets: [inactive] }),
+      pluginSummaries: summaries(['official', 'inactive']),
+    });
+
+    expect(view.plugins[0]?.aggregateStatus).toBe('available');
+    expect(buildPluginPreviewActions(view.plugins[0]!).map((action) => action.id)).toContain('add');
+    expect(view.issues[0]?.actions.map((action) => action.id)).toEqual(['viewTechnical']);
+  });
+
+  it('keeps root recovery scope exact when a desired consumer dependency is not ready', () => {
+    // Risk: a healthy project dependency must not replace the failed user dependency target.
+    const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
+    if (consumer.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    consumer.placements[0]!.components.push({
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+    });
+    consumer.placements[0]!.reasons = [{
+      code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+      dependencyPluginId: 'official/toolkit', dependencyPlatform: 'codex',
+      dependencyScope: 'user', dependencyProject: null,
+    }];
+    consumer.placements[0]!.recoveryActions = [{
+      command: 'sync', scope: 'project', description: 'Sync the complete root dependency plan.',
+    }];
+    consumer.placements[0]!.recoveryActions = [{
+      command: 'sync', scope: 'project', description: 'Sync the complete root dependency plan.',
+    }];
+    consumer.reasons = consumer.placements[0]!.reasons;
+    consumer.recoveryActions = consumer.placements[0]!.recoveryActions;
+    consumer.recoveryActions = consumer.placements[0]!.recoveryActions;
+    const dependency = target({ pluginName: 'toolkit', scope: 'project', state: 'present' });
+
+    const issue = buildTuiViewModel({
+      status: status({ targets: [consumer, dependency] }),
+      pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
+    }).issues.find((entry) => entry.category === 'dependencyNotReady')!;
+
+    expect(issue.explanation).toContain('official/toolkit（Codex · 所有项目）');
+    expect(issue.actions).toContainEqual(expect.objectContaining({
+      id: 'sync', pluginId: 'official/root', platform: 'codex', scope: 'project',
+    }));
+    expect(issue.actions).not.toContainEqual(expect.objectContaining({
+      pluginId: 'official/toolkit', scope: 'project', writeAction: 'reinstall',
+    }));
+  });
+
+  it('keeps cleanup on orphaned consumers and merges each exact recovery action', () => {
+    // Risk: collapsing one dependency root can change cleanup to the dependency identity or drop a consumer.
+    const rootIssueId = 'incompleteInstallation:official/toolkit:codex:user';
+    const consumer = (pluginName: string, scope: 'user' | 'project') => {
+      const value = target({ pluginName, scope, state: 'present' });
+      if (value.platform !== 'codex') throw new Error('Expected Codex fixture.');
+      value.state = 'orphaned';
+      value.placements[0]!.state = 'orphaned';
+      value.placements[0]!.reasons = [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+        rootIssueId, rootIssueCode: 'incompleteInstallation',
+      }];
+      value.placements[0]!.recoveryActions = [{
+        command: 'cleanup', scope, description: `Clean ${scope} root output.`,
+      }];
+      value.reasons = value.placements[0]!.reasons;
+      value.recoveryActions = value.placements[0]!.recoveryActions;
+      return value;
+    };
+
+    const issue = buildTuiViewModel({
+      status: status({ targets: [consumer('consumer-a', 'user'), consumer('consumer-b', 'project')] }),
+      pluginSummaries: summaries(
+        ['official', 'consumer-a'], ['official', 'consumer-b'], ['official', 'toolkit'],
+      ),
+    }).issues.find((entry) => entry.issueId === rootIssueId)!;
+
+    expect(issue.actions.filter((action) => action.id === 'cleanup')).toEqual([
+      expect.objectContaining({ pluginId: 'official/consumer-a', platform: 'codex', scope: 'user' }),
+      expect.objectContaining({ pluginId: 'official/consumer-b', platform: 'codex', scope: 'project' }),
+    ]);
+    expect(issue.actions.some((action) => action.id === 'installDependency'
+      || action.id === 'reinstallDependency')).toBe(false);
+  });
+
+  it('verifies only the selected consumer after merged cleanup succeeds', async () => {
+    // Risk: the surviving first consumer must not make a completed second cleanup look failed.
+    const rootIssueId = 'incompleteInstallation:official/toolkit:codex:user';
+    const consumer = (pluginName: string, scope: 'user' | 'project') => {
+      const value = target({ pluginName, scope, state: 'present' });
+      if (value.platform !== 'codex') throw new Error('Expected Codex fixture.');
+      value.state = 'orphaned';
+      value.placements[0]!.state = 'orphaned';
+      value.placements[0]!.reasons = [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+        rootIssueId, rootIssueCode: 'incompleteInstallation',
+      }];
+      value.placements[0]!.recoveryActions = [{
+        command: 'cleanup', scope, description: `Clean ${scope} root output.`,
+      }];
+      value.reasons = value.placements[0]!.reasons;
+      value.recoveryActions = value.placements[0]!.recoveryActions;
+      return value;
+    };
+    const summariesValue = summaries(
+      ['official', 'consumer-a'], ['official', 'consumer-b'], ['official', 'toolkit'],
+    );
+    const before: TuiStatusLoadResult = {
+      payload: status({ targets: [consumer('consumer-a', 'user'), consumer('consumer-b', 'project')] }),
+      pluginSummaries: summariesValue,
+    };
+    const after: TuiStatusLoadResult = {
+      payload: status({ targets: [consumer('consumer-a', 'user')] }),
+      pluginSummaries: summariesValue,
+    };
+    const value = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'succeeded',
+        targetResults: [{
+          target: { pluginId: 'official/consumer-b', platform: 'codex', scope: 'project' },
+          action: 'cleanup', state: 'completed',
+        }],
+      }),
+    }));
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.issueId === rootIssueId)!;
+    const action = issue.actions.find((entry) => entry.id === 'cleanup'
+      && entry.pluginId === 'official/consumer-b')!;
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: action.pluginId!,
+      platform: action.platform!, scope: action.scope!,
+      originIssue: {
+        issueId: issue.issueId, issueKey: userIssueKey(issue), category: issue.category,
+        actionId: action.id, consumerPluginId: action.pluginId,
+        consumerSourceIdentity: 'identity:official', consumerPlatform: action.platform,
+        consumerScope: action.scope, dependencyPluginId: issue.dependencyPluginId,
+        dependencyPlatform: issue.dependencyPlatform, dependencyScope: issue.dependencyScope,
+        dependencyProject: issue.dependencyProject,
+      },
+    });
+
+    await expect(value.executeOperation(review.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+    expect(value.listUserIssues()[0]?.affectedTargets).toEqual([
+      expect.objectContaining({ pluginId: 'official/consumer-a', scope: 'user' }),
+    ]);
   });
 
   it('does not synthesize a conflict or removal recovery for two ready pure-native scopes', () => {
@@ -4644,6 +4846,11 @@ describe('TUI v4 Review safety', () => {
 
   it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
+    if (consumer.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    consumer.placements[0]!.components.push({
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+    });
     consumer.placements[0]!.reasons = [{
       code: 'dependencyMissing',
       message: 'safe dependency evidence',
@@ -4683,9 +4890,9 @@ describe('TUI v4 Review safety', () => {
     }));
     await value.load();
     const issue = value.listUserIssues().find((candidate) => candidate.category === 'dependencyMissing')!;
-    const action = issue.actions.find((candidate) => candidate.id === 'installDependency')!;
+    const action = issue.actions.find((candidate) => candidate.id === 'sync')!;
     const review = await value.buildOperationReview({
-      kind: 'pluginWrite', action: 'install', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+      kind: 'pluginWrite', action: 'sync', pluginId: 'official/root', platform: 'codex', scope: 'project',
       originIssue: {
         issueId: issue.issueId, issueKey: userIssueKey(issue), category: issue.category, actionId: action.id,
         consumerPluginId: issue.pluginId, consumerSourceIdentity: issue.sourceIdentity,

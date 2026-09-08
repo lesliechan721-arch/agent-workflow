@@ -3342,7 +3342,7 @@ describe('ConsoleAppV4', () => {
 
     await value.load();
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('› 重新安装…');
+    expect(instance.lastFrame()).toContain('› 重新安装所有项目位置…');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
 
     await input(instance, '\r');
@@ -4029,9 +4029,11 @@ describe('ConsoleAppV4', () => {
     expect(productFrame).not.toContain('dependencyMissing');
     expect(productFrame).not.toContain('dependency-secret');
     await input(instance, 'd');
-    const technicalFrame = instance.lastFrame() ?? '';
+    const firstTechnicalFrame = instance.lastFrame() ?? '';
+    await input(instance, '\u001B[6~');
+    const technicalFrame = `${firstTechnicalFrame}\n${instance.lastFrame() ?? ''}`;
     expect(technicalFrame).toContain('dependencyMissing');
-    expect(technicalFrame).toContain('resolve-dependencies');
+    expect(issue.diagnostic.technical?.stage).toBe('resolve-dependencies');
     expect(technicalFrame).not.toContain('dependency-secret');
     expect(technicalFrame).not.toContain('/tmp/source');
   });
@@ -8852,12 +8854,10 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['dependencyMissing', 'installDependency', 'install', 'absent', 'D14'],
-    ['dependencyNotReady', 'reinstallDependency', 'sync', 'partial', 'D15'],
-  ] as const)('uses the contract dependency placement for a project consumer %s action', async (
+    ['dependencyMissing', 'absent', 'D14'],
+    ['dependencyNotReady', 'partial', 'D15'],
+  ] as const)('runs the complete project root plan for a desired consumer %s action', async (
     category,
-    actionId,
-    writeAction,
     dependencyState,
     expectedScreen,
   ) => {
@@ -8876,7 +8876,11 @@ describe('ConsoleAppV4', () => {
     for (const target of loaded.payload.targets.filter((entry) =>
       entry.pluginId === 'official/agent-lab'
       && entry.platform === 'codex')) {
-      updatePlacement(target, 'project', { state: 'blocked', reasons: [{
+      placement(target, 'project').components.push({
+        kind: 'intent', key: 'desired', state: 'desired',
+        metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+      });
+      updatePlacement(target, 'project', { state: 'needsSync', reasons: [{
         code: category,
         message: `${category}: official/skill-toolkit has changed state.`,
         severity: 'blocking',
@@ -8884,6 +8888,8 @@ describe('ConsoleAppV4', () => {
         dependencyPlatform: 'codex',
         dependencyScope: 'user',
         dependencyProject: null,
+      }], recoveryActions: [{
+        command: 'sync', scope: 'project', description: '同步完整的根插件依赖计划。',
       }] });
     }
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
@@ -8900,16 +8906,16 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('依赖目标');
     expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
 
-    await input(instance, ...(actionId === 'reinstallDependency' ? ['\u001B[B'] : []), '\r');
+    await input(instance, '\r');
 
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWrite',
-      action: writeAction,
-      pluginId: 'official/skill-toolkit',
+      action: 'sync',
+      pluginId: 'official/agent-lab',
       platform: 'codex',
-      scope: 'user',
+      scope: 'project',
       originIssue: expect.objectContaining({
-        actionId,
+        actionId: 'sync',
         consumerPluginId: 'official/agent-lab',
         consumerPlatform: 'codex',
         consumerScope: 'project',
@@ -8919,6 +8925,150 @@ describe('ConsoleAppV4', () => {
         dependencyProject: null,
       }),
     }), expect.any(AbortSignal));
+  });
+
+  it('keeps inactive shared Codex content in browse without installed or attention claims', async () => {
+    // Risk: shared payload can remain usable after its final scope is disabled.
+    const loaded = loadResult();
+    const inactive = setAllPlacementsAbsent(loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'codex')!);
+    if (inactive.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    inactive.components.push({
+      kind: 'sharedNative', key: 'agent-lab@aw-official', state: 'usable', metadata: { shared: true },
+    });
+    for (const entry of inactive.placements) entry.components = [
+      { kind: 'ownership', key: 'native', state: 'partial' },
+      { kind: 'activation', key: entry.scope, state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'extension', key: 'aw', state: 'missing', metadata: { kinds: [] } },
+    ];
+    loaded.payload.targets = [inactive];
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.pluginSummaries = [{
+      ...loaded.pluginSummaries.find((entry) => entry.pluginId === 'official/agent-lab')!,
+      supportedTargets: { codex: ['user', 'project'], claude: [] },
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).not.toContain('Agent Lab');
+    expect(value.listUserIssues()).toEqual([]);
+    value.replace({ name: 'pluginList', mode: 'browse' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).toContain('未添加');
+  });
+
+  it('opens a plugin config issue from detail and enters its correction flow', async () => {
+    // Risk: config issues have no target scope and previously fell back to technical details.
+    const loaded = loadResult();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('› 查看处理建议');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'issueDetail', issueId: 'config:team-tools/review-gate:required',
+    });
+    expect(instance.lastFrame()).toContain('完成设置');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configLayer', pluginId: 'team-tools/review-gate',
+    });
+  });
+
+  it('uses the selected merged consumer as cleanup origin', async () => {
+    // Risk: cleanup for the second consumer can otherwise verify the first consumer after success.
+    const loaded = dependencyLoadResult();
+    const rootIssueId = 'incompleteInstallation:official/skill-toolkit:codex:user';
+    const consumers = (['consumer-a', 'consumer-b'] as const).map((pluginName, index) => {
+      const value = target({
+        pluginName, platform: 'codex', scope: index === 0 ? 'user' : 'project', state: 'present',
+      });
+      if (value.platform !== 'codex') throw new Error('Expected Codex fixture.');
+      const entry = value.placements[0]!;
+      entry.state = 'orphaned';
+      entry.reasons = [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/skill-toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+        rootIssueId, rootIssueCode: 'incompleteInstallation',
+      }];
+      entry.recoveryActions = [{
+        command: 'cleanup', scope: entry.scope, description: `Clean ${pluginName}.`,
+      }];
+      value.state = 'orphaned';
+      value.reasons = entry.reasons;
+      value.recoveryActions = entry.recoveryActions;
+      return value;
+    });
+    loaded.payload.targets = aggregateCodexTargets(consumers);
+    loaded.pluginSummaries = [
+      { pluginName: 'consumer-a', pluginId: 'official/consumer-a', description: 'A' },
+      { pluginName: 'consumer-b', pluginId: 'official/consumer-b', description: 'B' },
+      { pluginName: 'skill-toolkit', pluginId: 'official/skill-toolkit', description: 'Toolkit' },
+    ];
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.issueId === rootIssueId)!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 40 }} />);
+    await nextTurn(2);
+
+    expect(issue.actions.filter((entry) => entry.id === 'cleanup').map((entry) => entry.pluginId))
+      .toEqual(['official/consumer-a', 'official/consumer-b']);
+    const secondCleanupIndex = issue.actions.findIndex((entry) =>
+      entry.id === 'cleanup' && entry.pluginId === 'official/consumer-b');
+    expect(secondCleanupIndex).toBeGreaterThan(0);
+    for (let index = 0; index < secondCleanupIndex; index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    await input(instance, '\r');
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'cleanup', pluginId: 'official/consumer-b', platform: 'codex', scope: 'project',
+      originIssue: expect.objectContaining({
+        consumerPluginId: 'official/consumer-b', consumerSourceIdentity: 'identity:official',
+        consumerPlatform: 'codex', consumerScope: 'project',
+      }),
+    }), expect.any(AbortSignal));
+  });
+
+  it('keeps current dependency evidence visible when the exact dependency scope has no issue', async () => {
+    // Risk: project evidence must not replace a missing user dependency issue target.
+    const loaded = dependencyLoadResult({ rootState: 'error', rootErrorCode: 'dependencyNotReady' });
+    const root = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'codex')!;
+    placement(root, 'project').components.push({
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+    });
+    updatePlacement(root, 'project', {
+      state: 'needsSync',
+      reasons: [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/skill-toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+      }],
+      recoveryActions: [{ command: 'sync', scope: 'project', description: '同步完整依赖计划。' }],
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) =>
+      entry.category === 'dependencyNotReady' && entry.platform === 'codex' && entry.scope === 'project')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'issueDetail', issueId: issue.issueId });
+    expect(instance.lastFrame()).toContain('dependencyNotReady');
+    expect(instance.lastFrame()).toContain('查看依赖插件问题');
   });
 
   it.each([

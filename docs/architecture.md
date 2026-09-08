@@ -222,11 +222,11 @@ Status v8 使用按平台区分的 target：Claude 保留单一 `scope`；Codex 
 
 | 状态 | 含义 | 建议 |
 |---|---|---|
-| `ready` | desired 与现场一致 | 无 |
-| `needsSync` | desired 已保存，但组件缺失、可替换或待同步 | `aw sync` 或 `aw reinstall` |
-| `orphaned` | 没有 desired root，但 managed/AW-owned 现场仍存在 | `aw cleanup` |
+| `ready` | desired 与现场、必需依赖一致 | 无 |
+| `needsSync` | desired 已保存，但组件或依赖缺失、不完整、可替换或待同步 | `aw sync` 或 `aw reinstall` |
+| `orphaned` | 没有该范围的 desired，但实际激活或 AW-owned 扩展仍存在 | `aw cleanup` |
 | `blocked` | 来源不可用，或 foreign、unreadable、collision 或其它安全问题阻止收敛 | 按 `recoveryActions` 刷新来源、清理 AW-owned 输出或手动修复 |
-| `absent` | 没有 desired intent，也没有 managed/AW-owned 现场 | 无 |
+| `absent` | 没有 desired intent、实际激活或需清理的范围输出；允许保留有效共享内容 | 无 |
 
 `reasons` 说明状态的稳定 code、severity 和可公开的 collision evidence；`components` 提供每个组件的浅检查事实；`recoveryActions` 提供下一步恢复操作。共享 native 使用统一五态：`missing`、`usable`、`replaceable`（`outdated | damaged | renderDrift`）、`blocked`（`foreign | unreadable`）或 `unobserved`。只有成功的 `codex plugin list --marketplace <AW marketplace> --json` 决定 native installed、absent 和 active version；公开 Codex config 决定 activation 和 marketplace ownership；AW-owned canonical marketplace source projection 决定可重建的 `renderDrift`。Codex private cache 和 installed manifest 不进入普通 lifecycle、repair、residue 或 cleanup 成败判断，AW 也不直接删除它们。每个 status、Review preview 和锁内执行 session 按 marketplace 复用 operation-local exact/neutral list snapshot。每个 operation/marketplace 的相关 target 和 activation 全部是 user 时，每代只读取 neutral；存在 project 时，每代最多读取一次 exact 和一次 neutral。一次 session 只创建并清理一个独立 neutral 临时 cwd。preview 与锁内执行不共享 snapshot。锁内执行复用一代 pre snapshot；全部 native registration 与 activation mutation 完成后，每个发生真实 mutation 的 marketplace 只捕获一代 post snapshot，并让该 marketplace 的全部 target postcheck 复用它。no-op 不捕获 post snapshot。PATH 中没有 compatible consumer，或 consumer incompatible/unresolved 时，shared native 是 `unobserved`；desired target 使用 `needsSync` 和 `codexSharedNativeUnobserved` warning，compatibility blocker 仍独立保留。official list 调用失败是 `blocked/unreadable`。`foreign` 表示 exclusive artifact slot 已被当前插件不拥有的内容占用；它不能作为已安装证据。公开 collision evidence 只包含 `reason`（`ownerMismatch | unownedContent | typeMismatch`）、`artifactKind`、`artifactKey`、`expectedOwner` 和可选 `actualOwner`，不得包含组件绝对路径、credential、未知 stderr 或临时内部信息。
 
@@ -236,13 +236,15 @@ Codex 顶层 `components` 记录 `sharedNative` 和 `systemConsumer`；共享 na
 
 当前 desired-state 边界的稳定错误或 warning code 为 `pluginIntentStateInvalid`、`codexProjectPluginVersionTooLow`、`codexProjectPluginUnsupported`、`codexProjectConfigNotEffective`、`codexSharedNativeForeign`、`codexSharedNativeCorrupt`、`codexSharedNativeUpdateRequired`、`codexSharedNativeRenderDrift`、`codexSharedNativeUnobserved`、`codexExtensionScopeConflict`、`codexActivationDrift`、`codexExtensionDrift`、`codexIntentSourceUnavailable` 和 `operationReviewStale`。正常的 `needsSync` 或 drift warning 不要求 `status` 返回命令失败。
 
+Codex 的有效共享 native、禁用 activation 配置和从 user 继承的可用性不构成 project 的显式使用或待清理输出。只有有效共享内容保留时显示正常未启用，不检查无使用范围的依赖，也不提供清理建议。依赖检查覆盖 desired scope、实际启用 scope 和存在适用扩展残留的 scope；没有 AW Intent 的手动启用仍检查实际范围，但不自动新增 Intent。user 只能使用 user 依赖；project 沿用显式 override 及健康 user 复用规则。配置不可读、native observation 失败和共享内容损坏的诊断不得由未启用规则吞掉。没有 desired scope 时，共享内容损坏提供手动说明：用户明确选择使用范围后，才能通过现有 install 重建；不提供无法生效的 sync/reinstall，也不自动新增 Intent。实际激活或扩展仍可按范围 cleanup，清理不承诺修复共享内容。
+
 Status v8 对已检查的直接依赖继续在所属范围的 `components` 中公开 `ready | absent | blockedByCollision | incomplete | error` readiness。依赖问题携带 `dependencyPluginId`，并在可识别时携带稳定的 `rootIssueId` 和 `rootIssueCode`。`status --json` 只输出 schema 8，不提供旧 schema 参数、fixture 或双轨输出。JSON、人类 CLI 和 TUI 使用同一 typed target model；人类输出可按 verbose 控制组件细节。
 
 TUI placement 在 ownership health 之外投影 collision blocker，但不能把 foreign-only collision 计为 installed。foreign-only placement 使用 `blocked`；`present` 或 `partial` placement 保留 installed ownership health，并同时保留 collision blocker。每个平台 placement 独立判断：混合平台仍可进入添加并只列可用 target；所有平台都阻断时，Preview 和平台菜单先提供“查看输出冲突”，且不显示添加、升级或重新安装。installed collision 仍提供安全移除入口，删除只处理 AW-owned 内容并保留 foreign 内容。
 
 TUI 插件清单组合当前 Catalog summary、status target 和可识别的 namespaced config v4 store identity。若 live ownership 仍存在，但当前 Catalog snapshot 已无该插件，目标保留 `bundleUnavailable`，并同时显示在浏览和已安装清单中。只有设置存储仍存在时，TUI 将条目标为已保存设置且来源不可用，只提供查看和精确 layer reset；它不伪造可安装的 Catalog plugin。普通 `cleanup` Review 说明会在锁内复核当前 Intent 与 live evidence 后取消所选 root Intent，再尽力清理所选目标中 AW-owned 的 live activation 和 extension；它保留 plugin config、`dependencyScopeOverrides`、foreign 内容和 shared native payload，不运行 preApply，也不读取 dependent 图，并显示不含 `--force` 的等价命令。受限高级 force 遵守上述 exact shallow 候选门禁。成功后是否从清单消失只由重新读取的 Intent、Catalog、live ownership 和可识别设置存储决定。
 
-TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。
+TUI 为每个插件选择一个稳定的 primary attention，包含 `warning | error`、稳定 code 和可读 message。选择顺序为：来源移除、artifact collision、来源不可用、依赖图无效、依赖目标不支持、依赖未就绪或缺失、scope 冲突、必填或无效配置、安装不完整、通用诊断。问题中心按 `sourceRemoved`、`artifactCollision`、`sourceUnavailable`、`dependency`、`scope`、`config`、`installation`、`diagnostic` 稳定分组和排序，并渲染真实分组标题和每组数量。Root Cause 只在 TUI 本地复用公开 `rootIssueId` 和 `rootIssueCode` 聚合，不扩展 Status schema；投影明确记录 root entity、affected targets 和 `direct | consumer` 关系。direct partial 或 error 使用 root code、root plugin entity、platform 和 scope 形成 canonical key，并与同 entity、同 root code 的 dependency evidence 合并。direct root 永远优先；过滤结果没有 direct target 时，从 dependency evidence 稳定合成 root，不能选择任意 consumer。payload target 顺序不影响结果。 问题合并保留各 affected target 的合法恢复动作，并按动作、插件、平台和 scope 去重。desired consumer 使用自身 sync/reinstall 的完整依赖计划；无 desired consumer 保留自身 cleanup，不因依赖提示自动补装或新增 Intent。插件处理建议同时匹配问题主体、root entity 和 affected targets；单个问题直接进入详情，多个问题供用户选择。依赖跳转按插件、平台和 scope 精确匹配，缺少独立依赖问题时保留当前依赖证据和可用恢复动作。
 
 ownership health 只表示当前 live 组件是否完整。Status v8 的 shared native version 比较投影为 `replaceable: outdated`，target 状态为 `needsSync`，并使用 `codexSharedNativeUpdateRequired` 原因。控制台仍可保留私有 revision sidecar，用它区分 `current`、`upgradeAvailable` 和 `unknown`；该 sidecar 不进入公开 Status v8 JSON。
 

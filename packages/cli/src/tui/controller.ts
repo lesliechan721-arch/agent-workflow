@@ -1374,6 +1374,23 @@ export function userIssueKey(issue: Pick<UserIssueViewModel,
     .join('\0');
 }
 
+function originIssueRemains(
+  issue: UserIssueViewModel,
+  origin: IssueOrigin,
+): boolean {
+  if (!origin.consumerPluginId || !origin.consumerPlatform || !origin.consumerScope) {
+    return userIssueKey(issue) === origin.issueKey;
+  }
+  return issue.category === origin.category
+    && issue.dependencyPluginId === origin.dependencyPluginId
+    && issue.dependencyPlatform === origin.dependencyPlatform
+    && issue.dependencyScope === origin.dependencyScope
+    && issue.affectedTargets?.some((target) =>
+      target.pluginId === origin.consumerPluginId
+      && target.platform === origin.consumerPlatform
+      && target.scope === origin.consumerScope) === true;
+}
+
 
 function issueCode(error: unknown): string {
   const safeOperationError = readSafeOperationError(error);
@@ -2837,6 +2854,11 @@ export class TuiController {
     return plugin ? cloneFrozen(plugin) : undefined;
   }
 
+  getPluginSourceIdentity(pluginId: string): string | undefined {
+    return flattenStatusTargets(this.#status?.payload.targets ?? []).find((target) =>
+      target.pluginId === pluginId)?.sourceIdentity;
+  }
+
   listCurrentProjectIntentRoots(): string[] {
     return cloneFrozen([...new Set(flattenStatusTargets(this.#status?.payload.targets ?? []).flatMap((target) => {
       const intent = statusTargetIntent(target);
@@ -4133,7 +4155,7 @@ export class TuiController {
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
       if (originIssue && !dependencyPartial
-        && this.#viewModel?.issues.some((issue) => userIssueKey(issue) === originIssue.issueKey)) {
+        && this.#viewModel?.issues.some((issue) => originIssueRemains(issue, originIssue))) {
         return this.#setBlocked(operationId, 'issueStillPresent', {
           intent: ticket.intent,
           navigation: 'result',
