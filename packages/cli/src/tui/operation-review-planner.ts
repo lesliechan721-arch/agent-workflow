@@ -1,4 +1,5 @@
 import { requestedIntentAction } from '../output/command-receipt.js';
+import { resolveCatalogVersionMutation } from '@lesliechan721/aw-plugin-core';
 import type { PlatformName } from '../types.js';
 import type {
   OperationEvidence,
@@ -20,6 +21,7 @@ import {
 } from '../commands/options.js';
 import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
 import { platformLabel, scopeLabel } from './glossary.js';
+import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -402,6 +404,62 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   );
 }
 
+function safePublicationRemote(remote: string | null | undefined, remoteUrl?: string): string {
+  if (remote) {
+    return /^[A-Za-z0-9._-]+$/u.test(remote)
+      ? remote : projectCatalogSourceLocation(remote);
+  }
+  return remoteUrl ? '已重新输入' : '未记录';
+}
+
+function catalogConfirmationDetails(
+  intent: Extract<OperationIntent, { kind: 'catalogManagement' }>,
+  evidence: OperationEvidence,
+): string[] {
+  const management = evidence.catalogManagement;
+  if (!management || management.action !== intent.action) return [];
+  if (intent.action === 'workspaceInit') {
+    return [`初始版本：${intent.catalogVersion ?? '0.1.0'}`];
+  }
+  if (intent.action === 'workspaceVersion') {
+    const currentVersion = management.workspace?.catalog.version;
+    const targetVersion = intent.version ?? (currentVersion && intent.bump
+      ? resolveCatalogVersionMutation(currentVersion, { bump: intent.bump })
+      : `提升 ${intent.bump ?? '未选择'}`);
+    return [`版本：${currentVersion ? `${currentVersion} → ${targetVersion}` : targetVersion}`];
+  }
+  if (intent.action === 'workspaceBuild') {
+    return management.workspace?.catalog.version
+      ? [`Catalog 版本：${management.workspace.catalog.version}`] : [];
+  }
+  if (intent.action === 'devActivate') {
+    return [
+      `来源 ID：${management.devActivation?.sourceId ?? intent.sourceId ?? 'catalog-dev'}`,
+      ...(management.devActivation?.catalogVersion
+        ? [`Catalog 版本：${management.devActivation.catalogVersion}`] : []),
+      `主来源：${intent.primary ? '是' : '否'}`,
+    ];
+  }
+  if (intent.action === 'devDeactivate') {
+    return [`替代主来源：${intent.replacementPrimary ?? '不变'}`];
+  }
+  if (intent.action === 'storePrune') {
+    return [`已选项目：${intent.items.length} 项`];
+  }
+  if (intent.action === 'publishPlan') {
+    return [
+      `发布远端：${safePublicationRemote(management.target?.remote ?? intent.remote, intent.remoteUrl)}`,
+      `发布 branch：${management.target?.branch ?? intent.branch ?? 'catalog'}`,
+    ];
+  }
+  return [
+    ...(management.publication?.catalogVersion
+      ? [`发布版本：${management.publication.catalogVersion}`] : []),
+    `发布远端：${safePublicationRemote(management.publication?.remote ?? intent.remote, intent.remoteUrl)}`,
+    `发布 branch：${management.publication?.branch ?? intent.branch ?? 'catalog'}`,
+  ];
+}
+
 function dependencyRelation(
   plan: ReconcileOperationPlan,
   pluginId: string,
@@ -433,10 +491,16 @@ function reviewChanges(
       ...(intent.force ? [{ kind: 'warning' as const, title: '修复匹配的受管 scaffold' }] : []),
       { kind: 'keep', title: '不会创建 Git commit 或发布内容' },
     ];
-    if (intent.action === 'workspaceVersion') return [
-      { kind: 'change', title: '更新 Catalog metadata 版本', description: intent.version ?? `提升 ${intent.bump ?? '未选择'}` },
-      { kind: 'keep', title: '不会自动构建或发布' },
-    ];
+    if (intent.action === 'workspaceVersion') {
+      const currentVersion = management.workspace?.catalog.version;
+      const targetVersion = intent.version ?? (currentVersion && intent.bump
+        ? resolveCatalogVersionMutation(currentVersion, { bump: intent.bump })
+        : `提升 ${intent.bump ?? '未选择'}`);
+      return [
+        { kind: 'change', title: '更新 Catalog metadata 版本', description: currentVersion ? `${currentVersion} → ${targetVersion}` : targetVersion },
+        { kind: 'keep', title: '不会自动构建或发布' },
+      ];
+    }
     if (intent.action === 'workspaceBuild') return [
       { kind: 'change', title: '验证 Workspace、插件依赖和 runtime closure' },
       { kind: 'change', title: '运行插件构建并生成 Catalog snapshot' },
@@ -512,9 +576,12 @@ function reviewChanges(
       ...(management.target?.remote ? [{ kind: 'keep' as const, title: '远端', description: management.target.remote }] : []),
       { kind: 'keep', title: '发布 branch', description: management.target?.branch ?? 'catalog' },
     ];
+    const publishRemote = safePublicationRemote(management.publication?.remote, intent.remoteUrl);
     return [
       { kind: 'change', title: '应用已保存的发布计划', description: management.publication?.catalogVersion },
       { kind: 'change', title: '写入并核对远端 branch 和 annotated tag' },
+      { kind: 'keep', title: '发布远端', description: publishRemote },
+      { kind: 'keep', title: '发布 branch', description: management.publication?.branch ?? intent.branch ?? 'catalog' },
       { kind: 'keep', title: '绑定旧 plan digest、Workspace identity、远端和 branch' },
       { kind: 'keep', title: '不要求当前 HEAD 或 metadata 仍与 plan 相同' },
       { kind: 'warning', title: management.publication?.state === 'uncertain'
@@ -1279,6 +1346,9 @@ export function buildOperationReviewProjection(options: {
           ? taskReviewChanges(intent, taskEvidence!)
         : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
+    ...(intent.kind === 'catalogManagement'
+      ? { confirmationDetails: catalogConfirmationDetails(intent, evidence) }
+      : {}),
     technicalDetails: technicalDetails(evidence),
     ...(intent.kind === 'pluginWrite'
       ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation || hasPreApply ? ' --yes' : ''}` }

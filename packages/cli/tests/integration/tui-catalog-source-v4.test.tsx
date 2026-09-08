@@ -85,9 +85,8 @@ async function confirmReview(
   controller: TuiController,
 ): Promise<void> {
   if (controller.snapshot.activeReview?.requiresConfirmation) {
-    await input(instance, '\r');
-  }
-  await input(instance, '\r');
+    await input(instance, '\r', '\u001B[B', '\r');
+  } else await input(instance, '\r');
   await waitFor(
     () => controller.snapshot.result !== undefined,
     'operation result',

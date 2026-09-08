@@ -74,6 +74,7 @@ import type {
   ExternalDraftState,
   OperationIntent,
   OperationReviewChange,
+  OperationReviewModel,
   OperationResultSummary,
   PluginWriteTaskCandidate,
   PluginWriteTaskGoal,
@@ -153,6 +154,7 @@ export type ConsoleV4ScreenId = TuiScreenId;
 type Overlay = 'help' | 'exit' | 'discard' | 'sessionNavigation' | undefined;
 
 interface ActionItem {
+  actionId?: string;
   label: string;
   description?: string;
   meta?: string;
@@ -163,6 +165,17 @@ interface ActionItem {
   selected?: boolean;
   pluginId?: string;
   canSelectNew?: boolean;
+}
+
+interface OperationConfirmationOverlay {
+  reviewToken: string;
+  returnFocus: number;
+  returnScrollOffset: number;
+  warningOffset: number;
+}
+
+interface SourceTransportOverlay {
+  owner: string;
 }
 
 interface DynamicMenuFocus {
@@ -535,6 +548,16 @@ function moveIndex(count: number, current: number, direction: -1 | 1): number {
   return (current + direction + count) % count;
 }
 
+function dedupeActions(actions: ActionItem[]): ActionItem[] {
+  const seen = new Set<string>();
+  return actions.filter((action) => {
+    const id = action.actionId ?? action.label;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function wrapConsoleText(value: string, columns: number): string[] {
   const width = Math.max(1, columns);
   const graphemes = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)]
@@ -554,6 +577,28 @@ function wrapConsoleText(value: string, columns: number): string[] {
   }
   if (line || lines.length === 0) lines.push(line);
   return lines;
+}
+
+function operationRiskWarnings(review: OperationReviewModel): string[] {
+  return [...new Set([
+    ...(review.sharedImpact.warning ? [review.sharedImpact.warning] : []),
+    ...review.changes.filter((change) => change.kind === 'warning' || change.kind === 'remove')
+      .map((change) => `${change.title}${change.description ? `：${change.description}` : ''}`),
+    ...review.changes.filter((change) => change.group === 'preserved')
+      .map((change) => `保留：${change.title}${change.description ? `：${change.description}` : ''}`),
+  ])];
+}
+
+function operationRiskLines(review: OperationReviewModel, columns: number): string[] {
+  const summaries = [
+    `操作：${review.title} · ${review.subject.name}`,
+    ...(review.confirmationDetails ?? []),
+    ...operationRiskWarnings(review).map((warning) => `! ${warning}`),
+  ];
+  return summaries.flatMap((summary) => {
+    const lines = wrapConsoleText(summary, Math.max(1, columns - 2));
+    return lines.map((line, index) => index === 0 ? line : `  ${line}`);
+  });
 }
 
 function actionViewport(
@@ -1251,6 +1296,12 @@ function reviewSymbol(change: OperationReviewChange): string {
   return { add: '+', change: '~', remove: '−', keep: '✓', warning: '!' }[change.kind];
 }
 
+function isTechnicalReviewGroup(group: OperationReviewChange['group']): boolean {
+  return group === 'projectIntent' || group === 'userIntent' || group === 'sharedCodexNative'
+    || group === 'userActivation' || group === 'projectActivation'
+    || group === 'awExtensions' || group === 'runtime';
+}
+
 function currentPlugin(controller: TuiController, route: TuiRoute): PluginListItemViewModel | undefined {
   return 'pluginId' in route ? controller.getPluginOverview(route.pluginId) : undefined;
 }
@@ -1299,6 +1350,8 @@ export function ConsoleAppV4(props: {
   const [snapshot, setSnapshot] = useState(props.controller.snapshot);
   const [overlay, setOverlay] = useState<Overlay>();
   const [overlayFocus, setOverlayFocus] = useState(0);
+  const [operationConfirmation, setOperationConfirmation] = useState<OperationConfirmationOverlay>();
+  const [sourceTransportOverlay, setSourceTransportOverlay] = useState<SourceTransportOverlay>();
   const [discardForExit, setDiscardForExit] = useState(false);
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
@@ -1325,6 +1378,7 @@ export function ConsoleAppV4(props: {
   const [configLayerPages, setConfigLayerPages] = useState<Partial<Record<Scope, ConfigPageViewModel>>>({});
   const [configSaveImpact, setConfigSaveImpact] = useState<Awaited<ReturnType<TuiController['previewConfigSaveImpact']>>>();
   const [configSaveImpactError, setConfigSaveImpactError] = useState(false);
+  const [configSaveImpactAttempt, setConfigSaveImpactAttempt] = useState(0);
   const [draftUpdates, setDraftUpdates] = useState<Record<string, PluginConfigValue>>({});
   const [draftRemoves, setDraftRemoves] = useState<string[]>([]);
   const [objectDrafts, setObjectDrafts] = useState<Record<string, PluginConfigObject>>({});
@@ -1373,7 +1427,6 @@ export function ConsoleAppV4(props: {
   const [draftOwner, setDraftOwner] = useState<string>();
   const [pendingPresetId, setPendingPresetId] = useState<string>();
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
-  const [confirmedSharedReviewToken, setConfirmedSharedReviewToken] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const dependencyGraphContexts = useRef(new Map<string, DependencyGraphSessionContext>());
   const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0, catalog: 0 });
@@ -2835,7 +2888,7 @@ export function ConsoleAppV4(props: {
       },
       ...(draft.type === 'git' ? [
         { title: '版本引用', before: ref(current), after: draft.refPolicy === 'cliChannel' ? '跟随 AW CLI' : draft.ref, changed: ref(current) !== (draft.refPolicy === 'cliChannel' ? '跟随 AW CLI' : draft.ref) },
-        { title: 'Catalog 子目录', before: current?.type === 'git' ? current.subdir ?? '未设置' : undefined, after: draft.subdir || '未设置', changed: current?.type !== 'git' || (current.subdir ?? '') !== draft.subdir },
+        { title: 'Catalog 子目录', before: current?.type === 'git' ? current.subdir ?? '仓库根目录' : undefined, after: draft.subdir || '仓库根目录', changed: current?.type !== 'git' || (current.subdir ?? '') !== draft.subdir },
       ] : []),
       { title: '自动检查更新', before: current ? current.autoCheck !== false ? '开启' : '关闭' : undefined, after: draft.autoCheck ? '开启' : '关闭', changed: !current || (current.autoCheck !== false) !== draft.autoCheck },
     ];
@@ -3283,7 +3336,16 @@ export function ConsoleAppV4(props: {
     route.name === 'configSave' ? `${route.pluginId}:${route.layer.scope}` : '',
     draftRemoves,
     draftUpdates,
+    configSaveImpactAttempt,
   ]);
+  useEffect(() => {
+    if (!operationConfirmation) return;
+    if (route.name !== 'review'
+      || snapshot.activeReview?.reviewToken !== operationConfirmation.reviewToken) {
+      setOperationConfirmation(undefined);
+      setOverlayFocus(0);
+    }
+  }, [operationConfirmation, route.name, snapshot.activeReview?.reviewToken]);
 
   if (snapshot.phase === 'error' && !isCatalogSourcesBootstrapFlow(snapshot)
     && !isOperationHistoryRoute(route)) {
@@ -3576,7 +3638,7 @@ export function ConsoleAppV4(props: {
           label: candidate.plugin?.displayName ?? `${candidate.pluginId}（已不可用，可取消选择）`,
           description: blockReason
             ? `${candidate.plugin?.sourceLabel ?? '状态已失效'} · ${isSelected ? '可取消选择' : '不可选择'}：${blockReason}`
-            : `${candidate.plugin!.sourceLabel} · ${pluginPlacementSummary(candidate.plugin!)}`,
+            : `${candidate.plugin!.description} · ${statusText(candidate.plugin!)} · ${candidate.plugin!.sourceLabel}`,
           selected: isSelected,
           pluginId: candidate.pluginId,
           canSelectNew: blockReason === undefined,
@@ -3658,6 +3720,13 @@ export function ConsoleAppV4(props: {
       const scrollActions = [...candidateActions, ...utilityActions];
       const viewport = actionViewport(scrollActions, policy.mode === 'compact', Math.max(0, batchFocus - 1),
         Math.max(0, scrollOffset - 1), Math.max(1, pageActionBudget(5)));
+      const candidateOffset = Math.min(viewport.offset, candidateActions.length);
+      const candidateLimit = Math.max(0,
+        Math.min(candidateActions.length, viewport.offset + viewport.limit) - candidateOffset);
+      const utilityOffset = Math.max(0, viewport.offset - candidateActions.length);
+      const utilityLimit = Math.max(0,
+        Math.min(utilityActions.length, viewport.offset + viewport.limit - candidateActions.length)
+          - utilityOffset);
       const focusedCandidate = batchFocus > 0 && batchFocus <= candidateActions.length
         ? candidates[batchFocus - 1]?.plugin : undefined;
       content = <Box flexDirection="column">
@@ -3677,8 +3746,11 @@ export function ConsoleAppV4(props: {
         {focusedCandidate
           ? <StaticRow title={`用途 · ${focusedCandidate.description}`} status="info" compact />
           : null}
-        <SemanticRows actions={scrollActions} focus={batchFocus - 1} kind="toggle"
-          compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />
+        {candidateLimit > 0 ? <SemanticRows actions={candidateActions} focus={batchFocus - 1} kind="toggle"
+          compact={policy.mode === 'compact'} offset={candidateOffset} limit={candidateLimit} /> : null}
+        {utilityLimit > 0 ? <SemanticRows actions={utilityActions}
+          focus={batchFocus - 1 - candidateActions.length} kind="action"
+          compact={policy.mode === 'compact'} offset={utilityOffset} limit={utilityLimit} /> : null}
       </Box>;
     } else {
       const selectedIds = batchDraft.selectedPluginIds;
@@ -5067,25 +5139,27 @@ export function ConsoleAppV4(props: {
             ? go({ name: 'issueDetail', issueId: issueForPlugin.issueId })
             : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
         } : undefined;
-    const primary = exceptionalAction ?? restoreAction ?? updateAction
-      ?? settingsAction ?? {
+    const aboutAction: ActionItem = {
+      actionId: 'about',
         label: '使用说明',
         description: '查看用途、支持平台和来源',
         run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
       };
-    actions = [
-      primary,
-      ...(settingsAction && primary !== settingsAction ? [settingsAction] : [{
-        label: '使用说明',
-        description: '查看用途、支持平台和来源',
-        run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
-      }]),
+    const primary = exceptionalAction ?? restoreAction ?? updateAction
+      ?? settingsAction ?? aboutAction;
+    actions = dedupeActions([
+      { ...primary, actionId: primary === aboutAction ? 'about'
+        : primary === settingsAction ? 'settings'
+          : primary === updateAction ? 'update'
+            : primary === restoreAction ? 'restore' : 'exceptional' },
+      ...(settingsAction && primary !== settingsAction ? [{ ...settingsAction, actionId: 'settings' }] : [aboutAction]),
       {
+        actionId: 'more',
         label: '更多操作…',
         description: '平台维护、依赖、通用 Skills、来源和诊断',
         run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
       },
-    ];
+    ]);
     const dependencyOverviewForDetail = dependencyOverview(plugin);
     const dependencyIssue = dependencyOverviewForDetail?.dependencies.find((entry) =>
       entry.aggregateStatus !== 'ready');
@@ -5096,6 +5170,17 @@ export function ConsoleAppV4(props: {
         : undefined;
     const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(4));
     content = <Box flexDirection="column">
+      <StatusCard
+        status={plugin.aggregateStatus === 'installed' ? 'success'
+          : plugin.aggregateStatus === 'needsAttention' ? 'warning'
+            : plugin.aggregateStatus === 'unavailable' ? 'error' : 'info'}
+        title={statusText(plugin)}
+        description={plugin.aggregateStatus === 'installed'
+          ? '已确认的使用位置当前可用。'
+          : plugin.aggregateStatus === 'needsAttention' ? '部分使用位置需要处理。'
+            : plugin.aggregateStatus === 'unavailable' ? '当前没有可确认使用的位置。'
+              : '当前没有已安装的使用位置。'}
+      />
       {updateDescription ? <Callout status="warning" title={statusText(plugin)} description={updateDescription} /> : null}
       {dependencyDetailText ? <StaticRow
         title={dependencyDetailText}
@@ -5687,12 +5772,24 @@ export function ConsoleAppV4(props: {
     description = route.layer.scope === 'project'
       ? '修改将保存到当前项目。'
       : '修改将保存为个人默认，并影响个人的所有项目；项目设置仍可覆盖。';
-    actions = configSaveImpact ? [
+    actions = configSaveImpactError ? [
+      {
+        label: '重新检查影响',
+        description: '重新读取当前安装位置；检查成功前不能保存',
+        run: () => setConfigSaveImpactAttempt((value) => value + 1),
+      },
+      { label: '返回修改', run: back },
+    ] : configSaveImpact ? [
       hasConsumers ? {
         label: '保存并生效',
         description: `保存设置，并重新应用：${targetSummary}`,
         status: 'success',
         run: () => beginConfigSave(true),
+      } : configSaveImpact.impactState === 'unknown' ? {
+        label: '仅保存设置（应用范围尚未确认）',
+        description: '保存所选设置层；不扩大到未确认的安装位置',
+        status: 'warning',
+        run: () => beginConfigSave(false),
       } : {
         label: '保存设置',
         description: '当前修改没有需要重新应用的已安装目标',
@@ -5703,6 +5800,10 @@ export function ConsoleAppV4(props: {
         label: '只保存，稍后应用',
         description: '保存所选设置层，不重新应用当前目标',
         run: () => beginConfigSave(false),
+      }] : configSaveImpact.impactState === 'unknown' ? [{
+        label: '重新检查影响',
+        description: '再次读取当前安装位置和配置消费者',
+        run: () => setConfigSaveImpactAttempt((value) => value + 1),
       }] : []),
       { label: '返回修改', run: back },
     ] : [{ label: '返回修改', run: back }];
@@ -5725,8 +5826,10 @@ export function ConsoleAppV4(props: {
               compact
             />)
           : <StaticRow
-              title={configSaveImpactError || configSaveImpact?.impactState === 'unknown'
-                ? '无法确认需要重新应用的目标；本次仅保存设置'
+              title={configSaveImpactError
+                ? '影响检查失败；设置尚未保存'
+                : configSaveImpact?.impactState === 'unknown'
+                  ? '应用范围尚未确认；可以仅保存并稍后重查'
                 : '没有需要重新应用的已安装目标'}
               status={configSaveImpactError || configSaveImpact?.impactState === 'unknown' ? 'warning' : 'success'}
               compact
@@ -6660,26 +6763,30 @@ export function ConsoleAppV4(props: {
     const locationSummary = draft
       ? projectCatalogSourceLocation(draft.location)
       : detail?.locationSummary ?? '不可用';
-    const setOfficialLocation = (location: string): void => {
-      const current = draft ?? (() => {
-        const source = props.controller.getConfiguredSource(route.sourceId);
-        if (!source) return undefined;
-        return sourceDraftFromSource(source, `source-update:${route.sourceId}:${Date.now()}`);
-      })();
-      if (!current || current.type !== 'git' || current.location === location) return;
-      const next = { ...current, location };
-      setSourceDraft(next);
-      setDirty(true);
-      props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner: next.owner });
-    };
+    const configuredSource = props.controller.getConfiguredSource(route.sourceId);
+    const currentLocation = draft?.location
+      ?? (configuredSource?.type === 'git' ? configuredSource.url : undefined);
+    const officialTransport = currentLocation === OFFICIAL_CATALOG_SOURCE_URL ? 'HTTPS'
+      : currentLocation === OFFICIAL_CATALOG_SOURCE_SSH_URL ? 'SSH' : undefined;
     actions = [
-      ...(route.sourceId === 'official' && (draft?.type === 'git' || !draft && detail?.type === 'git') ? [
-        { label: 'HTTPS', description: '使用系统 Git credential helper', selected: locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_URL), run: () => setOfficialLocation(OFFICIAL_CATALOG_SOURCE_URL) },
-        { label: 'SSH', description: '使用本机 SSH key；Git 连接使用 BatchMode', selected: locationSummary === projectCatalogSourceLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL), run: () => setOfficialLocation(OFFICIAL_CATALOG_SOURCE_SSH_URL) },
-      ] : [{ label: draft?.type === 'path' || detail?.type === 'path' ? '本地目录' : 'Git 仓库地址', description: locationSummary, run: () => startDraftField('location') }]),
+      ...(route.sourceId === 'official' && officialTransport ? [{
+        label: '下载方式',
+        meta: officialTransport,
+        description: officialTransport === 'HTTPS'
+          ? '默认方式；无需预先配置 SSH 密钥'
+          : '适合已配置 GitHub SSH 访问的用户',
+        run: () => {
+          const active = draft ?? (configuredSource
+            ? sourceDraftFromSource(configuredSource, `source-update:${route.sourceId}:${Date.now()}`)
+            : undefined);
+          if (!active) return;
+          setSourceTransportOverlay({ owner: active.owner });
+          setOverlayFocus(officialTransport === 'HTTPS' ? 0 : 1);
+        },
+      }] : [{ label: draft?.type === 'path' || detail?.type === 'path' ? '本地目录' : 'Git 仓库地址', description: locationSummary, run: () => startDraftField('location') }]),
       ...(draft?.type === 'git' || !draft && detail?.type === 'git' ? [
         { label: '版本引用', description: draft ? draft.refPolicy === 'explicit' ? `固定：${draft.ref}` : '跟随 AW 版本通道' : detail?.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startDraftField('refPolicy') },
-        { label: 'Catalog 子目录', description: draft?.subdir || detail?.subdir || '未设置', run: () => startDraftField('subdir') },
+        { label: 'Catalog 子目录', description: (draft ? draft.subdir : detail?.subdir) || '仓库根目录', run: () => startDraftField('subdir') },
       ] : []),
       { label: '自动检查更新', description: (draft?.autoCheck ?? detail?.autoCheck) ? '已开启' : '已关闭', selected: draft?.autoCheck ?? detail?.autoCheck, run: () => {
         if (!draft) {
@@ -6705,26 +6812,28 @@ export function ConsoleAppV4(props: {
     content = <Box flexDirection="column"><SectionCard title="来源草稿" compact={policy.mode === 'compact'}>
       <StaticRow title="来源 ID" meta={draft?.sourceId ?? route.sourceId} compact />
       <StaticRow title="类型" meta={(draft?.type ?? detail?.type) === 'git' ? 'Git 仓库' : '本地目录'} compact />
-    </SectionCard><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} />
-      {route.sourceId === 'official' && detail?.type === 'git' ? <SectionCard title="来源身份">
-        <StaticRow title="逻辑 Catalog" meta="lesliechan721-arch/agent-workflow" />
-        <StaticRow title="source identity" meta="HTTPS / SSH 保持一致" />
-        <StaticRow title="明文 HTTP" meta="不支持" status="warning" />
-      </SectionCard> : null}
-    </Box>;
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="section" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceSave' && sourceDraft?.owner === route.owner) {
     const changes = sourceDraftChanges(sourceDraft);
+    const savedSource = props.controller.getConfiguredSource(sourceDraft.sourceId);
+    const protocolOnly = changes.length === 1 && changes[0]?.title === 'Git 仓库地址'
+      && savedSource?.type === 'git'
+      && (savedSource.url === OFFICIAL_CATALOG_SOURCE_URL
+        || savedSource.url === OFFICIAL_CATALOG_SOURCE_SSH_URL)
+      && (sourceDraft.location === OFFICIAL_CATALOG_SOURCE_URL
+        || sourceDraft.location === OFFICIAL_CATALOG_SOURCE_SSH_URL);
     breadcrumb = `插件来源 / ${sourceDraft.sourceId} / 修改汇总`;
     context = `${changes.length} 项未保存`;
     title = sourceDraft.mode === 'add' ? `保存新来源 ${sourceDraft.sourceId}？` : `保存 ${sourceDraft.sourceId} 的修改？`;
     description = '选择是否在保存后验证候选并启用。保存成功与启用成功会分别报告。';
     actions = [
-      { label: '保存并启用', description: '保存来源配置，再验证并切换当前目录版本', status: 'success', run: () => beginSourceReview(sourceDraft, true) },
-      { label: '只保存', description: '只保存来源配置；当前目录版本保持不变', run: () => beginSourceReview(sourceDraft, false) },
+      ...(protocolOnly ? [] : [{ label: '保存并启用', description: '保存来源配置，再验证并切换当前目录版本', status: 'success' as const, run: () => beginSourceReview(sourceDraft, true) }]),
+      { label: protocolOnly ? '只保存下载方式' : '只保存', description: '只保存来源配置；当前目录版本保持不变', status: protocolOnly ? 'success' : undefined, run: () => beginSourceReview(sourceDraft, false) },
+      ...(protocolOnly ? [{ label: '保存并启用…', description: '保存后验证并切换当前目录版本', run: () => beginSourceReview(sourceDraft, true) }] : []),
       { label: '返回修改', run: back },
     ];
     content = <Box flexDirection="column"><SectionCard title="来源变化" compact={policy.mode === 'compact'}>
-      {changes.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} description={`${change.before ?? '未设置'} → ${change.after}`} compact />)}
+      {changes.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} description={`${change.before ?? '未设置'} → ${change.after}`} compact={policy.mode === 'compact'} />)}
     </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'scriptTimeout' && pendingReviewIntent) {
     breadcrumb = '高级选项 / 安装前检查脚本';
@@ -7155,14 +7264,12 @@ export function ConsoleAppV4(props: {
     const batchReview = review.operationKind === 'pluginWriteBatch';
     const taskReview = review.operationKind === 'pluginWriteTask';
     const catalogManagementReview = review.operationKind === 'catalogManagement';
-    const sharedImpactConfirmed = !review.requiresConfirmation
-      || confirmedSharedReviewToken === review.reviewToken;
     breadcrumb = `${review.subject.name} / ${review.title}`;
     title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}${review.operationKind === 'portableInstall' || taskReview
       ? review.title : `确认${review.title}`} ${review.subject.name}`;
     description = snapshot.result?.state === 'stale'
       ? '当前状态已变化。请检查新的变化后再次确认。'
-      : review.requiresConfirmation ? '' : review.description;
+      : review.description;
     if (taskReview) {
       context = '精确目标 · 用户任务';
       help = 'PgUp/PgDn 查看全部影响 · ↑↓ 移动 · Enter 选择 · Esc 返回';
@@ -7171,20 +7278,19 @@ export function ConsoleAppV4(props: {
       help = 'PgUp/PgDn 查看全部根插件和依赖 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
     actions = [
-      ...(review.requiresConfirmation ? [{
-        label: catalogManagementReview
-          ? sharedImpactConfirmed ? '已确认本次写入' : '确认本次写入'
-          : sharedImpactConfirmed ? '已确认共享影响' : '确认共享影响',
-        description: catalogManagementReview
-          ? '我已检查上方的精确写入、远端影响和保留项。'
-          : review.sharedImpact.warning ?? '此操作会修改多个插件共同使用的 Codex 平台内容',
-        selected: sharedImpactConfirmed,
-        run: () => {
-          setConfirmedSharedReviewToken(review.reviewToken);
-          setFocus(1);
-        },
-      }] : []),
-      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, disabled: sharedImpactConfirmed ? undefined : '请先确认共享影响', run: () => {
+      { label: review.primaryLabel, description: review.requiresConfirmation
+        ? '打开独立风险确认；执行时再次检查当前状态'
+        : '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => {
+        if (review.requiresConfirmation) {
+          setOperationConfirmation({
+            reviewToken: review.reviewToken,
+            returnFocus: focus,
+            returnScrollOffset: scrollOffset,
+            warningOffset: 0,
+          });
+          setOverlayFocus(0);
+          return;
+        }
         if (operationBusy.current) return;
         operationBusy.current = true;
         return props.controller.executeOperation(review.reviewToken).then(() => {
@@ -7230,7 +7336,7 @@ export function ConsoleAppV4(props: {
             setScrollOffset(0);
           },
         }] : []),
-      ...(sharedImpactConfirmed && (pendingReviewIntent?.kind === 'pluginWrite'
+      ...((pendingReviewIntent?.kind === 'pluginWrite'
         && (pendingReviewIntent.action === 'install'
           || pendingReviewIntent.action === 'refreshAndSync'
           || pendingReviewIntent.action === 'reinstall'
@@ -7255,7 +7361,7 @@ export function ConsoleAppV4(props: {
         : back },
     ];
     const groupedChanges = review.changes.some((change) => change.group);
-    const compressedReview = policy.mode === 'compact' || review.requiresConfirmation;
+    const compressedReview = policy.mode === 'compact';
     const groupTitle = {
       requested: review.operationKind === 'portableInstall' ? '已选择 Skills · 当前插件' : '你选择的插件',
       dependencies: review.operationKind === 'portableInstall' ? '已选择 Skills · 来自依赖插件' : '必需依赖',
@@ -7294,8 +7400,16 @@ export function ConsoleAppV4(props: {
       'projectIntent', 'userIntent', 'sharedCodexNative',
       'userActivation', 'projectActivation', 'awExtensions', 'runtime',
     ]);
-    const visibleSpecs = groupedSpecs.filter((group) => group.changes.length > 0
-      && !technicalGroups.has(group.key));
+    const userReviewChanges = review.changes.filter((change) =>
+      change.group === undefined
+      || !isTechnicalReviewGroup(change.group)
+      || change.kind === 'warning'
+      || change.kind === 'remove');
+    const visibleSpecs = groupedSpecs.map((group) => technicalGroups.has(group.key) ? {
+      ...group,
+      label: '风险',
+      changes: group.changes.filter((change) => change.kind === 'warning' || change.kind === 'remove'),
+    } : group).filter((group) => group.changes.length > 0);
     const headingLines = compressedReview ? 0 : visibleSpecs.filter((group) => group.label).length;
     const staticRowBudget = Math.max(visibleSpecs.length, responsiveBudget(7, 12) - headingLines);
     const allocations = new Map<string, number>(visibleSpecs.map((group) => [group.key, 1]));
@@ -7339,15 +7453,15 @@ export function ConsoleAppV4(props: {
       </Box>;
     });
     const batchChangeLimit = Math.max(1, responsiveBudget(6, 10) - actions.length);
-    const batchChanges = review.changes.slice(batchTargetOffset, batchTargetOffset + batchChangeLimit);
+    const batchChanges = userReviewChanges.slice(batchTargetOffset, batchTargetOffset + batchChangeLimit);
     const batchHiddenBefore = batchTargetOffset;
     const prioritizedReviewChanges = [
-      ...review.changes.filter((change) => change.kind === 'warning'),
-      ...review.changes.filter((change) => change.kind !== 'warning'),
+      ...userReviewChanges.filter((change) => change.kind === 'warning'),
+      ...userReviewChanges.filter((change) => change.kind !== 'warning'),
     ];
     const pagedReviewChanges = prioritizedReviewChanges.slice(batchTargetOffset,
       batchTargetOffset + batchChangeLimit);
-    const changeGroups = batchReview || review.changes.length > staticRowBudget
+    const changeGroups = batchReview || userReviewChanges.length > staticRowBudget
       ? <Box flexDirection="column">
           {batchHiddenBefore > 0 ? <StaticRow title={`↑ 前面还有 ${batchHiddenBefore} 项`} status="muted" compact /> : null}
           {(batchReview ? batchChanges : pagedReviewChanges).map((change, index) => <ReviewChangeRow
@@ -7357,7 +7471,7 @@ export function ConsoleAppV4(props: {
             status={changeStatus(change)}
             compact
           />)}
-          {Math.max(0, review.changes.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length) > 0 ? <StaticRow title={`↓ 后面还有 ${Math.max(0, review.changes.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length)} 项`} status="muted" compact /> : null}
+          {Math.max(0, userReviewChanges.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length) > 0 ? <StaticRow title={`↓ 后面还有 ${Math.max(0, userReviewChanges.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length)} 项`} status="muted" compact /> : null}
         </Box>
       : standardChangeGroups;
     const technicalDetails = review.technicalDetails ?? [];
@@ -7406,11 +7520,11 @@ export function ConsoleAppV4(props: {
     const widenedDependencyCount = new Set(installDependencyTargets
       .filter((target) => target.affectsOtherProjects && target.action !== 'keep')
       .map((target) => target.pluginId)).size;
-    if (review.changes.length > staticRowBudget || showTechnical
+    if (userReviewChanges.length > staticRowBudget || showTechnical
       && (review.changes.length > technicalChangeBudget || technicalDetails.length > technicalDetailLimit)) {
       help = 'PgUp/PgDn 查看全部确认信息 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = <Box flexDirection="column"><ReviewCard title={review.requiresConfirmation ? undefined : review.subject.name} meta={review.requiresConfirmation ? undefined : `${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{installDependencyPluginIds.size > 0 ? <><StaticRow
+    content = <Box flexDirection="column"><ReviewCard title={review.subject.name} meta={`${review.subject.sourceLabel ?? ''} ${review.subject.version ?? ''}`} description={showEquivalentCommand ? review.description : undefined}>{showEquivalentCommand ? <Text>等价命令：{review.equivalentCommand}</Text> : null}{showTechnical && review.catalogBinding ? <><StaticRow title={`Catalog：${review.catalogBinding.sourceId} ${review.catalogBinding.catalogVersion} · 当前使用`} meta={`generation ${review.catalogBinding.generationDigestShort}`} status="success" compact /><StaticRow title="操作期间不检查远端 Catalog" status="success" compact /></> : null}{installDependencyPluginIds.size > 0 ? <><StaticRow
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
@@ -8548,6 +8662,80 @@ export function ConsoleAppV4(props: {
       }
       return;
     }
+    if (operationConfirmation) {
+      const activeReview = snapshot.activeReview;
+      const closeConfirmation = (): void => {
+        setOperationConfirmation(undefined);
+        setFocus(operationConfirmation.returnFocus);
+        setScrollOffset(operationConfirmation.returnScrollOffset);
+        setOverlayFocus(0);
+      };
+      if (key.escape || input.toLowerCase() === 'b') {
+        closeConfirmation();
+      } else if (key.ctrl && input.toLowerCase() === 'c') {
+        closeConfirmation();
+        requestExit({ code: 0, reason: 'user' });
+      } else if (input.toLowerCase() === 'q') {
+        closeConfirmation();
+        setDiscardForExit(dirty);
+        setOverlay(dirty ? 'discard' : 'exit');
+      } else if (props.onSessionNavigation && (input === 'h' || input === 'H')) {
+        const navigation = input === 'H' ? 'reload' : 'home';
+        closeConfirmation();
+        requestSessionNavigation(navigation);
+      } else if (key.pageUp || key.pageDown) {
+        const warningCount = activeReview
+          ? operationRiskLines(activeReview, Math.max(12, size.columns - 8)).length : 0;
+        const warningLimit = policy.mode === 'compact' ? 3 : 7;
+        setOperationConfirmation((current) => current ? {
+          ...current,
+          warningOffset: Math.min(Math.max(0, warningCount - warningLimit),
+            Math.max(0, current.warningOffset + (key.pageUp ? -1 : 1))),
+        } : current);
+      } else if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
+        setOverlayFocus((value) => moveIndex(2, value, key.upArrow || key.leftArrow ? -1 : 1));
+      } else if (key.return) {
+        if (overlayFocus === 0) {
+          closeConfirmation();
+        } else if (activeReview?.reviewToken !== operationConfirmation.reviewToken) {
+          closeConfirmation();
+          setActionError('确认内容已变化。请重新检查操作汇总。');
+        } else if (!operationBusy.current) {
+          operationBusy.current = true;
+          setOperationConfirmation(undefined);
+          void props.controller.executeOperation(operationConfirmation.reviewToken).then(() => {
+            setFocus(0);
+            setScrollOffset(0);
+          }).finally(() => {
+            operationBusy.current = false;
+          });
+        }
+      }
+      return;
+    }
+    if (sourceTransportOverlay) {
+      if (key.escape || input.toLowerCase() === 'b') {
+        setSourceTransportOverlay(undefined);
+        setOverlayFocus(0);
+      } else if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
+        setOverlayFocus((value) => moveIndex(2, value, key.upArrow || key.leftArrow ? -1 : 1));
+      } else if (key.return && route.name === 'sourceEdit') {
+        const configured = props.controller.getConfiguredSource(route.sourceId);
+        const current = sourceDraft?.owner === sourceTransportOverlay.owner
+          ? sourceDraft
+          : configured ? sourceDraftFromSource(configured, sourceTransportOverlay.owner) : undefined;
+        const location = overlayFocus === 0
+          ? OFFICIAL_CATALOG_SOURCE_URL : OFFICIAL_CATALOG_SOURCE_SSH_URL;
+        if (current && current.type === 'git' && current.location !== location) {
+          setSourceDraft({ ...current, location });
+          setDirty(true);
+          props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner: current.owner });
+        }
+        setSourceTransportOverlay(undefined);
+        setOverlayFocus(0);
+      }
+      return;
+    }
     if (overlay) {
       if (key.ctrl && input.toLowerCase() === 'c') {
         requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
@@ -8670,10 +8858,14 @@ export function ConsoleAppV4(props: {
     if ((key.pageUp || key.pageDown)
       && route.name === 'review'
       && snapshot.activeReview) {
-      const total = Math.max(
-        snapshot.activeReview.changes.length,
-        showTechnical ? snapshot.activeReview.technicalDetails?.length ?? 0 : 0,
-      );
+      const userChangeCount = snapshot.activeReview.changes.filter((change) =>
+        !isTechnicalReviewGroup(change.group)
+        || change.kind === 'warning'
+        || change.kind === 'remove').length;
+      const total = showTechnical
+        ? Math.max(snapshot.activeReview.changes.length,
+            snapshot.activeReview.technicalDetails?.length ?? 0)
+        : userChangeCount;
       const pageRows = 1;
       setBatchTargetOffset((value) => Math.min(
         Math.max(0, total - 1),
@@ -9583,6 +9775,67 @@ export function ConsoleAppV4(props: {
       {content}
     </ScreenFrame>
   );
+  if (operationConfirmation && snapshot.activeReview) {
+    const review = snapshot.activeReview;
+    const modalWidth = Math.max(40, Math.floor(size.columns * 0.6));
+    const modalWarningLines = operationRiskLines(review, Math.max(12, modalWidth - 6));
+    const shortWarningLimit = policy.mode === 'compact' ? 4 : 6;
+    const shortConfirmation = modalWarningLines.length <= shortWarningLimit;
+    const warningLines = shortConfirmation
+      ? modalWarningLines
+      : operationRiskLines(review, Math.max(12, size.columns - 8));
+    const warningLimit = Math.max(1, policy.mode === 'compact' ? 3 : 7);
+    const warningOffset = Math.min(operationConfirmation.warningOffset,
+      Math.max(0, warningLines.length - warningLimit));
+    const visibleWarnings = shortConfirmation
+      ? warningLines : warningLines.slice(warningOffset, warningOffset + warningLimit);
+    const confirmationActions: ActionItem[] = [
+      { label: '返回检查', description: '回到完整操作汇总' },
+      { label: `我已了解影响，${review.primaryLabel}`, status: 'error' },
+    ];
+    const confirmationCard = (
+      <ReviewCard title="请确认本次风险" description="确认只对当前操作汇总有效；内容变化后必须重新检查。">
+        {!shortConfirmation && warningOffset > 0 ? <StaticRow title={`↑ 前面还有 ${warningOffset} 行`} status="muted" compact /> : null}
+        {visibleWarnings.length > 0
+          ? visibleWarnings.map((warning, index) => <StaticRow key={`${warningOffset + index}:${warning}`} title={warning} status={warning.startsWith('! ') ? 'warning' : 'info'} compact />)
+          : <StaticRow title="! 此操作需要明确授权" status="warning" compact />}
+        {!shortConfirmation && warningLines.length - warningOffset - visibleWarnings.length > 0
+          ? <StaticRow title={`↓ 后面还有 ${warningLines.length - warningOffset - visibleWarnings.length} 行`} status="muted" compact /> : null}
+        <SemanticRows actions={confirmationActions} focus={overlayFocus} kind="action" compact />
+      </ReviewCard>
+    );
+    if (shortConfirmation) {
+      return <Box position="relative" width={size.columns} height={size.rows}>
+        <Box>{base}</Box>
+        <Box position="absolute" marginTop={5} marginLeft={Math.max(2, Math.floor(size.columns / 5))}
+          width={modalWidth} flexDirection="column">
+          {confirmationCard}
+        </Box>
+      </Box>;
+    }
+    return <ScreenFrame
+      title={`确认${review.title} ${review.subject.name}？`}
+      breadcrumb={`${review.subject.name} / 风险确认`}
+      context="独立授权"
+      help="PgUp/PgDn 查看全部警告 · ↑↓ 移动 · Enter 选择 · Esc 返回"
+      size={size}
+    >{confirmationCard}</ScreenFrame>;
+  }
+  if (sourceTransportOverlay) {
+    const transportActions: ActionItem[] = [
+      { label: 'HTTPS', description: '默认方式；无需预先配置 SSH 密钥', selected: overlayFocus === 0 },
+      { label: 'SSH', description: '适合已配置 GitHub SSH 访问的用户', selected: overlayFocus === 1 },
+    ];
+    return <Box position="relative" width={size.columns} height={size.rows}>
+      <Box>{base}</Box>
+      <Box position="absolute" marginTop={5} marginLeft={Math.max(2, Math.floor(size.columns / 5))}
+        width={Math.max(40, Math.floor(size.columns * 0.6))} flexDirection="column">
+        <ReviewCard title="选择下载方式" description="选择只更新当前草稿；保存前仍会显示统一汇总。">
+          <SemanticRows actions={transportActions} focus={overlayFocus} kind="choice" compact={false} />
+        </ReviewCard>
+      </Box>
+    </Box>;
+  }
   if (!overlay) return base;
   const helpRows = helpRowsForRoute(
     route,

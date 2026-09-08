@@ -270,7 +270,7 @@ TUI 把结构损坏的 store、Catalog/schema 不可用和字段覆盖无效分�
 
 插件列表的工具行和插件行使用同一行序列完成渲染、焦点恢复、筛选和来源切换。搜索结果保留可聚焦的“选择多个当前结果”工具行。空列表分别说明全局没有安装、当前来源没有安装、query 没有匹配或更新筛选为空，并提供清除 query、查看全部来源或恢复完整筛选的对应动作。
 
-Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。official HTTPS/SSH 切换只改变 transport location，并通过 source mutation Review 提交；Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
+Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层仍只有 `cliChannel | explicit`。官方来源的下载方式从两个既定 HTTPS/SSH URL 派生，局部选择只修改 URL 草稿，通过 source mutation Review 提交；不新增持久 transport 字段。来源 ID 为 official 但 URL 为自定义地址时仍保留地址编辑，不静默替换镜像。Catalog logical identity 继续只来自 snapshot 的 Workspace identity，不修改 live owner identity。
 
 ### TUI 批量插件写入
 
@@ -291,6 +291,8 @@ TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup�
 ### TUI 导航流程
 
 普通消费任务、恢复入口和明确保留的 CLI 范围由 [CLI/TUI 能力覆盖](tui-capability-coverage.md) 记录。新增能力必须同步入口或缺口理由；作者工作流与机器接口分别说明，不以“高级排障”代替覆盖决定。
+
+操作 Review 先从执行计划分别投影用户汇总和技术详情，再独立分页；数据量不改变默认信息边界。技术分组中的共享、删除和脚本风险仍须在用户汇总中说明。完整汇总保留在页面，只有既有 `requiresConfirmation` 要求额外授权时才打开风险确认层，默认选择返回检查。确认层绑定当前 Review ticket，不建立另一套授权；它独占输入，取消保留页面上下文，失效或过期的 ticket 不可执行。风险内容超出空间时可分页阅读，低于最低终端尺寸不接受写入确认。
 
 TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配置、来源恢复和 Portable 安装流程记录自己的 flow ID、父 flow、稳定起点帧和返回目标。Flow 只管理导航归属和内存草稿引用；它不保存执行计划，不替代 Review ticket，也不是持久状态。
 

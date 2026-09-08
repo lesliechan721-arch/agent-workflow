@@ -999,9 +999,11 @@ async function focusAction(
 
 async function confirmReview(
   instance: ReturnType<typeof render>,
-  _value: TuiController,
+  value: TuiController,
 ): Promise<void> {
-  await input(instance, '\r');
+  if (value.snapshot.activeReview?.requiresConfirmation) {
+    await input(instance, '\r', '\u001B[B', '\r');
+  } else await input(instance, '\r');
 }
 
 async function chooseConfigSave(
@@ -1679,8 +1681,7 @@ describe('ConsoleAppV4', () => {
     expect(detail).not.toContain('重新安装');
     expect(detail).not.toContain('同步已保存');
 
-    await focusAction(instance, '更多操作…');
-    await input(instance, '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
     const more = instance.lastFrame() ?? '';
     expect(value.snapshot.router.current.route).toEqual({
       name: 'pluginMore', pluginId: 'team-tools/review-gate',
@@ -1696,6 +1697,20 @@ describe('ConsoleAppV4', () => {
     });
     expect(instance.lastFrame()).toContain('重新安装');
     expect(instance.lastFrame()).toContain('移除');
+  });
+
+  it('shows one usage action and an explicit health conclusion for a healthy plugin without config', async () => {
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    const frame = instance.lastFrame() ?? '';
+
+    expect(frame).toContain('已确认的使用位置当前可用');
+    expect(frame.match(/使用说明/gu)).toHaveLength(1);
   });
 
   it('opens the recommended update task with exact targets from two roots', async () => {
@@ -2215,10 +2230,11 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'c');
     expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
     expect(instance.lastFrame()).toContain('1 个已选插件已不可用');
-    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› ◇ 查看全部已选（1）'); index += 1) {
+    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› 查看全部已选（1）'); index += 1) {
       await input(instance, '\u001B[B');
     }
-    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    expect(instance.lastFrame()).toContain('› 查看全部已选（1）');
+    expect(instance.lastFrame()).not.toContain('◇ 查看全部已选（1）');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('official/review-gate');
     expect(instance.lastFrame()).toContain('可取消选择');
@@ -2260,12 +2276,14 @@ describe('ConsoleAppV4', () => {
     await input(instance, ' ');
     expect(instance.lastFrame()).toContain('查看确认（1）');
     await input(instance, ...Array.from({ length: 50 }, () => '\u001B[B'));
-    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    expect(instance.lastFrame()).toContain('› 查看全部已选（1）');
+    expect(instance.lastFrame()).not.toContain('◇ 查看全部已选（1）');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('› 查看确认（1）');
     await input(instance, '\u001B[B', ' ');
     expect(instance.lastFrame()).toContain('查看确认（0）');
-    expect(instance.lastFrame()).toContain('› ◇ 返回当前结果');
+    expect(instance.lastFrame()).toContain('› 返回当前结果');
+    expect(instance.lastFrame()).not.toContain('◇ 返回当前结果');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('› 查看确认（0）');
     await input(instance, '\u001B[B', ' ');
@@ -7335,8 +7353,18 @@ describe('ConsoleAppV4', () => {
     snapshot.activeReview.changes = [
       { kind: 'remove', group: 'requested', title: 'Codex · 所有项目', description: '目标安装' },
       ...Array.from({ length: 18 }, (_, index) => ({ kind: 'keep' as const, group: 'preserved' as const, title: `保留项 ${index + 1}`, description: '保持安装' })),
-      ...Array.from({ length: 12 }, (_, index) => ({ kind: 'warning' as const, group: 'portableWarnings' as const, title: `风险 ${index + 1}`, description: '共同风险原因' })),
+      ...Array.from({ length: 12 }, (_, index) => ({
+        kind: 'warning' as const,
+        group: 'portableWarnings' as const,
+        title: `风险 ${index + 1}`,
+        description: index === 11 ? `${'这是不能截断的风险说明。'.repeat(8)}完整结尾标记` : '共同风险原因',
+      })),
     ];
+    snapshot.activeReview.requiresConfirmation = true;
+    snapshot.activeReview.sharedImpact = {
+      pluginIds: ['team-tools/review-gate'],
+      warning: '共享内容需要明确确认。',
+    };
     Object.defineProperty(value, 'snapshot', { configurable: true, get: () => snapshot });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
@@ -7347,6 +7375,18 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain(`› ${review.primaryLabel}`);
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
+    expect(snapshot.activeReview.requiresConfirmation).toBe(true);
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('独立授权');
+    let riskFrames = instance.lastFrame() ?? '';
+    for (let index = 0; index < 50; index += 1) {
+      await input(instance, '\u001B[6~');
+      riskFrames += `\n${instance.lastFrame() ?? ''}`;
+    }
+    expect(riskFrames).toContain('风险 1');
+    expect(riskFrames).toContain('风险 12');
+    expect(riskFrames).toContain('完整结尾标记');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 
   it.each(['cleanup', 'uninstall'] as const)('does not offer script timeout for %s Review', async (action) => {
@@ -7588,15 +7628,66 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(5);
 
+    expect(instance.lastFrame()).toContain('下载方式');
     expect(instance.lastFrame()).toContain('HTTPS');
+    expect(instance.lastFrame()).not.toContain('○ SSH');
+    await input(instance, '\r', '\u001B[B');
     expect(instance.lastFrame()).toContain('SSH');
-    expect(instance.lastFrame()).toContain('BatchMode');
-    await input(instance, '\u001B[B', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    expect(instance.lastFrame()).toContain('适合已配置 GitHub SSH 访问的用户');
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('默认方式；无需预先配置 SSH 密钥');
+    expect(instance.lastFrame()).toContain('适合已配置 GitHub SSH 访问的用户');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('HTTPS');
+    expect(instance.lastFrame()).not.toContain('○ SSH');
+    await input(instance, '\r', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('SSH');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('review');
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(instance.lastFrame()).toContain('Git URL');
+    expect(instance.lastFrame()).toContain('Git 仓库地址');
     expect(instance.lastFrame()).not.toContain('http://');
+  });
+
+  it('keeps a custom official mirror as an editable address', async () => {
+    const loaded = loadResult();
+    loaded.configuredSources![0] = {
+      id: 'official', type: 'git', primary: true,
+      url: 'https://mirror.example.test/catalog.git',
+      refPolicy: { type: 'cliChannel' }, autoCheck: true,
+    };
+    loaded.sourceDetails![0] = {
+      ...loaded.sourceDetails![0]!, type: 'git',
+      locationSummary: 'https://mirror.example.test/catalog.git',
+      refPolicy: 'cliChannel',
+    };
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    value.push({ name: 'sourceEdit', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('Git 仓库地址');
+    expect(instance.lastFrame()).toContain('mirror.example.test/catalog.git');
+    expect(instance.lastFrame()).not.toContain('下载方式');
+  });
+
+  it('shows an explicitly cleared Catalog subdirectory as the repository root', async () => {
+    const value = controller();
+    value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u0015', '\r');
+    expect(instance.lastFrame()).toContain('仓库根目录');
+    expect(instance.lastFrame()).not.toContain('Catalog 子目录\n     catalog');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('catalog → 仓库根目录');
   });
 
   it('cancels a fixed-ref field without changing its parent source draft', async () => {
@@ -7816,9 +7907,9 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('安装引用受影响');
     expect(instance.lastFrame()).toContain('生命周期意图引用受影响');
     expect(instance.lastFrame()).toContain('来源影响未知');
-    expect(instance.lastFrame()).toContain('请先确认共享影响');
     await input(instance, '\r');
     expect(executeIntent).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('返回检查');
   });
 
   it('reaches the last blocked source reference at 60x18', async () => {
@@ -7943,11 +8034,12 @@ describe('ConsoleAppV4', () => {
     }), expect.anything());
     expect(instance.lastFrame()).toContain('替换损坏的当前启用版本');
     expect(instance.lastFrame()).toContain('待检查版本的影响未知');
-    expect(instance.lastFrame()).toContain('请先确认共享影响');
     await input(instance, '\r');
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(instance.lastFrame()).toContain('已确认共享影响');
+    expect(instance.lastFrame()).toContain('返回检查');
     await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await input(instance, '\r', '\u001B[B', '\r');
     expect(executeIntent).toHaveBeenCalledOnce();
   });
 
@@ -8156,7 +8248,8 @@ describe('ConsoleAppV4', () => {
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
 
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作…');
+    await input(instance, '\r');
     await focusAction(instance, '查看插件来源');
     const lastActionFrame = instance.lastFrame() ?? '';
     expect(lastActionFrame).toContain('› 查看插件来源');
@@ -8209,7 +8302,8 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('另有 3 个直接依赖');
     expect(instance.lastFrame()).toContain('另有 3 个间接依赖');
     expect(instance.lastFrame()).toContain('› 添加插件');
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作…');
+    await input(instance, '\r');
     for (const label of ['在其他 Agent 使用', '依赖与被使用情况', '查看插件来源']) {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
@@ -8241,7 +8335,8 @@ describe('ConsoleAppV4', () => {
     value.replace({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
     const detail = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(2);
-    await input(detail, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(detail, '更多操作…');
+    await input(detail, '\r');
     const frame = detail.lastFrame() ?? '';
     expect(screens).toContain('P13');
     expect(frame).toContain('更多操作');
@@ -8270,7 +8365,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(screens).toContain(expectedScreen);
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作…');
+    await input(instance, '\r');
     for (const label of labels) {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
@@ -8298,7 +8394,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(screens).toContain(expectedScreen);
-    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '更多操作…');
+    await input(instance, '\r');
     for (const label of labels) {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
@@ -8343,7 +8440,8 @@ describe('ConsoleAppV4', () => {
     const detail = render(<ConsoleAppV4 controller={installed} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => installedScreens.add(screen)} />);
     await nextTurn(2);
     expect(installedScreens).toContain('D09');
-    await input(detail, '\u001B[B', '\u001B[B', '\r');
+    await focusAction(detail, '更多操作…');
+    await input(detail, '\r');
     expect(detail.lastFrame()).toContain('依赖与被使用情况');
     expect(detail.lastFrame()).toContain('1 个直接 · 2 个总计');
     detail.unmount();
@@ -8743,28 +8841,53 @@ describe('ConsoleAppV4', () => {
       });
       await value.load();
       await value.buildOperationReview(intent);
-      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+      const navigate = vi.fn().mockResolvedValue('completed');
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }}
+        onSessionNavigation={navigate} />);
       await nextTurn(2);
 
       const initial = instance.lastFrame() ?? '';
       expect(initial).toContain('需要确认共享影响');
-      expect(initial).toContain('确认共享影响');
-      expect(initial).toContain('请先确认共享影响');
       for (const layer of [
         'Project intent', 'User intent', 'Shared Codex native',
         'User activation', 'Project activation', 'AW extensions',
       ]) expect(initial).not.toContain(layer);
       expect(initial).toContain('↑↓ 移动');
       expect(initial.split('\n').length).toBeLessThanOrEqual(rows);
+      await input(instance, ...Array.from({ length: 10 }, () => '\u001B[6~'));
+      for (const layer of [
+        'Project intent', 'User intent', 'Shared Codex native',
+        'User activation', 'Project activation', 'AW extensions',
+      ]) expect(instance.lastFrame()).not.toContain(layer);
+      await input(instance, ...Array.from({ length: 10 }, () => '\u001B[5~'));
       await input(instance, 'd');
       expect(instance.lastFrame()).toContain('Codex 平台共享内容');
       expect(instance.lastFrame()).toMatch(/另有 \d+ 项/u);
       await input(instance, '\r');
       expect(executeIntent).not.toHaveBeenCalled();
-      expect(instance.lastFrame()).toContain('已确认共享影响');
-      expect(instance.lastFrame()).toContain(`› 添加插件 ${plan.resolvedPluginIds.length} 个插件`);
+      expect(instance.lastFrame()).toContain('返回检查');
+      expect(instance.lastFrame()).toContain('我已了解影响');
 
+      if (columns === 80) {
+        await input(instance, 'h');
+        expect(navigate).toHaveBeenCalledWith('home', { discardDrafts: false });
+      } else {
+        await input(instance, '\r');
+        expect(instance.lastFrame()).toContain('Codex 平台共享内容');
+      }
+      expect(executeIntent).not.toHaveBeenCalled();
       await input(instance, '\r');
+      if (columns === 60) {
+        instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 59, rows: 17 }} />);
+        await nextTurn(2);
+        expect(instance.lastFrame()).toContain('终端空间不足');
+        await input(instance, '\r');
+        expect(executeIntent).not.toHaveBeenCalled();
+        instance.rerender(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+        await nextTurn(2);
+        expect(instance.lastFrame()).toContain('返回检查');
+      }
+      await input(instance, '\u001B[B', '\r');
       await nextTurn(3);
       expect(executeIntent).toHaveBeenCalledTimes(1);
     },
@@ -8796,17 +8919,68 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('需要确认共享影响');
-    expect(instance.lastFrame()).toContain('请先确认共享影响');
+    expect(instance.lastFrame()).toContain('重试应用插件设置');
     await input(instance, '\r');
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(instance.lastFrame()).toContain('已确认共享影响');
+    expect(instance.lastFrame()).toContain('返回检查');
+    expect(instance.lastFrame()).toContain('确认重试应用插件设置');
+    expect(instance.lastFrame()).not.toContain('独立授权');
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('返回检查');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await input(instance, 'q');
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await input(instance, '\r', '\r');
+    expect(instance.lastFrame()).toContain('返回检查');
     await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await input(instance, '\r', '\u001B[B', '\r');
     await nextTurn(3);
     expect(executeIntent).toHaveBeenCalledOnce();
     expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'configSave', retryApply: true,
     }), expect.anything());
+  });
+
+  it('invalidates an open risk confirmation when a new Review token replaces it', async () => {
+    const intent = {
+      kind: 'configSave' as const,
+      pluginId: 'official/enhance',
+      scope: 'user' as const,
+      apply: true,
+      retryApply: true,
+    };
+    const executeIntent = vi.fn();
+    const value = controller({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...evidence,
+        config: {
+          scope: 'user', schemaIdentity: 'sha256:schema', storeDigest: 'sha256:store',
+          affectedTargets: [{ platform: 'codex', scope: 'user' }],
+          sharedNativeRenderTargets: [{
+            id: 'explore', skillKey: 'codex-explore', refreshKeys: ['exploreWait'],
+          }],
+        },
+      }),
+      executeIntent,
+    });
+    await value.buildOperationReview(intent);
+    const firstToken = value.snapshot.activeReview!.reviewToken;
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('返回检查');
+
+    await value.buildOperationReview(intent);
+    await nextTurn(3);
+    expect(value.snapshot.activeReview!.reviewToken).not.toBe(firstToken);
+    expect(instance.lastFrame()).not.toContain('独立授权');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
   });
 
   it('executes an ordinary config retry without shared confirmation', async () => {
