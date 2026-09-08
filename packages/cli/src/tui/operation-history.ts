@@ -28,6 +28,7 @@ export interface SafeOperationDiagnostic {
   id: string;
   code: string;
   stage?: string;
+  sourceId?: string;
   safeMessage: string;
   target?: { pluginId?: string; platform: 'codex' | 'claude'; scope: 'user' | 'project' };
   exitCode?: number;
@@ -110,6 +111,9 @@ function boundDiagnostics(
       ...(diagnostic.stage
         ? { stage: safeDiagnosticCode(diagnostic.stage, 'execute') }
         : {}),
+      ...(diagnostic.sourceId
+        ? { sourceId: safeDiagnosticCode(diagnostic.sourceId, 'unknownSource') }
+        : {}),
       safeMessage: sanitizeDiagnosticText(diagnostic.safeMessage, [], sensitiveValues),
       ...(diagnostic.target ? { target: structuredClone(diagnostic.target) } : {}),
       ...(diagnostic.exitCode !== undefined && Number.isSafeInteger(diagnostic.exitCode)
@@ -149,6 +153,7 @@ function reportContent(record: OperationHistoryRecord): string {
   }
   for (const diagnostic of record.diagnostics) {
     lines.push('', `## ${diagnostic.code}`, `Stage: ${diagnostic.stage ?? 'unknown'}`);
+    if (diagnostic.sourceId) lines.push(`Source: ${diagnostic.sourceId}`);
     if (diagnostic.target) lines.push(`Target: ${JSON.stringify(diagnostic.target)}`);
     if (diagnostic.exitCode !== undefined) lines.push(`Exit code: ${diagnostic.exitCode}`);
     lines.push(`Message: ${diagnostic.safeMessage}`);

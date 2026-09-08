@@ -944,6 +944,12 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
+async function escape(instance: ReturnType<typeof render>): Promise<void> {
+  instance.stdin.write('\u001B');
+  await new Promise((resolve) => setTimeout(resolve, 550));
+  await nextTurn(2);
+}
+
 async function focusAction(
   instance: ReturnType<typeof render>,
   label: string,
@@ -1948,6 +1954,91 @@ describe('ConsoleAppV4', () => {
       expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
     },
   );
+
+  it('returns through batch maintenance and task stages with consecutive Esc presses', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed', sourceId: 'team-tools' }, {
+      query: 'review', installFilter: 'all', sourceTabId: 'team-tools', focusIndex: 0,
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', 'c');
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    await focusAction(instance, '其他维护方式…');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('其他维护方式');
+
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    expect(instance.lastFrame()).toContain('› 其他维护方式…');
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+
+    await escape(instance);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('/ review');
+    expect(instance.lastFrame()).toContain('已选 1 个');
+    expect(instance.lastFrame()).toContain('› ◆ Review Gate');
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    instance.unmount();
+  });
+
+  it('returns through batch read-only history and still guards the batch owner exit', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'team-tools/review-gate',
+    });
+    await focusAction(instance, '更多操作…');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginMore', pluginId: 'team-tools/review-gate',
+    });
+
+    await escape(instance);
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'team-tools/review-gate',
+    });
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+    await escape(instance);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('已选 1 个');
+    expect(instance.lastFrame()).toContain('› ◆ Review Gate');
+    expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    instance.unmount();
+  });
+
+  it('does not treat a separate plugin write task as part of the batch draft owner', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', '\r');
+    value.push({
+      name: 'pluginWriteTask', pluginId: 'team-tools/review-gate', goal: 'restore',
+    });
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', pluginId: 'team-tools/review-gate', goal: 'restore',
+    });
+
+    await escape(instance);
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    instance.unmount();
+  });
 
   it('keeps canonical selections across source and query changes and exposes the complete selected set', async () => {
     const loaded = loadResult();

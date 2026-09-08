@@ -887,11 +887,13 @@ interface ActiveReviewPreparation {
 
 export class TuiOperationBlockedError extends Error {
   readonly code: string;
+  readonly diagnostics?: SafeOperationDiagnostic[];
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, diagnostics?: readonly SafeOperationDiagnostic[]) {
     super(message);
     this.name = 'TuiOperationBlockedError';
     this.code = code;
+    if (diagnostics?.length) this.diagnostics = [...structuredClone(diagnostics)];
   }
 }
 
@@ -1791,23 +1793,123 @@ export class TuiController {
     effects?: OperationEffectFacts,
   ): void {
     const sensitiveValues = intent ? collectOperationSensitiveValues(intent) : [];
+    const carried = error instanceof TuiOperationBlockedError ? error.diagnostics : undefined;
     this.#operationDiagnostics.set(operationId, {
-      diagnostics: [projectThrownOperationDiagnostic({
-        error,
-        id: `${this.#sessionEpoch}:${operationId}:failure`,
-        stage,
-        fallbackCode: code,
-        sensitiveValues,
-        ...(intent && 'pluginId' in intent && 'platform' in intent && intent.platform !== 'both'
-          ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
-          : {}),
-      })],
+      diagnostics: carried?.length ? carried.map((diagnostic, index) => ({
+        ...structuredClone(diagnostic),
+        id: `${this.#sessionEpoch}:${operationId}:failure:${index}`,
+      })) : [projectThrownOperationDiagnostic({
+          error,
+          id: `${this.#sessionEpoch}:${operationId}:failure`,
+          stage,
+          fallbackCode: code,
+          sensitiveValues,
+          ...(intent && 'pluginId' in intent && 'platform' in intent && intent.platform !== 'both'
+            ? { target: { pluginId: intent.pluginId, platform: intent.platform, scope: intent.scope } }
+            : {}),
+        })],
       effects: effects ?? {
         configCommit: 'notApplicable', awWrite: 'notStarted',
         preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
       },
       sensitiveValues,
     });
+  }
+
+  #appendThrownProjection(
+    operationId: string,
+    error: unknown,
+    code: string,
+    stage: string,
+    intent: OperationIntent,
+  ): void {
+    const existing = this.#operationDiagnostics.get(operationId);
+    if (!existing) {
+      this.#captureThrownProjection(operationId, error, code, stage, intent);
+      return;
+    }
+    const carried = error instanceof TuiOperationBlockedError ? error.diagnostics : undefined;
+    const diagnostics = carried?.length ? carried : [projectThrownOperationDiagnostic({
+      error,
+      id: `${this.#sessionEpoch}:${operationId}:failure:${existing.diagnostics.length}`,
+      stage,
+      fallbackCode: code,
+      sensitiveValues: existing.sensitiveValues,
+    })];
+    const offset = existing.diagnostics.length;
+    const appended = diagnostics.map((diagnostic, index) => ({
+      ...structuredClone(diagnostic),
+      id: `${this.#sessionEpoch}:${operationId}:failure:${offset + index}`,
+    }));
+    existing.diagnostics.push(...appended);
+    const targetDiagnostics = appended.filter((diagnostic) => diagnostic.target !== undefined);
+    if (targetDiagnostics.length > 0) {
+      existing.targets = [...new Map([
+        ...(existing.targets ?? []).map((target) => [[
+          target.pluginId ?? '', target.platform, target.scope,
+        ].join('\0'), target] as const),
+        ...targetDiagnostics.map((diagnostic) => [[
+          diagnostic.target!.pluginId ?? '', diagnostic.target!.platform, diagnostic.target!.scope,
+        ].join('\0'), {
+          ...diagnostic.target!,
+          state: 'skipped' as const,
+          errorCode: diagnostic.code,
+          diagnosticIds: targetDiagnostics.filter((candidate) => candidate.target
+            && candidate.target.pluginId === diagnostic.target!.pluginId
+            && candidate.target.platform === diagnostic.target!.platform
+            && candidate.target.scope === diagnostic.target!.scope).map((candidate) => candidate.id),
+        }] as const),
+      ]).values()];
+    }
+  }
+
+  #recordStaleAttempt(operationId: string, intent: OperationIntent): void {
+    if (!this.#operationDiagnostics.has(operationId)) {
+      this.#captureThrownProjection(
+        operationId,
+        undefined,
+        'operationReviewStale',
+        'reviewValidation',
+        intent,
+      );
+    }
+    const projected = this.#operationDiagnostics.get(operationId)!;
+    const recordId = `${this.#sessionEpoch}:${operationId}`;
+    const diagnosticsByTarget = new Map<string, SafeOperationDiagnostic[]>();
+    for (const diagnostic of projected.diagnostics) {
+      if (!diagnostic.target) continue;
+      const key = [diagnostic.target.pluginId ?? '', diagnostic.target.platform, diagnostic.target.scope].join('\0');
+      diagnosticsByTarget.set(key, [...(diagnosticsByTarget.get(key) ?? []), diagnostic]);
+    }
+    const targets = projected.targets ?? [...diagnosticsByTarget.entries()].map(([key, diagnostics]) => {
+      const [pluginId, platform, scope] = key.split('\0') as [string, PlatformName, Scope];
+      return {
+        ...(pluginId ? { pluginId } : {}),
+        platform,
+        scope,
+        state: 'skipped' as const,
+        errorCode: diagnostics[0]!.code,
+        diagnosticIds: diagnostics.map((diagnostic) => diagnostic.id),
+      };
+    });
+    this.#operationHistory.record({
+      summary: {
+        recordId,
+        epoch: this.#sessionEpoch,
+        operationId,
+        createdAtMs: this.dependencies.now?.() ?? Date.now(),
+        state: 'blocked',
+        code: projected.diagnostics[0]?.code ?? 'operationReviewStale',
+        message: '状态已变化，原确认没有执行。已准备新的确认信息。',
+        operationKind: intent.kind,
+        ...('pluginId' in intent ? { pluginId: intent.pluginId } : {}),
+        diagnosticCount: projected.diagnostics.length,
+        effects: projected.effects,
+      },
+      diagnostics: projected.diagnostics,
+      targets,
+    }, { sensitiveValues: projected.sensitiveValues });
+    this.#operationDiagnostics.delete(operationId);
   }
 
   async #logErrorSafe(
@@ -3566,13 +3668,20 @@ export class TuiController {
         ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
         : '无法准备确认信息。请返回检查选择，或重试。';
       const preparationRecordId = `${this.#sessionEpoch}:${active.snapshot.id}`;
-      const preparationDiagnostic = projectThrownOperationDiagnostic({
-        error,
-        id: `${preparationRecordId}:failure`,
-        stage: active.snapshot.currentStage ?? 'reviewPreparation',
-        fallbackCode: code,
-        sensitiveValues: collectOperationSensitiveValues(intent),
-      });
+      const carriedDiagnostics = error instanceof TuiOperationBlockedError
+        ? error.diagnostics : undefined;
+      const preparationDiagnostics = carriedDiagnostics?.length
+        ? carriedDiagnostics.map((diagnostic, index) => ({
+            ...structuredClone(diagnostic),
+            id: `${preparationRecordId}:failure:${index}`,
+          }))
+        : [projectThrownOperationDiagnostic({
+            error,
+            id: `${preparationRecordId}:failure`,
+            stage: active.snapshot.currentStage ?? 'reviewPreparation',
+            fallbackCode: code,
+            sensitiveValues: collectOperationSensitiveValues(intent),
+          })];
       this.#operationHistory.record({
         summary: {
           recordId: preparationRecordId,
@@ -3580,18 +3689,29 @@ export class TuiController {
           operationId: active.snapshot.id,
           createdAtMs: this.dependencies.now?.() ?? Date.now(),
           state: 'blocked',
-          code: preparationDiagnostic.code,
+          code: preparationDiagnostics[0]!.code,
           message: active.snapshot.message,
           operationKind: intent.kind,
           ...('pluginId' in intent ? { pluginId: intent.pluginId } : {}),
-          diagnosticCount: 1,
+          diagnosticCount: preparationDiagnostics.length,
           effects: {
             configCommit: 'notApplicable', awWrite: 'notStarted',
             preApplyExternalEffect: 'notApplicable', finalVerification: 'notStarted',
           },
         },
-        diagnostics: [preparationDiagnostic],
-        targets: [],
+        diagnostics: preparationDiagnostics,
+        targets: [...new Map(preparationDiagnostics.flatMap((diagnostic) => diagnostic.target ? [[
+          [diagnostic.target.pluginId ?? '', diagnostic.target.platform, diagnostic.target.scope].join('\0'),
+          {
+            ...diagnostic.target,
+            state: 'skipped' as const,
+            errorCode: diagnostic.code,
+            diagnosticIds: preparationDiagnostics.filter((candidate) => candidate.target
+              && candidate.target.pluginId === diagnostic.target!.pluginId
+              && candidate.target.platform === diagnostic.target!.platform
+              && candidate.target.scope === diagnostic.target!.scope).map((candidate) => candidate.id),
+          },
+        ] as const] : [])).values()],
       }, { sensitiveValues: collectOperationSensitiveValues(intent) });
       this.#publish();
       await this.#logOperationError(error, code, intent);
@@ -4235,7 +4355,6 @@ export class TuiController {
       await this.#logOperationError(error, code, ticket.intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
-        this.#operationDiagnostics.delete(operationId);
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
       if (ticket.intent.kind === 'catalogManagement') {
@@ -4360,6 +4479,7 @@ export class TuiController {
         );
       } catch (error) {
         const code = issueCode(error);
+        this.#appendThrownProjection(operationId, error, code, 'reviewPreparation', ticket.intent);
         await this.#logOperationError(error, code, ticket.intent);
         return this.#setBlocked(operationId, code, {
           intent: ticket.intent,
@@ -4378,6 +4498,7 @@ export class TuiController {
         review,
         ...this.#operationIdentity(ticket.intent),
       };
+      this.#recordStaleAttempt(operationId, ticket.intent);
       this.#result = result;
       this.#publish();
       return cloneFrozen(result);
@@ -4390,6 +4511,7 @@ export class TuiController {
       this.#applyStatus(refreshed);
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      this.#appendThrownProjection(operationId, error, 'tuiStateReloadFailed', 'statusReload', ticket.intent);
       await this.#logErrorSafe(error, 'tuiStateReloadFailed', { privateConfigOperation: true });
       return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
         intent: ticket.intent,
@@ -4403,6 +4525,7 @@ export class TuiController {
     } catch (error) {
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
+      this.#appendThrownProjection(operationId, error, code, 'validate', intent);
       await this.#logOperationError(error, code, intent);
       if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const result: OperationExecuteResult = {
@@ -4430,6 +4553,7 @@ export class TuiController {
       } catch (error) {
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
+        this.#appendThrownProjection(operationId, error, code, 'reviewPreparation', intent);
         await this.#logOperationError(error, code, intent);
         if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         return this.#setBlocked(operationId, code, { intent, returnRoute: ticket.returnRoute });
@@ -4449,6 +4573,7 @@ export class TuiController {
     if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     const review = this.#storeOperationReview(intent, evidence, 'replace', ticket.returnRoute);
     const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(intent) };
+    this.#recordStaleAttempt(operationId, intent);
     this.#result = result;
     this.#publish();
     return cloneFrozen(result);

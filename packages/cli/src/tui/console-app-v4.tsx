@@ -261,6 +261,7 @@ interface BatchDraft {
   query: string;
   installFilter: PluginInstallFilter;
   showSelected: boolean;
+  stageView?: Partial<Record<BatchDraft['stage'], { focusIndex: number; scrollOffset: number }>>;
 }
 
 interface BatchSelectionCandidate {
@@ -2183,6 +2184,20 @@ export function ConsoleAppV4(props: {
     setShowTechnical(false);
     setActionError(undefined);
   };
+  const moveBatchStage = (stage: BatchDraft['stage']): void => {
+    const restored = batchDraft?.stageView?.[stage];
+    setBatchDraft((current) => current ? {
+      ...current,
+      stage,
+      stageView: {
+        ...current.stageView,
+        [current.stage]: { focusIndex: focus, scrollOffset },
+      },
+    } : current);
+    setFocus(restored?.focusIndex ?? 0);
+    setScrollOffset(restored?.scrollOffset ?? 0);
+    setActionError(undefined);
+  };
   const back = (): void => {
     if (route.name === 'sourceEdit'
       && sourceDraft
@@ -3404,11 +3419,11 @@ export function ConsoleAppV4(props: {
         if (batchDraft.mode === 'browse') {
           setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
           props.controller.push({ name: 'batchPlacement' });
+          setFocus(0);
+          setScrollOffset(0);
         } else {
-          setBatchDraft((current) => current ? { ...current, stage: 'task' } : current);
+          moveBatchStage('task');
         }
-        setFocus(0);
-        setScrollOffset(0);
       };
       const continueAction: ActionItem = {
         label: `查看确认（${batchDraft.selectedPluginIds.length}）`,
@@ -3508,11 +3523,7 @@ export function ConsoleAppV4(props: {
           { label: '清理遗留内容…', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个有受管证据的位置；保留 foreign 和 shared 内容`, run: () => startExistingBatch('cleanup') },
           {
             label: '返回任务选择',
-            run: () => {
-              setBatchDraft((current) => current ? { ...current, stage: 'task' } : current);
-              setFocus(0);
-              setScrollOffset(0);
-            },
+            run: () => moveBatchStage('task'),
           },
         ];
       } else {
@@ -3537,13 +3548,9 @@ export function ConsoleAppV4(props: {
           {
             label: '其他维护方式…',
             description: '同步、重新安装和普通清理',
-            run: () => {
-              setBatchDraft((current) => current ? { ...current, stage: 'maintenance' } : current);
-              setFocus(0);
-              setScrollOffset(0);
-            },
+            run: () => moveBatchStage('maintenance'),
           },
-          { label: '返回调整选择', run: () => setBatchDraft((current) => current ? { ...current, stage: 'select' } : current) },
+          { label: '返回调整选择', run: () => moveBatchStage('select') },
         ];
       }
       context = `${selectedIds.length} 个插件 · ${syncTargets.length} 个已保存或现场目标`;
@@ -8875,13 +8882,25 @@ export function ConsoleAppV4(props: {
     } else if (globalAction === 'back' && route.name === 'batchPlacement') {
       back();
     } else if (globalAction === 'back'
+      && route.name === 'batchSelection'
+      && batchDraft
+      && batchDraft.stage !== 'select'
+      && snapshot.router.currentFlowId === batchDraft.flowId) {
+      moveBatchStage(batchDraft.stage === 'maintenance' ? 'task' : 'select');
+    } else if (globalAction === 'back'
+      && batchDraft
+      && route.name !== 'batchSelection'
+      && snapshot.router.currentFlowId === batchDraft.flowId
+      && (route.name !== 'pluginWriteTask'
+        || route.batchOrigin?.flowId === batchDraft.flowId)) {
+      back();
+    } else if (globalAction === 'back'
       && (route.name === 'operationHistory'
         || route.name === 'operationDiagnostic'
         || route.name === 'operationReportPreview')) {
       back();
     } else if (globalAction === 'back') {
-      if (dirty && route.name !== 'review'
-        && !(batchDraft && (route.name === 'pluginPreview' || route.name === 'pluginDetail'))) {
+      if (dirty && route.name !== 'review') {
         setOverlayFocus(0);
         setDiscardForExit(false);
         setOverlay('discard');
@@ -8930,9 +8949,9 @@ export function ConsoleAppV4(props: {
         if (batchDraft.mode === 'browse') {
           setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
           props.controller.push({ name: 'batchPlacement' });
-        } else setBatchDraft((current) => current ? { ...current, stage: 'task' } : current);
-        setFocus(0);
-        setScrollOffset(0);
+          setFocus(0);
+          setScrollOffset(0);
+        } else moveBatchStage('task');
       } else setActionError('请至少选择一个插件。');
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input === ' ') {
       const action = actions[normalizedEffectiveFocus];

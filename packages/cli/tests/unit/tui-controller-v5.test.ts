@@ -5,6 +5,7 @@ import type { DependencyOperationPlan } from '../../src/commands/dependency-oper
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
+  TuiOperationBlockedError,
   operationEvidenceMatches,
   operationEvidenceFingerprint,
   pluginWriteBatchTargets,
@@ -5024,14 +5025,30 @@ describe('TUI v4 Review safety', () => {
 
   it('returns a new Review when the locked write reports a typed stale prefix', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:locked-change' };
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(new TuiOperationBlockedError(
+        'operationReviewStale',
+        'operationReviewStale: /Users/private/target token-private',
+        [{
+          id: 'runtime-root', code: 'catalogGenerationUnavailable', stage: 'source',
+          sourceId: 'official', safeMessage: 'The Catalog source could not be prepared safely.',
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          causes: [], detailLines: [],
+        }],
+      ))
+      .mockResolvedValueOnce({
+        overallState: 'succeeded', targetResults: [{
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'completed', requiredBy: [],
+        }],
+      });
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn()
         .mockResolvedValueOnce(baseEvidence)
         .mockResolvedValueOnce(baseEvidence)
+        .mockResolvedValueOnce(changedEvidence)
         .mockResolvedValueOnce(changedEvidence),
-      executeIntent: vi.fn().mockRejectedValue(
-        new Error('operationReviewStale: /Users/private/target token-private'),
-      ),
+      executeIntent,
     }));
     const review = await controller.buildOperationReview({
       kind: 'pluginWrite',
@@ -5045,8 +5062,68 @@ describe('TUI v4 Review safety', () => {
 
     expect(result.state).toBe('stale');
     expect(controller.snapshot.router.depth).toBe(2);
+    const staleHistory = controller.listOperationHistory();
+    expect(staleHistory).toEqual([expect.objectContaining({
+      operationId: review.operationId, state: 'blocked', code: 'catalogGenerationUnavailable',
+    })]);
+    expect(controller.getOperationDiagnostic(staleHistory[0]!.recordId)?.diagnostics)
+      .toEqual([expect.objectContaining({
+        code: 'catalogGenerationUnavailable', stage: 'source', sourceId: 'official',
+      })]);
+    const replacement = result.state === 'stale' ? result.review : undefined;
+    await expect(controller.executeOperation(replacement!.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+    });
+    expect(controller.listOperationHistory()).toHaveLength(2);
+    expect(controller.listOperationHistory()[0]).toMatchObject({ diagnosticCount: 0 });
     expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
     expect(JSON.stringify(controller.snapshot)).not.toContain('token-private');
+  });
+
+  it('keeps the stale cause and the failed re-preparation cause in operation history', async () => {
+    const rootCause = new TuiOperationBlockedError(
+      'taskNoExecutableTargets',
+      'The task has no executable targets.',
+      [{
+        id: 'temporary-root',
+        code: 'issueVerificationFailed',
+        stage: 'preflight.inspect',
+        sourceId: 'official',
+        safeMessage: 'The target inspection could not verify the current target.',
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        causes: [], detailLines: [],
+      }],
+    );
+    const captureEvidence = vi.fn()
+      .mockResolvedValueOnce(baseEvidence)
+      .mockRejectedValueOnce(rootCause);
+    const controller = new TuiController(dependencies({
+      captureEvidence,
+      executeIntent: vi.fn().mockRejectedValue(
+        new Error('operationReviewStale: /Users/private/target --token private-value'),
+      ),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'taskNoExecutableTargets',
+    });
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(1);
+    const detail = controller.getOperationDiagnostic(history[0]!.recordId)!;
+    expect(detail.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'operationReviewStale',
+      'issueVerificationFailed',
+    ]);
+    expect(detail.targets).toContainEqual(expect.objectContaining({
+      pluginId: 'official/demo', state: 'skipped',
+      diagnosticIds: [expect.stringContaining(':failure:1')],
+    }));
+    expect(JSON.stringify(detail)).not.toContain('/Users/private');
+    expect(JSON.stringify(detail)).not.toContain('private-value');
   });
 
   it('does not expose sensitive config values in Review or controller snapshots', async () => {
