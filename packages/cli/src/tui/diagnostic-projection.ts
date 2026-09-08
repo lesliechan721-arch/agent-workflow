@@ -81,6 +81,7 @@ export function projectThrownOperationDiagnostic(options: {
   stage: string;
   fallbackCode: string;
   target?: Target;
+  sourceId?: string;
   sensitiveValues?: readonly string[];
 }): SafeOperationDiagnostic {
   let metadata = readSafeOperationError(options.error);
@@ -89,10 +90,13 @@ export function projectThrownOperationDiagnostic(options: {
     cause = (cause as { cause?: unknown }).cause;
     metadata = readSafeOperationError(cause);
   }
-  if (metadata) return diagnosticFromMetadata({
-    ...metadata,
-    stage: metadata.stage ?? options.stage,
-  }, options.id, options.target, options.sensitiveValues);
+  if (metadata) return {
+    ...diagnosticFromMetadata({
+      ...metadata,
+      stage: metadata.stage ?? options.stage,
+    }, options.id, options.target, options.sensitiveValues),
+    ...(options.sourceId ? { sourceId: options.sourceId } : {}),
+  };
   const code = errorCode(options.error, options.fallbackCode);
   const causeCode = options.error && typeof options.error === 'object' && 'cause' in options.error
     ? errorCode((options.error as { cause?: unknown }).cause, '') : '';
@@ -100,6 +104,7 @@ export function projectThrownOperationDiagnostic(options: {
     id: options.id,
     code,
     stage: options.stage,
+    ...(options.sourceId ? { sourceId: options.sourceId } : {}),
     safeMessage: FIXED_STAGE_MESSAGES[options.stage] ?? 'The operation did not complete.',
     ...(options.target ? { target: options.target } : {}),
     causes: causeCode ? [{ code: causeCode, safeMessage: `The service reported ${causeCode}.` }] : [],
@@ -336,6 +341,53 @@ export function projectExecutionDiagnostics(
     ...(Array.isArray(raw.rebuildResults) ? raw.rebuildResults : []),
     ...(Array.isArray(raw.operationRebuildResults) ? raw.operationRebuildResults : []),
   ];
+  if (operationKind === 'pluginWriteTask') {
+    const taskPlan = raw.taskPlan && typeof raw.taskPlan === 'object'
+      ? raw.taskPlan as Record<string, unknown> : undefined;
+    const blockedTargets = Array.isArray(taskPlan?.blockedTargets) ? taskPlan.blockedTargets : [];
+    for (const [blockedIndex, candidate] of blockedTargets.entries()) {
+      if (!candidate || typeof candidate !== 'object') continue;
+      const blocked = candidate as Record<string, unknown>;
+      const target = targetFrom(blocked.target);
+      const prepared = Array.isArray(blocked.diagnostics) ? blocked.diagnostics : [];
+      for (const [diagnosticIndex, value] of prepared.entries()) {
+        if (!value || typeof value !== 'object') continue;
+        const diagnostic = value as Partial<SafeOperationDiagnostic>;
+        const diagnosticTarget = targetFrom(diagnostic.target);
+        diagnostics.push({
+          id: `${idPrefix}:blocked:${blockedIndex}:${diagnosticIndex}`,
+          code: safeDiagnosticCode(diagnostic.code, 'targetUnavailable'),
+          ...(diagnostic.stage ? { stage: safeDiagnosticCode(diagnostic.stage, 'execute') } : {}),
+          ...(diagnostic.sourceId ? { sourceId: safeDiagnosticCode(diagnostic.sourceId, 'unknownSource') } : {}),
+          safeMessage: sanitizeDiagnosticText(
+            diagnostic.safeMessage ?? 'The target operation did not complete.',
+            [],
+            sensitiveValues,
+          ),
+          ...(diagnosticTarget ? { target: diagnosticTarget }
+            : 'target' in diagnostic ? {} : target ? { target } : {}),
+          ...(diagnostic.exitCode !== undefined && Number.isSafeInteger(diagnostic.exitCode)
+            ? { exitCode: diagnostic.exitCode } : {}),
+          causes: Array.isArray(diagnostic.causes) ? diagnostic.causes.flatMap((cause) => {
+            if (!cause || typeof cause !== 'object') return [];
+            return [{
+              ...(cause.code ? { code: safeDiagnosticCode(cause.code, 'operationCause') } : {}),
+              safeMessage: sanitizeDiagnosticText(
+                typeof cause.safeMessage === 'string'
+                  ? cause.safeMessage : 'The operation reported another safe cause.',
+                [], sensitiveValues,
+              ),
+            }];
+          }) : [],
+          detailLines: Array.isArray(diagnostic.detailLines)
+            ? diagnostic.detailLines.flatMap((line) => typeof line === 'string'
+              ? [sanitizeDiagnosticText(line, [], sensitiveValues)] : [])
+            : [],
+          ...(diagnostic.omitted ? { omitted: structuredClone(diagnostic.omitted) } : {}),
+        });
+      }
+    }
+  }
   const receiptTargets = rebuildResults.length === 0 && Array.isArray(raw.targetResults) ? raw.targetResults : [];
   for (const [index, candidate] of receiptTargets.entries()) {
     if (!candidate || typeof candidate !== 'object') continue;

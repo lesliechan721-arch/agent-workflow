@@ -122,6 +122,28 @@ describe('TUI operation history', () => {
 });
 
 describe('TUI operation diagnostic projection', () => {
+  it('keeps safe blocked target diagnostic fields without copying private values', () => {
+    const projected = projectExecutionDiagnostics({
+      taskPlan: {
+        blockedTargets: [{
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          diagnostics: [{
+            id: 'temporary', code: 'preApplyExited', stage: 'preApply', sourceId: 'official',
+            safeMessage: 'The preApply process exited unsuccessfully.', exitCode: 9,
+            causes: [{ code: 'EACCES', safeMessage: 'Access denied for private-token.' }],
+            detailLines: ['Recovery: retry without private-token.'],
+          }],
+        }],
+      },
+    }, 'blocked-task', ['private-token'], 'pluginWriteTask');
+
+    expect(projected.diagnostics).toEqual([expect.objectContaining({
+      code: 'preApplyExited', stage: 'preApply', sourceId: 'official', exitCode: 9,
+      causes: [{ code: 'EACCES', safeMessage: expect.not.stringContaining('private-token') }],
+      detailLines: [expect.not.stringContaining('private-token')],
+    })]);
+  });
+
   it('keeps typed preApply facts without copying raw output', () => {
     const secret = 'stderr: token=private-value';
     const projected = projectExecutionDiagnostics({

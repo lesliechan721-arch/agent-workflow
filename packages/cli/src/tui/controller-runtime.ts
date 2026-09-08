@@ -112,6 +112,7 @@ import {
   pluginWriteTaskTargetKey,
   type PluginWriteTaskTarget,
 } from './plugin-write-task.js';
+import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
 import {
   createCatalogManagementService,
   type CatalogManagementProgressStage,
@@ -324,8 +325,15 @@ function configIntentRequestsApply(
 
 type OperationSourceEvidence = NonNullable<OperationEvidence['source']>;
 
-function operationReviewStale(message: string): TuiOperationBlockedError {
-  return new TuiOperationBlockedError('operationReviewStale', `operationReviewStale: ${message}`);
+function operationReviewStale(
+  message: string,
+  diagnostics?: ConstructorParameters<typeof TuiOperationBlockedError>[2],
+): TuiOperationBlockedError {
+  return new TuiOperationBlockedError(
+    'operationReviewStale',
+    `operationReviewStale: ${message}`,
+    diagnostics,
+  );
 }
 
 function sourceEvidenceForPlugin(
@@ -1524,12 +1532,34 @@ export function createTuiControllerDependencies(
                 ...(!freshCatalog ? { validatedStoreEntries, validatingStoreEntries } : {}),
                 ...(signal ? { signal } : {}),
               });
-        } catch {
-          blockedTargets.push(...requestedTargets.map((target) => ({
-            target,
-            reason: 'targetUnavailable' as const,
-            issueIds: [],
-          })));
+        } catch (error) {
+          if (error instanceof Error && error.name === 'AbortError') throw error;
+          blockedTargets.push(...requestedTargets.map((target, index) => {
+            const diagnostic = error instanceof CatalogGenerationError ? {
+              id: `task-source:${sourceId}:${index}`,
+              code: error.code,
+              stage: 'source',
+              sourceId,
+              safeMessage: 'The Catalog source could not be prepared safely.',
+              target: { pluginId: target.pluginId, platform: target.platform, scope: target.scope },
+              causes: [],
+              detailLines: [],
+            } : projectThrownOperationDiagnostic({
+                error,
+                id: `task-source:${sourceId}:${index}`,
+                stage: 'source',
+                fallbackCode: 'catalogSourceResolutionFailed',
+                sourceId,
+                target,
+              });
+            return {
+              target,
+              reason: 'targetUnavailable' as const,
+              issueIds: [],
+              errorCodes: [diagnostic.code],
+              diagnostics: [diagnostic],
+            };
+          }));
           continue;
         }
         operationContexts.set(sourceId, catalogOperation);
@@ -1648,13 +1678,48 @@ export function createTuiControllerDependencies(
             } : {}),
           });
           if (!preview.operationPlan) {
-            blockedTargets.push(...draft.executableTargets.map((target) => ({
-              target,
-              reason: 'targetUnavailable' as const,
-              issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
-                pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
-                .map((cause) => cause.issueId),
-            })));
+            const projected = projectExecutionDiagnostics(
+              preview,
+              `task-preview:${sourceId}`,
+              [],
+              'pluginWrite',
+            );
+            const sourceDiagnostics = projected.diagnostics.filter((diagnostic) => !diagnostic.target)
+              .map((diagnostic) => ({ ...diagnostic, sourceId, target: undefined }));
+            blockedTargets.push(...draft.executableTargets.map((target, targetIndex) => {
+              const matchingDiagnostics = projected.diagnostics.filter((diagnostic) =>
+                diagnostic.target?.pluginId === target.pluginId
+                && diagnostic.target.platform === target.platform
+                && diagnostic.target.scope === target.scope);
+              const preparedDiagnostics = [
+                ...matchingDiagnostics,
+                ...(targetIndex === 0 ? sourceDiagnostics : []),
+              ];
+              const targetDiagnostics = preparedDiagnostics.length > 0
+                ? preparedDiagnostics
+                : [projectThrownOperationDiagnostic({
+                    error: undefined,
+                    id: `task-preview:${sourceId}:${targetIndex}`,
+                    stage: 'dependencyPlan',
+                    fallbackCode: 'taskOperationPlanMissing',
+                    sourceId,
+                    target,
+                  })];
+              const diagnostics = targetDiagnostics.map((diagnostic, diagnosticIndex) => ({
+                ...structuredClone(diagnostic),
+                id: `task-preview:${sourceId}:${targetIndex}:${diagnosticIndex}`,
+                sourceId,
+              }));
+              return {
+                target,
+                reason: 'targetUnavailable' as const,
+                issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
+                  pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
+                  .map((cause) => cause.issueId),
+                errorCodes: [...new Set(diagnostics.map((diagnostic) => diagnostic.code))],
+                diagnostics,
+              };
+            }));
             draft.executableTargets = [];
             draft.causes = [];
             break;
@@ -1864,10 +1929,18 @@ export function createTuiControllerDependencies(
       ])).values()].sort((left, right) => pluginWriteTaskTargetKey(left.target)
         .localeCompare(pluginWriteTaskTargetKey(right.target), 'en'));
       if (executableTargets.length === 0) {
-        throw new TuiOperationBlockedError('taskNoExecutableTargets', '任务没有可安全执行的目标。');
+        throw new TuiOperationBlockedError(
+          'taskNoExecutableTargets',
+          '任务没有可安全执行的目标。',
+          canonicalBlocked.flatMap((target) => target.diagnostics ?? []),
+        );
       }
       if (intent.executionPolicy === 'all' && canonicalBlocked.length > 0) {
-        throw new TuiOperationBlockedError('taskHasBlockedTargets', '部分目标需要先处理。请调整选择。');
+        throw new TuiOperationBlockedError(
+          'taskHasBlockedTargets',
+          '部分目标需要先处理。请调整选择。',
+          canonicalBlocked.flatMap((target) => target.diagnostics ?? []),
+        );
       }
       await preparation?.reporter.emit('evidence');
       const evidence: PluginWriteTaskEvidence = {
@@ -3232,7 +3305,10 @@ export function createTuiControllerDependencies(
             const code = error instanceof TuiOperationBlockedError ? error.code : undefined;
             if (intent.kind === 'pluginWriteTask'
               && (code === 'taskHasBlockedTargets' || code === 'taskNoExecutableTargets')) {
-              throw operationReviewStale('确认后任务可执行目标发生变化。');
+              throw operationReviewStale(
+                '确认后任务可执行目标发生变化。',
+                error instanceof TuiOperationBlockedError ? error.diagnostics : undefined,
+              );
             }
             throw error;
           }

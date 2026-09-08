@@ -50,6 +50,9 @@ export interface DependencyGraphRow {
   lastChild: boolean;
   focused: boolean;
   sharedWithRowId?: string;
+  pathPluginIds: string[];
+  relationship: 'root' | 'directVerified' | 'indirectVerified' | 'declared' | 'unknown';
+  pathReferences: DependencyPlacementReferenceViewModel[][];
   edge?: {
     declared: boolean;
     placementReferences: DependencyPlacementReferenceViewModel[];
@@ -132,6 +135,36 @@ function referenceKey(reference: DependencyPlacementReferenceViewModel): string 
     dependency.scope,
     dependency.project ?? '',
   ].join('\0');
+}
+
+function placementKey(
+  placement: DependencyPlacementReferenceViewModel['consumer'],
+): string {
+  return [
+    placement.pluginId,
+    placement.platform,
+    placement.scope,
+    placement.project ?? '',
+  ].join('\0');
+}
+
+function extendPlacementPaths(
+  paths: readonly DependencyPlacementReferenceViewModel[][],
+  edge: EdgeRecord,
+  direction: DependencyGraphDirection,
+  direct: boolean,
+): DependencyPlacementReferenceViewModel[][] {
+  const references = edge.placementReferences;
+  if (direct) return references.map((reference) => [reference]);
+  return paths.flatMap((path) => {
+    const previous = path.at(-1);
+    if (!previous) return [];
+    const expected = direction === 'dependencies' ? previous.dependency : previous.consumer;
+    return references
+      .filter((reference) => placementKey(direction === 'dependencies'
+        ? reference.consumer : reference.dependency) === placementKey(expected))
+      .map((reference) => [...path, reference]);
+  });
 }
 
 function comparePluginIds(
@@ -469,11 +502,21 @@ export function buildDependencyGraphProjection(
     parentRowId?: string;
     depth: number;
     edge?: EdgeRecord;
+    pathPluginIds: string[];
+    pathReferences: DependencyPlacementReferenceViewModel[][];
     ancestorHasNextSibling: boolean[];
     lastChild: boolean;
   }): void => {
     const sharedWithRowId = visibleRows.get(input.pluginId);
-    const children = descendants(input.pluginId, direction, facts);
+    const children = descendants(input.pluginId, direction, facts).flatMap((child) => {
+      const paths = extendPlacementPaths(
+        input.pathReferences,
+        child.edge,
+        direction,
+        input.depth === 0,
+      );
+      return direction === 'dependents' && paths.length === 0 ? [] : [{ ...child, paths }];
+    });
     const rowId = input.parentRowId
       ? `${input.parentRowId}>${input.pluginId}`
       : input.pluginId;
@@ -500,6 +543,12 @@ export function buildDependencyGraphProjection(
       ancestorHasNextSibling: input.ancestorHasNextSibling,
       lastChild: input.lastChild,
       focused: false,
+      pathPluginIds: input.pathPluginIds,
+      relationship: input.depth === 0 ? 'root'
+        : input.pathReferences.length > 0
+          ? input.depth === 1 ? 'directVerified' : 'indirectVerified'
+          : (input.edge?.placementReferences.length ?? 0) > 0 ? 'unknown' : 'declared',
+      pathReferences: input.pathReferences,
       ...(sharedWithRowId ? { sharedWithRowId } : {}),
       ...(input.edge ? {
         edge: {
@@ -518,6 +567,8 @@ export function buildDependencyGraphProjection(
         parentRowId: row.id,
         depth: row.depth + 1,
         edge: child.edge,
+        pathPluginIds: [...input.pathPluginIds, child.pluginId],
+        pathReferences: child.paths,
         ancestorHasNextSibling: [...input.ancestorHasNextSibling, !input.lastChild],
         lastChild: index === children.length - 1,
       });
@@ -527,6 +578,8 @@ export function buildDependencyGraphProjection(
     append({
       pluginId: options.rootPluginId,
       depth: 0,
+      pathPluginIds: [options.rootPluginId],
+      pathReferences: [],
       ancestorHasNextSibling: [],
       lastChild: true,
     });
