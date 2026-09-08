@@ -2035,6 +2035,13 @@ export class TuiController {
 
   #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
     const active = this.#router.activeFlow();
+    if (intent.kind === 'pluginWriteTask'
+      && result.state === 'succeeded'
+      && 'returnRoute' in result
+      && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.batchOrigin?.owner === 'batch-write') {
+      return { name: 'pluginList', mode: 'installed' };
+    }
     if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
     if (active && (intent.kind === 'portableInstall'
       || intent.kind === 'configSave' || intent.kind === 'configReset')) {
@@ -2121,7 +2128,17 @@ export class TuiController {
           executionPolicy: 'all',
         }
       : undefined;
-    if (!this.#router.finishFlow(target, terminal)) this.#router.replace(terminal);
+    const batchFlowId = result.state === 'succeeded'
+      && intent.kind === 'pluginWriteTask'
+      && 'returnRoute' in result
+      && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.batchOrigin?.owner === 'batch-write'
+      ? result.returnRoute.batchOrigin.flowId
+      : undefined;
+    const finished = batchFlowId
+      ? this.#router.finishFlowById(batchFlowId, 'batchWrite', target, terminal)
+      : this.#router.finishFlow(target, terminal);
+    if (!finished) this.#router.replace(terminal);
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
@@ -3212,6 +3229,22 @@ export class TuiController {
       && active.returnTarget.name === 'pluginWriteTask'
       ? active.returnTarget
       : route);
+  }
+
+  returnToPluginWriteTaskBatchSelection(flowId: string): boolean {
+    this.#assertAcceptingActions();
+    const route = this.#router.snapshot.current.route;
+    if (route.name !== 'review'
+      || this.#activeReview?.operationId !== route.operationId
+      || this.#activeReview.operationKind !== 'pluginWriteTask') return false;
+    const reviewToken = this.#activeReview.reviewToken;
+    const returned = this.#router.returnToBatchSelection(flowId);
+    if (!returned) return false;
+    this.#cancelReviewPreparation();
+    this.#tickets.delete(reviewToken);
+    this.#activeReview = undefined;
+    this.#publish();
+    return true;
   }
 
   retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {

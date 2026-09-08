@@ -2029,7 +2029,9 @@ export function buildTuiViewModel(options: {
     dependencyOverviews: options.dependencyOverviews ?? [],
     home: {
       availablePlugins: pluginsWithAttention.filter((plugin) => plugin.aggregateStatus === 'available').length,
-      installedPlugins: pluginsWithAttention.filter(hasInstalledPlacement).length,
+      installedPlugins: new Set(pluginsWithAttention
+        .filter(hasInstalledPlacement)
+        .map((plugin) => plugin.pluginId)).size,
       issueCount: issues.length,
       sourceCount: sourceTabs.length,
       unavailableSourceCount: options.status.catalog.sources.filter((source) => source.error

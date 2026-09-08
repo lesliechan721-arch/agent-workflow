@@ -1651,7 +1651,9 @@ describe('ConsoleAppV4', () => {
       pluginId, platform: 'codex' as const, scope: 'user' as const,
       revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
     }));
-    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteTask'
+      ? pluginWriteTaskEvidence(intent)
+      : evidenceForIntent(intent));
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
     await value.load();
     value.push({ name: 'pluginList', mode: 'installed' }, { focusIndex: 0 });
@@ -1660,12 +1662,10 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).toContain('› 更新 2 个插件…');
     await input(instance, '\r');
-    const task = instance.lastFrame() ?? '';
-    expect(task).toContain('更新 2 个插件');
-    expect(task).toContain('official');
-    expect(task).toContain('team-tools');
-    await input(instance, '\r');
-    await nextTurn(4);
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    const review = instance.lastFrame() ?? '';
+    expect(review).toContain('调整选择（2）');
+    expect(review).toContain('2 个安装位置');
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWriteTask',
       targets: expect.arrayContaining([
@@ -3261,7 +3261,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(4);
 
-    expect(instance.lastFrame()).toContain('✓ 1 个插件可用');
+    expect(instance.lastFrame()).toContain('已添加 1 个插件');
+    expect(instance.lastFrame()).not.toContain('插件可用');
     await input(instance, '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('Review Gate');
     expect(instance.lastFrame()).toContain('来源不可用');

@@ -49,6 +49,7 @@ export type TuiRoute =
       goal: 'restore' | 'update';
       targetKeys?: string[];
       versionEvidence?: Record<string, string>;
+      recommendedPluginIds?: string[];
       batchOrigin?: { flowId: string; owner: 'batch-write' };
     }
   | { name: 'batchSelection' }
@@ -178,6 +179,7 @@ export interface TuiPageContext {
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
   autoPreparedRestore?: boolean;
+  autoPreparedUpdate?: boolean;
 }
 
 export interface TuiRouteFrame {
@@ -343,24 +345,52 @@ export class TuiRouter {
   finishFlow(target?: TuiRoute, terminalRoute?: TuiRoute): TuiRouterSnapshot | undefined {
     const flow = this.#activeFlowId ? this.#flows.get(this.#activeFlowId) : undefined;
     if (!flow) return undefined;
+    return this.#finishFlow(flow, target, terminalRoute);
+  }
+
+  finishFlowById(
+    flowId: string,
+    expectedKind: TuiFlowKind,
+    target?: TuiRoute,
+    terminalRoute?: TuiRoute,
+  ): TuiRouterSnapshot | undefined {
+    const flow = this.#flows.get(flowId);
+    if (!flow || flow.kind !== expectedKind || !this.#activeFlowDescendsFrom(flowId)) return undefined;
+    return this.#finishFlow(flow, target, terminalRoute);
+  }
+
+  returnToBatchSelection(flowId: string): TuiRouterSnapshot | undefined {
+    const flow = this.#flows.get(flowId);
+    if (!flow || flow.kind !== 'batchWrite' || !this.#activeFlowDescendsFrom(flowId)) return undefined;
+    let frameIndex = -1;
+    for (let index = this.#stack.length - 1; index >= 0; index -= 1) {
+      const frame = this.#stack[index]!;
+      if (frame.flowId === flowId && frame.route.name === 'batchSelection') {
+        frameIndex = index;
+        break;
+      }
+    }
+    if (frameIndex < 0) return undefined;
+    const descendants = this.#flowDescendants(flowId);
+    descendants.delete(flowId);
+    this.#stack.splice(frameIndex + 1);
+    for (const descendant of descendants) this.#flows.delete(descendant);
+    this.#activeFlowId = flowId;
+    return this.snapshot;
+  }
+
+  #finishFlow(
+    flow: TuiFlowScope,
+    target?: TuiRoute,
+    terminalRoute?: TuiRoute,
+  ): TuiRouterSnapshot | undefined {
     const origin = this.#stack.findIndex((frame) => frame.id === flow.originFrameId);
     if (origin < 0) {
       this.#flows.delete(flow.id);
       this.#restoreActiveFlow();
       return undefined;
     }
-    const descendants = new Set<string>([flow.id]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const candidate of this.#flows.values()) {
-        if (candidate.parentFlowId && descendants.has(candidate.parentFlowId)
-          && !descendants.has(candidate.id)) {
-          descendants.add(candidate.id);
-          changed = true;
-        }
-      }
-    }
+    const descendants = this.#flowDescendants(flow.id);
     this.#stack.splice(origin + 1);
     const originFrame = this.#stack[origin]!;
     const nextRoute = structuredClone(target ?? flow.returnTarget);
@@ -380,6 +410,31 @@ export class TuiRouter {
       });
     }
     return this.snapshot;
+  }
+
+  #flowDescendants(flowId: string): Set<string> {
+    const descendants = new Set<string>([flowId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidate of this.#flows.values()) {
+        if (candidate.parentFlowId && descendants.has(candidate.parentFlowId)
+          && !descendants.has(candidate.id)) {
+          descendants.add(candidate.id);
+          changed = true;
+        }
+      }
+    }
+    return descendants;
+  }
+
+  #activeFlowDescendsFrom(flowId: string): boolean {
+    let current = this.#activeFlowId ? this.#flows.get(this.#activeFlowId) : undefined;
+    while (current) {
+      if (current.id === flowId) return true;
+      current = current.parentFlowId ? this.#flows.get(current.parentFlowId) : undefined;
+    }
+    return false;
   }
 
   abandonFlow(flowId: string): TuiRouterSnapshot | undefined {

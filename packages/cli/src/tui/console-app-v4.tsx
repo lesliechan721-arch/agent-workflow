@@ -251,10 +251,12 @@ interface SourceDraft {
 interface BatchDraft {
   flowId: string;
   action?: BatchPluginWriteAction;
+  recommendedGoal?: 'update';
   mode: 'browse' | 'installed';
   stage: 'select' | 'task' | 'maintenance';
   selection: 'selected' | 'currentProjectIntentRoots';
   selectedPluginIds: string[];
+  frozenPluginIds?: string[];
   platform: PlatformName | 'both';
   scope: Scope;
   sourceId?: string;
@@ -1834,6 +1836,60 @@ export function ConsoleAppV4(props: {
     route.name === 'pluginList' ? route.sourceId : '',
     snapshot.viewModel,
   ]);
+  useEffect(() => {
+    if (route.name !== 'pluginWriteTask' || route.goal !== 'update'
+      || !route.recommendedPluginIds || route.recommendedPluginIds.length === 0) return;
+    if (snapshot.router.current.context.autoPreparedUpdate) return;
+    const targetKeys = route.targetKeys;
+    const versionEvidence = route.versionEvidence;
+    if (!targetKeys || !versionEvidence) return;
+    const allCandidates = props.controller.listPluginWriteTaskCandidates('update');
+    const recommendedPluginIds = new Set(route.recommendedPluginIds);
+    const retainedTargetKeys = new Set(targetKeys);
+    const currentRecommendedCandidates = allCandidates.filter((candidate) =>
+      recommendedPluginIds.has(candidate.target.pluginId));
+    if (currentRecommendedCandidates.length !== targetKeys.length
+      || currentRecommendedCandidates.some((candidate) =>
+        !retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate)))) return;
+    const currentByKey = new Map(allCandidates.map((candidate) => [
+      pluginWriteTaskTargetKey(candidate), candidate,
+    ]));
+    const candidates = targetKeys.flatMap((targetKey) => {
+      const candidate = currentByKey.get(targetKey);
+      return candidate ? [candidate] : [];
+    });
+    const representedPluginIds = new Set(candidates.map((candidate) => candidate.target.pluginId));
+    if (candidates.length !== targetKeys.length
+      || candidates.some((candidate) => !candidate.eligible
+        || !recommendedPluginIds.has(candidate.target.pluginId))
+      || route.recommendedPluginIds.some((pluginId) => !representedPluginIds.has(pluginId))) return;
+    const currentVersionEvidence = Object.assign({}, ...route.recommendedPluginIds.map((pluginId) => {
+      const candidatePlugin = props.controller.getPluginOverview(pluginId);
+      return candidatePlugin ? pluginWriteTaskVersionEvidence(
+        candidatePlugin,
+        candidates.filter((candidate) => candidate.target.pluginId === pluginId),
+      ) : {};
+    }));
+    if (Object.keys(currentVersionEvidence).length !== targetKeys.length
+      || Object.entries(currentVersionEvidence).some(([key, version]) => versionEvidence[key] !== version)
+      || Object.keys(versionEvidence).some((key) => currentVersionEvidence[key] === undefined)) return;
+    props.controller.updatePageContext({ autoPreparedUpdate: true });
+    beginReview({
+      kind: 'pluginWriteTask',
+      goal: 'update',
+      targets: candidates.map((candidate) => candidate.target),
+      executionPolicy: 'all',
+    }, props.controller.pluginWriteTaskReturnRoute(route));
+  }, [
+    props.controller,
+    route.name,
+    route.name === 'pluginWriteTask' ? route.goal : '',
+    route.name === 'pluginWriteTask' ? route.targetKeys?.join('\0') ?? '' : '',
+    route.name === 'pluginWriteTask' ? route.recommendedPluginIds?.join('\0') ?? '' : '',
+    route.name === 'pluginWriteTask' ? JSON.stringify(route.versionEvidence ?? {}) : '',
+    snapshot.router.current.context.autoPreparedUpdate,
+    snapshot.viewModel,
+  ]);
 
   useEffect(() => {
     if (route.name !== 'operationReportPreview') return;
@@ -2316,7 +2372,9 @@ export function ConsoleAppV4(props: {
   };
   const batchCandidates = (draft: BatchDraft): BatchSelectionCandidate[] => {
     const mode = draft.mode;
-    const all = props.controller.listPlugins({ mode });
+    const frozenPluginIds = draft.frozenPluginIds ? new Set(draft.frozenPluginIds) : undefined;
+    const all = props.controller.listPlugins({ mode })
+      .filter((candidate) => !frozenPluginIds || frozenPluginIds.has(candidate.pluginId));
     if (draft.showSelected) {
       const byId = new Map(all.map((candidate) => [candidate.pluginId, candidate]));
       return draft.selectedPluginIds.map((pluginId) => ({
@@ -2329,7 +2387,8 @@ export function ConsoleAppV4(props: {
       ...(draft.sourceId ? { sourceId: draft.sourceId } : {}),
       ...(draft.query ? { query: draft.query } : {}),
       installFilter: draft.installFilter,
-    }).map((plugin) => ({ pluginId: plugin.pluginId, plugin }));
+    }).filter((plugin) => !frozenPluginIds || frozenPluginIds.has(plugin.pluginId))
+      .map((plugin) => ({ pluginId: plugin.pluginId, plugin }));
   };
   const batchCandidateBlockReason = (
     draft: BatchDraft,
@@ -2346,7 +2405,9 @@ export function ConsoleAppV4(props: {
           ? '没有可信且兼容的缺失位置'
           : undefined;
   const invalidBatchSelection = (draft: BatchDraft): string[] => {
+    const frozenPluginIds = draft.frozenPluginIds ? new Set(draft.frozenPluginIds) : undefined;
     const byId = new Map(props.controller.listPlugins({ mode: draft.mode })
+      .filter((plugin) => !frozenPluginIds || frozenPluginIds.has(plugin.pluginId))
       .map((plugin) => [plugin.pluginId, plugin]));
     return draft.selectedPluginIds.filter((pluginId) => batchCandidateBlockReason(draft, {
       pluginId,
@@ -2427,9 +2488,69 @@ export function ConsoleAppV4(props: {
               candidatePlugin,
               candidates.filter((candidate) => candidate.target.pluginId === pluginId),
             ) : {};
-          })) }
+          })),
+          ...(batchDraft?.frozenPluginIds
+            ? { recommendedPluginIds: batchDraft.selectedPluginIds.slice() }
+            : {}) }
         : {}),
     });
+  };
+  const openRecommendedUpdateTask = (pluginIds: string[]): void => {
+    props.controller.updatePageContext({
+      focusIndex: focus,
+      scrollOffset,
+      query,
+      installFilter,
+      sourceTabId: route.name === 'pluginList' ? route.sourceId ?? 'all' : undefined,
+      focusedEntityId: route.name === 'pluginList' ? pluginRows[focus]?.pluginId : undefined,
+    });
+    props.controller.beginPluginWriteBatch();
+    const flowId = props.controller.snapshot.router.currentFlowId;
+    if (!flowId) throw new Error('推荐更新流程缺少 flowId。');
+    const frozenPluginIds = [...new Set(pluginIds)];
+    setBatchDraft({
+      flowId,
+      recommendedGoal: 'update',
+      mode: 'installed',
+      stage: 'select',
+      selection: 'selected',
+      selectedPluginIds: frozenPluginIds.slice(),
+      frozenPluginIds,
+      platform: 'both',
+      scope: 'project',
+      ...(route.name === 'pluginList' && route.sourceId ? { sourceId: route.sourceId } : {}),
+      query,
+      installFilter,
+      showSelected: false,
+    });
+    setDirty(true);
+    const selected = new Set(frozenPluginIds);
+    const candidates = props.controller.listPluginWriteTaskCandidates('update')
+      .filter((candidate) => selected.has(candidate.target.pluginId));
+    const first = candidates[0];
+    if (!first) {
+      setActionError('推荐插件没有经过版本证据确认的更新。');
+      return;
+    }
+    const versionEvidence = Object.assign({}, ...frozenPluginIds.map((pluginId) => {
+      const candidatePlugin = props.controller.getPluginOverview(pluginId);
+      return candidatePlugin ? pluginWriteTaskVersionEvidence(
+        candidatePlugin,
+        candidates.filter((candidate) => candidate.target.pluginId === pluginId),
+      ) : {};
+    }));
+    props.controller.push({
+      name: 'pluginWriteTask',
+      pluginId: first.target.pluginId,
+      goal: 'update',
+      targetKeys: candidates.map(pluginWriteTaskTargetKey),
+      versionEvidence,
+      recommendedPluginIds: frozenPluginIds,
+      batchOrigin: { flowId, owner: 'batch-write' },
+    });
+    setFocus(0);
+    setScrollOffset(0);
+    setSearchFocus(false);
   };
   const continueInstallAfterTargets = async (
     candidate: PluginListItemViewModel,
@@ -3198,7 +3319,7 @@ export function ConsoleAppV4(props: {
         {snapshot.statusReadAtMs !== undefined
           ? <StaticRow title="最近成功读取状态" meta={new Date(snapshot.statusReadAtMs).toLocaleString('zh-CN', { hour12: false })} compact />
           : null}
-        <ResultRow title={`${home.installedPlugins} 个插件可用`} status="success" />
+        <ResultRow title={`已添加 ${home.installedPlugins} 个插件`} status="muted" />
         <ResultRow title={`${home.issueCount} 项需要处理`} status={home.issueCount > 0 ? 'warning' : 'muted'} />
         {home.unavailableSourceCount > 0 ? <ResultRow title={`${home.unavailableSourceCount} 个来源不可用`} status="error" /> : null}
         {home.catalogCheckingCount > 0 ? <ResultRow title={`${home.catalogCheckingCount} 个插件来源正在检查`} status="muted" /> : null}
@@ -3257,7 +3378,7 @@ export function ConsoleAppV4(props: {
         placementSummary: '',
         statusLabel: '推荐',
         status: 'warning' as const,
-        menuAction: () => openSelectedPluginTask('update', recommendedUpdatePluginIds),
+        menuAction: () => openRecommendedUpdateTask(recommendedUpdatePluginIds),
       }] : []),
       ...(route.mode === 'installed' && projectIntentRoots.length > 0 ? [{
         pluginId: '@menu:restore-project',
@@ -3455,6 +3576,10 @@ export function ConsoleAppV4(props: {
           setActionError(`${invalid.length} 个已选插件已不可用。请先在“查看全部已选”中取消选择。`);
           return;
         }
+        if (batchDraft.recommendedGoal) {
+          openSelectedPluginTask(batchDraft.recommendedGoal, batchDraft.selectedPluginIds);
+          return;
+        }
         if (batchDraft.mode === 'browse') {
           setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
           props.controller.push({ name: 'batchPlacement' });
@@ -3466,7 +3591,10 @@ export function ConsoleAppV4(props: {
       };
       const continueAction: ActionItem = {
         label: `查看确认（${batchDraft.selectedPluginIds.length}）`,
-        description: batchDraft.selectedPluginIds.length > 0 ? '继续选择任务和确认范围' : '先选择至少一个插件',
+        description: batchDraft.selectedPluginIds.length > 0
+          ? batchDraft.recommendedGoal ? '重新读取更新证据并建立 Review' : '继续选择任务和确认范围'
+          : '先选择至少一个插件',
+        disabled: batchDraft.selectedPluginIds.length === 0 ? '先选择至少一个插件' : undefined,
         run: continueSelection,
       };
       const utilityActions: ActionItem[] = [
@@ -4569,6 +4697,15 @@ export function ConsoleAppV4(props: {
     const allTaskCandidates = props.controller.listPluginWriteTaskCandidates(route.goal);
     const currentTargetKeys = new Set(allTaskCandidates.map(pluginWriteTaskTargetKey));
     const missingTargetKeys = route.targetKeys?.filter((targetKey) => !currentTargetKeys.has(targetKey)) ?? [];
+    const recommendedPluginIds = route.recommendedPluginIds
+      ? new Set(route.recommendedPluginIds) : undefined;
+    const addedTargetKeys = retainedTargetKeys && recommendedPluginIds
+      ? allTaskCandidates.filter((candidate) =>
+        recommendedPluginIds.has(candidate.target.pluginId)
+        && !retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate)))
+        .map(pluginWriteTaskTargetKey)
+      : [];
+    const targetSetChanged = missingTargetKeys.length > 0 || addedTargetKeys.length > 0;
     const candidates: PluginWriteTaskCandidate[] = allTaskCandidates
       .filter((candidate) => retainedTargetKeys
         ? retainedTargetKeys.has(pluginWriteTaskTargetKey(candidate))
@@ -4707,8 +4844,8 @@ export function ConsoleAppV4(props: {
     })).values()];
     const taskLabel = pluginWriteTaskLabel(route.goal);
     const startTaskReview = (executionPolicy: 'all' | 'executableSubset'): void => {
-      if (missingTargetKeys.length > 0) {
-        setActionError(`${missingTargetKeys.length} 个冻结位置已失效或无需处理。请返回调整后重新开始。`);
+      if (targetSetChanged) {
+        setActionError('冻结的精确位置已变化。请返回调整后重新开始。');
         return;
       }
       props.controller.startPluginWriteTaskReview({
@@ -4734,14 +4871,14 @@ export function ConsoleAppV4(props: {
       ? 'PgUp/PgDn 查看全部位置 · ↑↓ 移动 · Enter 选择 · Esc 返回'
       : '↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = [
-      ...(missingTargetKeys.length === 0 && !versionEvidenceChanged
+      ...(!targetSetChanged && !versionEvidenceChanged
         && blockedCandidates.length === 0 && executable.length > 0 ? [{
         label: `确认${taskLabel} ${executable.length} 个位置…`,
         description: '进入统一影响确认；执行前再次检查当前证据',
         status: 'success' as const,
         run: () => startTaskReview('all'),
       }] : []),
-      ...(missingTargetKeys.length === 0 && !versionEvidenceChanged
+      ...(!targetSetChanged && !versionEvidenceChanged
         && blockedCandidates.length > 0 && executable.length > 0 ? [{
         label: `先处理可执行的 ${executable.length} 个位置…`,
         description: `${blockedCandidates.length} 个受阻位置保留，不会无声跳过`,
@@ -4765,7 +4902,7 @@ export function ConsoleAppV4(props: {
           setScrollOffset(0);
         },
       }] : []),
-      { label: '返回插件详情', run: back },
+      { label: route.recommendedPluginIds ? '返回调整选择' : '返回插件详情', run: back },
     ];
     const taskTargetLimit = policy.mode === 'compact' ? 3 : 6;
     const taskTargetOffset = Math.min(batchTargetOffset, Math.max(0, candidates.length - 1));
@@ -4803,6 +4940,10 @@ export function ConsoleAppV4(props: {
       {missingTargetKeys.length > 0 ? <Callout status="warning"
         title={`${missingTargetKeys.length} 个冻结位置已失效或无需处理`}
         description="不会把这些位置当作已完成，也不会自动缩小本次范围。请返回调整选择后重新开始。"
+        compact={policy.mode === 'compact'} /> : null}
+      {addedTargetKeys.length > 0 ? <Callout status="warning"
+        title={`${addedTargetKeys.length} 个新位置需要重新确认`}
+        description="不会把刷新后新增的位置自动加入冻结范围。请返回调整选择后重新开始。"
         compact={policy.mode === 'compact'} /> : null}
       {versionEvidenceChanged ? <Callout status="warning" title="插件目标版本已变化" description="不会沿用来源启用前的版本证据，也不会自动执行新版本。" compact={policy.mode === 'compact'} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={taskViewport.offset} limit={taskViewport.limit} />
@@ -7002,6 +7143,29 @@ export function ConsoleAppV4(props: {
           operationBusy.current = false;
         });
       } },
+      ...(taskReview
+        && pendingReviewIntent?.kind === 'pluginWriteTask'
+        && pendingReviewIntent.goal === 'update'
+        && batchDraft?.frozenPluginIds ? [{
+          label: `调整选择（${new Set(pendingReviewIntent.targets
+            .map((target) => target.pluginId)).size}）`,
+          description: '只可删减或恢复本次冻结的推荐插件；调整后重新读取证据并建立 Review',
+          run: () => {
+            if (!props.controller.returnToPluginWriteTaskBatchSelection(batchDraft.flowId)) {
+              setActionError('推荐选择已失效。请返回我的插件重新开始。');
+              return;
+            }
+            setBatchDraft((current) => current ? {
+              ...current,
+              stage: 'select',
+              showSelected: false,
+            } : current);
+            setFocus(0);
+            setScrollOffset(0);
+            setShowTechnical(false);
+            setActionError(undefined);
+          },
+        }] : []),
       ...(installReviewPluginId
         && (snapshot.installPlacementDraft?.targets.length ?? 0) > 0 ? [{
           label: '查看/调整依赖位置',
