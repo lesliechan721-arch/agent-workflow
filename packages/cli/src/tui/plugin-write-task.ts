@@ -83,6 +83,27 @@ function targetKey(target: Pick<PluginWriteTaskTarget, 'pluginId' | 'platform' |
   return [target.pluginId, target.platform, target.scope].join('\0');
 }
 
+export function pluginWriteTaskVersionEvidence(
+  plugin: PluginListItemViewModel,
+  candidates: readonly PluginWriteTaskCandidate[],
+): Record<string, string> {
+  return Object.fromEntries(candidates.flatMap((candidate) => {
+    const update = plugin.update.targets.find((target) =>
+      target.platform === candidate.target.platform && target.scope === candidate.target.scope);
+    const version = candidate.target.expectedUpdate?.activeVersion
+      ?? update?.candidateVersion ?? update?.availableVersion;
+    if (!version) return [];
+    const candidateEvidence = update?.candidateVersion === version
+      ? update.candidateEvidence : undefined;
+    const binding = candidateEvidence ?? plugin.update.generationKey;
+    return [[targetKey(candidate.target), JSON.stringify({
+      version,
+      ...(plugin.update.sourceIdentity ? { sourceIdentity: plugin.update.sourceIdentity } : {}),
+      ...(binding ? { binding } : {}),
+    })]];
+  }));
+}
+
 function canonicalTargets(targets: readonly PluginWriteTaskTarget[]): PluginWriteTaskTarget[] {
   return [...new Map(targets.map((target) => [targetKey(target), structuredClone(target)])).values()]
     .sort((left, right) => targetKey(left).localeCompare(targetKey(right), 'en'));

@@ -46,7 +46,10 @@ import {
 import { createNoopReporter } from '../output/reporter.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
-import { createCodexNativeObservationSession } from '../utils/codex-native-observation.js';
+import {
+  createCodexNativeObservationSession,
+  type CodexNativeObservationSession,
+} from '../utils/codex-native-observation.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type {
   ArtifactCollisionEvidence,
@@ -2889,7 +2892,14 @@ export async function statusCommandV7(options: {
   verbose?: boolean;
   catalogOperationContext?: CatalogOperationContext;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
+  codexObservationSession?: CodexNativeObservationSession;
 }): ReturnType<typeof statusCommandV7InSession> {
+  if (options.codexObservationSession) {
+    return statusCommandV7InSession({
+      ...options,
+      codexObservationSession: options.codexObservationSession,
+    });
+  }
   const env = options.env ?? process.env;
   const session = await createCodexNativeObservationSession({
     exactCwd: options.cwd,

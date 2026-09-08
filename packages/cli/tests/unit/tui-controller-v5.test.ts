@@ -7,6 +7,7 @@ import {
   TuiController,
   operationEvidenceMatches,
   operationEvidenceFingerprint,
+  pluginWriteBatchTargets,
   pluginWriteBatchFailedRequestedPluginIds,
   pluginWriteBatchFailedRequestedTargets,
   userIssueKey,
@@ -112,6 +113,56 @@ describe('TuiController session retirement', () => {
 });
 
 describe('TUI plugin write batches', () => {
+  it('enumerates exact targets from intent, ownership, and Codex activation evidence', () => {
+    const codex = target({ pluginName: 'native', platform: 'codex', scope: 'user', state: 'present' });
+    codex.components.push(
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['user', 'project'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'sharedNative', key: 'native@aw-official', state: 'usable' },
+    );
+    const claude = target({ pluginName: 'native', platform: 'claude', scope: 'project', state: 'present' });
+    claude.components.push({ kind: 'intent', key: 'desired', state: 'desired', metadata: {
+      enabled: true, scopes: ['project'], relation: 'root',
+    } });
+    const supportedButAbsent = target({
+      pluginName: 'native', platform: 'claude', scope: 'user', state: 'absent',
+    });
+    const targets = [codex, claude, supportedButAbsent];
+
+    expect(pluginWriteBatchTargets('sync', ['official/native'], targets)).toEqual([
+      { pluginId: 'official/native', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'user' },
+    ]);
+    expect(pluginWriteBatchTargets('uninstall', ['official/native'], targets)).toEqual([
+      { pluginId: 'official/native', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'user' },
+    ]);
+    expect(pluginWriteBatchTargets('cleanup', ['official/native'], targets)).toEqual([
+      { pluginId: 'official/native', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'user' },
+    ]);
+  });
+
+  it('keeps both configured Codex activations when the system probe is unavailable', () => {
+    const codex = target({ pluginName: 'native', platform: 'codex', scope: 'user', state: 'present' });
+    codex.components.push(
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'assumed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'assumed' } },
+      { kind: 'sharedNative', key: 'native@aw-official', state: 'usable' },
+    );
+
+    expect(pluginWriteBatchTargets('cleanup', ['official/native'], [codex])).toEqual([
+      { pluginId: 'official/native', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/native', platform: 'codex', scope: 'user' },
+    ]);
+  });
+
   function failedBatchResult(
     targetResults: Array<Record<string, unknown>>,
   ): PluginWriteBatchExecutionResult {
@@ -221,6 +272,16 @@ describe('TUI plugin write batches', () => {
         scope: 'project',
         requestedPluginIds: ['official/root-a', 'official/root-b'], preview, executable: true,
       }],
+      targetVersions: [
+        {
+          pluginId: 'official/root-a', platform: 'codex', scope: 'project',
+          presence: 'installed', availableVersion: '2.0.0',
+        },
+        {
+          pluginId: 'official/root-b', platform: 'codex', scope: 'project',
+          presence: 'new', availableVersion: '2.0.0',
+        },
+      ],
     };
 
     const review = buildOperationReviewProjection({
@@ -245,7 +306,49 @@ describe('TUI plugin write batches', () => {
         relation: 'direct',
       }),
       expect.objectContaining({ title: '获取 Codex 运行组件' }),
+      expect.objectContaining({
+        pluginId: 'official/root-a', description: expect.stringContaining('已有安装，版本待确认'),
+      }),
+      expect.objectContaining({
+        pluginId: 'official/root-b', description: expect.stringContaining('新增当前项目安装'),
+      }),
     ]));
+  });
+
+  it('identifies a missing saved user target as an all-project installation in Review', () => {
+    const evidence: PluginWriteBatchEvidence = {
+      ...baseEvidence,
+      requestedPluginIds: ['official/root'],
+      groups: [{
+        groupId: 'official\0codex\0user', sourceId: 'official', platform: 'codex', scope: 'user',
+        requestedPluginIds: ['official/root'], executable: true,
+        preview: {
+          platforms: ['codex'], plugins: ['official/root'], warnings: [], rebuildResults: [],
+          targetResults: [{
+            target: { pluginId: 'official/root', pluginName: 'root', platform: 'codex', scope: 'user' },
+            action: 'sync', state: 'completed', requiredBy: [],
+          }],
+          overallState: 'succeeded', receiptTargets: [],
+          operationPlan: { planFingerprint: 'sha256:user-plan' },
+        } as unknown as PluginWriteBatchEvidence['groups'][number]['preview'],
+      }],
+      targetVersions: [{
+        pluginId: 'official/root', platform: 'codex', scope: 'user',
+        presence: 'new', availableVersion: '2.0.0',
+      }],
+    };
+    const review = buildOperationReviewProjection({
+      intent: {
+        kind: 'pluginWriteBatch', action: 'sync', platform: 'codex', scope: 'user',
+        selection: { kind: 'targets', targets: [{
+          pluginId: 'official/root', platform: 'codex', scope: 'user',
+        }] },
+      },
+      evidence,
+    });
+    const requested = review.changes.find((change) => change.pluginId === 'official/root');
+    expect(requested?.description).toContain('新增所有项目安装');
+    expect(requested?.description).not.toContain('新增当前项目安装');
   });
 
   it('uses each exact target scope in a mixed-scope batch Review', () => {

@@ -175,6 +175,7 @@ export interface TuiPageContext {
   focusedEntityId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
+  autoPreparedRestore?: boolean;
 }
 
 export interface TuiRouteFrame {
@@ -403,9 +404,13 @@ export class TuiRouter {
 
   beginConfigFlow(pluginId: string): TuiRoute {
     const route = this.#stack.at(-1)!.route;
-    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
-      || route.pluginId !== pluginId) {
-      throw new Error('Config flow must start from its plugin preview or detail.');
+    const taskContainsPlugin = route.name === 'pluginWriteTask'
+      && (route.pluginId === pluginId
+        || route.targetKeys?.some((key) => key.startsWith(`${pluginId}\0`)) === true);
+    if (!taskContainsPlugin
+      && ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+        || route.pluginId !== pluginId)) {
+      throw new Error('Config flow must start from its plugin preview, detail, or frozen write task.');
     }
     this.beginFlow('configEdit', route);
     return structuredClone(route);
@@ -415,8 +420,12 @@ export class TuiRouter {
     const flow = this.#activeFlowId ? this.#flows.get(this.#activeFlowId) : undefined;
     if (flow?.kind !== 'configEdit') return undefined;
     const frame = this.#stack.find((candidate) => candidate.id === flow.originFrameId);
-    if (!frame || (frame.route.name !== 'pluginPreview' && frame.route.name !== 'pluginDetail')
-      || frame.route.pluginId !== pluginId) {
+    const taskContainsPlugin = frame?.route.name === 'pluginWriteTask'
+      && (frame.route.pluginId === pluginId
+        || frame.route.targetKeys?.some((key) => key.startsWith(`${pluginId}\0`)) === true);
+    if (!frame || (!taskContainsPlugin
+      && ((frame.route.name !== 'pluginPreview' && frame.route.name !== 'pluginDetail')
+        || frame.route.pluginId !== pluginId))) {
       return undefined;
     }
     return copyFrame(frame).route;

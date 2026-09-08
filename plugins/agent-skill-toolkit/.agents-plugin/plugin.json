@@ -2,186 +2,11 @@
   "schemaVersion": 3,
   "name": "agent-skill-toolkit",
   "version": "0.1.0",
-  "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
+  "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
   "dependencies": [
     "agent-content-toolkit"
   ],
   "skills": "./skills",
-  "buildConfig": {
-    "cacheable": true,
-    "runtimeExports": [
-      {
-        "name": "skill-rules",
-        "source": "./standards/skill-rules.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "review-dimensions",
-        "source": "./standards/review-dimensions.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "review-publication-reference",
-        "source": "./references/review-publication.md",
-        "requires": {
-          "aw": {
-            "capabilities": [
-              "aw.review-publication.v1"
-            ]
-          }
-        }
-      },
-      {
-        "name": "validate-json-contract",
-        "source": "./scripts/validate-json-contract.mjs",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "check-agent-skill",
-        "source": "./scripts/check-agent-skill.mjs",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "validate-quality-review-result",
-        "source": "./scripts/validate-quality-review-result.mjs",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "quality-review-result-schema",
-        "source": "./schemas/quality-review-result.schema.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      },
-      {
-        "name": "skill-design-brief-schema",
-        "source": "./schemas/skill-design-brief.schema.json",
-        "requires": {
-          "aw": {
-            "capabilities": []
-          }
-        }
-      }
-    ],
-    "buildImports": [
-      {
-        "plugin": "agent-content-toolkit",
-        "export": "content-rules",
-        "env": "AW_PLUGIN_IMPORT_CONTENT_RULES"
-      }
-    ],
-    "skillRuntimeFiles": [
-      {
-        "skill": "author-agent-skill",
-        "source": "./schemas/skill-design-brief.schema.json",
-        "target": "assets/skill-design-brief.schema.json"
-      },
-      {
-        "skill": "author-agent-skill",
-        "source": "./scripts/validate-json-contract.mjs",
-        "target": "scripts/validate-json-contract.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/check-agent-skill.mjs",
-        "target": "scripts/check-agent-skill.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-quality-review-result.mjs",
-        "target": "scripts/validate-quality-review-result.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./schemas/quality-review-result.schema.json",
-        "target": "assets/quality-review-result.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./standards/review-dimensions.json",
-        "target": "assets/review-dimensions.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./references/review-publication.md",
-        "target": "references/review-publication.md"
-      },
-      {
-        "skill": "review-agent-workflow",
-        "source": "./references/review-publication.md",
-        "target": "references/review-publication.md"
-      }
-    ],
-    "generatedSkillRuntimeFiles": [
-      {
-        "skill": "author-agent-skill",
-        "target": "references/author-standard.md"
-      },
-      {
-        "skill": "author-agent-skill",
-        "target": "references/composition-audit.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/review-rubric.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/composition-fitness.md"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/evidence-and-severity.md"
-      },
-      {
-        "skill": "design-agent-skill-evals",
-        "target": "references/eval-design-standard.md"
-      },
-      {
-        "skill": "audit-agent-skill-evals",
-        "target": "references/eval-audit-standard.md"
-      }
-    ]
-  },
-  "scripts": {
-    "node": {
-      "build": {
-        "runner": "node",
-        "path": "./scripts/build.mjs",
-        "args": []
-      }
-    },
-    "tests": {
-      "node": [
-        "./scripts/contract.test.mjs",
-        "./scripts/lightweight-review-contract.test.mjs",
-        "./scripts/reference-routing-contract.test.mjs",
-        "./scripts/workflow-review-contract.test.mjs"
-      ]
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -196,16 +21,76 @@
   },
   "interface": {
     "displayName": "Agent Skill Toolkit",
-    "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+    "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
     "capabilities": [
       "Skills"
     ]
   },
-  "requires": {
-    "aw": {
-      "capabilities": [
-        "aw.review-publication.v1",
-        "aw.skill-validation.v1"
+  "buildConfig": {
+    "skillRuntimeFiles": [
+      {
+        "skill": "author-agent-skill",
+        "target": "references/invocation-and-description.md",
+        "source": "./references/skill-invocation.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/skill-invocation.md",
+        "source": "./references/skill-invocation.md"
+      },
+      {
+        "skill": "review-agent-architecture",
+        "target": "references/skill-invocation.md",
+        "source": "./references/skill-invocation.md"
+      },
+      {
+        "skill": "author-agent-skill",
+        "target": "references/composition-audit.md",
+        "source": "./references/skill-composition.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/skill-composition.md",
+        "source": "./references/skill-composition.md"
+      },
+      {
+        "skill": "review-agent-architecture",
+        "target": "references/skill-composition.md",
+        "source": "./references/skill-composition.md"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "scripts/audit-output-contracts.mjs",
+        "source": "./scripts/audit-output-contracts.mjs"
+      },
+      {
+        "skill": "review-agent-architecture",
+        "target": "scripts/audit-output-contracts.mjs",
+        "source": "./scripts/audit-output-contracts.mjs"
+      },
+      {
+        "skill": "review-agent-skill",
+        "target": "references/report-publication.md",
+        "import": {
+          "plugin": "aw-development-toolkit",
+          "export": "review-publication-reference"
+        }
+      },
+      {
+        "skill": "review-agent-architecture",
+        "target": "references/report-publication.md",
+        "import": {
+          "plugin": "aw-development-toolkit",
+          "export": "review-publication-reference"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs",
+        "./scripts/output-contract-audit.test.mjs"
       ]
     }
   }

@@ -45,7 +45,7 @@
 - Codex project cleanup 和 uninstall 对当前仓库的 `.agents/skills` 做单层 owner marker 扫描。扫描不依赖当前 Manifest 是否仍声明该 Skill，也不进入嵌套目录或其它项目；删除仍要求 source、plugin、platform 和 scope 的 owner identity 精确匹配。
 - 配置写入、生命周期和平台写入各自保留最小的本地恢复；它们不组成跨第三方系统的事务。
 - Config v2 只允许顶层 string 字段声明 `sensitive: true`，且该字段不得声明 default 或 choices。object、object child、KV additionalProperties child、number 和 boolean 都不得声明 sensitive。sensitive 值只允许写入 user scope；writer 拒绝 project scope，因此 TUI 隐藏 project sensitive 编辑入口不能替代安全边界。`aw config set` 拒绝用 argv `--value-json` 或 `--preset` 提交 sensitive 值；非交互或 JSON 模式必须用 `--value-stdin`，交互 TTY 可用隐藏输入。stdin 按 EOF 读取原始 UTF-8，不 trim。string value 与 object key 共用同一 validation 合同和 RE2-WASM Unicode 实现；声明 pattern 时必须同时声明 `maxLength`，pattern 最多 512 个 Unicode code point，`maxLength` 范围是 `0..4096`。匹配保持非锚定；作者需要整串匹配时必须显式使用 `^` 和 `$`。
-- `aw-plugin-development` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
+- `aw-development-toolkit` 不在构建时绑定 CLI registry，也不分发 capability Markdown。已安装 Author 从当前 PATH 查询 `aw plugin capabilities`，因此旧 development plugin 可以使用较新的 CLI 能力合同。
 - `aw plugin remove <name> --workspace-root <root> --yes` 只删除 canonical `plugins/<name>` source root。Workspace 必须位于有有效 HEAD 的 Git worktree 中；目标必须存在于 HEAD，且当前目标 tree 的 inventory、文件 bytes 和 executable mode 必须与 HEAD 精确相同。命令拒绝目标内 tracked、staged、untracked、ignored、符号链接或额外节点，也拒绝仍由其它当前 manifest 依赖的目标。所有检查在删除前完成；缺少 `--yes` 不写入。成功不修改 Catalog version、不 commit、不 build、不 publish。删除 I/O 失败必须给出从已核验 HEAD 恢复目标的 Git 命令；命令不提供 force、backup、ledger 或补偿状态。
 
 ## Distribution and Runtime State
@@ -246,6 +246,8 @@ ownership health 只表示当前 live 组件是否完整。Status v7 的 shared 
 
 TUI 的 `PluginUpdateProjection` 把 runtime 的 target revision 与当前 session 的已验证 Catalog candidate 合并为插件级更新事实，并与 health 分开显示。它只在 installed version、目标 Active 或 candidate version、source identity、generation key、manifest/content evidence 和 capability compatibility 都可验证时提供“更新到 X”；Catalog version、ref commit 或未验证 candidate 本身都不能作为插件更新。candidate 需要切换 Active 时，来源切换 Review 与重新规划后的精确插件更新 Review 是两个确认边界。来源切换成功只说明 Active 已改变；插件写入失败仍单独报告。更新 intent 绑定 installed/active version、source identity 和 generation key；锁内任一项改变时返回 stale，不得无声跟随新 candidate。该 projection 和 candidate overlay 都是 session-private 数据，不改变 Status v7 JSON。
 
+TUI 依赖关系区分当前 Catalog 声明与已确认的现场引用。dependency readiness 只说明当前声明要求的依赖是否就绪，owner、激活或版本相等均不能单独证明该依赖边及位置已应用。当前 runtime 缺少这类绑定证据，不生成实际 placement reference；声明者保留在可访问的未验证分组，不计入实际使用者。图的证据分类不放宽锁内写入与依赖删除保护，不增加持久依赖记录或额外现场扫描。
+
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v7 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
 
 配置按 manifest default、user、project 合并。user store 位于 `AW_HOME`，project store 位于项目 `.agent-workflows/plugin-config/`；两者都使用 namespaced schemaVersion 4 envelope，并通过原子替换写入。user binding 严格绑定当前 source identity。project binding 只绑定从已验证 Active 或候选证据明确传入的 Catalog logical identity，不绑定 Git URL、SSH/HTTPS transport、本地 path 或 source identity；因此同一 source ID 和 logical identity 在 transport 改变后仍可共享读取。缺少 logical identity 证据时 project 读写 fail closed，不从 URL 或 path 推导。project 写入在 Review 和现有 AW_HOME mutation lock 内的最终提交前，以项目根相对 path 运行 `git check-ignore -q`：退出码 `0` 以 `projectConfigIgnored` 阻止写入且不改 store，`1`（包括已跟踪文件和有效 `!` 例外）允许写入，其它结果允许写入并产生 `projectConfigShareabilityUnverified` warning。只有已确认 ignore 后才运行 `-v` 读取解释；解释失败不推翻 ignore，且检查不使用 `--no-index`。Config Mutation Receipt v7 与 TUI 的安全 Review/结果投影显示该 warning。reset 不经过 Git visibility 门禁。
@@ -272,6 +274,10 @@ Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层�
 
 TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action 并建立一张 Review ticket；`selected` 选择使用共同 scope 和 platform，`targets` 选择沿用每个精确目标自己的 scope 和单个平台。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
 
+“按项目清单准备”使用当前项目的 sync-all 合同，允许准备尚未安装的已保存根；“修复异常”使用有版本证据的精确恢复任务，不能把未知版本的已有目标当成未安装。手动批量维护由 Controller 按动作和精确 status target 枚举位置，不从平台展示摘要反推 scope，也不按 supported scopes 扩张目标。合法的 Codex native 双位置启用保留两个请求位置；共享内容的写入影响仍由原 planner 在 Review 中说明。
+
+批量选择分别记录已选状态、新增选择资格和执行资格。已选项始终能逐项取消；从当前清单消失的已选 ID 仍以不可用占位显示，不静默丢弃或执行。“全部已选”以选择集合为准。继续动作在窄屏保持可见，与候选使用同一焦点序列；聚焦插件保留用途说明。
+
 普通批次按 source 分组，同一 source 的所有根插件通过一次 typed write 解析依赖和构建目标，因此共享依赖和 native projection 只处理一次。不同 source 独立执行；一个分组失败不回滚或阻止其它分组。当前项目的 sync-all 在准备 Review 时读取 Intent roots，并冻结规范化的 requested plugin IDs 和 source/platform 分组。确认后，executor 在现有单一 `AW_HOME` mutation lock 内重新读取 Intent，并用已冻结 ID 作为 selectors、`all:false` 重新解析；完整根集合或分组变化时返回 typed stale，不能把后来新增的 root 自动加入本次写入。
 
 每个可执行分组分别绑定其 `operationPlan.planFingerprint`。锁内首次复核按去除全局 Intent digest 的分组计划语义比较；前序分组完成后，后续分组重新预览，只忽略已完成 target 和对应 Intent digest 的预期变化，再把当前完整 fingerprint 交给 typed writer。没有 operation plan 的预览失败分组也进入同一 Review，但标记为不可执行；确认固定保留已审核的失败结果。即使该来源在确认后恢复，也不能重新求值后开始写入，且不能阻止其它已审核分组继续。部分失败后的 retry 只从能恢复精确 `(pluginId, platform, scope)` 的失败 requested target，或失败 dependency 的 `requiredBy` 根计算新的 selected targets；无法细分到精确 target 的失败分组不提供重试。retry 必须重新读取 status、Intent、Catalog 和依赖，建立新的 preparation、evidence、fingerprint 和 Review ticket，不能复用旧计划。
@@ -283,6 +289,10 @@ TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup�
 普通消费任务、恢复入口和明确保留的 CLI 范围由 [CLI/TUI 能力覆盖](tui-capability-coverage.md) 记录。新增能力必须同步入口或缺口理由；作者工作流与机器接口分别说明，不以“高级排障”代替覆盖决定。
 
 TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配置、来源恢复和 Portable 安装流程记录自己的 flow ID、父 flow、稳定起点帧和返回目标。Flow 只管理导航归属和内存草稿引用；它不保存执行计划，不替代 Review ticket，也不是持久状态。
+
+冻结的插件恢复任务可以作为设置编辑或显式更新的起点。嵌套流程保留父任务的精确目标和批量草稿归属，完成后返回父任务并重新取证；普通详情入口没有外层 flow 时也遵守同一返回合同。嵌套更新完成不清除仍有剩余目标的外层批量草稿。来源问题优先进入对应恢复入口，不被版本未知的通用重检入口遮蔽。
+
+没有业务分歧的恢复任务自动只读准备并进入一次影响 Review；版本、位置、来源、删除或可执行子集需要决定时保留选择。取消 Review 不得自动再次进入准备。依赖图按根插件和方向保留会话内展开、焦点和滚动上下文；普通节点详情返回恢复阅读位置，失效节点按有效祖先或根规范化，不保存到磁盘。
 
 操作进入结果页前，Controller 必须删除该 flow 的选择、输入、准备、Review 和 Progress 帧。插件安装把原预览锚点更新为插件详情，再追加只读 Result。因此关闭 Result 后先到插件详情，再返回保留 query、来源、焦点实体和滚动位置的原列表。回首页必须把历史重置为唯一根帧。确认前返回会撤销旧 Review ticket，并保留所属 flow 的草稿；再次确认必须重新准备证据。执行后的重试也必须建立新 attempt 并重新读取证据。
 
@@ -359,15 +369,31 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 - macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
 - Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
 
-## Quality Review、Release Check 与 Review Publication
+## AW Review 只读取证与来源绑定
+
+`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... --json` 为 Plugin 或 Catalog 的 Review 与 Release Check 提供机器事实。`aw.review-inspection.v1` 表示该能力。它读取当前 source inventory、已有 snapshot、适用 profile、Skill digest 和当前 manifest 的必需 Eval；不判断语义质量或发布 readiness。Catalog target 覆盖全部当前插件，Plugin target 只覆盖所选插件。缺少 materialized final 时保留 source 事实并报告缺口，不阻断普通源码 Review。
+
+Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验和官方 Eval parser，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。相同内容的不同 profile 仍是独立覆盖项；相同物化身份的重复凭据可去重，产物摘要冲突时报告歧义，不按参数顺序选择。`profile` 表示平台和 scope；有 `materializationProfile` 时，消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分实际配置身份，不只按平台合并。缺失、陈旧或无法建立来源关系的 final 不能成为当前版本的通过证据。
+
+必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。AW prepare 当前提供 Codex 目标；Claude 和 portable 的 final 覆盖不自动产生对应平台的 Eval 要求。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
+
+AW Eval prepare 和 Skill materialize 在既有准备流程中生成 `aw-source-binding.json`，公开 receipt 返回其路径。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存凭据明文，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
+
+Eval 绑定还覆盖所选 suite/default、用例与实际复制的 fixture 输入，并保存准备时的 provider 摘要。消费者通过当前绑定关联 Spec 的 target、cases、workspace 和 provider；完整源 corpus 的 canonical 摘要与准备后选集文件的字节摘要属于不同对象，不能直接比较。
+
+Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归到根插件。消费者按当前依赖闭包及声明重新检查这项归属。Portable profile 摘要同时绑定有效配置值及其来源；相同值从 user 改由 project 提供时，旧凭据也必须重新物化，因为 Renderer 可以读取配置来源。
+
+来源绑定是可删除、可重建的弱证据，供后续只读消费者重新校验，不是签名、安装 ledger 或运行授权。旧产物缺少绑定时重新 prepare/materialize；检查器不能凭同名路径、有效旧 EvalSpec 或模型填写的字段推断 currentness。检查源码漂移不需要运行被审插件代码，也不新增锁、journal 或恢复状态机。
+
+## 人读 Review、可选 Release Check 与 Review Publication
 
 这三种合同彼此独立：
 
-- **Quality Review** 只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`，可选 `QualityReviewResult`。workflow Review 还定义有界的 scope。Review 不计算发布准备度，`QualityReviewResult` 也不拥有 Eval 证据等级。
-- **Release Check** 是独立的机器检查，产物为 `release-check.json`。它消费自己的确定性输入并拥有 readiness 结论；它不是 Review mode，也不会把 readiness 或 Eval 等级写回 Quality Review。
+- **人读 Review** 默认只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`。它只读 source、已有 materialization 与 Eval 证据，不 build 或 test 被审对象，也不计算发布准备度。workflow Review 还定义有界的 scope。
+- **Release Check** 是可选的 AW-owned machine consumer。只有用户明确请求且环境存在兼容 checker 时，它才对单个 Plugin 或完整 Catalog 生成 `release-check.json` 并拥有 readiness 结论。它只消费 inspection、逐 subject Review 与实际 required Eval 链；没有 required Eval suite 是合法输入，不自动补做模型 Eval。缺少实现或证据时结果为 incomplete 或 unsupported，不由人读报告手工推断 ready。
 - **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval 执行结果、不更新 README，也不维护可变 index。
 
-公开入口是 `aw review digest|publish|verify|list|show`，并统一由 `aw.review-publication.v1` 表示运行时能力。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
+公开只读 inspection 入口是 `aw review inspect`，由 `aw.review-inspection.v1` 表示运行时能力。归档入口是 `aw review digest|publish|verify|list|show`，由 `aw.review-publication.v1` 表示。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
 
 ### Immutable record
 
@@ -379,11 +405,13 @@ reports/reviews/<kind>/<encoded-target-id>/<review-id>/
 
 文档把稳定编码后的中间目录抽象为 `<target-id>`；实现使用 `id-` 加 target id 的 UTF-8 base64url。`kind` 只能是 `skill`、`workflow`、`aw-plugin` 或 `aw-workflow`。`review-id` 格式为 `<YYYYMMDDTHHMMSSZ>-<target-digest-8>-<report-digest-8>`。
 
-record 最少包含 `manifest.json` 和 `report.md`。schema 1 manifest 只拥有 record identity、`publishedAt`、目标 `{ kind, id, digest }`、report/附件的路径与 digest、source `{ commit, dirty }` 和可选 `supersedes`；它不解释 report、result 或 release check 的语义。可选内容为 `review-result.json`、唯一 kebab-case kind 的 `checks/<kind>.json` 与 `evidence/<kind>.json`、`release-check.json`，以及 workflow 的 `scope.json`。JSON 附件必须以 canonical JSON 归档，manifest 的文件清单必须完全匹配实际普通文件。
+record 最少包含 `manifest.json` 和 `report.md`。schema 1 manifest 只拥有 record identity、`publishedAt`、目标 `{ kind, id, digest }`、report/附件的路径与 digest、source `{ commit, dirty }` 和可选 `supersedes`；它不解释 report、result 或 release check 的语义。可选内容为 machine `review-result.json`、唯一 kebab-case kind 的 `checks/<kind>.json` 与 `evidence/<kind>.json`、`release-check.json`，以及 workflow 的 `scope.json`。JSON 附件必须以 canonical JSON 归档，manifest 的文件清单必须完全匹配实际普通文件。
 
 leaf `skill` 使用静态 Skill 或 `plugin/skill` id，`aw-plugin` 使用插件 production bundle digest；二者不接受 scope。`aw-plugin --target` 可使用 id 对应的默认 `plugins/<id>`，也可使用仓库内其它 plugin root；path chain、root 和 manifest 必须是非符号链接，且 manifest name 必须匹配 root 的 target id。production digest 始终从该实际 root 构建，并使用同一仓库中所需的 provider source set，因此仍绑定 build/generated runtime bytes。实际引用的 direct provider root 必须位于同一仓库内；其完整 path chain、root、`.agents-plugin` 目录和 manifest 都必须是预期的普通非符号链接节点。
 
 `workflow` 和 `aw-workflow` 必须提供 schema 1 `scope.json`，其 `kind`、`id`、用户结果、入口、非空组件和代表性路径、外部依赖及排除项共同形成 target digest；归档后的 `scope.json` 是该 target binding 的 canonical 副本。每个 component path 必须解析为仓库内现存的普通文件或目录，完整 path chain 和目录树不得包含符号链接。component digest 使用与 production tree 相同的 canonical records v1：按 codepoint 排序相对路径，绑定普通文件执行模式和文件 SHA-256；单文件使用 `.` 作为 tree-relative path。发布时必须重算并拒绝伪造或 stale digest。公开 `verify` 验证归档后的 canonical scope、component digest 声明和 target digest 绑定；它不把当前源码是否仍与历史 scope 相同混入不可变记录验证。scope target digest 仍只使用 canonical scope JSON，不混入第二个 target digest 协议。
+
+Catalog composition 与 portfolio 的人读报告写入用户指定目录；它们不伪装成 workflow，也不新增 archive kind。
 
 发布先在同一 target 父目录创建临时 record，写完并验证 inventory/digest 后原子 rename 到不可变最终目录；失败清理临时目录。相同 target digest 与 report digest 只有在 target、report、所有附件、source 和 `supersedes` 都等价时才幂等返回原 record；同一 target/report digest 的不同输入必须失败，不能覆盖。`supersedes` 必须引用一个已验证、同 kind 且同 target id 的 record；它可以引用旧 target digest。`verify` 验证一个 record 的完整 binding 和 digest；`show` 要求全仓唯一 review id；`list` 扫描固定 records 根的 manifest，按 `publishedAt`、`reviewId` 稳定排序，并可按 kind 和 target id 过滤。归档根不计入发布时的 source dirty 检查。
 

@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "agent-content",
+    "participants": [
+      "author-agent-skill",
+      "review-agent-skill",
+      "review-agent-architecture"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "agents_edit",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "整理 AGENTS.md 的目录规则，减少每次都读入的无关内容。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "直接编辑 Agent 指令属于本能力。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "若只解释规则含义而不评价或修改，则不使用。"
+      }
+    },
+    {
+      "id": "prompt_review",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读看看这个系统 prompt 是否约束过多，指出应删除或放宽的要求。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "对象是 Agent prompt 的内容质量。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为普通网站文案校对则不使用。"
+      }
+    },
+    {
+      "id": "reference_reorganize",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "这份给 Agent 读的运维 reference 混合诊断和发布，帮我按真正用到的分支重组。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "参考资料的信息层级属于共同内容方法。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为只运行现有发布命令则不是内容工作。"
+      }
+    },
+    {
+      "id": "role_write",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "为审查 Agent 写一段 role instruction，保留只读边界但不要强制固定报告结构。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "创建 role instruction 是直接职责。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为调整机器 TOML 的一个整数参数而不处理指令，则不使用。"
+      }
+    },
+    {
+      "id": "human_readme",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只把面向新用户的安装 README 改得通顺，不涉及 Agent 指令。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通人读文档不属于本能力。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "读者改为 Agent，且要处理加载和行为约束时才使用。"
+      }
+    },
+    {
+      "id": "explain_only",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解释这段 prompt 的字面含义，不评价设计，也不修改。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "解释不等于内容设计或评价。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求判断是否限制模型过度时才使用。"
+      }
+    },
+    {
+      "id": "run_script",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "运行已有 JSON 格式检查脚本，原样返回结果；不要审核或编辑指令。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "执行已有工具不需要内容方法。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为重写工具使用说明给 Agent 阅读时使用。"
+      }
+    },
+    {
+      "id": "normal_code",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "修复 Python 函数的 off-by-one，别改任何文档或 prompt。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "请求只有业务代码。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "改为修正 Agent 的代码修改规则时使用。"
+      }
+    }
+  ]
+}

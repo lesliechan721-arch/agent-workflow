@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "simplify-agent-skill",
+    "participants": [
+      "agent-content",
+      "author-agent-skill",
+      "review-agent-skill",
+      "audit-agent-skill-evals"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "simplify_plan",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "为这份越来越长的 Skill 制定删减计划，先别改也别跑模型。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "计划路径不要求运行条件。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "普通 typo 修正由 author 处理。"
+      }
+    },
+    {
+      "id": "ablation",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "在已固定的 Eval 和预算内，对现有 Skill 做一次消融简化，保留原版。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "明确请求受限对照减法。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只要独立只读 Review 不实际简化时不主导。"
+      }
+    },
+    {
+      "id": "reduce_controls",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "简化这份 Skill 的强制步骤，判断哪些是脆弱点保护，哪些可以放宽。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "目标是减少控制。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "新增业务能力而非简化时是 author。"
+      }
+    },
+    {
+      "id": "reduce_context",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "降低这个 Skill 的 active-path 文本负担，用旧版对照确认关键行为不退化。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "行为约束下的上下文优化。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "普通摘要文章不是 Skill 简化。"
+      }
+    },
+    {
+      "id": "simple_typo",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只修 SKILL.md 标题的一个错别字，不改规则、不做消融。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通修词不是专门简化。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "目标是删减流程时使用。"
+      }
+    },
+    {
+      "id": "add_feature",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "给 Skill 增加导出 CSV 能力，不改变已有流程。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "功能创建不是减法优化。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "去除未使用导出功能并验证影响时使用。"
+      }
+    },
+    {
+      "id": "readonly_score",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只给这份 Skill 做质量评估和分数，不提出简化实验或改文件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "Review 自有入口。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求实验验证删减时使用。"
+      }
+    },
+    {
+      "id": "run_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只运行已经准备好的 EvalSpec，不选择候选、不修改 Skill。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "只运行由 Runner 拥有。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要基于对照选择并应用简化时使用。"
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # AW Catalog Workspace 作者指南
 
-本指南适用于官方和第三方 Catalog Workspace。当前合同是 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器真值。
+本指南适用于官方和第三方 Catalog Workspace。当前合同是 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是机器真值。`develop-aw` 路由 Workspace 与 Plugin 维护；远端发布只由手动调用的 `publish-aw-catalog` 处理。
 
 ## Workspace 和聚合验证
 
@@ -50,7 +50,7 @@ Catalog beta 候选只读取 source metadata、`catalog-v<version>` tag 和 publ
 
 ## 发布计划、授权和恢复
 
-远端发布使用两个公开命令。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须明确选择。Branch 使用显式值或固定默认 `catalog`，不从当前 Git branch 推断。
+远端发布使用两个公开命令。Publisher 先让 CLI 从当前位置向上定位最近的 Workspace。Remote 按显式参数、`origin`、唯一 remote 的顺序选择；多个且无 `origin` 时必须明确选择。Branch 使用显式值或固定默认 `catalog`，不从当前 Git branch 推断。无论使用哪种默认，apply 都必须取得完整 `planDigest` 的一次授权。
 
 ```bash
 aw catalog publish plan --workspace-root "$workspace" \
@@ -115,7 +115,7 @@ Snapshot v6 首次上线使用空的新 branch state，不读取旧 snapshot sta
 
 ## 删除一个 canonical Plugin Source
 
-Catalog Author 先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取 inventory、目标 dependency graph 和反向依赖。实际删除使用 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、不 commit、build 或 publish。成功后重新验证剩余 inventory；空 inventory 不运行 plugin 命令。删除不自动 publish。
+`develop-aw` 的删除分支先确认用户明确给出 `<workspace-root>` 和 `<plugin-name>`，读取 inventory、目标 dependency graph 和反向依赖。实际删除使用 `aw plugin remove <name> --workspace-root <root> --yes --json`。它不直接删除目录、不使用 `--force`、不修改 Catalog metadata、不 commit、build 或 publish。成功后重新验证剩余 inventory；空 inventory 不运行 plugin 命令。删除不自动 publish。
 
 ## Related documents
 

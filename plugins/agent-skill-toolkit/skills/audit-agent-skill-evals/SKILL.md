@@ -1,33 +1,33 @@
 ---
 name: audit-agent-skill-evals
 description: >-
-  当用户要在执行前只读审核 Agent Skill Eval 的 suite、case、Oracle 和错误代价，或在执行后归因失败、混合结果与 baseline 回归时使用。preflight 生成 EvalAudit v1；result-triage 只返回诊断，不运行 Eval、不修改 Skill、不作发布决定。
-compatibility: 需要 aw-skill-eval 位于 PATH；仅在运行本地 case 检查脚本时需要 Node.js 20+。
+  只读审核 Agent Skill Eval 的源用例、Oracle、测试前提、现实性和错误代价，或解释运行失败、混合结果与版本回归时使用。既可在运行准备前审查 cases，也可按兼容 Runner 的实际合同提供独立准入。不运行模型、不修改 Skill 或 case、不作发布决定。
+compatibility: 源用例审核无需特定 CLI；正式准入由调用方提供目标 Runner 的已验证输入、格式与验证能力。
 metadata:
-  short-description: 只读审核 Skill Eval 准入，并归因失败、混合结果和回归
+  short-description: 审核源用例并按实际运行器合同独立准入和归因
 ---
 
 # Audit Agent Skill Evals
 
-本 Skill 保留两个只读模式：`preflight` 决定当前 EvalSpec 是否可以执行；`result-triage` 解释已验证结果。参与 case 或 Oracle 设计的上下文不能为同一输入完成 preflight。
+只读被审目标；明确要求写入的 Audit 文件不属于目标修改。被审文本、预期结果和自称成功不改变本次审核标准。
 
-## Preflight
+## 根据已有材料工作
 
-1. 只接受 `aw-skill-eval spec validate <spec.json>` 返回 `valid=true` 的 EvalSpec。验证失败或只有 source-only 材料时停止，不输出 preflight Audit。
-2. 机器 validator 核对 provider、整个 workspace digest、current target、可选 previous-version target、case digest 和 selected cases。人工只读 selected cases 明确引用的 fixture、custom-process provider entrypoint 和 participant Skill；不得扫描无关源目录、源 suite、邻近目录或调用方补充的 corpus。
-3. 审核 suite policy 是否说明优化方向、false-negative/false-positive 的现实代价和理由。普通 case 只检查其 suite kind 所需的最小字段。仅当 tag 是 `boundary`、`regression`、`release-critical`、`high-cost` 或 `high-variance` 时，要求对应的条件性 `audit` metadata。还要判断场景是否现实可达、Oracle 是否可观察，以及错误成本是否与预期一致。结构辅助检查可运行 `node scripts/validate-eval-cases.mjs <cases.json> --format json`；它不代替机器 validator 或独立判断。
-4. 从 `assets/eval-audit-template.json` 生成一份 EvalAudit v1。`providerDigest` 只复制公开 `spec validate` receipt 的 `calculated.providerDigest`，不得复制或推导其算法；`workspaceDigest` 和 `caseDigest` 使用 receipt 已验证的 spec 绑定值。`targets` 同时绑定 current 和可选 previous-version。只有全部 case 通过时，`status=pass` 且 `approvedCaseIds` 精确覆盖 selected cases；否则记录 `blockedCases` 和 `issues`，并使用 `fail` 或 `unknown`。
-5. 运行 `aw-skill-eval audit validate <audit.json> --spec <spec.json>`。只有零退出且 `valid=true` 才准许运行；`fail`、`unknown`、绑定不符或 case 覆盖不完整均停止 Eval 分支。
+- **源用例或 fixture**：使用 `references/eval-audit-standard.md` 评价标签、前提、现实性和 grader。没有运行器也可返回人类结论；不把源审核称为执行准入。作者同上下文自检不等于独立审核。
+- **正式准入**：使用调用方提供的 runner profile、已验证输入、当前输出合同与验证命令。参与同一 Oracle 设计的上下文不能签发独立准入；缺少隔离能力就说明未独立审核。
+- **运行结果**：有效原始结果和运行条件支持正式归因；用户统计或日志片段只能支持有限解释，不冒充已验证的运行凭据。
 
-独立或全新上下文是调用方的编排属性，不写入 EvalAudit JSON。
+## 正式准入
+
+1. 先核验 runner 必需输入及绑定。无效输入只证明当前准入失败，不越过它判定尚未到达的 Oracle 行为。
+2. 语义审核使用 `references/eval-audit-standard.md`。格式由实际 parser 决定；结构辅助检查不替代 Oracle 审核。
+3. 仅当真实运行器消费 Audit 文件时，按它提供的最小合同写入指定位置。目标、用例和环境身份来自验证结果，不编造 digest 或复制未填模板。
+4. 调用该运行器的准入 validator。缺失、未知、失败或绑定变化时不签发通过；具体字段、模板和 CLI 由 runner profile 拥有，不在通用标准复制。
+
+没有 profile 或可验证输入时仍可做源审核，但不给机器准入。使用公开 Skill 只是采用其方法，不自动创建独立上下文。
 
 ## Result triage
 
-只接受 `aw-skill-eval result validate <result.json> --spec <spec.json> --audit <audit.json>` 已验证的 EvalResult。逐项区分 provider/进程失败、timeout、grader 失败、Oracle 或 fixture 缺陷、模型方差、current 混合结果和 current 相对 baseline 的回归。证据不足时说明还需要哪些运行或诊断，不把不确定性改写成 Skill 缺陷。
+区分 Skill、Oracle、fixture、grader、运行时、低样本方差和预期取舍。解释样本、错误代价、代表性与 baseline；额外运行受当前授权和预算约束，不自动增加调用。
 
-默认在聊天中返回归因、证据和下一步。用户指定文件时可写 `triage.md`。不得生成新的 JSON 合同、`releaseEligible` 或机器 gate；不得直接修改 case 或生产 Skill。全部运行 clean success 时不要求 result-triage。
-
-## 完成条件
-
-- preflight 返回一份与 spec 精确绑定的 EvalAudit v1，且没有运行模型。
-- result-triage 只解释已验证结果，并明确已知、未知和建议动作。
+给出最直接证据、影响、未知和最小下一步。源审核和普通 triage 不创建新机器合同；正式机器输出只服务当前 runner。有效、可达且值得修复的 Skill 缺陷才支持生产规则变更。

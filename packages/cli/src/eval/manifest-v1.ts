@@ -345,14 +345,6 @@ export async function readAwSkillEvalManifest(options: {
     throw new Error('eval manifest.defaults.profile references an unknown profile.')
   }
   const suites = parseSuites(raw.suites, new Set(profiles.map((profile) => profile.id)))
-  const ownsDynamicSkill = (options.plugin.manifest.artifacts?.targets ?? []).some((target) =>
-    (target.target === 'codex.skill' || target.target === 'claude.skill')
-    && target.skillKey === skill)
-  if (ownsDynamicSkill && !suites.some((suite) => suite.requiredForRelease)) {
-    throw new Error(
-      `eval manifest.suites must include at least one release-required suite for dynamic Skill "${skill}".`,
-    )
-  }
   const casesBySuite = new Map<string, SelectedCasesDocument>()
   for (const suite of suites) {
     if (suite.provider) await resolveAwSkillEvalCustomCommand(evalRoot, suite.provider)

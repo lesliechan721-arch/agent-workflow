@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "develop-aw",
+    "participants": [
+      "agent-content",
+      "author-agent-skill",
+      "review-aw"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "init_catalog",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "把当前项目初始化为 AW Catalog Workspace，并创建一个日志摘要插件；不要发布。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "统一开发入口。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只读审核不修改时 review-aw。"
+      }
+    },
+    {
+      "id": "edit_plugin",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "在这个 AW Workspace 内给现有插件增加一个静态 Skill，完成相关确定性验证。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "AW 插件作者。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只开发普通 Python 应用不使用。"
+      }
+    },
+    {
+      "id": "remove_plugin",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "从当前 AW Catalog 中安全删除已不用的插件，先检查反向依赖。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "删除包含 Catalog 准入及 Plugin 操作。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只读分析删除影响不实际删除时 review。"
+      }
+    },
+    {
+      "id": "activate_local",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "把这个 AW Catalog Workspace 激活为本地开发源，不发布远端。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "development source 路径。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只查看已有状态不要求变更可用普通 CLI。"
+      }
+    },
+    {
+      "id": "review_only",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只读评审当前 AW Catalog 的库存和插件依赖，不 build、不改文件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "明确只读不会进入开发。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求修正库存则进入开发。"
+      }
+    },
+    {
+      "id": "generic_skill",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只创建可移植 Agent Skill，不生成 AW manifest 或 Catalog。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "通用作者足够。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "目标要求 AW 插件包装时使用。"
+      }
+    },
+    {
+      "id": "run_only",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只运行已准备的 Skill EvalSpec，不变更 AW 或 Skill。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "运行与开发分离。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要添加 Eval source 文件时开发/author 可用。"
+      }
+    },
+    {
+      "id": "plain_project",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "给普通 Node 应用新增 API 路由，不涉及 AW 插件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "非 AW 项目开发。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "目标改为 AW plugin 才使用。"
+      }
+    }
+  ]
+}

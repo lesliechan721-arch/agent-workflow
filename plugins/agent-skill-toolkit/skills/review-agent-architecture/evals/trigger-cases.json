@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "review-agent-architecture",
+    "participants": [
+      "agent-content",
+      "review-agent-skill",
+      "author-agent-skill"
+    ],
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "portfolio",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "评审这一组 Agent 插件是否拆得太碎，用户需要记住的 Skill 入口是否过多。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "portfolio 范围。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只检查某个 leaf typo 不使用。"
+      }
+    },
+    {
+      "id": "workflow",
+      "split": "train",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "只读评审这三个 Skill 的交接路径和权限边界，不修改任何内容。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "有界 workflow 范围。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "写一个新 Skill 由 author 主导。"
+      }
+    },
+    {
+      "id": "public_surface",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "比较现有公开 Skill 与 reference 分支划分，给出更少入口但同样安全的方案。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "架构减法。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "普通代码模块重构不属于 Agent 架构。"
+      }
+    },
+    {
+      "id": "contracts",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "审核多个 Skill 之间 JSON handoff 是否真的有消费者，不改文件。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "跨组件合同 owner。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只转换已有 JSON 数据不是评审。"
+      }
+    },
+    {
+      "id": "leaf_quality",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "仅检查这一份 SKILL.md 及直接引用文件的质量，不涉及其它组件。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "单 Skill Reviewer 承担。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "发现明确跨组件问题且扩大授权范围后可使用。"
+      }
+    },
+    {
+      "id": "app_architecture",
+      "split": "train",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "评审电商服务的数据库分片架构，与 Agent 或 Skill 无关。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "普通软件架构非范围。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "评审 Agent 工作流架构时使用。"
+      }
+    },
+    {
+      "id": "implement_plugin",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "直接实现一个 AW 插件组件，按已有设计写文件，不进行架构 review。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "实现不是独立架构评审。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "已有组件要求只读评价时使用。"
+      }
+    },
+    {
+      "id": "read_help",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只解释当前工具命令的参数，不做设计判断。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "纯帮助解释非范围。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求跨工具状态 owner 评审时使用。"
+      }
+    }
+  ]
+}

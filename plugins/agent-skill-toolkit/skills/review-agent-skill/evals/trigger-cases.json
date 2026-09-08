@@ -4,206 +4,150 @@
     "kind": "trigger",
     "unitUnderTest": "review-agent-skill",
     "participants": [
-      "write-agent-content",
-      "review-agent-content",
-      "author-agent-skill",
-      "review-agent-workflow",
-      "design-agent-skill-evals",
+      "agent-content",
       "audit-agent-skill-evals",
-      "run-aw-skill-evals"
+      "review-agent-architecture"
     ],
     "policy": {
-      "optimization": "precision-first",
+      "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "单 Skill Review 漏触发会遗漏质量问题；跨插件或跨 Skill 工作流误触发会产生错误范围结论。"
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
     },
     "runtime": {
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
+      "strictNegativeSplits": [],
       "forbidMultipleSkillLoads": false
     }
   },
   "cases": [
     {
-      "id": "full_skill",
+      "id": "single_full",
       "split": "train",
       "tags": [
         "representative"
       ],
       "input": {
-        "query": "完整只读评审这个 Agent Skill 包，检查触发、职责、references 和脚本。",
+        "query": "只读 full review 这个 Agent Skill 的触发、资源和过度控制，给出有依据的问题。",
         "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "单 Skill 设计评价。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只审多个插件的入口架构时由 architecture 主导。"
       }
     },
     {
-      "id": "delta_skill",
+      "id": "delta_review",
       "split": "train",
       "tags": [
         "representative"
       ],
       "input": {
-        "query": "对比这个 Skill 的新旧版本，确认旧 finding 和净复杂度变化。",
-        "expectedLoad": true
-      }
-    },
-    {
-      "id": "split_skill",
-      "split": "validation",
-      "tags": [
-        "representative",
-        "release-critical"
-      ],
-      "input": {
-        "query": "审核这个单独 Skill 是否塞入多个独立职责，是否需要拆分。",
+        "query": "复核上轮这个 Skill 的问题是否修好，只看本次差量和回归。",
         "expectedLoad": true
       },
       "audit": {
-        "errorCost": "high"
+        "rationale": "delta 属于单 Skill review。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "直接应用补丁时改用 author。"
       }
     },
     {
-      "id": "skill_existing_eval",
+      "id": "too_heavy",
       "split": "validation",
       "tags": [
-        "representative",
-        "release-critical"
+        "representative"
       ],
       "input": {
-        "query": "评审这个 Skill 及它已有的 Eval 定义和运行证据。",
+        "query": "这个 Skill 内容都对但很重，只分析哪些约束可能多余，不要修改。",
         "expectedLoad": true
       },
       "audit": {
-        "errorCost": "high"
+        "rationale": "最小控制是 Review 范围。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求实际消融并应用简化则 simplify 主导。"
       }
     },
     {
-      "id": "modify_skill",
+      "id": "resource_check",
+      "split": "validation",
+      "tags": [
+        "representative"
+      ],
+      "input": {
+        "query": "检查这个 Skill 的三个 reference 是否真的按需读取，不修改。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "包内资源评审。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "只润色普通用户 README 不使用。"
+      }
+    },
+    {
+      "id": "create_new",
       "split": "train",
       "tags": [
         "boundary"
       ],
       "input": {
-        "query": "直接修改这个 Skill 并提交。",
+        "query": "从零编写一个新的 Agent Skill，并交付文件，不需要评审。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求是写入变更，不是只读 Review。",
-        "minimalCounterexample": "改为只读评价现有 Skill 后标签翻转。"
+        "rationale": "创建不自动附带独立 Review。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "已有草稿只要求评价时使用。"
       }
     },
     {
-      "id": "prompt_review",
+      "id": "run_existing",
       "split": "train",
       "tags": [
         "boundary"
       ],
       "input": {
-        "query": "只审核一个普通 prompt，不评价 Skill 包。",
+        "query": "只运行现有 EvalSpec 并返回 CLI 结果，不做质量评审。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由 Agent 内容 Reviewer 拥有。",
-        "minimalCounterexample": "若目标改为一个完整 Skill package，则应加载 review-agent-skill。"
+        "rationale": "执行能力由 Runner 承担。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要求据结果评价 Skill 时可使用。"
       }
     },
     {
-      "id": "design_eval",
+      "id": "plain_python_review",
       "split": "validation",
       "tags": [
-        "boundary",
-        "release-critical"
+        "boundary"
       ],
       "input": {
-        "query": "为这个 Skill 设计一组新的 Eval cases。",
+        "query": "只 review 这个 Python 函数的代码正确性，与任何 Skill 无关。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由 Eval Designer 拥有。",
-        "minimalCounterexample": "若请求改为评审现有 Skill package，而不是设计 Eval，则应加载 review-agent-skill。",
-        "errorCost": "high"
+        "rationale": "普通代码审查不属于本工具。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "代码是被审 Skill 的组成且请求包质量时才相关。"
       }
     },
     {
-      "id": "audit_eval",
+      "id": "meaning_only",
       "split": "validation",
       "tags": [
-        "boundary",
-        "release-critical"
+        "boundary"
       ],
       "input": {
-        "query": "只审核这组 Eval Oracle 是否合理。",
+        "query": "这份 SKILL.md 是做什么的？只解释，不给问题或分数。",
         "expectedLoad": false
       },
       "audit": {
-        "rationale": "请求由 Eval Auditor 拥有。",
-        "minimalCounterexample": "若请求改为评审生产 Skill package，而不是审核 Oracle，则应加载 review-agent-skill。",
-        "errorCost": "high"
-      }
-    },
-    {
-      "id": "single_aw_plugin",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "release-critical"
-      ],
-      "input": {
-        "query": "评审这个 AW 插件的 manifest、两个 Skill 和 materialized profiles。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "完整 AW plugin 由 review-aw-plugin 拥有。",
-        "minimalCounterexample": "若请求只收窄到插件中的一个 Skill package，则应加载 review-agent-skill。",
-        "errorCost": "high"
-      }
-    },
-    {
-      "id": "multi_skill_workflow",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "release-critical"
-      ],
-      "input": {
-        "query": "审核 author、auditor 和 runner 联合完成的 Eval 工作流。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "跨多个 Skill 的有界工作流由 workflow Reviewer 拥有。",
-        "minimalCounterexample": "若请求只评审其中一个 Skill package，则应加载 review-agent-skill。",
-        "errorCost": "high"
-      }
-    },
-    {
-      "id": "multi_aw_workflow",
-      "split": "validation",
-      "tags": [
-        "boundary",
-        "release-critical"
-      ],
-      "input": {
-        "query": "审核三个 AW 插件联合实现的 Skill 开发与 Eval 流程。",
-        "expectedLoad": false
-      },
-      "audit": {
-        "rationale": "跨多个 AW plugin 的工作流由 AW workflow Reviewer 拥有。",
-        "minimalCounterexample": "若请求只评审一个插件中的一个 Skill package，则应加载 review-agent-skill。",
-        "errorCost": "high"
-      }
-    },
-    {
-      "id": "whole_repo",
-      "split": "sanity",
-      "tags": [
-        "diagnostic"
-      ],
-      "input": {
-        "query": "评审整个仓库的所有 Agent 系统并给一个总 pass。",
-        "expectedLoad": false
+        "rationale": "纯解释不是设计评审。",
+        "allowedVariance": "仅评价目标在观测期是否被读取；不禁止其它合理公开能力。该标签不表示首个入口。",
+        "minimalCounterexample": "要风险、缺陷或评分时使用。"
       }
     }
   ]

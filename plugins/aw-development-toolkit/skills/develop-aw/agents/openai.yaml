@@ -1,0 +1,7 @@
+interface:
+  display_name: "Develop AW"
+  short_description: "创建、维护和验证 AW Catalog Workspace 与 Plugin Source"
+  default_prompt: "使用 $develop-aw 处理当前 AW 开发请求。"
+
+policy:
+  allow_implicit_invocation: true
