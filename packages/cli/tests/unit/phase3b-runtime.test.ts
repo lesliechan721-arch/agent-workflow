@@ -163,6 +163,66 @@ describe('phase 3B namespaced runtime stores', () => {
     await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
   });
 
+  it('treats unrelated inventory damage as irrelevant to an empty cleanup target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const result = await cleanupWriteCommand(['team/missing'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+    }, {
+      env: isolation.env,
+      inventoryCatalogSourceReferences: async () => ({
+        inventorySchemaVersion: 1,
+        references: [],
+        errors: [{
+          code: 'stateInventoryFailed',
+          kind: 'configFileRead',
+          location: '[aw-state]/plugin-config/other/bad/config.json',
+          message: 'unrelated config is damaged',
+          relevance: {
+            global: false, sourceId: 'other', pluginName: 'bad', scope: 'user',
+          },
+        }],
+      }),
+    });
+
+    expect(result).toMatchObject({ overallState: 'succeeded', warnings: [] });
+  });
+
+  it('does not report a sanitized owned-text inventory error after force removes its exact path', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const filePath = path.join(isolation.env.AW_CODEX_HOME!, 'agents', 'aw-demo-recovered.toml');
+    const identity: OwnerIdentity = {
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'recovered',
+      platform: 'codex', scope: 'user',
+    };
+    await fs.outputFile(filePath, renderOwnedTextFile('recovered output\n', identity));
+    const result = await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user', force: true,
+    }, {
+      env: isolation.env,
+      inventoryCatalogSourceReferences: async () => ({
+        inventorySchemaVersion: 1,
+        references: [{
+          kind: 'namespacedOwner', location: filePath, sourceId: 'team',
+          sourceIdentity: SOURCE_IDENTITY, pluginName: 'demo', platform: 'codex', scope: 'user',
+        }],
+        errors: [{
+          code: 'stateInventoryFailed',
+          kind: 'ownerHeaderParse',
+          location: '[catalog-source]/agents/aw-demo-recovered.toml',
+          message: 'the original owner header was damaged',
+          relevance: {
+            global: false, sourceId: 'team', pluginName: 'demo', platform: 'codex', scope: 'user',
+          },
+        }],
+      }),
+    });
+
+    expect(result).toMatchObject({ overallState: 'succeeded' });
+    expect(result.rebuildResults[0]?.residual).toEqual([]);
+    await expect(fs.pathExists(filePath)).resolves.toBe(false);
+  });
+
   it('force cleanup removes safe live output but keeps unknown damaged residue as partial', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };

@@ -1398,15 +1398,54 @@ function cleanupInventoryErrorsForTarget(
   });
 }
 
+function cleanupInventoryErrorsForSelection(options: {
+  inventory: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>;
+  selectors: readonly string[];
+  platforms: readonly PlatformName[];
+  scope: Scope;
+  all: boolean;
+}) {
+  const selectors = options.selectors.map(parsePluginId);
+  return options.inventory.errors.filter((error) => {
+    const relevance = error.relevance;
+    if (relevance.global) return true;
+    if (relevance.scope !== undefined && relevance.scope !== options.scope) return false;
+    if (relevance.platform !== undefined && !options.platforms.includes(relevance.platform)) return false;
+    if (options.all) return true;
+    return selectors.some((selector) =>
+      (relevance.pluginName === undefined || relevance.pluginName === selector.pluginName)
+      && (selector.sourceId === undefined
+        || relevance.sourceId === undefined
+        || relevance.sourceId === selector.sourceId));
+  });
+}
+
 function cleanupActionCoversLocation(
   evidence: OfflineCleanupTargetEvidence | undefined,
   location: string,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
 ): boolean {
+  const rawRepoRoot = resolveRepoRootSync(cwd);
+  const sensitiveRoots = [
+    canonicalizePathThroughExistingAncestorSync(getCodexHome(env)),
+    canonicalizePathThroughExistingAncestorSync(getClaudeHome(env)),
+    canonicalizePathThroughExistingAncestorSync(rawRepoRoot),
+    getCodexHome(env),
+    getClaudeHome(env),
+    rawRepoRoot,
+  ];
+  const normalizedLocation = location.replaceAll('\\', '/');
   return evidence?.plan.actions.some((action) => {
     if (action.action !== 'removeOwnedOutput') return false;
-    const relative = path.relative(path.resolve(action.target), path.resolve(location));
+    const normalizedTarget = sanitizeCatalogSourceErrorMessage(
+      action.target,
+      env,
+      sensitiveRoots,
+    ).replaceAll('\\', '/');
+    const relative = path.posix.relative(normalizedTarget, normalizedLocation);
     return relative === ''
-      || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+      || (relative !== '..' && !relative.startsWith('../') && !path.posix.isAbsolute(relative));
   }) ?? false;
 }
 
@@ -2268,6 +2307,7 @@ async function runRebuildCommandInSession(
   }
   let cleanupTargets: LiveCleanupTarget[] = [];
   let cleanupIntentAfter: PluginIntentState | undefined;
+  let cleanupSelectionErrors: Awaited<ReturnType<typeof inventoryCatalogSourceReferences>>['errors'] = [];
   if (options.command === 'cleanup') {
     const primarySourceId = cleanupForce
       ? await readCatalogSourcesConfigSnapshot(runtimeEnv)
@@ -2318,6 +2358,13 @@ async function runRebuildCommandInSession(
     const filtered = omitSelectedPluginConfigErrors(cleanupInventory!, cleanupTargets);
     cleanupInventory = filtered.inventory;
     malformedSelectedConfigPreserved ||= filtered.omitted;
+    cleanupSelectionErrors = cleanupInventoryErrorsForSelection({
+      inventory: cleanupInventory,
+      selectors: options.pluginNames,
+      platforms: selectedPlatforms(options.commandOptions.platform),
+      scope: options.commandOptions.scope,
+      all: options.all === true,
+    });
   }
   const selectors = requestedPluginNames.map(parsePluginId);
   const sourceIds = planPluginSelectorSourceIds(selectors);
@@ -2335,7 +2382,7 @@ async function runRebuildCommandInSession(
   if (options.command === 'cleanup') {
     if (!cleanupForce
       && cleanupTargets.length === 0
-      && cleanupInventory!.errors.length === 0
+      && cleanupSelectionErrors.length === 0
       && legacyLiveTargets.length === 0) {
       const result = mergeRebuildCommandResults([]);
       const operationPlan = createOfflineCleanupOperationPlan([], {
@@ -2504,7 +2551,12 @@ async function runRebuildCommandInSession(
         const unresolvedErrors = cleanupInventoryErrorsForTarget(
           cleanupInventory!,
           targetDescriptor,
-        ).filter((error) => !cleanupActionCoversLocation(targetEvidence, error.location));
+        ).filter((error) => !cleanupActionCoversLocation(
+          targetEvidence,
+          error.location,
+          runtimeEnv,
+          options.commandOptions.cwd,
+        ));
         if (unresolvedErrors.length > 0) {
           const message = 'stateInventoryResidual: Some weak state could not be verified after force cleanup.';
           result.residual = [...new Set([
@@ -2571,8 +2623,10 @@ async function runRebuildCommandInSession(
         assertOperationPlanFingerprint(options.runtime.expectedPlanFingerprint, operationPlan);
       }
       result.operationPlan = operationPlan;
-      result.overallState = 'failed';
-      result.warnings.push(...cleanupInventory!.errors.map((error) =>
+      result.overallState = cleanupSelectionErrors.length > 0 || legacyLiveTargets.length > 0
+        ? 'failed'
+        : 'succeeded';
+      result.warnings.push(...cleanupSelectionErrors.map((error) =>
         `stateInventoryResidual: ${error.kind}: ${error.message}`));
       result.warnings.push(...legacyLiveTargets.map((target) =>
         `legacyStateUnsupported: legacy live runtime state exists for ${target.pluginName}:${target.platform}/${target.scope}.`));

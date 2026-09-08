@@ -7267,9 +7267,9 @@ describe('five namespaced write commands', () => {
     const unrelatedNoLive = await cleanupWriteCommand(['team/no-live-other'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
     }, runtime);
-    expect(unrelatedNoLive.overallState).toBe('failed');
+    expect(unrelatedNoLive.overallState).toBe('succeeded');
     expect(unrelatedNoLive.targetResults).toEqual([]);
-    expect(JSON.stringify(unrelatedNoLive)).toContain('stateInventory');
+    await expect(fs.readFile(configOnlyPath, 'utf8')).resolves.toBe('{config-only-malformed');
 
     await fs.outputFile(resolvePluginConfigStorePath({
       sourceId: 'team', pluginName: 'unrelated', scope: 'project',
@@ -9783,13 +9783,14 @@ describe('five namespaced write commands', () => {
     const recovered = await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project', force: true,
     }, { env: isolation.env });
-    expect(recovered.overallState, JSON.stringify(recovered.rebuildResults)).toBe('partial');
+    expect(recovered.overallState, JSON.stringify(recovered)).toBe('succeeded');
     expect(recovered.rebuildResults).toEqual([
+      expect.objectContaining({ status: 'succeeded', residual: [], failures: [] }),
+    ]);
+    expect(recovered.targetResults).toEqual([
       expect.objectContaining({
-        residual: ['aw-demo-reviewer.toml'],
-        failures: [expect.objectContaining({
-          message: expect.stringContaining('stateInventoryResidual'),
-        })],
+        state: 'completed',
+        target: expect.objectContaining({ pluginId: 'team/demo' }),
       }),
     ]);
     await expect(fs.pathExists(skillRoot)).resolves.toBe(false);
