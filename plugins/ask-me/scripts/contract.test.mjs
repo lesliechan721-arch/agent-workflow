@@ -101,7 +101,7 @@ test('manifest exposes the three decision Skills', async () => {
   assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.extensions?.instructions?.length ?? 0, 0);
-  assert.equal(manifest.config, undefined);
+  assert.equal(manifest.config?.fields?.reviewSessionTtlMinutes?.type, 'number');
   assert.equal(manifest.artifacts, undefined);
   assert.equal(manifest.scripts.artifacts, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);

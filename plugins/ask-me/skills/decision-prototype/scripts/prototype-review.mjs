@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmod,
   lstat,
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
   rm,
   rmdir,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -23,34 +26,43 @@ import {
   readJsonSchema,
   validateFeedbackAgainstPrototype,
 } from './review-contract.mjs';
+import { resolveReviewTtl } from './review-config.mjs';
 
 const reviewShellVersion = 2;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const prototypeSchemaPath = path.resolve(scriptDir, '..', 'assets', 'prototype.schema.json');
 const feedbackSchemaPath = path.resolve(scriptDir, '..', 'assets', 'feedback.schema.json');
 const serverScript = path.join(scriptDir, 'review-server.mjs');
-const sessionBindings = new WeakMap();
+const terminalRetentionMs = 24 * 60 * 60 * 1000;
+const lockStaleMs = 30_000;
 
 class UsageError extends Error {}
 
+class CommandError extends Error {
+  constructor(message, commandReceipt) {
+    super(message);
+    this.commandReceipt = commandReceipt;
+  }
+}
+
 function globalHelp() {
   return `Usage:
-  prototype-review.mjs start --prototype <prototype.json>
-  prototype-review.mjs wait --session <session.json> [--timeout 30m]
+  prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
+  prototype-review.mjs wait --session <session.json> [--timeout 30s]
   prototype-review.mjs status --session <session.json>
   prototype-review.mjs stop --session <session.json>
 
 Commands:
   start   Validate and start a localhost Prototype Review session.
-  wait    Wait for submitted feedback, cancellation, or timeout.
+  wait    Wait for a result. A timeout ends only this wait.
   status  Read the current session status without changing it.
-  stop    Stop the session when reachable and clean up its local descriptor.`;
+  stop    Stop the session and report success only after shutdown is confirmed.`;
 }
 
 function commandHelp(command) {
   const lines = {
-    start: 'Usage: prototype-review.mjs start --prototype <prototype.json>',
-    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 30m]',
+    start: 'Usage: prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]',
+    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 30s]',
     status: 'Usage: prototype-review.mjs status --session <session.json>',
     stop: 'Usage: prototype-review.mjs stop --session <session.json>',
   };
@@ -70,17 +82,40 @@ function parseCommand(argv) {
     const value = argv[index];
     if (value === '--help' || value === '-h') values.help = true;
     else if (value === '--prototype' && command === 'start') values.prototype = argv[++index];
+    else if (value === '--ttl' && command === 'start') values.ttl = argv[++index];
+    else if (value === '--plugin' && command === 'start') values.plugin = argv[++index];
+    else if (value === '--new-session' && command === 'start') values.newSession = true;
     else if (value === '--session' && command !== 'start') values.session = argv[++index];
     else if (value === '--timeout' && command === 'wait') values.timeout = argv[++index];
     else throw new UsageError(`Unknown argument for ${command}: ${value}`);
   }
   if (values.help) return values;
+  for (const [name, flag] of [
+    ['prototype', '--prototype'],
+    ['session', '--session'],
+    ['ttl', '--ttl'],
+    ['plugin', '--plugin'],
+    ['timeout', '--timeout'],
+  ]) {
+    if (name in values && (typeof values[name] !== 'string' || values[name].startsWith('--'))) {
+      throw new UsageError(`${command} requires a value for ${flag}`);
+    }
+  }
   if (command === 'start' && !values.prototype) throw new UsageError('start requires --prototype');
+  if (command === 'start' && values.ttl === undefined && argv.includes('--ttl')) {
+    throw new UsageError('start requires a value for --ttl');
+  }
+  if (command === 'start' && values.plugin === undefined && argv.includes('--plugin')) {
+    throw new UsageError('start requires a value for --plugin');
+  }
+  if (command === 'wait' && values.timeout === undefined && argv.includes('--timeout')) {
+    throw new UsageError('wait requires a value for --timeout');
+  }
   if (command !== 'start' && !values.session) throw new UsageError(`${command} requires --session`);
   return values;
 }
 
-function parseTimeout(value = '30m') {
+function parseTimeout(value = '30s') {
   const match = /^(\d+)(ms|s|m|h)?$/.exec(value);
   if (!match) throw new UsageError(`Invalid timeout: ${value}`);
   const multipliers = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
@@ -95,14 +130,6 @@ function receipt(value) {
 
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function stableJson(value) {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (isObject(value)) {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function sessionBase() {
@@ -326,7 +353,7 @@ function assertLocalDescriptor(value, location) {
     !value
     || typeof value !== 'object'
     || Array.isArray(value)
-    || value.schemaVersion !== 1
+    || ![1, 2].includes(value.schemaVersion)
     || value.reviewShellVersion !== reviewShellVersion
     || typeof value.sessionId !== 'string'
     || !/^[a-f0-9]{32}$/.test(value.sessionId)
@@ -350,6 +377,17 @@ function assertLocalDescriptor(value, location) {
   if (new URLSearchParams(url.hash.slice(1)).get('token') !== value.token) {
     throw new Error('Session descriptor URL must contain the session token fragment');
   }
+  if (value.schemaVersion === 2) {
+    if (
+      typeof value.createdAt !== 'string'
+      || typeof value.expiresAt !== 'string'
+      || !Number.isFinite(Date.parse(value.createdAt))
+      || !Number.isFinite(Date.parse(value.expiresAt))
+      || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)
+    ) {
+      throw new Error('Invalid Prototype Review v2 session deadline');
+    }
+  }
   return value;
 }
 
@@ -367,65 +405,313 @@ async function readSession(sessionPath, { allowMissing = false } = {}) {
   if (await realpath(location.resolved) !== path.join(physical.physicalSessionDir, 'session.json')) {
     throw new Error('Session descriptor is outside the physical Prototype Review session directory');
   }
-  const descriptor = assertLocalDescriptor(JSON.parse(await readFile(location.resolved, 'utf8')), location);
-  sessionBindings.set(descriptor, {
-    physicalSessionDir: physical.physicalSessionDir,
-    sessionDirIdentity: physical.sessionDirIdentity,
-    sessionPathIdentity: { dev: info.dev, ino: info.ino },
-  });
-  return descriptor;
+  return assertLocalDescriptor(JSON.parse(await readFile(location.resolved, 'utf8')), location);
 }
 
-async function cleanupSession(sessionPath, expectedDescriptor) {
+function assertTerminal(value, location, descriptor = null) {
+  if (
+    !isObject(value)
+    || value.schemaVersion !== 1
+    || value.sessionId !== location.sessionId
+    || !['submitted', 'cancelled', 'expired'].includes(value.status)
+    || value.resourcesClosed !== true
+    || typeof value.prototypePath !== 'string'
+    || typeof value.prototypeRoot !== 'string'
+    || typeof value.prototypeId !== 'string'
+    || !Number.isInteger(value.revision)
+    || typeof value.endedAt !== 'string'
+    || !Number.isFinite(Date.parse(value.endedAt))
+  ) {
+    throw new Error('Invalid Prototype Review terminal receipt');
+  }
+  if (descriptor && (
+    value.sessionId !== descriptor.sessionId
+    || value.prototypePath !== descriptor.prototypePath
+    || value.prototypeRoot !== descriptor.prototypeRoot
+    || value.prototypeId !== descriptor.prototypeId
+    || value.revision !== descriptor.revision
+  )) {
+    throw new Error('Prototype Review terminal receipt does not match its session');
+  }
+  return value;
+}
+
+async function readTerminal(sessionPath, descriptor = null, { allowMissing = true } = {}) {
   const location = localSessionLocation(sessionPath);
-  const binding = sessionBindings.get(expectedDescriptor);
-  if (!binding) throw new Error('Prototype Review session cleanup has no bound owner identity');
   let physical;
   try {
     physical = await physicalSessionLocation(location);
   } catch (error) {
+    if (allowMissing && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  const terminalPath = path.join(location.sessionDir, 'terminal.json');
+  let info;
+  try {
+    info = await lstat(terminalPath);
+  } catch (error) {
+    if (allowMissing && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error('Prototype Review terminal receipt must be a regular non-symlink file');
+  }
+  if (await realpath(terminalPath) !== path.join(physical.physicalSessionDir, 'terminal.json')) {
+    throw new Error('Prototype Review terminal receipt is outside its session directory');
+  }
+  return assertTerminal(JSON.parse(await readFile(terminalPath, 'utf8')), location, descriptor);
+}
+
+async function readPartialSessionIdentity(sessionPath) {
+  const location = localSessionLocation(sessionPath);
+  let physical;
+  try {
+    physical = await physicalSessionLocation(location);
+  } catch {
+    return null;
+  }
+  for (const name of ['session.json', 'launch.json']) {
+    const filePath = path.join(location.sessionDir, name);
+    try {
+      const info = await lstat(filePath);
+      if (!info.isFile() || info.isSymbolicLink()) continue;
+      if (await realpath(filePath) !== path.join(physical.physicalSessionDir, name)) continue;
+      const value = JSON.parse(await readFile(filePath, 'utf8'));
+      if (isObject(value) && typeof value.prototypePath === 'string') return value;
+    } catch {
+      // An unreadable or invalid file has no identity that this command can safely use.
+    }
+  }
+  return null;
+}
+
+async function removeKnownSessionDirectory(sessionPath, allowedNames) {
+  const location = localSessionLocation(sessionPath);
+  const physical = await physicalSessionLocation(location);
+  const names = await readdir(location.sessionDir);
+  if (names.some((name) => !allowedNames.has(name))) return false;
+  const identities = new Map();
+  for (const name of names) {
+    const filePath = path.join(location.sessionDir, name);
+    const info = await lstat(filePath);
+    if (!info.isFile() || info.isSymbolicLink()) return false;
+    if (await realpath(filePath) !== path.join(physical.physicalSessionDir, name)) return false;
+    identities.set(name, { filePath, dev: info.dev, ino: info.ino });
+  }
+  for (const identity of identities.values()) {
+    const current = await lstat(identity.filePath);
+    if (
+      !current.isFile()
+      || current.isSymbolicLink()
+      || current.dev !== identity.dev
+      || current.ino !== identity.ino
+    ) return false;
+  }
+  for (const identity of identities.values()) await rm(identity.filePath);
+  const current = await physicalSessionLocation(location);
+  if (!sameSessionDirectory(current, physical)) return false;
+  await rmdir(location.sessionDir);
+  return true;
+}
+
+async function garbageCollectSessions() {
+  const base = sessionBase();
+  let entries;
+  try {
+    entries = await readdir(base, { withFileTypes: true });
+  } catch (error) {
     if (error.code === 'ENOENT') return;
     throw error;
   }
-  if (
-    physical.physicalSessionDir !== binding.physicalSessionDir
-    || physical.sessionDirIdentity.dev !== binding.sessionDirIdentity.dev
-    || physical.sessionDirIdentity.ino !== binding.sessionDirIdentity.ino
-  ) {
-    throw new Error('Prototype Review session directory physical identity changed before cleanup');
-  }
-  let info;
-  try {
-    info = await lstat(location.resolved);
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  if (info && (!info.isFile() || info.isSymbolicLink())) {
-    throw new Error('Session descriptor must be a regular non-symlink file');
-  }
-  if (info) {
+  const cutoff = Date.now() - terminalRetentionMs;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(entry.name)) continue;
+    const sessionPath = path.join(base, entry.name, 'session.json');
+    let descriptor = null;
     try {
-      if (info.dev !== binding.sessionPathIdentity.dev || info.ino !== binding.sessionPathIdentity.ino) {
-        throw new Error('Prototype Review session descriptor physical identity changed before cleanup');
+      descriptor = await readSession(sessionPath, { allowMissing: true });
+      const terminal = await readTerminal(sessionPath, descriptor);
+      if (terminal && Date.parse(terminal.endedAt) < cutoff) {
+        if (descriptor && await probeListener(descriptor) !== 'closed') continue;
+        await removeKnownSessionDirectory(sessionPath, new Set(['session.json', 'terminal.json']));
+        continue;
       }
-      if (await realpath(location.resolved) !== path.join(await realpath(location.sessionDir), 'session.json')) {
-        throw new Error('Session descriptor is outside the physical Prototype Review session directory');
-      }
-      const current = assertLocalDescriptor(JSON.parse(await readFile(location.resolved, 'utf8')), location);
-      if (stableJson(current) !== stableJson(expectedDescriptor)) {
-        throw new Error('Prototype Review session descriptor owner identity changed before cleanup');
-      }
-    } catch (error) {
-      if (error.code === 'ENOENT') return;
-      throw error;
+      if (!descriptor || !Number.isFinite(Date.parse(descriptor.createdAt))) continue;
+      if (Date.parse(descriptor.createdAt) >= cutoff) continue;
+      if (await probeListener(descriptor) !== 'closed') continue;
+      await removeKnownSessionDirectory(sessionPath, new Set(['session.json']));
+    } catch {
+      // Unknown or replaced temporary state is preserved for manual recovery.
     }
   }
-  await rm(location.resolved, { force: true });
-  try {
-    await rmdir(location.sessionDir);
-  } catch (error) {
-    if (!['ENOENT', 'ENOTEMPTY'].includes(error.code)) throw error;
+}
+
+function startLockName(prototype) {
+  const key = `${prototype.prototypePath}\0${prototype.config.id}\0${prototype.config.revision}`;
+  return `.start-${createHash('sha256').update(key).digest('hex')}.lock`;
+}
+
+async function acquireStartLock(prototype) {
+  const base = sessionBase();
+  await mkdir(base, { recursive: true, mode: 0o700 });
+  const baseInfo = await lstat(base);
+  if (!baseInfo.isDirectory() || baseInfo.isSymbolicLink()) {
+    throw new Error('Prototype Review temporary root must be a regular non-symlink directory');
   }
+  const physicalBase = await realpath(base);
+  const lockPath = path.join(base, startLockName(prototype));
+  const ownerPath = path.join(lockPath, 'owner.json');
+  const token = randomBytes(16).toString('hex');
+  const deadline = Date.now() + 40_000;
+  for (;;) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      await writeFile(ownerPath, JSON.stringify({
+        token,
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      }), { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      const [directoryInfo, ownerInfo] = await Promise.all([lstat(lockPath), lstat(ownerPath)]);
+      if (
+        !directoryInfo.isDirectory()
+        || directoryInfo.isSymbolicLink()
+        || path.dirname(await realpath(lockPath)) !== physicalBase
+        || !ownerInfo.isFile()
+        || ownerInfo.isSymbolicLink()
+        || await realpath(ownerPath) !== path.join(await realpath(lockPath), 'owner.json')
+      ) {
+        throw new Error('Prototype Review start lock physical identity is invalid');
+      }
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void utimes(ownerPath, now, now).catch(() => {});
+      }, 1_000);
+      heartbeat.unref();
+      return async () => {
+        clearInterval(heartbeat);
+        try {
+          const [currentDirectory, currentOwner] = await Promise.all([lstat(lockPath), lstat(ownerPath)]);
+          if (
+            !currentDirectory.isDirectory()
+            || currentDirectory.isSymbolicLink()
+            || currentDirectory.dev !== directoryInfo.dev
+            || currentDirectory.ino !== directoryInfo.ino
+            || !currentOwner.isFile()
+            || currentOwner.isSymbolicLink()
+            || currentOwner.dev !== ownerInfo.dev
+            || currentOwner.ino !== ownerInfo.ino
+          ) return;
+          const owner = JSON.parse(await readFile(ownerPath, 'utf8'));
+          if (owner.token !== token) return;
+          await rm(ownerPath);
+          await rmdir(lockPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let lockInfo;
+      let ownerInfo;
+      try {
+        lockInfo = await lstat(lockPath);
+        if (!lockInfo.isDirectory() || lockInfo.isSymbolicLink()) {
+          throw new Error('Prototype Review start lock is not a regular directory');
+        }
+        ownerInfo = await lstat(ownerPath);
+        if (!ownerInfo.isFile() || ownerInfo.isSymbolicLink()) {
+          throw new Error('Prototype Review start lock owner is invalid');
+        }
+      } catch (inspectionError) {
+        if (inspectionError.code !== 'ENOENT') throw inspectionError;
+      }
+      if (ownerInfo && Date.now() - ownerInfo.mtimeMs > lockStaleMs) {
+        try {
+          const current = await lstat(ownerPath);
+          if (current.dev === ownerInfo.dev && current.ino === ownerInfo.ino) {
+            await rm(ownerPath);
+            await rmdir(lockPath);
+            continue;
+          }
+        } catch (recoveryError) {
+          if (!['ENOENT', 'ENOTEMPTY'].includes(recoveryError.code)) throw recoveryError;
+        }
+      }
+      if (!ownerInfo && lockInfo && Date.now() - lockInfo.mtimeMs > lockStaleMs) {
+        try {
+          const current = await lstat(lockPath);
+          if (current.dev === lockInfo.dev && current.ino === lockInfo.ino) {
+            await rmdir(lockPath);
+            continue;
+          }
+        } catch (recoveryError) {
+          if (!['ENOENT', 'ENOTEMPTY'].includes(recoveryError.code)) throw recoveryError;
+        }
+      }
+      if (Date.now() >= deadline) throw new Error('Timed out while waiting for another Prototype Review start');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
+async function findReusableSession(prototype, { allowUnknown }) {
+  let entries;
+  try {
+    entries = await readdir(sessionBase(), { withFileTypes: true });
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  let conflict = null;
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(entry.name)) continue;
+    const sessionPath = path.join(sessionBase(), entry.name, 'session.json');
+    let descriptor;
+    try {
+      descriptor = await readSession(sessionPath, { allowMissing: true });
+    } catch {
+      descriptor = null;
+    }
+    const identity = descriptor || await readPartialSessionIdentity(sessionPath);
+    const matches = identity
+      && identity.prototypePath === prototype.prototypePath
+      && (identity.prototypeId === undefined || identity.prototypeId === prototype.config.id)
+      && (identity.revision === undefined || identity.revision === prototype.config.revision);
+    if (!matches) continue;
+    if (!descriptor) {
+      conflict ||= 'A matching Prototype Review session cannot be verified; use --new-session to preserve it and start another session';
+      continue;
+    }
+    const terminal = await readTerminal(sessionPath, descriptor);
+    if (terminal) continue;
+    let state;
+    try {
+      state = await authenticatedRequest(descriptor, '/api/status', { timeoutMs: 750 });
+    } catch {
+      conflict ||= 'A matching Prototype Review session is unreachable; use --new-session to preserve it and start another session';
+      continue;
+    }
+    if (state.status === 'submitted') {
+      const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+      if (submitted) return submittedReceipt(submitted.feedback, submitted.feedbackPath);
+    }
+    if (descriptor.schemaVersion === 2 && state.status === 'ready') {
+      return {
+        ok: true,
+        status: 'ready',
+        session: sessionPath,
+        url: descriptor.url,
+        prototypeId: descriptor.prototypeId,
+        revision: descriptor.revision,
+        reviewShellVersion,
+        reused: true,
+        expiresAt: state.expiresAt || descriptor.expiresAt,
+      };
+    }
+    conflict ||= 'A matching legacy or stopping Prototype Review session must be stopped or bypassed with --new-session';
+  }
+  if (conflict && !allowUnknown) throw new Error(conflict);
+  return null;
 }
 
 async function waitForStartup(child, sessionPath, errorPath, location, ownedFiles) {
@@ -451,54 +737,72 @@ async function startCommand(options) {
     readJsonSchema(feedbackSchemaPath),
   ]);
   const prototype = await loadAndValidatePrototype(path.resolve(options.prototype), prototypeSchema);
-  const existingReceipt = await prepareFeedbackForStart(prototype, feedbackSchema);
-  if (existingReceipt) return existingReceipt;
-  const { sessionDir, sessionId, location } = await createSessionDirectory();
-  const sessionPath = path.join(sessionDir, 'session.json');
-  const launchPath = path.join(sessionDir, 'launch.json');
-  const startupErrorPath = path.join(sessionDir, 'startup-error.json');
-  const token = randomBytes(32).toString('base64url');
-  const ownedFiles = new Map();
-  let child;
+  const explicitTtlMs = options.ttl === undefined ? undefined : parseTimeout(options.ttl);
+  await garbageCollectSessions();
+  const releaseLock = await acquireStartLock(prototype);
   try {
-    await writeAtomicJson(launchPath, {
-      schemaVersion: 1,
-      sessionId,
-      token,
+    const existingReceipt = await prepareFeedbackForStart(prototype, feedbackSchema);
+    if (existingReceipt) return existingReceipt;
+    const reusable = await findReusableSession(prototype, { allowUnknown: options.newSession === true });
+    if (reusable) return reusable;
+    const ttlMs = await resolveReviewTtl({
       prototypePath: prototype.prototypePath,
+      ttlMs: explicitTtlMs,
+      pluginSelector: options.plugin || 'ask-me',
     });
-    ownedFiles.set(launchPath, await bindOwnedSessionFile(location, launchPath));
-    if (!sameSessionDirectory(await physicalSessionLocation(location), location)) {
-      throw new Error('Prototype Review session directory physical identity changed during start');
+    const { sessionDir, sessionId, location } = await createSessionDirectory();
+    const sessionPath = path.join(sessionDir, 'session.json');
+    const launchPath = path.join(sessionDir, 'launch.json');
+    const startupErrorPath = path.join(sessionDir, 'startup-error.json');
+    const token = randomBytes(32).toString('base64url');
+    const ownedFiles = new Map();
+    let child;
+    try {
+      await writeAtomicJson(launchPath, {
+        schemaVersion: 2,
+        reviewShellVersion,
+        sessionId,
+        token,
+        prototypePath: prototype.prototypePath,
+        ttlMs,
+      });
+      ownedFiles.set(launchPath, await bindOwnedSessionFile(location, launchPath));
+      if (!sameSessionDirectory(await physicalSessionLocation(location), location)) {
+        throw new Error('Prototype Review session directory physical identity changed during start');
+      }
+      const managedByTestRunner = process.env.AW_TEST_RUNNER_PROCESS_TREE === '1';
+      child = spawn(process.execPath, [serverScript, '--launch', launchPath], {
+        detached: !managedByTestRunner,
+        stdio: 'ignore',
+      });
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      const descriptor = await waitForStartup(child, sessionPath, startupErrorPath, location, ownedFiles);
+      if (descriptor.token !== token || descriptor.sessionId !== sessionId) {
+        throw new Error('Prototype Review server returned a mismatched session descriptor');
+      }
+      ownedFiles.set(sessionPath, await bindOwnedSessionFile(location, sessionPath));
+      child.unref();
+      return {
+        ok: true,
+        status: 'ready',
+        session: sessionPath,
+        url: descriptor.url,
+        prototypeId: descriptor.prototypeId,
+        revision: descriptor.revision,
+        reviewShellVersion,
+        reused: false,
+        expiresAt: descriptor.expiresAt,
+      };
+    } catch (error) {
+      if (child && child.exitCode === null) child.kill('SIGTERM');
+      await cleanupFailedStart(location, ownedFiles);
+      throw error;
     }
-    const managedByTestRunner = process.env.AW_TEST_RUNNER_PROCESS_TREE === '1';
-    child = spawn(process.execPath, [serverScript, '--launch', launchPath], {
-      detached: !managedByTestRunner,
-      stdio: 'ignore',
-    });
-    await new Promise((resolve, reject) => {
-      child.once('spawn', resolve);
-      child.once('error', reject);
-    });
-    const descriptor = await waitForStartup(child, sessionPath, startupErrorPath, location, ownedFiles);
-    if (descriptor.token !== token || descriptor.sessionId !== sessionId) {
-      throw new Error('Prototype Review server returned a mismatched session descriptor');
-    }
-    ownedFiles.set(sessionPath, await bindOwnedSessionFile(location, sessionPath));
-    child.unref();
-    return {
-      ok: true,
-      status: 'ready',
-      session: sessionPath,
-      url: descriptor.url,
-      prototypeId: descriptor.prototypeId,
-      revision: descriptor.revision,
-      reviewShellVersion,
-    };
-  } catch (error) {
-    if (child && child.exitCode === null) child.kill('SIGTERM');
-    await cleanupFailedStart(location, ownedFiles);
-    throw error;
+  } finally {
+    await releaseLock();
   }
 }
 
@@ -531,7 +835,16 @@ async function stopReachableSession(descriptor) {
   return authenticatedRequest(descriptor, '/api/stop', { method: 'POST' });
 }
 
-async function readSubmittedFeedback(descriptor) {
+async function readSubmittedFeedback(descriptor, { allowMissing = false } = {}) {
+  const feedbackPath = path.join(descriptor.prototypeRoot, 'feedback.json');
+  let info;
+  try {
+    info = await lstat(feedbackPath);
+  } catch (error) {
+    if (allowMissing && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!info.isFile() || info.isSymbolicLink()) throw new Error('Submitted feedback must be a regular non-symlink file');
   const [prototypeSchema, feedbackSchema] = await Promise.all([
     readJsonSchema(prototypeSchemaPath),
     readJsonSchema(feedbackSchemaPath),
@@ -545,39 +858,59 @@ async function readSubmittedFeedback(descriptor) {
   ) {
     throw new Error('Session Prototype identity no longer matches prototype.json');
   }
-  const feedbackPath = path.join(descriptor.prototypeRoot, 'feedback.json');
-  const info = await lstat(feedbackPath);
-  if (!info.isFile() || info.isSymbolicLink()) throw new Error('Submitted feedback must be a regular non-symlink file');
+  if (await realpath(feedbackPath) !== path.join(descriptor.prototypeRoot, 'feedback.json')) {
+    throw new Error('Submitted feedback is outside the physical Prototype root');
+  }
   const feedback = normalizeAndValidate(
     JSON.parse(await readFile(feedbackPath, 'utf8')),
     feedbackSchema,
     'feedback',
   );
+  if (
+    feedback.prototypeId !== descriptor.prototypeId
+    || feedback.prototypeRevision !== descriptor.revision
+  ) {
+    throw new Error('Submitted feedback does not match this Prototype Review session');
+  }
   validateFeedbackAgainstPrototype(feedback, prototype.config, 'feedback');
   return { feedback, feedbackPath };
+}
+
+async function terminalResult(terminal, sessionPath) {
+  const submitted = await readSubmittedFeedback(terminal, { allowMissing: true });
+  if (submitted) return { ...submittedReceipt(submitted.feedback, submitted.feedbackPath), session: sessionPath };
+  if (terminal.status === 'submitted') {
+    throw new Error('Prototype Review ended as submitted, but its matching feedback is unavailable');
+  }
+  return {
+    ok: true,
+    status: terminal.status,
+    session: sessionPath,
+    prototypeId: terminal.prototypeId,
+    revision: terminal.revision,
+    endedAt: terminal.endedAt,
+  };
 }
 
 async function waitCommand(options) {
   const timeoutMs = parseTimeout(options.timeout);
   const sessionPath = path.resolve(options.session);
-  const descriptor = await readSession(sessionPath);
+  const descriptor = await readSession(sessionPath, { allowMissing: true });
+  if (!descriptor) {
+    const terminal = await readTerminal(sessionPath);
+    return terminal ? terminalResult(terminal, sessionPath) : { ok: true, status: 'not-found', session: sessionPath };
+  }
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
+    const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+    if (submitted) return submittedReceipt(submitted.feedback, submitted.feedbackPath);
+    const terminal = await readTerminal(sessionPath, descriptor);
+    if (terminal) {
+      return terminalResult(terminal, sessionPath);
+    }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      let stopped;
-      try {
-        stopped = await stopReachableSession(descriptor);
-      } catch {
-        // Timeout still owns cleanup of its local session descriptor.
-      }
-      if (stopped?.status === 'submitted') {
-        const submitted = await readSubmittedFeedback(descriptor);
-        await cleanupSession(sessionPath, descriptor);
-        return submittedReceipt(submitted.feedback, submitted.feedbackPath);
-      }
-      await cleanupSession(sessionPath, descriptor);
       return {
         ok: true,
         status: 'timeout',
@@ -586,53 +919,54 @@ async function waitCommand(options) {
       };
     }
     const pollMs = Math.min(remaining, 30_000);
-    const state = await authenticatedRequest(
-      descriptor,
-      `/api/wait?timeoutMs=${pollMs}`,
-      { timeoutMs: pollMs + 2_000 },
-    );
-    if (state.status === 'ready') continue;
-    if (state.status === 'cancelled') {
-      await cleanupSession(sessionPath, descriptor);
+    let state;
+    try {
+      state = await authenticatedRequest(
+        descriptor,
+        `/api/wait?timeoutMs=${pollMs}`,
+        { timeoutMs: pollMs + 2_000 },
+      );
+    } catch (error) {
+      const recovered = await readSubmittedFeedback(descriptor, { allowMissing: true });
+      if (recovered) return submittedReceipt(recovered.feedback, recovered.feedbackPath);
+      const ended = await readTerminal(sessionPath, descriptor);
+      if (ended) return terminalResult(ended, sessionPath);
+      console.error(error.message);
       return {
         ok: true,
-        status: 'cancelled',
+        status: 'unreachable',
+        session: sessionPath,
         prototypeId: descriptor.prototypeId,
         revision: descriptor.revision,
       };
     }
+    if (state.status === 'ready') continue;
+    if (['cancelled', 'expired', 'stopping'].includes(state.status)) continue;
     if (state.status !== 'submitted') throw new Error(`Unknown Prototype Review wait status: ${state.status}`);
-
-    const submitted = await readSubmittedFeedback(descriptor);
-    const { feedback, feedbackPath } = submitted;
-    try {
-      await stopReachableSession(descriptor);
-    } catch {
-      // Submitted feedback on disk is canonical even if the server already exited.
-    }
-    await cleanupSession(sessionPath, descriptor);
-    return {
-      ok: true,
-      status: 'submitted',
-      prototypeId: descriptor.prototypeId,
-      revision: descriptor.revision,
-      verdict: feedback.verdict,
-      selectedOptionCount: feedback.selectedOptions.length,
-      annotationCount: feedback.annotations.length,
-      feedback: feedbackPath,
-    };
   }
 }
 
 async function statusCommand(options) {
   const sessionPath = path.resolve(options.session);
   const descriptor = await readSession(sessionPath, { allowMissing: true });
-  if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
+  if (!descriptor) {
+    const terminal = await readTerminal(sessionPath);
+    return terminal ? terminalResult(terminal, sessionPath) : { ok: true, status: 'not-found', session: sessionPath };
+  }
+  const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+  if (submitted) {
+    return {
+      ...submittedReceipt(submitted.feedback, submitted.feedbackPath),
+      session: sessionPath,
+    };
+  }
+  const terminal = await readTerminal(sessionPath, descriptor);
+  if (terminal) return terminalResult(terminal, sessionPath);
   try {
     const state = await authenticatedRequest(descriptor, '/api/status');
-    let submitted;
     if (state.status === 'submitted') {
-      submitted = await readSubmittedFeedback(descriptor);
+      const recovered = await readSubmittedFeedback(descriptor);
+      return { ...submittedReceipt(recovered.feedback, recovered.feedbackPath), session: sessionPath };
     }
     return {
       ok: true,
@@ -642,9 +976,15 @@ async function statusCommand(options) {
       prototypeId: descriptor.prototypeId,
       revision: descriptor.revision,
       reviewShellVersion,
-      ...(submitted ? submittedReceipt(submitted.feedback, submitted.feedbackPath) : {}),
+      ...(descriptor.schemaVersion === 2 ? { expiresAt: state.expiresAt || descriptor.expiresAt } : {}),
     };
   } catch (error) {
+    const recovered = await readSubmittedFeedback(descriptor, { allowMissing: true });
+    if (recovered) {
+      return { ...submittedReceipt(recovered.feedback, recovered.feedbackPath), session: sessionPath };
+    }
+    const ended = await readTerminal(sessionPath, descriptor);
+    if (ended) return terminalResult(ended, sessionPath);
     console.error(error.message);
     return {
       ok: true,
@@ -658,19 +998,101 @@ async function statusCommand(options) {
   }
 }
 
+function probeListener(descriptor, timeoutMs = 250) {
+  const url = new URL(descriptor.url);
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: url.hostname, port: Number(url.port) });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(timeoutMs, () => finish('unknown'));
+    socket.once('connect', () => finish('open'));
+    socket.once('error', (error) => finish(error.code === 'ECONNREFUSED' ? 'closed' : 'unknown'));
+  });
+}
+
+async function waitForTerminal(sessionPath, descriptor, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const terminal = await readTerminal(sessionPath, descriptor);
+    if (terminal) return terminal;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
 async function stopCommand(options) {
+  await garbageCollectSessions();
   const sessionPath = path.resolve(options.session);
   const descriptor = await readSession(sessionPath, { allowMissing: true });
-  if (!descriptor) return { ok: true, status: 'not-found', session: sessionPath };
-  try {
-    await stopReachableSession(descriptor);
-  } catch {
-    // A local stop also cleans up a server that is already unreachable.
+  if (!descriptor) {
+    const terminal = await readTerminal(sessionPath);
+    return terminal
+      ? { ok: true, status: 'stopped', terminalStatus: terminal.status, session: sessionPath }
+      : { ok: true, status: 'not-found', session: sessionPath };
   }
-  await cleanupSession(sessionPath, descriptor);
+  const existingTerminal = await readTerminal(sessionPath, descriptor);
+  if (existingTerminal) {
+    return {
+      ok: true,
+      status: 'stopped',
+      terminalStatus: existingTerminal.status,
+      prototypeId: descriptor.prototypeId,
+      revision: descriptor.revision,
+    };
+  }
+  let requested;
+  try {
+    requested = await stopReachableSession(descriptor);
+    if (!['submitted', 'cancelled', 'expired', 'stopping'].includes(requested.status)) {
+      throw new Error(`Unknown Prototype Review stop status: ${requested.status}`);
+    }
+  } catch (error) {
+    const terminal = await waitForTerminal(sessionPath, descriptor, 3_500);
+    if (terminal) {
+      return {
+        ok: true,
+        status: 'stopped',
+        terminalStatus: terminal.status,
+        prototypeId: descriptor.prototypeId,
+        revision: descriptor.revision,
+      };
+    }
+    throw new CommandError(error.message, {
+      ok: false,
+      status: 'stop-unconfirmed',
+      session: sessionPath,
+      prototypeId: descriptor.prototypeId,
+      revision: descriptor.revision,
+    });
+  }
+  if (descriptor.schemaVersion === 1) {
+    return {
+      ok: true,
+      status: 'stopping',
+      session: sessionPath,
+      prototypeId: descriptor.prototypeId,
+      revision: descriptor.revision,
+    };
+  }
+  const terminal = await waitForTerminal(sessionPath, descriptor, 6_000);
+  if (!terminal) {
+    throw new CommandError('Prototype Review shutdown could not be confirmed', {
+      ok: false,
+      status: 'stop-unconfirmed',
+      session: sessionPath,
+      prototypeId: descriptor.prototypeId,
+      revision: descriptor.revision,
+    });
+  }
   return {
     ok: true,
     status: 'stopped',
+    terminalStatus: terminal.status,
     prototypeId: descriptor.prototypeId,
     revision: descriptor.revision,
   };
@@ -698,6 +1120,11 @@ async function main() {
       console.error(options?.command ? commandHelp(options.command) : globalHelp());
       receipt({ ok: false, status: 'usage', error: error.message });
       return 2;
+    }
+    if (error instanceof CommandError) {
+      console.error(error.message);
+      receipt(error.commandReceipt);
+      return 1;
     }
     console.error(error.stack || error.message);
     receipt({ ok: false, status: 'failed', error: error.message });

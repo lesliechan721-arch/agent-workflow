@@ -22,9 +22,11 @@ import {
   readJsonSchema,
   validateFeedbackAgainstPrototype,
 } from './review-contract.mjs';
+import { MAX_REVIEW_TTL_MS } from './review-config.mjs';
 
 const maxBodyBytes = 2 * 1024 * 1024;
 const reviewShellVersion = 2;
+const shutdownGraceMs = 3_000;
 const shellFiles = new Set(['app.js', 'index.html', 'review-policy.mjs', 'styles.css']);
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -189,10 +191,15 @@ async function startServer(launchPath) {
   const launch = await readRegularJson(launchPath, 'Launch descriptor');
   if (
     !isObject(launch)
+    || launch.schemaVersion !== 2
+    || launch.reviewShellVersion !== reviewShellVersion
     || typeof launch.sessionId !== 'string'
     || !/^[a-f0-9]{32}$/.test(launch.sessionId)
     || typeof launch.token !== 'string'
     || typeof launch.prototypePath !== 'string'
+    || !Number.isInteger(launch.ttlMs)
+    || launch.ttlMs <= 0
+    || launch.ttlMs > MAX_REVIEW_TTL_MS
   ) {
     throw new Error('Invalid launch descriptor');
   }
@@ -234,9 +241,34 @@ async function startServer(launchPath) {
   };
   const feedbackPath = path.join(prototype.prototypeRoot, 'feedback.json');
   const sessionPath = path.join(sessionDir, 'session.json');
+  const terminalPath = path.join(sessionDir, 'terminal.json');
   const waiters = new Set();
   const activeSubmissions = new Set();
+  const sockets = new Set();
+  const createdAtMs = Date.now();
+  const createdAtMonotonic = performance.now();
+  const expiresAtMs = createdAtMs + launch.ttlMs;
+  const expiresAtMonotonic = createdAtMonotonic + launch.ttlMs;
   let stopping = false;
+  let finalStatus = null;
+  let finalization = null;
+  let expiryTimer = null;
+  let origin;
+  let server;
+  let finishLifetime;
+  const lifetime = new Promise((resolve) => {
+    finishLifetime = resolve;
+  });
+
+  function deadlinePassed() {
+    return Date.now() >= expiresAtMs || performance.now() >= expiresAtMonotonic;
+  }
+
+  function assertSubmissionDeadline() {
+    if (deadlinePassed()) {
+      throw new HttpError(410, 'Prototype Review session expired before feedback was saved');
+    }
+  }
 
   async function currentPrototype() {
     await assertDirectoryIdentity(prototype.prototypeRoot, prototypeRootIdentity, 'Prototype root');
@@ -322,6 +354,7 @@ async function startServer(launchPath) {
         throw new Error('Feedback temporary is outside the Prototype root');
       }
       await currentPrototype();
+      assertSubmissionDeadline();
       try {
         await link(temporary, feedbackPath);
       } catch (error) {
@@ -341,17 +374,119 @@ async function startServer(launchPath) {
   function notifyWaiters(status) {
     for (const waiter of waiters) {
       clearTimeout(waiter.timer);
-      sendJson(waiter.response, 200, { ok: true, status });
+      try {
+        sendJson(waiter.response, 200, { ok: true, status });
+      } catch {
+        waiter.response.destroy();
+      }
     }
     waiters.clear();
   }
 
-  let origin;
-  const server = http.createServer(async (request, response) => {
+  async function canonicalFeedbackExists() {
+    try {
+      return await readCanonicalFeedback({ allowMissing: true }) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  function closeServerBounded() {
+    return new Promise((resolve) => {
+      let settled = false;
+      let forceTimer;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(forceTimer);
+        resolve();
+      };
+      forceTimer = setTimeout(() => {
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        for (const socket of sockets) socket.destroy();
+        setTimeout(finish, 50);
+      }, shutdownGraceMs);
+      server.close(finish);
+      if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    });
+  }
+
+  function finalize(requestedStatus) {
+    stopping = true;
+    if (expiryTimer) clearTimeout(expiryTimer);
+    if (finalization) return finalization;
+    finalization = (async () => {
+      const submissions = await Promise.allSettled([...activeSubmissions]);
+      const submitted = requestedStatus === 'submitted'
+        || submissions.some((result) => result.status === 'fulfilled')
+        || await canonicalFeedbackExists();
+      finalStatus = submitted ? 'submitted' : requestedStatus;
+      notifyWaiters(finalStatus);
+      await closeServerBounded();
+      try {
+        await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
+        await writeAtomicJson(terminalPath, {
+          schemaVersion: 1,
+          sessionId: launch.sessionId,
+          prototypePath: prototype.prototypePath,
+          prototypeRoot: prototype.prototypeRoot,
+          prototypeId: prototype.config.id,
+          revision: prototype.config.revision,
+          status: finalStatus,
+          resourcesClosed: true,
+          endedAt: new Date().toISOString(),
+        }, { compact: true });
+      } catch (error) {
+        console.error(`Cannot persist Prototype Review terminal receipt: ${error.message}`);
+      }
+      process.off('SIGINT', handleSignal);
+      process.off('SIGTERM', handleSignal);
+      finishLifetime();
+      return finalStatus;
+    })();
+    return finalization;
+  }
+
+  function handleSignal() {
+    void finalize('cancelled');
+  }
+
+  function scheduleExpiry() {
+    const remaining = Math.min(expiresAtMs - Date.now(), expiresAtMonotonic - performance.now());
+    if (remaining <= 0) {
+      void finalize('expired');
+      return;
+    }
+    expiryTimer = setTimeout(() => scheduleExpiry(), Math.max(1, remaining));
+  }
+
+  server = http.createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url || '/', origin);
+      if (deadlinePassed()) {
+        if (requestUrl.pathname.startsWith('/api/')) {
+          assertApiRequest(request, launch.token, origin);
+        }
+        const readableTerminalRequest = (
+          request.method === 'GET'
+          && ['/api/status', '/api/wait'].includes(requestUrl.pathname)
+        ) || (request.method === 'POST' && requestUrl.pathname === '/api/stop');
+        sendJson(response, readableTerminalRequest ? 200 : 410, { ok: true, status: 'expired' });
+        void finalize('expired');
+        return;
+      }
       if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
         assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, {
+            ok: true,
+            status: finalStatus || 'stopping',
+            prototypeId: prototype.config.id,
+            revision: prototype.config.revision,
+            expiresAt: new Date(expiresAtMs).toISOString(),
+          });
+          return;
+        }
         await currentPrototype();
         const feedback = await readCanonicalFeedback({ allowMissing: true });
         sendJson(response, 200, {
@@ -361,13 +496,14 @@ async function startServer(launchPath) {
           revision: prototype.config.revision,
           ...(feedback ? feedbackReceipt(feedback, feedbackPath) : {}),
           url: `${origin}/review/index.html`,
+          expiresAt: new Date(expiresAtMs).toISOString(),
         });
         return;
       }
       if (request.method === 'GET' && requestUrl.pathname === '/api/wait') {
         assertApiRequest(request, launch.token, origin);
         if (stopping) {
-          sendJson(response, 200, { ok: true, status: 'cancelled' });
+          sendJson(response, 200, { ok: true, status: finalStatus || 'stopping' });
           return;
         }
         await currentPrototype();
@@ -399,6 +535,7 @@ async function startServer(launchPath) {
           throw new HttpError(415, 'Feedback must use application/json');
         }
         const feedback = normalizeAndValidate(await receiveJson(request), feedbackSchema, 'feedback');
+        assertSubmissionDeadline();
         if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
         if (
           feedback.prototypeId !== prototype.config.id
@@ -415,35 +552,29 @@ async function startServer(launchPath) {
         } finally {
           activeSubmissions.delete(submission);
         }
+        stopping = true;
         sendJson(response, 200, {
           ok: true,
           status: 'submitted',
           accepted: committed.accepted,
           ...feedbackReceipt(committed.feedback, feedbackPath),
         });
-        notifyWaiters('submitted');
+        void finalize('submitted');
         return;
       }
       if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {
         assertApiRequest(request, launch.token, origin);
         if (stopping) {
-          sendJson(response, 200, { ok: true, status: 'cancelled' });
+          sendJson(response, 200, { ok: true, status: finalStatus || 'stopping' });
           return;
         }
         stopping = true;
         const submissions = await Promise.allSettled([...activeSubmissions]);
-        let submitted = submissions.some((result) => result.status === 'fulfilled');
-        if (!submitted) {
-          try {
-            submitted = await readCanonicalFeedback({ allowMissing: true }) !== null;
-          } catch {
-            // Invalid or foreign feedback never changes a cancellation into submission.
-          }
-        }
+        const submitted = submissions.some((result) => result.status === 'fulfilled')
+          || await canonicalFeedbackExists();
         const status = submitted ? 'submitted' : 'cancelled';
         sendJson(response, 200, { ok: true, status });
-        notifyWaiters(status);
-        setImmediate(() => server.close());
+        void finalize(status);
         return;
       }
       if (requestUrl.pathname.startsWith('/api/')) throw new HttpError(404, 'API route not found');
@@ -475,7 +606,17 @@ async function startServer(launchPath) {
     } catch (error) {
       const status = error.status || (error.code === 'ENOENT' ? 404 : 400);
       sendJson(response, status, { ok: false, status: 'failed', error: error.message });
+      if (status === 409 && error.message.includes('Prototype revision changed')) {
+        void finalize('cancelled');
+      }
+      if (status === 410 && error.message.includes('Prototype Review session expired')) {
+        void finalize('expired');
+      }
     }
+  });
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
   });
 
   await new Promise((resolve, reject) => {
@@ -486,7 +627,7 @@ async function startServer(launchPath) {
   if (!address || typeof address === 'string') throw new Error('Prototype Review server did not allocate a port');
   origin = `http://127.0.0.1:${address.port}`;
   const descriptor = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     reviewShellVersion,
     sessionId: launch.sessionId,
     token: launch.token,
@@ -496,21 +637,17 @@ async function startServer(launchPath) {
     prototypeRoot: prototype.prototypeRoot,
     prototypeId: prototype.config.id,
     revision: prototype.config.revision,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(createdAtMs).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
   };
   await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
   await writeAtomicJson(sessionPath, descriptor, { compact: true });
   await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
   await rm(launchPath, { force: true });
-
-  const close = () => {
-    if (stopping) return;
-    stopping = true;
-    notifyWaiters('cancelled');
-    server.close();
-  };
-  process.once('SIGINT', close);
-  process.once('SIGTERM', close);
+  process.once('SIGINT', handleSignal);
+  process.once('SIGTERM', handleSignal);
+  scheduleExpiry();
+  await lifetime;
 }
 
 const args = parseArgs(process.argv.slice(2));
