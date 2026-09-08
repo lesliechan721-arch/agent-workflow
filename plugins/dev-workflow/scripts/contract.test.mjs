@@ -5,7 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code'];
+const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-build', 'dev-breakdown', 'dev-implement', 'dev-review-code'];
 const decisionSkills = ['decision-shape', 'decision-grill', 'decision-prototype'];
 const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
@@ -58,7 +58,7 @@ function assertCaseDocument(document) {
 
 const target = await context();
 
-test('manifest exposes five local Skills and declares the ask-me dependency', async () => {
+test('manifest exposes local Skills and declares the ask-me dependency', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
   assert.deepEqual(manifest.dependencies, ['ask-me']);
@@ -69,7 +69,7 @@ test('manifest exposes five local Skills and declares the ask-me dependency', as
   }
 });
 
-test('source exposes five directly usable Skills', async () => {
+test('source exposes seven directly usable Skills', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
     const skillRoot = path.join(target.source, 'skills', name);
@@ -109,7 +109,7 @@ test('review behavior suites remain structurally valid', async () => {
   }
 });
 
-test('workflow routing eval observes leaf candidates but routes Shape through decision-shape', async () => {
+test('workflow routing Eval includes Build and decision candidates', async () => {
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
   const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
   const router = manifest.suites.find((suite) => suite.id === 'router-composed');
@@ -119,6 +119,8 @@ test('workflow routing eval observes leaf candidates but routes Shape through de
   assert.equal(routingCorpus.suite.participants.includes('decision-shape'), true);
   assert.equal(routingCorpus.suite.participants.includes('decision-grill'), true);
   assert.equal(routingCorpus.suite.participants.includes('decision-prototype'), true);
+  assert.equal(routingCorpus.suite.participants.includes('dev-build'), true);
+  assert.equal(routingCorpus.suite.participants.includes('dev-breakdown'), true);
 
   const cases = assertCaseDocument(routingCorpus);
   for (const id of [
@@ -142,7 +144,7 @@ test('workflow routing eval observes leaf candidates but routes Shape through de
   }
   assert.deepEqual(
     cases.find((entry) => entry.id === 'route_fast_verified_to_code_review').input.expected.loadedSkills,
-    ['dev-workflow', 'dev-review-code'],
+    ['dev-workflow', 'dev-build'],
   );
   const composition = assertCaseDocument(
     await readJson(path.join(evalRoot, 'composition-behavior-cases.json')),
@@ -165,4 +167,18 @@ test('runtime keeps all Skill roots and conditional references', async () => {
   await read(path.join(skillsRoot, 'dev-workflow', 'references', 'review-repair.md'));
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
+  await read(path.join(skillsRoot, 'dev-review-code', 'references', 'milestone-review.md'));
+  for (const reference of ['coordinated-build.md', 'review-repair.md', 'checkpoints.md']) {
+    await read(path.join(skillsRoot, 'dev-build', 'references', reference));
+  }
+  await read(path.join(skillsRoot, 'dev-breakdown', 'assets', 'work-template.md'));
+  await assert.rejects(
+    read(path.join(skillsRoot, 'dev-implement', 'assets', 'work-template.md')),
+    { code: 'ENOENT' },
+  );
+  if (target.platform) {
+    for (const name of ['dev-build', 'dev-breakdown']) {
+      await assert.rejects(readdir(path.join(skillsRoot, name, 'evals')), { code: 'ENOENT' });
+    }
+  }
 });

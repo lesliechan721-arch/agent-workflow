@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-workflow",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "participants": [
+      "dev-build",
+      "dev-breakdown",
+      "dev-implement",
+      "dev-spec",
+      "dev-review-spec",
+      "dev-review-code",
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "fast_one_question_stays_local",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow。只是内部姓名空值显示，我尚未选“未填写”还是“—”；先向我问这个问题，不要改代码，也不需要完整访谈。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "局部一个问题可在当前交互澄清，不能跳实现或强迫Shape宏。",
+        "minimalCounterexample": "若涉及多项依赖决定应进入 decision-shape。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "fast_confirmed_enters_build",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow 完成这个局部 bug。结果和验证已明确，用户确认过；不需要持久流程文档。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "dev-build"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "Fast readiness 完成后进入闭环 Build，不强制 Spec。",
+        "minimalCounterexample": "未对齐时先澄清。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "complex_shape_first",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow 实现新的权限继承系统，范围、兼容、审批和回滚都没有决定。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "decision-shape"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "实现意图不能跳过材料共识。",
+        "minimalCounterexample": "已有完整批准 Spec 时进入 Build。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "approved_spec_build",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow 继续；当前 Spec 已通过正式审查并得到明确批准，尚未实施。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "dev-build"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "生命周期进入 Build，执行拓扑由 Build 决定。",
+        "minimalCounterexample": "只要求实现一个切片可以直接 dev-implement。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "only_breakdown",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只把已批准 Spec 拆成可交接工作项，先不要执行，不需要完整开发流程。",
+        "expected": {
+          "loadedSkills": [
+            "dev-breakdown"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "独立分解不激活宏流程或实现。",
+        "minimalCounterexample": "要求分解并交付完整结果时使用 dev-build。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "only_bounded_implementation",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只实现我分配的 normalizeName 工作项，运行测试后把结果返回，整个项目由另一位协调者管理。",
+        "expected": {
+          "loadedSkills": [
+            "dev-implement"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "叶子独立实现，不再次分解全局需求。",
+        "minimalCounterexample": "需要整个多切片闭环时使用 dev-build。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "milestone_review_not_new_skill",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只审查当前权限核心这个阶段，判断是否可以解锁下游。其余功能尚未进入本阶段，不要修复代码。",
+        "expected": {
+          "loadedSkills": [
+            "dev-review-code"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "同一代码审查能力接受阶段范围。",
+        "minimalCounterexample": "要求设计权限模型时需要需求决定能力。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "only_build_coordination",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
+        "expected": {
+          "loadedSkills": [
+            "dev-build"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "Build 是独立宏能力，不要求先调用 dev-workflow。",
+        "minimalCounterexample": "单项改动直接 dev-implement。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "bounded_interview_uses_grill",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow，先通过一次有界访谈确定内部通知的默认开关；只需逐轮讨论，不需要原型或持续维护 Shape。本轮不要实现。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "decision-grill"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "一次有界访谈遵守当前 ask-me 的原子入口，不强制进入 Shape。",
+        "minimalCounterexample": "多个相互依赖的决定需要持续塑形时进入 decision-shape。",
+        "allowedVariance": "只判断当前能力选择，不据此推断真实访谈或原型执行成功。"
+      }
+    },
+    {
+      "id": "single_prototype_uses_prototype",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "使用 dev-workflow，只做一个可以操作的候选页面，让我确定列表密度。已有需求和约束，只剩这一个体验问题，不需要跨会话维护 Shape，也不要生产实现。",
+        "expected": {
+          "loadedSkills": [
+            "dev-workflow",
+            "decision-prototype"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "单一体验问题直接使用原型能力；需在多轮问答和证据间切换时才由 Shape 组织。",
+        "minimalCounterexample": "多个相互依赖的决定需要持续塑形时进入 decision-shape。",
+        "allowedVariance": "只判断当前能力选择，不据此推断真实访谈或原型执行成功。"
+      }
+    }
+  ]
+}

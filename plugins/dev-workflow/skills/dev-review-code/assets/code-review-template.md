@@ -1,49 +1,32 @@
 # Code Review
 
-- Review target: `<commit range or current diff>`
-- Implementation version: `<version identifier>`
-- Spec: `<path / none>`
-- Spec version: `<version identifier / none>`
-- Assurance: `Fast | Standard | Assured`
-- Result: `clean | blocked | incomplete`
-- Reviewer topology: `one dual-axis reviewer | two axis reviewers`
+- 审查目的：阶段 / 最终
+- 目标与版本：
+- 需求 / Spec 及版本：
+- 实际审查范围与基线：
+- 保障要求与 reviewer：
+- 结论：clean / blocked / incomplete
 
-## 结论
+## 结论含义
 
-用一句话说明是否可以交付。`incomplete` 说明缺失的审查轴、目标稳定性或证据。
+说明本次仅允许相关下游继续，还是支持最终交付；证据不足时说明缺口。
 
 ## Spec fidelity
 
-一次列出当前证据支持的全部遗漏、scope creep、未经批准的材料偏离和验收缺口，并按影响排序。
-
-每项包含位置、预期、实际、影响、类型和可验证关闭条件。没有问题时写“无”。
+每个 blocker：证据/位置、预期与实际、材料影响、可验证关闭条件。没有时写无。
 
 ## Engineering quality
 
-一次列出当前证据支持的正确性、安全性、故障处理、并发、维护性、项目规范、测试可信度和不必要复杂度问题，并按影响排序。
+每个 blocker：证据/位置、材料影响、最小修复方向、可验证关闭条件。没有时写无。
 
-每项包含位置、证据、影响、建议方向、类型和可验证关闭条件。测试 finding 还应说明被保护的可观察风险和最低稳定验证 seam。没有问题时写“无”。
+## 非阻塞建议与剩余风险
 
-最终产物泄漏被否决方案、Review 过程、修复历史或无消费者价值的否定性指令时，只有它会误导消费者、改变公开行为或违反当前合同时才作为 blocker；其它情况放入非阻塞建议。
+只列与当前工作有意义的内容，不把建议纳入自动修复范围。
 
-类型使用：`implementation-defect` / `spec-fidelity` / `spec-defect` / `material-decision` / `evidence-needed`。
+## 实际验证与限制
 
-## 非阻塞建议
+已运行的验证及结果；未验证内容和原因。
 
-记录偏好性简化、相邻重构和不改变当前交付门槛的改进。没有时写“无”。
+## 与上一份报告的关系
 
-## 已运行验证
-
-列出实际命令或行为检查及结果。没有运行时说明原因。
-
-## 与上一份 Review 比较
-
-仅在复审时保留：
-
-- 已解决：
-- 仍存在：
-- 新发现：
-
-## 建议动作
-
-说明下一步需要完成哪类工作，以及满足什么条件后可以重新审查。Review 需要用户决定时，只给用户可选动作，不继续自动修复。
+只在复审时保留：已解决、仍存在、新发现；说明有争议的旧 finding 是被修复、经证据撤回，还是尚未关闭。补充专项审查注明覆盖缺口和与整体结论的关系。必要时注明受阻下游和用户检查点。
