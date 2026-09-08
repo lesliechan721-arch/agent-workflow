@@ -48,7 +48,12 @@
           "src/normalize-name.js",
           "work.md"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "恢复读取工件但仍需校验事实。",
@@ -116,7 +121,12 @@
         "allowedWorkspaceChanges": [
           "src/normalize-name.js"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "direct 与 delegation 是执行选择，不是固定门禁。",

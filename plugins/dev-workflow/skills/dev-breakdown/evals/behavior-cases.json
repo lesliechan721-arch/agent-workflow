@@ -118,7 +118,12 @@
         "allowedWorkspaceChanges": [
           "docs/work.md"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "docs/work.md",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "纵向切片不能成为所有重构的唯一程序。",

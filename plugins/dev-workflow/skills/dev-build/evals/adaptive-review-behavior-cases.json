@@ -51,7 +51,12 @@
           "src/clamp.js",
           "work.md"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "src/clamp.js",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "一轮必停会打断具有新依据、仍在范围内的明确修复；会话用例只验证执行与暂停语义。",

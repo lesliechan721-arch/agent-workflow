@@ -55,12 +55,8 @@
         ],
         "artifacts": [
           {
-            "path": "spec.md",
-            "exists": false
-          },
-          {
-            "path": "work.md",
-            "exists": false
+            "path": "src/format-name.js",
+            "exists": true
           }
         ]
       },
@@ -93,10 +89,8 @@
       },
       "expected": {
         "output": "用户说明生产租户删除后，不再按 Fast 直接实现；保留已知事实，说明权限、恢复和范围需进一步确定。",
-        "workspaceUnchanged": false,
-        "allowedWorkspaceChanges": [
-          "docs/dev/**"
-        ],
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
         "artifacts": []
       },
       "audit": {

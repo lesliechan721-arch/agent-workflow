@@ -88,7 +88,12 @@
           "src/help.js",
           "test/help.test.js"
         ],
-        "artifacts": []
+        "artifacts": [
+          {
+            "path": "src/help.js",
+            "exists": true
+          }
+        ]
       },
       "audit": {
         "rationale": "原有“全部 blocker”需要收窄为分配给该 worker 的集合。",
