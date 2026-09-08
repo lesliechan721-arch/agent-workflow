@@ -149,7 +149,7 @@ test('eval manifests point to parseable case documents with valid participant na
 });
 
 function workflowEvidence(overrides = {}) {
-  return {
+  const evidence = {
     version: 1,
     rootThreadId: 'root',
     completion: { status: 'completed' },
@@ -164,6 +164,10 @@ function workflowEvidence(overrides = {}) {
     collaborationCalls: [],
     ...overrides,
   };
+  evidence.collaborationCalls.forEach((call, index) => {
+    call.ordinal = index + 1;
+  });
+  return evidence;
 }
 
 async function workflowFixture() {
@@ -210,10 +214,17 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
   const persistent = corpus.cases.find((entry) => entry.id === 'persistent-artifact-uses-builder');
   const technical = corpus.cases.find((entry) => entry.id === 'technical-spike-builder-runs-evidence');
   const direct = corpus.cases.find((entry) => entry.id === 'direct-chat-example-stays-local');
+  const tiny = corpus.cases.find((entry) => entry.id === 'tiny-persisted-example-can-stay-local');
   assert.ok(persistent);
   assert.ok(technical);
   assert.ok(direct);
-  const fixtures = [await workflowFixture(), await workflowFixture(), await workflowFixture()];
+  assert.ok(tiny);
+  const fixtures = [
+    await workflowFixture(),
+    await workflowFixture(),
+    await workflowFixture(),
+    await workflowFixture(),
+  ];
   try {
     const prepared = await prepareBuilderWorkflow({
       case: persistent,
@@ -234,7 +245,10 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     );
     await mkdir(path.join(prototypeRoot, 'artifact'), { recursive: true });
     await Promise.all([
-      writeFile(path.join(prototypeRoot, 'brief.md'), '# 设置页信息密度\n'),
+      writeFile(
+        path.join(prototypeRoot, 'brief.md'),
+        '# 设置页信息密度\n\n比较 compact 和 comfortable 的信息密度。\n',
+      ),
       writeFile(path.join(prototypeRoot, 'prototype.json'), JSON.stringify({
         schemaVersion: 2,
         id: 'settings-density',
@@ -252,8 +266,14 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
         ],
         stopCondition: '用户选择一种密度或要求修订',
       })),
-      writeFile(path.join(prototypeRoot, 'artifact', 'compact.html'), '<h1>紧凑 临时原型</h1>\n'),
-      writeFile(path.join(prototypeRoot, 'artifact', 'comfortable.html'), '<h1>舒适 临时原型</h1>\n'),
+      writeFile(
+        path.join(prototypeRoot, 'artifact', 'compact.html'),
+        '<main><h1>compact</h1><p>通知</p><p>语言</p></main>\n',
+      ),
+      writeFile(
+        path.join(prototypeRoot, 'artifact', 'comfortable.html'),
+        '<main><h1>comfortable</h1><p>通知</p><p>语言</p></main>\n',
+      ),
     ]);
     const added = [
       'prototypes/settings-density/brief.md',
@@ -293,11 +313,18 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
           tool: 'wait_agent',
           output: { status: { builder: { completed: 'done' } } },
         },
+        {
+          threadId: 'root',
+          tool: 'exec_command',
+          arguments: { cmd: "sed -n '1,160p' prototypes/settings-density/artifact/compact.html" },
+          output: { exitCode: 0 },
+          status: 'completed',
+        },
       ],
     });
     await Promise.all([
       writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence)),
-      writeFile(fixtures[0].paths.modelOutput, '候选已准备，等待用户决定。\n'),
+      writeFile(fixtures[0].paths.modelOutput, '证据范围 -> 已核对 compact artifact。\n'),
     ]);
     const passing = await gradeBuilderWorkflow({
       case: persistent,
@@ -305,6 +332,94 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[0].paths,
     });
     assert.equal(passing.passed, true, JSON.stringify(passing.details));
+
+    evidence.collaborationCalls.push({
+      ordinal: evidence.collaborationCalls.length + 1,
+      threadId: 'root',
+      linkedThreadId: 'builder',
+      tool: 'wait_agent',
+      output: { status: { builder: { completed: 'done' } } },
+    });
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
+    const repeatedTerminal = await gradeBuilderWorkflow({
+      case: persistent,
+      variant: 'current',
+      paths: fixtures[0].paths,
+    });
+    assert.equal(repeatedTerminal.passed, true, JSON.stringify(repeatedTerminal.details));
+    evidence.collaborationCalls.pop();
+
+    const persistentRead = evidence.collaborationCalls.pop();
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
+    const missingPersistentRead = await gradeBuilderWorkflow({
+      case: persistent,
+      variant: 'current',
+      paths: fixtures[0].paths,
+    });
+    assert.equal(missingPersistentRead.passed, false);
+    assert.equal(
+      missingPersistentRead.details.assertions.find((entry) => (
+        entry.name === 'root_artifact_read'
+      )).passed,
+      false,
+    );
+    evidence.collaborationCalls.push(persistentRead);
+
+    evidence.collaborationCalls.splice(3, 0, evidence.collaborationCalls.pop());
+    evidence.collaborationCalls.forEach((call, index) => {
+      call.ordinal = index + 1;
+    });
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
+    const prematurePersistentRead = await gradeBuilderWorkflow({
+      case: persistent,
+      variant: 'current',
+      paths: fixtures[0].paths,
+    });
+    assert.equal(prematurePersistentRead.passed, false);
+    assert.equal(
+      prematurePersistentRead.details.assertions.find((entry) => (
+        entry.name === 'root_artifact_read'
+      )).passed,
+      false,
+    );
+    evidence.collaborationCalls.splice(3, 1);
+    evidence.collaborationCalls.push(persistentRead);
+    evidence.collaborationCalls.forEach((call, index) => {
+      call.ordinal = index + 1;
+    });
+    await writeFile(fixtures[0].paths.modelOutput, 'done\n');
+    const persistentDone = await gradeBuilderWorkflow({
+      case: persistent,
+      variant: 'current',
+      paths: fixtures[0].paths,
+    });
+    assert.equal(persistentDone.passed, false);
+    assert.equal(
+      persistentDone.details.assertions.find((entry) => (
+        entry.name === 'model_output_mapping:证据范围'
+      )).passed,
+      false,
+    );
+    await writeFile(fixtures[0].paths.modelOutput, '证据范围 -> 已核对 compact artifact。\n');
+    await writeFile(fixtures[0].paths.evidence, JSON.stringify(evidence));
+
+    await writeFile(path.join(prototypeRoot, 'artifact', 'compact.html'), '');
+    const emptyArtifact = await gradeBuilderWorkflow({
+      case: persistent,
+      variant: 'current',
+      paths: fixtures[0].paths,
+    });
+    assert.equal(emptyArtifact.passed, false);
+    assert.equal(
+      emptyArtifact.details.assertions.find((entry) => (
+        entry.name === 'content:prototypes/settings-density/artifact/compact.html'
+      )).passed,
+      false,
+    );
+    await writeFile(
+      path.join(prototypeRoot, 'artifact', 'compact.html'),
+      '<main><h1>compact</h1><p>通知</p><p>语言</p></main>\n',
+    );
 
     const builderThread = evidence.threadGraph[1];
     const builderSpawn = evidence.collaborationCalls.find((entry) => entry.tool === 'spawn_agent');
@@ -369,15 +484,17 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     await mkdir(path.join(spikeRoot, 'artifact'), { recursive: true });
     await Promise.all([
       writeFile(path.join(spikeRoot, 'brief.md'), '# Node.js Web Crypto spike\n\n浏览器兼容范围不在本轮证据内。\n'),
-      writeFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), 'console.log("Web Crypto supported")\n'),
-      writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
-        'globalThis.crypto.present=true',
-        'crypto.subtle.present=true',
-        'getRandomValues.call=ok',
-        'subtle.digest.call=ok',
-        `subtle.digest.sha256=${'a'.repeat(64)}`,
+      writeFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), [
+        "const input = new TextEncoder().encode('ask-me');",
+        "const digest = await crypto.subtle.digest('SHA-256', input);",
+        "const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');",
+        "process.stdout.write(JSON.stringify({ runtime: process.version, sha256 }) + '\\n');",
         '',
       ].join('\n')),
+      writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), JSON.stringify({
+        runtime: process.version,
+        sha256: 'cde17348a6dbdbc1775b65ba025cc711120258318c69c0b8118bf7b15bbc3441',
+      })),
     ]);
     const spikeEvidence = workflowEvidence({
       workspaceDiff: {
@@ -417,6 +534,8 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
           arguments: {
             cmd: 'node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt',
           },
+          output: { exitCode: 0 },
+          status: 'completed',
         },
         {
           threadId: 'root',
@@ -424,11 +543,18 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
           tool: 'wait_agent',
           output: { status: { builder: { completed: 'done' } } },
         },
+        {
+          threadId: 'root',
+          tool: 'exec_command',
+          arguments: { cmd: "sed -n '1,160p' prototypes/web-crypto-runtime/artifact/result.txt" },
+          output: { exitCode: 0 },
+          status: 'completed',
+        },
       ],
     });
     await Promise.all([
       writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence)),
-      writeFile(fixtures[1].paths.modelOutput, 'Web Crypto 证据已保存。\n'),
+      writeFile(fixtures[1].paths.modelOutput, '证据范围 -> 当前 Node 运行的 result.txt。\n'),
     ]);
     const spikeGrade = await gradeBuilderWorkflow({
       case: technical,
@@ -436,112 +562,69 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[1].paths,
     });
     assert.equal(spikeGrade.passed, true, JSON.stringify(spikeGrade.details));
-    const fixedEvidence = await readFile(path.join(spikeRoot, 'artifact', 'result.txt'), 'utf8');
-    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
-      'Web Crypto runtime spike',
-      JSON.stringify({
-        globalThisCrypto: true,
-        globalThisCryptoSubtle: true,
-        sha256Probe: 'a'.repeat(64),
-      }, null, 2),
-      '',
-    ].join('\n'));
-    const jsonEvidenceGrade = await gradeBuilderWorkflow({
+
+    const probeCommand = spikeEvidence.collaborationCalls.find((entry) => (
+      entry.threadId === 'builder' && entry.tool === 'exec_command'
+    ));
+    probeCommand.output.exitCode = 1;
+    await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
+    const failedProbeCommand = await gradeBuilderWorkflow({
       case: technical,
       variant: 'current',
       paths: fixtures[1].paths,
     });
-    assert.equal(jsonEvidenceGrade.passed, true, JSON.stringify(jsonEvidenceGrade.details));
+    assert.equal(failedProbeCommand.passed, false);
+    assert.equal(
+      failedProbeCommand.details.assertions.find((entry) => (
+        entry.name === 'technical_probe_execution'
+      )).passed,
+      false,
+    );
+    probeCommand.output.exitCode = 0;
+    await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
+
+    const validSpikeSource = await readFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), 'utf8');
+    await writeFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), '');
+    const emptyProbeSource = await gradeBuilderWorkflow({
+      case: technical,
+      variant: 'current',
+      paths: fixtures[1].paths,
+    });
+    assert.equal(emptyProbeSource.passed, false);
+    assert.equal(
+      emptyProbeSource.details.assertions.find((entry) => (
+        entry.name === 'technical_probe_source'
+      )).passed,
+      false,
+    );
+    await writeFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), validSpikeSource);
 
     await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), JSON.stringify({
-      checks: {
-        globalThisCrypto: {
-          present: true,
-          hasSubtle: true,
-        },
-      },
-      probe: {
-        success: true,
-        sha256Hex: 'a'.repeat(64),
-      },
-    }, null, 2));
-    const nestedJsonEvidenceGrade = await gradeBuilderWorkflow({
+      runtime: process.version,
+      sha256: '0'.repeat(64),
+    }));
+    const invalidProbeResult = await gradeBuilderWorkflow({
       case: technical,
       variant: 'current',
       paths: fixtures[1].paths,
     });
+    assert.equal(invalidProbeResult.passed, false);
     assert.equal(
-      nestedJsonEvidenceGrade.passed,
-      true,
-      JSON.stringify(nestedJsonEvidenceGrade.details),
-    );
-
-    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
-      'timestamp: 2026-09-03T02:16:11.751Z',
-      'node_version: v24.14.1',
-      'globalThis.crypto: present',
-      'crypto.subtle: present',
-      'digest_sha256_status: ok',
-      `digest_sha256_hex: ${'a'.repeat(64)}`,
-      'errors: none',
-      'web_crypto_available: yes',
-      '',
-    ].join('\n'));
-    const labeledEvidenceGrade = await gradeBuilderWorkflow({
-      case: technical,
-      variant: 'current',
-      paths: fixtures[1].paths,
-    });
-    assert.equal(labeledEvidenceGrade.passed, true, JSON.stringify(labeledEvidenceGrade.details));
-
-    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
-      'globalThis.crypto: present',
-      'crypto.subtle: present',
-      'digest_sha256_status: ok',
-      'digest_sha256_hex: incomplete',
-      '',
-    ].join('\n'));
-    const incompleteDigestGrade = await gradeBuilderWorkflow({
-      case: technical,
-      variant: 'current',
-      paths: fixtures[1].paths,
-    });
-    assert.equal(incompleteDigestGrade.passed, false);
-    assert.equal(
-      incompleteDigestGrade.details.assertions.find((entry) => (
-        entry.name === 'technical_runtime_evidence'
+      invalidProbeResult.details.assertions.find((entry) => (
+        entry.name === 'technical_probe_result'
       )).passed,
       false,
     );
+    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), JSON.stringify({
+      runtime: process.version,
+      sha256: 'cde17348a6dbdbc1775b65ba025cc711120258318c69c0b8118bf7b15bbc3441',
+    }));
 
-    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
-      'globalThis.crypto.present=true',
-      'crypto.subtle.present=true',
-      'subtle.digest.call=ok',
-      'subtle.digest.sha256=incomplete',
-      '',
-    ].join('\n'));
-    const incompleteFixedDigestGrade = await gradeBuilderWorkflow({
-      case: technical,
-      variant: 'current',
-      paths: fixtures[1].paths,
-    });
-    assert.equal(incompleteFixedDigestGrade.passed, false);
-    assert.equal(
-      incompleteFixedDigestGrade.details.assertions.find((entry) => (
-        entry.name === 'technical_runtime_evidence'
-      )).passed,
-      false,
-    );
-
-    await writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), fixedEvidence);
-    const rootRead = {
-      threadId: 'root',
-      tool: 'exec_command',
-      arguments: { cmd: 'sed -n 1,20p prototypes/web-crypto-runtime/artifact/result.txt' },
-    };
-    spikeEvidence.collaborationCalls.push(rootRead);
-    await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
+    const rootRead = spikeEvidence.collaborationCalls.find((entry) => (
+      entry.threadId === 'root'
+      && entry.tool === 'exec_command'
+      && entry.arguments.cmd.includes('result.txt')
+    ));
     const rootReadGrade = await gradeBuilderWorkflow({
       case: technical,
       variant: 'current',
@@ -549,16 +632,24 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     });
     assert.equal(rootReadGrade.passed, true, JSON.stringify(rootReadGrade.details));
 
-    rootRead.arguments.cmd = 'node prototypes/web-crypto-runtime/artifact/spike.mjs';
+    const rootVerification = {
+      ordinal: spikeEvidence.collaborationCalls.length + 1,
+      threadId: 'root',
+      tool: 'exec_command',
+      arguments: { cmd: 'node prototypes/web-crypto-runtime/artifact/spike.mjs' },
+      output: { exitCode: 0 },
+      status: 'completed',
+    };
+    spikeEvidence.collaborationCalls.push(rootVerification);
     await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
-    const rootVerification = await gradeBuilderWorkflow({
+    const rootVerificationGrade = await gradeBuilderWorkflow({
       case: technical,
       variant: 'current',
       paths: fixtures[1].paths,
     });
-    assert.equal(rootVerification.passed, true, JSON.stringify(rootVerification.details));
+    assert.equal(rootVerificationGrade.passed, true, JSON.stringify(rootVerificationGrade.details));
 
-    rootRead.arguments.cmd = 'node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt';
+    rootVerification.arguments.cmd = 'node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt';
     await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
     const rootOverwrite = await gradeBuilderWorkflow({
       case: technical,
@@ -568,18 +659,44 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     assert.equal(rootOverwrite.passed, false);
     assert.equal(
       rootOverwrite.details.assertions.find((entry) => (
-        entry.name === 'builder_generates:prototypes/web-crypto-runtime/artifact/result.txt'
+        entry.name === 'technical_probe_provenance'
       )).passed,
       false,
     );
-
     spikeEvidence.collaborationCalls.pop();
+
+    const rootReadIndex = spikeEvidence.collaborationCalls.indexOf(rootRead);
+    const [removedRootRead] = spikeEvidence.collaborationCalls.splice(rootReadIndex, 1);
+    spikeEvidence.collaborationCalls.forEach((call, index) => {
+      call.ordinal = index + 1;
+    });
+    await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
+    const missingTechnicalRead = await gradeBuilderWorkflow({
+      case: technical,
+      variant: 'current',
+      paths: fixtures[1].paths,
+    });
+    assert.equal(missingTechnicalRead.passed, false);
+    assert.equal(
+      missingTechnicalRead.details.assertions.find((entry) => (
+        entry.name === 'root_artifact_read'
+      )).passed,
+      false,
+    );
+    spikeEvidence.collaborationCalls.push(removedRootRead);
+    spikeEvidence.collaborationCalls.forEach((call, index) => {
+      call.ordinal = index + 1;
+    });
+
     spikeEvidence.collaborationCalls.splice(
       spikeEvidence.collaborationCalls.findIndex((entry) => (
         entry.threadId === 'builder' && entry.tool === 'exec_command'
       )),
       1,
     );
+    spikeEvidence.collaborationCalls.forEach((call, index) => {
+      call.ordinal = index + 1;
+    });
     await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
     const missingExecution = await gradeBuilderWorkflow({
       case: technical,
@@ -588,14 +705,19 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     });
     assert.equal(missingExecution.passed, false);
     assert.equal(
-      missingExecution.details.assertions.find((entry) => entry.name === 'builder_execution').passed,
+      missingExecution.details.assertions.find((entry) => entry.name === 'technical_probe_execution').passed,
       false,
     );
 
     await prepareBuilderWorkflow({ case: direct, paths: fixtures[2].paths });
     await Promise.all([
       writeFile(fixtures[2].paths.evidence, JSON.stringify(workflowEvidence())),
-      writeFile(fixtures[2].paths.modelOutput, '批准 / 请求修改 / 拒绝\n'),
+      writeFile(fixtures[2].paths.modelOutput, [
+        '批准 -> 确认当前方案可以继续。',
+        '请求修改 -> 指出需要调整后再确认。',
+        '拒绝 -> 结束当前方案，不再继续。',
+        '',
+      ].join('\n')),
     ]);
     const directGrade = await gradeBuilderWorkflow({
       case: direct,
@@ -603,6 +725,102 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[2].paths,
     });
     assert.equal(directGrade.passed, true, JSON.stringify(directGrade.details));
+
+    await writeFile(fixtures[2].paths.modelOutput, [
+      '批准 -> 批准。',
+      '请求修改 -> 指出需要调整后再确认。',
+      '拒绝 -> 结束当前方案，不再继续。',
+      '',
+    ].join('\n'));
+    const echoedDirectLabel = await gradeBuilderWorkflow({
+      case: direct,
+      variant: 'current',
+      paths: fixtures[2].paths,
+    });
+    assert.equal(echoedDirectLabel.passed, false);
+    assert.equal(
+      echoedDirectLabel.details.assertions.find((entry) => (
+        entry.name === 'model_output_mapping:批准'
+      )).passed,
+      false,
+    );
+
+    await writeFile(fixtures[2].paths.modelOutput, 'done\n');
+    const directDone = await gradeBuilderWorkflow({
+      case: direct,
+      variant: 'current',
+      paths: fixtures[2].paths,
+    });
+    assert.equal(directDone.passed, false);
+    assert.equal(
+      directDone.details.assertions.find((entry) => (
+        entry.name === 'model_output_mapping:批准'
+      )).passed,
+      false,
+    );
+
+    await prepareBuilderWorkflow({ case: tiny, paths: fixtures[3].paths });
+    const tinyRoot = path.join(fixtures[3].paths.workspace, 'prototypes', 'submitted-copy');
+    await mkdir(path.join(tinyRoot, 'artifact'), { recursive: true });
+    await Promise.all([
+      writeFile(path.join(tinyRoot, 'brief.md'), '# 申请已提交\n'),
+      writeFile(path.join(tinyRoot, 'artifact', 'index.html'), '<main><p>申请已提交</p></main>\n'),
+    ]);
+    const tinyEvidence = workflowEvidence({
+      workspaceDiff: {
+        added: [
+          'prototypes/submitted-copy/brief.md',
+          'prototypes/submitted-copy/artifact/index.html',
+        ],
+        modified: [],
+        removed: [],
+      },
+      collaborationCalls: [{
+        threadId: 'root',
+        tool: 'exec',
+        arguments: {
+          input: 'const patch = "*** Begin Patch\\n*** Add File: /workspace/prototypes/submitted-copy/brief.md\\n*** Add File: /workspace/prototypes/submitted-copy/artifact/index.html\\n*** End Patch"; text(await tools.apply_patch(patch));',
+        },
+      }],
+    });
+    await Promise.all([
+      writeFile(fixtures[3].paths.evidence, JSON.stringify(tinyEvidence)),
+      writeFile(fixtures[3].paths.modelOutput, '小型页面已保存。\n'),
+    ]);
+    const tinyGrade = await gradeBuilderWorkflow({
+      case: tiny,
+      variant: 'current',
+      paths: fixtures[3].paths,
+    });
+    assert.equal(tinyGrade.passed, true, JSON.stringify(tinyGrade.details));
+
+    await writeFile(path.join(tinyRoot, 'brief.md'), '');
+    const emptyTinyBrief = await gradeBuilderWorkflow({
+      case: tiny,
+      variant: 'current',
+      paths: fixtures[3].paths,
+    });
+    assert.equal(emptyTinyBrief.passed, false);
+    assert.equal(
+      emptyTinyBrief.details.assertions.find((entry) => (
+        entry.name === 'content:prototypes/submitted-copy/brief.md'
+      )).passed,
+      false,
+    );
+    await writeFile(path.join(tinyRoot, 'brief.md'), '# 申请已提交\n');
+    await writeFile(path.join(tinyRoot, 'artifact', 'index.html'), '<!-- 申请已提交 -->\n');
+    const hiddenTinyPage = await gradeBuilderWorkflow({
+      case: tiny,
+      variant: 'current',
+      paths: fixtures[3].paths,
+    });
+    assert.equal(hiddenTinyPage.passed, false);
+    assert.equal(
+      hiddenTinyPage.details.assertions.find((entry) => (
+        entry.name === 'content:prototypes/submitted-copy/artifact/index.html'
+      )).passed,
+      false,
+    );
   } finally {
     await Promise.all(fixtures.map(({ root }) => rm(root, { recursive: true, force: true })));
   }

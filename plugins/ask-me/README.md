@@ -64,4 +64,4 @@ aw config set ask-me reviewSessionTtlMinutes --scope project --value-json 90
 
 页面显示剩余期限，支持显式延长或取消本次会话。服务会自行到期，提交成功后也会自行关闭。短 `wait` 超时只结束当前等待，不取消仍有效的会话。原型和已保存的反馈继续保留。
 
-Review Shell 的维护边界见 [`docs/prototype-review-ux.md`](docs/prototype-review-ux.md)，会话与配置行为见 [`docs/prototype-review-runtime.md`](docs/prototype-review-runtime.md)。
+Review Shell 的维护边界见 [`docs/prototype-review-ux.md`](docs/prototype-review-ux.md)，会话与配置行为见 [`docs/prototype-review-runtime.md`](docs/prototype-review-runtime.md)，本轮验证结果与未验边界见 [`docs/prototype-review-validation.md`](docs/prototype-review-validation.md)。
