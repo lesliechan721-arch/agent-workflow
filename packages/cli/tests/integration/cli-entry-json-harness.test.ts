@@ -60,7 +60,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON Status v7 and Receipt v6 harness', () => {
+describe('CLI JSON Status v8 and Receipt v6 harness', () => {
   it.each([
     [['catalog', 'publish', 'apply', '--json'], "error: required option '--expected-plan-digest <sha256>' not specified"],
     [[

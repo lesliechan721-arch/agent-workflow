@@ -157,7 +157,8 @@ export interface PluginListItemViewModel {
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
-    scope: Scope;
+    scope?: Scope;
+    shared?: true;
     key: string;
     state: StatusV8Component['state'];
     errorCode?: string;
@@ -1168,24 +1169,33 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 
 function sourceIssue(
   health: SourceHealthViewModel,
-  impactedTargets = 0,
+  targetIssues: UserIssueDraft[] = [],
 ): UserIssueDraft | undefined {
   if (health.state !== 'unavailable') return undefined;
   const issueId = health.issueId ?? `source:${health.sourceId}:unavailable`;
+  const affectedTargets = [...new Map(targetIssues.flatMap((issue) => issue.affectedTargets ?? [])
+    .map((target) => [`${target.pluginId}\0${target.platform}\0${target.scope}`, target])).values()]
+    .sort((left, right) => compareText(left.pluginId, right.pluginId)
+      || compareText(left.platform, right.platform)
+      || compareText(left.scope, right.scope));
+  const cleanupActions = targetIssues.flatMap((issue) => issue.actions)
+    .filter((action) => action.id === 'cleanup');
   return {
     issueId,
     category: 'sourceUnavailable',
     title: `${health.sourceId} · 来源不可用`,
     explanation: '来源检查失败。',
     impact: ['当前不能浏览或安装这个来源的插件。',
-      ...(impactedTargets > 0 ? [`${impactedTargets} 个安装位置受此来源根问题影响。`] : [])],
+      ...(affectedTargets.length > 0 ? [`${affectedTargets.length} 个安装位置受此来源根问题影响。`] : [])],
     entity: { kind: 'source', id: health.sourceId },
     sourceId: health.sourceId,
-    actions: [
+    ...(affectedTargets.length > 0 ? { affectedTargets } : {}),
+    actions: dedupeIssueActions([
+      ...cleanupActions,
       { id: 'editSource', label: '编辑来源', description: '检查 URL、路径或 ref' },
       { id: 'refreshSource', label: '稍后重试', description: '只重新检查来源' },
       { id: 'viewTechnical', label: '技术详情' },
-    ],
+    ]),
     technicalDetails: [{
       code: 'catalogSourceUnavailable',
       message: '来源检查失败。',
@@ -1950,6 +1960,15 @@ function issueReasonPriority(issue: UserIssueDraft): number {
   } as Record<string, number>)[code] ?? 9;
 }
 
+function dedupeIssueActions(actions: UserIssueActionViewModel[]): UserIssueActionViewModel[] {
+  return [...new Map(actions.map((action) => [[
+    action.id,
+    action.pluginId ?? '',
+    action.platform ?? '',
+    action.scope ?? '',
+  ].join('\0'), action])).values()];
+}
+
 function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
   const byId = new Map<string, UserIssueDraft[]>();
   for (const issue of issues) byId.set(issue.issueId, [...(byId.get(issue.issueId) ?? []), issue]);
@@ -1987,13 +2006,7 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
       impact: [...new Set(ordered.flatMap((issue) => issue.impact))],
       technicalDetails: [...new Map(ordered.flatMap((issue) => issue.technicalDetails)
         .map((detail) => [`${detail.code}\0${detail.message}`, detail])).values()],
-      actions: [...new Map(ordered.flatMap((issue) => issue.actions)
-        .map((action) => [[
-          action.id,
-          action.pluginId ?? '',
-          action.platform ?? '',
-          action.scope ?? '',
-        ].join('\0'), action])).values()],
+      actions: dedupeIssueActions(ordered.flatMap((issue) => issue.actions)),
     };
   });
 }
@@ -2129,15 +2142,31 @@ export function buildTuiViewModel(options: {
               issueCount: summary.dependencyIssueCount ?? 0,
             } }
           : {}),
-      technicalComponents: targets.flatMap((target) => target.components.map((component) => ({
-        platform: target.platform,
-        scope: target.scope,
-        key: component.key,
-        state: component.state,
-        ...(typeof component.metadata?.errorCode === 'string'
-          ? { errorCode: component.metadata.errorCode }
-          : {}),
-      }))),
+      technicalComponents: [
+        ...targets.flatMap((target) => [
+          ...target.components,
+          ...(target.sharedComponents ?? []).filter((component) => component.kind === 'systemConsumer'),
+        ].map((component) => ({
+          platform: target.platform,
+          scope: target.scope,
+          key: component.key,
+          state: component.state,
+          ...(typeof component.metadata?.errorCode === 'string'
+            ? { errorCode: component.metadata.errorCode }
+            : {}),
+        }))),
+        ...new Map(targets.flatMap((target) => (target.sharedComponents ?? [])
+          .filter((component) => component.kind === 'sharedNative')
+          .map((component) => [`${target.platform}\0${component.key}`, {
+            platform: target.platform,
+            shared: true as const,
+            key: component.key,
+            state: component.state,
+            ...(typeof component.metadata?.errorCode === 'string'
+              ? { errorCode: component.metadata.errorCode }
+              : {}),
+          }] as const))).values(),
+      ],
       update,
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
@@ -2158,10 +2187,10 @@ export function buildTuiViewModel(options: {
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
   const allTargetIssues = targetIssues(options.status);
-  const targetImpactCounts = new Map<string, number>();
+  const mergedTargetIssues = new Map<string, UserIssueDraft[]>();
   for (const issue of allTargetIssues) {
     if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
-    targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
+    mergedTargetIssues.set(issue.sourceId, [...(mergedTargetIssues.get(issue.sourceId) ?? []), issue]);
   }
   const sourceDetails = new Map((options.sourceDetails ?? []).map((detail) => [detail.id, detail]));
   const issueDrafts = [
@@ -2175,7 +2204,7 @@ export function buildTuiViewModel(options: {
       options.status,
     ),
     ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
-      sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
+      sourceIssue(health, mergedTargetIssues.get(health.sourceId) ?? []) ?? []),
   ];
   const stableIssueDrafts = collapseRootIssues(issueDrafts).sort((left, right) =>
     issueGroupOrder[issueGroup(left)] - issueGroupOrder[issueGroup(right)]

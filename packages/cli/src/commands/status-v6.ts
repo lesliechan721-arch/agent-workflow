@@ -1950,9 +1950,44 @@ async function statusCommandV8InSession(options: {
                             issueScope: dependencyScope,
                           };
                         }
-                        if (dependencyLiveState !== 'present') {
-                          const state = dependencyLiveState === 'absent' ? 'absent' as const
-                            : dependencyLiveState === 'partial' ? 'incomplete' as const
+                        const requiredDependencyComponents = dependencyInspected.target
+                          .desiredOwnedComponents ?? dependencyInspected.target.ownedComponents;
+                        const desiredDependency = sourceDesired.get(desiredTargetKey(
+                          dependencyId,
+                          platform,
+                        ));
+                        const projectMigrationPending = dependencyScope === 'project'
+                          && projectIntent.dependencyScopeOverrides.some((override) =>
+                            override.pluginId === dependencyId
+                            && override.scope === 'project'
+                            && (override.platform === undefined || override.platform === platform))
+                          && desiredDependency?.scopes.includes('project') === true
+                          && desiredDependency.scopes.includes('user') === false
+                          && ownerInventory.references.some((reference) =>
+                            reference.kind === 'namespacedOwner'
+                            && reference.sourceId === item.resolution!.sourceId
+                            && reference.pluginName === dependencyName
+                            && reference.platform === platform
+                            && reference.scope === 'user');
+                        const migrationOnlyPartial = dependencyLiveState === 'partial'
+                          && projectMigrationPending
+                          && dependencyInspected.inspection.components.every((component) =>
+                            component.state === 'present' || component.state === 'absent')
+                          && requiredDependencyComponents.every((required) =>
+                            dependencyInspected.inspection.components.some((component) =>
+                              component.component === required
+                              && (component.state === 'present'
+                                || component.state === 'absent'
+                                  && component.component.kind !== 'native-plugin'
+                                  && 'locator' in component.component
+                                  && component.component.locator.kind === 'codex-activation'
+                                  && component.component.locator.desired === false)));
+                        const effectiveDependencyLiveState = migrationOnlyPartial
+                          ? 'present'
+                          : dependencyLiveState;
+                        if (effectiveDependencyLiveState !== 'present') {
+                          const state = effectiveDependencyLiveState === 'absent' ? 'absent' as const
+                            : effectiveDependencyLiveState === 'partial' ? 'incomplete' as const
                               : 'error' as const;
                           return {
                             state,

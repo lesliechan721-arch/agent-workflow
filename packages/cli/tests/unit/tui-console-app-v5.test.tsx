@@ -9039,6 +9039,86 @@ describe('ConsoleAppV4', () => {
     }), expect.any(AbortSignal));
   });
 
+  it('completes cleanup for the selected target while its source issue remains', async () => {
+    // Risk: the surviving source root can make a completed target cleanup look failed.
+    const loaded = loadResult();
+    const offlineTargets = (['user', 'project'] as const).map((scope) => target({
+      pluginName: `offline-${scope}`,
+      sourceId: 'team-tools',
+      platform: 'codex',
+      scope,
+      state: 'error',
+      errorCode: 'catalogSourceUnavailable',
+      recoveryActions: [{
+        command: 'cleanup', scope, description: `Clean ${scope} target.`,
+      }],
+    }));
+    loaded.payload.targets = aggregateCodexTargets(offlineTargets);
+    loaded.pluginSummaries = offlineTargets.map((entry) => ({
+      pluginName: entry.pluginName,
+      pluginId: entry.pluginId,
+      description: entry.pluginName,
+    }));
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.map((entry) =>
+      entry.id === 'team-tools'
+        ? { ...entry, error: 'unavailable', errorCode: 'catalogSourceUnavailable', freshness: undefined }
+        : entry);
+    const after = structuredClone(loaded);
+    after.payload.targets = after.payload.targets.filter((entry) =>
+      entry.pluginId !== 'team-tools/offline-project');
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(after),
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'succeeded',
+        targetResults: [{
+          target: {
+            pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
+          },
+          action: 'cleanup',
+          state: 'completed',
+        }],
+      }),
+    });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) =>
+      entry.issueId === 'source:team-tools:unavailable')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 40 }} />);
+    await nextTurn(2);
+
+    const projectCleanupIndex = issue.actions.findIndex((entry) =>
+      entry.id === 'cleanup' && entry.pluginId === 'team-tools/offline-project');
+    expect(projectCleanupIndex).toBeGreaterThan(0);
+    for (let index = 0; index < projectCleanupIndex; index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    await input(instance, '\r');
+
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'review' });
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'cleanup', pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
+      originIssue: expect.objectContaining({
+        issueId: issue.issueId, actionId: 'cleanup',
+        consumerPluginId: 'team-tools/offline-project',
+        consumerSourceIdentity: 'identity:team-tools',
+        consumerPlatform: 'codex', consumerScope: 'project',
+      }),
+    }), expect.any(AbortSignal));
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded' });
+    expect(value.snapshot.result).not.toHaveProperty('code', 'issueStillPresent');
+    expect(value.listUserIssues()).toContainEqual(expect.objectContaining({
+      issueId: issue.issueId,
+      affectedTargets: [expect.objectContaining({
+        pluginId: 'team-tools/offline-user', platform: 'codex', scope: 'user',
+      })],
+    }));
+  });
+
   it('keeps current dependency evidence visible when the exact dependency scope has no issue', async () => {
     // Risk: project evidence must not replace a missing user dependency issue target.
     const loaded = dependencyLoadResult({ rootState: 'error', rootErrorCode: 'dependencyNotReady' });

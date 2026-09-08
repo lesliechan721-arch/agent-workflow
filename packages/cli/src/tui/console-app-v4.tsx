@@ -2576,7 +2576,7 @@ export function ConsoleAppV4(props: {
     action: UserIssueActionViewModel,
   ): OperationIntent | undefined => {
     const pluginId = action.pluginId ?? selectedIssue.pluginId;
-    if (!pluginId || !selectedIssue.platform) return undefined;
+    if (!pluginId) return undefined;
     const selectedScope = action.id === 'keepUserScope'
       ? 'project'
       : action.id === 'keepProjectScope' ? 'user' : action.scope ?? selectedIssue.scope;
@@ -2585,11 +2585,18 @@ export function ConsoleAppV4(props: {
       || selectedIssue.category === 'dependencyNotReady';
     const dependencyTargetAction = action.id === 'installDependency'
       || action.id === 'reinstallDependency';
-    const consumerPluginId = dependencyIssue && !dependencyTargetAction
+    const sourceTargetCleanup = selectedIssue.entity.kind === 'source'
+      && action.id === 'cleanup'
+      && action.pluginId !== undefined
+      && action.platform !== undefined
+      && action.scope !== undefined;
+    const targetSpecificOrigin = (dependencyIssue && !dependencyTargetAction)
+      || sourceTargetCleanup;
+    const consumerPluginId = targetSpecificOrigin
       ? pluginId : selectedIssue.pluginId;
-    const consumerPlatform = dependencyIssue && !dependencyTargetAction
+    const consumerPlatform = targetSpecificOrigin
       ? selectedPlatform : selectedIssue.platform;
-    const consumerScope = dependencyIssue && !dependencyTargetAction
+    const consumerScope = targetSpecificOrigin
       ? selectedScope : selectedIssue.scope;
     const writeAction = action.writeAction ?? (action.id === 'sync'
       ? 'sync'
@@ -2619,7 +2626,7 @@ export function ConsoleAppV4(props: {
         issueKey: userIssueKey(selectedIssue),
         category: selectedIssue.category,
         actionId: action.id,
-        ...(dependencyIssue
+        ...(targetSpecificOrigin
           ? {
               consumerPluginId,
               consumerSourceIdentity: consumerPluginId
@@ -2627,10 +2634,12 @@ export function ConsoleAppV4(props: {
                 : selectedIssue.sourceIdentity,
               consumerPlatform,
               consumerScope,
-              dependencyPluginId: selectedIssue.dependencyPluginId,
-              dependencyPlatform: selectedIssue.dependencyPlatform,
-              dependencyScope: selectedIssue.dependencyScope,
-              dependencyProject: selectedIssue.dependencyProject,
+              ...(dependencyIssue ? {
+                dependencyPluginId: selectedIssue.dependencyPluginId,
+                dependencyPlatform: selectedIssue.dependencyPlatform,
+                dependencyScope: selectedIssue.dependencyScope,
+                dependencyProject: selectedIssue.dependencyProject,
+              } : {}),
             }
           : {}),
       },
@@ -7950,7 +7959,7 @@ export function ConsoleAppV4(props: {
     if (prioritizedComponents.length > componentLimit) {
       help = 'PgUp/PgDn 查看全部组件 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.capabilityUnsupported ? <><StaticRow title="failure code" meta="awCapabilityUnsupported" /><StaticRow title="capability 状态" meta="当前 AW CLI 不支持" status="error" /><StaticRow title="缺少 capability" meta={plugin.missingCapabilities?.join('、') ?? 'Status 未提供具体 capability'} /><StaticRow title="恢复方向" meta={plugin.capabilityRecovery ?? '升级 AW CLI 到支持所需 capability 的版本后重试。'} /></> : null}{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{componentOffset > 0 ? <StaticRow title={`↑ 前面还有 ${componentOffset} 个组件`} status="muted" compact /> : null}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${scopeLabel(component.scope)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`↓ 后面还有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.capabilityUnsupported ? <><StaticRow title="failure code" meta="awCapabilityUnsupported" /><StaticRow title="capability 状态" meta="当前 AW CLI 不支持" status="error" /><StaticRow title="缺少 capability" meta={plugin.missingCapabilities?.join('、') ?? 'Status 未提供具体 capability'} /><StaticRow title="恢复方向" meta={plugin.capabilityRecovery ?? '升级 AW CLI 到支持所需 capability 的版本后重试。'} /></> : null}{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{componentOffset > 0 ? <StaticRow title={`↑ 前面还有 ${componentOffset} 个组件`} status="muted" compact /> : null}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.shared ? 'shared' : component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${component.shared ? '平台共享' : scopeLabel(component.scope!)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`↓ 后面还有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else {
     const missingPlugin = definition.entity === 'plugin' && plugin === undefined;
     const missingIssue = definition.entity === 'issue' && issue === undefined;

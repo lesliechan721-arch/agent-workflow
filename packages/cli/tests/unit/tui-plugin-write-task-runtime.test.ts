@@ -207,14 +207,20 @@ function sharedDependencyRestoreStatus(options: {
     pluginName: 'alpha', pluginId: 'team/alpha', sourceId: 'team',
     sourceIdentity: options.sourceIdentity, version: '1.0.0',
     platform: 'claude', scope, cwd: options.cwd, state: 'needsSync',
-    components: [{ kind: 'ownership', key: `alpha-${scope}`, state: 'present' }],
+    components: [
+      { kind: 'ownership', key: `alpha-${scope}`, state: 'present' },
+      {
+        kind: 'intent', key: 'desired', state: 'desired',
+        metadata: { enabled: true, scopes: [scope], relation: 'root' },
+      },
+    ],
     reasons: [{
       code: 'dependencyMissing', message: `team/beta is missing from ${scope}`,
       severity: 'blocking', dependencyPluginId: 'team/beta', dependencyPlatform: 'claude',
       dependencyScope: scope, rootIssueId: `missing-beta-${scope}`,
       rootIssueCode: 'dependencyMissing',
     }],
-    recoveryActions: [],
+    recoveryActions: [{ command: 'sync', scope, description: `Sync alpha at ${scope}.` }],
   });
   const dependencyTarget = (scope: 'user' | 'project'): StatusV8Payload['targets'][number] => ({
     pluginName: 'beta', pluginId: 'team/beta', sourceId: 'team',

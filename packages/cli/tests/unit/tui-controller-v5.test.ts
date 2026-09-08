@@ -2472,6 +2472,10 @@ describe('TUI v4 router and ViewModel', () => {
     ready.components.push({
       kind: 'sharedNative', key: 'dual-ready@aw-official', state: 'usable',
       metadata: { shared: true, version: '1.0.0' },
+    }, {
+      kind: 'systemConsumer', key: 'codex:user', state: 'compatible',
+    }, {
+      kind: 'systemConsumer', key: 'codex:project', state: 'compatible',
     });
     ready.placements[0] = {
       scope: 'user',
@@ -2533,6 +2537,17 @@ describe('TUI v4 router and ViewModel', () => {
       { id: 'reinstall', platform: 'codex', scope: 'user' },
       { id: 'remove', platform: 'codex', scope: 'user' },
     ]));
+    expect(plugin.technicalComponents.filter((component) =>
+      component.key === 'dual-ready@aw-official')).toEqual([
+      {
+        platform: 'codex', shared: true, key: 'dual-ready@aw-official', state: 'usable',
+      },
+    ]);
+    expect(plugin.technicalComponents.filter((component) => component.key.startsWith('codex:')))
+      .toEqual([
+        expect.objectContaining({ key: 'codex:user', platform: 'codex', scope: 'user' }),
+        expect.objectContaining({ key: 'codex:project', platform: 'codex', scope: 'project' }),
+      ]);
   });
 
   it.each([
@@ -2664,8 +2679,14 @@ describe('TUI v4 router and ViewModel', () => {
             ],
           }),
           target({ pluginName: 'changed', scope: 'user', state: 'error', errorCode: 'sourceChanged' }),
-          target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
-          target({ pluginName: 'offline-two', scope: 'project', state: 'error', errorCode: 'catalogSourceUnavailable' }),
+          target({
+            pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
+            recoveryActions: [{ command: 'cleanup', scope: 'user', description: 'Clean user target.' }],
+          }),
+          target({
+            pluginName: 'offline-two', scope: 'project', state: 'error', errorCode: 'catalogSourceUnavailable',
+            recoveryActions: [{ command: 'cleanup', scope: 'project', description: 'Clean project target.' }],
+          }),
         ],
         errors: [{ code: 'legacyStateUnsupported', message: 'arbitrary text that does not name legacy state', severity: 'blocking' }],
       }),
@@ -2701,8 +2722,22 @@ describe('TUI v4 router and ViewModel', () => {
       actions: [{ id: 'viewTechnical' }, { id: 'retryLater' }],
       technicalDetails: [{ code: 'artifactCollision', message: '目标包含没有 AW owner 标记的内容。' }],
     });
-    expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.actions.map((action) => action.id))
-      .toEqual(['editSource', 'refreshSource', 'viewTechnical']);
+    const sourceUnavailable = view.issues.find((issue) => issue.category === 'sourceUnavailable');
+    expect(sourceUnavailable?.actions).toEqual([
+      expect.objectContaining({
+        id: 'cleanup', pluginId: 'official/offline', platform: 'codex', scope: 'user',
+      }),
+      expect.objectContaining({
+        id: 'cleanup', pluginId: 'official/offline-two', platform: 'codex', scope: 'project',
+      }),
+      expect.objectContaining({ id: 'editSource' }),
+      expect.objectContaining({ id: 'refreshSource' }),
+      expect.objectContaining({ id: 'viewTechnical' }),
+    ]);
+    expect(sourceUnavailable?.affectedTargets).toEqual([
+      { pluginId: 'official/offline', platform: 'codex', scope: 'user', relationship: 'direct' },
+      { pluginId: 'official/offline-two', platform: 'codex', scope: 'project', relationship: 'direct' },
+    ]);
     expect(view.issues.filter((issue) => issue.sourceId === 'official'
       && issue.category === 'sourceUnavailable')).toHaveLength(1);
     expect(view.issues.find((issue) => issue.category === 'sourceUnavailable')?.impact).toContain(
