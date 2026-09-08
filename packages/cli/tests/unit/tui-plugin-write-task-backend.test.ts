@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
-import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import {
   operationEvidenceFingerprint,
   TuiController,
@@ -216,8 +216,8 @@ describe('plugin write task planning', () => {
 });
 
 function loaded(): TuiStatusLoadResult {
-  const payload: StatusV7Payload = {
-    schemaVersion: 7,
+  const payload: StatusV8Payload = {
+    schemaVersion: 8,
     catalog: {
       primarySourceId: 'official', configDigest: 'sha256:config',
       compositeDigest: 'sha256:composite',
@@ -229,7 +229,7 @@ function loaded(): TuiStatusLoadResult {
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
     targets: [], errors: [],
   };
-  const summary: StatusV7PluginSummary = {
+  const summary: StatusV8PluginSummary = {
     pluginName: 'demo', pluginId: 'official/demo', description: 'Demo',
   };
   return { payload, pluginSummaries: [summary] };

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
+import { flattenStatusTargets } from '../../src/commands/status-v6.js';
 import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
@@ -33,7 +34,7 @@ import { buildOperationReviewProjection } from '../../src/tui/operation-review-p
 function source(
   id: string,
   options: { primary?: boolean; error?: string; type?: 'git' | 'path' } = {},
-): StatusV7Payload['catalog']['sources'][number] {
+): StatusV8Payload['catalog']['sources'][number] {
   return {
     id,
     identity: `identity:${id}`,
@@ -116,14 +117,24 @@ describe('TuiController session retirement', () => {
 describe('TUI plugin write batches', () => {
   it('enumerates exact targets from intent, ownership, and Codex activation evidence', () => {
     const codex = target({ pluginName: 'native', platform: 'codex', scope: 'user', state: 'present' });
-    codex.components.push(
+    codex.placements[0]!.components.push(
       { kind: 'intent', key: 'desired', state: 'desired', metadata: {
-        enabled: true, scopes: ['user', 'project'], relation: 'root',
+        enabled: true, scopes: ['user'], relation: 'root',
       } },
       { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
-      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
-      { kind: 'sharedNative', key: 'native@aw-official', state: 'usable' },
     );
+    codex.placements.push({
+      scope: 'project', state: 'ready',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-project', state: 'present' },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      ],
+      reasons: [], recoveryActions: [],
+    });
+    codex.components.push({ kind: 'sharedNative', key: 'native@aw-official', state: 'usable' });
     const claude = target({ pluginName: 'native', platform: 'claude', scope: 'project', state: 'present' });
     claude.components.push({ kind: 'intent', key: 'desired', state: 'desired', metadata: {
       enabled: true, scopes: ['project'], relation: 'root',
@@ -133,17 +144,18 @@ describe('TUI plugin write batches', () => {
     });
     const targets = [codex, claude, supportedButAbsent];
 
-    expect(pluginWriteBatchTargets('sync', ['official/native'], targets)).toEqual([
+    const placements = flattenStatusTargets(targets);
+    expect(pluginWriteBatchTargets('sync', ['official/native'], placements)).toEqual([
       { pluginId: 'official/native', platform: 'claude', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'user' },
     ]);
-    expect(pluginWriteBatchTargets('uninstall', ['official/native'], targets)).toEqual([
+    expect(pluginWriteBatchTargets('uninstall', ['official/native'], placements)).toEqual([
       { pluginId: 'official/native', platform: 'claude', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'user' },
     ]);
-    expect(pluginWriteBatchTargets('cleanup', ['official/native'], targets)).toEqual([
+    expect(pluginWriteBatchTargets('cleanup', ['official/native'], placements)).toEqual([
       { pluginId: 'official/native', platform: 'claude', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'user' },
@@ -152,13 +164,20 @@ describe('TUI plugin write batches', () => {
 
   it('keeps both configured Codex activations when the system probe is unavailable', () => {
     const codex = target({ pluginName: 'native', platform: 'codex', scope: 'user', state: 'present' });
-    codex.components.push(
+    codex.placements[0]!.components.push(
       { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'assumed' } },
-      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'assumed' } },
-      { kind: 'sharedNative', key: 'native@aw-official', state: 'usable' },
     );
+    codex.placements.push({
+      scope: 'project', state: 'ready',
+      components: [
+        { kind: 'ownership', key: 'fixture-project', state: 'present' },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'assumed' } },
+      ],
+      reasons: [], recoveryActions: [],
+    });
+    codex.components.push({ kind: 'sharedNative', key: 'native@aw-official', state: 'usable' });
 
-    expect(pluginWriteBatchTargets('cleanup', ['official/native'], [codex])).toEqual([
+    expect(pluginWriteBatchTargets('cleanup', ['official/native'], flattenStatusTargets([codex]))).toEqual([
       { pluginId: 'official/native', platform: 'codex', scope: 'project' },
       { pluginId: 'official/native', platform: 'codex', scope: 'user' },
     ]);
@@ -697,12 +716,12 @@ function sourceDetail(
 }
 
 function status(options: {
-  sources?: StatusV7Payload['catalog']['sources'];
-  targets?: StatusV7Payload['targets'];
-  errors?: StatusV7Payload['errors'];
-} = {}): StatusV7Payload {
+  sources?: StatusV8Payload['catalog']['sources'];
+  targets?: StatusV8Payload['targets'];
+  errors?: StatusV8Payload['errors'];
+} = {}): StatusV8Payload {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     catalog: {
       primarySourceId: 'official',
       configDigest: 'sha256:config',
@@ -722,9 +741,9 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-  errors?: StatusV7Payload['targets'][number]['errors'];
-  recoveryActions?: StatusV7Payload['targets'][number]['recoveryActions'];
-}): StatusV7Payload['targets'][number] {
+  errors?: StatusV8Payload['targets'][number]['reasons'];
+  recoveryActions?: StatusV8Payload['targets'][number]['recoveryActions'];
+}): StatusV8Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
   const state = options.state === 'present'
@@ -732,24 +751,37 @@ function target(options: {
     : options.state === 'partial'
       ? 'needsSync' as const
       : options.state === 'error' ? 'blocked' as const : 'absent' as const;
-  return {
+  const placement = {
+    scope: options.scope,
+    state,
+    components: [{ kind: 'ownership' as const, key: 'fixture', state: options.state }],
+    reasons: options.errors
+      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure', severity: 'blocking' as const }] : []),
+    recoveryActions: options.recoveryActions ?? [],
+  };
+  const identity = {
     pluginName,
     sourceId,
     sourceIdentity: `identity:${sourceId}`,
     pluginId: `${sourceId}/${pluginName}`,
     version: '1.0.0',
-    platform: options.platform ?? 'codex',
-    scope: options.scope,
     cwd: '/workspace',
-    state,
-    components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
-    reasons: options.errors
-      ?? (options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure', severity: 'blocking' }] : []),
-    recoveryActions: options.recoveryActions ?? [],
+  };
+  if (options.platform === 'claude') {
+    return { ...identity, platform: 'claude', ...placement };
+  }
+  return {
+    ...identity,
+    platform: 'codex',
+    state: placement.state,
+    components: [],
+    reasons: placement.reasons,
+    recoveryActions: placement.recoveryActions,
+    placements: [placement],
   };
 }
 
-function summaries(...entries: Array<[string, string]>): StatusV7PluginSummary[] {
+function summaries(...entries: Array<[string, string]>): StatusV8PluginSummary[] {
   return entries.map(([sourceId, pluginName]) => ({
     pluginName,
     pluginId: `${sourceId}/${pluginName}`,
@@ -1095,10 +1127,11 @@ describe('TUI v4 router and ViewModel', () => {
         severity: 'blocking',
       }],
     });
-    unsupported.recoveryActions = [{
+    unsupported.placements[0]!.recoveryActions = [{
       command: 'manual',
       description: '升级 AW CLI 到支持插件所需 capability 的版本后重试。',
     }];
+    unsupported.recoveryActions = unsupported.placements[0]!.recoveryActions;
     const view = buildTuiViewModel({
       status: status({ targets: [unsupported] }),
       pluginSummaries: [{
@@ -1142,14 +1175,27 @@ describe('TUI v4 router and ViewModel', () => {
 
   it('keeps pure-native scope overlap legal and consumes real scoped uninstall recovery for mixed conflict', () => {
     const pureNative = target({ scope: 'project', state: 'present' });
-    pureNative.components.push(
+    pureNative.placements[0]!.components.push(
       {
         kind: 'intent', key: 'desired', state: 'desired',
-        metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
+        metadata: { enabled: true, scopes: ['project'], relation: 'root' },
       },
-      { kind: 'sharedNative', key: 'demo@aw-official', state: 'usable', metadata: { shared: true } },
-      { kind: 'activation', key: 'user', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
       { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+    );
+    pureNative.placements.push({
+      scope: 'user', state: 'ready',
+      components: [
+        {
+          kind: 'intent', key: 'desired', state: 'desired',
+          metadata: { enabled: true, scopes: ['user'], relation: 'root' },
+        },
+        { kind: 'ownership', key: 'fixture-user', state: 'present' },
+        { kind: 'activation', key: 'user', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+      ],
+      reasons: [], recoveryActions: [],
+    });
+    pureNative.components.push(
+      { kind: 'sharedNative', key: 'demo@aw-official', state: 'usable', metadata: { shared: true } },
     );
     const purePlugin = buildTuiViewModel({
       status: status({ targets: [pureNative] }),
@@ -1157,7 +1203,7 @@ describe('TUI v4 router and ViewModel', () => {
     }).plugins[0]!;
     expect(purePlugin.installedPlacements).toEqual([
       expect.objectContaining({
-        state: 'installed', desiredScopes: ['project', 'user'], actualState: 'ready',
+        scope: 'project', state: 'installed', desiredScopes: ['project', 'user'], actualState: 'ready',
       }),
     ]);
     expect(purePlugin.installedPlacements[0]?.state).not.toBe('scopeConflict');
@@ -1165,11 +1211,14 @@ describe('TUI v4 router and ViewModel', () => {
     const pureSingleScope = buildTuiViewModel({
       status: status({ targets: [{
         ...pureNative,
-        components: pureNative.components.map((component) => component.kind === 'intent'
+        placements: pureNative.placements.map((placement) => ({
+          ...placement,
+          components: placement.components.map((component) => component.kind === 'intent'
           ? { ...component, metadata: { enabled: true, scopes: ['user'], relation: 'root' } }
           : component.kind === 'activation' && component.key === 'project'
             ? { ...component, state: 'disabled' }
             : component),
+        })),
       }] }),
       pluginSummaries: [{
         ...summaries(['official', 'demo'])[0]!,
@@ -1183,10 +1232,6 @@ describe('TUI v4 router and ViewModel', () => {
     const mixed = {
       ...pureNative,
       state: 'blocked' as const,
-      components: [
-        ...pureNative.components,
-        { kind: 'extension' as const, key: 'aw', state: 'conflict', metadata: { kinds: ['instruction'] } },
-      ],
       reasons: [{ code: 'codexExtensionScopeConflict', message: 'safe conflict', severity: 'blocking' as const }],
       recoveryActions: [
         {
@@ -1206,18 +1251,17 @@ describe('TUI v4 router and ViewModel', () => {
       pluginSummaries: summaries(['official', 'demo']),
     }).plugins[0]!;
     expect(mixedPlugin.installedPlacements[0]).toMatchObject({
-      state: 'installed', health: 'error', actualState: 'blocked',
-      extensions: { state: 'conflict' },
-      recovery: expect.arrayContaining([
-        expect.objectContaining({ command: 'uninstall', scope: 'user' }),
-        expect.objectContaining({ command: 'uninstall', scope: 'project' }),
+      state: 'scopeConflict',
+      placements: expect.arrayContaining([
+        expect.objectContaining({ scope: 'project', health: 'ready' }),
+        expect.objectContaining({ scope: 'user', health: 'ready' }),
       ]),
     });
     expect(buildPlatformActions(mixedPlugin, 'codex').map((action) => action.id)).toEqual([
-      'resolveScopeConflict', 'resolveScopeConflict', 'technical',
+      'scopeConflict',
     ]);
     expect(buildPluginDetailActions(mixedPlugin).filter((action) =>
-      action.id === 'resolveScopeConflict')).toHaveLength(2);
+      action.id === 'scopeConflict')).toHaveLength(1);
     expect(buildTuiViewModel({
       status: status({ targets: [mixed] }),
       pluginSummaries: summaries(['official', 'demo']),
@@ -1238,6 +1282,15 @@ describe('TUI v4 router and ViewModel', () => {
         components: pureNative.components.map((component) => component.kind === 'sharedNative'
           ? { ...component, state: 'blocked', metadata: { shared: true, reason: 'foreign' } }
           : component),
+        placements: pureNative.placements.map((placement) => ({
+          ...placement,
+          state: 'blocked',
+          reasons: [{ code: 'codexSharedNativeForeign', message: 'safe foreign', severity: 'blocking' }],
+          recoveryActions: [{
+            command: 'sync',
+            description: '先移除或重命名 foreign shared native；cleanup 会保留 foreign 内容。',
+          }],
+        })),
         reasons: [{ code: 'codexSharedNativeForeign', message: 'safe foreign', severity: 'blocking' }],
         recoveryActions: [{
           command: 'sync',
@@ -2093,7 +2146,7 @@ describe('TUI v4 router and ViewModel', () => {
 
   it('projects typed dependency issue actions to the canonical dependency target', () => {
     const missing = target({ pluginName: 'root', scope: 'project', state: 'partial' });
-    missing.reasons = [{
+    missing.placements[0]!.reasons = [{
       code: 'dependencyMissing',
       message: 'dependencyMissing: official/toolkit is absent at its recorded target.',
       severity: 'warning',
@@ -2102,6 +2155,7 @@ describe('TUI v4 router and ViewModel', () => {
       dependencyScope: 'user',
       dependencyProject: null,
     }];
+    missing.reasons = missing.placements[0]!.reasons;
     const view = buildTuiViewModel({
       status: status({ targets: [missing] }),
       pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
@@ -2169,6 +2223,114 @@ describe('TUI v4 router and ViewModel', () => {
     expect(view.issues.some((issue) => issue.category === 'scopeConflict')).toBe(false);
     expect(buildPluginDetailActions(view.plugins[0]!).some((action) =>
       action.id === 'resolveScopeConflict')).toBe(false);
+  });
+
+  it('keeps shared V8 diagnostics singular and exposes both ready Codex lifecycle placements', () => {
+    const shared = target({ pluginName: 'shared-ready', scope: 'user', state: 'partial' });
+    shared.state = 'needsSync';
+    shared.components.push({
+      kind: 'sharedNative', key: 'shared-ready@aw-official', state: 'replaceable',
+      metadata: { shared: true, reason: 'renderDrift', version: '1.0.0' },
+    });
+    shared.reasons = [{
+      code: 'codexSharedNativeRenderDrift', message: 'shared render drift', severity: 'warning',
+    }];
+    shared.recoveryActions = [
+      { command: 'sync', scope: 'user', description: 'Synchronize user.' },
+      { command: 'sync', scope: 'project', description: 'Synchronize project.' },
+    ];
+    shared.placements[0] = {
+      scope: 'user',
+      state: 'needsSync',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['user'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-user', state: 'present' },
+        { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      ],
+      reasons: [],
+      recoveryActions: [{ command: 'sync', scope: 'user', description: 'Synchronize user.' }],
+    };
+    shared.placements.push({
+      scope: 'project',
+      state: 'needsSync',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-project', state: 'present' },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      ],
+      reasons: [],
+      recoveryActions: [{ command: 'sync', scope: 'project', description: 'Synchronize project.' }],
+    });
+
+    const ready = target({ pluginName: 'dual-ready', scope: 'user', state: 'present' });
+    ready.components.push({
+      kind: 'sharedNative', key: 'dual-ready@aw-official', state: 'usable',
+      metadata: { shared: true, version: '1.0.0' },
+    });
+    ready.placements[0] = {
+      scope: 'user',
+      state: 'ready',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['user'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-user', state: 'present' },
+        { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      ],
+      reasons: [], recoveryActions: [],
+    };
+    ready.placements.push({
+      scope: 'project',
+      state: 'ready',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-project', state: 'present' },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      ],
+      reasons: [], recoveryActions: [],
+    });
+
+    const view = buildTuiViewModel({
+      status: status({ targets: [shared, ready] }),
+      pluginSummaries: summaries(['official', 'shared-ready'], ['official', 'dual-ready']),
+    });
+    const sharedDiagnostics = view.issues.filter((issue) => issue.pluginId === 'official/shared-ready'
+      && issue.technicalDetails.some((detail) => detail.code === 'codexSharedNativeRenderDrift'));
+    expect(sharedDiagnostics).toEqual([expect.objectContaining({ placements: ['project', 'user'] })]);
+    const sharedPlugin = view.plugins.find((entry) => entry.pluginId === 'official/shared-ready')!;
+    expect(sharedPlugin.installedPlacements).toEqual([expect.objectContaining({
+      platform: 'codex',
+      desiredScopes: ['project', 'user'],
+      scopedPlacements: expect.arrayContaining([
+        expect.objectContaining({ scope: 'project', actualState: 'needsSync' }),
+        expect.objectContaining({ scope: 'user', actualState: 'needsSync' }),
+      ]),
+    })]);
+    expect(buildPlatformActions(sharedPlugin, 'codex')).toEqual(expect.arrayContaining([
+      { id: 'sync', platform: 'codex', scope: 'project' },
+      { id: 'sync', platform: 'codex', scope: 'user' },
+    ]));
+
+    const plugin = view.plugins.find((entry) => entry.pluginId === 'official/dual-ready')!;
+    expect(plugin.installedPlacements).toEqual([expect.objectContaining({
+      platform: 'codex',
+      scopedPlacements: expect.arrayContaining([
+        expect.objectContaining({ scope: 'project', health: 'ready', actualState: 'ready' }),
+        expect.objectContaining({ scope: 'user', health: 'ready', actualState: 'ready' }),
+      ]),
+    })]);
+    expect(buildPlatformActions(plugin, 'codex')).toEqual(expect.arrayContaining([
+      { id: 'reinstall', platform: 'codex', scope: 'project' },
+      { id: 'remove', platform: 'codex', scope: 'project' },
+      { id: 'reinstall', platform: 'codex', scope: 'user' },
+      { id: 'remove', platform: 'codex', scope: 'user' },
+    ]));
   });
 
   it.each([
@@ -2502,7 +2664,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV7Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV8Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -2563,7 +2725,7 @@ describe('TUI v4 router and ViewModel', () => {
       }],
     });
     const targets = [consumer('consumer-b', 'project'), direct, consumer('consumer-a', 'user')];
-    const project = (orderedTargets: StatusV7Payload['targets']) => buildTuiViewModel({
+    const project = (orderedTargets: StatusV8Payload['targets']) => buildTuiViewModel({
       status: status({ targets: orderedTargets }),
       pluginSummaries: summaries(
         ['official', 'leaf'],
@@ -2609,11 +2771,13 @@ describe('TUI v4 router and ViewModel', () => {
     const unavailableTarget = target({
       pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable',
     });
-    unavailableTarget.reasons.push({ code: 'bundleUnavailable', message: 'bundle missing' });
-    unavailableTarget.recoveryActions = [
+    unavailableTarget.placements[0]!.reasons.push({ code: 'bundleUnavailable', message: 'bundle missing' });
+    unavailableTarget.reasons = unavailableTarget.placements[0]!.reasons;
+    unavailableTarget.placements[0]!.recoveryActions = [
       { command: 'sync', description: '来源恢复后同步 desired intent。' },
       { command: 'cleanup', description: '清理可证明属于 AW 的输出。' },
     ];
+    unavailableTarget.recoveryActions = unavailableTarget.placements[0]!.recoveryActions;
     const view = buildTuiViewModel({
       status: status({ targets: [unavailableTarget] }),
       pluginSummaries: [],
@@ -4480,7 +4644,7 @@ describe('TUI v4 Review safety', () => {
 
   it('delegates dependency issue freshness to the locked plugin write executor', async () => {
     const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
-    consumer.reasons = [{
+    consumer.placements[0]!.reasons = [{
       code: 'dependencyMissing',
       message: 'safe dependency evidence',
       dependencyPluginId: 'official/toolkit',
@@ -4489,6 +4653,7 @@ describe('TUI v4 Review safety', () => {
       dependencyProject: null,
       severity: 'warning',
     }];
+    consumer.reasons = consumer.placements[0]!.reasons;
     const loaded: TuiStatusLoadResult = {
       payload: status({ targets: [consumer, target({ pluginName: 'toolkit', scope: 'user', state: 'absent' })] }),
       pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),

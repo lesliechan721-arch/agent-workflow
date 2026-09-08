@@ -236,14 +236,14 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     });
   });
 
-  it('keeps exact status v7 JSON on stdout', async () => {
+  it('keeps exact status v8 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
     vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV7: vi.fn(async () => {
+      statusCommandV8: vi.fn(async () => {
         const payload = {
-          schemaVersion: 7,
+          schemaVersion: 8,
           catalog: {
             primarySourceId: 'official',
             configDigest: 'sha256:config',
@@ -262,25 +262,31 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
             sourceId: 'official',
             sourceIdentity: 'sha256:source',
             version: '1.0.0',
-            platform: 'codex',
-            scope: 'project',
-            cwd: tempDir,
+            platform: 'codex', cwd: tempDir,
             state: 'needsSync',
-            components: [
-              {
-                kind: 'intent',
-                key: 'desired',
-                state: 'desired',
-                metadata: { enabled: true, scopes: ['project'], relation: 'root' },
-              },
-              { kind: 'ownership', key: 'aw', state: 'partial' },
-            ],
+            components: [],
             reasons: [{
               code: 'codexExtensionDrift',
               message: 'codexExtensionDrift: extension drift requires repair.',
               severity: 'warning',
             }],
             recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+            placements: [{
+              scope: 'project', state: 'needsSync',
+              components: [
+                {
+                  kind: 'intent', key: 'desired', state: 'desired',
+                  metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+                },
+                { kind: 'ownership', key: 'aw', state: 'partial' },
+              ],
+              reasons: [{
+                code: 'codexExtensionDrift',
+                message: 'codexExtensionDrift: extension drift requires repair.',
+                severity: 'warning',
+              }],
+              recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+            }],
           }],
           errors: [],
         };
@@ -301,7 +307,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toEqual({
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'official', configDigest: 'sha256:config',
         compositeDigest: 'sha256:composite', sources: [],
@@ -312,21 +318,31 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
       targets: [{
         pluginName: 'git-commit', pluginId: 'official/git-commit', sourceId: 'official',
         sourceIdentity: 'sha256:source', version: '1.0.0', platform: 'codex',
-        scope: 'project', cwd: tempDir,
+        cwd: tempDir,
         state: 'needsSync',
-        components: [
-          {
-            kind: 'intent', key: 'desired', state: 'desired',
-            metadata: { enabled: true, scopes: ['project'], relation: 'root' },
-          },
-          { kind: 'ownership', key: 'aw', state: 'partial' },
-        ],
+        components: [],
         reasons: [{
           code: 'codexExtensionDrift',
           message: 'codexExtensionDrift: extension drift requires repair.',
           severity: 'warning',
         }],
         recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+        placements: [{
+          scope: 'project', state: 'needsSync',
+          components: [
+            {
+              kind: 'intent', key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+            },
+            { kind: 'ownership', key: 'aw', state: 'partial' },
+          ],
+          reasons: [{
+            code: 'codexExtensionDrift',
+            message: 'codexExtensionDrift: extension drift requires repair.',
+            severity: 'warning',
+          }],
+          recoveryActions: [{ command: 'reinstall', scope: 'project', description: 'repair drift' }],
+        }],
       }],
       errors: [],
     });
@@ -338,7 +354,7 @@ describe('CLI JSON Status v7 and Receipt v6 harness', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
     vi.doMock('../../src/commands/status-v6.js', () => ({
-      statusCommandV7: vi.fn(async () => {
+      statusCommandV8: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));

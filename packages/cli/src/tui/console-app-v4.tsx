@@ -4917,13 +4917,14 @@ export function ConsoleAppV4(props: {
         }),
       };
       if (action.id === 'sync') return {
-        label: '同步已保存的使用位置…',
+        label: `同步${scopeLabel(action.scope)}的使用位置…`,
         description: placement?.state === 'installed'
-          ? placement.recovery?.find((entry) => entry.command === 'sync')?.description
+          ? (placement.scopedPlacements?.find((entry) => entry.scope === action.scope)?.recovery
+            ?? placement.recovery)?.find((entry) => entry.command === 'sync')?.description
             ?? '进入现有 Review、进度和结果链修复 needsSync 或 drift'
           : undefined,
         run: () => placement?.state === 'installed'
-          ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope })
+          ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope })
           : undefined,
       };
       if (action.id === 'reinstall') return { label: '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };

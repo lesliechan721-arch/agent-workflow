@@ -2,7 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { PortableReview, PortableInstallReceipt } from '../../src/portable/commands.js';
-import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
@@ -27,7 +27,7 @@ const candidates: PortableReview['selected'] = [
 ];
 
 function status(): TuiStatusLoadResult {
-  const summaries: StatusV7PluginSummary[] = [{
+  const summaries: StatusV8PluginSummary[] = [{
     pluginName: 'toolkit', pluginId: 'official/toolkit', displayName: 'Toolkit', description: '工具集',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
     dependencyDirectCount: 1, dependencyTotalCount: 1, dependencyIssueCount: 0,
@@ -35,13 +35,23 @@ function status(): TuiStatusLoadResult {
     pluginName: 'content', pluginId: 'official/content', displayName: 'Content', description: '内容工具',
     version: '1.0.0', supportedTargets: { codex: ['project'], claude: ['project'] }, configFieldCount: 0,
   }];
-  const payload: StatusV7Payload = {
-    schemaVersion: 7,
+  const payload: StatusV8Payload = {
+    schemaVersion: 8,
     catalog: { primarySourceId: 'official', configDigest: 'sha256:config', compositeDigest: 'sha256:catalog', sources: [{ id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'active' }] },
     filters: { plugins: [], platform: 'both', cwd: '/workspace' },
-    targets: summaries.flatMap((summary) => (['codex', 'claude'] as const).map((platform) => ({
-      pluginName: summary.pluginName, pluginId: summary.pluginId, sourceId: 'official', sourceIdentity: 'identity:official', version: '1.0.0', platform, scope: 'project' as const, cwd: '/workspace', state: 'absent' as const, components: [], reasons: [], recoveryActions: [],
-    }))),
+    targets: summaries.flatMap((summary) => (['codex', 'claude'] as const).map((platform) => {
+      const identity = {
+        pluginName: summary.pluginName, pluginId: summary.pluginId, sourceId: 'official',
+        sourceIdentity: 'identity:official', version: '1.0.0', platform, cwd: '/workspace',
+      };
+      const placement = {
+        scope: 'project' as const, state: 'absent' as const,
+        components: [], reasons: [], recoveryActions: [],
+      };
+      return platform === 'codex'
+        ? { ...identity, state: 'absent' as const, components: [], reasons: [], recoveryActions: [], placements: [placement] }
+        : { ...identity, ...placement };
+    })),
     errors: [],
   };
   return {

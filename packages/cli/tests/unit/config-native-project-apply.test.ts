@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const statusCommandV7 = vi.hoisted(() => vi.fn(async () => ({
+const statusCommandV8 = vi.hoisted(() => vi.fn(async () => ({
   payload: {
     targets: [{
       pluginName: 'claude-native-only',
@@ -31,7 +31,7 @@ const statusCommandV7 = vi.hoisted(() => vi.fn(async () => ({
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV7,
+  statusCommandV8,
 }));
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
@@ -179,7 +179,7 @@ describe('Claude project renderer config apply', () => {
     if (receipt.apply.state !== 'succeeded') throw new Error('Expected config apply to succeed.');
     expect(receipt.apply.targetResults.map((entry) => entry.target.scope)).toEqual(expectedScopes);
     expect(receipt.apply.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
-    expect(statusCommandV7).toHaveBeenCalledWith(expect.objectContaining({ nativeCliRunner }));
+    expect(statusCommandV8).toHaveBeenCalledWith(expect.objectContaining({ nativeCliRunner }));
     expect(reinstallCommandImpl).toHaveBeenCalledTimes(1);
     expect(reinstallCommandImpl).toHaveBeenCalledWith(
       ['claude-native-only'],

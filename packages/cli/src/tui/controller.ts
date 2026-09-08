@@ -31,12 +31,13 @@ import type {
   CatalogGenerationFreshnessResult,
 } from '../utils/catalog-generation-service.js';
 import type {
-  StatusV7Payload,
-  StatusV7PluginSummary,
-  StatusV7Target,
+  StatusV8Payload,
+  StatusV8PluginSummary,
+  StatusScopedTarget,
   StatusTargetRevision,
 } from '../commands/status-v6.js';
 import {
+  flattenStatusTargets,
   statusTargetActivation,
   statusTargetIntent,
   statusTargetOwnershipState,
@@ -159,11 +160,11 @@ export interface PluginWriteBatchTarget {
 export function pluginWriteBatchTargets(
   action: Exclude<BatchPluginWriteAction, 'install'>,
   pluginIds: readonly string[],
-  statusTargets: readonly StatusV7Target[],
+  statusTargets: readonly StatusScopedTarget[],
 ): PluginWriteBatchTarget[] {
   const selected = new Set(pluginIds);
   const targets: PluginWriteBatchTarget[] = [];
-  const add = (target: StatusV7Target, scope: Scope): void => {
+  const add = (target: StatusScopedTarget, scope: Scope): void => {
     targets.push({ pluginId: target.pluginId, platform: target.platform, scope });
   };
   for (const target of statusTargets) {
@@ -729,8 +730,8 @@ export interface PluginOperationProgressLine {
 
 export interface TuiStatusLoadResult {
   cliChannel?: 'latest' | 'beta';
-  payload: StatusV7Payload;
-  pluginSummaries: StatusV7PluginSummary[];
+  payload: StatusV8Payload;
+  pluginSummaries: StatusV8PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceDetails?: SourceDetailViewModel[];
   configuredSources?: CatalogSource[];
@@ -2837,7 +2838,7 @@ export class TuiController {
   }
 
   listCurrentProjectIntentRoots(): string[] {
-    return cloneFrozen([...new Set((this.#status?.payload.targets ?? []).flatMap((target) => {
+    return cloneFrozen([...new Set(flattenStatusTargets(this.#status?.payload.targets ?? []).flatMap((target) => {
       const intent = statusTargetIntent(target);
       return intent.relation === 'root' && intent.scopes.includes('project')
         ? [target.pluginId] : [];
@@ -2851,7 +2852,7 @@ export class TuiController {
     return cloneFrozen(pluginWriteBatchTargets(
       action,
       pluginIds,
-      this.#status?.payload.targets ?? [],
+      flattenStatusTargets(this.#status?.payload.targets ?? []),
     ));
   }
 
@@ -2869,6 +2870,7 @@ export class TuiController {
     platform: PlatformName,
     scope: Scope,
   ): PluginDependencyOverviewViewModel['dependents'] {
+    const statusTargets = flattenStatusTargets(this.#status?.payload.targets ?? []);
     const dependents = this.#viewModel?.dependencyOverviews.find((entry) =>
       entry.pluginId === pluginId)?.dependents ?? [];
     return cloneFrozen(dependents.flatMap((dependent) => {
@@ -2878,7 +2880,7 @@ export class TuiController {
         && reference.dependency.scope === scope
         && (scope === 'user' || reference.dependency.project === 'current')
         && (reference.consumer.project === 'other'
-          || this.#status?.payload.targets.find((target) =>
+          || statusTargets.find((target) =>
             target.pluginId === reference.consumer.pluginId
             && target.platform === reference.consumer.platform
             && target.scope === reference.consumer.scope)?.state !== 'absent'));
@@ -2902,7 +2904,8 @@ export class TuiController {
       }));
     }
     return plugin.supportedPlatforms.map((platform): InstallTargetOption => {
-      const platformTargets = this.#status?.payload.targets.filter((target) =>
+      const allStatusTargets = flattenStatusTargets(this.#status?.payload.targets ?? []);
+      const platformTargets = allStatusTargets.filter((target) =>
         target.pluginId === pluginId && target.platform === platform) ?? [];
       const rootSummary = this.#status?.pluginSummaries.find((summary) =>
         summary.pluginId === pluginId);
@@ -2922,7 +2925,7 @@ export class TuiController {
         const dependencySummary = this.#status?.pluginSummaries.find((summary) =>
           summary.pluginId === dependency.pluginId);
         const allowedScopes = dependencySummary?.supportedTargets?.[platform]
-          ?? (this.#status?.payload.targets.filter((target) =>
+          ?? (allStatusTargets.filter((target) =>
             target.pluginId === dependency.pluginId
             && target.platform === platform
             && !target.reasons.some((error) => error.code === 'unsupportedTarget'))
@@ -2937,7 +2940,7 @@ export class TuiController {
           };
         }
         const collisionAtEveryViableScope = viableScopes.every((candidateScope) => {
-          const target = this.#status?.payload.targets.find((entry) =>
+          const target = allStatusTargets.find((entry) =>
             entry.pluginId === dependency.pluginId
             && entry.platform === platform
             && entry.scope === candidateScope);
@@ -2959,8 +2962,8 @@ export class TuiController {
     pluginId: string,
     platform: PlatformName,
     scope: Scope,
-  ): StatusV7Payload['targets'][number]['state'] | undefined {
-    return this.#status?.payload.targets.find((target) =>
+  ): StatusV8Payload['targets'][number]['state'] | undefined {
+    return flattenStatusTargets(this.#status?.payload.targets ?? []).find((target) =>
       target.pluginId === pluginId
       && target.platform === platform
       && target.scope === scope)?.state;

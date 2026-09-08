@@ -81,7 +81,7 @@ import {
   type SystemCodexInspection,
 } from '../utils/codex-manager.js';
 
-export interface StatusV7CatalogSource {
+export interface StatusV8CatalogSource {
   id: string;
   identity: string;
   type: CatalogSource['type'];
@@ -95,59 +95,111 @@ export interface StatusV7CatalogSource {
   errorCode?: string;
 }
 
-export interface StatusV7Target {
+interface StatusTargetIdentity {
   pluginName: string;
   sourceId: string;
   sourceIdentity: string;
   pluginId: string;
   version?: string;
   platform: PlatformName;
-  scope: Scope;
   cwd: string;
-  state: StatusV7State;
-  components: StatusV7Component[];
-  reasons: StatusV7Reason[];
-  recoveryActions: StatusV7RecoveryAction[];
 }
 
-export type StatusV7State =
+export interface StatusV8Placement {
+  scope: Scope;
+  state: StatusV8State;
+  components: StatusV8Component[];
+  reasons: StatusV8Reason[];
+  recoveryActions: StatusV8RecoveryAction[];
+}
+
+export interface StatusV8ClaudeTarget extends StatusTargetIdentity, StatusV8Placement {
+  platform: 'claude';
+}
+
+export interface StatusV8CodexTarget extends StatusTargetIdentity {
+  platform: 'codex';
+  state: StatusV8State;
+  components: StatusV8Component[];
+  reasons: StatusV8Reason[];
+  recoveryActions: StatusV8RecoveryAction[];
+  placements: StatusV8Placement[];
+}
+
+export type StatusV8Target = StatusV8ClaudeTarget | StatusV8CodexTarget;
+
+export interface StatusScopedTarget extends StatusV8Placement {
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  pluginId: string;
+  version?: string;
+  platform: PlatformName;
+  cwd: string;
+  sharedComponents?: StatusV8Component[];
+  sharedReasons?: StatusV8Reason[];
+}
+
+export function statusTargetPlacements(target: StatusV8Target): StatusScopedTarget[] {
+  if (target.platform === 'claude') return [target];
+  return target.placements.map((placement) => ({
+    pluginName: target.pluginName,
+    sourceId: target.sourceId,
+    sourceIdentity: target.sourceIdentity,
+    pluginId: target.pluginId,
+    ...(target.version ? { version: target.version } : {}),
+    platform: target.platform,
+    cwd: target.cwd,
+    ...placement,
+    sharedComponents: target.components.filter((component) =>
+      component.kind !== 'systemConsumer' || component.key === `codex:${placement.scope}`),
+    sharedReasons: target.reasons.filter((reason) =>
+      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved'),
+  }));
+}
+
+export function flattenStatusTargets(targets: readonly StatusV8Target[]): StatusScopedTarget[] {
+  return targets.flatMap(statusTargetPlacements);
+}
+
+export type StatusV8State =
   | 'absent'
   | 'ready'
   | 'needsSync'
   | 'orphaned'
   | 'blocked';
 
-export interface StatusV7RecoveryAction {
+export interface StatusV8RecoveryAction {
   command: 'sync' | 'cleanup' | 'reinstall' | 'uninstall' | 'manual';
   scope?: Scope;
   description: string;
 }
 
-export type StatusV7DependencyReadinessState =
+export type StatusV8DependencyReadinessState =
   | 'ready'
   | 'absent'
   | 'blockedByCollision'
   | 'incomplete'
   | 'error';
 
-interface StatusV7DependencyReadiness {
+interface StatusV8DependencyReadiness {
   dependencyPluginId: string;
   dependencyPlatform: PlatformName;
   dependencyScope: Scope;
   dependencyProject: 'current' | null;
-  state: StatusV7DependencyReadinessState;
+  state: StatusV8DependencyReadinessState;
   rootIssueId?: string;
   rootIssueCode?: string;
 }
 
-export interface StatusV7Component {
+export interface StatusV8Component {
   kind: 'intent' | 'ownership' | 'sharedNative' | 'activation' | 'extension' | 'dependency' | 'systemConsumer';
   key: string;
   state: string;
   metadata?: Record<string, string | number | boolean | string[]>;
 }
 
-export interface StatusV7Reason {
+export interface StatusV8Reason {
   code: string;
   message: string;
   severity: 'warning' | 'blocking';
@@ -160,14 +212,14 @@ export interface StatusV7Reason {
   rootIssueCode?: string;
 }
 
-type StatusV7ReasonInput = Omit<StatusV7Reason, 'severity'>;
+type StatusV8ReasonInput = Omit<StatusV8Reason, 'severity'>;
 
 type StatusOwnershipState = 'present' | 'absent' | 'partial' | 'error';
 
 interface StatusOwnershipComponent {
   key: string;
   state: OwnershipInspection['components'][number]['state'];
-  error?: StatusV7Reason;
+  error?: StatusV8Reason;
 }
 
 export interface StatusSharedNativeProjection {
@@ -184,14 +236,14 @@ export function projectStatusSharedNativeReasons(
   sharedNative: StatusSharedNativeProjection | undefined,
   existingReasonCodes: readonly string[] = [],
   desiredEnabled = false,
-): StatusV7Reason[] {
+): StatusV8Reason[] {
   if (!sharedNative) return [];
-  const warning = (code: string, message: string): StatusV7Reason => ({
+  const warning = (code: string, message: string): StatusV8Reason => ({
     code,
     message: `${code}: ${message}`,
     severity: 'warning',
   });
-  const blocking = (code: string, message: string): StatusV7Reason => ({
+  const blocking = (code: string, message: string): StatusV8Reason => ({
     code,
     message: `${code}: ${message}`,
     severity: 'blocking',
@@ -236,7 +288,7 @@ export interface StatusExtensionProjection {
   kinds: CodexExtensionKind[];
 }
 
-interface StatusV7TargetDraft {
+interface StatusV8TargetDraft {
   pluginName: string;
   sourceId: string;
   sourceIdentity: string;
@@ -247,7 +299,7 @@ interface StatusV7TargetDraft {
   cwd: string;
   state: StatusOwnershipState;
   components: StatusOwnershipComponent[];
-  errors: StatusV7Reason[];
+  errors: StatusV8Reason[];
   sharedNative?: StatusSharedNativeProjection;
   activation?: StatusActivationProjection;
   extensions?: StatusExtensionProjection;
@@ -255,8 +307,10 @@ interface StatusV7TargetDraft {
     directCount: number;
     issueCount: number;
   };
-  dependencyReadiness?: StatusV7DependencyReadiness[];
+  dependencyReadiness?: StatusV8DependencyReadiness[];
 }
+
+interface StatusDecoratedPlacement extends StatusTargetIdentity, StatusV8Placement {}
 
 export interface StatusIntentProjection {
   enabled: boolean;
@@ -264,12 +318,16 @@ export interface StatusIntentProjection {
   relation: 'root' | 'dependency' | 'managed' | 'none';
 }
 
-function statusComponent(target: StatusV7Target, kind: StatusV7Component['kind'], key?: string) {
-  return target.components.find((component) =>
+type StatusComponentOwner = Pick<StatusV8Target | StatusV8Placement, 'components'> & {
+  sharedComponents?: StatusV8Component[];
+};
+
+function statusComponent(target: StatusComponentOwner, kind: StatusV8Component['kind'], key?: string) {
+  return [...target.components, ...(target.sharedComponents ?? [])].find((component) =>
     component.kind === kind && (key === undefined || component.key === key));
 }
 
-export function statusTargetIntent(target: StatusV7Target): StatusIntentProjection {
+export function statusTargetIntent(target: StatusComponentOwner): StatusIntentProjection {
   const metadata = statusComponent(target, 'intent', 'desired')?.metadata;
   return {
     enabled: metadata?.enabled === true,
@@ -284,7 +342,7 @@ export function statusTargetIntent(target: StatusV7Target): StatusIntentProjecti
   };
 }
 
-export function statusTargetOwnershipState(target: StatusV7Target): StatusOwnershipState {
+export function statusTargetOwnershipState(target: StatusComponentOwner): StatusOwnershipState {
   const components = target.components.filter((component) => component.kind === 'ownership');
   if (components.some((component) => component.state === 'error')) return 'error';
   if (components.some((component) => component.state === 'partial')) return 'partial';
@@ -293,7 +351,7 @@ export function statusTargetOwnershipState(target: StatusV7Target): StatusOwners
 }
 
 export function statusTargetSharedNative(
-  target: StatusV7Target,
+  target: StatusComponentOwner,
 ): StatusSharedNativeProjection | undefined {
   const component = statusComponent(target, 'sharedNative');
   if (!component || (component.state !== 'missing'
@@ -323,11 +381,11 @@ export function statusTargetSharedNative(
 }
 
 export function statusTargetActivation(
-  target: StatusV7Target,
+  target: StatusComponentOwner,
 ): StatusActivationProjection | undefined {
   const user = statusComponent(target, 'activation', 'user');
   const project = statusComponent(target, 'activation', 'project');
-  const consumer = statusComponent(target, 'systemConsumer', 'codex');
+  const consumer = statusComponent(target, 'systemConsumer');
   if (!user && !project && !consumer) return undefined;
   const activation = user ?? project ?? consumer;
   const evidence = activation?.metadata?.evidence;
@@ -364,7 +422,7 @@ export function statusTargetActivation(
 }
 
 export function statusTargetExtensions(
-  target: StatusV7Target,
+  target: StatusComponentOwner,
 ): StatusExtensionProjection | undefined {
   const component = statusComponent(target, 'extension', 'aw');
   if (!component || (component.state !== 'ready'
@@ -382,14 +440,14 @@ export function statusTargetExtensions(
   return { state: component.state, kinds };
 }
 
-export interface StatusV7Payload {
-  schemaVersion: 7;
+export interface StatusV8Payload {
+  schemaVersion: 8;
   catalog: {
     primarySourceId: string;
     configDigest: string;
     compositeDigest: string;
     generationSetDigest?: string;
-    sources: StatusV7CatalogSource[];
+    sources: StatusV8CatalogSource[];
   };
   filters: {
     plugins: string[];
@@ -397,8 +455,8 @@ export interface StatusV7Payload {
     scope?: Scope;
     cwd: string;
   };
-  targets: StatusV7Target[];
-  configIssues?: Array<NonNullable<StatusV7PluginSummary['configIssues']>[number] & {
+  targets: StatusV8Target[];
+  configIssues?: Array<NonNullable<StatusV8PluginSummary['configIssues']>[number] & {
     pluginId: string;
     pluginName: string;
   }>;
@@ -424,14 +482,14 @@ interface StatusPluginCapability {
   shortDescription: string;
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
-  configIssues?: StatusV7PluginSummary['configIssues'];
-  configDiagnostic?: StatusV7PluginSummary['configDiagnostic'];
+  configIssues?: StatusV8PluginSummary['configIssues'];
+  configDiagnostic?: StatusV8PluginSummary['configDiagnostic'];
   targets: Record<PlatformName, Record<Scope, boolean>>;
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
     state: StatusOwnershipState;
-    errors: StatusV7Reason[];
+    errors: StatusV8Reason[];
     components: StatusOwnershipComponent[];
-    dependencyReadiness?: StatusV7DependencyReadiness[];
+    dependencyReadiness?: StatusV8DependencyReadiness[];
     installedVersion?: string;
   }>>>>;
   dependencies: string[];
@@ -451,7 +509,7 @@ function resolveCatalogEntrySupportedPlatforms(
   return resolveSupportedPlatforms({ marketplace: { policy } } as PluginMeta['manifest']);
 }
 
-export interface StatusV7PluginSummary {
+export interface StatusV8PluginSummary {
   pluginName: string;
   pluginId: string;
   displayName?: string;
@@ -477,14 +535,14 @@ export interface StatusV7PluginSummary {
 export interface LiveConsoleItem {
   pluginName: string;
   version?: string;
-  pluginSummary?: Omit<StatusV7PluginSummary, 'pluginName' | 'pluginId'>;
-  targets: StatusV7Target[];
+  pluginSummary?: Omit<StatusV8PluginSummary, 'pluginName' | 'pluginId'>;
+  targets: StatusScopedTarget[];
 }
 
 export interface ConsoleItemsLoadResult {
   items: LiveConsoleItem[];
   catalogUnavailable: boolean;
-  status: StatusV7Payload;
+  status: StatusV8Payload;
 }
 
 let dependencyInspectionHookForTests: (() => void) | undefined;
@@ -502,7 +560,7 @@ export async function loadConsoleItemsResult(
   } = {},
   runtime: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<ConsoleItemsLoadResult> {
-  const result = await statusCommandV7({
+  const result = await statusCommandV8({
     cwd: options.cwd ?? process.cwd(),
     env: runtime.env,
     platform: options.platform,
@@ -524,7 +582,7 @@ export async function loadConsoleItemsResult(
       ...(pluginSummary ? { pluginSummary } : {}),
       targets: [],
     };
-    current.targets.push(target);
+    current.targets.push(...statusTargetPlacements(target));
     groups.set(target.pluginId, current);
   }
   const allSourcesFailed = result.payload.catalog.sources.length > 0
@@ -601,9 +659,9 @@ function inventoryErrorMatchesSelection(options: {
 }
 
 function finalizeTargetError(
-  error: StatusV7ReasonInput | StatusV7Reason,
+  error: StatusV8ReasonInput | StatusV8Reason,
   targetState: StatusOwnershipState,
-): StatusV7Reason {
+): StatusV8Reason {
   return {
     ...error,
     severity: error.code === 'artifactCollision'
@@ -615,11 +673,11 @@ function finalizeTargetError(
 }
 
 function projectTargetError(
-  error: StatusV7ReasonInput | StatusV7Reason,
+  error: StatusV8ReasonInput | StatusV8Reason,
   env: NodeJS.ProcessEnv,
   cwd: string,
   targetState: StatusOwnershipState,
-): StatusV7Reason {
+): StatusV8Reason {
   const sanitized = sanitizeCatalogSourceError(new Error(error.message), env, [
     getCodexHome(env),
     getClaudeHome(env),
@@ -818,7 +876,7 @@ function projectDependencyClosureForTarget(options: {
 }
 
 function statusRecovery(options: {
-  state: StatusV7State;
+  state: StatusV8State;
   desired: DesiredTargetState;
   platform: PlatformName;
   pluginId: string;
@@ -826,7 +884,7 @@ function statusRecovery(options: {
   sharedNative?: StatusSharedNativeProjection;
   conflictRoots?: Partial<Record<Scope, string[]>>;
   errorCodes?: string[];
-}): StatusV7RecoveryAction[] {
+}): StatusV8RecoveryAction[] {
   if (options.errorCodes?.some((code) =>
     code === 'codexProjectPluginVersionTooLow'
     || code === 'codexProjectPluginUnsupported'
@@ -980,7 +1038,7 @@ export function projectTargetRevision(
   return { state: 'unknown', availableVersion, installedVersion };
 }
 
-function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
+function renderStatusV8(payload: StatusV8Payload, verbose: boolean): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
     lines.push(`${source.primary ? '*' : '-'} ${source.id}: ${source.error ?? source.freshness ?? 'unavailable'}`);
@@ -990,10 +1048,25 @@ function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
       ? ` [${target.reasons.map((reason) => reason.message.startsWith(`${reason.code}:`)
         ? reason.message : `${reason.code}: ${reason.message}`).join('; ')}]`
       : '';
-    lines.push(`${target.pluginId} ${target.platform} (${target.scope}): ${target.state}${reasons}`);
+    if (target.platform === 'claude') {
+      lines.push(`${target.pluginId} ${target.platform} (${target.scope}): ${target.state}${reasons}`);
+    } else {
+      lines.push(`${target.pluginId} ${target.platform}: ${target.state}${reasons}`);
+      for (const placement of target.placements) {
+        lines.push(`  ${placement.scope}: ${placement.state}`);
+      }
+    }
     if (verbose) {
       for (const component of target.components) {
         lines.push(`  component ${component.kind}/${component.key}: ${component.state}`);
+      }
+      if (target.platform === 'codex') {
+        for (const placement of target.placements) {
+          lines.push(`  placement ${placement.scope}: ${placement.state}`);
+          for (const component of placement.components) {
+            lines.push(`    component ${component.kind}/${component.key}: ${component.state}`);
+          }
+        }
       }
       for (const action of target.recoveryActions) {
         lines.push(`  recovery ${action.command}: ${action.description}`);
@@ -1032,7 +1105,7 @@ function collisionRootIssueId(options: {
   ].join(':');
 }
 
-async function statusCommandV7InSession(options: {
+async function statusCommandV8InSession(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -1046,10 +1119,10 @@ async function statusCommandV7InSession(options: {
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession: Awaited<ReturnType<typeof createCodexNativeObservationSession>>;
 }): Promise<{
-  payload: StatusV7Payload;
+  payload: StatusV8Payload;
   output: string;
   hasErrors: boolean;
-  pluginSummaries: StatusV7PluginSummary[];
+  pluginSummaries: StatusV8PluginSummary[];
   targetRevisions: StatusTargetRevision[];
 }> {
   const env = options.env ?? process.env;
@@ -1057,7 +1130,7 @@ async function statusCommandV7InSession(options: {
   const dependencyInspectionCache = new Map<
     string,
     Promise<{
-      state: StatusV7DependencyReadinessState;
+      state: StatusV8DependencyReadinessState;
       rootIssueId?: string;
       rootIssueCode?: string;
     }>
@@ -1449,10 +1522,10 @@ async function statusCommandV7InSession(options: {
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
               plugin.catalogLogicalIdentity = item.resolution!.logicalIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
-              let configIssues: StatusV7PluginSummary['configIssues'];
-              let configDiagnostic: StatusV7PluginSummary['configDiagnostic'];
+              let configIssues: StatusV8PluginSummary['configIssues'];
+              let configDiagnostic: StatusV8PluginSummary['configDiagnostic'];
               if (plugin.manifest.config?.fields) {
-                const issues = new Map<string, NonNullable<StatusV7PluginSummary['configIssues']>[number]>();
+                const issues = new Map<string, NonNullable<StatusV8PluginSummary['configIssues']>[number]>();
                 for (const scope of scopes) {
                   try {
                     const resolved = scope === 'project'
@@ -1483,7 +1556,7 @@ async function statusCommandV7InSession(options: {
                         key: issue.key,
                         title: plugin.manifest.config.fields[issue.key]?.title ?? issue.key,
                         source,
-                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
                       issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
                     for (const override of resolved.unsupportedLayerOverrides) {
@@ -1493,7 +1566,7 @@ async function statusCommandV7InSession(options: {
                         key: override.key,
                         title: plugin.manifest.config.fields[override.key]?.title ?? override.key,
                         source: override.source,
-                      } as NonNullable<StatusV7PluginSummary['configIssues']>[number];
+                      } as NonNullable<StatusV8PluginSummary['configIssues']>[number];
                       issues.set(`${scope}\0${configIssue.type}\0${configIssue.key}\0${configIssue.source}`, configIssue);
                     }
                   } catch {
@@ -1610,7 +1683,7 @@ async function statusCommandV7InSession(options: {
                       required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
                       optional: inspected.target.optionalOwnedComponents ?? [],
                     });
-                    const collisionErrors: StatusV7Reason[] = inspected.inspection.components.flatMap(
+                    const collisionErrors: StatusV8Reason[] = inspected.inspection.components.flatMap(
                       (component) => component.collision ? [finalizeTargetError({
                         code: 'artifactCollision',
                         message: collisionMessage(component.collision),
@@ -1627,8 +1700,8 @@ async function statusCommandV7InSession(options: {
                         rootIssueCode: 'artifactCollision',
                       }, liveState)] : [],
                     );
-                    const dependencyErrors: StatusV7Reason[] = [];
-                    const dependencyReadiness: StatusV7DependencyReadiness[] = [];
+                    const dependencyErrors: StatusV8Reason[] = [];
+                    const dependencyReadiness: StatusV8DependencyReadiness[] = [];
                     const directDependencies = plugin.manifest.dependencies ?? [];
                     if (directDependencies.length > 0
                       && (liveState === 'present' || liveState === 'partial')) {
@@ -1713,7 +1786,7 @@ async function statusCommandV7InSession(options: {
                           ? [dependencyOverride.scope]
                           : scope === 'project' ? ['project', 'user'] : ['user'];
                         let dependencyResult: {
-                          state: StatusV7DependencyReadinessState;
+                          state: StatusV8DependencyReadinessState;
                           dependencyScope?: Scope;
                           rootIssueId?: string;
                           rootIssueCode?: string;
@@ -1822,7 +1895,7 @@ async function statusCommandV7InSession(options: {
                             dependencyResult = candidate;
                             break;
                           }
-                          const priority: Record<StatusV7DependencyReadinessState, number> = {
+                          const priority: Record<StatusV8DependencyReadinessState, number> = {
                             ready: 5,
                             blockedByCollision: 4,
                             incomplete: 3,
@@ -2171,8 +2244,8 @@ async function statusCommandV7InSession(options: {
   const selected = [...selectedById.values()];
   const explicitTargetFilter = requested.length > 0
     && (options.platform !== undefined || options.scope !== undefined);
-  const targets: StatusV7TargetDraft[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
-    scopes.flatMap((scope): StatusV7TargetDraft[] => {
+  const targets: StatusV8TargetDraft[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
+    scopes.flatMap((scope): StatusV8TargetDraft[] => {
       const target = {
         pluginName: entry.name,
         sourceId: entry.source.id,
@@ -2297,7 +2370,7 @@ async function statusCommandV7InSession(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV7TargetDraft = {
+    const target: StatusV8TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -2326,7 +2399,7 @@ async function statusCommandV7InSession(options: {
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
       || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
     const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
-    const target: StatusV7TargetDraft = {
+    const target: StatusV8TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -2379,7 +2452,7 @@ async function statusCommandV7InSession(options: {
       && ![userIntent, projectIntent].some((intent) => intent.roots.some((root) =>
         root.pluginId === pluginId && root.platforms.includes('codex')))
       && (desiredTargetStates.get(desiredTargetKey(pluginId, 'codex'))?.scopes.length ?? 0) === 0;
-    const target: StatusV7TargetDraft = {
+    const target: StatusV8TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
       sourceIdentity: reference.sourceIdentity ?? 'unavailable',
@@ -2456,31 +2529,29 @@ async function statusCommandV7InSession(options: {
     entry,
   ]));
   const explicitScope = options.scope === undefined ? undefined : scopes[0]!;
-  const warning = (code: string, message: string): StatusV7Reason => ({
+  const warning = (code: string, message: string): StatusV8Reason => ({
     code,
     message: `${code}: ${message}`,
     severity: 'warning',
   });
-  const blocking = (code: string, message: string): StatusV7Reason => ({
+  const blocking = (code: string, message: string): StatusV8Reason => ({
     code,
     message: `${code}: ${message}`,
     severity: 'blocking',
   });
   const decorateTarget = async (
-    target: StatusV7TargetDraft,
+    target: StatusV8TargetDraft,
     groupedScopes: Scope[],
-    groupedTargets: StatusV7TargetDraft[],
-  ): Promise<StatusV7Target> => {
+    groupedTargets: StatusV8TargetDraft[],
+  ): Promise<StatusDecoratedPlacement> => {
     const entry = selectedByPluginId.get(target.pluginId);
     const codex = target.platform === 'codex' ? entry?.codex : undefined;
     const desiredAll = desiredTargetStates.get(desiredTargetKey(target.pluginId, target.platform))
       ?? { scopes: [], relation: 'none' as const };
-    const desired = target.platform === 'codex'
-      ? desiredAll
-      : {
-          scopes: desiredAll.scopes.includes(target.scope) ? [target.scope] : [],
-          relation: desiredAll.relation,
-        };
+    const desired = {
+      scopes: desiredAll.scopes.includes(target.scope) ? [target.scope] : [],
+      relation: desiredAll.relation,
+    };
     const sharedNative = codex?.sharedNative ?? target.sharedNative;
     const baseActivation = codex?.activation ?? target.activation;
     const consumerScope: Scope = desired.scopes.includes('project')
@@ -2503,9 +2574,7 @@ async function statusCommandV7InSession(options: {
           systemConsumer,
         }
       : baseActivation;
-    const observationScopes = explicitScope
-      ? [explicitScope]
-      : desired.scopes.length > 0 ? desired.scopes : groupedScopes;
+    const observationScopes = [target.scope];
     const scopedTargets = groupedTargets.filter((candidate) =>
       observationScopes.includes(candidate.scope));
     const observedTargets = scopedTargets.length > 0 ? scopedTargets : groupedTargets;
@@ -2527,16 +2596,13 @@ async function statusCommandV7InSession(options: {
       && (codex?.extensionKinds.length ?? 0) > 0
       && desired.scopes.includes('user')
       && desired.scopes.includes('project');
-    const expectedUser = desired.scopes.includes('user');
-    const expectedProject = desired.scopes.includes('project');
+    const expectedEnabled = desired.scopes.includes(target.scope);
     const activationDrift = target.platform === 'codex'
       && (codexConfigErrors.some((error) =>
         error.scope === 'user' || observationScopes.includes(error.scope))
         || ((codex?.nativeKinds.length ?? 0) > 0
-          && ((expectedUser && activation?.user !== true)
-            || (!expectedUser && activation?.user === true)
-            || (expectedProject && activation?.project !== true)
-            || (!expectedProject && activation?.project === true))));
+          && (expectedEnabled && activation?.[target.scope] !== true
+            || !expectedEnabled && activation?.[target.scope] === true)));
     const extensionComponents = observedTargets.flatMap((candidate) => candidate.components).filter(
       (component) => component.key !== 'native'
         && !component.key.startsWith('activation-')
@@ -2605,7 +2671,7 @@ async function statusCommandV7InSession(options: {
     const hasBlockingBaseReason = baseTargetErrors.some((reason) => reason.severity === 'blocking');
     const capabilityUnsupported = baseTargetErrors.some((reason) =>
       reason.code === 'awCapabilityUnsupported');
-    const state: StatusV7State = hasSourceError && desiredEnabled
+    const state: StatusV8State = hasSourceError && desiredEnabled
       ? 'blocked'
       : consumerBlocking && desiredEnabled
         ? 'blocked'
@@ -2642,13 +2708,13 @@ async function statusCommandV7InSession(options: {
       ...(activationDrift && sharedNative?.state !== 'missing' && sharedNative?.state !== 'unobserved'
         ? [warning('codexActivationDrift',
             `${target.pluginId} activation differs from desired intent: `
-            + `user expected=${expectedUser}, actual=${activation?.user ?? 'unset'}; `
-            + `project expected=${expectedProject}, actual=${activation?.project ?? 'unset'}.`)]
+            + `${target.scope} expected=${expectedEnabled}, `
+            + `actual=${activation?.[target.scope] ?? 'unset'}.`)]
         : []),
       ...(extensions?.state === 'drifted'
         ? [warning('codexExtensionDrift', `${target.pluginId} extension projection has drifted.`)]
         : []),
-      ...dependencyMoves.map((move): StatusV7Reason => ({
+      ...dependencyMoves.map((move): StatusV8Reason => ({
         ...warning(
           'dependencyScopeMigrationCleanupRequired',
           `${move.pluginId} has preserved user-scope output after moving to project scope.`,
@@ -2675,14 +2741,10 @@ async function statusCommandV7InSession(options: {
     ])).values()];
     const ownershipComponents = [...new Map(observedTargets.flatMap((candidate) => candidate.components)
       .map((component) => [component.key, component] as const)).values()];
-    const representativeScope = explicitScope
-      ?? (desired.scopes.length === 1
-      ? desired.scopes[0]!
-      : observedTargets.find((candidate) => candidate.state !== 'absent')?.scope
-        ?? (groupedScopes.includes('user') ? 'user' : groupedScopes[0] ?? target.scope));
+    const representativeScope = target.scope;
     const representativeTarget = observedTargets.find((candidate) =>
       candidate.scope === representativeScope) ?? target;
-    const components: StatusV7Component[] = [
+    const components: StatusV8Component[] = [
       {
         kind: 'intent',
         key: 'desired',
@@ -2693,7 +2755,7 @@ async function statusCommandV7InSession(options: {
           relation: desired.relation,
         },
       },
-      ...ownershipComponents.map((component): StatusV7Component => ({
+      ...ownershipComponents.map((component): StatusV8Component => ({
         kind: 'ownership',
         key: component.key,
         state: component.key === 'native'
@@ -2728,7 +2790,7 @@ async function statusCommandV7InSession(options: {
         }]),
       ...(activation?.systemConsumer ? [{
         kind: 'systemConsumer' as const,
-        key: 'codex',
+        key: `codex:${representativeScope}`,
         state: activation.systemConsumer.state,
         metadata: {
           evidence: activation.evidence,
@@ -2748,7 +2810,7 @@ async function statusCommandV7InSession(options: {
         state: extensions.state,
         metadata: { kinds: extensions.kinds },
       }] : []),
-      ...(representativeTarget.dependencyReadiness ?? []).map((dependency): StatusV7Component => ({
+      ...(representativeTarget.dependencyReadiness ?? []).map((dependency): StatusV8Component => ({
         kind: 'dependency',
         key: dependency.dependencyPluginId,
         state: dependency.state,
@@ -2793,14 +2855,16 @@ async function statusCommandV7InSession(options: {
           available,
         }),
         errorCodes: dedupedErrors.map((error) => error.code),
-      }),
+      }).map((action) => action.command === 'manual' || action.scope
+        ? action
+        : { ...action, scope: representativeScope }),
     };
   };
-  const codexGroups = new Map<string, StatusV7TargetDraft[]>();
-  const projectedTargets: StatusV7Target[] = [];
+  const codexGroups = new Map<string, StatusV8TargetDraft[]>();
+  const projectedTargets: StatusV8Target[] = [];
   for (const target of draftTargets) {
     if (target.platform !== 'codex') {
-      projectedTargets.push(await decorateTarget(target, [target.scope], [target]));
+      projectedTargets.push(await decorateTarget(target, [target.scope], [target]) as StatusV8ClaudeTarget);
       continue;
     }
     const group = codexGroups.get(target.pluginId) ?? [];
@@ -2808,25 +2872,97 @@ async function statusCommandV7InSession(options: {
     codexGroups.set(target.pluginId, group);
   }
   for (const group of codexGroups.values()) {
-    const scopes = [...new Set(group.map((target) => target.scope))].sort();
-    projectedTargets.push(await decorateTarget(group[0]!, scopes, group));
+    const decorated = await Promise.all(group.map((target) =>
+      decorateTarget(target, [target.scope], [target])));
+    const first = decorated[0]!;
+    const entry = selectedByPluginId.get(first.pluginId);
+    const desired = desiredTargetStates.get(desiredTargetKey(first.pluginId, 'codex'))
+      ?? { scopes: [], relation: 'none' as const };
+    const returnedScopes = new Set(decorated.map((target) => target.scope));
+    const desiredOverlapConflict = (entry?.codex?.extensionKinds.length ?? 0) > 0
+      && desired.scopes.includes('user')
+      && desired.scopes.includes('project')
+      && returnedScopes.has('user')
+      && returnedScopes.has('project');
+    const sharedComponents = [...new Map(decorated.flatMap((target) => target.components)
+      .filter((component) => component.kind === 'sharedNative' || component.kind === 'systemConsumer')
+      .map((component) => [`${component.kind}\0${component.key}`, component] as const)).values()];
+    const sharedReason = (reason: StatusV8Reason): boolean =>
+      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved';
+    const sharedReasons = decorated.flatMap((target) => target.reasons.filter(sharedReason));
+    const placements = decorated.map((target): StatusV8Placement => ({
+      scope: target.scope,
+      state: target.state,
+      components: target.components.filter((component) =>
+        component.kind !== 'sharedNative' && component.kind !== 'systemConsumer'),
+      reasons: target.reasons.filter((reason) => !sharedReason(reason)),
+      recoveryActions: target.recoveryActions,
+    })).sort((left, right) => left.scope.localeCompare(right.scope, 'en'));
+    const reasons = [...new Map([
+      ...placements.flatMap((placement) => placement.reasons),
+      ...sharedReasons,
+      ...(desiredOverlapConflict ? [blocking(
+        'codexExtensionScopeConflict',
+        `${first.pluginId} has AW extensions desired at user and project scope.`,
+      )] : []),
+    ]
+      .map((reason) => [`${reason.code}\0${reason.message}`, reason] as const)).values()];
+    const conflictRecovery = desiredOverlapConflict ? statusRecovery({
+      state: 'blocked',
+      desired,
+      platform: 'codex',
+      pluginId: first.pluginId,
+      conflictRoots: rootIntentsForTarget({
+        pluginId: first.pluginId,
+        platform: 'codex',
+        userIntent,
+        projectIntent,
+        available,
+      }),
+      errorCodes: ['codexExtensionScopeConflict'],
+    }) : [];
+    const recoveryActions = [...new Map((desiredOverlapConflict
+      ? conflictRecovery
+      : placements.flatMap((placement) => placement.recoveryActions))
+      .map((action) => [
+        `${action.command}\0${action.scope ?? ''}\0${action.description}`,
+        action,
+      ] as const)).values()];
+    const state = desiredOverlapConflict ? 'blocked' as const
+      : (['blocked', 'needsSync', 'orphaned', 'ready', 'absent'] as const)
+          .find((candidate) => placements.some((placement) => placement.state === candidate))!;
+    projectedTargets.push({
+      pluginName: first.pluginName,
+      sourceId: first.sourceId,
+      sourceIdentity: first.sourceIdentity,
+      pluginId: first.pluginId,
+      ...(first.version ? { version: first.version } : {}),
+      platform: 'codex',
+      cwd: first.cwd,
+      state,
+      components: sharedComponents,
+      reasons,
+      recoveryActions,
+      placements,
+    });
   }
   projectedTargets.sort((left, right) =>
-    `${left.pluginId}\0${left.platform}\0${left.scope}`.localeCompare(
-      `${right.pluginId}\0${right.platform}\0${right.scope}`,
+    `${left.pluginId}\0${left.platform}`.localeCompare(
+      `${right.pluginId}\0${right.platform}`,
       'en',
     ));
-  const targetRevisions: StatusTargetRevision[] = projectedTargets.map((target) => {
+  const targetRevisions: StatusTargetRevision[] = projectedTargets.flatMap((target) => {
     const entry = selectedByPluginId.get(target.pluginId);
-    return {
+    const placements = target.platform === 'codex' ? target.placements : [target];
+    return placements.map((placement) => ({
       pluginId: target.pluginId,
       platform: target.platform,
-      scope: target.scope,
+      scope: placement.scope,
       revision: projectTargetRevision(
         entry?.version,
-        entry?.states[target.platform]?.[target.scope]?.installedVersion,
+        entry?.states[target.platform]?.[placement.scope]?.installedVersion,
       ),
-    };
+    }));
   });
   const publicConfigIssues = available.flatMap((entry) => (entry.configIssues ?? [])
     .filter((issue) => issue.type === 'configLayerUnsupported')
@@ -2835,8 +2971,8 @@ async function statusCommandV7InSession(options: {
       pluginName: entry.name,
       ...issue,
     })));
-  const payload: StatusV7Payload = {
-    schemaVersion: 7,
+  const payload: StatusV8Payload = {
+    schemaVersion: 8,
     catalog: {
       primarySourceId: catalog.primarySourceId,
       configDigest: catalog.configDigest,
@@ -2865,7 +3001,7 @@ async function statusCommandV7InSession(options: {
     || payload.targets.some((target) => target.reasons.some((reason) => reason.severity === 'blocking'));
   return {
     payload,
-    output: options.json ? JSON.stringify(payload) : renderStatusV7(payload, options.verbose === true),
+    output: options.json ? JSON.stringify(payload) : renderStatusV8(payload, options.verbose === true),
     hasErrors,
     targetRevisions,
     pluginSummaries: available.map((entry) => {
@@ -2913,7 +3049,7 @@ async function statusCommandV7InSession(options: {
   };
 }
 
-export async function statusCommandV7(options: {
+export async function statusCommandV8(options: {
   plugins?: string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -2926,9 +3062,9 @@ export async function statusCommandV7(options: {
   catalogOperationContext?: CatalogOperationContext;
   inventoryCatalogSourceReferences?: typeof inventoryCatalogSourceReferences;
   codexObservationSession?: CodexNativeObservationSession;
-}): ReturnType<typeof statusCommandV7InSession> {
+}): ReturnType<typeof statusCommandV8InSession> {
   if (options.codexObservationSession) {
-    return statusCommandV7InSession({
+    return statusCommandV8InSession({
       ...options,
       codexObservationSession: options.codexObservationSession,
     });
@@ -2940,7 +3076,7 @@ export async function statusCommandV7(options: {
     runner: options.nativeCliRunner ?? getDefaultNativeCliRunner(),
   });
   try {
-    return await statusCommandV7InSession({ ...options, codexObservationSession: session });
+    return await statusCommandV8InSession({ ...options, codexObservationSession: session });
   } finally {
     await session.dispose();
   }

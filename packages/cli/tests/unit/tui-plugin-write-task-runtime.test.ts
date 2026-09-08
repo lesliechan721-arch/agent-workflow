@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import type { RebuildTaskTarget } from '../../src/commands/rebuild-command.js';
-import type { StatusV7Payload } from '../../src/commands/status-v6.js';
+import type { StatusV8Payload } from '../../src/commands/status-v6.js';
 import {
   createTuiControllerDependencies,
 } from '../../src/tui/controller-runtime.js';
@@ -25,13 +25,13 @@ import { createDependencyCatalogSnapshotFixture } from '../helpers/catalog-sourc
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const runtimeMocks = vi.hoisted(() => ({
-  statusCommandV7: vi.fn(),
+  statusCommandV8: vi.fn(),
   taskWriteCommand: vi.fn(),
 }));
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV7: runtimeMocks.statusCommandV7,
+  statusCommandV8: runtimeMocks.statusCommandV8,
 }));
 
 vi.mock('../../src/commands/write-commands.js', async (importOriginal) => ({
@@ -80,15 +80,20 @@ function status(options: {
   configDigest: string;
   sourceIdentity: string;
   installedVersion?: string;
-}): Awaited<ReturnType<typeof runtimeMocks.statusCommandV7>> {
+}): Awaited<ReturnType<typeof runtimeMocks.statusCommandV8>> {
   const installedVersion = options.installedVersion ?? '0.9.0';
-  const targets: StatusV7Payload['targets'] = [
+  const targets: StatusV8Payload['targets'] = [
     {
       pluginName: 'alpha', pluginId: 'team/alpha', sourceId: 'team',
       sourceIdentity: options.sourceIdentity, version: '1.0.0',
-      platform: 'codex', scope: 'user', cwd: options.cwd, state: 'ready',
-      components: [{ kind: 'ownership', key: 'alpha', state: 'present' }],
+      platform: 'codex', cwd: options.cwd, state: 'ready',
+      components: [],
       reasons: [], recoveryActions: [],
+      placements: [{
+        scope: 'user', state: 'ready',
+        components: [{ kind: 'ownership', key: 'alpha', state: 'present' }],
+        reasons: [], recoveryActions: [],
+      }],
     },
     {
       pluginName: 'beta', pluginId: 'team/beta', sourceId: 'team',
@@ -101,7 +106,7 @@ function status(options: {
   ];
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'team', configDigest: options.configDigest,
         compositeDigest: 'sha256:composite',
@@ -126,14 +131,15 @@ function status(options: {
         supportedTargets: { codex: [], claude: ['project'] }, configFieldCount: 0,
       },
     ],
-    targetRevisions: targets.map((target) => ({
-      pluginId: target.pluginId, platform: target.platform, scope: target.scope,
-      revision: {
-        state: 'upgradeAvailable' as const,
-        installedVersion,
-        availableVersion: '1.0.0',
-      },
-    })),
+    targetRevisions: targets.flatMap((target) =>
+      (target.platform === 'codex' ? target.placements : [target]).map((placement) => ({
+        pluginId: target.pluginId, platform: target.platform, scope: placement.scope,
+        revision: {
+          state: 'upgradeAvailable' as const,
+          installedVersion,
+          availableVersion: '1.0.0',
+        },
+      }))),
   };
 }
 
@@ -196,8 +202,8 @@ function sharedDependencyRestoreStatus(options: {
   cwd: string;
   configDigest: string;
   sourceIdentity: string;
-}): Awaited<ReturnType<typeof runtimeMocks.statusCommandV7>> {
-  const rootTarget = (scope: 'user' | 'project'): StatusV7Payload['targets'][number] => ({
+}): Awaited<ReturnType<typeof runtimeMocks.statusCommandV8>> {
+  const rootTarget = (scope: 'user' | 'project'): StatusV8Payload['targets'][number] => ({
     pluginName: 'alpha', pluginId: 'team/alpha', sourceId: 'team',
     sourceIdentity: options.sourceIdentity, version: '1.0.0',
     platform: 'claude', scope, cwd: options.cwd, state: 'needsSync',
@@ -210,7 +216,7 @@ function sharedDependencyRestoreStatus(options: {
     }],
     recoveryActions: [],
   });
-  const dependencyTarget = (scope: 'user' | 'project'): StatusV7Payload['targets'][number] => ({
+  const dependencyTarget = (scope: 'user' | 'project'): StatusV8Payload['targets'][number] => ({
     pluginName: 'beta', pluginId: 'team/beta', sourceId: 'team',
     sourceIdentity: options.sourceIdentity, version: '1.0.0',
     platform: 'claude', scope, cwd: options.cwd, state: 'absent',
@@ -221,7 +227,7 @@ function sharedDependencyRestoreStatus(options: {
   ];
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'team', configDigest: options.configDigest,
         compositeDigest: 'sha256:composite',
@@ -260,7 +266,7 @@ describe('plugin write task runtime', () => {
 
   it('previews and executes mixed platform/scope methods once for one source', async () => {
     const catalog = await configureCatalog();
-    runtimeMocks.statusCommandV7.mockImplementation(async () => status(catalog));
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: catalog.cwd,
@@ -303,7 +309,7 @@ describe('plugin write task runtime', () => {
   it('rejects a changed installed version during the lock-time evidence check', async () => {
     const catalog = await configureCatalog();
     let installedVersion = '0.9.0';
-    runtimeMocks.statusCommandV7.mockImplementation(async () => status({
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status({
       ...catalog, installedVersion,
     }));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
@@ -337,7 +343,7 @@ describe('plugin write task runtime', () => {
 
   it('moves a blocked requested plan target out of the executable subset and repreviews', async () => {
     const catalog = await configureCatalog();
-    runtimeMocks.statusCommandV7.mockImplementation(async () => status(catalog));
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => {
       const result = commandResult(targets);
       if (targets.length !== 2) return result;
@@ -392,7 +398,7 @@ describe('plugin write task runtime', () => {
 
   it('maps a blocked shared dependency only to its connected root', async () => {
     const catalog = await configureCatalog();
-    runtimeMocks.statusCommandV7.mockImplementation(async () => status(catalog));
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => {
       const result = commandResult(targets);
       if (targets.length !== 2) return result;
@@ -445,7 +451,7 @@ describe('plugin write task runtime', () => {
     projectRevision.revision = {
       state: 'upgradeAvailable', installedVersion: '0.9.0', availableVersion: '1.0.0',
     };
-    runtimeMocks.statusCommandV7.mockResolvedValue(current);
+    runtimeMocks.statusCommandV8.mockResolvedValue(current);
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: catalog.cwd, env: catalog.env, interactive: false,
@@ -461,7 +467,7 @@ describe('plugin write task runtime', () => {
 
   it('normalizes two missing dependency scopes to one promoted repair target', async () => {
     const catalog = await configureCatalog();
-    runtimeMocks.statusCommandV7.mockImplementation(async () =>
+    runtimeMocks.statusCommandV8.mockImplementation(async () =>
       sharedDependencyRestoreStatus(catalog));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => ({
       ...commandResult(targets),

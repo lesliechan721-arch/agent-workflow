@@ -14,7 +14,7 @@ import {
   createCliExecutionContext,
   createCommandExecutionContext,
 } from '../../src/commands/runtime.js';
-import { loadConsoleItemsResult, statusCommandV7 } from '../../src/commands/status-v6.js';
+import { loadConsoleItemsResult, statusCommandV8 } from '../../src/commands/status-v6.js';
 import { installWriteCommand } from '../../src/commands/write-commands.js';
 import type { CommandEvent } from '../../src/output/model.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
@@ -333,7 +333,7 @@ describe('multi-source performance budgets', () => {
 
   it('keeps warm multi-source status and console loading within budget', async () => {
     const durations = await sample(async () => {
-      const result = await statusCommandV7({
+      const result = await statusCommandV8({
         cwd: root, env, cliVersion: '1.0.0', json: true,
       });
       const consoleResult = await loadConsoleItemsResult({ cwd: root }, { env });

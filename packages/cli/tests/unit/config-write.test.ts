@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/commands/status-v6.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/commands/status-v6.js')>(),
-  statusCommandV7: mocks.status,
+  statusCommandV8: mocks.status,
 }));
 
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
@@ -237,29 +237,43 @@ beforeEach(() => {
   mocks.configVisibility.mockResolvedValue({ state: 'visible' });
   mocks.status.mockImplementation(async (options: { scope?: Scope }) => ({
     payload: {
+      schemaVersion: 8,
       targets: [...mocks.visible].flatMap((key) => {
         const [platform, scope] = key.split(':') as [PlatformName, Scope];
         if (options.scope && options.scope !== scope) return [];
         const ownership = mocks.states.get(key) ?? 'present';
-        return [{
+        const state = ownership === 'present' ? 'ready' as const
+          : ownership === 'partial' ? 'needsSync' as const
+            : ownership === 'error' ? 'blocked' as const : 'absent' as const;
+        const placement = {
+          scope,
+          state,
+          components: [
+            { kind: 'intent' as const, key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: [scope], relation: 'root' } },
+            { kind: 'ownership' as const, key: 'fixture', state: ownership },
+          ],
+          reasons: [],
+          recoveryActions: [],
+        };
+        const identity = {
           pluginName: 'configurable-plugin',
           pluginId: 'configurable-plugin',
           sourceId: 'fixture',
           sourceIdentity: 'identity:fixture',
-          platform,
-          scope,
           cwd: '/workspace',
-          state: ownership === 'present' ? 'ready'
-            : ownership === 'partial' ? 'needsSync'
-              : ownership === 'error' ? 'blocked' : 'absent',
-          components: [
-            { kind: 'intent', key: 'desired', state: 'desired',
-              metadata: { enabled: true, scopes: [scope], relation: 'root' } },
-            { kind: 'ownership', key: 'fixture', state: ownership },
-          ],
-          reasons: [],
-          recoveryActions: [],
-        }];
+        };
+        return platform === 'codex'
+          ? [{
+              ...identity,
+              platform: 'codex' as const,
+              state,
+              components: [],
+              reasons: [],
+              recoveryActions: [],
+              placements: [placement],
+            }]
+          : [{ ...identity, platform: 'claude' as const, ...placement }];
       }),
     },
   }));
@@ -1779,21 +1793,37 @@ describe('config write full reinstall apply', () => {
     const fixture = await createFixture();
     mocks.status.mockResolvedValueOnce({
       payload: {
+        schemaVersion: 8,
         targets: [{
           pluginName: fixture.plugin.manifest.name,
           pluginId: fixture.plugin.manifest.name,
           sourceId: 'fixture',
           sourceIdentity: 'identity:fixture',
           platform: 'codex',
-          scope: 'user',
           cwd: fixture.cwd,
           state: 'ready',
-          components: [{
-            kind: 'intent', key: 'desired', state: 'desired',
-            metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
-          }],
+          components: [],
           reasons: [],
           recoveryActions: [],
+          placements: [{
+            scope: 'user',
+            state: 'ready',
+            components: [{
+              kind: 'intent', key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: ['user'], relation: 'root' },
+            }],
+            reasons: [],
+            recoveryActions: [],
+          }, {
+            scope: 'project',
+            state: 'ready',
+            components: [{
+              kind: 'intent', key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+            }],
+            reasons: [],
+            recoveryActions: [],
+          }],
         }],
       },
     });
