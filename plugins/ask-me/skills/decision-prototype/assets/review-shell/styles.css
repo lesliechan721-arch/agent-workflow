@@ -31,6 +31,25 @@ ul { margin: 0; padding-left: 20px; }
 .meta, .section-description, .option-description { color: color-mix(in srgb, CanvasText 68%, transparent); }
 .meta { margin-bottom: 22px; }
 
+.session-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 18px 0;
+  padding: 16px 20px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, CanvasText 2.5%, Canvas);
+}
+.session-panel h2 { margin-bottom: 2px; font-size: 1rem; }
+.session-state, .session-remaining { margin: 0; }
+.session-state { font-weight: 700; }
+.session-remaining { color: color-mix(in srgb, CanvasText 68%, transparent); font-size: .9rem; }
+.session-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.session-ended { margin: 18px 0; padding: 20px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); border-radius: 14px; }
+.session-ended p { margin-bottom: 0; }
+
 .decision-context {
   display: grid;
   grid-template-columns: minmax(220px, 1.4fr) 1fr 1fr;
@@ -70,6 +89,7 @@ button:hover { background: color-mix(in srgb, CanvasText 7%, Canvas); }
 button.primary { border-color: Highlight; background: Highlight; color: HighlightText; font-weight: 700; }
 button.primary:hover { filter: brightness(.94); }
 button.secondary { background: color-mix(in srgb, CanvasText 5%, Canvas); }
+button.danger { border-color: #b42318; color: #b42318; background: Canvas; }
 button.icon-button { min-width: 42px; padding: 4px 10px; font-size: 1.6rem; line-height: 1; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
   outline: 3px solid Highlight;
@@ -156,11 +176,14 @@ textarea { display: block; margin-top: 6px; resize: vertical; }
 
 @media (prefers-color-scheme: dark) {
   .field-error, .form-error { color: #ffb4ab; }
+  button.danger { border-color: #ffb4ab; color: #ffb4ab; }
 }
 
 @media (max-width: 720px) {
   main { width: min(100% - 24px, 1180px); padding-top: 24px; }
   .decision-context { grid-template-columns: 1fr; }
+  .session-panel { align-items: stretch; flex-direction: column; }
+  .session-actions { justify-content: flex-start; }
   .section-heading { display: grid; }
   .preview-actions { justify-content: flex-start; }
   #compareToggle { display: none; }

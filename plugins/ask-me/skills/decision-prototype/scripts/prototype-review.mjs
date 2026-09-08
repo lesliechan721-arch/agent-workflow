@@ -27,6 +27,7 @@ import {
   validateFeedbackAgainstPrototype,
 } from './review-contract.mjs';
 import { resolveReviewTtl } from './review-config.mjs';
+import { requestBrowserOpen } from './review-opener.mjs';
 
 const reviewShellVersion = 2;
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -48,20 +49,35 @@ class CommandError extends Error {
 function globalHelp() {
   return `Usage:
   prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
+  prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
   prototype-review.mjs wait --session <session.json> [--timeout 30s]
   prototype-review.mjs status --session <session.json>
   prototype-review.mjs stop --session <session.json>
 
 Commands:
   start   Validate and start a localhost Prototype Review session.
+  open    Request the system browser and wait briefly for a page connection.
   wait    Wait for a result. A timeout ends only this wait.
   status  Read the current session status without changing it.
-  stop    Stop the session and report success only after shutdown is confirmed.`;
+  stop    Stop the session and report success only after shutdown is confirmed.
+
+Options:
+  start without --ttl reads the effective AW setting; --plugin selects its ask-me source.
+  --new-session preserves an unknown old session; it does not stop it or renew a healthy session.
+  open --timeout limits only the page-connection wait; it does not wait for feedback.
+  open --retry requests the browser again after the previous request has finished.`;
 }
 
 function commandHelp(command) {
   const lines = {
-    start: 'Usage: prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]',
+    start: `Usage: prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
+
+Without --ttl, start reads the effective AW setting; --plugin selects its ask-me source.
+--new-session preserves an unknown old session. It does not stop it or renew a healthy session.`,
+    open: `Usage: prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
+
+--timeout limits only the page-connection wait; it does not wait for feedback.
+--retry requests the browser again after the previous request has finished.`,
     wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 30s]',
     status: 'Usage: prototype-review.mjs status --session <session.json>',
     stop: 'Usage: prototype-review.mjs stop --session <session.json>',
@@ -74,7 +90,7 @@ function parseCommand(argv) {
     return { help: true, command: null };
   }
   const command = argv[0];
-  if (!['start', 'wait', 'status', 'stop'].includes(command)) {
+  if (!['start', 'open', 'wait', 'status', 'stop'].includes(command)) {
     throw new UsageError(`Unknown command: ${command}`);
   }
   const values = { command };
@@ -86,7 +102,8 @@ function parseCommand(argv) {
     else if (value === '--plugin' && command === 'start') values.plugin = argv[++index];
     else if (value === '--new-session' && command === 'start') values.newSession = true;
     else if (value === '--session' && command !== 'start') values.session = argv[++index];
-    else if (value === '--timeout' && command === 'wait') values.timeout = argv[++index];
+    else if (value === '--timeout' && ['open', 'wait'].includes(command)) values.timeout = argv[++index];
+    else if (value === '--retry' && command === 'open') values.retry = true;
     else throw new UsageError(`Unknown argument for ${command}: ${value}`);
   }
   if (values.help) return values;
@@ -108,8 +125,8 @@ function parseCommand(argv) {
   if (command === 'start' && values.plugin === undefined && argv.includes('--plugin')) {
     throw new UsageError('start requires a value for --plugin');
   }
-  if (command === 'wait' && values.timeout === undefined && argv.includes('--timeout')) {
-    throw new UsageError('wait requires a value for --timeout');
+  if (['open', 'wait'].includes(command) && values.timeout === undefined && argv.includes('--timeout')) {
+    throw new UsageError(`${command} requires a value for --timeout`);
   }
   if (command !== 'start' && !values.session) throw new UsageError(`${command} requires --session`);
   return values;
@@ -892,6 +909,168 @@ async function terminalResult(terminal, sessionPath) {
   };
 }
 
+function openReceipt(state, descriptor, sessionPath, status = state.status) {
+  const pageConnected = state.presentation?.pageConnected === true;
+  const browserAttempted = state.presentation?.openInProgress === true
+    || state.presentation?.openStatus !== null && state.presentation?.openStatus !== undefined
+    || ['open-requested', 'unavailable', 'failed'].includes(status);
+  return {
+    ok: status !== 'failed',
+    status,
+    session: sessionPath,
+    prototypeId: descriptor.prototypeId,
+    revision: descriptor.revision,
+    presentation: {
+      pageConnected,
+      ...(browserAttempted ? { method: 'system-browser' } : {}),
+    },
+    ...(state.presentation?.openReason ? { reason: state.presentation.openReason } : {}),
+  };
+}
+
+async function submittedOpenResult(descriptor, sessionPath) {
+  const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+  if (!submitted) throw new Error('Prototype Review reported submission without matching feedback');
+  return { ...submittedReceipt(submitted.feedback, submitted.feedbackPath), session: sessionPath };
+}
+
+async function recoverOpenRequest(error, descriptor, sessionPath) {
+  const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+  if (submitted) return { ...submittedReceipt(submitted.feedback, submitted.feedbackPath), session: sessionPath };
+  const terminal = await waitForTerminal(sessionPath, descriptor, 3_500);
+  const recovered = await readSubmittedFeedback(descriptor, { allowMissing: true });
+  if (recovered) return { ...submittedReceipt(recovered.feedback, recovered.feedbackPath), session: sessionPath };
+  if (terminal) return terminalResult(terminal, sessionPath);
+  throw new CommandError(error.message, {
+    ok: false,
+    status: 'failed',
+    session: sessionPath,
+    prototypeId: descriptor.prototypeId,
+    revision: descriptor.revision,
+  });
+}
+
+async function waitForOpenConnection(descriptor, sessionPath, timeoutMs, initialState) {
+  const deadline = Date.now() + timeoutMs;
+  let state = initialState;
+  for (;;) {
+    if (state.status === 'submitted') return submittedOpenResult(descriptor, sessionPath);
+    if (['cancelled', 'expired', 'stopping'].includes(state.status)) {
+      return openReceipt(state, descriptor, sessionPath);
+    }
+    if (state.presentation?.pageConnected === true || state.status === 'connected') {
+      return openReceipt(state, descriptor, sessionPath, 'connected');
+    }
+    const openStatus = state.presentation?.openStatus || state.status;
+    if (openStatus === 'unavailable') {
+      return openReceipt(state, descriptor, sessionPath, 'unavailable');
+    }
+    if (openStatus === 'failed') {
+      const failed = openReceipt(state, descriptor, sessionPath, 'failed');
+      throw new CommandError(failed.reason || 'The system browser request failed', failed);
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      return openReceipt(
+        state,
+        descriptor,
+        sessionPath,
+        state.presentation?.openInProgress === true ? 'opening' : 'open-requested',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(250, remaining)));
+    try {
+      state = await authenticatedRequest(descriptor, '/api/status', {
+        timeoutMs: Math.max(100, Math.min(1_000, remaining)),
+      });
+    } catch (error) {
+      return recoverOpenRequest(error, descriptor, sessionPath);
+    }
+  }
+}
+
+async function openCommand(options) {
+  await garbageCollectSessions();
+  const timeoutMs = parseTimeout(options.timeout || '10s');
+  const sessionPath = path.resolve(options.session);
+  const descriptor = await readSession(sessionPath, { allowMissing: true });
+  if (!descriptor) {
+    const terminal = await readTerminal(sessionPath);
+    return terminal ? terminalResult(terminal, sessionPath) : { ok: true, status: 'not-found', session: sessionPath };
+  }
+  const submitted = await readSubmittedFeedback(descriptor, { allowMissing: true });
+  if (submitted) return { ...submittedReceipt(submitted.feedback, submitted.feedbackPath), session: sessionPath };
+  const terminal = await readTerminal(sessionPath, descriptor);
+  if (terminal) return terminalResult(terminal, sessionPath);
+  if (descriptor.schemaVersion !== 2) {
+    throw new Error('open requires a Prototype Review v2 session');
+  }
+
+  let reserved;
+  try {
+    reserved = await authenticatedRequest(descriptor, '/api/open-reserve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ retry: options.retry === true }),
+    });
+  } catch (error) {
+    return recoverOpenRequest(error, descriptor, sessionPath);
+  }
+  if (reserved.status === 'submitted') return submittedOpenResult(descriptor, sessionPath);
+  if (reserved.status === 'connected') return openReceipt(reserved, descriptor, sessionPath);
+  if (reserved.status === 'unavailable') {
+    return openReceipt(reserved, descriptor, sessionPath);
+  }
+  if (reserved.status === 'failed') {
+    const failed = openReceipt(reserved, descriptor, sessionPath);
+    throw new CommandError(failed.reason || 'The system browser request failed', failed);
+  }
+  if (['cancelled', 'expired', 'stopping'].includes(reserved.status)) {
+    return openReceipt(reserved, descriptor, sessionPath);
+  }
+  if (['opening', 'open-requested'].includes(reserved.status)) {
+    return waitForOpenConnection(descriptor, sessionPath, timeoutMs, reserved);
+  }
+  if (reserved.status !== 'reserved' || typeof reserved.reservation !== 'string') {
+    throw new Error(`Unknown Prototype Review open status: ${reserved.status}`);
+  }
+
+  let openerResult;
+  try {
+    openerResult = await requestBrowserOpen(descriptor.url);
+  } catch {
+    openerResult = {
+      status: 'failed',
+      method: 'system-browser',
+      reason: 'The system browser request failed unexpectedly',
+    };
+  }
+  let completed;
+  try {
+    completed = await authenticatedRequest(descriptor, '/api/open-complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reservation: reserved.reservation, ...openerResult }),
+    });
+  } catch (error) {
+    return recoverOpenRequest(error, descriptor, sessionPath);
+  }
+  if (completed.status === 'submitted') return submittedOpenResult(descriptor, sessionPath);
+  if (['cancelled', 'expired', 'stopping'].includes(completed.status)) {
+    return openReceipt(completed, descriptor, sessionPath);
+  }
+  if (completed.status === 'unavailable') return openReceipt(completed, descriptor, sessionPath);
+  if (completed.status === 'failed') {
+    const failed = openReceipt(completed, descriptor, sessionPath);
+    throw new CommandError(failed.reason || 'The system browser request failed', failed);
+  }
+  if (completed.status === 'connected') return openReceipt(completed, descriptor, sessionPath);
+  if (completed.status !== 'open-requested') {
+    throw new Error(`Unknown Prototype Review open completion status: ${completed.status}`);
+  }
+  return waitForOpenConnection(descriptor, sessionPath, timeoutMs, completed);
+}
+
 async function waitCommand(options) {
   const timeoutMs = parseTimeout(options.timeout);
   const sessionPath = path.resolve(options.session);
@@ -976,7 +1155,12 @@ async function statusCommand(options) {
       prototypeId: descriptor.prototypeId,
       revision: descriptor.revision,
       reviewShellVersion,
-      ...(descriptor.schemaVersion === 2 ? { expiresAt: state.expiresAt || descriptor.expiresAt } : {}),
+      ...(descriptor.schemaVersion === 2 ? {
+        createdAt: state.createdAt || descriptor.createdAt,
+        expiresAt: state.expiresAt || descriptor.expiresAt,
+        ...(state.maxExpiresAt ? { maxExpiresAt: state.maxExpiresAt } : {}),
+        ...(state.presentation ? { presentation: state.presentation } : {}),
+      } : {}),
     };
   } catch (error) {
     const recovered = await readSubmittedFeedback(descriptor, { allowMissing: true });
@@ -1108,6 +1292,7 @@ async function main() {
     }
     const handlers = {
       start: startCommand,
+      open: openCommand,
       wait: waitCommand,
       status: statusCommand,
       stop: stopCommand,

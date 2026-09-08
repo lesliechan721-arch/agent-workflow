@@ -3,6 +3,8 @@ import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   access,
+  chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -295,6 +297,66 @@ async function apiRequest(started, pathname, options = {}) {
   });
 }
 
+async function fakeSystemOpener(name, delayMs = 0, exitCode = 0) {
+  if (!['darwin', 'linux'].includes(process.platform)) return null;
+  if (process.platform === 'linux') {
+    for (const marker of ['/.dockerenv', '/run/.containerenv']) {
+      try {
+        await access(marker);
+        return null;
+      } catch {
+        // A missing container marker keeps the natural desktop qualification available.
+      }
+    }
+  }
+  const bin = path.join(testRoot, `fake-opener-${name}`);
+  const countPath = path.join(bin, 'requests.txt');
+  const executable = path.join(bin, process.platform === 'darwin' ? 'open' : 'xdg-open');
+  await mkdir(bin, { recursive: true });
+  await writeFile(executable, `#!${process.execPath}\n`
+    + "const { appendFileSync } = require('node:fs');\n"
+    + "const delay = Number(process.env.FAKE_OPEN_DELAY_MS || '0');\n"
+    + "const exitCode = Number(process.env.FAKE_OPEN_EXIT_CODE || '0');\n"
+    + "setTimeout(() => { appendFileSync(process.env.FAKE_OPEN_COUNT, 'request\\n'); process.exit(exitCode); }, delay);\n");
+  await chmod(executable, 0o700);
+  return {
+    countPath,
+    env: {
+      ...runtimeEnv,
+      PATH: bin,
+      CI: '',
+      SSH_CLIENT: '',
+      SSH_CONNECTION: '',
+      SSH_TTY: '',
+      WSL_DISTRO_NAME: '',
+      WSL_INTEROP: '',
+      container: '',
+      DISPLAY: process.platform === 'linux' ? ':99' : runtimeEnv.DISPLAY,
+      FAKE_OPEN_COUNT: countPath,
+      FAKE_OPEN_DELAY_MS: String(delayMs),
+      FAKE_OPEN_EXIT_CODE: String(exitCode),
+    },
+  };
+}
+
+async function openRequestCount(countPath) {
+  try {
+    return (await readFile(countPath, 'utf8')).trim().split('\n').filter(Boolean).length;
+  } catch (error) {
+    if (error.code === 'ENOENT') return 0;
+    throw error;
+  }
+}
+
+async function waitForOpenRequest(countPath, expected, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await openRequestCount(countPath) >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`Timed out while waiting for ${expected} fake browser open requests`);
+}
+
 async function postFeedback(started, value) {
   return apiRequest(started, '/api/feedback', {
     method: 'POST',
@@ -354,7 +416,7 @@ test('Prototype Review scripts expose the bounded command contract', async () =>
   assert.match(general.stdout, /--ttl 30m/);
   assert.match(general.stdout, /--new-session/);
   assert.match(general.stdout, /--timeout 30s/);
-  for (const command of ['start', 'wait', 'status', 'stop']) {
+  for (const command of ['start', 'open', 'wait', 'status', 'stop']) {
     const result = await runRuntime([command, '--help']);
     assert.match(result.stdout, new RegExp(`prototype-review\\.mjs ${command}`));
     assert.equal(result.stderr, '');
@@ -470,6 +532,358 @@ test('start, authenticated HTTP, submission, status, and wait form one real sess
   assert.equal(waited.feedback, await realpath(path.join(root, 'feedback.json')));
   assert.equal('feedbackDigest' in waited, false);
   assert.equal(parseReceipt((await runRuntime(['status', '--session', started.session])).stdout).status, 'submitted');
+});
+
+test('authenticated page connection and explicit extension expose current bounded time state', async () => {
+  const root = path.join(testRoot, 'page-lifecycle');
+  const started = await startOwnedServer(root, prototypeConfig('page-lifecycle'), 5_000);
+  const descriptor = await sessionDetails(started);
+  const descriptorInfo = await lstat(started.session);
+  const initialResponse = await apiRequest(started, '/api/status');
+  assert.equal(initialResponse.status, 200);
+  const initial = await initialResponse.json();
+  assert.equal(initial.status, 'ready');
+  assert.equal(initial.presentation.pageConnected, false);
+  assert.equal(initial.presentation.openRequested, false);
+  assert.equal(initial.presentation.openInProgress, false);
+  assert.equal(initial.presentation.openStatus, null);
+  assert.equal(initial.createdAt, descriptor.createdAt);
+  assert.equal(initial.expiresAt, descriptor.expiresAt);
+  assert.equal(Date.parse(initial.maxExpiresAt) - Date.parse(initial.createdAt), 4 * 60 * 60 * 1000);
+
+  await apiRequest(started, '/api/wait?timeoutMs=1');
+  const connectedResponse = await apiRequest(started, '/api/page-connected', { method: 'POST' });
+  assert.equal(connectedResponse.status, 200);
+  const connected = await connectedResponse.json();
+  assert.equal(connected.status, 'ready');
+  assert.equal(connected.presentation.pageConnected, true);
+  assert.equal(connected.expiresAt, initial.expiresAt);
+
+  let extended = connected;
+  for (let index = 0; index < 8; index += 1) {
+    const response = await apiRequest(started, '/api/extend', { method: 'POST' });
+    assert.equal(response.status, 200);
+    extended = await response.json();
+    if (index === 0) {
+      assert.equal(Date.parse(extended.expiresAt) - Date.parse(initial.expiresAt), 30 * 60 * 1000);
+    }
+  }
+  assert.equal(extended.status, 'ready');
+  assert.equal(extended.expiresAt, extended.maxExpiresAt);
+  assert.equal(extended.presentation.pageConnected, true);
+  const currentDescriptor = await sessionDetails(started);
+  const currentDescriptorInfo = await lstat(started.session);
+  assert.equal(currentDescriptor.expiresAt, descriptor.expiresAt);
+  assert.equal(currentDescriptorInfo.dev, descriptorInfo.dev);
+  assert.equal(currentDescriptorInfo.ino, descriptorInfo.ino);
+
+  const cliStatus = parseReceipt((await runRuntime(['status', '--session', started.session])).stdout);
+  assert.equal(cliStatus.createdAt, initial.createdAt);
+  assert.equal(cliStatus.expiresAt, extended.expiresAt);
+  assert.equal(cliStatus.maxExpiresAt, extended.maxExpiresAt);
+  assert.equal(cliStatus.presentation.pageConnected, true);
+  await apiRequest(started, '/api/stop', { method: 'POST' });
+  await waitForChildExit(started.child);
+});
+
+test('new control APIs require the bound origin and token', async () => {
+  const started = await startOwnedServer(
+    path.join(testRoot, 'control-auth'),
+    prototypeConfig('control-auth'),
+    5_000,
+  );
+  const descriptor = await sessionDetails(started);
+  const browserStatus = await fetch(new URL('/api/status', started.url), {
+    headers: {
+      referer: new URL('/review/index.html', started.url).href,
+      'sec-fetch-site': 'same-origin',
+      'x-prototype-review-token': descriptor.token,
+    },
+  });
+  assert.equal(browserStatus.status, 200);
+  const incompleteBrowserStatus = await fetch(new URL('/api/status', started.url), {
+    headers: {
+      'sec-fetch-site': 'same-origin',
+      'x-prototype-review-token': descriptor.token,
+    },
+  });
+  assert.equal(incompleteBrowserStatus.status, 403);
+  for (const pathname of [
+    '/api/page-connected',
+    '/api/extend',
+    '/api/cancel',
+    '/api/open-reserve',
+    '/api/open-complete',
+  ]) {
+    const response = await fetch(new URL(pathname, started.url), {
+      method: 'POST',
+      headers: {
+        origin: new URL(started.url).origin,
+        'x-prototype-review-token': `${descriptor.token}-wrong`,
+        'content-type': 'application/json',
+      },
+      body: pathname.includes('open-') ? '{}' : undefined,
+    });
+    assert.equal(response.status, 403, pathname);
+  }
+  const wrongOrigin = await fetch(new URL('/api/page-connected', started.url), {
+    method: 'POST',
+    headers: {
+      origin: 'http://127.0.0.1:1',
+      'x-prototype-review-token': descriptor.token,
+    },
+  });
+  assert.equal(wrongOrigin.status, 403);
+  await apiRequest(started, '/api/stop', { method: 'POST' });
+  await waitForChildExit(started.child);
+});
+
+test('the server coordinates one browser request and permits retry only after completion', async () => {
+  const started = await startOwnedServer(
+    path.join(testRoot, 'open-coordination'),
+    prototypeConfig('open-coordination'),
+    5_000,
+  );
+  const reserve = (retry) => apiRequest(started, '/api/open-reserve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ retry }),
+  });
+  const complete = (reservation, status) => apiRequest(started, '/api/open-complete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ reservation, status, method: 'system-browser' }),
+  });
+
+  const first = await (await reserve(false)).json();
+  assert.equal(first.status, 'reserved');
+  assert.equal(first.presentation.openInProgress, true);
+  assert.equal((await (await reserve(false)).json()).status, 'opening');
+  assert.equal((await (await complete(first.reservation, 'requested')).json()).status, 'open-requested');
+  assert.equal((await (await reserve(false)).json()).status, 'open-requested');
+
+  const retry = await (await reserve(true)).json();
+  assert.equal(retry.status, 'reserved');
+  assert.notEqual(retry.reservation, first.reservation);
+  assert.equal((await (await reserve(true)).json()).status, 'opening');
+  assert.equal((await (await complete(retry.reservation, 'unavailable')).json()).status, 'unavailable');
+  assert.equal((await (await reserve(false)).json()).status, 'unavailable');
+  await apiRequest(started, '/api/stop', { method: 'POST' });
+  await waitForChildExit(started.child);
+});
+
+test('cancel closes the session without feedback and preserves canonical submission precedence', async () => {
+  const cancelledRoot = path.join(testRoot, 'page-cancelled');
+  const cancelled = await startOwnedServer(
+    cancelledRoot,
+    prototypeConfig('page-cancelled'),
+    5_000,
+  );
+  const cancelResponse = await apiRequest(cancelled, '/api/cancel', { method: 'POST' });
+  assert.equal(cancelResponse.status, 200);
+  const cancelledState = await cancelResponse.json();
+  assert.equal(cancelledState.status, 'cancelled');
+  assert.equal(typeof cancelledState.createdAt, 'string');
+  assert.equal(typeof cancelledState.maxExpiresAt, 'string');
+  await waitForChildExit(cancelled.child);
+  await assert.rejects(access(path.join(cancelledRoot, 'feedback.json')), /ENOENT/);
+  assert.equal((await readJson(path.join(path.dirname(cancelled.session), 'terminal.json'))).status, 'cancelled');
+
+  const submittedRoot = path.join(testRoot, 'page-cancel-submitted');
+  const config = prototypeConfig('page-cancel-submitted');
+  const prototypePath = await writePrototype(submittedRoot, config);
+  const [writer, canceller] = await Promise.all([
+    startOwnedServerFromPrototype(prototypePath, 5_000),
+    startOwnedServerFromPrototype(prototypePath, 5_000),
+  ]);
+  assert.equal((await postFeedback(writer, feedbackFor(config))).status, 200);
+  const submittedResponse = await apiRequest(canceller, '/api/cancel', { method: 'POST' });
+  assert.equal(submittedResponse.status, 200);
+  assert.equal((await submittedResponse.json()).status, 'submitted');
+  await Promise.all([waitForChildExit(writer.child), waitForChildExit(canceller.child)]);
+  assert.equal((await readJson(path.join(path.dirname(canceller.session), 'terminal.json'))).status, 'submitted');
+});
+
+test('open reports a request without claiming connection, does not repeat, and retries explicitly', async (t) => {
+  const fake = await fakeSystemOpener('open-retry');
+  if (!fake) {
+    t.skip('The host cannot qualify a fake executable as a natural desktop opener');
+    return;
+  }
+  const root = path.join(testRoot, 'open-retry');
+  const config = prototypeConfig('open-retry');
+  const started = await startPrototype(root, config);
+  const before = await (await apiRequest(started, '/api/status')).json();
+
+  const opened = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '50ms',
+  ], fake.env)).stdout);
+  assert.equal(opened.status, 'open-requested');
+  assert.deepEqual(opened.presentation, { pageConnected: false, method: 'system-browser' });
+  assert.equal(await openRequestCount(fake.countPath), 1);
+
+  const repeated = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms',
+  ], fake.env)).stdout);
+  assert.equal(repeated.status, 'open-requested');
+  assert.equal(await openRequestCount(fake.countPath), 1);
+
+  const retried = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms', '--retry',
+  ], fake.env)).stdout);
+  assert.equal(retried.status, 'open-requested');
+  assert.equal(await openRequestCount(fake.countPath), 2);
+  const after = await (await apiRequest(started, '/api/status')).json();
+  assert.equal(after.expiresAt, before.expiresAt);
+  assert.equal(after.presentation.openRequested, true);
+  assert.equal(after.presentation.pageConnected, false);
+
+  assert.equal((await postFeedback(started, feedbackFor(config))).status, 200);
+  const submitted = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms', '--retry',
+  ], fake.env)).stdout);
+  assert.equal(submitted.status, 'submitted');
+  assert.equal(await openRequestCount(fake.countPath), 2);
+  activeSessions.delete(started.session);
+});
+
+test('a repeated open waits for a later page connection without another browser request', async (t) => {
+  const fake = await fakeSystemOpener('open-repeated-wait');
+  if (!fake) {
+    t.skip('The host cannot qualify a fake executable as a natural desktop opener');
+    return;
+  }
+  const started = await startPrototype(
+    path.join(testRoot, 'open-repeated-wait'),
+    prototypeConfig('open-repeated-wait'),
+  );
+  const first = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms',
+  ], fake.env)).stdout);
+  assert.equal(first.status, 'open-requested');
+  assert.equal(await openRequestCount(fake.countPath), 1);
+
+  const repeated = runRuntime([
+    'open', '--session', started.session, '--timeout', '1s',
+  ], fake.env);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal((await apiRequest(started, '/api/page-connected', { method: 'POST' })).status, 200);
+  const connected = parseReceipt((await repeated).stdout);
+  assert.equal(connected.status, 'connected');
+  assert.equal(connected.presentation.pageConnected, true);
+  assert.equal(await openRequestCount(fake.countPath), 1);
+  await stopIfActive(started.session);
+});
+
+test('concurrent open commands share one request, observe connection, and allow a later retry', async (t) => {
+  const fake = await fakeSystemOpener('open-concurrent', 100);
+  if (!fake) {
+    t.skip('The host cannot qualify a fake executable as a natural desktop opener');
+    return;
+  }
+  const started = await startPrototype(
+    path.join(testRoot, 'open-concurrent'),
+    prototypeConfig('open-concurrent'),
+  );
+  const commands = [
+    runRuntime(['open', '--session', started.session, '--timeout', '1s'], fake.env),
+    runRuntime(['open', '--session', started.session, '--timeout', '1s'], fake.env),
+  ];
+  await waitForOpenRequest(fake.countPath, 1);
+  const connectedResponse = await apiRequest(started, '/api/page-connected', { method: 'POST' });
+  assert.equal(connectedResponse.status, 200);
+  const receipts = (await Promise.all(commands)).map((result) => parseReceipt(result.stdout));
+  assert.deepEqual(receipts.map((value) => value.status), ['connected', 'connected']);
+  assert.equal(await openRequestCount(fake.countPath), 1);
+
+  const repeated = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms',
+  ], fake.env)).stdout);
+  assert.equal(repeated.status, 'connected');
+  assert.equal(await openRequestCount(fake.countPath), 1);
+
+  const retried = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '0ms', '--retry',
+  ], fake.env)).stdout);
+  assert.equal(retried.status, 'connected');
+  assert.equal(await openRequestCount(fake.countPath), 2);
+  await stopIfActive(started.session);
+});
+
+test('a concurrent open stays pending until the shared opener result is known', async (t) => {
+  const fake = await fakeSystemOpener('open-pending-failure', 250, 1);
+  if (!fake) {
+    t.skip('The host cannot qualify a fake executable as a natural desktop opener');
+    return;
+  }
+  const started = await startPrototype(
+    path.join(testRoot, 'open-pending-failure'),
+    prototypeConfig('open-pending-failure'),
+  );
+  const owner = runRuntimeFailure([
+    'open', '--session', started.session, '--timeout', '1s',
+  ], 1, fake.env);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const shared = parseReceipt((await runRuntime([
+    'open', '--session', started.session, '--timeout', '50ms',
+  ], fake.env)).stdout);
+  assert.equal(shared.status, 'opening');
+  assert.equal(shared.presentation.pageConnected, false);
+
+  const ownerFailure = await owner;
+  assert.equal(parseReceipt(ownerFailure.stdout).status, 'failed');
+  assert.equal(await openRequestCount(fake.countPath), 1);
+  const repeatedFailure = await runRuntimeFailure([
+    'open', '--session', started.session, '--timeout', '0ms',
+  ], 1, fake.env);
+  assert.equal(parseReceipt(repeatedFailure.stdout).status, 'failed');
+  assert.equal(await openRequestCount(fake.countPath), 1);
+  await stopIfActive(started.session);
+});
+
+test('open recovers cancellation after listener close while an owned connection delays terminal', async (t) => {
+  const fake = await fakeSystemOpener('open-cancel-recovery');
+  if (!fake) {
+    t.skip('The host cannot qualify a fake executable as a natural desktop opener');
+    return;
+  }
+  const root = path.join(testRoot, 'open-cancel-recovery');
+  const config = prototypeConfig('open-cancel-recovery');
+  const started = await startOwnedServer(root, config, 10_000);
+  const descriptor = await sessionDetails(started);
+  const opening = runRuntime([
+    'open', '--session', started.session, '--timeout', '5s',
+  ], fake.env).then(
+    (result) => ({ result }),
+    (error) => ({ error }),
+  );
+  await waitForOpenRequest(fake.countPath, 1);
+
+  const pending = openChunkedFeedback(started, descriptor);
+  const connectionClosed = pending.response.then(
+    () => null,
+    (error) => error,
+  );
+  await new Promise((resolve, reject) => {
+    pending.request.write('{', (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const cancelResponse = await apiRequest(started, '/api/cancel', { method: 'POST' });
+  assert.equal(cancelResponse.status, 200);
+  assert.equal((await cancelResponse.json()).status, 'cancelled');
+
+  const outcome = await opening;
+  assert.equal('error' in outcome, false, outcome.error?.stderr);
+  assert.equal(parseReceipt(outcome.result.stdout).status, 'cancelled');
+  assert.ok(await connectionClosed instanceof Error);
+  await waitForChildExit(started.child);
+  const terminal = await readJson(path.join(path.dirname(started.session), 'terminal.json'));
+  assert.equal(terminal.status, 'cancelled');
+  assert.equal(terminal.resourcesClosed, true);
+  await assert.rejects(access(path.join(root, 'feedback.json')), /ENOENT/);
 });
 
 test('the server exits by its own TTL and after feedback without a waiter', async () => {
@@ -917,6 +1331,39 @@ test('v2 stop waits for terminal while an owned HTTP connection is still active'
   assert.equal(stopped.terminalStatus, 'cancelled');
   await access(path.join(path.dirname(started.session), 'terminal.json'));
   await waitForChildExit(started.child);
+});
+
+test('v2 shutdown force-closes an owned HTTP connection before terminal confirmation', async () => {
+  const root = path.join(testRoot, 'stop-force-close');
+  const config = prototypeConfig('stop-force-close');
+  const started = await startOwnedServer(root, config, 10_000);
+  const descriptor = await sessionDetails(started);
+  const serialized = JSON.stringify(feedbackFor(config));
+  const pending = openChunkedFeedback(started, descriptor);
+  const connectionClosed = pending.response.then(
+    () => null,
+    (error) => error,
+  );
+  await new Promise((resolve, reject) => {
+    pending.request.write(serialized.slice(0, 1), (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  const requestedAt = Date.now();
+  const stopped = parseReceipt((await runRuntime(['stop', '--session', started.session])).stdout);
+  const elapsedMs = Date.now() - requestedAt;
+  assert.equal(stopped.status, 'stopped');
+  assert.equal(stopped.terminalStatus, 'cancelled');
+  assert.ok(elapsedMs >= 2_500, `shutdown completed too early after ${elapsedMs}ms`);
+  assert.ok(elapsedMs < 6_000, `shutdown exceeded the CLI confirmation bound after ${elapsedMs}ms`);
+  const connectionError = await connectionClosed;
+  assert.ok(connectionError instanceof Error);
+  assert.equal((await readJson(path.join(path.dirname(started.session), 'terminal.json'))).resourcesClosed, true);
+  await waitForChildExit(started.child);
+  await assert.rejects(access(path.join(root, 'feedback.json')), /ENOENT/);
 });
 
 test('artifact and feedback paths fail closed on escape or symlink replacement', async () => {

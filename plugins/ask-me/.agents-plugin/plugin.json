@@ -52,7 +52,8 @@
       "node": [
         "./scripts/contract.test.mjs",
         "./scripts/prototype-review.test.mjs",
-        "./scripts/review-config.test.mjs"
+        "./scripts/review-config.test.mjs",
+        "./scripts/review-opener.test.mjs"
       ]
     }
   },

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Locator, type Page, type Route } from 'playwright';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
@@ -58,6 +58,7 @@ type StartedSession = {
   url: string;
   prototypeId: string;
   revision: number;
+  prototypePath: string;
 };
 
 const tempRoots: string[] = [];
@@ -83,7 +84,7 @@ async function runRuntime(root: string, args: string[]): Promise<Record<string, 
   await fs.ensureDir(runtimeTmp);
   const result = await execFileAsync(process.execPath, [runtimeScript, ...args], {
     cwd: repoRoot,
-    env: { ...process.env, TMPDIR: runtimeTmp },
+    env: { ...process.env, AW_HOME: path.join(root, 'aw-home'), TMPDIR: runtimeTmp },
     maxBuffer: 2 * 1024 * 1024,
     timeout: 20_000,
   });
@@ -111,11 +112,12 @@ async function startPrototype(
   root: string,
   config: PrototypeConfig,
   artifacts: Record<string, string>,
+  ttl = '2m',
 ): Promise<StartedSession> {
   const prototypePath = await writePrototype(root, config, artifacts);
-  const receipt = await runRuntime(root, ['start', '--prototype', prototypePath]);
+  const receipt = await runRuntime(root, ['start', '--prototype', prototypePath, '--ttl', ttl]);
   expect(receipt).toMatchObject({ ok: true, status: 'ready', prototypeId: config.id });
-  const started = receipt as StartedSession;
+  const started = { ...receipt, prototypePath } as StartedSession;
   activeSessions.add(started.session);
   return started;
 }
@@ -185,9 +187,25 @@ async function expectChecked(locator: Locator): Promise<void> {
 }
 
 async function expectSubmitted(page: Page): Promise<void> {
-  await expectVisible(page.getByText('反馈已提交。Agent 已收到，可以关闭本页。'));
+  await expectVisible(page.getByText('反馈已保存。可以关闭本页。'));
   await expectHidden(page.locator('#reviewForm'));
   await expectFocused(page.locator('#success'));
+}
+
+function tokenFrom(started: StartedSession): string {
+  return new URLSearchParams(new URL(started.url).hash.slice(1)).get('token')!;
+}
+
+async function browserSessionStatus(
+  page: Page,
+  started: StartedSession,
+): Promise<Record<string, unknown>> {
+  return page.evaluate(async (token) => {
+    const response = await fetch('/api/status', {
+      headers: { 'x-prototype-review-token': token },
+    });
+    return response.json();
+  }, tokenFrom(started));
 }
 
 beforeAll(async () => {
@@ -282,6 +300,7 @@ describe('ask-me Prototype Review browser smoke', () => {
     const { context, page } = await newPage();
     try {
       await page.goto(started.url);
+      await expectText(page.locator('#sessionState'), '页面已连接', { exact: true });
       await expectText(page.getByRole('heading', { level: 1 }), config.question, { exact: true });
       await expectText(page.locator('#decisionContext'), config.decisionContext.goal);
       await expectText(page.locator('#decisionContext'), config.decisionContext.priorities[1]);
@@ -451,15 +470,15 @@ describe('ask-me Prototype Review browser smoke', () => {
       ));
       expect(imageAnnotation.target.value.x).toBeCloseTo(expectedImagePoint.x, 2);
       expect(imageAnnotation.target.value.y).toBeCloseTo(expectedImagePoint.y, 2);
-      await expect(fs.pathExists(started.session)).resolves.toBe(false);
-      await expect(fs.pathExists(path.join(root, 'review'))).resolves.toBe(false);
+      await expect(runRuntime(root, ['start', '--prototype', started.prototypePath, '--ttl', '2m']))
+        .resolves.toMatchObject({ status: 'submitted', verdict: 'revise' });
       await expect(fetch(started.url)).rejects.toThrow();
     } finally {
       await context.close();
     }
   }, 60_000);
 
-  it('completes an accepted single-selection flow with the keyboard and cleans the session', async () => {
+  it('completes an accepted single-selection flow with the keyboard and locks submitted editing', async () => {
     const root = await createTempRoot('keyboard');
     const config: PrototypeConfig = {
       schemaVersion: 2,
@@ -497,6 +516,7 @@ describe('ask-me Prototype Review browser smoke', () => {
       await submit.focus();
       await page.keyboard.press('Enter');
       await expectSubmitted(page);
+      await expect.poll(() => candidate.isDisabled()).toBe(true);
 
       const waited = await waitForSubmission(root, started);
       expect(waited).toMatchObject({
@@ -504,12 +524,118 @@ describe('ask-me Prototype Review browser smoke', () => {
         verdict: 'accepted',
         selectedOptionCount: 1,
       });
-      await expect(fs.pathExists(started.session)).resolves.toBe(false);
-      await expect(fs.pathExists(path.join(root, 'review'))).resolves.toBe(false);
     } finally {
       await context.close();
     }
   });
+
+  it('connects, extends to the cap, and ends cancellation, expiry, and disconnection without a verdict', async () => {
+    const config: PrototypeConfig = {
+      schemaVersion: 2,
+      id: 'browser-session-controls',
+      revision: 1,
+      question: '会话控制是否清楚？',
+      decisionContext: {
+        goal: '核对连接和结束状态。',
+        priorities: ['状态真实'],
+        constraints: ['取消不生成反馈'],
+      },
+      selectionMode: 'none',
+      stopCondition: '确认会话控制。',
+      options: [{ id: 'only', label: '会话控制', kind: 'text', artifact: 'artifact/only.txt' }],
+    };
+
+    const cancelRoot = await createTempRoot('session-controls');
+    const started = await startPrototype(cancelRoot, config, { 'artifact/only.txt': 'Session controls\n' });
+    const first = await newPage();
+    try {
+      await first.page.goto(started.url);
+      await expectText(first.page.locator('#sessionState'), '页面已连接', { exact: true });
+      const connected = await browserSessionStatus(first.page, started);
+      expect(connected).toMatchObject({
+        status: 'ready',
+        presentation: { pageConnected: true },
+      });
+      expect(Date.parse(connected.expiresAt as string)).toBeLessThan(Date.parse(connected.maxExpiresAt as string));
+
+      const extend = first.page.getByRole('button', { name: '延长 30 分钟' });
+      for (let count = 0; count < 8; count += 1) {
+        await extend.click();
+        await expectText(first.page.locator('#sessionState'), '页面已连接', { exact: true });
+      }
+      await expect.poll(() => extend.isDisabled()).toBe(true);
+      const capped = await browserSessionStatus(first.page, started);
+      expect(capped.expiresAt).toBe(capped.maxExpiresAt);
+
+      let pendingFeedbackRoute: Route | undefined;
+      let markFeedbackPending!: () => void;
+      const feedbackPending = new Promise<void>((resolve) => { markFeedbackPending = resolve; });
+      await first.page.route('**/api/feedback', (route) => {
+        pendingFeedbackRoute = route;
+        markFeedbackPending();
+      });
+      await first.page.locator('input[name="verdict"][value="accepted"]').check();
+      await first.page.getByRole('button', { name: '提交反馈' }).click();
+      await feedbackPending;
+      await first.page.getByRole('button', { name: '取消评审' }).click();
+      await expectText(first.page.locator('#sessionState'), '评审已取消', { exact: true });
+      await pendingFeedbackRoute!.abort('internetdisconnected');
+      await expect.poll(() => first.page.locator('#status').textContent()).toBe('');
+      await expectVisible(first.page.getByText('此会话已取消。未生成反馈判断。'));
+      await expect.poll(() => first.page.locator('#reviewForm').evaluate((form) => (
+        [...form.querySelectorAll('button, input, select, textarea')]
+          .every((control) => (control as HTMLButtonElement).disabled)
+      ))).toBe(true);
+      await expect(waitForSubmission(cancelRoot, started)).resolves.toMatchObject({ status: 'cancelled' });
+      await expect(fs.pathExists(path.join(cancelRoot, 'feedback.json'))).resolves.toBe(false);
+      await expect(fetch(started.url)).rejects.toThrow();
+    } finally {
+      await first.context.close();
+    }
+
+    const disconnectedRoot = await createTempRoot('disconnected');
+    const disconnected = await startPrototype(disconnectedRoot, {
+      ...config,
+      id: 'browser-disconnected',
+    }, { 'artifact/only.txt': 'Disconnected session\n' });
+    const second = await newPage();
+    try {
+      await second.page.goto(disconnected.url);
+      await expectText(second.page.locator('#sessionState'), '页面已连接', { exact: true });
+      await second.page.route('**/api/status', async (route) => route.abort('internetdisconnected'));
+      await expect.poll(
+        () => second.page.locator('#sessionState').textContent(),
+        { timeout: 5000 },
+      ).toBe('连接已断开');
+      await expect.poll(() => second.page.locator('input[name="verdict"]').first().isDisabled()).toBe(true);
+      await expect(fs.pathExists(path.join(disconnectedRoot, 'feedback.json'))).resolves.toBe(false);
+    } finally {
+      await second.context.close();
+    }
+
+    const expiredRoot = await createTempRoot('expired');
+    const expired = await startPrototype(expiredRoot, {
+      ...config,
+      id: 'browser-expired',
+    }, { 'artifact/only.txt': 'Expiring session\n' }, '2s');
+    const third = await newPage();
+    try {
+      await third.page.goto(expired.url);
+      await expectText(third.page.locator('#sessionState'), '页面已连接', { exact: true });
+      await expect.poll(
+        async () => ['评审已到期', '期限已到，状态待确认'].includes(
+          (await third.page.locator('#sessionState').textContent()) || '',
+        ),
+        { timeout: 6000 },
+      ).toBe(true);
+      await expect.poll(() => third.page.locator('input[name="verdict"]').first().isDisabled()).toBe(true);
+      await expect(waitForSubmission(expiredRoot, expired)).resolves.toMatchObject({ status: 'expired' });
+      await expect(fs.pathExists(path.join(expiredRoot, 'feedback.json'))).resolves.toBe(false);
+      await expect(fetch(expired.url)).rejects.toThrow();
+    } finally {
+      await third.context.close();
+    }
+  }, 40_000);
 
   it('uses checkboxes for multiple selection and hides meaningless controls for single-candidate modes', async () => {
     const multipleRoot = await createTempRoot('multiple');
@@ -618,13 +744,14 @@ describe('ask-me Prototype Review browser smoke', () => {
       question: '这个单一原型是否成立？',
       decisionContext: baseContext,
       selectionMode: 'none',
+      htmlExecution: 'sandboxed',
       stopCondition: '直接判断单一原型。',
       options: [
-        { id: 'only', label: '唯一原型', kind: 'text', artifact: 'artifact/only.txt' },
+        { id: 'only', label: '唯一原型', kind: 'html', artifact: 'artifact/only.html' },
       ],
     };
     const noneStarted = await startPrototype(noneRoot, none, {
-      'artifact/only.txt': 'Only candidate\n',
+      'artifact/only.html': '<p data-prototype-id="sandbox-result">等待脚本</p><script>document.querySelector("p").textContent = "模型逻辑已运行"</script>',
     });
     const second = await newPage();
     try {
@@ -632,7 +759,11 @@ describe('ask-me Prototype Review browser smoke', () => {
       await expectHidden(second.page.locator('#candidateTabs'));
       await expectHidden(second.page.locator('#candidateSelection'));
       await expectCount(second.page.locator('input[name="selected-option"]'), 0);
+      await expectText(second.page.frameLocator('iframe').locator('p'), '模型逻辑已运行', { exact: true });
+      await expectHidden(second.page.locator('#annotationPanel'));
+      await expectCount(second.page.frameLocator('iframe').locator('.prototype-review-marker'), 0);
       await second.page.locator('input[name="verdict"][value="accepted"]').check();
+      await second.page.locator('#globalNotes').fill('整体反馈仍可提交。');
       await second.page.getByRole('button', { name: '提交反馈' }).click();
       await expectSubmitted(second.page);
       await expect(waitForSubmission(noneRoot, noneStarted)).resolves.toMatchObject({
