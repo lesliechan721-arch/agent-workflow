@@ -13,7 +13,7 @@ import {
   extractStrictSemVerTokenFromVersionOutput,
   probeAgentVersion,
 } from './agent-version.js';
-import { compareStrictSemVer, tryParseStrictSemVer } from './manifest.js';
+import { tryParseStrictSemVer } from './manifest.js';
 import {
   getDefaultNativeCliRunner,
   runNativeCli,
@@ -74,14 +74,15 @@ export interface ResolveCodexOperationConsumerOptions extends CodexManagerOption
   requiresNativeMaterialization: boolean;
 }
 
-export interface InspectSystemCodexFilesystemOptions {
+export interface InspectSystemCodexOptions {
+  runner?: NativeCliRunner;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   operationRequirement: CodexOperationRequirement;
   platform?: NodeJS.Platform;
 }
 
-export type SystemCodexFilesystemInspection =
+export type SystemCodexInspection =
   | {
       state: 'missing';
       requiredMinVersion: string;
@@ -629,8 +630,6 @@ type SystemCommandManagerResolution =
   | { state: 'supported'; manager: CodexManager; expectedVersion?: string }
   | { state: 'unsupported'; diagnostic: string };
 
-type PosixSystemCommandManagerResolution = SystemCommandManagerResolution | { state: 'unobserved' };
-
 function unsupportedSystemResolution(
   reason: string,
 ): Extract<SystemCommandManagerResolution, { state: 'unsupported' }> {
@@ -712,127 +711,43 @@ async function resolveWindowsNpmCodexManager(
   }
 }
 
-async function resolvePosixNpmCodexManager(
-  launcherPath: string,
-): Promise<PosixSystemCommandManagerResolution> {
-  try {
-    if (
-      path.basename(launcherPath) !== 'codex.js'
-      || path.basename(path.dirname(launcherPath)) !== 'bin'
-    ) {
-      return { state: 'unobserved' };
-    }
-    const launcherStats = await fs.lstat(launcherPath);
-    if (!launcherStats.isFile() || launcherStats.isSymbolicLink()) {
-      return unsupportedSystemResolution('The npm package launcher is not a regular file.');
-    }
-    const packageRoot = path.dirname(path.dirname(launcherPath));
-    const packageJsonPath = path.join(packageRoot, 'package.json');
-    const looksLikeOfficialPackagePath = path.basename(packageRoot) === 'codex'
-      && path.basename(path.dirname(packageRoot)) === '@openai';
-    if (!looksLikeOfficialPackagePath && !await fs.pathExists(packageJsonPath)) {
-      return { state: 'unobserved' };
-    }
-    const [packageStats, packageJsonStats, canonicalPackageRoot, canonicalPackageJson] = await Promise.all([
-      fs.lstat(packageRoot),
-      fs.lstat(packageJsonPath),
-      fs.realpath(packageRoot),
-      fs.realpath(packageJsonPath),
-    ]);
-    if (
-      !packageStats.isDirectory()
-      || packageStats.isSymbolicLink()
-      || !packageJsonStats.isFile()
-      || packageJsonStats.isSymbolicLink()
-      || !isPathWithin(canonicalPackageRoot, launcherPath)
-      || !isPathWithin(canonicalPackageRoot, canonicalPackageJson)
-    ) {
-      return unsupportedSystemResolution('The npm package or launcher is not a regular file tree.');
-    }
-    const packageJson = await fs.readJson(canonicalPackageJson).catch(() => undefined) as
-      | { name?: unknown; version?: unknown; bin?: unknown }
-      | undefined;
-    const bin = packageJson?.bin;
-    if (
-      packageJson?.name !== MANAGED_CODEX_PACKAGE_NAME
-      || typeof packageJson.version !== 'string'
-      || !tryParseStrictSemVer(packageJson.version)
-      || !bin
-      || typeof bin !== 'object'
-      || Array.isArray(bin)
-      || (bin as Record<string, unknown>).codex !== 'bin/codex.js'
-    ) {
-      return unsupportedSystemResolution('The npm package identity, version, or launcher contract is invalid.');
-    }
-    return {
-      state: 'supported',
-      expectedVersion: packageJson.version,
-      manager: {
-        kind: 'system',
-        version: packageJson.version,
-        command: process.execPath,
-        argsPrefix: [launcherPath],
-      },
-    };
-  } catch {
-    return unsupportedSystemResolution('The npm package identity or launcher is missing or unreadable.');
-  }
-}
-
-/**
- * Reads only PATH and the canonical npm package tree. It never starts Codex or
- * inspects managed runtime state.
- */
-export async function inspectSystemCodexFilesystem(
-  options: InspectSystemCodexFilesystemOptions,
-): Promise<SystemCodexFilesystemInspection> {
+/** Probes only the PATH consumer; never inspects or acquires a managed runtime. */
+export async function inspectSystemCodex(
+  options: InspectSystemCodexOptions,
+): Promise<SystemCodexInspection> {
   const requiredMinVersion = options.operationRequirement.minimumVersion;
-  let command: string | undefined;
+  const unresolved = (diagnostic: string): SystemCodexInspection => ({
+    state: 'unresolved',
+    code: options.operationRequirement.requiresProjectPluginContract
+      ? 'codexProjectPluginUnsupported'
+      : 'codexSystemCliUnsupported',
+    diagnostic,
+    requiredMinVersion,
+  });
+  let system: SystemCodexProbe;
   try {
-    command = await resolvePathExecutable('codex', options);
+    system = await probeSystemCodex(options);
   } catch {
-    return {
-      state: 'unresolved',
-      code: options.operationRequirement.requiresProjectPluginContract
-        ? 'codexProjectPluginUnsupported'
-        : 'codexSystemCliUnsupported',
-      diagnostic: 'The installed system Codex CLI is not supported. The PATH launcher is unreadable. Install or upgrade the official Codex CLI, or remove the invalid shim and retry.',
-      requiredMinVersion,
-    };
+    return unresolved('The PATH Codex launcher could not be inspected. Check the launcher and retry.');
   }
-  if (!command) return { state: 'missing', requiredMinVersion };
-  const platform = options.platform ?? process.platform;
-  const resolution = platform === 'win32'
-    ? await resolveWindowsNpmCodexManager(command)
-    : await resolvePosixNpmCodexManager(command);
-  if (resolution.state === 'unobserved') {
-    return { state: 'unobserved', requiredMinVersion };
+  if (system.state === 'missing') return { state: 'missing', requiredMinVersion };
+  if (system.state === 'unsupported') return unresolved(system.diagnostic);
+  const { result } = system;
+  if (result.status === 'supported') {
+    return { state: 'compatible', detectedVersion: result.detectedVersion!, requiredMinVersion };
   }
-  if (resolution.state === 'unsupported' || !resolution.expectedVersion) {
-    return {
-      state: 'unresolved',
-      code: options.operationRequirement.requiresProjectPluginContract
-        ? 'codexProjectPluginUnsupported'
-        : 'codexSystemCliUnsupported',
-      diagnostic: resolution.state === 'unsupported'
-        ? resolution.diagnostic
-        : unsupportedSystemResolution('The npm package version is unavailable.').diagnostic,
-      requiredMinVersion,
-    };
-  }
-  const detectedVersion = resolution.expectedVersion;
-  if (compareStrictSemVer(detectedVersion, requiredMinVersion) < 0) {
+  if (result.status === 'tooOld') {
     return {
       state: 'incompatible',
       code: options.operationRequirement.requiresProjectPluginContract
         ? 'codexProjectPluginVersionTooLow'
         : 'codexSystemCliUnsupported',
-      detectedVersion,
-      diagnostic: `The installed system Codex CLI is not supported. Detected ${detectedVersion}. Required minimum: ${requiredMinVersion}. Upgrade the official Codex CLI and retry.`,
+      detectedVersion: result.detectedVersion!,
+      diagnostic: unsupportedSystemDiagnostic(result),
       requiredMinVersion,
     };
   }
-  return { state: 'compatible', detectedVersion, requiredMinVersion };
+  return unresolved('The PATH Codex version query failed or returned an invalid version. Check the launcher and retry.');
 }
 
 async function resolveSystemCommandManager(
