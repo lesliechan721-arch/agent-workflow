@@ -1,0 +1,209 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-prototype",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检查用户可观察行为与任务边界，不以固定措辞或内部读取顺序作为通过标准。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "short-copy-stays-in-chat",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "只比较两种付款失败提示：“付款未完成，请重试”和“未扣款，请换一种方式”。直接在聊天展示给我选，不保存、不运行服务，本轮不追问。",
+      "assertions": [
+        "直接展示两个候选及会改变用户理解的区别",
+        "不创建文件、Review 会话或维护型测试",
+        "不把未核实的“未扣款”当成产品真实保证"
+      ],
+      "expected": {
+        "output": "直接展示两个候选及会改变用户理解的区别",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "若是否扣款必须通过支付系统证据确认，应明确该事实缺口，不让文案偏好替代验证。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "state-model-not-visual-variants",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "请用一个可操作的最小原型帮我理解草稿、提交和撤回的关系。只在 prototypes/request-state/ 保存第一轮：我需要自己操作和重置，不是选配色。为以后的标准网页 Review 准备 schema v2 的 prototype.json，但本轮不启动服务。请求已完成：成员提交后进入待审，待审可撤回，审批完成后不能撤回。不要修改 src/requests.ts，也不替我作最终决定。 本轮只交付第一版和查看方法，不提问，然后结束。本轮不要创建 verdict.md。",
+      "assertions": [
+        "构造一个展示相关状态和最近操作结果的可重置模型，而非多个配色候选",
+        "保存配置时 selectionMode 为 none、htmlExecution 为 sandboxed，不承诺同源 DOM 标注",
+        "原型展示一条主要路径与撤回边界，不实现生产权限或持久化服务",
+        "没有用户反馈前不生成接受结论"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "src/requests.ts": "export const production = true;\n"
+        }
+      },
+      "expected": {
+        "output": "构造一个展示相关状态和最近操作结果的可重置模型，而非多个配色候选",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/request-state/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/request-state/brief.md",
+            "exists": true
+          },
+          {
+            "path": "prototypes/request-state/prototype.json",
+            "exists": true,
+            "json": {
+              "selectionMode": "none",
+              "htmlExecution": "sandboxed"
+            }
+          },
+          {
+            "path": "prototypes/request-state/verdict.md",
+            "exists": false
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "任务目标或已授权范围不同，可能需要不同方法；本用例只评价给定上下文。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "ui-variants-change-hierarchy",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "审批页的风险提示应放顶部还是提交按钮附近？只在 prototypes/risk-placement/ 给我两个静态候选，在相同页面外壳和相近数据量下比较；关键风险必须在提交前可见。为以后的标准网页 Review 保存 schema v2 的 prototype.json。保存第一轮，不启动服务，不问我选择。本轮不要创建 verdict.md。",
+      "assertions": [
+        "两个候选在风险信息位置或信息顺序上有实质区别，不仅改颜色",
+        "复现足以比较的页面上下文，而不复制整个应用",
+        "候选保留关键风险在提交前可见，不预设用户已接受",
+        "保存原型说明和 schema v2 配置"
+      ],
+      "expected": {
+        "output": "两个候选在风险信息位置或信息顺序上有实质区别，不仅改颜色",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/risk-placement/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/risk-placement/brief.md",
+            "exists": true
+          },
+          {
+            "path": "prototypes/risk-placement/prototype.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2
+            }
+          },
+          {
+            "path": "prototypes/risk-placement/verdict.md",
+            "exists": false
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "任务目标或已授权范围不同，可能需要不同方法；本用例只评价给定上下文。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "spike-evidence-does-not-prove-browsers",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "technical-evidence",
+        "platform-codex"
+      ],
+      "prompt": "只在 prototypes/crypto-probe/ 做并运行一个最小 Node.js Web Crypto 探针，验证当前运行环境可以完成 digest。运行记录保存在 artifact/result.txt。暂时没有浏览器环境，不需要评审页面，不询问用户，也不生成采用路线的最终结论。本轮不要创建 verdict.md。",
+      "assertions": [
+        "实际创建并运行探针，保存当前环境与运行结果，而非只写结论",
+        "明确 Node 结果不能证明目标浏览器兼容",
+        "不建设通用加密库、兼容层或维护型测试套件",
+        "不修改原型目录外内容"
+      ],
+      "expected": {
+        "output": "实际创建并运行探针，保存当前环境与运行结果，而非只写结论",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "prototypes/crypto-probe/**"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/crypto-probe/brief.md",
+            "exists": true
+          },
+          {
+            "path": "prototypes/crypto-probe/artifact/result.txt",
+            "exists": true
+          },
+          {
+            "path": "prototypes/crypto-probe/verdict.md",
+            "exists": false
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "任务目标或已授权范围不同，可能需要不同方法；本用例只评价给定上下文。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "sandboxed-model-keeps-isolation",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "已有一个靠 JavaScript 运行的审批模型。用户还希望在 Review Shell 里点击 DOM 精确标注。请只说明如何同时保留可操作证据和反馈能力；本轮不修改文件、不启动服务。",
+      "assertions": [
+        "保持脚本型原型隔离，不建议同时开放 allow-scripts 与 allow-same-origin",
+        "说明当前限制，采用评论、场景反馈或另行截图定位，而非承诺不存在的 DOM 能力",
+        "不创建通用跨 iframe 编辑器来解决本次问题"
+      ],
+      "expected": {
+        "output": "保持脚本型原型隔离，不建议同时开放 allow-scripts 与 allow-same-origin",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "不执行脚本的静态原型可以使用现有静态 DOM 标注，因此无需一律禁用标注。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    }
+  ]
+}

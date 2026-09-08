@@ -122,17 +122,6 @@ test('source package contains the three public Skills and native metadata', asyn
   }
 });
 
-test('decision-prototype keeps Builder ownership inside artifact', async () => {
-  const skill = await readFile(
-    path.join(context.sourceRoot, 'skills', 'decision-prototype', 'SKILL.md'),
-    'utf8',
-  );
-  assert.match(skill, /优先使用 Builder 子代理/u);
-  assert.match(skill, /Builder 只创建或修改 `artifact\/\*\*`/u);
-  assert.match(skill, /主代理拥有 `brief\.md`、`prototype\.json`、用户反馈和 `verdict\.md`/u);
-  assert.match(skill, /没有可用子代理、委派失败/u);
-});
-
 test('eval manifests point to parseable case documents with valid participant names', async () => {
   const participants = new Set(requiredSkills);
   for (const skillName of requiredSkills) {
@@ -380,25 +369,6 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
     await mkdir(path.join(spikeRoot, 'artifact'), { recursive: true });
     await Promise.all([
       writeFile(path.join(spikeRoot, 'brief.md'), '# Node.js Web Crypto spike\n\n浏览器兼容范围不在本轮证据内。\n'),
-      writeFile(path.join(spikeRoot, 'prototype.json'), JSON.stringify({
-        schemaVersion: 2,
-        id: 'web-crypto-runtime',
-        revision: 1,
-        question: '当前 Node.js 是否提供 Web Crypto？',
-        decisionContext: {
-          goal: '确认当前 Node.js 的 Web Crypto 能力',
-          priorities: ['可重复证据'],
-          constraints: ['不代表浏览器兼容性'],
-        },
-        selectionMode: 'single',
-        options: [{
-          id: 'runtime-result',
-          label: 'Node.js Web Crypto 结果',
-          kind: 'metrics',
-          artifact: 'artifact/result.txt',
-        }],
-        stopCondition: '记录当前运行时证据并保留浏览器范围问题',
-      })),
       writeFile(path.join(spikeRoot, 'artifact', 'spike.mjs'), 'console.log("Web Crypto supported")\n'),
       writeFile(path.join(spikeRoot, 'artifact', 'result.txt'), [
         'globalThis.crypto.present=true',
@@ -413,7 +383,6 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       workspaceDiff: {
         added: [
           'prototypes/web-crypto-runtime/brief.md',
-          'prototypes/web-crypto-runtime/prototype.json',
           'prototypes/web-crypto-runtime/artifact/spike.mjs',
           'prototypes/web-crypto-runtime/artifact/result.txt',
         ],
@@ -429,7 +398,7 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
           threadId: 'root',
           tool: 'exec',
           arguments: {
-            input: 'const patch = "*** Begin Patch\\n*** Add File: /workspace/prototypes/web-crypto-runtime/brief.md\\n*** Add File: /workspace/prototypes/web-crypto-runtime/prototype.json\\n*** End Patch"; text(await tools.apply_patch(patch));',
+            input: 'const patch = "*** Begin Patch\\n*** Add File: /workspace/prototypes/web-crypto-runtime/brief.md\\n*** End Patch"; text(await tools.apply_patch(patch));',
           },
         },
         {
@@ -579,6 +548,15 @@ test('decision-prototype Builder workflow grades normalized ownership evidence',
       paths: fixtures[1].paths,
     });
     assert.equal(rootReadGrade.passed, true, JSON.stringify(rootReadGrade.details));
+
+    rootRead.arguments.cmd = 'node prototypes/web-crypto-runtime/artifact/spike.mjs';
+    await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));
+    const rootVerification = await gradeBuilderWorkflow({
+      case: technical,
+      variant: 'current',
+      paths: fixtures[1].paths,
+    });
+    assert.equal(rootVerification.passed, true, JSON.stringify(rootVerification.details));
 
     rootRead.arguments.cmd = 'node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt';
     await writeFile(fixtures[1].paths.evidence, JSON.stringify(spikeEvidence));

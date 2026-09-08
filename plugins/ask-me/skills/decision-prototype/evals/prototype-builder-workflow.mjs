@@ -213,7 +213,7 @@ export async function prepareBuilderWorkflow(input) {
     model: 'gpt-5.6-luna',
     developerInstructions: [
       'Follow the user request and applicable skills.',
-      'Delegation is authorized only when the applicable Skill requires it.',
+      'Delegation is authorized when explicitly requested by the user or allowed by applicable Skill guidance.',
       'Use apply_patch for all file creation so thread ownership remains observable.',
       'This evaluation has no interactive user reply; do not call a user-input tool.',
       'Keep any unresolved decision open in the final response.',

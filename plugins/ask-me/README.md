@@ -20,6 +20,8 @@ aw install ask-me -p both
 
 三个 Skill 都可以直接调用。`decision-shape` 是可选宏能力，拥有跨轮次共享决策方向（Decision frame），并把它传给当前叶子 Skill。方向变化时，它只重新打开受影响的决定。两个叶子 Skill 不互相调用，也不依赖 `decision-shape`。
 
+`decision-prototype` 按主要不确定性选择逻辑演示、界面候选或技术实验，再选择反馈方式。Review Shell 负责呈现证据和收集输入。Shape 只吸收当前答案、成立条件、必要风险和证据指针。
+
 ## 典型用法
 
 ```text
@@ -46,6 +48,7 @@ aw install ask-me -p both
 - 普通实施任务中的局部歧义不会自动进入完整决策访谈。
 - `decision-shape` 只在调用者提供路径、仓库有约定或跨会话确有价值时写入 Shape。
 - `decision-grill` 在最终记录确认前不修改文件。
+- 持久化原型保存问题、可重放证据和结论；只有标准网页 Review 或用户明确要求时才需要 `prototype.json`。简单文件不自动触发 Builder，主代理仍可检查和运行产物。
 - `decision-prototype` 可以生成清楚标记的临时原型，并按需启动仅绑定本机的 Review 会话。页面用 tabs 展示单个大预览，可按需并排比较；用户选择总体判断后，页面才显示相关评论、受控参数或 drawer 标注。页面只有一个提交动作，同一 revision 的首个有效反馈生效。Agent 优先使用用户可交互的原生预览，脚本的 `open` 操作提供本机默认浏览器兜底；`wait` 读取当前 revision 的真实反馈。原型不会自动成为生产实现。
 
 ## Review 默认期限

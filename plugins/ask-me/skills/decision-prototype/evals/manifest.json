@@ -110,6 +110,34 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "prototype-method",
+      "kind": "conversation",
+      "cases": "prototype-method-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "opening-policy",
+      "kind": "conversation",
+      "cases": "prototype-opening-policy-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
