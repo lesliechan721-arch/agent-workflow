@@ -1375,6 +1375,66 @@ function cleanupActionCoversLocation(
   }) ?? false;
 }
 
+function cleanupLocatorPaths(component: Extract<OwnedComponent, { locator: unknown }>): string[] {
+  const locator = component.locator;
+  switch (locator.kind) {
+    case 'claude-permissions': return [locator.settingsPath];
+    case 'codex-instruction': return [locator.configPath];
+    case 'codex-activation': return [locator.configPath];
+    case 'legacy-codex-mcp': return [locator.configPath];
+    case 'legacy-codex-hook': return [locator.hooksPath];
+    case 'codex-role-registration': return [locator.configPath, locator.rolePath];
+    case 'codex-marketplace':
+    case 'claude-marketplace': return [locator.marketplaceRoot];
+    case 'corrupted': return [];
+  }
+}
+
+function cleanupPathAuthorized(pathValue: string, evidence: OfflineCleanupTargetEvidence): boolean {
+  const normalizedPath = canonicalizePathThroughExistingAncestorSync(pathValue);
+  return evidence.plan.actions.some((action) => {
+    if (action.action !== 'removeOwnedOutput') return false;
+    const actionPath = action.target.split('#', 1)[0]!;
+    const normalizedActionPath = canonicalizePathThroughExistingAncestorSync(actionPath);
+    const relative = path.relative(normalizedPath, normalizedActionPath);
+    return relative === ''
+      || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  });
+}
+
+function cleanupComponentAuthorized(
+  component: OwnedComponent,
+  evidence: OfflineCleanupTargetEvidence,
+): boolean {
+  if ('path' in component) return cleanupPathAuthorized(component.path, evidence);
+  if (component.kind === 'native-plugin') {
+    return evidence.plan.actions.some((action) =>
+      action.action === 'removeNativeRegistration' && action.target === component.pluginId);
+  }
+  const locator = component.locator;
+  if (locator.kind === 'codex-activation') {
+    return evidence.plan.actions.some((action) =>
+      action.action === 'removeNativeRegistration'
+      && action.target === locator.codexPluginId);
+  }
+  if (locator.kind === 'codex-marketplace'
+    || locator.kind === 'claude-marketplace') {
+    return evidence.plan.actions.some((action) =>
+      action.action === 'removeNativeRegistration'
+      && action.marketplaceName === locator.marketplaceName);
+  }
+  if (evidence.plan.actions.some((action) =>
+    action.action === 'removeOwnedOutput' && action.target === component.label)) return true;
+  return cleanupLocatorPaths(component).some((candidate) =>
+    cleanupPathAuthorized(candidate, evidence));
+}
+
+function cleanupComponentResidual(component: OwnedComponent): string {
+  if ('path' in component) return component.path;
+  if (component.kind === 'native-plugin') return component.pluginId;
+  return component.label;
+}
+
 function resolveLiveCleanupTargets(options: {
   selectors: string[];
   platforms: PlatformName[];
@@ -1492,92 +1552,143 @@ async function cleanupOfflineOwnedComponents(options: {
   const integration = createRebuildIntegration({ context });
   for (const target of options.targets) {
     try {
-    const inventoryErrors = (options.inventoryErrors ?? []).filter((error) =>
-      error.relevance.global || (
-        (error.relevance.sourceId === undefined || error.relevance.sourceId === target.sourceId)
-        && (error.relevance.pluginName === undefined || error.relevance.pluginName === target.pluginName)
-        && (error.relevance.platform === undefined || error.relevance.platform === target.platform)
-        && (error.relevance.scope === undefined || error.relevance.scope === target.scope)
-      ));
-    const evidence = options.evidence?.find((candidate) =>
-      candidate.pluginId === target.pluginId
-      && candidate.sourceIdentity === target.sourceIdentity
-      && candidate.platform === target.platform
-      && candidate.scope === target.scope);
-    const activationAction = target.platform === 'codex'
-      ? evidence?.plan.actions.find((action) =>
-          action.action === 'removeNativeRegistration'
-          && action.activationScope === target.scope)
-      : undefined;
-    let activationDisposition: 'remove' | 'disable' = 'remove';
-    if (activationAction && target.scope === 'user') {
-      activationDisposition = 'disable';
-    }
-    const plugin = createSyntheticPlugin(target.pluginName, options.env);
-    plugin.sourceId = target.sourceId;
-    plugin.sourceIdentity = target.sourceIdentity;
-    plugin.pluginId = target.pluginId;
-    const marketplaceName = target.marketplaceName ?? 'aw';
-    plugin.marketplaceName = marketplaceName;
-    const desired = await integration.buildTarget({
-      sourceId: target.sourceId,
-      sourceIdentity: target.sourceIdentity,
-      pluginId: target.pluginId,
-      marketplaceName,
-      marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
-      plugin,
-      platform: target.platform,
-      scope: target.scope,
-      cwd: options.cwd,
-      command: 'cleanup',
-      catalog: {
-        rootDir: resolveAwHome(options.env),
-        source: 'local',
-        catalogVersion: '0.0.0',
-        channel: 'beta',
-      },
-      includeNativeCleanupCandidate: target.nativeRegistration === true,
-      preserveCodexSharedNativePayload: target.platform === 'codex',
-      ...(activationAction
-        ? {
-            codexActivationCleanup: [{
-              codexPluginId: activationAction.target,
-              scope: activationAction.activationScope!,
-              disposition: activationDisposition,
-            }],
-          }
-        : {}),
-    });
-    const result = await (options.executeCleanupOperation ?? executeRebuildOperation)({
-      command: 'cleanup',
-      target: desired,
-      driver: integration.driver,
-    });
-    if (target.marketplaceIdentityUnresolved) {
-      result.residual.push('nativeMarketplaceIdentityUnresolved');
-      warnings.push(
-        `nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`,
-      );
-    }
-    let finalResult = result;
-    if (inventoryErrors.length > 0) {
-      const message = 'stateInventoryResidual: Some weak state could not be verified. Retry cleanup, use cleanup --force only for exclusively owned damaged output, or run reinstall/sync to restore the target.';
-      result.residual = [...new Set([
-        ...result.residual,
-        ...inventoryErrors.map((error) => error.location),
-      ])];
-      warnings.push(...inventoryErrors.map((error) =>
-        `stateInventoryResidual: ${error.kind}: ${error.message}`));
-      if (result.status === 'succeeded') {
-        finalResult = {
-          ...result,
-          status: 'failed',
-          failures: [...result.failures, { phase: 'cleanup.owned', message }],
-          error: { phase: 'cleanup.owned', message },
-        };
+      const inventoryErrors = (options.inventoryErrors ?? []).filter((error) =>
+        error.relevance.global || (
+          (error.relevance.sourceId === undefined || error.relevance.sourceId === target.sourceId)
+          && (error.relevance.pluginName === undefined || error.relevance.pluginName === target.pluginName)
+          && (error.relevance.platform === undefined || error.relevance.platform === target.platform)
+          && (error.relevance.scope === undefined || error.relevance.scope === target.scope)
+        ));
+      const evidence = options.evidence?.find((candidate) =>
+        candidate.pluginId === target.pluginId
+        && candidate.sourceIdentity === target.sourceIdentity
+        && candidate.platform === target.platform
+        && candidate.scope === target.scope);
+      const activationAction = target.platform === 'codex'
+        ? evidence?.plan.actions.find((action) =>
+            action.action === 'removeNativeRegistration'
+            && action.activationScope === target.scope)
+        : undefined;
+      let activationDisposition: 'remove' | 'disable' = 'remove';
+      if (activationAction && target.scope === 'user') {
+        activationDisposition = 'disable';
       }
-    }
-    results.push(finalResult);
+      const plugin = createSyntheticPlugin(target.pluginName, options.env);
+      plugin.sourceId = target.sourceId;
+      plugin.sourceIdentity = target.sourceIdentity;
+      plugin.pluginId = target.pluginId;
+      const marketplaceName = target.marketplaceName ?? 'aw';
+      plugin.marketplaceName = marketplaceName;
+      const desired = await integration.buildTarget({
+        sourceId: target.sourceId,
+        sourceIdentity: target.sourceIdentity,
+        pluginId: target.pluginId,
+        marketplaceName,
+        marketplaceRoot: path.join(resolveAwHome(options.env), 'marketplaces', target.sourceId),
+        plugin,
+        platform: target.platform,
+        scope: target.scope,
+        cwd: options.cwd,
+        command: 'cleanup',
+        catalog: {
+          rootDir: resolveAwHome(options.env),
+          source: 'local',
+          catalogVersion: '0.0.0',
+          channel: 'beta',
+        },
+        includeNativeCleanupCandidate: target.nativeRegistration === true,
+        preserveCodexSharedNativePayload: target.platform === 'codex',
+        ...(activationAction
+          ? {
+              codexActivationCleanup: [{
+                codexPluginId: activationAction.target,
+                scope: activationAction.activationScope!,
+                disposition: activationDisposition,
+              }],
+            }
+          : {}),
+      });
+      const unplannedCandidates = evidence
+        ? desired.ownedComponents.filter((component) =>
+            !cleanupComponentAuthorized(component, evidence))
+        : [];
+      const unplannedComponents = unplannedCandidates.length > 0
+        ? (await inspectOwnedComponents({
+            components: unplannedCandidates,
+            executor: integration.driver.ownership,
+          })).components.flatMap((entry) => entry.state === 'present' ? [entry.component] : [])
+        : [];
+      if (evidence) {
+        const authorized = (component: OwnedComponent): boolean =>
+          cleanupComponentAuthorized(component, evidence);
+        desired.ownedComponents = desired.ownedComponents.filter(authorized);
+        desired.desiredOwnedComponents = desired.desiredOwnedComponents?.filter(authorized);
+        desired.optionalOwnedComponents = desired.optionalOwnedComponents?.filter(authorized);
+        desired.artifacts = desired.artifacts.filter((artifact) =>
+          cleanupPathAuthorized(artifact.path, evidence));
+        const nativeAuthorized = evidence.plan.actions.some((action) =>
+          action.action === 'removeNativeRegistration');
+        desired.requiresNative &&= nativeAuthorized;
+        desired.writeNativeRequired &&= nativeAuthorized;
+        desired.operationActions = desired.operationActions?.filter((action) => {
+          if (action.kind === 'removeOwnedArtifact') {
+            return cleanupPathAuthorized(action.path, evidence);
+          }
+          if (action.kind === 'removeNativeRegistration') {
+            return evidence.plan.actions.some((planned) =>
+              planned.action === 'removeNativeRegistration'
+              && planned.target === action.registration);
+          }
+          if (action.kind === 'setActivation') return nativeAuthorized;
+          return false;
+        });
+      }
+      const result = await (options.executeCleanupOperation ?? executeRebuildOperation)({
+        command: 'cleanup',
+        target: desired,
+        driver: integration.driver,
+      });
+      if (target.marketplaceIdentityUnresolved) {
+        result.residual.push('nativeMarketplaceIdentityUnresolved');
+        warnings.push(
+          `nativeMarketplaceIdentityUnresolved: Preserved ambiguous native registration for ${target.pluginId} on ${target.platform}/${target.scope}.`,
+        );
+      }
+      let finalResult = result;
+      if (unplannedComponents.length > 0) {
+        const message = 'operationPlanResidual: Newly discovered owned output was not included in the cleanup plan and was preserved.';
+        result.residual = [...new Set([
+          ...result.residual,
+          ...unplannedComponents.map(cleanupComponentResidual),
+        ])];
+        warnings.push(message);
+        if (result.status === 'succeeded') {
+          finalResult = {
+            ...result,
+            status: 'failed',
+            failures: [...result.failures, { phase: 'cleanup.owned', message }],
+            error: { phase: 'cleanup.owned', message },
+          };
+        }
+      }
+      if (inventoryErrors.length > 0) {
+        const message = 'stateInventoryResidual: Some weak state could not be verified. Retry cleanup, use cleanup --force only for exclusively owned damaged output, or run reinstall/sync to restore the target.';
+        result.residual = [...new Set([
+          ...result.residual,
+          ...inventoryErrors.map((error) => error.location),
+        ])];
+        warnings.push(...inventoryErrors.map((error) =>
+          `stateInventoryResidual: ${error.kind}: ${error.message}`));
+        if (finalResult.status === 'succeeded') {
+          finalResult = {
+            ...finalResult,
+            status: 'failed',
+            failures: [...finalResult.failures, { phase: 'cleanup.owned', message }],
+            error: { phase: 'cleanup.owned', message },
+          };
+        }
+      }
+      results.push(finalResult);
     } catch (error) {
       results.push(failedResult(
         'cleanup',

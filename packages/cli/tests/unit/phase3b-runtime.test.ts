@@ -353,6 +353,60 @@ describe('phase 3B namespaced runtime stores', () => {
     await expect(fs.pathExists(damagedRoot)).resolves.toBe(true);
   });
 
+  it('preserves owned output added after cleanup evidence capture', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };
+    const skillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
+    const reviewedRoot = path.join(skillsRoot, 'reviewed-output');
+    const addedRoot = path.join(skillsRoot, 'added-after-review');
+    const owner: OwnerIdentity = {
+      owner: 'agent-workflows', sourceId: 'team', sourceIdentity: SOURCE_IDENTITY,
+      pluginId: 'team/demo', plugin: 'demo', artifactKey: 'reviewed-output',
+      platform: 'codex', scope: 'user',
+    };
+    await writePluginIntentState(location, {
+      schemaVersion: 2, kind: 'aw-plugin-intents',
+      roots: [{ pluginId: 'team/demo', platforms: ['codex'] }],
+      dependencyScopeOverrides: [],
+    });
+    await fs.outputFile(path.join(reviewedRoot, 'SKILL.md'), 'reviewed output\n');
+    await writeSkillOwnerMarker({
+      skillRoot: reviewedRoot, allowedRoot: skillsRoot, identity: owner,
+    });
+    const capturedInventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      inventoryCatalogSourceReferences: async () => capturedInventory,
+    };
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    const preview = await cleanupWriteCommand(['team/demo'], options, {
+      ...runtime, previewOperationPlan: true,
+    });
+    await fs.outputFile(path.join(addedRoot, 'SKILL.md'), 'added after Review\n');
+    await writeSkillOwnerMarker({
+      skillRoot: addedRoot,
+      allowedRoot: skillsRoot,
+      identity: { ...owner, artifactKey: 'added-after-review' },
+    });
+
+    const result = await cleanupWriteCommand(['team/demo'], options, {
+      ...runtime,
+      expectedPlanFingerprint: preview.operationPlan!.planFingerprint,
+    });
+
+    expect(result.overallState).toBe('partial');
+    await expect(fs.pathExists(reviewedRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(addedRoot)).resolves.toBe(true);
+    await expect(readPluginIntentState(location)).resolves.toMatchObject({ roots: [] });
+    expect(result.rebuildResults[0]).toMatchObject({
+      status: 'failed',
+      residual: expect.arrayContaining(['added-after-review']),
+    });
+  });
+
   it('keeps the Intent cancellation and reports partial when output cleanup fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const location = { scope: 'user' as const, cwd: isolation.layout.fixtureCwd, env: isolation.env };

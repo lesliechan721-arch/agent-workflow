@@ -76,11 +76,6 @@ import type {
   RebuildCommandResult,
   RebuildReviewPreflightEvidence,
 } from '../commands/rebuild-command.js';
-import {
-  offlineCleanupEvidenceFromInventory,
-  offlineCleanupEvidenceMatches,
-  type OfflineCleanupTargetEvidence,
-} from '../commands/offline-cleanup-evidence.js';
 import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   operationEvidenceMatches,
@@ -490,10 +485,12 @@ function selectedBatchGroups(intent: Extract<OperationIntent, { kind: 'pluginWri
   for (const target of uniqueTargets) {
     const pluginId = target.pluginId;
     const sourceId = parsePluginId(pluginId).sourceId!;
-    const groupKey = [sourceId, target.platform, target.scope].join('\0');
+    const groupKey = intent.action === 'cleanup'
+      ? ['cleanup', target.platform, target.scope].join('\0')
+      : [sourceId, target.platform, target.scope].join('\0');
     const group = groups.get(groupKey) ?? {
       groupId: groupKey,
-      sourceId,
+      sourceId: intent.action === 'cleanup' ? 'offline' : sourceId,
       platform: target.platform,
       scope: target.scope,
       requestedPluginIds: [],
@@ -1908,6 +1905,42 @@ export function createTuiControllerDependencies(
         frozenBatchEvidence?.requestedPluginIds,
       );
       signal?.throwIfAborted();
+      if (intent.action === 'cleanup') {
+        const groups: PluginWriteBatchGroupEvidence[] = [];
+        for (const group of selection.groups) {
+          signal?.throwIfAborted();
+          const preview = await runBatchWriteGroup({
+            intent,
+            group,
+            cwd: context.cwd,
+            runtime: {
+              ...context,
+              inventoryCatalogSourceReferences: operationInventory,
+              previewOperationPlan: true,
+              ...(codexObservationSession ? { codexObservationSession } : {}),
+              ...(preparation ? {
+                onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+                  stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+              } : {}),
+            },
+          });
+          groups.push({ ...group, preview, executable: preview.operationPlan !== undefined });
+        }
+        await preparation?.reporter.emit('evidence');
+        signal?.throwIfAborted();
+        const evidence: PluginWriteBatchEvidence = {
+          catalog: {
+            configDigest: 'cleanup-offline',
+            compositeDigest: digest(groups.map((group) => [
+              group.groupId,
+              group.preview.operationPlan?.planFingerprint,
+            ])),
+          },
+          requestedPluginIds: selection.requestedPluginIds,
+          groups,
+        };
+        return evidence;
+      }
       const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
       const groups: PluginWriteBatchGroupEvidence[] = [];
       const ownsObservationSession = !codexObservationSession
@@ -2024,18 +2057,48 @@ export function createTuiControllerDependencies(
       };
       return evidence;
     }
+    if (intent.kind === 'pluginWrite' && intent.action === 'cleanup') {
+      const preview = await cleanupWriteCommand([intent.pluginId], {
+        cwd: context.cwd,
+        platform: intent.platform,
+        scope: intent.scope,
+        force: intent.force === true,
+      }, {
+        ...context,
+        inventoryCatalogSourceReferences: operationInventory,
+        previewOperationPlan: true,
+        ...(codexObservationSession ? { codexObservationSession } : {}),
+        ...(preparation ? {
+          onPreviewStage: (stage: 'catalog' | 'inventory' | 'dependencyPlan') =>
+            stage === 'catalog' ? undefined : preparation.reporter.emit(stage),
+        } : {}),
+      });
+      signal?.throwIfAborted();
+      if (!preview.operationPlan) {
+        throw new TuiOperationBlockedError(
+          'cleanupPlanUnavailable',
+          '无法建立可信的清理计划。',
+        );
+      }
+      const offlineCleanupPlans = preview.offlineCleanupPlans ?? [];
+      await preparation?.reporter.emit('evidence');
+      return {
+        catalog: {
+          configDigest: 'cleanup-offline',
+          compositeDigest: preview.operationPlan.planFingerprint,
+        },
+        operationPlan: preview.operationPlan,
+        offlineCleanupPlans,
+        ...(offlineCleanupPlans.length === 1
+          ? { offlineCleanup: offlineCleanupPlans[0] }
+          : {}),
+        targetFingerprint: preview.operationPlan.planFingerprint,
+      };
+    }
     const packageInfo = await readCliPackageInfo();
-    const offlineCleanupReason: OfflineCleanupTargetEvidence['reason'] | undefined =
-      intent.kind === 'pluginWrite'
-      && intent.action === 'cleanup'
-      && intent.originIssue?.actionId === 'cleanup'
-      && (intent.originIssue?.category === 'sourceMissing'
-        || intent.originIssue?.category === 'sourceUnavailable')
-        ? intent.originIssue.category === 'sourceMissing' ? 'sourceMissing' : 'bundleUnavailable'
-        : undefined;
     let catalogOperation: CatalogOperationContext | undefined;
     let catalogOperationError: unknown;
-    if (!offlineCleanupReason && intent.kind !== 'portableInstall') {
+    if (intent.kind !== 'portableInstall') {
       try {
         const sourceIds = [parsePluginId(intent.pluginId).sourceId!];
         catalogOperation = !freshCatalog && sessionCatalogOperationContext
@@ -2208,9 +2271,8 @@ export function createTuiControllerDependencies(
       return evidence;
     }
     await preparation?.reporter.emit('status');
-    const statusCatalogOperation = offlineCleanupReason
-      ? undefined
-      : catalogOperation ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
+    const statusCatalogOperation = catalogOperation
+      ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
     const status = await statusCommandV7({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
@@ -2234,7 +2296,7 @@ export function createTuiControllerDependencies(
       throw operationReviewStale('准备确认信息期间来源配置发生变化。');
     }
     if (catalogOperationError) throw catalogOperationError;
-    if (!offlineCleanupReason && !catalogOperation) {
+    if (!catalogOperation) {
       catalogOperation = await resolveCatalogOperationContext({
         sourceIds: [parsePluginId(intent.pluginId).sourceId!],
         configSnapshot,
@@ -2246,53 +2308,11 @@ export function createTuiControllerDependencies(
     let dependencyPlan: ReconcileOperationPlan | undefined;
     let codexReconcilePlans: OperationEvidence['codexReconcilePlans'];
     let operationPlan: OperationEvidence['operationPlan'];
-    let forceCleanupEvidence: OfflineCleanupTargetEvidence | undefined;
     await preparation?.reporter.emit('catalog');
-    const offlineCleanupTarget = offlineCleanupReason && intent.kind === 'pluginWrite'
-      ? status.payload.targets.find((target) => target.pluginId === intent.pluginId
-        && target.platform === intent.platform
-        && target.scope === intent.scope
-        && target.reasons.some((error) => error.code === offlineCleanupReason))
-      : undefined;
-    const catalogSource = offlineCleanupTarget
-      ? status.payload.catalog.sources.find((source) => source.id === offlineCleanupTarget.sourceId)
-      : undefined;
-    let offlineCleanup: OfflineCleanupTargetEvidence | undefined;
-    if (offlineCleanupReason && offlineCleanupTarget) {
-      await preparation?.reporter.emit('inventory');
-      const inventory = await operationInventory({
-        cwd: context.cwd,
-        env: context.env,
-      });
-      signal?.throwIfAborted();
-      offlineCleanup = offlineCleanupEvidenceFromInventory({
-        reason: offlineCleanupReason,
-        pluginId: offlineCleanupTarget.pluginId,
-        pluginName: offlineCleanupTarget.pluginName,
-        sourceId: offlineCleanupTarget.sourceId,
-        sourceIdentity: offlineCleanupTarget.sourceIdentity,
-        platform: offlineCleanupTarget.platform,
-        scope: offlineCleanupTarget.scope,
-        inventory,
-      }) ?? undefined;
-      if (!offlineCleanup) {
-        throw operationReviewStale('离线清理现场证据已消失或无法验证。');
-      }
-    }
     const configVisibleTargets = intent.kind === 'configSave'
       ? configAffectedStatusTargets(status.payload.targets, intent.pluginId, intent.scope)
       : [];
-    const selected = offlineCleanupTarget
-      ? {
-          pluginName: offlineCleanupTarget.pluginName,
-          source: {
-            sourceId: offlineCleanupTarget.sourceId,
-            sourceIdentity: offlineCleanupTarget.sourceIdentity,
-            ...(catalogSource?.requestedRef ? { requestedRef: catalogSource.requestedRef } : {}),
-            ...(catalogSource?.resolvedCommit ? { resolvedCommit: catalogSource.resolvedCommit } : {}),
-          },
-        }
-      : await withResolvedCatalogPlugin({
+    const selected = await withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
           configSnapshot,
@@ -2424,21 +2444,6 @@ export function createTuiControllerDependencies(
       signal?.throwIfAborted();
       codexReconcilePlans = preview?.codexReconcilePlans;
       operationPlan = preview?.operationPlan;
-      if (intent.action === 'cleanup' && intent.force === true) {
-        const candidates = preview?.offlineCleanupPlans?.filter((candidate) =>
-          candidate.forceExclusive === true
-          && candidate.pluginId === intent.pluginId
-          && candidate.platform === intent.platform
-          && candidate.scope === intent.scope
-          && candidate.plan.actions.length > 0) ?? [];
-        if (candidates.length !== 1) {
-          throw new TuiOperationBlockedError(
-            'forceCleanupPathUnavailable',
-            '没有唯一且可验证的精确清理目标。',
-          );
-        }
-        [forceCleanupEvidence] = candidates;
-      }
       if (hasDeclaredDependencies
         && (intent.action === 'install'
           || intent.action === 'refreshAndSync'
@@ -2499,8 +2504,6 @@ export function createTuiControllerDependencies(
           : {}),
       },
       source: selected.source,
-      ...(offlineCleanup ? { offlineCleanup } : {}),
-      ...(forceCleanupEvidence ? { offlineCleanup: forceCleanupEvidence } : {}),
       ...(dependencyPlan ? { dependencyPlan } : {}),
       ...(codexReconcilePlans ? { codexReconcilePlans } : {}),
       ...(operationPlan ? { operationPlan } : {}),
@@ -3244,7 +3247,9 @@ export function createTuiControllerDependencies(
               requestedPluginIds: group.requestedPluginIds,
               executable: group.executable,
               planFingerprint: group.preview.operationPlan
-                ? createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
+                ? intent.action === 'cleanup'
+                  ? group.preview.operationPlan.planFingerprint
+                  : createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
                 : undefined,
             }));
             const currentGroups = currentBatch.groups.map((group) => ({
@@ -3259,7 +3264,9 @@ export function createTuiControllerDependencies(
                 ?.executable === false
                 ? undefined
                 : group.preview.operationPlan
-                  ? createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
+                  ? intent.action === 'cleanup'
+                    ? group.preview.operationPlan.planFingerprint
+                    : createBatchIntentCompatiblePlanFingerprint(group.preview.operationPlan)
                   : undefined,
             }));
             if (expectedBatch.catalog.configDigest !== currentBatch.catalog.configDigest
@@ -3271,6 +3278,12 @@ export function createTuiControllerDependencies(
             await tuiControllerRuntimeTestHooks?.afterMutationEvidenceCapture?.();
             const groupResults = [];
             const completedTargetKeys = new Set<string>();
+            const expectedIntentDigests = new Map<string, string>();
+            for (const group of expectedBatch.groups) {
+              for (const intentDigest of group.preview.operationPlan?.evidence.intentDigests ?? []) {
+                expectedIntentDigests.set(intentDigest.scope, intentDigest.digest);
+              }
+            }
             let executedGroupCount = 0;
             const appendStoppedGroups = (startIndex: number, staleMessage: string): void => {
               for (const [offset, stopped] of expectedBatch.groups.slice(startIndex).entries()) {
@@ -3311,7 +3324,8 @@ export function createTuiControllerDependencies(
                 ? operationInventory
                 : createOperationInventoryReader();
               let executionPreview = current.preview;
-              if (completedTargetKeys.size > 0) {
+              if (completedTargetKeys.size > 0
+                || (intent.action === 'cleanup' && executedGroupCount > 0)) {
                 executionPreview = await runBatchWriteGroup({
                   intent,
                   group: current,
@@ -3320,12 +3334,18 @@ export function createTuiControllerDependencies(
                     ...context,
                     awHomeMutationToken,
                     inventoryCatalogSourceReferences: groupInventory,
-                    expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                    ...(intent.action === 'cleanup' ? {} : {
+                      expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                    }),
                     previewOperationPlan: true,
                     ...(codexObservationSession ? { codexObservationSession } : {}),
                   },
                 });
-                if (!reviewed.preview.operationPlan || !executionPreview.operationPlan
+                const cleanupIntentDigestChanged = intent.action === 'cleanup'
+                  && executionPreview.operationPlan?.evidence.intentDigests.find((entry) =>
+                    entry.scope === current.scope)?.digest !== expectedIntentDigests.get(current.scope);
+                if (cleanupIntentDigestChanged
+                  || !reviewed.preview.operationPlan || !executionPreview.operationPlan
                   || createBatchIntentCompatiblePlanFingerprint(
                     reviewed.preview.operationPlan,
                     completedTargetKeys,
@@ -3350,7 +3370,9 @@ export function createTuiControllerDependencies(
                   awHomeMutationToken,
                   preApplyConfirmed: true,
                   inventoryCatalogSourceReferences: groupInventory,
-                  expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                  ...(intent.action === 'cleanup' ? {} : {
+                    expectedCatalogConfigDigest: expectedBatch.catalog.configDigest,
+                  }),
                   ...(executionPreview.operationPlan ? {
                     expectedPlanFingerprint: executionPreview.operationPlan.planFingerprint,
                   } : {}),
@@ -3364,6 +3386,11 @@ export function createTuiControllerDependencies(
                 if (executedGroupCount === 0) throwIfWriteReviewStale(result);
                 appendStoppedGroups(groupIndex, '这个组的实际写入计划发生变化。');
                 break;
+              }
+              if (intent.action === 'cleanup') {
+                for (const change of result.operationPlan?.intentChanges ?? []) {
+                  expectedIntentDigests.set(change.scope, change.afterDigest);
+                }
               }
               executedGroupCount += 1;
               for (const target of result.targetResults) {
@@ -3569,19 +3596,28 @@ export function createTuiControllerDependencies(
               cleanup: cleanupWriteCommand,
               sync: syncWriteCommand,
             }[intent.action];
-            const currentSource = currentEvidence.source;
-            const offlineCleanup = currentEvidence.offlineCleanup;
-            const reviewedOfflineCleanup = expectedEvidence.offlineCleanup;
-            if ((offlineCleanup || reviewedOfflineCleanup)
-              && (!offlineCleanup
-                || !reviewedOfflineCleanup
-                || !offlineCleanupEvidenceMatches(reviewedOfflineCleanup, offlineCleanup))) {
-              throw new TuiOperationBlockedError(
-                'operationReviewStale',
-                '确认后离线清理证据发生变化。',
-              );
+            if (intent.action === 'cleanup') {
+              if (!expectedEvidence.operationPlan || !currentEvidence.operationPlan
+                || expectedEvidence.operationPlan.planFingerprint
+                  !== currentEvidence.operationPlan.planFingerprint) {
+                throw operationReviewStale('确认后清理计划发生变化。');
+              }
+              const result = await command([intent.pluginId], options, {
+                ...context,
+                ...(codexObservationSession ? { codexObservationSession } : {}),
+                awHomeMutationToken,
+                preApplyConfirmed: true,
+                inventoryCatalogSourceReferences: operationInventory,
+                expectedPlanFingerprint: expectedEvidence.operationPlan.planFingerprint,
+                ...(expectedEvidence.codexManager?.state === 'requires-install'
+                  ? { managedCodexAuthorizer: async () => true }
+                  : {}),
+              });
+              throwIfWriteReviewStale(result);
+              return result;
             }
-            if (!offlineCleanup && (!expectedEvidence.source || !currentSource)) {
+            const currentSource = currentEvidence.source;
+            if (!expectedEvidence.source || !currentSource) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
             }
             const result = await command([intent.pluginId], options, {
@@ -3601,10 +3637,8 @@ export function createTuiControllerDependencies(
               ...(expectedEvidence.codexManager?.state === 'requires-install'
                 ? { managedCodexAuthorizer: async () => true }
                 : {}),
-              ...(reviewedOfflineCleanup
-                ? { expectedOfflineCleanupEvidence: reviewedOfflineCleanup }
-                : { reviewPreflight: (actual: RebuildReviewPreflightEvidence) =>
-                    assertSourceEvidenceMatches(currentSource!, actual) }),
+              reviewPreflight: (actual: RebuildReviewPreflightEvidence) =>
+                assertSourceEvidenceMatches(currentSource, actual),
             });
             throwIfWriteReviewStale(result);
             return result;

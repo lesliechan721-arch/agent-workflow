@@ -37,7 +37,6 @@ import {
   createCatalogStoreKey,
   readCatalogSnapshotLogicalIdentity,
 } from '../../src/utils/catalog-generation-store.js';
-import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import {
   resolvePluginConfigStorePath,
   writePluginConfigStore,
@@ -369,6 +368,181 @@ describe('TUI batch write runtime', () => {
       ['team/first', 'team/second'],
       expect.objectContaining({ platform: 'both', scope: 'user', scriptTimeoutMs: 33_000 }),
       expect.objectContaining({ previewOperationPlan: true }),
+    );
+  });
+
+  it('previews and executes cross-source cleanup in one offline scope and platform group', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const operationPlan = createOperationPlan({
+      intentChanges: [{
+        scope: 'user', beforeDigest: 'sha256:intent-before', afterDigest: 'sha256:intent-after',
+      }],
+      actions: [],
+      changes: [
+        'first/alpha:codex:user:removeIntent',
+        'second/beta:codex:user:removeIntent',
+      ],
+      warnings: [],
+      evidence: {
+        catalogDigests: [],
+        intentDigests: [{ scope: 'user', digest: 'sha256:intent-before' }],
+        configDigests: [], targetOwnerFingerprints: [],
+      },
+    });
+    runtimeMocks.cleanupWriteCommand.mockResolvedValue({
+      platforms: ['codex'], plugins: ['alpha', 'beta'], warnings: [], rebuildResults: [],
+      targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      offlineCleanupPlans: [], operationPlan,
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action: 'cleanup' as const,
+      selection: {
+        kind: 'targets' as const,
+        targets: [
+          { pluginId: 'first/alpha', platform: 'codex' as const, scope: 'user' as const },
+          { pluginId: 'second/beta', platform: 'codex' as const, scope: 'user' as const },
+        ],
+      },
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence).toMatchObject({
+      catalog: { configDigest: 'cleanup-offline' },
+      groups: [{
+        sourceId: 'offline', platform: 'codex', scope: 'user',
+        requestedPluginIds: ['first/alpha', 'second/beta'], executable: true,
+      }],
+    });
+    await dependencies.executeIntent(intent, evidence);
+
+    expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledTimes(3);
+    for (const call of runtimeMocks.cleanupWriteCommand.mock.calls) {
+      expect(call[0]).toEqual(['first/alpha', 'second/beta']);
+      expect(call[2]).not.toHaveProperty('expectedCatalogConfigDigest');
+      expect(call[2]).not.toHaveProperty('catalogOperationContext');
+    }
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2]).toEqual(
+      expect.objectContaining({ expectedPlanFingerprint: operationPlan.planFingerprint }),
+    );
+    expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed batch cleanup plan before the first write', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plan = (intentDigest: string) => createOperationPlan({
+      intentChanges: [{ scope: 'user', beforeDigest: intentDigest, afterDigest: 'sha256:after' }],
+      actions: [], changes: ['team/demo:codex:user:removeIntent'], warnings: [],
+      evidence: {
+        catalogDigests: [], intentDigests: [{ scope: 'user', digest: intentDigest }],
+        configDigests: [], targetOwnerFingerprints: [],
+      },
+    });
+    runtimeMocks.cleanupWriteCommand
+      .mockResolvedValueOnce({
+        platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+        overallState: 'succeeded', receiptTargets: [], operationPlan: plan('sha256:reviewed'),
+      })
+      .mockResolvedValueOnce({
+        platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
+        overallState: 'succeeded', receiptTargets: [], operationPlan: plan('sha256:changed'),
+      });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const, action: 'cleanup' as const,
+      selection: { kind: 'selected' as const, pluginIds: ['team/demo'] },
+      platform: 'codex' as const, scope: 'user' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    await expect(dependencies.executeIntent(intent, evidence))
+      .rejects.toMatchObject({ code: 'operationReviewStale' });
+    expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls.every((call) =>
+      call[2]?.previewOperationPlan === true)).toBe(true);
+  });
+
+  it('repreviews the next cleanup group after Intent changed even when all earlier outputs failed', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plan = (
+      pluginId: string,
+      platform: 'codex' | 'claude',
+      beforeDigest: string,
+      afterDigest: string,
+    ) => createOperationPlan({
+      intentChanges: [{ scope: 'user', beforeDigest, afterDigest }],
+      actions: [], changes: [`${pluginId}:${platform}:user:removeIntent`], warnings: [],
+      evidence: {
+        catalogDigests: [], intentDigests: [{ scope: 'user', digest: beforeDigest }],
+        configDigests: [], targetOwnerFingerprints: [],
+      },
+    });
+    const firstPlan = plan('first/alpha', 'claude', 'sha256:before', 'sha256:after-first');
+    const secondPlan = plan('second/beta', 'codex', 'sha256:before', 'sha256:after-second');
+    const continuedSecondPlan = plan(
+      'second/beta', 'codex', 'sha256:after-first', 'sha256:after-both',
+    );
+    const result = (
+      pluginId: string,
+      platform: 'codex' | 'claude',
+      operationPlan: ReturnType<typeof createOperationPlan>,
+      state: 'failed' | 'completed',
+    ) => ({
+      platforms: [platform], plugins: state === 'completed' ? [pluginId.split('/')[1]!] : [],
+      warnings: [], rebuildResults: [],
+      targetResults: [{
+        target: {
+          pluginName: pluginId.split('/')[1]!, pluginId,
+          sourceId: pluginId.split('/')[0]!, platform, scope: 'user' as const,
+        },
+        action: 'cleanup' as const, state, requiredBy: [],
+        ...(state === 'failed' ? { errorCode: 'cleanupFailed' } : {}),
+      }],
+      overallState: state === 'failed' ? 'partial' as const : 'succeeded' as const,
+      receiptTargets: [], operationPlan,
+    });
+    runtimeMocks.cleanupWriteCommand
+      .mockResolvedValueOnce(result('first/alpha', 'claude', firstPlan, 'completed'))
+      .mockResolvedValueOnce(result('second/beta', 'codex', secondPlan, 'completed'))
+      .mockResolvedValueOnce(result('first/alpha', 'claude', firstPlan, 'completed'))
+      .mockResolvedValueOnce(result('second/beta', 'codex', secondPlan, 'completed'))
+      .mockResolvedValueOnce(result('first/alpha', 'claude', firstPlan, 'failed'))
+      .mockResolvedValueOnce(result('second/beta', 'codex', continuedSecondPlan, 'completed'))
+      .mockResolvedValueOnce(result('second/beta', 'codex', continuedSecondPlan, 'completed'));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const, action: 'cleanup' as const,
+      selection: {
+        kind: 'targets' as const,
+        targets: [
+          { pluginId: 'first/alpha', platform: 'claude' as const, scope: 'user' as const },
+          { pluginId: 'second/beta', platform: 'codex' as const, scope: 'user' as const },
+        ],
+      },
+      platform: 'codex' as const, scope: 'user' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    const execution = await dependencies.executeIntent(intent, evidence) as PluginWriteBatchExecutionResult;
+
+    expect(execution.groupResults).toHaveLength(2);
+    expect(execution.groupResults[0]?.result.overallState).toBe('partial');
+    expect(execution.groupResults[1]?.result.overallState).toBe('succeeded');
+    expect(runtimeMocks.cleanupWriteCommand).toHaveBeenCalledTimes(7);
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls[5]?.[2]).toEqual(
+      expect.objectContaining({ previewOperationPlan: true }),
+    );
+    expect(runtimeMocks.cleanupWriteCommand.mock.calls[6]?.[2]).toEqual(
+      expect.objectContaining({ expectedPlanFingerprint: continuedSecondPlan.planFingerprint }),
     );
   });
 
@@ -2075,6 +2249,20 @@ describe('TUI controller runtime scope conflict validation', () => {
         },
       }] : [],
     });
+    if (action === 'cleanup') {
+      runtimeMocks.cleanupWriteCommand.mockResolvedValue({
+        platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [],
+        targetResults: [], overallState: 'succeeded', receiptTargets: [],
+        offlineCleanupPlans: [],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [], warnings: [],
+          evidence: {
+            catalogDigests: [], intentDigests: [], configDigests: [],
+            targetOwnerFingerprints: [],
+          },
+        }),
+      });
+    }
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
@@ -2088,18 +2276,27 @@ describe('TUI controller runtime scope conflict validation', () => {
       pluginId: 'team/demo',
       platform: 'codex',
       scope: 'user',
-    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject({
-      source: {
-        sourceId: 'team',
-        pluginVersion: action === 'refreshAndSync' ? '2.0.0' : '1.0.0',
-      },
-    });
+    }, new AbortController().signal, (stage) => { stages.push(stage); })).resolves.toMatchObject(
+      action === 'cleanup'
+        ? { catalog: { configDigest: 'cleanup-offline' }, operationPlan: expect.any(Object) }
+        : {
+            source: {
+              sourceId: 'team',
+              pluginVersion: action === 'refreshAndSync' ? '2.0.0' : '1.0.0',
+            },
+          },
+    );
 
-    expect(runtimeMocks.statusCommandV7).toHaveBeenCalledOnce();
-    expect(stages).toEqual([
-      ...(action === 'refreshAndSync' ? ['refresh'] : []),
-      'status', 'catalog', 'evidence',
-    ]);
+    if (action === 'cleanup') {
+      expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
+      expect(stages).toEqual(['evidence']);
+    } else {
+      expect(runtimeMocks.statusCommandV7).toHaveBeenCalledOnce();
+      expect(stages).toEqual([
+        ...(action === 'refreshAndSync' ? ['refresh'] : []),
+        'status', 'catalog', 'evidence',
+      ]);
+    }
   });
 
   it('keeps the old Active and reports a non-blocking warning when refresh fails', async () => {
@@ -2921,30 +3118,45 @@ describe('TUI controller runtime scope conflict validation', () => {
     expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
   });
 
-  it('uses status ownership evidence to run ordinary cleanup when the current Catalog bundle is absent', async () => {
+  it('uses the core offline plan for ordinary cleanup without Catalog evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const skillsRoot = path.join(isolation.env.AW_CODEX_HOME!, 'skills');
-    await fs.ensureDir(path.join(skillsRoot, 'demo-owned'));
-    await writeSkillOwnerMarker({
-      skillRoot: path.join(skillsRoot, 'demo-owned'),
-      allowedRoot: skillsRoot,
-      identity: {
-        owner: 'agent-workflows',
-        sourceId: 'official',
-        sourceIdentity: OFFLINE_SOURCE_IDENTITY,
-        pluginId: 'official/demo',
-        plugin: 'demo',
-        artifactKey: 'demo-owned',
-        platform: 'codex',
-        scope: 'user',
+    const cleanupPlan = createOperationPlan({
+      intentChanges: [{
+        scope: 'user', beforeDigest: 'sha256:intent-before', afterDigest: 'sha256:intent-after',
+      }],
+      actions: [{
+        kind: 'removeOwnedArtifact', pluginId: 'official/demo', platform: 'codex',
+        scope: 'user', path: '/owned/demo', ownerFingerprint: 'sha256:owned',
+      }],
+      changes: ['official/demo:codex:user:removeIntent'],
+      warnings: ['stateInventoryResidual: ownerMarkerRead: preserved'],
+      evidence: {
+        catalogDigests: [],
+        intentDigests: [{ scope: 'user', digest: 'sha256:intent-before' }],
+        configDigests: [],
+        targetOwnerFingerprints: [{
+          pluginId: 'official/demo', platform: 'codex', scope: 'user', fingerprint: 'sha256:owned',
+        }],
       },
     });
-    const configSnapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV7.mockResolvedValue(bundleUnavailableStatus(configSnapshot.digest));
+    const offlineCleanup = {
+      reason: 'bundleUnavailable' as const,
+      pluginId: 'official/demo', pluginName: 'demo', sourceId: 'official',
+      sourceIdentity: OFFLINE_SOURCE_IDENTITY, platform: 'codex' as const, scope: 'user' as const,
+      plan: {
+        schemaVersion: 1 as const, pluginId: 'official/demo',
+        sourceIdentity: OFFLINE_SOURCE_IDENTITY, platform: 'codex' as const, scope: 'user' as const,
+        actions: [{
+          action: 'removeOwnedOutput' as const, kind: 'skill-directory' as const,
+          target: '/owned/demo',
+        }],
+      },
+      planDigest: 'sha256:offline', targetFingerprint: 'sha256:offline',
+    };
     runtimeMocks.cleanupWriteCommand.mockResolvedValue({
       platforms: ['codex'],
       plugins: ['demo'],
-      warnings: [],
+      warnings: cleanupPlan.warnings,
       rebuildResults: [],
       targetResults: [{
         target: {
@@ -2960,12 +3172,12 @@ describe('TUI controller runtime scope conflict validation', () => {
       }],
       overallState: 'succeeded',
       receiptTargets: [],
-      codexManagerPreview: { state: 'requires-install' },
+      operationPlan: cleanupPlan,
+      offlineCleanupPlans: [offlineCleanup],
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
-      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
       interactive: false,
     }));
     const intent = {
@@ -2974,31 +3186,16 @@ describe('TUI controller runtime scope conflict validation', () => {
       pluginId: 'official/demo',
       platform: 'codex' as const,
       scope: 'user' as const,
-      scriptTimeoutMs: 20_000,
-      originIssue: {
-        issueId: 'target:official/demo:codex:user:error',
-        issueKey: 'sourceUnavailable\0official/demo\0\0\0\0\0official\0identity:official\0codex\0user',
-        category: 'sourceUnavailable' as const,
-        actionId: 'cleanup' as const,
-      },
     };
 
     await expect(dependencies.validateIntent!(intent, new AbortController().signal))
       .resolves.toBeUndefined();
     const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
     expect(evidence).toMatchObject({
-      source: { sourceId: 'official', sourceIdentity: OFFLINE_SOURCE_IDENTITY, requestedRef: 'path' },
-      offlineCleanup: {
-        reason: 'bundleUnavailable',
-        pluginId: 'official/demo',
-        targetFingerprint: expect.stringMatching(/^sha256:/u),
-      },
-      codexManager: {
-        state: 'requires-install',
-        packageName: '@openai/codex',
-        version: '0.151.0',
-      },
-      targetFingerprint: expect.stringMatching(/^sha256:/u),
+      catalog: { configDigest: 'cleanup-offline' },
+      operationPlan: cleanupPlan,
+      offlineCleanupPlans: [offlineCleanup],
+      targetFingerprint: cleanupPlan.planFingerprint,
     });
 
     await expect(dependencies.executeIntent(intent, evidence)).resolves.toMatchObject({
@@ -3008,78 +3205,48 @@ describe('TUI controller runtime scope conflict validation', () => {
       ['official/demo'],
       expect.objectContaining({
         platform: 'codex', scope: 'user', force: false,
-        allowManagedCodexInstall: true,
       }),
       expect.objectContaining({
-        expectedOfflineCleanupEvidence: expect.objectContaining({
-          reason: 'bundleUnavailable',
-          pluginId: 'official/demo',
-          targetFingerprint: expect.stringMatching(/^sha256:/u),
-        }),
-        managedCodexAuthorizer: expect.any(Function),
+        expectedPlanFingerprint: cleanupPlan.planFingerprint,
       }),
     );
     expect(runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[1])
       .not.toHaveProperty('scriptTimeoutMs');
     const runtime = runtimeMocks.cleanupWriteCommand.mock.calls.at(-1)?.[2];
-    await expect(runtime.managedCodexAuthorizer()).resolves.toBe(true);
+    expect(runtime).not.toHaveProperty('expectedCatalogConfigDigest');
+    expect(runtime).not.toHaveProperty('expectedGenerationSetDigest');
+    expect(runtime).not.toHaveProperty('catalogOperationContext');
+    expect(runtime).not.toHaveProperty('expectedOfflineCleanupEvidence');
+    expect(runtimeMocks.statusCommandV7).not.toHaveBeenCalled();
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.uninstallWriteCommand).not.toHaveBeenCalled();
   });
 
-  it('binds reviewed force cleanup to one exact shallow exclusive candidate', async () => {
+  it('accepts Intent-only force cleanup and rejects a changed locked plan', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-force-review-source');
-    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
-    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
-    await replaceCatalogSourcesConfig({
-      config: {
-        schemaVersion: 2,
-        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
-      },
-      expectedDigest: initial.digest,
-      env: isolation.env,
-    });
-    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
-    runtimeMocks.statusCommandV7.mockResolvedValue({
-      payload: {
-        schemaVersion: 7,
-        catalog: {
-          primarySourceId: 'team', configDigest: configured.digest,
-          compositeDigest: 'sha256:composite',
-          sources: [{
-            id: 'team', identity: 'identity:team', type: 'path', primary: true,
-            requestedRef: 'path', freshness: 'active',
-          }],
-        },
-        filters: { plugins: [], platform: 'both', cwd: isolation.layout.fixtureCwd },
-        targets: [{ ...target('user', 'error'), pluginId: 'team/demo', sourceId: 'team' }],
-        errors: [],
-      },
-      pluginSummaries: [{
-        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
-        dependencyDirectCount: 0, dependencyTotalCount: 0,
-      }],
-      targetRevisions: [],
-    });
     const forceEvidence = {
       reason: 'bundleUnavailable' as const,
       pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
       sourceIdentity: 'identity:team', platform: 'codex' as const, scope: 'user' as const,
-      forceExclusive: true as const,
       plan: {
         schemaVersion: 1 as const, pluginId: 'team/demo', sourceIdentity: 'identity:team',
         platform: 'codex' as const, scope: 'user' as const,
-        actions: [{
-          action: 'removeOwnedOutput' as const, kind: 'skill-directory' as const,
-          target: '/owned/demo',
-        }],
+        actions: [],
       },
       planDigest: 'sha256:force', targetFingerprint: 'sha256:force',
     };
+    const reviewedPlan = createOperationPlan({
+      intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
+      actions: [], changes: ['team/demo:codex:user:removeIntent'], warnings: [],
+      evidence: {
+        catalogDigests: [], intentDigests: [{ scope: 'user', digest: 'sha256:before' }],
+        configDigests: [], targetOwnerFingerprints: [],
+      },
+    });
     runtimeMocks.cleanupWriteCommand.mockResolvedValue({
       platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
       overallState: 'succeeded', receiptTargets: [], offlineCleanupPlans: [forceEvidence],
+      operationPlan: reviewedPlan,
     });
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
@@ -3090,25 +3257,18 @@ describe('TUI controller runtime scope conflict validation', () => {
     };
 
     const reviewedEvidence = await dependencies.captureEvidence(intent, new AbortController().signal);
-    expect(reviewedEvidence).toMatchObject({ offlineCleanup: forceEvidence });
+    expect(reviewedEvidence).toMatchObject({
+      offlineCleanupPlans: [forceEvidence], operationPlan: reviewedPlan,
+    });
 
-    const changedPlan = {
-      ...forceEvidence.plan,
-      actions: [{
-        action: 'removeOwnedOutput' as const,
-        kind: 'skill-directory' as const,
-        target: '/owned/changed-demo',
-      }],
-    };
+    const changedPlan = createOperationPlan({
+      ...reviewedPlan,
+      warnings: ['stateInventoryResidual: changed'],
+    });
     runtimeMocks.cleanupWriteCommand.mockResolvedValueOnce({
       platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
       overallState: 'succeeded', receiptTargets: [],
-      offlineCleanupPlans: [{
-        ...forceEvidence,
-        plan: changedPlan,
-        planDigest: 'sha256:changed-force',
-        targetFingerprint: 'sha256:changed-force',
-      }],
+      offlineCleanupPlans: [forceEvidence], operationPlan: changedPlan,
     });
     await expect(dependencies.executeIntent(intent, reviewedEvidence))
       .rejects.toMatchObject({ code: 'operationReviewStale' });
@@ -3116,9 +3276,10 @@ describe('TUI controller runtime scope conflict validation', () => {
 
     runtimeMocks.cleanupWriteCommand.mockResolvedValueOnce({
       platforms: ['codex'], plugins: [], warnings: [], rebuildResults: [], targetResults: [],
-      overallState: 'failed', receiptTargets: [], offlineCleanupPlans: [],
+      overallState: 'succeeded', receiptTargets: [], offlineCleanupPlans: [forceEvidence],
+      operationPlan: reviewedPlan,
     });
     await expect(dependencies.captureEvidence(intent, new AbortController().signal))
-      .rejects.toMatchObject({ code: 'forceCleanupPathUnavailable' });
+      .resolves.toMatchObject({ offlineCleanupPlans: [forceEvidence] });
   });
 });
