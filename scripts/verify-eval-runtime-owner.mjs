@@ -18,8 +18,16 @@ const runnerSkillFiles = new Set([
   'SKILL.md',
   'aw-plugin-requirements.json',
   'agents/openai.yaml',
+  'assets/eval-audit-template.json',
+  'references/aw-eval-profile.md',
+  'references/execution-and-safety.md',
+  'scripts/validate-eval-cases.mjs',
 ])
-const runnerSkillDirectories = new Set(['agents'])
+const runnerSkillDirectories = new Set(['agents', 'assets', 'references', 'scripts'])
+const allowedRunnerResourceReferences = new Set([
+  'assets/eval-audit-template.json',
+  'scripts/validate-eval-cases.mjs',
+])
 const allowedAwCommands = [
   /^aw skill eval prepare --help$/u,
   /^aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json$/u,
@@ -27,10 +35,15 @@ const allowedAwCommands = [
 ]
 const allowedEvalCommands = [
   /^aw-skill-eval spec validate <spec\.json>$/u,
+  /^aw-skill-eval spec validate <spec>$/u,
   /^aw-skill-eval audit validate <audit\.json> --spec <spec\.json>$/u,
+  /^aw-skill-eval audit validate <audit> --spec <spec>$/u,
   /^aw-skill-eval run <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval run <spec> --audit <audit>$/u,
   /^aw-skill-eval result validate <result\.json> --spec <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval result validate <result> --spec <spec> --audit <audit>$/u,
   /^aw-skill-eval inspect-result <result\.json> --spec <spec\.json> --audit <audit\.json>$/u,
+  /^aw-skill-eval inspect-result <result> --spec <spec> --audit <audit>$/u,
   /^aw-skill-eval doctor --json$/u,
 ]
 
@@ -44,7 +57,7 @@ function sha256(value) {
 
 function parseMinimumPackageVersion(skill) {
   const matches = [...skill.matchAll(
-    /@lesliechan721\/agent-skill-eval\s+>=\s+((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)/gu,
+    /@lesliechan721\/agent-skill-eval\s+>=\s*((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)/gu,
   )]
   const versions = [...new Set(matches.map((match) => match[1]))]
   if (versions.length !== 1) {
@@ -169,6 +182,7 @@ function shellCommandSegments(candidate) {
 export function assertRunnerCommands(skill) {
   for (const candidate of markdownCommandCandidates(skill)) {
     for (const command of shellCommandSegments(candidate)) {
+      if (allowedRunnerResourceReferences.has(command)) continue
       const executable = command.split(/\s+/u, 1)[0]
       if (executable === 'aw') {
         if (!allowedAwCommands.some((pattern) => pattern.test(command))) {

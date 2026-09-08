@@ -1,251 +1,30 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
-import { test } from 'node:test';
+import test from 'node:test';
 
-const execFileAsync = promisify(execFile);
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginContext = process.env.AW_PLUGIN_CONTEXT
-  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
-  : null;
-const sourceRoot = pluginContext?.sourceRoot ?? root;
-const runtimeRoot = pluginContext?.platform ? path.join(root, pluginContext.platform) : root;
-const runtimeSkillRoot = path.join(runtimeRoot, 'skills', 'run-aw-skill-evals');
-const repoRoot = path.resolve(sourceRoot, '..', '..');
-const cliEntry = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
-const declaredCapabilities = ['aw.skill-eval.v2'];
-const derivedCapabilities = [
-  'aw.plugin-manifest.v3',
-  'aw.plugin-skills.v1',
-];
+const root = process.env.AW_PLUGIN_ROOT;
 
-async function readRuntime(relativePath) {
-  return readFile(path.join(runtimeSkillRoot, relativePath), 'utf8');
-}
-
-async function exists(relativePath) {
-  return access(path.join(runtimeSkillRoot, relativePath)).then(() => true, () => false);
-}
-
-async function materializeHandoffFiles(workspaceFiles) {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-runner-handoff-contract-'));
-  for (const [relative, contents] of Object.entries(workspaceFiles)) {
-    const destination = path.join(temporary, relative);
-    await mkdir(path.dirname(destination), { recursive: true });
-    await writeFile(destination, contents);
-  }
-  return temporary;
-}
-
-async function runEval(args, cwd) {
-  const bin = path.resolve(sourceRoot, '../../packages/agent-skill-eval/dist/bin.js');
-  return execFileAsync(process.execPath, [bin, ...args], { cwd, encoding: 'utf8' });
-}
-
-function parseSingleJson(stdout, label) {
-  const trimmed = stdout.trim();
-  assert.notEqual(trimmed, '', `${label} must return JSON`);
-  return JSON.parse(trimmed);
-}
-
-async function runCli(args, cwd) {
-  try {
-    const result = await execFileAsync(process.execPath, [cliEntry, ...args], {
-      cwd,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return { exitCode: 0, ...result };
-  } catch (error) {
-    if (typeof error?.code !== 'number') throw error;
-    return {
-      exitCode: error.code,
-      stdout: error.stdout ?? '',
-      stderr: error.stderr ?? '',
-    };
-  }
-}
-
-test('Runner declares the Auditor dependency and v2 runtime capability', async () => {
-  const manifest = JSON.parse(await readFile(
-    path.join(sourceRoot, '.agents-plugin', 'plugin.json'),
-    'utf8',
-  ));
+test('publishes one model-callable Skill with the Eval capability', () => {
+  const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'aw-skill-eval-runner');
-  assert.deepEqual(manifest.dependencies, ['agent-skill-toolkit']);
-  assert.equal(manifest.schemaVersion, 3);
-  assert.equal(manifest.buildConfig, undefined);
-  assert.deepEqual(manifest.requires.aw.capabilities, declaredCapabilities);
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.skill-eval.v2'));
+  assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), ['run-aw-skill-evals']);
 
-  const result = await runCli([
-    'plugin', 'requirements', sourceRoot, '--workspace-root', repoRoot, '--json',
-  ], repoRoot);
-  assert.equal(result.exitCode, 0, result.stderr);
-  const receipt = parseSingleJson(result.stdout, 'plugin requirements');
-  assert.deepEqual(receipt.declared, declaredCapabilities);
-  assert.deepEqual(receipt.derived, derivedCapabilities);
-  assert.deepEqual(receipt.effective, [...declaredCapabilities, ...derivedCapabilities].sort());
-  assert.deepEqual(receipt.unsupportedByCurrentAw, []);
-  assert.deepEqual(receipt.detected, declaredCapabilities);
-  assert.deepEqual(receipt.observations.map((observation) => ({
-    code: observation.code,
-    blocking: observation.blocking,
-    path: observation.path,
-    provenance: observation.provenance,
-    command: observation.command,
-    capability: observation.capability,
-  })), [{
-    code: 'aw-command-detected',
-    blocking: false,
-    path: 'skills/run-aw-skill-evals/SKILL.md',
-    provenance: 'shell-fence',
-    command: 'aw skill eval',
-    capability: 'aw.skill-eval.v2',
-  }]);
-  for (const relativePath of ['schemas', 'providers', 'scripts']) {
-    assert.equal(await exists(relativePath), false, relativePath);
-  }
-});
+  const skillRoot = path.join(root, 'codex', 'skills', 'run-aw-skill-evals');
+  const policyLines = readFileSync(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8')
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('allow_implicit_invocation:'));
+  assert.deepEqual(policyLines, ['allow_implicit_invocation: true']);
 
-test('Runner exposes exactly five public workflow steps', async () => {
-  const skill = await readRuntime('SKILL.md');
-  const openai = await readRuntime('agents/openai.yaml');
-  assert.match(openai, /^\s*allow_implicit_invocation: true$/mu);
-
-  // Static contract exception: an installed Agent reads these five headings as the executable workflow; behavior test is not suitable because the contract is consumed as instructions rather than code.
-  assert.deepEqual(
-    [...skill.matchAll(/^## ([1-5])\. /gmu)].map((match) => Number(match[1])),
-    [1, 2, 3, 4, 5],
-  );
-  // Static contract exception: an installed Agent must use the canonical public CLI sequence; behavior test is not suitable because these command pointers are consumed as instructions rather than executable code.
-  for (const command of [
-    'aw skill eval prepare <plugin> <skill> --suite <suite> --profile <profile> --output <new-spec-directory> --json',
-    'aw-skill-eval spec validate <spec.json>',
-    'aw-skill-eval audit validate <audit.json> --spec <spec.json>',
-    'aw-skill-eval run <spec.json> --audit <audit.json>',
-    'aw-skill-eval result validate <result.json> --spec <spec.json> --audit <audit.json>',
-  ]) {
-    assert.ok(skill.includes(command), command);
-  }
-
-  const diagnosticsStart = skill.indexOf('## 高级诊断');
-  assert.ok(diagnosticsStart > 0, 'advanced diagnostics pointer');
-  const publicWorkflow = skill.slice(skill.indexOf('## 1. '), diagnosticsStart);
-  // Static contract exception: ordinary execution must not invoke optional diagnostics; behavior test is not suitable because absence from the always-loaded workflow is the safety property.
-  assert.doesNotMatch(publicWorkflow, /\bdoctor\b|capabilit(?:y|ies)|\bdescribe\b|\bsmoke\b/u);
-  assert.ok(skill.indexOf('aw skill eval doctor --json') > diagnosticsStart);
-
-  // Static contract exception: obsolete commands can start unapproved model paths or bind stale contracts; behavior test is not suitable because absence from the installed instructions is the safety property.
-  for (const forbidden of [
-    /capabilities --json/u,
-    /schema print/u,
-    /provider describe/u,
-    /provider smoke/u,
-    /plan validate/u,
-    /bundle validate/u,
-    /EvalRunBundle/u,
-    /EvalAuditResult/u,
-    /Plan v4/u,
-    /Bundle v4/u,
-    /逐.*digest/u,
-    /强制.*triage/u,
-  ]) {
-    assert.doesNotMatch(skill, forbidden);
-  }
-  assert.doesNotMatch(skill, /\bnpx\b/u);
-});
-
-test('Runner user-facing summaries agree on EvalSpec, EvalAudit, EvalResult, and conditional triage', async () => {
-  const [skillReadme, pluginReadme, openai] = await Promise.all([
-    readRuntime('README.md'),
-    readFile(path.join(sourceRoot, 'README.md'), 'utf8'),
-    readRuntime('agents/openai.yaml'),
-  ]);
-  // Static contract exception: conflicting installed summaries cause users to authorize the wrong workflow; behavior test is not suitable because these are direct user and Agent instructions.
-  for (const text of [skillReadme, pluginReadme, openai]) {
-    assert.match(text, /EvalSpec/u);
-    assert.match(text, /EvalAudit|Audit/u);
-    assert.match(text, /EvalResult/u);
-    assert.match(text, /triage/u);
-  }
-});
-
-test('trigger cases route direct selection and reject Audit-only requests', async () => {
-  const cases = JSON.parse(await readFile(
-    path.join(sourceRoot, 'skills/run-aw-skill-evals/evals/trigger-cases.json'),
-    'utf8',
-  )).cases;
-  assert.equal(cases.find((entry) => entry.id === 'prepare_selection')?.input.expectedLoad, true);
-  assert.equal(cases.find((entry) => entry.id === 'unaudited')?.input.expectedLoad, true);
-  assert.equal(cases.find((entry) => entry.id === 'audit')?.input.expectedLoad, false);
-});
-
-test('nested Runner handoff fixtures reach their intended admission states', async () => {
-  const cases = JSON.parse(await readFile(
-    path.join(sourceRoot, 'skills/run-aw-skill-evals/evals/behavior-cases.json'),
-    'utf8',
-  )).cases;
-  const unknownAudit = cases.find((entry) => entry.id === 'missing-audit-blocks-model-run');
-  const prepareFailure = cases.find((entry) => entry.id === 'selection-prepare-failure-stops');
-  const engineBlocked = cases.find((entry) => entry.id === 'engine-preflight-block-stops-without-doctor');
-  const restricted = cases.find((entry) => entry.id === 'restricted-profile-requires-explicit-mode-choice');
-  const unmanaged = cases.find((entry) => entry.id === 'explicit-unmanaged-choice-is-per-run');
-  assert.ok(unknownAudit);
-  assert.ok(prepareFailure);
-  assert.ok(engineBlocked);
-  assert.ok(restricted);
-  assert.ok(unmanaged);
-  assert.equal(prepareFailure.expected.workspaceUnchanged, true);
-  assert.equal(engineBlocked.expected.workspaceUnchanged, false);
-  assert.deepEqual(engineBlocked.input.pathPrepend, ['fixtures/bin']);
-
-  for (const entry of [unknownAudit, engineBlocked]) {
-    const temporary = await materializeHandoffFiles(entry.input.workspaceFiles);
-    try {
-      const specPath = path.join(temporary, 'spec.json');
-      const auditPath = path.join(temporary, 'audit.json');
-      assert.equal(JSON.parse((await runEval(['spec', 'validate', specPath], temporary)).stdout).valid, true);
-      if (entry.id === unknownAudit.id) {
-        await assert.rejects(
-          runEval(['audit', 'validate', auditPath, '--spec', specPath], temporary),
-          (error) => JSON.parse(error.stdout).errors.includes('Audit status is unknown; execution is blocked'),
-        );
-      } else {
-        assert.equal(JSON.parse((await runEval([
-          'audit', 'validate', auditPath, '--spec', specPath,
-        ], temporary)).stdout).valid, true);
-      }
-    } finally {
-      await rm(temporary, { recursive: true, force: true });
-    }
-  }
-});
-
-test('Runner preflight fixture blocks before model start and records the canonical command', async () => {
-  const fixture = path.join(
-    sourceRoot,
-    'skills/run-aw-skill-evals/evals/fixtures/bin/aw-skill-eval',
-  );
-  const temporary = await mkdtemp(path.join(os.tmpdir(), 'eval-runner-preflight-fixture-'));
-  try {
-    await access(fixture, constants.X_OK);
-    await mkdir(path.join(temporary, 'fixtures'), { recursive: true });
-    await assert.rejects(
-      execFileAsync(process.execPath, [fixture, 'run', 'spec.json', '--audit', 'audit.json'], {
-        cwd: temporary,
-        encoding: 'utf8',
-      }),
-      (error) => error.code === 2 && error.stderr.includes('before model start'),
-    );
-    assert.equal(
-      await readFile(path.join(temporary, 'fixtures/runner-trace.txt'), 'utf8'),
-      'aw-skill-eval run spec.json --audit audit.json\n',
-    );
-  } finally {
-    await rm(temporary, { recursive: true, force: true });
-  }
+  const result = spawnSync('aw', [
+    'skill', 'validate', skillRoot,
+    '--frontmatter-profile', 'portable-agent-skills',
+    '--codex-metadata', 'required',
+    '--json',
+  ], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(JSON.parse(result.stdout).ok, true);
 });

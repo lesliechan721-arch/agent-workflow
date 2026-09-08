@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "target": {
+    "kind": "plugin",
+    "path": "plugins/example",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "subjects": [
+    {
+      "kind": "plugin",
+      "path": "plugins/example",
+      "profile": "none",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "assessment": "not-assessed",
+      "evidenceRefs": [],
+      "blockingFindings": []
+    }
+  ]
+}

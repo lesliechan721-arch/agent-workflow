@@ -1,13 +1,31 @@
-# Eval 审核器行为评测
+# audit-agent-skill-evals Eval
 
-`behavior-cases.json` 是作者期的结构与设计证据。它定义 fail-closed、digest binding 和结果归因场景，但当前没有真实模型执行证据，也不得据此声称行为已通过。
+本测试资产使用 AW Selected Cases v1 / Manifest v1，由当前项目公开 parser 核验格式。适配字段的权威说明在 Runner 的 `references/aw-eval-profile.md`，真实 parser 高于本包辅助校验器。
 
-通过公开 prepare 命令按 suite/profile/case 选择准备 `EvalSpec v1`；需要执行时交给 Runner：
+通用方法不绑定此测试适配格式。需要格式的作者/审核任务由 fixture 或 caller 提供合同；结构通过不代表语义通过。
 
-```bash
-aw skill eval prepare agent-skill-toolkit audit-agent-skill-evals --suite behavior --profile project-default --output ./audit-spec --json
-```
+Trigger 只检查任意加载；不以不是顶层 owner 禁止合法下游组合。发布候选与 diagnostic 按 manifest 区分；标为 required 不等于已通过。全体模型运行状态为 NOT_RUN。
 
-执行前验证 Spec，并复用与 target 和 selected cases 精确绑定的单份 `EvalAudit v1`；没有可复用 Audit 时，由全新上下文生成一份。Runner 执行 `aw-skill-eval run <spec> --audit <audit>`，生成 `EvalResult v2`，再用 `aw-skill-eval result validate <result> --spec <spec> --audit <audit>` 验证。
+| Case | 层 | 观测依据 | 模型状态 |
+| --- | --- | --- | --- |
+| `source_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `preflight` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `triage` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `oracle_mismatch` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `write_cases` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `explain_cli_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `syntax_only` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `code_audit` | trigger | 观测期是否加载，不测试首个入口 | NOT_RUN |
+| `source_oracle_mismatch` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+| `source_valid_not_execution_admission` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+| `low_sample_not_auto_fix` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+| `challenge_does_not_dominate` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
+| `generic_oracle_without_aw` | behavior | 给定文件、修改范围和可观察断言 | NOT_RUN |
 
-clean success 不要求 triage。只有 execution/grade 失败、混合结果、baseline 回归，或结果将驱动生产 Skill 修改时，才做 result-triage；默认在聊天中返回，用户指定时可写 `triage.md`。triage 不是 Release Check 的机器输入。发布检查范围只从当前 `evals/manifest.json` 的 `requiredForRelease` 和 `releaseSplits` 派生。
+## 运行与审定
+
+先用实际 parser 和独立 Oracle 审核确认用例可执行。源行为有真实文件；CLI deny fixture 只证明拒绝边界，不证明产品成功、安全权限或远端发布。额外模型运行遵守现有预算和授权。
+
+一般格式示例属于测试输入，不要求模型采用 AW 作为所有消费者格式；未知外部事实不由 prompt 自称证明。真实集成责任与未验证项见[迁移记录](../../../../../docs/skill-toolkit-migration.md)。
+
+原 invalid_spec_stops_before_oracle 的 AW 拒绝替身从通用集移出，Runner 的 invalid_spec_no_run 保留同层拒绝检查。正式 Auditor 成功准入/绑定仍需真实集成；源 Oracle 与非 AW 源审核不依赖该替身。

@@ -1,6 +1,6 @@
 # AW Plugin Source 作者指南
 
-本指南面向在既有合法 [Catalog Workspace](catalog-authoring.md) 中维护单个 Plugin Source 的作者。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 manifest、bundle 和 validator 的机器真值；`aw-plugin-development` 只帮助 Agent 使用这些公开合同。
+本指南面向在既有合法 [Catalog Workspace](catalog-authoring.md) 中维护单个 Plugin Source 的作者。当前 PATH 的 `aw` CLI 和 `@lesliechan721/aw-plugin-core` 是 manifest、bundle 和 validator 的机器真值；`aw-development-toolkit` 只帮助 Agent 使用这些公开合同。
 
 ## Plugin Source 边界
 
@@ -77,7 +77,9 @@ aw plugin status "$plugin" --workspace-root "$workspace" --json
 
 `validate` 检查 source contract，`test` 运行 manifest 声明的确定性 Node tests，`build` 生成一个插件 bundle。`status` 默认不要求 Git；只有显式传 `--base <git-ref>` 时才做 Git comparison。
 
-`author-aw-plugin` 修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它只负责一个 Plugin Source，不维护 Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 或远端 publication。
+只读 Review 使用 `aw review inspect <plugin-path> --json`。该入口读取 source、已有 Catalog snapshot 和显式 `--materialization <receipt>`，不执行被审插件代码。`plugin validate` 可能运行 renderer fixture，`plugin status` 可能准备 bundle，因此不能替代只读取证。缺少当前 final 时，inspection 返回源码事实和证据缺口；质量判断由 Reviewer 完成。
+
+`develop-aw` 的 Plugin 分支修改插件内 Skill 时调用 `author-agent-skill`，返回后运行 `aw skill validate <skill-root>`。它处理一个 Plugin Source 的内部内容；Catalog metadata、inventory、精确 Catalog version、聚合 snapshot 由它的 Catalog 分支处理，远端 publication 仍由手动 `publish-aw-catalog` 负责。
 
 作者工具以 best-effort 方式检查 `extensions.hooks`、`extensions.nativeHooks` 和 MCP stdio server 的 executable。静态 `aw <group> <command> ...` 会进入 detected requirements；`node`、`sh`、`bash` 或 `pwsh` 后的插件相对脚本会作为生产入口扫描，其中 Node 包含相对 import closure，shell 只包含指定入口。该检查不是通用 shell parser。变量、动态 argv、引号、转义、缺少可映射 argv 或不安全脚本路径只产生非阻断 observation；此时必须在 `requires.aw.capabilities` 显式声明真实要求。静态未知 AW command 会阻止验证；`echo`、`python` 等静态 foreign executable 不产生 AW requirement。
 
@@ -102,6 +104,8 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 每个 `buildConfig.runtimeExports[]` 必须使用 `{ name, source, requires: { aw: { capabilities: [] } } }`。Provider 作者显式声明该 export 的完整 runtime capability 集合；空数组合法。Core 只规范化、排序、去重并计算稳定 capability set digest，不扫描 export 内容推断 metadata。`skillRuntimeFiles.import` 和 artifact `runtimeImports` 把实际使用 export 的 capability 合并到 consumer 最终 bundle、Catalog entry 和每个 Skill receipt；`buildImports` 不传播。Consumer 自有 `skillRuntimeFiles.source` 和 `generatedSkillRuntimeFiles` 继续由顶层 `requires.aw.capabilities` 负责。
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
+
+`aw skill materialize` 和 `aw skill eval prepare` 返回 `sourceBindingPath`，指向被测 Skill 外的 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失或过期时重新准备产物，不手工补写 digest。
 
 每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` 的 `refreshKeys` 都不得引用 sensitive config；非 Skill target 可以读取 sensitive config。native target 使用 user 配置 profile；与其 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须使用完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用声明 scopes，slash command 不参与该规则。
 

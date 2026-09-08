@@ -9,7 +9,7 @@
 日常开发使用以下三个入口：
 
 - 快速反馈：`pnpm test:unit:fast`，运行 command options、command receipt、hooks contract、platform support 和 template engine 五个稳定文件。
-- 修改范围验证：在 `packages/cli` 中运行 `node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated tests/unit/<file>.test.ts`；integration 文件使用 `--project integration`，process-lifecycle 文件使用对应项目及下方的单 worker 约束。必要时用 `-t <name>` 缩小到用例。不要向 package 的 `test` 脚本追加文件名，该脚本仍会先运行全量 unit。
+- 修改范围验证：在 `packages/cli` 中运行 `node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated tests/unit/<file>.test.ts`；integration 文件使用 `--project integration`，process-lifecycle 文件使用对应项目及下方的单 worker 约束。必要时用 `-t <name>` 缩小到用例。属于 dist config 的文件仍使用同一 wrapper 和对应 config，例如 `node ../../scripts/test/run-vitest.mjs run --config vitest.dist.config.ts tests/integration/authoring-tools.test.ts`。build smoke 需要 `npm_execpath` 读取 build launcher，运行 `pnpm test:smoke:build`；该 script 也使用同一 wrapper。不要向 package 的 `test` 脚本追加文件名，该脚本仍会先运行全量 unit。不使用 Vitest 直接入口。
 - 交付验证：按下方 Validation Matrix 运行所需的完整命令；默认 unit 和 integration 全量入口是 `pnpm test`。Performance、smoke 和需要 single worker 的锁测试继续使用各自的专用 Vitest 配置。
 
 ## Test Layers
@@ -120,7 +120,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Offline cleanup 或 `cleanup --force` 恢复 | Unit + Integration | 对应 ownership/rebuild 定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
-| Catalog 作者与 Publisher 合同 | Plugin test + Smoke | `pnpm plugin:test aw-catalog-development`、Catalog build/publish smoke 和 [Catalog 作者指南](catalog-authoring.md)要求的隔离验证；删除分支的 Agent-facing command/return boundary 与 empty inventory 指令只在已安装 Skill 的静态合同测试中覆盖，CLI 删除行为由 integration 覆盖 |
+| Catalog 作者与 Publisher 合同 | Plugin test + Smoke | `pnpm plugin:test aw-development-toolkit`、Catalog build/publish smoke 和 [Catalog 作者指南](catalog-authoring.md)要求的隔离验证；CLI 删除行为由 integration 覆盖 |
 | Eval schema、fixture environment 或 conversation runner | Unit + Plugin test | 定向 Eval contract/runner unit、`workspace_valid` fixture validation 和相关 `pnpm plugin:test`；不运行昂贵 model Eval |
 | 第三方作者公开闭环与 tarball dependency closure | Smoke | `pnpm test:smoke:authoring:external`；它不得通过 monorepo cwd、`NODE_PATH` 或 workspace symlink 取得依赖 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |

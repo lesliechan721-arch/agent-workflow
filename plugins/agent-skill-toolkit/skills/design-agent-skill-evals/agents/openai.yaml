@@ -1,7 +1,0 @@
-interface:
-  display_name: "Design Agent Skill Evals"
-  short_description: "设计最小、现实、可审核的 Skill Eval case 与 suite"
-  default_prompt: "使用 $design-agent-skill-evals 为指定 Skill 设计最小 case/suite，并保留现实场景、Oracle 和错误成本；不要审核或运行 Eval。"
-
-policy:
-  allow_implicit_invocation: true

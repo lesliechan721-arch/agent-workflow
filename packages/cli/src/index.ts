@@ -151,6 +151,10 @@ import {
   type ReviewPublicationKind,
   type ReviewRecord,
 } from './commands/review-publication.js';
+import {
+  createReviewInspectionFailure,
+  inspectReviewTarget,
+} from './commands/review-inspection.js';
 import { resolveRepoRoot } from './utils/state-paths.js';
 import {
   runCatalogBuildCommand,
@@ -1632,6 +1636,41 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     recordDir: reviewRecordDir(repoRoot, record),
     manifest: record.manifest,
   });
+
+  review
+    .command('inspect')
+    .description('Inspect current AW Review source and materialization facts')
+    .argument('<target>', 'canonical Catalog Workspace or Plugin path')
+    .option('--workspace-root <root>', 'explicit Catalog Workspace root')
+    .option(
+      '--materialization <receipt>',
+      'validate one aw-source-binding receipt',
+      (value: string, previous: string[]) => [...previous, value],
+      [],
+    )
+    .requiredOption('--json', 'emit one Review inspection JSON object')
+    .action(async (target: string, rawOptions: {
+      workspaceRoot?: string;
+      materialization: string[];
+      json: boolean;
+    }) => {
+      try {
+        const receipt = await inspectReviewTarget({
+          cwd,
+          target,
+          ...(rawOptions.workspaceRoot === undefined
+            ? {}
+            : { workspaceRoot: rawOptions.workspaceRoot }),
+          materializations: rawOptions.materialization.map((entry) => path.resolve(cwd, entry)),
+          env,
+        });
+        writeJsonReceipt(io.stdout, receipt);
+        commandExitState.exitCode = receipt.ok ? 0 : 1;
+      } catch (error) {
+        writeJsonReceipt(io.stdout, createReviewInspectionFailure(error));
+        commandExitState.exitCode = 1;
+      }
+    });
 
   review
     .command('digest')
@@ -3937,6 +3976,7 @@ export async function runCli(
     && (
       (argv[0] === 'catalog' && ['init', 'context', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
       || (argv[0] === 'plugin' && ['build', 'test', 'validate', 'status', 'remove'].includes(argv[1] ?? ''))
+      || (argv[0] === 'review' && argv[1] === 'inspect')
     )
     ? `${argv[0]}:${argv[1]}`
     : null;
@@ -4201,6 +4241,8 @@ export async function runCli(
           removed: false,
           errors: [{ code: 'workspaceResolutionFailed', message }],
         });
+      } else if (jsonAuthoringCommand === 'review:inspect') {
+        writeJsonReceipt(io.stdout, createReviewInspectionFailure(error));
       } else {
         writeJsonReceipt(io.stdout, {
           command: jsonAuthoringCommand,
@@ -4211,11 +4253,13 @@ export async function runCli(
       return 1;
     }
     if (jsonAuthoringCommand && error instanceof CommanderError) {
-      writeJsonReceipt(io.stdout, {
-        command: jsonAuthoringCommand,
-        ok: false,
-        errors: [{ code: 'invalidArguments', message: error.message }],
-      });
+      writeJsonReceipt(io.stdout, jsonAuthoringCommand === 'review:inspect'
+        ? createReviewInspectionFailure(error, 'invalidArguments')
+        : {
+            command: jsonAuthoringCommand,
+            ok: false,
+            errors: [{ code: 'invalidArguments', message: error.message }],
+          });
     }
     return handleCliError(error, io.stderr);
   }

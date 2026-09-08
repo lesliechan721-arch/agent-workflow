@@ -1,0 +1,7 @@
+interface:
+  display_name: "Publish AW Catalog"
+  short_description: "手动生成 AW Catalog 发布计划，授权具体计划后发布"
+  default_prompt: "使用 $publish-aw-catalog 生成并授权当前 Catalog publication plan。"
+
+policy:
+  allow_implicit_invocation: false

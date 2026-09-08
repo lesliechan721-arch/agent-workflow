@@ -1,0 +1,10 @@
+#!/usr/bin/env node
+// TEST DOUBLE: refuses every operation. It proves fail-closed handling only.
+const args=process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+  process.stdout.write('TEST DOUBLE only; all operations unavailable.\n');
+  process.exit(0);
+}
+process.stderr.write('TEST_DOUBLE_CALL '+JSON.stringify(args)+'\n');
+process.stdout.write(JSON.stringify({ok:false,valid:false,missingCapabilities:['fixture.unavailable'],errors:['TEST DOUBLE: intentionally unavailable; no operation executed']})+'\n');
+process.exit(2);

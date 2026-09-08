@@ -75,6 +75,7 @@ const COMMAND_CAPABILITIES: Readonly<Record<string, RegisteredAwCapabilityId>> =
   'catalog build': 'aw.catalog-authoring.v1',
   'catalog validate': 'aw.catalog-authoring.v1',
   'catalog publish': 'aw.catalog-publication.v1',
+  'review inspect': 'aw.review-inspection.v1',
   'review publish': 'aw.review-publication.v1',
   'review digest': 'aw.review-publication.v1',
   'review verify': 'aw.review-publication.v1',

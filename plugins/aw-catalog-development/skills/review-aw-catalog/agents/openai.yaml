@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review AW Catalog"
-  short_description: "只读评审 Catalog composition 和 snapshot evidence"
-  default_prompt: "使用 $review-aw-catalog 只读评审当前 AW Catalog Workspace。"
-
-policy:
-  allow_implicit_invocation: true

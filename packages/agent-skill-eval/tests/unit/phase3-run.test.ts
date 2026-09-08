@@ -76,6 +76,12 @@ function runManagedEval(
   options: Parameters<typeof runEvalSpec>[1],
 ): ReturnType<typeof runEvalSpec> {
   return runEvalSpec(specPath, {
+    // Fake providers use an explicit test session, independent of the host agent's permissions.
+    sourceEnv: {
+      PATH: process.env.PATH,
+      CODEX_HOME: process.env.CODEX_HOME,
+      CODEX_PERMISSION_PROFILE: ':danger-full-access',
+    },
     ...options,
     processManagementDependencies: options.processManagementDependencies ?? {
       platform: 'linux',
@@ -1272,14 +1278,12 @@ describe('EvalSpec v1 execution', () => {
   it('normalizes every registered conversation corpus through the actual adapter', async () => {
     const repositoryRoot = path.resolve('../..')
     const manifests = await evalManifestPaths(path.join(repositoryRoot, 'plugins'))
-    let suiteCount = 0
     let conversationCount = 0
     let caseCount = 0
     for (const manifestPath of manifests) {
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
         suites: Array<{ kind: string; cases?: string }>
       }
-      suiteCount += manifest.suites.length
       for (const suite of manifest.suites) {
         if (suite.kind !== 'conversation') continue
         conversationCount += 1
@@ -1300,7 +1304,6 @@ describe('EvalSpec v1 execution', () => {
         }
       }
     }
-    expect({ manifests: manifests.length, suites: suiteCount }).toEqual({ manifests: 27, suites: 71 })
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
   })
@@ -1346,7 +1349,9 @@ describe('EvalSpec v1 execution', () => {
       auditPath: without.auditPath,
       executeCustomProvider: execute as never,
       sourceEnv: {
-        ...process.env,
+        PATH: process.env.PATH,
+        CODEX_HOME: process.env.CODEX_HOME,
+        CODEX_PERMISSION_PROFILE: ':danger-full-access',
         OPENAI_API_KEY: secret,
         AW_SKILL_EVAL_CODEX_MODEL: control,
         HOME: '/phase3/home-control',

@@ -3,11 +3,15 @@
   "suite": {
     "kind": "conversation",
     "unitUnderTest": "audit-agent-skill-evals",
+    "participants": [
+      "author-agent-skill",
+      "review-agent-skill"
+    ],
     "policy": {
-      "optimization": "critical",
-      "falseNegativeCost": "critical",
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "错误 Oracle、陈旧绑定或错误归因可驱动有害的生产 Skill 修改；审核必须 fail closed，但也不能把 provider 或 harness 故障误报为 Skill 缺陷。"
+      "rationale": "按代表性任务分别观察漏用与误用；写入、成本和授权边界错误不能被其它通过平均抵消。数量平衡不代表错误同价。"
     },
     "runtime": {
       "isolation": "strict"
@@ -15,101 +19,143 @@
   },
   "cases": [
     {
-      "id": "source-only-review-cannot-pass-preflight",
+      "id": "source_oracle_mismatch",
       "split": "validation",
       "tags": [
         "regression"
       ],
-      "prompt": "只读检查 target/SKILL.md 和 evals/cases.json。当前只有 source-only 材料，没有 validated EvalSpec v1。说明它能否产生可执行的 EvalAudit v1。",
+      "prompt": "尚未 prepare。只读检查 skill/SKILL.md 与 cases.json 的标签是否一致，不运行 CLI，也不签发 Audit。",
       "assertions": [
-        "明确 source-only 材料不能进入 preflight，且不得输出 EvalAudit v1",
-        "指出必须先由 aw-skill-eval spec validate 得到 valid=true，再只读取 validator 绑定的 target 和 selected cases",
-        "可以指出 vague assertion 的设计风险，但不运行模型、不修改 case 或生产 Skill"
+        "识别大范围未知搜索与单个明确文件边界矛盾",
+        "将其归为 Oracle/用例问题，不建议拓宽 Skill 迁就标签",
+        "源审核可完成，不要求必须先有 Spec；不输出 passing EvalAudit"
       ],
       "input": {
-        "scriptedReplies": [],
         "workspaceFiles": {
-          "target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
-          "evals/cases.json": "{\n  \"version\": 1,\n  \"suite\": {\n    \"kind\": \"conversation\",\n    \"unitUnderTest\": \"record-checker\",\n    \"policy\": {\n      \"optimization\": \"critical\",\n      \"falseNegativeCost\": \"high\",\n      \"falsePositiveCost\": \"high\",\n      \"rationale\": \"Invalid records must not pass.\"\n    }\n  },\n  \"cases\": [\n    {\n      \"id\": \"vague-case\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Check a record.\",\n      \"assertions\": [\n        \"Do the right thing.\"\n      ]\n    }\n  ]\n}\n"
-        },
-        "pathPrepend": []
+          "skill/SKILL.md": "---\nname: local-summary\ndescription: Summarize one explicitly supplied local text file; do not search unknown repositories.\n---\n\n# local-summary\n\nRead the named local file only. If the request requires searching an unknown repository, leave this skill.\n",
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"trigger\", \"unitUnderTest\": \"local-summary\", \"policy\": {\"optimization\": \"precision-first\", \"falseNegativeCost\": \"medium\", \"falsePositiveCost\": \"high\", \"rationale\": \"Avoid broad exploration.\"}}, \"cases\": [{\"id\": \"large_repo\", \"split\": \"validation\", \"tags\": [\"boundary\"], \"input\": {\"query\": \"Search an unfamiliar large repository to locate all authentication entry points.\", \"expectedLoad\": true}, \"audit\": {\"rationale\": \"All read-only work should trigger.\", \"minimalCounterexample\": \"A write request should not trigger.\"}}]}"
+        }
       },
       "expected": {
-        "output": "报告 source-only preflight 不可准入；要求先生成并验证 EvalSpec v1；不生成 Audit JSON。",
-        "workspaceUnchanged": true,
-        "allowedWorkspaceChanges": [],
-        "artifacts": []
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "Preflight 的机器绑定只能来自 validated EvalSpec v1；source-only 材料没有执行准入资格。",
-        "minimalCounterexample": "提供 valid=true 的 EvalSpec v1 后，Auditor 才能审核其绑定的 target 和 selected cases。"
+        "rationale": "源用例应在昂贵执行前可审核。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "query 改为“摘要给定 notes.txt”时 expectedLoad=true 合理。"
       }
     },
     {
-      "id": "invalid-bundle-or-stale-binding-is-rejected",
+      "id": "source_valid_not_execution_admission",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只读审查 cases.json 及对应 Skill。没有 Spec、CLI 或模型结果；请区分设计成立与可执行准入。",
+      "assertions": [
+        "认可给定正例的标签依据",
+        "明确源审通过不等于签发绑定 Spec 的 pass、不等于已运行",
+        "不凭空要求扩大用例数量或创建 JSON 合同"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "skill/SKILL.md": "---\nname: local-summary\ndescription: Summarize one explicitly supplied local text file; do not search unknown repositories.\n---\n\n# local-summary\n\nRead the named local file only. If the request requires searching an unknown repository, leave this skill.\n",
+          "cases.json": "{\"version\": 1, \"suite\": {\"kind\": \"trigger\", \"unitUnderTest\": \"local-summary\", \"policy\": {\"optimization\": \"precision-first\", \"falseNegativeCost\": \"medium\", \"falsePositiveCost\": \"high\", \"rationale\": \"Avoid broad exploration.\"}}, \"cases\": [{\"id\": \"large_repo\", \"split\": \"validation\", \"tags\": [\"boundary\"], \"input\": {\"query\": \"Summarize the supplied notes.txt without searching other files.\", \"expectedLoad\": true}, \"audit\": {\"rationale\": \"One named supplied local file matches the stated scope.\", \"minimalCounterexample\": \"Request unknown-repository search instead.\"}}]}"
+        }
+      },
+      "expected": {
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "有效源 Oracle 与执行身份是两层。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "要真正运行时必须使用 validated Spec 和独立绑定 Audit。"
+      }
+    },
+    {
+      "id": "low_sample_not_auto_fix",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "logs/observations.md 只有人工记录，不是 EvalResult。解释是否应立即改 Skill；不要运行或改文件。",
+      "assertions": [
+        "不把1/3当稳定33%概率，不宣称正式 result validator 已通过",
+        "区分漏触发与误触发代价，不自动扩大 description 或强制修到100%",
+        "建议补关键记录/有预算的复测，不能自行启动运行"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "logs/observations.md": "观察：同一负例试了3次，1次误触发。10次正例中9次触发。模型版本、工具权限和旧版基线未保存。误触发只是额外读取，不写文件。漏触发会遗漏用户要求的证据格式。\n"
+        }
+      },
+      "expected": {
+        "output": "依据所给材料完成请求；区分事实、推断和未验证状态。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "有限非标准统计只支持有限推断。",
+        "allowedVariance": "允许同样满足用户目标的不同措辞和方法；不按内部术语、步骤数或 JSON 字段猜正确性。",
+        "minimalCounterexample": "若有足量匹配基线、有效 trace 及稳定高影响失败，可考虑受控修复。"
+      }
+    },
+    {
+      "id": "challenge_does_not_dominate",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "仅审查eval-policy.md及observations.md的解释是否合理；这是手工记录，不是正式EvalResult，不运行。",
+      "assertions": [
+        "不凭两个case的小样本声称普遍可靠",
+        "要求先判断challenge现实性与代价，不直接新增十条规则",
+        "不把未验证手工记录转为正式release证据"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "eval-policy.md": "核心承诺：从一个命名文件提取事实。漏触发损失中等；误触发只是读取多余标准。固定的代表性任务优先。\n",
+          "observations.md": "一个人为把五种无关需求塞入一句话的challenge失败；两个常见单文件case各3次都正常。没有旧版对照。作者想新增十条强制步骤让这个challenge通过。\n"
+        }
+      },
+      "expected": {
+        "output": "按实际材料完成请求，不补造前提或执行证据。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "测试结果使用需要代表性与成本，而非单例绑架。",
+        "allowedVariance": "允许等价方法与措辞，不强制固定输出字段。",
+        "minimalCounterexample": "如果challenge代表真实高影响可达安全场景，应优先调查而不能忽略。"
+      }
+    },
+    {
+      "id": "generic_oracle_without_aw",
       "split": "validation",
       "tags": [
         "regression"
       ],
-      "prompt": "以 result-triage 模式处理 handoff/result.json。先用 handoff/spec.json 和 handoff/audit.json 验证 EvalResult v2；只读。",
+      "prompt": "按 contract.md 只读审核 checks.jsonl 与 skill.md。这里没有 AW、Spec 或 CLI；只判断两个标签与目标是否一致，不运行也不签发机器准入。",
       "assertions": [
-        "先调用 aw-skill-eval result validate，并因 result.auditDigest 与提供的单份 EvalAudit v1 不匹配而停止",
-        "不从绑定失配的 EvalResult 输出 provider、grader 或 Skill 缺陷归因",
-        "不生成第二份 Audit、不修改 target/cases，也不输出 release gate"
+        "第一例标签有依据，第二例与不查询在线服务冲突",
+        "不要求 prepare 或 AW 字段才能做源审核",
+        "不改文件，不生成 passing Audit，不声称真实运行"
       ],
       "input": {
-        "scriptedReplies": [],
         "workspaceFiles": {
-          "handoff/workspace/.keep": "",
-          "handoff/target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
-          "handoff/cases.json": "{\n  \"version\": 1,\n  \"suite\": {\n    \"kind\": \"conversation\",\n    \"unitUnderTest\": \"record-checker\",\n    \"policy\": {\n      \"optimization\": \"critical\",\n      \"falseNegativeCost\": \"high\",\n      \"falsePositiveCost\": \"high\",\n      \"rationale\": \"Invalid records must not pass.\"\n    },\n    \"runtime\": {\n      \"isolation\": \"strict\"\n    }\n  },\n  \"cases\": [\n    {\n      \"id\": \"current-case\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Evaluate current-case.\",\n      \"assertions\": [\n        \"The output follows the record contract.\"\n      ]\n    }\n  ]\n}\n",
-          "handoff/spec.json": "{\n  \"version\": 1,\n  \"source\": {\n    \"plugin\": \"fixture-plugin\",\n    \"skill\": \"record-checker\",\n    \"suite\": \"behavior\",\n    \"profile\": \"project-default\"\n  },\n  \"workspace\": {\n    \"path\": \"workspace\",\n    \"digest\": \"sha256:38cd635901b10db5559f8c53db4bdef9a846b35c283140a451df6dd7ffeb3b43\"\n  },\n  \"target\": {\n    \"path\": \"target\",\n    \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n  },\n  \"cases\": {\n    \"path\": \"cases.json\",\n    \"digest\": \"sha256:08bd393656abe9b0986af90189eb0f22afd1c19fdf08fc6c65b2f0ee4cf8a9a0\"\n  },\n  \"provider\": \"codex-conversation\",\n  \"runs\": 1,\n  \"timeoutMs\": 120000,\n  \"baseline\": {\n    \"type\": \"none\"\n  },\n  \"outputDir\": \"output\"\n}\n",
-          "handoff/audit.json": "{\n  \"version\": 1,\n  \"targets\": [\n    {\n      \"role\": \"current\",\n      \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n    }\n  ],\n  \"caseDigest\": \"sha256:08bd393656abe9b0986af90189eb0f22afd1c19fdf08fc6c65b2f0ee4cf8a9a0\",\n  \"status\": \"pass\",\n  \"approvedCaseIds\": [\n    \"current-case\"\n  ],\n  \"blockedCases\": [],\n  \"issues\": [],\n  \"workspaceDigest\": \"sha256:38cd635901b10db5559f8c53db4bdef9a846b35c283140a451df6dd7ffeb3b43\",\n  \"providerDigest\": \"sha256:413ffdd9696d652e9e2f69f819a7b3e10a7f3ecac130dc5f9cb95bf04b65df62\"\n}\n",
-          "handoff/result.json": "{\n  \"version\": 2,\n  \"specDigest\": \"sha256:e61db6d81465ec32179d6c24cc409a02cfedee8fd20975833db7d8354eba1dd8\",\n  \"auditDigest\": \"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\n  \"targetDigest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\",\n  \"caseDigest\": \"sha256:08bd393656abe9b0986af90189eb0f22afd1c19fdf08fc6c65b2f0ee4cf8a9a0\",\n  \"provider\": \"codex-conversation\",\n  \"processManagement\": {\n    \"mode\": \"managed\",\n    \"inspectionAvailable\": true,\n    \"userAcknowledged\": false,\n    \"descendantCleanupGuaranteed\": false,\n    \"limitation\": \"Process-tree inspection is not OS-enforced containment.\"\n  },\n  \"startedAt\": \"2026-08-31T00:00:00.000Z\",\n  \"finishedAt\": \"2026-08-31T00:00:03.000Z\",\n  \"runs\": [\n    {\n      \"caseId\": \"current-case\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"completed\",\n      \"durationMs\": 100,\n      \"outputDir\": \"output/current-case/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": {\n        \"passed\": true,\n        \"score\": 1\n      },\n      \"error\": null\n    }\n  ],\n  \"summary\": {\n    \"passed\": 1,\n    \"failed\": 0,\n    \"timeout\": 0,\n    \"error\": 0\n  }\n}\n"
-        },
-        "pathPrepend": []
+          "contract.md": "每行 query 是请求，expected=true 表示可使用本摘要能力；false 表示不在范围。\n",
+          "skill.md": "本能力只概括用户提供的文本，不查询在线服务。\n",
+          "checks.jsonl": "{\"query\":\"概括这段已提供的状态文本：服务正常。\",\"expected\":true}\n{\"query\":\"登录云服务查询所有实例状态。\",\"expected\":true}\n"
+        }
       },
       "expected": {
-        "output": "拒绝绑定失配的 EvalResult v2，报告 validator 错误并停止 triage。",
-        "workspaceUnchanged": true,
-        "allowedWorkspaceChanges": [],
-        "artifacts": []
+        "output": "按给定材料完成任务，区分事实、建议与未验证效果。",
+        "workspaceUnchanged": true
       },
       "audit": {
-        "rationale": "Result triage 只能解释与 validated EvalSpec 和单份 EvalAudit 精确绑定的 EvalResult v2。",
-        "minimalCounterexample": "使用同一 spec/audit 运行并生成 auditDigest 匹配的有效 EvalResult v2 后，才可进入 triage。"
-      }
-    },
-    {
-      "id": "triage-separates-provider-harness-and-skill-evidence",
-      "split": "validation",
-      "tags": [
-        "representative"
-      ],
-      "prompt": "以 result-triage 模式处理 handoff/result.json。先以 handoff/spec.json 和 handoff/audit.json 验证 EvalResult v2，再区分三个失败。只读。",
-      "assertions": [
-        "case-a 归为 provider authentication/runtime failure，不把无模型输出当作 Skill 失败",
-        "case-b 归为 grader/harness failure，不把缺失 grade 当作 Skill 失败",
-        "case-c 仅作为可能的 Skill 或 Oracle/fixture 缺陷候选，证据不足时要求复现或诊断",
-        "只在聊天中返回已知、未知和下一步；不生成 JSON gate，不修改 case 或生产 Skill"
-      ],
-      "input": {
-        "scriptedReplies": [],
-        "workspaceFiles": {
-          "handoff/workspace/.keep": "",
-          "handoff/target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
-          "handoff/cases.json": "{\n  \"version\": 1,\n  \"suite\": {\n    \"kind\": \"conversation\",\n    \"unitUnderTest\": \"record-checker\",\n    \"policy\": {\n      \"optimization\": \"critical\",\n      \"falseNegativeCost\": \"high\",\n      \"falsePositiveCost\": \"high\",\n      \"rationale\": \"Invalid records must not pass.\"\n    },\n    \"runtime\": {\n      \"isolation\": \"strict\"\n    }\n  },\n  \"cases\": [\n    {\n      \"id\": \"case-a\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Evaluate case-a.\",\n      \"assertions\": [\n        \"The output follows the record contract.\"\n      ]\n    },\n    {\n      \"id\": \"case-b\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Evaluate case-b.\",\n      \"assertions\": [\n        \"The output follows the record contract.\"\n      ]\n    },\n    {\n      \"id\": \"case-c\",\n      \"split\": \"validation\",\n      \"tags\": [],\n      \"prompt\": \"Evaluate case-c.\",\n      \"assertions\": [\n        \"The output follows the record contract.\"\n      ]\n    }\n  ]\n}\n",
-          "handoff/spec.json": "{\n  \"version\": 1,\n  \"source\": {\n    \"plugin\": \"fixture-plugin\",\n    \"skill\": \"record-checker\",\n    \"suite\": \"behavior\",\n    \"profile\": \"project-default\"\n  },\n  \"workspace\": {\n    \"path\": \"workspace\",\n    \"digest\": \"sha256:38cd635901b10db5559f8c53db4bdef9a846b35c283140a451df6dd7ffeb3b43\"\n  },\n  \"target\": {\n    \"path\": \"target\",\n    \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n  },\n  \"cases\": {\n    \"path\": \"cases.json\",\n    \"digest\": \"sha256:a02f0977b8db3d58db2c22acbc5e425167eb731bbb8f0c4973ec07a0800bb415\"\n  },\n  \"provider\": \"codex-conversation\",\n  \"runs\": 1,\n  \"timeoutMs\": 120000,\n  \"baseline\": {\n    \"type\": \"none\"\n  },\n  \"outputDir\": \"output\"\n}\n",
-          "handoff/audit.json": "{\n  \"version\": 1,\n  \"targets\": [\n    {\n      \"role\": \"current\",\n      \"digest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\"\n    }\n  ],\n  \"caseDigest\": \"sha256:a02f0977b8db3d58db2c22acbc5e425167eb731bbb8f0c4973ec07a0800bb415\",\n  \"status\": \"pass\",\n  \"approvedCaseIds\": [\n    \"case-a\",\n    \"case-b\",\n    \"case-c\"\n  ],\n  \"blockedCases\": [],\n  \"issues\": [],\n  \"workspaceDigest\": \"sha256:38cd635901b10db5559f8c53db4bdef9a846b35c283140a451df6dd7ffeb3b43\",\n  \"providerDigest\": \"sha256:413ffdd9696d652e9e2f69f819a7b3e10a7f3ecac130dc5f9cb95bf04b65df62\"\n}\n",
-          "handoff/result.json": "{\n  \"version\": 2,\n  \"specDigest\": \"sha256:e13f01830fcfd7159a7dbdac1a3711c8f774eb2b71466e383349a6a00289e9e5\",\n  \"auditDigest\": \"sha256:5410ca3f9956b3b8c1da7f8a20e97af9ab196ecf2444a5a3f6fa8a47b420d1a5\",\n  \"targetDigest\": \"sha256:dc281e71ea37c8b101e93f6101ba357428db54a8b6931e232ed4baba5d40a180\",\n  \"caseDigest\": \"sha256:a02f0977b8db3d58db2c22acbc5e425167eb731bbb8f0c4973ec07a0800bb415\",\n  \"provider\": \"codex-conversation\",\n  \"processManagement\": {\n    \"mode\": \"managed\",\n    \"inspectionAvailable\": true,\n    \"userAcknowledged\": false,\n    \"descendantCleanupGuaranteed\": false,\n    \"limitation\": \"Process-tree inspection is not OS-enforced containment.\"\n  },\n  \"startedAt\": \"2026-08-31T00:00:00.000Z\",\n  \"finishedAt\": \"2026-08-31T00:00:03.000Z\",\n  \"runs\": [\n    {\n      \"caseId\": \"case-a\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"failed\",\n      \"durationMs\": 10,\n      \"outputDir\": \"output/case-a/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": null,\n      \"error\": {\n        \"message\": \"provider authentication failed before model output\"\n      }\n    },\n    {\n      \"caseId\": \"case-b\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"failed\",\n      \"durationMs\": 20,\n      \"outputDir\": \"output/case-b/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": null,\n      \"error\": {\n        \"message\": \"independent grader failed before publishing a grade\"\n      }\n    },\n    {\n      \"caseId\": \"case-c\",\n      \"variant\": \"current\",\n      \"attempt\": 1,\n      \"status\": \"completed\",\n      \"durationMs\": 30,\n      \"outputDir\": \"output/case-c/current/attempt-1\",\n      \"usage\": null,\n      \"grade\": {\n        \"passed\": false,\n        \"score\": 0,\n        \"details\": {\n          \"reason\": \"Complete record was rejected.\"\n        }\n      },\n      \"error\": null\n    }\n  ],\n  \"summary\": {\n    \"passed\": 0,\n    \"failed\": 1,\n    \"timeout\": 0,\n    \"error\": 2\n  }\n}\n"
-        },
-        "pathPrepend": []
-      },
-      "expected": {
-        "output": "验证 EvalResult v2 后，分别归因 provider、grader 和候选语义失败，并保持 workspace 不变。",
-        "workspaceUnchanged": true,
-        "allowedWorkspaceChanges": [],
-        "artifacts": []
+        "rationale": "源 Oracle 审核是通用方法；消费者格式由已给合同解释。",
+        "minimalCounterexample": "若能力范围包括明确授权的云服务查询，第二例不再由这一限制排除。",
+        "allowedVariance": "允许等价措辞和实现；不以是否复述标准术语或固定中间步骤判定。"
       }
     }
   ]

@@ -203,7 +203,7 @@ describe('AwSkillEvalManifest v1 reader', () => {
     })
   })
 
-  it('requires a release suite for a dynamic Skill', async () => {
+  it('does not invent a release requirement for a dynamic Skill', async () => {
     const fixture = await createFixture()
     fixture.plugin.manifest.artifacts = {
       targets: [{
@@ -223,8 +223,9 @@ describe('AwSkillEvalManifest v1 reader', () => {
       plugin: fixture.plugin,
       skill: 'owner-skill',
     })).resolves.toMatchObject({
-      valid: false,
-      errors: [expect.stringContaining('at least one release-required suite')],
+      valid: true,
+      errors: [],
+      manifest: { suites: [{ requiredForRelease: false }] },
     })
   })
 

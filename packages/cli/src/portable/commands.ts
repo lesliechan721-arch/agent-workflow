@@ -21,8 +21,10 @@ import {
 } from '../utils/state-paths.js';
 import {
   materializePortableSkillsFromCatalog,
+  resolvePortableCatalogBindingInput,
   type MaterializedPortableSkills,
 } from './materializer.js';
+import { AW_SOURCE_BINDING_FILENAME, writeAwSourceBinding } from '../review/source-binding.js';
 import {
   addSkills,
   listInstalledSkills,
@@ -126,6 +128,7 @@ export interface PortableMaterializeReceipt {
   configDigest: string;
   materializationDigest: string;
   outputDigest: string;
+  sourceBindingPath: string;
 }
 
 interface PortableMarker extends PortableMaterializeReceipt {
@@ -761,6 +764,7 @@ export async function materializePortableSkillsToDirectory(options: {
         configDigest,
         materializationDigest: materialized.digest,
         outputDigest,
+        sourceBindingPath: path.join(target, AW_SOURCE_BINDING_FILENAME),
       };
       const marker: PortableMarker & {
         config: { digest: string; catalogSourcesDigest: string; pluginConfigDigest: string };
@@ -774,7 +778,49 @@ export async function materializePortableSkillsToDirectory(options: {
         },
       };
       await fs.writeJson(path.join(staging, '.aw-materialization.json'), marker, { spaces: 2 });
+      if (!materialized.sourceBindingSource) {
+        throw new Error('Portable Catalog materialization is missing validated snapshot identity.');
+      }
+      await writeAwSourceBinding({
+        rootDir: staging,
+        source: materialized.sourceBindingSource,
+        subject: { plugin: materialized.pluginId.split('/').at(-1)! },
+        profile: {
+          kind: 'portable',
+          id: `agent-skills-${scope}`,
+          scope,
+          inputDigest: materialized.configDigest,
+        },
+        artifacts: selected.map((candidate) => ({
+          kind: 'portable-skill' as const,
+          plugin: parsePluginId(candidate.providerPluginId).pluginName,
+          skill: candidate.name,
+          path: `skills/${candidate.name}`,
+        })),
+      });
       await portableCommandTestHooks?.beforeMaterializeOutputCommit?.(target);
+      const currentConfigSnapshot = await readCatalogSourcesConfigSnapshot(options.env);
+      const currentCatalogOperationContext = await resolveCatalogOperationContext({
+        ...(parsedSelector.sourceId ? { sourceIds: [parsedSelector.sourceId] } : {}),
+        configSnapshot: currentConfigSnapshot,
+        env: options.env,
+      });
+      const currentBinding = await resolvePortableCatalogBindingInput({
+        selector: options.selector,
+        scope,
+        cwd: options.cwd,
+        cliVersion: options.cliVersion,
+        env: options.env,
+        configSnapshot: currentConfigSnapshot,
+        catalogOperationContext: currentCatalogOperationContext,
+      });
+      if (
+        JSON.stringify(currentBinding.source) !== JSON.stringify(materialized.sourceBindingSource)
+        || currentBinding.profile.inputDigest !== materialized.configDigest
+        || currentBinding.subject.plugin !== materialized.pluginId.split('/').at(-1)
+      ) {
+        throw new PortableCommandError('reviewStale', 'portable source 或 profile 在输出准备期间发生变化。');
+      }
       await commitOutput(staging, target, {
         pluginId: materialized.pluginId,
         sourceIdentity: materialized.sourceIdentity,

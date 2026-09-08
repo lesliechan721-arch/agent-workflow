@@ -11,7 +11,6 @@ import type { PluginStagingRunner } from '../../src/generators/local-plugin.js';
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
 import {
   validateRuntimeSkillClosure,
-  validateRuntimeSkillClosuresRoot,
   validateSkillRuntimeProjectionFreshness,
 } from '../../src/utils/runtime-skill-closure.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
@@ -1290,32 +1289,36 @@ describe('runtime Skill resource closure', () => {
     return skillRoot;
   }
 
-  it('matches the shared deterministic closure corpus', async () => {
-    const corpus = await fs.readJson(path.resolve(
-      import.meta.dirname,
-      '../../../../plugins/agent-skill-toolkit/standards/runtime-skill-closure-cases.json',
-    )) as {
-      cases: Array<{
-        id: string;
-        skill: string;
-        files: Record<string, string>;
-        expected: { valid: boolean; target: string | null };
-      }>;
-    };
-    for (const fixture of corpus.cases) {
-      const skillRoot = await createRuntimeSkill([
-        '---',
-        'name: demo-skill',
-        'description: fixture',
-        '---',
-        fixture.skill,
-      ].join('\n'), fixture.files);
-      if (fixture.expected.valid) {
-        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).resolves.toBeUndefined();
-      } else {
-        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).rejects.toThrow(
-          fixture.expected.target!,
-        );
+  it('allows current manifest-declared runtime reference projections in source Skills', async () => {
+    const pluginsRoot = path.resolve(import.meta.dirname, '../../../../plugins');
+    const entries = await fs.readdir(pluginsRoot, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory()) continue;
+      const skillsRoot = path.join(pluginsRoot, entry.name, 'skills');
+      const stats = await fs.stat(skillsRoot).catch(() => undefined);
+      if (!stats?.isDirectory()) continue;
+      const manifest = await fs.readJson(path.join(
+        pluginsRoot,
+        entry.name,
+        '.agents-plugin',
+        'plugin.json',
+      )) as {
+        buildConfig?: {
+          skillRuntimeFiles?: Array<{ skill: string; target: string }>;
+        };
+      };
+      const declaredTargets = new Map<string, Set<string>>();
+      for (const runtimeFile of manifest.buildConfig?.skillRuntimeFiles ?? []) {
+        const targets = declaredTargets.get(runtimeFile.skill) ?? new Set<string>();
+        targets.add(runtimeFile.target);
+        declaredTargets.set(runtimeFile.skill, targets);
+      }
+      const skills = await fs.readdir(skillsRoot, { withFileTypes: true });
+      for (const skill of skills.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (!skill.isDirectory()) continue;
+        await expect(validateRuntimeSkillClosure(path.join(skillsRoot, skill.name), {
+          declaredGeneratedFiles: declaredTargets.get(skill.name),
+        }), `${entry.name}/${skill.name}`).resolves.toBeUndefined();
       }
     }
   });
