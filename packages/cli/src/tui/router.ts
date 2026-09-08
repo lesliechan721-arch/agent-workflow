@@ -73,6 +73,8 @@ export type TuiRoute =
       pluginId: string;
       nodePluginId: string;
       direction: 'dependencies' | 'dependents';
+      nodePathPluginIds?: string[];
+      view?: 'summary' | 'references';
     }
   | { name: 'installPlacement'; pluginId: string }
   | {

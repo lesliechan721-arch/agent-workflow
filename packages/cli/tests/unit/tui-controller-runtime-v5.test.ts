@@ -937,7 +937,7 @@ describe('TUI batch write runtime', () => {
 });
 
 describe('TUI controller runtime scope conflict validation', () => {
-  it('keeps Catalog dependency declarations unverified without applied-reference evidence', async () => {
+  it('does not turn ready dependency checks into applied references', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-overview-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
@@ -955,6 +955,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       env: isolation.env,
     });
     const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const active = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
     const statusTarget = (
       pluginName: string,
       scope: 'user' | 'project',
@@ -964,7 +965,7 @@ describe('TUI controller runtime scope conflict validation', () => {
       pluginName,
       pluginId: `team/${pluginName}`,
       sourceId: 'team',
-      sourceIdentity: 'identity:team',
+      sourceIdentity: active.sourceIdentity,
       cwd: isolation.layout.fixtureCwd,
     });
     runtimeMocks.statusCommandV7.mockResolvedValue({
@@ -979,7 +980,13 @@ describe('TUI controller runtime scope conflict validation', () => {
         filters: { plugins: [], platform: 'codex', cwd: isolation.layout.fixtureCwd },
         targets: [
           statusTarget('blocked-consumer', 'project', 'error'),
-          statusTarget('stale-consumer', 'user', 'present'),
+          {
+            ...statusTarget('stale-consumer', 'user', 'present'),
+            components: [{
+              kind: 'dependency', key: 'team/dependency', state: 'ready',
+              metadata: { platform: 'codex', scope: 'user', project: 'none' },
+            }],
+          },
           statusTarget('dependency', 'user', 'present'),
         ],
         errors: [],
@@ -988,7 +995,7 @@ describe('TUI controller runtime scope conflict validation', () => {
         pluginId: `team/${pluginName}`,
         pluginName,
         sourceId: 'team',
-        sourceIdentity: 'identity:team',
+        sourceIdentity: active.sourceIdentity,
         dependencyDirectCount: pluginName === 'dependency' ? 0 : 1,
         dependencyTotalCount: pluginName === 'dependency' ? 0 : 1,
       })),

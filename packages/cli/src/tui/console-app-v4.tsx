@@ -4151,6 +4151,7 @@ export function ConsoleAppV4(props: {
               pluginId: plugin.pluginId,
               nodePluginId: row.pluginId,
               direction,
+              nodePathPluginIds: row.pathPluginIds,
             });
           },
         };
@@ -4228,48 +4229,110 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'pluginDependencyNode' && plugin) {
     const node = props.controller.getPluginOverview(route.nodePluginId);
-    const overview = dependencyOverview(plugin);
+    const nodePathPluginIds = route.nodePathPluginIds ?? [plugin.pluginId, route.nodePluginId];
+    const nodeProjection = buildDependencyGraphProjection({
+      overviews: props.controller.listPluginDependencyOverviews(),
+      rootPluginId: plugin.pluginId,
+      direction: route.direction,
+      expandedPluginIds: nodePathPluginIds,
+      focusPluginId: route.nodePluginId,
+    });
+    const selectedRow = nodeProjection.rows.find((row) =>
+      row.pathPluginIds.join('\0') === nodePathPluginIds.join('\0'))
+      ?? nodeProjection.rows.find((row) => row.pluginId === route.nodePluginId);
     const item = route.nodePluginId === plugin.pluginId ? undefined
-      : route.direction === 'dependencies'
-        ? overview?.dependencies.find((entry) => entry.pluginId === route.nodePluginId)
-        : overview?.dependents.find((entry) => entry.pluginId === route.nodePluginId);
-    const verifiedDependent = route.direction !== 'dependents'
-      || (item?.placementReferences?.length ?? 0) > 0;
+      : (route.direction === 'dependencies'
+        ? props.controller.getPluginDependencyOverview(plugin.pluginId)?.dependencies
+        : props.controller.getPluginDependencyOverview(plugin.pluginId)?.dependents)
+        ?.find((entry) => entry.pluginId === route.nodePluginId);
     const state = item ? dependencyStatus(item) : undefined;
+    const relationship = selectedRow?.relationship
+      ?? ((item?.placementReferences?.length ?? 0) > 0 ? 'unknown'
+        : item ? 'declared' : undefined);
     breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId}`;
     context = route.direction === 'dependencies' ? '它需要的' : '谁在使用它';
     title = node?.displayName ?? route.nodePluginId;
-    description = route.nodePluginId === plugin.pluginId
+    const pathPluginIds = selectedRow?.pathPluginIds ?? nodePathPluginIds;
+    const intermediateNames = pathPluginIds.slice(1, -1).reverse().map((pluginId) =>
+      props.controller.getPluginOverview(pluginId)?.displayName ?? pluginId);
+    const declaringPluginId = pathPluginIds.at(-2) ?? plugin.pluginId;
+    const declaringPluginName = props.controller.getPluginOverview(declaringPluginId)?.displayName
+      ?? declaringPluginId;
+    description = relationship === 'root'
       ? '这是当前关系图的根插件。'
-      : route.direction === 'dependencies'
-        ? `${item?.requiredBy.map((entry) => entry.displayName).join('、') || plugin.displayName} 需要这个插件。`
-        : verifiedDependent
-          ? `${node?.displayName ?? route.nodePluginId} 的已安装位置实际引用当前插件。`
-          : `${item?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前没有实际引用证据。`;
-    actions = [
-      ...(route.nodePluginId !== plugin.pluginId ? [{
-        label: '以此节点查看关系',
-        description: '打开局部子树；面包屑保留来路',
-        run: () => go({
-          name: 'pluginDependencies',
-          pluginId: route.nodePluginId,
-          direction: route.direction,
-        }),
-      }] : []),
-      { label: '返回关系图', run: back },
-    ];
-    content = <Box flexDirection="column">
-      <SectionCard title="节点状态">
-        <StaticRow title={node?.displayName ?? route.nodePluginId}
-          meta={state?.value ?? (node ? statusText(node) : '未检查')} status={state?.status ?? 'muted'} compact />
-        <StaticRow title={route.nodePluginId} description="canonical pluginId" status="muted" compact />
-        {item?.placementReferences?.slice(0, responsiveBudget(1, 3)).map((reference) =>
-          <StaticRow key={`${reference.consumer.pluginId}:${reference.consumer.platform}:${reference.consumer.scope}`}
-            title={`${platformLabel(reference.consumer.platform)} · ${scopeLabel(reference.consumer.scope)}`}
-            description={`${reference.consumer.pluginId} → ${reference.dependency.pluginId}`} compact />)}
-      </SectionCard>
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
-    </Box>;
+      : relationship === 'directVerified'
+        ? route.direction === 'dependencies'
+          ? `${plugin.displayName} 的已安装位置直接使用这个插件。`
+          : `${node?.displayName ?? route.nodePluginId} 的已安装位置直接使用当前插件。`
+        : relationship === 'indirectVerified'
+          ? route.direction === 'dependencies'
+            ? `${plugin.displayName} 通过 ${intermediateNames.join('、')} 间接使用 ${node?.displayName ?? route.nodePluginId}。`
+            : `${node?.displayName ?? route.nodePluginId} 通过 ${intermediateNames.join('、')} 间接使用 ${plugin.displayName}。`
+          : relationship === 'unknown'
+            ? '引用位置不能组成连续路径，不能确认这项间接使用。'
+            : relationship === 'declared'
+              ? route.direction === 'dependencies'
+                ? `${declaringPluginName} 声明需要 ${node?.displayName ?? route.nodePluginId}，但当前没有实际引用证据。`
+                : `${node?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前没有实际引用证据。`
+              : '当前数据不足，不能判断这项依赖关系。';
+    const references = selectedRow?.edge?.placementReferences ?? item?.placementReferences ?? [];
+    const referenceActions: ActionItem[] = references.map((reference, index) => ({
+      label: `位置 ${index + 1} · ${reference.consumer.pluginId} → ${reference.dependency.pluginId}`,
+      meta: '已确认引用',
+    }));
+    if (route.view === 'references') {
+      breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId} / 使用位置`;
+      context = '现场证据';
+      title = `已检查的使用位置 ${references.length} 个`;
+      description = '每项都保留 consumer、dependency、平台、范围和项目。';
+      actions = [...referenceActions, { label: '返回节点详情', run: back }];
+      const referenceViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
+        responsiveBudget(3, 6));
+      const selectedReference = references[Math.min(focus, references.length - 1)];
+      help = '↑↓ 查看全部位置 · Enter 选择 · Esc 返回节点详情';
+      content = <Box flexDirection="column">
+        <StaticRow title="证据边界" description="这里只显示已确认的现场引用；readiness 不计入引用" status="muted" compact />
+        {selectedReference ? <>
+          <StaticRow title={`consumer · ${selectedReference.consumer.pluginId}`} compact />
+          <StaticRow title={`consumer · platform=${platformLabel(selectedReference.consumer.platform)} · scope=${selectedReference.consumer.scope}`} compact />
+          <StaticRow title={`consumer · project=${selectedReference.consumer.project ?? 'none'}`} compact />
+          <StaticRow title={`dependency · ${selectedReference.dependency.pluginId}`} compact />
+          <StaticRow title={`dependency · platform=${platformLabel(selectedReference.dependency.platform)} · scope=${selectedReference.dependency.scope}`} compact />
+          <StaticRow title={`dependency · project=${selectedReference.dependency.project ?? 'none'}`} compact />
+        </> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact
+          offset={referenceViewport.offset} limit={referenceViewport.limit} />
+      </Box>;
+    } else {
+      actions = [
+        ...(references.length > 0 ? [{
+          label: `查看全部位置（${references.length}）`,
+          description: '查看每个已检查位置及证据状态',
+          run: () => go({ ...route, view: 'references' }),
+        }] : []),
+        ...(route.nodePluginId !== plugin.pluginId ? [{
+          label: '以此节点查看关系',
+          description: '打开局部子树；面包屑保留来路',
+          run: () => go({
+            name: 'pluginDependencies',
+            pluginId: route.nodePluginId,
+            direction: route.direction,
+          }),
+        }] : []),
+        { label: '返回关系图', run: back },
+      ];
+      content = <Box flexDirection="column">
+        <SectionCard title="节点状态">
+          <StaticRow title={node?.displayName ?? route.nodePluginId}
+            meta={state?.value ?? (node ? statusText(node) : '未检查')} status={state?.status ?? 'muted'} compact />
+          <StaticRow title={route.nodePluginId} description="canonical pluginId" status="muted" compact />
+          {references.length > 0
+            ? <StaticRow title={`已检查的使用位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
+            : null}
+        </SectionCard>
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+      </Box>;
+    }
   } else if (route.name === 'installPlacement' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加`;
     context = '第 1 步，共 2 步';
