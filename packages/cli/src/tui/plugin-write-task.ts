@@ -4,6 +4,7 @@ import type {
   TuiViewModel,
   UserIssueViewModel,
 } from './model.js';
+import type { SafeOperationDiagnostic } from './operation-history.js';
 
 export type PluginWriteTaskGoal = 'restore' | 'update';
 export type PluginWriteTaskMethod = 'sync' | 'reinstall';
@@ -70,6 +71,7 @@ export interface PluginWriteTaskBlockedTarget {
   reason: PluginWriteTaskBlockReason;
   issueIds: string[];
   errorCodes?: string[];
+  diagnostics?: SafeOperationDiagnostic[];
 }
 
 export interface PluginWriteTaskDraft {

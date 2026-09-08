@@ -6,6 +6,7 @@ import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
+  TuiOperationBlockedError,
   operationEvidenceMatches,
   operationEvidenceFingerprint,
   pluginWriteBatchTargets,
@@ -1288,6 +1289,158 @@ describe('TUI v4 router and ViewModel', () => {
       { platform: 'codex', compatible: true },
       { platform: 'claude', compatible: true },
     ]);
+  });
+
+  it('classifies only missing compatible batch install targets as writable', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [
+          target({ platform: 'codex', scope: 'project', state: 'present' }),
+          target({ platform: 'claude', scope: 'project', state: 'absent' }),
+        ] }),
+        pluginSummaries: [{
+          ...summaries(['official', 'demo'])[0]!,
+          supportedTargets: { codex: ['project'], claude: ['project'] },
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/demo'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/demo', platform: 'claude', scope: 'project', state: 'add' },
+      { pluginId: 'official/demo', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.pluginHasInstallableTarget('official/demo')).toBe(true);
+    expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
+  });
+
+  it('preserves exact installed targets before blocking missing targets that cannot be installed', async () => {
+    const existing = (pluginName: string): StatusV7Payload['targets'][number] => {
+      const value = target({ pluginName, platform: 'codex', scope: 'project', state: 'present' });
+      value.components.push(
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      );
+      return value;
+    };
+    const missing = (pluginName: string): StatusV7Payload['targets'][number] =>
+      target({ pluginName, platform: 'claude', scope: 'project', state: 'absent' });
+    const unobserved = target({ pluginName: 'unobserved', platform: 'codex', scope: 'project', state: 'absent' });
+    unobserved.components.push({
+      kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'unobserved' },
+    });
+    const foreign = target({
+      pluginName: 'foreign', platform: 'codex', scope: 'project', state: 'error',
+      errorCode: 'codexSharedNativeForeign',
+    });
+    foreign.components.push({
+      kind: 'sharedNative', key: 'foreign@aw-official', state: 'blocked', metadata: { reason: 'foreign' },
+    });
+    const foldedMissing = target({
+      pluginName: 'folded-missing', platform: 'codex', scope: 'user', state: 'absent',
+    });
+    foldedMissing.components.push(
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'disabled', metadata: { evidence: 'observed' } },
+    );
+    const foldedUser = target({
+      pluginName: 'folded-user', platform: 'codex', scope: 'user', state: 'present',
+    });
+    foldedUser.components.push(
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['user'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'disabled', metadata: { evidence: 'observed' } },
+    );
+    const foldedProject = target({
+      pluginName: 'folded-project', platform: 'codex', scope: 'project', state: 'present',
+    });
+    foldedProject.components.push(
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['project'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+    );
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({
+          sources: [source('official'), source('offline', { error: 'unavailable' })],
+          targets: [
+            existing('capability'), missing('capability'),
+            { ...existing('offline'), sourceId: 'offline', sourceIdentity: 'identity:offline', pluginId: 'offline/offline' },
+            { ...missing('offline'), sourceId: 'offline', sourceIdentity: 'identity:offline', pluginId: 'offline/offline' },
+            existing('compatibility'), missing('compatibility'), unobserved, foreign,
+            foldedMissing, foldedUser, foldedProject,
+          ],
+        }),
+        pluginSummaries: [
+          { ...summaries(['official', 'capability'])[0]!, missingCapabilities: ['aw.future.v1'], supportedTargets: { codex: ['project'], claude: ['project'] } },
+          { ...summaries(['offline', 'offline'])[0]!, supportedTargets: { codex: ['project'], claude: ['project'] } },
+          { ...summaries(['official', 'compatibility'])[0]!, supportedTargets: { codex: [], claude: [] } },
+          { ...summaries(['official', 'unobserved'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'foreign'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'unknown'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'folded-missing'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+          { ...summaries(['official', 'folded-user'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+          { ...summaries(['official', 'folded-project'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+        ],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/capability'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/capability', platform: 'claude', scope: 'project', state: 'blocked', reason: '当前 AW CLI 不支持插件所需功能' },
+      { pluginId: 'official/capability', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['offline/offline'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'offline/offline', platform: 'claude', scope: 'project', state: 'blocked', reason: '插件来源不可用' },
+      { pluginId: 'offline/offline', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/compatibility'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/compatibility', platform: 'claude', scope: 'project', state: 'blocked', reason: '插件不支持所选工具或位置' },
+      { pluginId: 'official/compatibility', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/unobserved', 'official/foreign'], 'codex', 'project',
+    )).toEqual([
+      { pluginId: 'official/foreign', platform: 'codex', scope: 'project', state: 'blocked', reason: 'safe failure' },
+      { pluginId: 'official/unobserved', platform: 'codex', scope: 'project', state: 'blocked', reason: '无法确认所选位置是否缺失' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/unknown'], 'codex', 'project',
+    )).toEqual([
+      { pluginId: 'official/unknown', platform: 'codex', scope: 'project', state: 'blocked', reason: '无法确认所选位置是否缺失' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-missing'], 'codex', 'user',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-missing'], 'codex', 'project',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-user'], 'codex', 'user',
+    )[0]?.state).toBe('existing');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-user'], 'codex', 'project',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-project'], 'codex', 'project',
+    )[0]?.state).toBe('existing');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-project'], 'codex', 'user',
+    )[0]?.state).toBe('add');
   });
 
   it('keeps a typed per-platform placement draft and delegates scope legality to the preview plan', async () => {
@@ -5144,14 +5297,30 @@ describe('TUI v4 Review safety', () => {
 
   it('returns a new Review when the locked write reports a typed stale prefix', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:locked-change' };
+    const executeIntent = vi.fn()
+      .mockRejectedValueOnce(new TuiOperationBlockedError(
+        'operationReviewStale',
+        'operationReviewStale: /Users/private/target token-private',
+        [{
+          id: 'runtime-root', code: 'catalogGenerationUnavailable', stage: 'source',
+          sourceId: 'official', safeMessage: 'The Catalog source could not be prepared safely.',
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          causes: [], detailLines: [],
+        }],
+      ))
+      .mockResolvedValueOnce({
+        overallState: 'succeeded', targetResults: [{
+          target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+          action: 'install', state: 'completed', requiredBy: [],
+        }],
+      });
     const controller = new TuiController(dependencies({
       captureEvidence: vi.fn()
         .mockResolvedValueOnce(baseEvidence)
         .mockResolvedValueOnce(baseEvidence)
+        .mockResolvedValueOnce(changedEvidence)
         .mockResolvedValueOnce(changedEvidence),
-      executeIntent: vi.fn().mockRejectedValue(
-        new Error('operationReviewStale: /Users/private/target token-private'),
-      ),
+      executeIntent,
     }));
     const review = await controller.buildOperationReview({
       kind: 'pluginWrite',
@@ -5165,8 +5334,68 @@ describe('TUI v4 Review safety', () => {
 
     expect(result.state).toBe('stale');
     expect(controller.snapshot.router.depth).toBe(2);
+    const staleHistory = controller.listOperationHistory();
+    expect(staleHistory).toEqual([expect.objectContaining({
+      operationId: review.operationId, state: 'blocked', code: 'catalogGenerationUnavailable',
+    })]);
+    expect(controller.getOperationDiagnostic(staleHistory[0]!.recordId)?.diagnostics)
+      .toEqual([expect.objectContaining({
+        code: 'catalogGenerationUnavailable', stage: 'source', sourceId: 'official',
+      })]);
+    const replacement = result.state === 'stale' ? result.review : undefined;
+    await expect(controller.executeOperation(replacement!.reviewToken)).resolves.toMatchObject({
+      state: 'succeeded',
+    });
+    expect(controller.listOperationHistory()).toHaveLength(2);
+    expect(controller.listOperationHistory()[0]).toMatchObject({ diagnosticCount: 0 });
     expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
     expect(JSON.stringify(controller.snapshot)).not.toContain('token-private');
+  });
+
+  it('keeps the stale cause and the failed re-preparation cause in operation history', async () => {
+    const rootCause = new TuiOperationBlockedError(
+      'taskNoExecutableTargets',
+      'The task has no executable targets.',
+      [{
+        id: 'temporary-root',
+        code: 'issueVerificationFailed',
+        stage: 'preflight.inspect',
+        sourceId: 'official',
+        safeMessage: 'The target inspection could not verify the current target.',
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        causes: [], detailLines: [],
+      }],
+    );
+    const captureEvidence = vi.fn()
+      .mockResolvedValueOnce(baseEvidence)
+      .mockRejectedValueOnce(rootCause);
+    const controller = new TuiController(dependencies({
+      captureEvidence,
+      executeIntent: vi.fn().mockRejectedValue(
+        new Error('operationReviewStale: /Users/private/target --token private-value'),
+      ),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'taskNoExecutableTargets',
+    });
+    const history = controller.listOperationHistory();
+    expect(history).toHaveLength(1);
+    const detail = controller.getOperationDiagnostic(history[0]!.recordId)!;
+    expect(detail.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      'operationReviewStale',
+      'issueVerificationFailed',
+    ]);
+    expect(detail.targets).toContainEqual(expect.objectContaining({
+      pluginId: 'official/demo', state: 'skipped',
+      diagnosticIds: [expect.stringContaining(':failure:1')],
+    }));
+    expect(JSON.stringify(detail)).not.toContain('/Users/private');
+    expect(JSON.stringify(detail)).not.toContain('private-value');
   });
 
   it('does not expose sensitive config values in Review or controller snapshots', async () => {
