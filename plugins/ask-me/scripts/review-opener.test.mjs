@@ -134,7 +134,7 @@ test('reports missing, rejected, and failed opener processes without process det
   assert.doesNotMatch(thrownResult.reason, /private_token/);
 });
 
-test('bounds the opener process without waiting for a browser process', async () => {
+test('bounds the open request without terminating the user application', async () => {
   const hanging = fakeSpawn({ hang: true });
   const startedAt = Date.now();
   const opened = await requestBrowserOpen(reviewUrl, {
@@ -143,7 +143,7 @@ test('bounds the opener process without waiting for a browser process', async ()
   });
 
   assert.equal(opened.status, 'failed');
-  assert.equal(hanging.wasKilled(), true);
+  assert.equal(hanging.wasKilled(), false);
   assert.ok(Date.now() - startedAt < 1_000);
   assert.doesNotMatch(opened.reason, /private_token/);
 });

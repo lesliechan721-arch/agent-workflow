@@ -123,11 +123,7 @@ function runOpener(command, args, { spawnProcess, timeoutMs }) {
       else finish(result('failed', 'The system browser opener did not accept the request.'));
     });
     timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        // The bounded result does not depend on process output or later exit events.
-      }
+      // A desktop opener may remain attached to the user application.
       child.unref?.();
       finish(result('failed', 'The system browser opener did not finish in time.'));
     }, timeoutMs);

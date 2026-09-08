@@ -668,6 +668,18 @@ test('the server coordinates one browser request and permits retry only after co
   assert.equal((await (await reserve(true)).json()).status, 'opening');
   assert.equal((await (await complete(retry.reservation, 'unavailable')).json()).status, 'unavailable');
   assert.equal((await (await reserve(false)).json()).status, 'unavailable');
+  for (const status of ['failed', 'unavailable']) {
+    const opening = await (await reserve(true)).json();
+    assert.equal(opening.status, 'reserved');
+    await apiRequest(started, '/api/page-connected', { method: 'POST' });
+    const connected = await (await complete(opening.reservation, status)).json();
+    assert.equal(connected.status, 'connected');
+    assert.equal(connected.presentation.pageConnected, true);
+    assert.equal(connected.presentation.openStatus, status);
+    assert.equal(parseReceipt((await runRuntime([
+      'open', '--session', started.session, '--timeout', '0ms',
+    ])).stdout).status, 'connected');
+  }
   await apiRequest(started, '/api/stop', { method: 'POST' });
   await waitForChildExit(started.child);
 });
@@ -1217,6 +1229,47 @@ test('v1 sessions keep feedback recovery and authenticated stop without claiming
   clearTimeout(safetyTimer);
   await access(session);
   await assert.rejects(access(path.join(sessionDir, 'terminal.json')), /ENOENT/);
+});
+
+test('wait preserves an observed terminal response before resource confirmation and prefers saved feedback', async () => {
+  for (const [status, saveFeedback] of [['cancelled', false], ['expired', false], ['expired', true]]) {
+    const id = `wait-observed-${status}-${saveFeedback}`;
+    const root = path.join(testRoot, id);
+    const config = prototypeConfig(id);
+    const session = await writeUnreachableSession(root, config);
+    const descriptor = await readJson(session);
+    const origin = new URL(descriptor.url).origin;
+    let requests = 0;
+    // This peer models the authenticated response followed by listener closure;
+    // real server shutdown and resource confirmation have separate lifecycle tests.
+    const server = http.createServer(async (request, response) => {
+      requests += 1;
+      assert.equal(request.headers.origin, origin);
+      assert.equal(request.headers['x-prototype-review-token'], descriptor.token);
+      assert.ok(request.url.startsWith('/api/wait?'));
+      if (saveFeedback) {
+        await writeFile(path.join(root, 'feedback.json'), JSON.stringify(feedbackFor(config)));
+      }
+      response.writeHead(200, { 'content-type': 'application/json', connection: 'close' });
+      response.end(JSON.stringify({ ok: true, status }));
+      server.close();
+    });
+    const closed = new Promise((resolve) => server.once('close', resolve));
+    await new Promise((resolve) => server.listen(Number(new URL(origin).port), '127.0.0.1', resolve));
+    try {
+      const result = await runRuntime(['wait', '--session', session, '--timeout', '500ms']);
+      const receipt = parseReceipt(result.stdout);
+      assert.equal(receipt.status, saveFeedback ? 'submitted' : status);
+      assert.equal(requests, 1);
+      assert.equal(result.stderr, '');
+      assert.equal('resourcesClosed' in receipt, false);
+      await assert.rejects(access(path.join(path.dirname(session), 'terminal.json')), /ENOENT/);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+      await closed;
+    }
+  }
 });
 
 test('terminal-only submitted state requires matching canonical feedback', async () => {

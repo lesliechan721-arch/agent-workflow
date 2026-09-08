@@ -1119,8 +1119,18 @@ async function waitCommand(options) {
         revision: descriptor.revision,
       };
     }
-    if (state.status === 'ready') continue;
-    if (['cancelled', 'expired', 'stopping'].includes(state.status)) continue;
+    if (['cancelled', 'expired'].includes(state.status)) {
+      const recovered = await readSubmittedFeedback(descriptor, { allowMissing: true });
+      if (recovered) return submittedReceipt(recovered.feedback, recovered.feedbackPath);
+      return {
+        ok: true,
+        status: state.status,
+        session: sessionPath,
+        prototypeId: descriptor.prototypeId,
+        revision: descriptor.revision,
+      };
+    }
+    if (['ready', 'stopping'].includes(state.status)) continue;
     if (state.status !== 'submitted') throw new Error(`Unknown Prototype Review wait status: ${state.status}`);
   }
 }

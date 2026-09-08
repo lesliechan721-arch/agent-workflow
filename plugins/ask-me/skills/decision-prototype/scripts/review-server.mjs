@@ -707,7 +707,7 @@ async function startServer(launchPath) {
           ...(body.reason ? { reason: body.reason } : {}),
         };
         sendJson(response, 200, stateReceipt(
-          body.status === 'requested' ? (pageConnected ? 'connected' : 'open-requested') : body.status,
+          pageConnected ? 'connected' : (body.status === 'requested' ? 'open-requested' : body.status),
         ));
         return;
       }
