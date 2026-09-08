@@ -3211,7 +3211,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('-j, --json', 'print cleanup result as JSON', false)
-    .option('--force', 'remove exclusively owned plugin output without dependency protection', false)
+    .option('--force', 'use exact shallow evidence for exclusively owned damaged output; preserve foreign and shared content', false)
     .option('--allow-managed-codex-install', 'allow this command to acquire or rebuild the pinned AW-managed Codex runtime', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -3933,10 +3933,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.hasErrors ? 1 : 0;
       writeLine(io.stdout, result.output);
       for (const source of result.payload.catalog.sources) {
-        if (source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
+        if (rawOptions.json && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
       }
       for (const error of result.payload.errors) {
-        if (error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
+        if (rawOptions.json && error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
           writeLine(io.stderr, error.message);
         }
       }

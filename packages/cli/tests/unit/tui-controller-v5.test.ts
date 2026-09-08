@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
@@ -2502,6 +2503,33 @@ describe('TUI v4 router and ViewModel', () => {
       .toEqual(['viewSourceChange', 'viewTechnical']);
   });
 
+  it.each([
+    ['catalogSourceUnavailable', 'sourceUnavailable', ['cleanup', 'editSource', 'viewTechnical']],
+    ['bundleUnavailable', 'sourceUnavailable', ['cleanup', 'editSource', 'viewTechnical']],
+    ['codexIntentSourceUnavailable', 'sourceUnavailable', ['cleanup', 'editSource', 'viewTechnical']],
+    ['sourceMissing', 'sourceMissing', ['cleanup', 'reAddSource', 'viewTechnical']],
+  ] as const)('classifies %s as %s and provides only its local recovery', (code, category, actions) => {
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [target({
+          pluginName: `offline-${code}`,
+          scope: 'user',
+          state: 'error',
+          errorCode: code,
+          recoveryActions: [{ command: 'cleanup', description: '清理可证明属于 AW 的输出。' }],
+        })],
+      }),
+      pluginSummaries: [],
+    });
+
+    expect(view.issues).toHaveLength(1);
+    expect(view.issues[0]).toMatchObject({ category, rootCode: code, platform: 'codex', scope: 'user' });
+    expect(view.issues[0]?.actions.map((action) => action.id)).toEqual(actions);
+    expect(view.issues[0]?.actions[0]).toMatchObject({
+      id: 'cleanup', platform: 'codex', scope: 'user', writeAction: 'cleanup',
+    });
+  });
+
   it('selects one stable primary reason and orders issue root groups', () => {
     const consumer = target({
       pluginName: 'consumer', scope: 'project', state: 'partial', errors: [{
@@ -2766,7 +2794,7 @@ describe('TUI v4 router and ViewModel', () => {
       }),
     ]));
     expect(view.issues.find((issue) => issue.rootCode === 'bundleUnavailable')?.impact)
-      .toContain('可以清理可信的 AW 现场；这不表示来源整体可用。');
+      .toContain('可以核验后取消这个位置的使用设置，并清理可信的 AW 现场。');
     expect(view.plugins).toContainEqual(expect.objectContaining({
       pluginId: 'official/offline',
       aggregateStatus: 'unavailable',
@@ -3448,10 +3476,22 @@ describe('TUI v4 Review safety', () => {
     expect(loadStatus).toHaveBeenCalledTimes(2);
   });
 
-  it('opens force cleanup Review only from exact exclusive preview evidence', async () => {
+  it('opens force cleanup Review for an exact Intent-only preview', async () => {
     const forceEvidence: OperationEvidence = {
       ...baseEvidence,
-      offlineCleanup: {
+      operationPlan: createOperationPlan({
+        intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
+        actions: [],
+        changes: ['official/demo:codex:user:removeIntent'],
+        warnings: [],
+        evidence: {
+          catalogDigests: [],
+          intentDigests: [{ scope: 'user', digest: 'sha256:intent' }],
+          configDigests: [],
+          targetOwnerFingerprints: [],
+        },
+      }),
+      offlineCleanupPlans: [{
         reason: 'bundleUnavailable',
         pluginId: 'official/demo',
         pluginName: 'demo',
@@ -3466,15 +3506,11 @@ describe('TUI v4 Review safety', () => {
           sourceIdentity: 'identity:official',
           platform: 'codex',
           scope: 'user',
-          actions: [{
-            action: 'removeOwnedOutput',
-            kind: 'skill-directory',
-            target: '/safe/owned-output',
-          }],
+          actions: [],
         },
         planDigest: 'sha256:force',
         targetFingerprint: 'sha256:force',
-      },
+      }],
     };
     const captureEvidence = vi.fn().mockResolvedValue(forceEvidence);
     const controller = new TuiController(dependencies({ captureEvidence }));
@@ -3483,7 +3519,7 @@ describe('TUI v4 Review safety', () => {
 
     const candidate = await controller.getForceCleanupCandidate('official/demo', 'codex', 'user');
     expect(candidate).toEqual({
-      pluginId: 'official/demo', platform: 'codex', scope: 'user', actionCount: 1,
+      pluginId: 'official/demo', platform: 'codex', scope: 'user', actionCount: 0,
     });
     controller.startForceCleanupReview(candidate!);
     await vi.waitFor(() => expect(controller.snapshot.activeReview).toBeDefined());
@@ -3639,7 +3675,7 @@ describe('TUI v4 Review safety', () => {
     expect(JSON.stringify(review.changes)).not.toContain('claim');
   });
 
-  it('shows the frozen offline cleanup actions and exact targets in Review', async () => {
+  it('shows cleanup intent cancellation and safe output totals without local targets', async () => {
     const offlineCleanup: NonNullable<OperationEvidence['offlineCleanup']> = {
       reason: 'sourceMissing',
       pluginId: 'official/demo',
@@ -3662,8 +3698,24 @@ describe('TUI v4 Review safety', () => {
       planDigest: 'sha256:offline-plan',
       targetFingerprint: 'sha256:offline-plan',
     };
+    const operationPlan = createOperationPlan({
+      intentChanges: [{ scope: 'project', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
+      actions: [],
+      changes: ['official/demo:codex:project:removeIntent'],
+      warnings: ['inventoryUnreadable: sha256:residual'],
+      evidence: {
+        catalogDigests: [],
+        intentDigests: [{ scope: 'project', digest: 'sha256:intent' }],
+        configDigests: [],
+        targetOwnerFingerprints: [],
+      },
+    });
     const controller = new TuiController(dependencies({
-      captureEvidence: vi.fn().mockResolvedValue({ ...baseEvidence, offlineCleanup }),
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...baseEvidence,
+        operationPlan,
+        offlineCleanupPlans: [offlineCleanup],
+      }),
     }));
     await controller.load();
 
@@ -3674,17 +3726,85 @@ describe('TUI v4 Review safety', () => {
 
     expect(review.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        kind: 'remove', title: '移除 AW 管理输出',
-        description: '/workspace/.codex/owners/demo.json',
+        kind: 'change', title: '核验当前 AW 管理现场',
       }),
       expect.objectContaining({
-        kind: 'remove', title: '移除原生插件注册', description: 'demo@aw-official',
+        kind: 'remove', title: '取消已保存的使用设置',
+      }),
+      expect.objectContaining({
+        kind: 'remove', title: '移除可验证的 AW 输出', description: 'Codex · 当前项目 · 2 项',
+      }),
+      expect.objectContaining({
+        kind: 'warning', title: '部分现场残留无法完整核验',
+      }),
+      expect.objectContaining({
+        kind: 'keep', title: '保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置',
+      }),
+      expect.objectContaining({
+        kind: 'keep', title: '其他根插件仍可按自己的设置使用或安装此依赖',
       }),
     ]));
     expect(review.technicalDetails).toEqual(expect.arrayContaining([
+      '离线清理目标：official/demo · codex/project',
       '离线清理计划：2 个动作 · offline-',
-      '离线清理动作：removeOwnedOutput · /workspace/.codex/owners/demo.json',
-      '离线清理动作：removeNativeRegistration · demo@aw-official',
+    ]));
+    expect(JSON.stringify(review)).not.toContain('/workspace/.codex/owners/demo.json');
+    expect(JSON.stringify(review)).not.toContain('inventoryUnreadable');
+  });
+
+  it('keeps an Intent-only cleanup valid when there are no removable outputs', async () => {
+    const offlineCleanup: NonNullable<OperationEvidence['offlineCleanup']> = {
+      reason: 'bundleUnavailable',
+      pluginId: 'official/demo',
+      pluginName: 'demo',
+      sourceId: 'official',
+      sourceIdentity: 'identity:official',
+      platform: 'codex',
+      scope: 'user',
+      plan: {
+        schemaVersion: 1,
+        pluginId: 'official/demo',
+        sourceIdentity: 'identity:official',
+        platform: 'codex',
+        scope: 'user',
+        actions: [],
+      },
+      planDigest: 'sha256:intent-only',
+      targetFingerprint: 'sha256:intent-only',
+    };
+    const operationPlan = createOperationPlan({
+      intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
+      actions: [],
+      changes: ['official/demo:codex:user:removeIntent'],
+      warnings: [],
+      evidence: {
+        catalogDigests: [],
+        intentDigests: [{ scope: 'user', digest: 'sha256:intent' }],
+        configDigests: [],
+        targetOwnerFingerprints: [],
+      },
+    });
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue({
+        ...baseEvidence,
+        operationPlan,
+        offlineCleanupPlans: [offlineCleanup],
+      }),
+    }));
+    await controller.load();
+
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'cleanup', pluginId: 'official/demo',
+      platform: 'codex', scope: 'user',
+    });
+
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'remove', title: '取消已保存的使用设置' }),
+      expect.objectContaining({
+        kind: 'keep',
+        title: '没有可验证的 AW 输出',
+        description: 'Codex · 所有项目 · 仍会取消此位置的使用设置',
+      }),
     ]));
   });
 

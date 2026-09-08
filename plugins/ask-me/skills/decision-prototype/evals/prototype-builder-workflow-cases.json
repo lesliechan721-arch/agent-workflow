@@ -81,6 +81,72 @@
       }
     },
     {
+      "id": "default-page-build-uses-builder",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "default-builder",
+        "platform-codex"
+      ],
+      "input": {
+        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。创建 prototypes/settings-density/artifact/compact.html 和 prototypes/settings-density/artifact/comfortable.html，两页都显示“通知”和“语言”，在可见文本中标识各自的 compact 或 comfortable ID，并用明显不同的密度组织设置内容。同时创建 brief.md 和 schema v2、revision 1 的 prototype.json，原型 ID 为 settings-density；brief 用两个 ID 说明正在比较的信息密度。构建完成后，主代理用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact，最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；不启动服务，没有交互式用户回复，不创建 verdict.md，随后结束。"
+      },
+      "expected": {
+        "criteria": {
+          "spawnCalls": {
+            "min": 1,
+            "max": 1
+          },
+          "rootOwnedFiles": [
+            "prototypes/settings-density/brief.md",
+            "prototypes/settings-density/prototype.json"
+          ],
+          "builderOwnedFiles": [
+            "prototypes/settings-density/artifact/compact.html",
+            "prototypes/settings-density/artifact/comfortable.html"
+          ],
+          "prototypeIdentity": {
+            "schemaVersion": 2,
+            "id": "settings-density",
+            "revision": 1
+          },
+          "forbiddenFiles": [
+            "prototypes/settings-density/verdict.md"
+          ],
+          "requiredContent": {
+            "prototypes/settings-density/brief.md": [
+              "compact",
+              "comfortable",
+              "信息密度"
+            ],
+            "prototypes/settings-density/artifact/compact.html": [
+              "compact",
+              "通知",
+              "语言"
+            ],
+            "prototypes/settings-density/artifact/comfortable.html": [
+              "comfortable",
+              "通知",
+              "语言"
+            ]
+          },
+          "distinctContentFiles": [
+            "prototypes/settings-density/artifact/compact.html",
+            "prototypes/settings-density/artifact/comfortable.html"
+          ],
+          "rootArtifactRead": "prototypes/settings-density/artifact/compact.html",
+          "modelOutputMappings": [
+            "证据范围"
+          ]
+        },
+        "outcome": "默认委派一个 Builder 构建页面，主代理维护决定材料并验收，决定保持开放。"
+      },
+      "audit": {
+        "rationale": "未显式要求委派的普通页面构建应采用默认 Builder；通过真实子线程写入和主代理验收证明分工。",
+        "minimalCounterexample": "极小静态示例或子代理不可用时，主代理可直接完成。"
+      }
+    },
+    {
       "id": "technical-spike-builder-runs-evidence",
       "split": "validation",
       "tags": [

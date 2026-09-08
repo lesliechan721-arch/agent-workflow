@@ -415,7 +415,7 @@ test('Prototype Review scripts expose the bounded command contract', async () =>
   assert.match(general.stdout, /start --prototype/);
   assert.match(general.stdout, /--ttl 30m/);
   assert.match(general.stdout, /--new-session/);
-  assert.match(general.stdout, /--timeout 30s/);
+  assert.match(general.stdout, /--timeout 5m/);
   for (const command of ['start', 'open', 'wait', 'status', 'stop']) {
     const result = await runRuntime([command, '--help']);
     assert.match(result.stdout, new RegExp(`prototype-review\\.mjs ${command}`));
@@ -515,7 +515,16 @@ test('start, authenticated HTTP, submission, status, and wait form one real sess
     headers: { origin: new URL(started.url).origin },
   })).status, 403);
 
-  const feedback = feedbackFor(config, { cssVariableValues: { '--space': '8px' } });
+  const feedback = feedbackFor(config, {
+    cssVariableValues: { '--space': '8px' },
+    globalNotes: 'Keep the summary visible.',
+    annotations: [{
+      id: 'summary-note',
+      target: { kind: 'text', value: { optionId: 'a', elementId: 'heading' } },
+      category: { kind: 'content' },
+      comment: 'This heading is clear.',
+    }],
+  });
   const first = await postFeedback(started, feedback);
   assert.equal(first.status, 200);
   assert.equal((await first.json()).accepted, true);
@@ -530,6 +539,8 @@ test('start, authenticated HTTP, submission, status, and wait form one real sess
   activeSessions.delete(started.session);
   assert.equal(waited.status, 'submitted');
   assert.equal(waited.feedback, await realpath(path.join(root, 'feedback.json')));
+  assert.deepEqual(waited.feedbackData, feedback);
+  assert.deepEqual(status.feedbackData, feedback);
   assert.equal('feedbackDigest' in waited, false);
   assert.equal(parseReceipt((await runRuntime(['status', '--session', started.session])).stdout).status, 'submitted');
 });
@@ -1062,6 +1073,7 @@ test('start reuses canonical feedback for the same revision without opening a se
   ])).stdout);
   assert.equal(reused.status, 'submitted');
   assert.equal(reused.verdict, 'accepted');
+  assert.deepEqual(reused.feedbackData, feedback);
   assert.equal('session' in reused, false);
   assert.deepEqual(await readJson(path.join(root, 'feedback.json')), feedback);
 
@@ -1281,11 +1293,12 @@ test('terminal-only submitted state requires matching canonical feedback', async
     `${JSON.stringify(feedbackFor(matchingConfig), null, 2)}\n`,
   );
   const matchingSession = await writeTerminalOnly(matchingPrototype, matchingConfig);
-  for (const command of ['status', 'wait']) {
+  for (const command of ['status', 'wait', 'open']) {
     const result = parseReceipt((await runRuntime([command, '--session', matchingSession])).stdout);
     assert.equal(result.status, 'submitted');
     assert.equal(result.verdict, 'accepted');
     assert.equal(result.feedback, await realpath(path.join(matchingRoot, 'feedback.json')));
+    assert.deepEqual(result.feedbackData, feedbackFor(matchingConfig));
   }
 
   const missingRoot = path.join(testRoot, 'terminal-only-missing');

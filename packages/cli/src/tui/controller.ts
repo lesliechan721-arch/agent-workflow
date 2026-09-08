@@ -405,6 +405,7 @@ export interface OperationEvidence {
   };
   targetFingerprint?: string;
   offlineCleanup?: OfflineCleanupTargetEvidence;
+  offlineCleanupPlans?: OfflineCleanupTargetEvidence[];
   dependencyPlan?: ReconcileOperationPlan;
   codexReconcilePlans?: CodexReconcilePlan[];
   operationPlan?: OperationPlan;
@@ -2516,12 +2517,20 @@ export class TuiController {
     };
     try {
       const evidence = await this.#trackRead(this.dependencies.captureEvidence(intent, this.#abort.signal));
-      const candidate = evidence.offlineCleanup;
-      if (candidate?.forceExclusive !== true
-        || candidate.pluginId !== pluginId
+      const candidate = (evidence.offlineCleanupPlans
+        ?? (evidence.offlineCleanup ? [evidence.offlineCleanup] : [])).find((entry) =>
+        entry.pluginId === pluginId
+        && entry.platform === platform
+        && entry.scope === scope);
+      if (!evidence.operationPlan
+        || !candidate
         || candidate.platform !== platform
         || candidate.scope !== scope
-        || candidate.plan.actions.length === 0) return undefined;
+        || (candidate.forceExclusive !== true && candidate.plan.actions.length > 0)
+        || (candidate.plan.actions.length === 0
+          && !evidence.operationPlan.intentChanges.some((change) => change.scope === scope))) {
+        return undefined;
+      }
       return cloneFrozen({ pluginId, platform, scope, actionCount: candidate.plan.actions.length });
     } catch (error) {
       await this.#logOperationError(error, issueCode(error), intent);
@@ -2530,9 +2539,6 @@ export class TuiController {
   }
 
   startForceCleanupReview(candidate: ForceCleanupCandidate): ReviewPreparationSnapshot {
-    if (candidate.actionCount <= 0) {
-      throw new TuiOperationBlockedError('forceCleanupPathUnavailable', '没有可验证的精确清理目标。');
-    }
     return this.startReviewPreparation({
       kind: 'pluginWrite',
       action: 'cleanup',

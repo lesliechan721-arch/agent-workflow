@@ -10,12 +10,14 @@ const privateToken = 'private_token_12345678901234567890123456789';
 const reviewUrl = `http://127.0.0.1:43127/review/index.html#token=${privateToken}`;
 const execFileAsync = promisify(execFile);
 
-function fakeSpawn({ code = 0, error, hang = false } = {}) {
+function fakeSpawn({ code = 0, error, hang = false, stderr = '', signal } = {}) {
   const calls = [];
   let killed = false;
   const spawnProcess = (command, args, options) => {
     calls.push({ command, args, options });
     const child = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stderr.destroy = () => {};
     child.kill = () => {
       killed = true;
       return true;
@@ -23,7 +25,10 @@ function fakeSpawn({ code = 0, error, hang = false } = {}) {
     if (!hang) {
       queueMicrotask(() => {
         if (error) child.emit('error', error);
-        else child.emit('close', code);
+        else {
+          child.stderr.emit('data', Buffer.from(stderr));
+          child.emit('close', code, signal);
+        }
       });
     }
     return child;
@@ -57,7 +62,7 @@ test('uses each supported platform opener with an argument array and no shell', 
     assert.deepEqual(fake.calls, [{
       command,
       args,
-      options: { shell: false, stdio: 'ignore', windowsHide: true },
+      options: { shell: false, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
     }]);
   }
 });
@@ -108,7 +113,7 @@ test('reports remote, container, WSL, and headless environments as unavailable',
   }
 });
 
-test('reports missing, rejected, and failed opener processes without process details', async () => {
+test('reports missing, rejected, and failed opener processes without leaking private tokens', async () => {
   const missing = fakeSpawn({ error: Object.assign(new Error(privateToken), { code: 'ENOENT' }) });
   assert.deepEqual(await requestBrowserOpen(reviewUrl, options('darwin', missing)), {
     status: 'unavailable',
@@ -121,9 +126,15 @@ test('reports missing, rejected, and failed opener processes without process det
   assert.equal(deniedResult.status, 'failed');
   assert.doesNotMatch(deniedResult.reason, /private_token/);
 
-  const rejected = fakeSpawn({ code: 2 });
+  const rejected = fakeSpawn({ code: 2, stderr: `No application can open ${reviewUrl} ${privateToken}` });
   const rejectedResult = await requestBrowserOpen(reviewUrl, options('darwin', rejected));
   assert.equal(rejectedResult.status, 'failed');
+  assert.match(rejectedResult.reason, /exit 2.*No application can open/);
+  assert.match(deniedResult.reason, /EACCES/);
+  const signalled = fakeSpawn({ code: null, signal: 'SIGTERM', stderr: 'x'.repeat(10_000) });
+  const signalResult = await requestBrowserOpen(reviewUrl, options('darwin', signalled));
+  assert.match(signalResult.reason, /signal SIGTERM/);
+  assert.ok(signalResult.reason.length <= 500);
   assert.doesNotMatch(rejectedResult.reason, /private_token/);
 
   const thrownResult = await requestBrowserOpen(reviewUrl, {
@@ -160,7 +171,7 @@ test('a launcher that ignores SIGTERM does not keep the calling process alive', 
     const launcher = spawn(process.execPath, [
       '-e',
       ${JSON.stringify(`process.on('SIGTERM', () => {}); process.send('ready'); setTimeout(() => process.exit(0), ${launcherLifetimeMs})`)},
-    ], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    ], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     await new Promise((resolve, reject) => {
       launcher.once('message', resolve);
       launcher.once('error', reject);

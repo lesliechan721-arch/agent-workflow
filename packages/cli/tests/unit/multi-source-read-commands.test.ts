@@ -769,6 +769,15 @@ describe('multi-source read commands', () => {
         expect.objectContaining({ code: 'pluginNotFound' }),
       ]),
     });
+    const textOutput = createCapturedCliIo();
+    expect(await runCli(['status', 'missing'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: textOutput.io,
+      interactive: false,
+    })).toBe(1);
+    expect(textOutput.readStdout()).toContain('Plugin "missing" was not found');
+    expect(textOutput.readStderr()).toBe('');
   });
 
   it('resolves only selector dependencies and withholds a bare match when one source fails', async () => {

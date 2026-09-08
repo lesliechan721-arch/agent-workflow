@@ -73,7 +73,7 @@ export function requestedIntentAction(
   command: RebuildReceiptJson['command'],
 ): 'add' | 'remove' | 'keep' {
   if (command === 'install') return 'add';
-  if (command === 'uninstall') return 'remove';
+  if (command === 'uninstall' || command === 'cleanup') return 'remove';
   return 'keep';
 }
 
@@ -262,10 +262,14 @@ function receiptTargetResult(
     ?? (message && (targetResult.state === 'failed' || targetResult.action === 'skipped')
       ? rebuildErrorCode(message)
       : undefined);
-  const planChanges = plannedTargetChanges(target, result.operationPlan);
-  const changes = planChanges.length > 0
-    ? planChanges
-    : observableTargetChanges(targetResult, rebuild);
+  const planChanges = plannedTargetChanges(target, result.operationPlan).filter((change) =>
+    targetResult.action !== 'cleanup'
+    || targetResult.state === 'completed'
+    || change.endsWith(':removeIntent'));
+  const observableChanges = observableTargetChanges(targetResult, rebuild);
+  const changes = targetResult.action === 'cleanup' && targetResult.state !== 'completed'
+    ? unique([...planChanges, ...observableChanges])
+    : planChanges.length > 0 ? planChanges : observableChanges;
   const recoveryActions = unique([
     ...(targetResult.recoveryActions ?? []),
     ...recoveryForTarget(
@@ -338,9 +342,9 @@ export function buildRebuildReceiptJson(
   const targetResults = sourceTargetResults(command, result, errors)
     .map((target) => receiptTargetResult(target, result));
   const state = overallState(targetResults, result.overallState);
-  const changes = result.operationPlan?.changes ?? unique(
-    targetResults.flatMap((target) => target.changes),
-  );
+  const changes = command === 'cleanup' && state !== 'succeeded'
+    ? unique(targetResults.flatMap((target) => target.changes))
+    : result.operationPlan?.changes ?? unique(targetResults.flatMap((target) => target.changes));
   const recoveryActions = unique(targetResults.flatMap((target) => target.recoveryActions));
   if (state !== 'succeeded' && targetResults.length === 0) {
     recoveryActions.push(...earlyFailureRecovery(command, errors[0]?.code));
