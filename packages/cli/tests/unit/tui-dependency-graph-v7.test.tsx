@@ -300,6 +300,9 @@ describe('dependency graph v7', () => {
     await input(instance, '', '', '', '\r');
     expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'references' });
     expect(instance.lastFrame()).toContain('已检查的使用位置 4 个');
+    expect(instance.lastFrame()).toContain('实际使用者在当前项目的Codex中使用它');
+    expect(instance.lastFrame()).not.toContain('consumer · platform=');
+    await input(instance, 'd');
     const expectedPlacements = [
       ['Codex', 'project', 'current', 'Codex', 'user', 'none'],
       ['Codex', 'user', 'none', 'Codex', 'project', 'current'],
@@ -344,7 +347,7 @@ describe('dependency graph v7', () => {
       controller={controller as unknown as TuiController}
       size={{ columns: 60, rows: 18 }}
     />);
-    await input(instance, '', '', '');
+    await input(instance, '', '', '', 'd', '');
 
     const readCurrentReference = async (): Promise<{
       consumer: string;
@@ -400,28 +403,36 @@ describe('dependency graph v7', () => {
         size={{ columns, rows }}
       />);
       await input(instance, '', '', '');
-      expect(instance.lastFrame()).toContain('当前方向：它需要的');
+      expect(instance.lastFrame()).toContain('每一层表示上面的插件需要下面的插件');
       expect(instance.lastFrame()).toContain('共享组件');
-      expect(instance.lastFrame()).toContain('[same]');
+      expect(instance.lastFrame()).toContain('共用，见上方');
+      expect(instance.lastFrame()).not.toContain('必需依赖 ·');
+      expect(instance.lastFrame()).not.toContain('根插件 ·');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
       await input(instance, '\u001b[B', '\u001b[D');
-      expect(instance.lastFrame()).not.toContain('[same]');
+      expect(instance.lastFrame()).not.toContain('共用，见上方');
       await input(instance, '\u001b[C');
-      expect(instance.lastFrame()).toContain('[same]');
+      expect(instance.lastFrame()).toContain('共用，见上方');
       await input(instance, '\u001b[A');
       await input(instance, '\r');
       expect(controller.route.name).toBe('pluginDependencyNode');
+      expect(instance.lastFrame()).toContain('用途');
+      expect(instance.lastFrame()).toContain('为何需要');
+      expect(instance.lastFrame()).toContain('影响');
+      expect(instance.lastFrame()).not.toContain('official/root');
+      await input(instance, 'd');
       expect(instance.lastFrame()).toContain('official/root');
       await input(instance, 'b');
       expect(controller.route.name).toBe('pluginDependencies');
 
       await input(instance, ...Array.from({ length: 5 }, () => '\u001b[B'), '\r');
       expect(controller.route).toMatchObject({ name: 'pluginDependencies', direction: 'dependents' });
-      expect(instance.lastFrame()).toContain('当前方向：谁在使用它');
+      expect(instance.lastFrame()).toContain('下面的插件正在使用上面的插件');
       expect(instance.lastFrame()).toContain('实际使用者');
       expect(instance.lastFrame()).toContain('未验证声明者 · 1 个');
-      expect(instance.lastFrame()).toContain('未验证声明者 · 未安装声明者');
+      expect(instance.lastFrame()).toContain('未安装声明者');
+      expect(instance.lastFrame()).toContain('仅声明 · 未安装');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
       await input(instance, '\u001b[B', '\u001b[B', '\r');

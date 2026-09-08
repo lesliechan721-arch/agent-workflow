@@ -359,21 +359,11 @@ describe('TUI plugin write task', () => {
 
       expect(instance.lastFrame()).toContain('更新到 2.0.0');
       await write(instance, '\r');
-      expect(value.snapshot.router.current.route).toEqual({
-        name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
-        targetKeys: ['official/demo\0codex\0user'],
-        versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
-          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
-        }) },
-      });
-      expect(instance.lastFrame()).toContain('Codex · 所有项目');
-      expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
+      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+      expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
       expect(Math.max(...(instance.lastFrame() ?? '').split('\n').map(stringWidth))).toBeLessThanOrEqual(columns);
 
-      await write(instance, '\r');
-      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
-      expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
       await write(instance, '\r');
       await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
       expect(dependencies.executeIntent).toHaveBeenCalledWith(
@@ -383,7 +373,7 @@ describe('TUI plugin write task', () => {
         expect.objectContaining({ taskPlan: expect.any(Object) }),
       );
       expect(instance.lastFrame()).toContain('插件更新完成');
-      expect(instance.lastFrame()).toContain('根插件结果');
+      expect(instance.lastFrame()).toContain('所选插件结果');
       expect(instance.lastFrame()).toContain('Demo');
       expect(instance.lastFrame()).toContain('Codex · 所有项目');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
@@ -508,12 +498,6 @@ describe('TUI plugin write task', () => {
 
     expect(instance.lastFrame()).toContain('0 个可执行 · 2 个需决定');
     expect(instance.lastFrame()).toContain('更新并恢复 Demo · Codex · 所有项目');
-    await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'pluginWriteTask', goal: 'update', targetKeys: ['official/demo\0codex\0user'],
-    });
-    expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
@@ -792,10 +776,6 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     expect(instance.lastFrame()).toContain('重新准备插件更新');
     await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'pluginWriteTask', goal: 'update' });
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
-
-    await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
@@ -1010,13 +990,8 @@ describe('TUI plugin write task', () => {
     expect(instance.lastFrame()).toContain('使用当前版本重新准备');
     expect(instance.lastFrame()).not.toContain('确认更新 1 个位置');
     await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'pluginWriteTask',
-      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
-        version: '3.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
-      }) },
-    });
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(instance.lastFrame()).toContain('确认更新到 3.0.0');
     value.dispose();
   });
 

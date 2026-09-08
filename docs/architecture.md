@@ -274,6 +274,8 @@ Catalog ref 页面只把 Release 和 Beta 投影为现有 explicit ref；底层�
 
 ### TUI 批量插件写入
 
+批量选择页的插件行显示用途与版本信息，Space 修改插件选择，Enter 查看插件；选择工具作为独立动作展开，并与插件行共享焦点序列。首次安装的使用范围和工具是两个独立设置。维护任务默认沿用本次枚举的精确安装目标，范围编辑只能删减或恢复该集合，不添加缺失的平台或位置；范围变化后撤销旧 Review 并重新取证。
+
 TUI 批量写入支持 install、sync、reinstall、uninstall 和普通 cleanup；force cleanup 仍只允许单个 target。一次批次固定一个 action 并建立一张 Review ticket；`selected` 选择使用共同 scope 和 platform，`targets` 选择沿用每个精确目标自己的 scope 和单个平台。执行完成后只记录一条 history；顶层 receipt 汇总所有分组的 target 和 rebuild 结果，分组结果只用于显示来源归属和计算重试根插件。批次不新增持久状态、ledger 或锁。
 
 批量添加允许选择已有部分安装的插件，但至少要有一个可信、兼容且缺失的位置；“未安装”筛选仍只包含整个插件没有安装的位置。来源不可用、能力不足和 config-only 等新增选择门禁只适用于 browse 添加；installed 清单必须继续提供移除、同步和 cleanup 恢复入口。选择工具和 scope 后，TUI 把目标分成可添加、已有和受阻；只有可添加的精确单平台目标进入 `targets`，已有位置不重装。存在受阻目标时，TUI 必须显示每个原因，并要求用户显式选择只添加可执行子集或返回调整。位置摘要和可分页的完整位置明细使用同一草稿；窄屏必须能聚焦每个结果并返回原选择。
