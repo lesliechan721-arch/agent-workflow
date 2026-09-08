@@ -148,6 +148,58 @@
         "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
         "errorCost": "high"
       }
+    },
+    {
+      "id": "script-open-failure-system-fallback",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "diagnostic",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "本机 Review 会话 ready，URL 为 http://127.0.0.1:43127/review/index.html#token=example。用户可交互原生预览不可用，插件脚本 open 因技术错误失败，没有用户或平台权限拒绝；当前工具还有系统浏览器打开能力。只说明下一步策略，不执行、不改文件。",
+      "assertions": [
+        "主代理使用系统浏览器打开能力打开同一会话 URL",
+        "不重复启动服务，不把脚本技术失败等同于权限拒绝",
+        "检查页面连接并继续等待真实反馈"
+      ],
+      "expected": {
+        "output": "主代理使用系统浏览器打开能力打开同一会话 URL",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "验证打开技术失败后的恢复入口和真实反馈等待策略。",
+        "minimalCounterexample": "明确拒绝权限时不能换工具绕过；远程 URL 未验证可达时必须说明限制。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "all-openers-fail-manual-url-long-wait",
+      "split": "validation",
+      "tags": [
+        "representative",
+        "diagnostic",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "Review 在用户本机运行，URL 为 http://127.0.0.1:43127/review/index.html#token=example。原生预览、脚本 open 和系统浏览器能力均发生技术失败，无权限拒绝。工具支持后台运行并可等待较长时间。只说明如何让用户查看和继续等待，不执行命令、不改文件。",
+      "assertions": [
+        "输出会话 URL 供用户自行打开",
+        "继续使用同一会话，以工具允许的较长窗口等待，避免几秒一次短轮询",
+        "超时不取消会话，不推断用户决定"
+      ],
+      "expected": {
+        "output": "输出会话 URL 供用户自行打开",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "验证打开技术失败后的恢复入口和真实反馈等待策略。",
+        "minimalCounterexample": "明确拒绝权限时不能换工具绕过；远程 URL 未验证可达时必须说明限制。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
     }
   ]
 }
