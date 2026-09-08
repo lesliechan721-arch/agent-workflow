@@ -1042,6 +1042,31 @@ export function createTuiControllerDependencies(
     frozenBatchEvidence?: PluginWriteBatchEvidence,
   ): Promise<OperationEvidence> => {
     reviewedScriptTimeoutMs(intent);
+    if ((intent.kind === 'pluginWrite'
+      && (intent.platform === 'codex' || intent.platform === 'both')
+      || intent.kind === 'pluginWriteTask'
+      && intent.targets.some((target) => target.platform === 'codex'))
+      && !codexObservationSession) {
+      const observationSession = await createCodexNativeObservationSession({
+        exactCwd: context.cwd,
+        env: context.env,
+        runner: context.nativeCliRunner,
+      });
+      try {
+        return await captureEvidence(
+          intent,
+          signal,
+          preparation,
+          operationInventory,
+          freshCatalog,
+          reusableCandidate,
+          observationSession,
+          frozenBatchEvidence,
+        );
+      } finally {
+        await observationSession.dispose();
+      }
+    }
     if (intent.kind === 'catalogManagement') {
       signal?.throwIfAborted();
       await preparation?.reporter.emit('validate');
@@ -1516,6 +1541,7 @@ export function createTuiControllerDependencies(
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          ...(codexObservationSession ? { codexObservationSession } : {}),
           cliVersion: packageInfo.version,
           catalogOperationContext: catalogOperation,
           inventoryCatalogSourceReferences: operationInventory,
@@ -2196,6 +2222,7 @@ export function createTuiControllerDependencies(
       cwd: context.cwd,
       env: context.env,
       nativeCliRunner: context.nativeCliRunner,
+      ...(codexObservationSession ? { codexObservationSession } : {}),
       cliVersion: packageInfo.version,
       ...(statusCatalogOperation ? { catalogOperationContext: statusCatalogOperation } : {}),
       inventoryCatalogSourceReferences: operationInventory,

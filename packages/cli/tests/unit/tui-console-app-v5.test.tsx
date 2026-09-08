@@ -1986,6 +1986,134 @@ describe('ConsoleAppV4', () => {
     expect(selectedFrame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it('lets each selected plugin be removed after it becomes ineligible or disappears', async () => {
+    const loaded = loadResult();
+    for (const entry of loaded.payload.targets) {
+      if ((entry.pluginId === 'official/agent-lab' || entry.pluginId === 'official/review-gate')
+        && entry.platform === 'codex' && entry.scope === 'user') {
+        entry.state = 'ready';
+        entry.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+      }
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const originalListPlugins = value.listPlugins.bind(value);
+    let unavailable = false;
+    let missing = false;
+    vi.spyOn(value, 'listPlugins').mockImplementation((options) => originalListPlugins(options)
+      .filter((plugin) => !missing || plugin.pluginId !== 'official/review-gate')
+      .map((plugin) => unavailable && plugin.pluginId === 'official/agent-lab'
+        ? { ...plugin, configOnly: true }
+        : plugin));
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（2）');
+    unavailable = true;
+    value.updatePageContext({ focusIndex: 1 });
+    await nextTurn(2);
+    await input(instance, '\u001B[A', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    expect(instance.lastFrame()).toContain('Review Gate');
+
+    missing = true;
+    value.updatePageContext({ focusIndex: 1 });
+    await nextTurn(2);
+    await input(instance, 'c');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('1 个已选插件已不可用');
+    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› ◇ 查看全部已选（1）'); index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('official/review-gate');
+    expect(instance.lastFrame()).toContain('可取消选择');
+    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› ◆ official/review-gate'); index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    expect(instance.lastFrame()).toContain('› ◆ official/review-gate');
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+  });
+
+  it('keeps Continue and the focused plugin purpose visible for 50 candidates at 60x18', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = Array.from({ length: 50 }, (_, index): StatusV7PluginSummary => ({
+      pluginName: `plugin-${String(index).padStart(2, '0')}`,
+      pluginId: `official/plugin-${String(index).padStart(2, '0')}`,
+      displayName: `Plugin ${String(index).padStart(2, '0')}`,
+      description: `用途说明 ${index}`,
+      version: '1.0.0',
+      supportedTargets: { codex: ['project'], claude: [] },
+      configFieldCount: 0,
+    }));
+    loaded.payload.targets = loaded.pluginSummaries.map((summary) => target({
+      pluginName: summary.pluginName,
+      platform: 'codex',
+      scope: 'project',
+      state: 'present',
+    }));
+    const loadStatus = vi.fn().mockResolvedValue(loaded);
+    const value = controller({ loadStatus });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+    expect(instance.lastFrame()).toContain('用途 · 用途说明 0');
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    await input(instance, ...Array.from({ length: 50 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('› 查看确认（1）');
+    await input(instance, '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+    expect(instance.lastFrame()).toContain('› ◇ 返回当前结果');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('› 查看确认（0）');
+    await input(instance, '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    await input(instance, ...Array.from({ length: 20 }, () => '\u001B[B'));
+    loaded.pluginSummaries = loaded.pluginSummaries.slice(0, 2);
+    loaded.payload.targets = loaded.payload.targets.slice(0, 2);
+    await value.load();
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('›');
+    expect((instance.lastFrame()?.match(/›/gu) ?? [])).toHaveLength(1);
+    await input(instance, 'c');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+  });
+
+  it('blocks final batch preparation when a selected plugin disappears on the task page', async () => {
+    const value = controller();
+    await value.load();
+    const originalListPlugins = value.listPlugins.bind(value);
+    let missing = false;
+    vi.spyOn(value, 'listPlugins').mockImplementation((options) => originalListPlugins(options)
+      .filter((plugin) => !missing || plugin.pluginId !== 'team-tools/review-gate'));
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', 'c');
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    missing = true;
+    value.updatePageContext({ focusIndex: 0 });
+    await nextTurn(2);
+    await focusAction(instance, '移除所选插件…');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('已选插件状态已变化');
+    expect(value.snapshot.reviewPreparation).toBeUndefined();
+  });
+
   it('keeps an ineligible add candidate focusable for its reason and prevents Space selection', async () => {
     const value = controller();
     await value.load();
@@ -9308,6 +9436,127 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\u001B[B');
     expect(instance.lastFrame()).toContain('›');
+  });
+
+  it('restores a deep dependency row, expansion, and scroll after detail and normalizes a removed node', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    overview.dependencies.push(
+      {
+        pluginId: 'official/y-branch', displayName: 'Y Branch', relation: 'direct', depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      {
+        pluginId: 'official/y-child', displayName: 'Y Child', relation: 'transitive', depth: 2,
+        requiredBy: [{ pluginId: 'official/y-branch', displayName: 'Y Branch' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      ...Array.from({ length: 7 }, (_, index) => ({
+        pluginId: `official/missing-${index}`, displayName: `Missing ${index}`,
+        relation: 'direct' as const, depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex' as const, state: 'notInstalled' as const, supportedScopes: ['user' as const] }],
+        aggregateStatus: 'notInstalled' as const,
+      })),
+      {
+        pluginId: 'official/z-branch', displayName: 'Z Branch', relation: 'direct', depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      {
+        pluginId: 'official/z-deep', displayName: 'Z Deep', relation: 'transitive', depth: 2,
+        requiredBy: [{ pluginId: 'official/z-branch', displayName: 'Z Branch' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+    );
+    loaded.pluginSummaries!.push(
+      { pluginName: 'y-branch', pluginId: 'official/y-branch', displayName: 'Y Branch', description: 'Y', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'y-child', pluginId: 'official/y-child', displayName: 'Y Child', description: 'Y child', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'z-branch', pluginId: 'official/z-branch', displayName: 'Z Branch', description: 'Z', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'z-deep', pluginId: 'official/z-deep', displayName: 'Z Deep', description: 'Z deep', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+    );
+    const loadStatus = vi.fn().mockResolvedValue(loaded);
+    const value = controller({ loadStatus });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    const initialProjection = buildDependencyGraphProjection({
+      overviews: value.listPluginDependencyOverviews(),
+      rootPluginId: 'official/agent-lab',
+    });
+    const yIndex = initialProjection.rows.findIndex((row) => row.pluginId === 'official/y-branch');
+    await input(instance, ...Array.from({ length: yIndex }, () => '\u001B[B'), '\u001B[D');
+    expect(instance.lastFrame()).not.toContain('Y Child');
+    const collapsedProjection = buildDependencyGraphProjection({
+      overviews: value.listPluginDependencyOverviews(),
+      rootPluginId: 'official/agent-lab',
+      expandedPluginIds: initialProjection.defaultExpandedPluginIds.filter((id) => id !== 'official/y-branch'),
+    });
+    const deepIndex = collapsedProjection.rows.findIndex((row) => row.pluginId === 'official/z-deep');
+    await input(instance, ...Array.from({ length: deepIndex - yIndex }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toMatch(/›\s+└─ 必需依赖 · Z Deep/u);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'pluginDependencyNode', nodePluginId: 'official/z-deep' });
+    await input(instance, 'b');
+    const restoredFrame = instance.lastFrame() ?? '';
+    expect(restoredFrame).toMatch(/›\s+└─ 必需依赖 · Z Deep/u);
+    expect(restoredFrame).not.toContain('Y Child');
+    expect(restoredFrame).not.toContain('根插件 · Agent Lab（当前插件）');
+
+    await input(instance, '\r');
+    const invalid = structuredClone(loaded);
+    invalid.pluginSummaries = invalid.pluginSummaries?.filter((summary) => summary.pluginId !== 'official/z-deep');
+    invalid.dependencyOverviews = invalid.dependencyOverviews?.map((entry) => ({
+      ...entry,
+      dependencies: entry.dependencies.filter((dependency) => dependency.pluginId !== 'official/z-deep'),
+    }));
+    loadStatus.mockResolvedValue(invalid);
+    await value.load();
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDependencies', pluginId: 'official/agent-lab', direction: 'dependencies',
+    });
+    expect(instance.lastFrame()).toContain('› 根插件 · Agent Lab（当前插件）');
+  });
+
+  it('restores focus for an unverified reverse relation after its detail', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/skill-toolkit')!;
+    const dependent = overview.dependents.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    dependent.placementReferences = [];
+    for (const entry of loaded.dependencyOverviews!) {
+      for (const item of [...entry.dependencies, ...entry.dependents]) {
+        item.placementReferences = item.placementReferences?.filter((reference) =>
+          reference.consumer.pluginId !== 'official/agent-lab'
+          || reference.dependency.pluginId !== 'official/skill-toolkit');
+      }
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', direction: 'dependents',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 未验证声明者 · Agent Lab');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginDependencyNode', nodePluginId: 'official/agent-lab', direction: 'dependents',
+    });
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', direction: 'dependents',
+    });
+    expect(instance.lastFrame()).toContain('› 未验证声明者 · Agent Lab');
   });
 
   it.each([

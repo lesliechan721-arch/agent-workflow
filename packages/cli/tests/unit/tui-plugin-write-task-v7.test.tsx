@@ -155,6 +155,70 @@ async function write(instance: ReturnType<typeof render>, input: string): Promis
 }
 
 describe('TUI plugin write task', () => {
+  it('prepares an unambiguous restore once and lets Esc return without a loop', async () => {
+    const { value, dependencies } = controller();
+    await value.load();
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{
+      target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+      displayName: 'Demo', sourceId: 'official', eligible: true,
+      recommendedMethod: 'sync', issueIds: [],
+    }]);
+    value.push({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(dependencies.captureEvidence).toHaveBeenCalledTimes(1);
+    expect(dependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWriteTask', goal: 'restore', executionPolicy: 'all',
+      targets: [{ pluginId: 'official/demo', platform: 'codex', scope: 'user' }],
+    }), expect.any(AbortSignal));
+    await write(instance, 'b');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+    });
+    expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
+    await nextTurn();
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    expect(dependencies.captureEvidence).toHaveBeenCalledTimes(1);
+    value.dispose();
+  });
+
+  it.each(['restore', 'update'] as const)(
+    'does not prepare a %s task when one frozen target disappears',
+    async (goal) => {
+      const { value, dependencies } = controller();
+      await value.load();
+      vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [],
+      }]);
+      const route = {
+        name: 'pluginWriteTask' as const, pluginId: 'official/demo', goal,
+        targetKeys: [
+          'official/demo\0codex\0user',
+          'official/demo\0claude\0project',
+        ],
+      };
+      value.push(route);
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+      await nextTurn();
+      await nextTurn();
+
+      expect(value.snapshot.router.current.route).toEqual(route);
+      expect(instance.lastFrame()).toContain('1 个冻结位置已失效或无需处理');
+      expect(instance.lastFrame()).not.toContain(`确认${goal === 'restore' ? '恢复' : '更新'} 1 个位置`);
+      await write(instance, '\r');
+      expect(dependencies.captureEvidence).not.toHaveBeenCalled();
+      expect(value.snapshot.router.current.route.name).not.toBe('review');
+      value.dispose();
+    },
+  );
+
   it.each([[80, 24], [60, 18]] as const)(
     'uses one task preparation, Review, progress/result chain at %ix%i',
     async (columns, rows) => {
@@ -275,10 +339,9 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       ...taskRoute,
-      targetKeys: ['official/demo\0claude\0project', 'official/demo\0codex\0user'],
+      targetKeys: ['official/demo\0claude\0project'],
     });
     expect(instance.lastFrame()).toContain('维护 Demo · Claude Code · 当前项目');
-    await write(instance, '\u001b[B');
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'platform', pluginId: 'official/demo', platform: 'claude',
@@ -443,10 +506,14 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     expect(instance.lastFrame()).toContain('返回恢复任务');
     await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, 'b');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'pluginWriteTask', goal: 'restore', targetKeys: ['official/demo\0codex\0user'],
     });
     expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
+    await nextTurn();
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
     value.dispose();
   });
 
@@ -604,9 +671,12 @@ describe('TUI plugin write task', () => {
     expect(instance.lastFrame()).toContain('返回剩余恢复任务');
     expect(value.hasSessionDraft).toBe(true);
     await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual(outerTask);
     expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
-
+    await nextTurn();
+    expect(value.snapshot.router.current.route).toEqual(outerTask);
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
@@ -697,7 +767,6 @@ describe('TUI plugin write task', () => {
     value.push({ name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
-    await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));

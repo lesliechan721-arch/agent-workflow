@@ -175,6 +175,7 @@ export interface TuiPageContext {
   focusedEntityId?: string;
   installFilter?: PluginInstallFilter;
   configGroupId?: string;
+  autoPreparedRestore?: boolean;
 }
 
 export interface TuiRouteFrame {
