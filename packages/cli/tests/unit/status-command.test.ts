@@ -1189,6 +1189,54 @@ describe('status v7 current behavior', () => {
     }
   });
 
+  it('shows scope and activation differences without leaking Codex components into Claude status', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-diagnostic-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.apps = './.app.json';
+    });
+    const { env, sourceIdentity } = await configurePathSource(sourceRoot);
+    await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    await writeCodexNativeResidue({
+      cwd: isolation.layout.fixtureCwd, env, version: '1.0.0', userEnabled: true, sourceIdentity,
+    });
+    await applyCodexConfigTransactionFile(
+      resolveCodexPaths(isolation.layout.fixtureCwd, 'project', env).configTomlPath,
+      { upsertPluginActivations: { 'demo@aw-local': true } },
+    );
+    const binRoot = await writeSystemCodexPackage({
+      root: path.join(isolation.layout.fixtureCwd, 'activation-diagnostic-prefix'),
+      version: '0.151.0',
+    });
+    const result = await statusCommandV7({
+      plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env: { ...env, PATH: binRoot },
+      nativeCliRunner: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({
+          installed: [{ pluginId: 'demo@aw-local', installed: true, enabled: true, version: '1.0.0' }],
+          available: [],
+        }),
+        stderr: '',
+      }),
+    });
+
+    expect(result.output).toContain('local/demo claude (project): absent');
+    expect(result.output).toContain('local/demo claude (user): absent');
+    expect(result.output).toContain('local/demo codex (user): needsSync');
+    expect(result.output).toContain('user expected=true, actual=true; project expected=false, actual=true');
+    expect(result.output).not.toContain('codexActivationDrift: codexActivationDrift:');
+    for (const target of result.payload.targets.filter((candidate) => candidate.platform === 'claude')) {
+      expect(target.components).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'sharedNative' }),
+        expect.objectContaining({ kind: 'activation' }),
+      ]));
+    }
+  });
+
   it('keeps official Codex installs usable without reading private cache payload', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'registered-codex-source');

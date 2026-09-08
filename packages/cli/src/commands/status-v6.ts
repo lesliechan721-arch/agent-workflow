@@ -987,9 +987,10 @@ function renderStatusV7(payload: StatusV7Payload, verbose: boolean): string {
   }
   for (const target of payload.targets) {
     const reasons = target.reasons.length > 0
-      ? ` [${target.reasons.map((reason) => `${reason.code}: ${reason.message}`).join('; ')}]`
+      ? ` [${target.reasons.map((reason) => reason.message.startsWith(`${reason.code}:`)
+        ? reason.message : `${reason.code}: ${reason.message}`).join('; ')}]`
       : '';
-    lines.push(`${target.pluginId} ${target.platform}: ${target.state}${reasons}`);
+    lines.push(`${target.pluginId} ${target.platform} (${target.scope}): ${target.state}${reasons}`);
     if (verbose) {
       for (const component of target.components) {
         lines.push(`  component ${component.kind}/${component.key}: ${component.state}`);
@@ -2130,7 +2131,23 @@ async function statusCommandV7InSession(options: {
             scopes,
             currentProjectLocationKey,
           }));
-        if (!selectorHasInventoryError) {
+        const selectorHasLiveOrIntent = ownerInventory.references.some((reference) =>
+          (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+          && reference.pluginName === selector.parsed.pluginName
+          && reference.sourceId !== undefined
+          && (selector.parsed.sourceId === undefined || reference.sourceId === selector.parsed.sourceId)
+          && platforms.some((platform) => platform === reference.platform)
+          && scopes.some((scope) => scope === reference.scope)
+          && (reference.scope !== 'project' || reference.projectKey === currentProjectKey))
+          || [userIntent, projectIntent].some((intent, index) =>
+            scopes.includes(index === 0 ? 'user' : 'project')
+            && intent.roots.some((root) => {
+              const parsed = parsePluginId(root.pluginId);
+              return parsed.pluginName === selector.parsed.pluginName
+                && (selector.parsed.sourceId === undefined || parsed.sourceId === selector.parsed.sourceId)
+                && root.platforms.some((platform) => platforms.includes(platform));
+            }));
+        if (!selectorHasInventoryError && !selectorHasLiveOrIntent) {
           selectorErrors.push({
             code: 'pluginNotFound',
             message: `Plugin "${selector.raw}" was not found in the selected catalog source set.`,
@@ -2341,6 +2358,14 @@ async function statusCommandV7InSession(options: {
       sourceId: reference.sourceId,
       pluginName: reference.pluginName,
     })));
+  const isDisabledCodexReference = (reference: typeof unavailableBundleReferences[number]): boolean => {
+    if (reference.kind !== 'namespacedMarketplace' || reference.platform !== 'codex'
+      || !reference.pluginName || !reference.marketplaceName) return false;
+    const config = reference.scope === 'user' ? userCodexConfig : projectCodexConfig;
+    return config?.snapshot.plugins[`${reference.pluginName}@${reference.marketplaceName}`]?.enabled === false;
+  };
+  unavailableBundleReferences.sort((left, right) =>
+    Number(isDisabledCodexReference(right)) - Number(isDisabledCodexReference(left)));
   const unavailableBundleTargets = [...new Map(unavailableBundleReferences.flatMap((reference) => {
     if (!reference.sourceId || !reference.pluginName
       || (reference.platform !== 'codex' && reference.platform !== 'claude')
@@ -2349,6 +2374,10 @@ async function statusCommandV7InSession(options: {
     if (requested.length > 0 && !plannedSelectors.some((selector) =>
       selector.parsed.pluginName === reference.pluginName
       && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId))) return [];
+    const disabled = isDisabledCodexReference(reference)
+      && ![userIntent, projectIntent].some((intent) => intent.roots.some((root) =>
+        root.pluginId === pluginId && root.platforms.includes('codex')))
+      && (desiredTargetStates.get(desiredTargetKey(pluginId, 'codex'))?.scopes.length ?? 0) === 0;
     const target: StatusV7TargetDraft = {
       pluginName: reference.pluginName,
       sourceId: reference.sourceId,
@@ -2357,9 +2386,9 @@ async function statusCommandV7InSession(options: {
       platform: reference.platform,
       scope: reference.scope,
       cwd: path.resolve(options.cwd),
-      state: 'error',
+      state: disabled ? 'absent' : 'error',
       components: [],
-      errors: [finalizeTargetError({
+      errors: disabled ? [] : [finalizeTargetError({
         code: 'bundleUnavailable',
         message: `bundleUnavailable: ${pluginId} has live state but is not present in the current source snapshot.`,
       }, 'error')],
@@ -2442,7 +2471,7 @@ async function statusCommandV7InSession(options: {
     groupedTargets: StatusV7TargetDraft[],
   ): Promise<StatusV7Target> => {
     const entry = selectedByPluginId.get(target.pluginId);
-    const codex = entry?.codex;
+    const codex = target.platform === 'codex' ? entry?.codex : undefined;
     const desiredAll = desiredTargetStates.get(desiredTargetKey(target.pluginId, target.platform))
       ?? { scopes: [], relation: 'none' as const };
     const desired = target.platform === 'codex'
@@ -2610,7 +2639,10 @@ async function statusCommandV7InSession(options: {
         ? [blocking('codexExtensionScopeConflict', `${target.pluginId} has AW extensions desired at user and project scope.`)]
         : []),
       ...(activationDrift && sharedNative?.state !== 'missing' && sharedNative?.state !== 'unobserved'
-        ? [warning('codexActivationDrift', `${target.pluginId} activation differs from desired intent.`)]
+        ? [warning('codexActivationDrift',
+            `${target.pluginId} activation differs from desired intent: `
+            + `user expected=${expectedUser}, actual=${activation?.user ?? 'unset'}; `
+            + `project expected=${expectedProject}, actual=${activation?.project ?? 'unset'}.`)]
         : []),
       ...(extensions?.state === 'drifted'
         ? [warning('codexExtensionDrift', `${target.pluginId} extension projection has drifted.`)]
