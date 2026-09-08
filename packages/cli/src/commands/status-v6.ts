@@ -77,8 +77,8 @@ import { IMPLEMENTED_AW_CAPABILITIES } from './aw-capabilities.js';
 import { createDependencyPlacementPlan } from './dependency-operation-plan.js';
 import { getCodexOperationRequirement } from '../utils/agent-version.js';
 import {
-  inspectSystemCodexFilesystem,
-  type SystemCodexFilesystemInspection,
+  inspectSystemCodex,
+  type SystemCodexInspection,
 } from '../utils/codex-manager.js';
 
 export interface StatusV7CatalogSource {
@@ -228,7 +228,7 @@ export interface StatusActivationProjection {
   project?: boolean;
   effective?: boolean;
   evidence: 'observed' | 'assumed' | 'unobserved';
-  systemConsumer?: SystemCodexFilesystemInspection;
+  systemConsumer?: SystemCodexInspection;
 }
 
 export interface StatusExtensionProjection {
@@ -332,7 +332,7 @@ export function statusTargetActivation(
   const activation = user ?? project ?? consumer;
   const evidence = activation?.metadata?.evidence;
   const requiredMinVersion = consumer?.metadata?.requiredMinVersion;
-  let systemConsumer: SystemCodexFilesystemInspection | undefined;
+  let systemConsumer: SystemCodexInspection | undefined;
   if (consumer && typeof requiredMinVersion === 'string') {
     const detectedVersion = consumer.metadata?.detectedVersion;
     const code = consumer.metadata?.code;
@@ -1097,13 +1097,13 @@ async function statusCommandV7InSession(options: {
       return undefined;
     }
   };
+  const codexScopePathsAlias = codexProjectConfigAliasesUserHome(options.cwd, env);
   const [userCodexConfig, projectCodexConfig] = await Promise.all([
     readActivationConfig('user'),
-    readActivationConfig('project'),
+    codexScopePathsAlias ? undefined : readActivationConfig('project'),
   ]);
   const currentProjectKey = await resolveCanonicalRepoProjectKey(options.cwd);
   const currentProjectLocationKey = createProjectLocationKey(currentProjectKey);
-  const codexScopePathsAlias = codexProjectConfigAliasesUserHome(options.cwd, env);
   const inventoryErrors: StatusInventoryError[] = [];
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
@@ -1123,11 +1123,12 @@ async function statusCommandV7InSession(options: {
     });
   }
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
-  const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexFilesystemInspection>>();
+  const codexSystemConsumerInspections = new Map<Scope, Promise<SystemCodexInspection>>();
   const inspectCodexSystemConsumer = (scope: Scope) => {
     let inspection = codexSystemConsumerInspections.get(scope);
     if (!inspection) {
-      inspection = inspectSystemCodexFilesystem({
+      inspection = inspectSystemCodex({
+        runner: nativeCliRunner,
         cwd: options.cwd,
         env,
         operationRequirement: getCodexOperationRequirement(scope),

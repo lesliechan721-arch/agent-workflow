@@ -1091,6 +1091,10 @@ describe('ConsoleAppV4', () => {
   it.each([
     ['codexSharedNativeCorrupt', 'Codex 平台共享生成内容缺失或损坏。'],
     ['codexSharedNativeRenderDrift', 'Codex 平台共享生成内容与当前渲染输入不一致。'],
+    ['codexSharedNativeUnobserved', '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。'],
+    ['codexNativeObservationFailed', '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。'],
+    ['codexActivationDrift', 'Codex 激活配置与期望的使用范围不一致。'],
+    ['codexSharedNativeUpdateRequired', '已安装的 Codex 平台共享内容版本与当前插件版本不一致。'],
   ] as const)('shows typed shared-native reason %s in a mounted issue page', async (
     code,
     explanation,
@@ -1112,9 +1116,18 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(instance.lastFrame()).toContain(explanation);
-    expect(instance.lastFrame()).toContain('运行同步可重新生成平台共享 Skill。');
+    if (code === 'codexSharedNativeCorrupt' || code === 'codexSharedNativeRenderDrift') {
+      expect(instance.lastFrame()).toContain('运行同步可重新生成平台共享 Skill。');
+    } else {
+      expect(instance.lastFrame()).not.toContain('安装不完整');
+      expect(instance.lastFrame()).not.toContain('必要内容缺失');
+    }
     expect(instance.lastFrame()).not.toContain('个人默认已变化');
     expect(instance.lastFrame()).not.toContain('这不是缓存损坏');
+    value.push({ name: 'platform', pluginId: issue.pluginId!, platform: 'codex' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain(explanation);
+    expect(instance.lastFrame()).not.toContain('缺少一项必要内容');
   });
 
   it.each([
@@ -1929,9 +1942,11 @@ describe('ConsoleAppV4', () => {
     await fs.ensureDir(binRoot);
     await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
     const env = { ...isolation.env, PATH: `${binRoot}:${isolation.env.PATH ?? ''}` };
-    const nativeCliRunner = vi.fn(async () => ({
+    const nativeCliRunner = vi.fn(async (invocation) => ({
       exitCode: 0,
-      stdout: JSON.stringify({ installed: [], available: [] }),
+      stdout: invocation.args.at(-1) === '--version'
+        ? 'codex-cli 0.151.0'
+        : JSON.stringify({ installed: [], available: [] }),
       stderr: '',
     }));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({

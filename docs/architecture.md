@@ -315,7 +315,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - primary source 默认继续使用 `aw` marketplace。若用户级 Codex 或 Claude 的 `aw` 已由 legacy 或 foreign source 占用，首次安装改用 source-bound `aw-<sourceId>`；两个平台使用同一名称。已有 canonical 注册继续决定名称，候选名称被 foreign source 占用时 fail closed。
 - 外部 Codex/Claude 命令、用户手改目录和共享 marketplace 都是不受 AW 完全控制的边界。Claude 合法的未绑定默认安装记录不属于任何 marketplace；来源 inventory 必须保留并忽略它，不能把它归为 canonical 或 foreign。执行 native install 前，若任意 scope 存在与目标原生插件名称相同的未绑定 bare-key 记录，写命令必须在清理、mirror 和 native CLI 调用前 fail closed；不同名记录继续保留并忽略。cleanup 和 uninstall 不删除、迁移或重命名未绑定记录。命令允许部分成功，并报告残留和失败。
 - Codex cleanup 和 uninstall 先检查 official scoped list、公开 config 和 AW ownership。没有 official installed native、AW-owned output 或待移除的 canonical marketplace 时，不解析或获取 manager。需要 official remove 且 system CLI 缺失时，可在本次授权下使用 AW-managed 官方 CLI。Codex private cache 和 installed manifest 不算 residue，也不影响 cleanup 成败；AW 不直接删除它们。foreign 内容始终保留。remove 或完成后检查失败时保留可公开观察的 residue，并提示重试 cleanup/uninstall、升级 AW 或安装兼容的官方 Codex CLI。
-- Codex project config 的规范路径与 Codex user home 相同时，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`sync` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
+- Codex project config 的规范路径与 Codex user home 相同时，status 不重复读取或投影 project activation，未发现 project owner 的默认 status 不生成 project placement；显式 project status 报告路径别名。`install`、`sync` 和 `reinstall` 不向这个 project placement 写入，用户必须进入独立项目目录；`cleanup` 和 `uninstall` 仍可处理已有 project owner。
 - active marketplace 和 quarantine 都是弱状态。清理失败时保留它们，后续 cleanup 可重试；不得因为弱状态损坏永久阻止用户清理自己的 AW 输出。
 - marketplace mirror 中的 Skill owner marker 只证明 overlay/payload 完整性。它属于可重建的弱 materialization，不进入 live installation inventory，也不阻止 source removal。
 - 项目范围路径必须在项目边界内；不跟随不安全的符号链接或删除 foreign 内容。
@@ -335,6 +335,7 @@ TUI 在 Controller/ViewModel 层把现有 source、status target、dependency、
 - PATH 中有 Codex CLI 时，操作按适用版本门禁探测它。PATH 中没有 system CLI 且操作只修改 project activation 时，不获取 manager。此时 AW 未观察到 system loader 或 Codex App，只把 project activation support 标记为 `assumed`。只有操作需要物化或移除 shared native package 时才解析 manager；system CLI 缺失时，AW-managed manager 必须取得精确 `0.151.0`。
 - 每种 native kind 必须先通过显式真实 qualification 才能进入 rollout allowlist。未被行为证据证明的 kind 必须返回 `unsupported`，不能从帮助文本、源码字符串或相邻 kind 推断。当前 `0.151.0` qualification 可证明 Skill、MCP、Hook 和 App；slash command 因没有可用的离线运行时证据保持 `unsupported`。
 - project activation 的最低行为合同是：native add 默认创建 user enabled；`user=false, project=true` 只在受信任的精确 project cwd 加载；neutral cwd 不加载；`user=true, project=true` 在两处加载同一 shared native plugin；project trust 未生效时 project-only activation 不加载。
+- `status` 自动对 PATH Codex 执行适用最低版本的 `--version` 探测，并复用 marketplace-scoped JSON list 校验合同和观察安装。POSIX 启动器不要求 npm 目录形状；Windows 保留现有启动边界。探测结果在本次状态加载内复用，不获取或安装 managed runtime。查询失败或 JSON 无效不能解释为组件缺失，TUI 按原因区分状态未确认、激活范围不一致、版本待同步和真实内容缺失或损坏。
 - `status` 始终只读。它只能读取 Intent、live ownership 和 native evidence，并标明 observed 或 assumed；不得安装 manager、调用 native add/remove、修改 trust/config、创建 claim/refcount，或把 qualification report 当现场事实。
 - 旧 Codex direct MCP/Hook residue 不由新 CLI 扫描、重建或删除。保留旧环境时，先用旧 CLI cleanup。
 

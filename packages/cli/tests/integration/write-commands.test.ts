@@ -5168,15 +5168,19 @@ describe('five namespaced write commands', () => {
       evidence: 'observed',
       systemConsumer: {
         state: 'compatible',
-        detectedVersion: '0.151.0',
+        detectedVersion: '0.200.0',
         requiredMinVersion: '0.151.0',
       },
     });
     expect(statusTargetSharedNative(status.payload.targets[0]!)).toMatchObject({
       state: 'usable', version: '1.0.0',
     });
-    expect(statusRunner).toHaveBeenCalledTimes(2);
-    expect(statusRunner.mock.calls.every(([invocation]) =>
+    expect(statusRunner.mock.calls.filter(([invocation]) =>
+      invocation.args.at(-1) === '--version')).toHaveLength(1);
+    const listCalls = statusRunner.mock.calls.filter(([invocation]) =>
+      invocation.args.at(-1) !== '--version');
+    expect(listCalls).toHaveLength(2);
+    expect(listCalls.every(([invocation]) =>
       invocation.command === 'codex'
       && invocation.args.join(' ') === 'plugin list --marketplace aw --json')).toBe(true);
   }, 30_000);
