@@ -46,3 +46,5 @@ AW_TUI_ACCEPTANCE_TRACE_DIR="$PWD/../../.tmp/tui-v7-2-review/production-acceptan
 轨迹文件记录 `fixtureId`、尺寸、输入和真实 Ink Frame。测试断言行宽、行数、ANSI 色码边界和唯一可见焦点。轨迹不是逐字 golden，也不提交到仓库。
 
 这些测试使用 synthetic catalog 和 fake native runner。它们不访问用户配置，也不证明真实 SSH、网络来源、PTY 尺寸协商、原生平台安装、共享 native 内容写入或外部插件工具。真实环境行为仍需要独立 qualification 或人工证据。
+
+依赖图的已确认位置与连续路径用例显式注入合成的 `placementReferences`，只证明关系计算和渲染能正确处理这类证据。当前 runtime 不采集消费者与已应用依赖位置的绑定证据，因此生产页面仍将没有证据的关系显示为“仅声明／未验证”；这些测试不证明生产端已经取得实际引用。

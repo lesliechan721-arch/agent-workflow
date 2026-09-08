@@ -7823,7 +7823,9 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('○ SSH');
     trace.push(acceptanceTraceStep(instance, standardSize, '官方下载方式草稿', []));
     await input(instance, '\r', '\u001B[B');
-    expect(instance.lastFrame()).toContain('SSH');
+    expect(instance.lastFrame()).toContain('当前草稿：HTTPS');
+    expect(instance.lastFrame()).toContain('● HTTPS');
+    expect(instance.lastFrame()).toContain('› ○ SSH');
     expect(instance.lastFrame()).toContain('适合已配置 GitHub SSH 访问的用户');
     trace.push(acceptanceTraceStep(instance, standardSize, '打开局部选择并聚焦 SSH', ['Enter', 'ArrowDown']));
     instance.rerender(<ConsoleAppV4 controller={value} size={compactSize} />);
@@ -7840,7 +7842,12 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     await input(instance, '\r', '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('SSH');
-    trace.push(acceptanceTraceStep(instance, standardSize, '取消不改草稿，确认后只改草稿', ['resize 80x24', 'Esc', 'Enter', 'ArrowDown', 'Enter']));
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('当前草稿：SSH');
+    expect(instance.lastFrame()).toContain('○ HTTPS');
+    expect(instance.lastFrame()).toContain('› ● SSH');
+    trace.push(acceptanceTraceStep(instance, standardSize, '取消不改草稿，确认后再次打开显示 SSH 当前值', ['resize 80x24', 'Esc', 'Enter', 'ArrowDown', 'Enter', 'Enter']));
+    await escape(instance);
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('review');
@@ -8165,6 +8172,40 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).toContain(label);
     expect(instance.lastFrame()).not.toContain(state);
+  });
+
+  it('[source-detail/damaged-default] keeps damaged Active unavailable when its freshness check also fails', async () => {
+    const loaded = loadResult();
+    loaded.catalogGenerations = loaded.catalogGenerations?.map((generation) =>
+      generation.sourceId === 'team-tools'
+        ? { ...generation, state: 'repairRequired' as const }
+        : generation);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      probeCatalogFreshness: vi.fn(async () => { throw new Error('remote check failed'); }),
+    });
+    await value.load();
+    await value.recheckCatalogSource('team-tools');
+    value.push({ name: 'sourceList' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    const list = instance.lastFrame() ?? '';
+    const officialLine = list.split('\n').find((line) => line.includes('official  主来源'));
+    const damagedLine = list.split('\n').find((line) => line.includes('team-tools'));
+    expect(officialLine).toContain('检查失败 · Active 可用');
+    expect(damagedLine).toContain('检查失败 · Active 不可用');
+
+    await input(instance, '\u001B[B', '\r');
+    const detail = instance.lastFrame() ?? '';
+    expect(detail).toContain('当前目录版本缺失或损坏。可在这里精确修复。');
+    expect(detail).toContain('来源目录损坏，当前无法使用');
+    expect(detail).toContain('更新检查');
+    expect(detail).toContain('检查失败');
+    expect(detail).toContain('恢复来源');
+    expect(detail).not.toContain('仍可浏览和使用');
+    expect(detail).not.toContain('Active 仍可用');
+    expect(detail).not.toContain('当前版本继续可用');
   });
 
 

@@ -6547,7 +6547,9 @@ export function ConsoleAppV4(props: {
         const overview = props.controller.getSourceOverview(source.id);
         const generation = props.controller.getCatalogGeneration(source.id);
         const freshness = props.controller.getCatalogFreshness(source.id);
-        const health = overview.health?.state ?? source.state;
+        const health = generation?.state !== undefined && generation.state !== 'ready'
+          ? 'unavailable' as const
+          : overview.health?.state ?? source.state;
         const presentation = catalogSourceListPresentation({
           freshness,
           activeVersion: generation?.active?.catalogVersion,
@@ -6597,16 +6599,16 @@ export function ConsoleAppV4(props: {
       : freshness?.state === 'incompatible'
       ? generationState === 'repairRequired'
         ? `待检查版本需要升级 AW 或修改来源后才能使用；损坏的当前启用版本仍可按旧版本精确修复。`
-        : activeVersion
+        : activeVersion && generationState === 'ready'
         ? `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项待检查版本所需功能；当前目录版本 ${activeVersion} 仍可浏览和使用。`
         : `当前 AW 缺少 ${freshness.missingCapabilities?.length ?? 0} 项待检查版本所需功能；这个来源没有可用目录版本。`
-      : freshness?.state === 'checkFailed' && activeVersion
+      : freshness?.state === 'checkFailed' && activeVersion && generationState === 'ready'
       ? `更新检查失败，但当前目录版本 ${activeVersion} 仍可浏览和使用。`
-      : freshness?.state === 'updateAvailable'
+      : freshness?.state === 'updateAvailable' && generationState === 'ready'
         ? `当前使用 ${activeVersion ?? '未启用'}；待检查版本 ${candidateVersion ?? '未知'} 可更新。`
-        : freshness?.state === 'localChangesAvailable'
+        : freshness?.state === 'localChangesAvailable' && generationState === 'ready'
           ? '本地插件目录内容已变化；确认前仍使用当前启用版本。'
-          : activeVersion ? `当前使用目录版本 ${activeVersion}。`
+          : activeVersion && generationState === 'ready' ? `当前使用目录版本 ${activeVersion}。`
       : generationState === 'stateInvalid' ? '目录版本状态无效。确认恢复后可以重新启用这个来源。'
         : generationState === 'repairRequired' ? combinedRepairAndMismatch
           ? '当前目录版本损坏，且来源配置已变化。验证待检查版本后可精确修复同一版本，或明确切换到新版本。'
@@ -6740,7 +6742,8 @@ export function ConsoleAppV4(props: {
       },
     ];
     const sourceActionViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(2, 5));
-    const freshnessLabel = catalogSourceFreshnessLabel(freshness);
+    const freshnessLabel = freshness?.state === 'checkFailed' && generationState !== 'ready'
+      ? '检查失败' : catalogSourceFreshnessLabel(freshness);
     const sourceStateLabel = generationState === 'ready' ? '来源可用'
       : generationState === 'repairRequired' ? '来源目录损坏，当前无法使用'
         : generationState === 'incompatible' ? '当前 AW 无法使用这个目录版本'
@@ -10060,15 +10063,24 @@ export function ConsoleAppV4(props: {
     >{confirmationCard}</ScreenFrame>;
   }
   if (sourceTransportOverlay) {
+    const configuredSource = route.name === 'sourceEdit'
+      ? props.controller.getConfiguredSource(route.sourceId)
+      : undefined;
+    const currentLocation = sourceDraft?.owner === sourceTransportOverlay.owner
+      && sourceDraft.type === 'git'
+      ? sourceDraft.location
+      : configuredSource?.type === 'git' ? configuredSource.url : undefined;
+    const currentTransport = currentLocation === OFFICIAL_CATALOG_SOURCE_URL ? 'HTTPS'
+      : currentLocation === OFFICIAL_CATALOG_SOURCE_SSH_URL ? 'SSH' : undefined;
     const transportActions: ActionItem[] = [
-      { label: 'HTTPS', description: '默认方式；无需预先配置 SSH 密钥', selected: overlayFocus === 0 },
-      { label: 'SSH', description: '适合已配置 GitHub SSH 访问的用户', selected: overlayFocus === 1 },
+      { label: 'HTTPS', description: '默认方式；无需预先配置 SSH 密钥', selected: currentTransport === 'HTTPS' },
+      { label: 'SSH', description: '适合已配置 GitHub SSH 访问的用户', selected: currentTransport === 'SSH' },
     ];
     return <Box position="relative" width={size.columns} height={size.rows}>
       <Box>{base}</Box>
       <Box position="absolute" marginTop={5} marginLeft={Math.max(2, Math.floor(size.columns / 5))}
         width={Math.max(40, Math.floor(size.columns * 0.6))} flexDirection="column">
-        <ReviewCard title="选择下载方式" description="选择只更新当前草稿；保存前仍会显示统一汇总。">
+        <ReviewCard title="选择下载方式" description={`当前草稿：${currentTransport ?? '未识别'}。选择只更新当前草稿；保存前仍会显示统一汇总。`}>
           <SemanticRows actions={transportActions} focus={overlayFocus} kind="choice" compact={false} />
         </ReviewCard>
       </Box>
