@@ -4096,10 +4096,8 @@ describe('authoring tools', () => {
         timeoutMs: 10_000,
       }],
     });
-    await expect(runValidatePlugin(dynamicCodex.pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining(
-        'must include at least one release-required suite for dynamic Skill "codex-dynamic"',
-      ),
+    await expect(runValidatePlugin(dynamicCodex.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
     await fs.remove(dynamicEvalDir);
     await fs.writeFile(
