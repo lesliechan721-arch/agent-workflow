@@ -1235,6 +1235,29 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
     const sharedNativeDamaged = target.state === 'needsSync'
       && codes.has('codexSharedNativeCorrupt');
     const sharedNativeProjectionIssue = sharedNativeRenderDrift || sharedNativeDamaged;
+    const sharedNative = statusTargetSharedNative(target);
+    const systemConsumer = statusTargetActivation(target)?.systemConsumer;
+    const statusUnconfirmed = systemConsumer?.state === 'unresolved'
+      || codes.has('codexSharedNativeUnobserved')
+      || codes.has('codexNativeObservationFailed')
+      || (sharedNative?.state === 'blocked' && sharedNative.reason === 'unreadable');
+    const contentMissing = codes.has('missingContent')
+      || sharedNative?.state === 'missing'
+      || statusTargetExtensions(target)?.state === 'missing'
+      || target.components.some((component) => component.kind === 'ownership'
+        && component.state === 'absent');
+    const statusIssue = systemConsumer?.state === 'incompatible'
+      ? { title: 'Codex 版本不兼容', explanation: '当前 Codex 版本低于要求，请升级后重试。' }
+      : statusUnconfirmed
+        ? { title: '状态未确认', explanation: '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。' }
+        : codes.has('codexActivationDrift')
+          ? { title: '激活范围不一致', explanation: 'Codex 激活配置与期望的使用范围不一致。' }
+          : codes.has('codexSharedNativeUpdateRequired')
+            ? { title: '版本待同步', explanation: '已安装的 Codex 平台共享内容版本与当前插件版本不一致。' }
+            : sharedNativeDamaged || contentMissing
+              ? { title: '安装不完整', explanation: '必要内容缺失或损坏，需要运行同步。' }
+              : { title: '状态待同步', explanation: '现场状态与期望状态不一致，需要重新检查并同步。' };
+
     const dependencyCodes = [
       'dependencyMissing',
       'dependencyNotReady',
@@ -1427,7 +1450,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' ? '安装不完整' : bundleUnavailable ? '当前插件目录不再包含此插件' : codexIntentSourceUnavailable ? '已保存使用设置不能解析' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' || statusUnconfirmed || systemConsumer?.state === 'incompatible' ? statusIssue.title : bundleUnavailable ? '当前插件目录不再包含此插件' : codexIntentSourceUnavailable ? '已保存使用设置不能解析' : '检查失败'}`,
         explanation: root.category === 'artifactCollision'
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
@@ -1438,8 +1461,8 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           ? 'Codex 平台共享生成内容缺失或损坏。'
           : sharedNativeRenderDrift
           ? 'Codex 平台共享生成内容与当前渲染输入不一致。'
-          : target.state === 'needsSync'
-          ? '必要内容缺失，插件可能不能稳定运行。'
+          : target.state === 'needsSync' || statusUnconfirmed || systemConsumer?.state === 'incompatible'
+          ? statusIssue.explanation
           : bundleUnavailable
             ? '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。'
             : codexIntentSourceUnavailable

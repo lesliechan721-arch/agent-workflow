@@ -19,7 +19,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { createSharedOwnerToken, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
-import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
+import { type NativeCliRunner, setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
 import { applyCodexConfigTransactionFile } from '../../src/utils/codex-config.js';
 import {
   createEmptyPluginIntentState,
@@ -119,6 +119,12 @@ async function writeCodexNativeResidue(options: {
     getCodexHome(options.env),
     'plugins', 'cache', marketplaceName, 'demo', options.version, 'plugin.json',
   ), { name: 'demo', version: options.version });
+}
+
+function withCodexVersion(runner: NativeCliRunner, version = '0.151.0'): NativeCliRunner {
+  return async (invocation) => invocation.args.at(-1) === '--version'
+    ? { exitCode: 0, stdout: `codex-cli ${version}`, stderr: '' }
+    : runner(invocation);
 }
 
 async function writeSystemCodexPackage(options: {
@@ -582,7 +588,7 @@ describe('status v7 current behavior', () => {
               stderr: '',
             }))
           : null;
-      setNativeCliRunnerOverrideForTests(nativeRunner);
+      setNativeCliRunnerOverrideForTests(nativeRunner ? withCodexVersion(nativeRunner) : null);
 
       try {
         const result = await statusCommandV7({
@@ -1051,7 +1057,7 @@ describe('status v7 current behavior', () => {
       stdout: JSON.stringify({ installed: [], available: [] }),
       stderr: '',
     }));
-    setNativeCliRunnerOverrideForTests(nativeRunner);
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner));
     const before = await filesystemSnapshot(isolation.layout.rootDir);
     const codexHomeBefore = await filesystemSnapshot(isolation.layout.codexHomeDir);
 
@@ -1117,7 +1123,7 @@ describe('status v7 current behavior', () => {
       env: { ...env, PATH: binRoot },
       platform: 'codex',
       json: true,
-      nativeCliRunner: nativeRunner,
+      nativeCliRunner: withCodexVersion(nativeRunner),
     });
 
     expect(calls).toHaveLength(2);
@@ -1164,7 +1170,7 @@ describe('status v7 current behavior', () => {
         stderr: '',
       };
     });
-    setNativeCliRunnerOverrideForTests(nativeRunner);
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner));
 
     try {
       const merged = await statusCommandV7({
@@ -1214,14 +1220,14 @@ describe('status v7 current behavior', () => {
     });
     const result = await statusCommandV7({
       plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd, env: { ...env, PATH: binRoot },
-      nativeCliRunner: async () => ({
+      nativeCliRunner: withCodexVersion(async () => ({
         exitCode: 0,
         stdout: JSON.stringify({
           installed: [{ pluginId: 'demo@aw-local', installed: true, enabled: true, version: '1.0.0' }],
           available: [],
         }),
         stderr: '',
-      }),
+      })),
     });
 
     expect(result.output).toContain('local/demo claude (project): absent');
@@ -1281,7 +1287,7 @@ describe('status v7 current behavior', () => {
       }),
       stderr: '',
     }));
-    setNativeCliRunnerOverrideForTests(nativeRunner);
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner));
 
     try {
       await fs.remove(cacheRoot);
@@ -1356,7 +1362,7 @@ describe('status v7 current behavior', () => {
       && invocation.args.join(' ') === 'plugin list --marketplace aw-local --json')).toBe(true);
   });
 
-  it('reports a filesystem-validated Codex 0.150 consumer as unresolved', async () => {
+  it('reports a probed Codex 0.150 project consumer as incompatible', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'low-codex-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -1376,7 +1382,7 @@ describe('status v7 current behavior', () => {
     const nativeRunner = vi.fn(async () => {
       throw new Error('status must not execute Codex');
     });
-    setNativeCliRunnerOverrideForTests(nativeRunner);
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner, '0.150.0'));
 
     let result;
     try {
@@ -1433,7 +1439,7 @@ describe('status v7 current behavior', () => {
       stdout: JSON.stringify({ installed: [], available: [] }),
       stderr: '',
     }));
-    setNativeCliRunnerOverrideForTests(nativeRunner);
+    setNativeCliRunnerOverrideForTests(withCodexVersion(nativeRunner, '0.150.0'));
 
     let result;
     try {
@@ -1458,53 +1464,81 @@ describe('status v7 current behavior', () => {
     expect(nativeRunner).toHaveBeenCalledTimes(2);
   });
 
-  it.runIf(process.platform !== 'win32')(
-    'keeps an ordinary POSIX shim unobserved and non-blocking without executing it',
-    async () => {
-      const isolation = getCurrentSourceTestIsolation();
-      const sourceRoot = path.join(isolation.layout.fixtureCwd, 'unobserved-codex-source');
-      await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
-      await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
-        manifest.marketplace.policy.products = ['CODEX'];
-        manifest.apps = './.app.json';
-      });
-      const { env } = await configurePathSource(sourceRoot);
-      await writePluginIntentState({ scope: 'project', cwd: isolation.layout.fixtureCwd, env }, {
-        ...createEmptyPluginIntentState(),
-        roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
-      });
-      const binRoot = path.join(isolation.layout.fixtureCwd, 'unobserved-system-bin');
-      const launcher = path.join(binRoot, 'codex');
-      await fs.outputFile(launcher, '#!/bin/sh\nexit 0\n');
-      await fs.chmod(launcher, 0o755);
-      const nativeRunner = vi.fn(async () => {
-        throw new Error('status must not execute Codex');
-      });
-      setNativeCliRunnerOverrideForTests(nativeRunner);
-
-      let result;
-      try {
-        result = await statusCommandV7({
-          plugins: ['local/demo'], cwd: isolation.layout.fixtureCwd,
-          env: { ...env, PATH: binRoot }, platform: 'codex', scope: 'project', json: true,
-        });
-      } finally {
-        setNativeCliRunnerOverrideForTests(null);
+  it.runIf(process.platform !== 'win32').each([
+    ['installed', 'ready'],
+    ['invalid-json', 'blocked'],
+    ['failed-list', 'blocked'],
+  ] as const)('observes a POSIX wrapper with aliased activation: %s', async (observation, state) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = path.join(isolation.env.HOME!, 'alias-home');
+    await fs.ensureDir(cwd);
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'wrapper-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './.app.json';
+    });
+    const configured = await configurePathSource(sourceRoot);
+    const binRoot = path.join(isolation.layout.fixtureCwd, 'wrapper-bin');
+    await fs.outputFile(path.join(binRoot, 'codex'), '#!/bin/sh\nexit 0\n');
+    await fs.chmod(path.join(binRoot, 'codex'), 0o755);
+    const env = { ...configured.env, PATH: binRoot, AW_CODEX_HOME: path.join(cwd, '.codex') };
+    await writePluginIntentState({ scope: 'user', cwd, env }, {
+      ...createEmptyPluginIntentState(),
+      roots: [{ pluginId: 'local/demo', platforms: ['codex'] }],
+    });
+    await writeCodexNativeResidue({
+      cwd, env, version: '1.0.0', userEnabled: true, sourceIdentity: configured.sourceIdentity,
+    });
+    const nativeRunner = vi.fn<NativeCliRunner>(async (invocation) => {
+      if (invocation.args.at(-1) === '--version') {
+        return { exitCode: 0, stdout: 'codex-cli 0.151.0', stderr: '' };
       }
-
-      expect(result.payload.targets[0]).toMatchObject({ state: 'needsSync' });
-      expect(statusTargetActivation(result.payload.targets[0]!)).toMatchObject({
-        evidence: 'unobserved',
-        systemConsumer: { state: 'unobserved', requiredMinVersion: '0.151.0' },
+      return {
+        exitCode: observation === 'failed-list' ? 1 : 0,
+        stdout: observation === 'invalid-json' ? '{}' : JSON.stringify({
+          installed: [{ pluginId: 'demo@aw-local', installed: true, enabled: true, version: '1.0.0' }],
+          available: [],
+        }),
+        stderr: '',
+      };
+    });
+    const before = await filesystemSnapshot(cwd);
+    const result = await statusCommandV7({
+      plugins: ['local/demo'], cwd, env, platform: 'codex', json: true, nativeCliRunner: nativeRunner,
+    });
+    expect(result.payload.targets).toHaveLength(1);
+    const target = result.payload.targets[0]!;
+    expect(target).toMatchObject({ scope: 'user', state });
+    expect(statusTargetActivation(target)).toMatchObject({ user: true });
+    expect(statusTargetActivation(target)?.project).toBeUndefined();
+    expect(target.reasons).not.toContainEqual(expect.objectContaining({ code: 'codexActivationDrift' }));
+    expect(await filesystemSnapshot(cwd)).toEqual(before);
+    expect(nativeRunner.mock.calls.filter(([call]) => call.args.at(-1) === '--version')).toHaveLength(1);
+    expect(nativeRunner.mock.calls.filter(([call]) => call.args[0] === 'plugin')).toHaveLength(2);
+    if (observation === 'installed') {
+      const project = await statusCommandV7({
+        plugins: ['local/demo'], cwd, env, platform: 'codex', scope: 'project',
+        json: true, nativeCliRunner: nativeRunner,
       });
-      expect(result.payload.targets[0]?.reasons).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({ code: 'codexProjectPluginUnsupported' }),
-      ]));
-      expect(nativeRunner).not.toHaveBeenCalled();
-    },
-  );
+      expect(project.payload.targets[0]?.reasons).toContainEqual(
+        expect.objectContaining({ code: 'codexScopePathAlias' }),
+      );
+      const projectCwd = path.join(isolation.layout.fixtureCwd, 'separate-project');
+      await fs.ensureDir(path.join(projectCwd, '.git'));
+      await fs.outputFile(path.join(projectCwd, '.codex', 'config.toml'),
+        '[plugins."demo@aw-local"]\nenabled = true\n');
+      const drifted = await statusCommandV7({
+        plugins: ['local/demo'], cwd: projectCwd, env, platform: 'codex',
+        json: true, nativeCliRunner: nativeRunner,
+      });
+      expect(drifted.payload.targets[0]?.reasons).toContainEqual(
+        expect.objectContaining({ code: 'codexActivationDrift' }),
+      );
+    }
+  });
 
-  it('reports an invalid npm package identity as typed unresolved evidence', async () => {
+  it.runIf(process.platform !== 'win32')('reports a failed version query as typed unresolved evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-source-identity');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
@@ -1523,7 +1557,7 @@ describe('status v7 current behavior', () => {
       packageName: 'foreign/codex',
     });
     const nativeRunner = vi.fn(async () => {
-      throw new Error('status must not execute Codex');
+      throw new Error('version query failed');
     });
     setNativeCliRunnerOverrideForTests(nativeRunner);
 
@@ -1556,7 +1590,7 @@ describe('status v7 current behavior', () => {
     expect(statusTargetSharedNative(result.payload.targets[0]!)).toMatchObject({
       state: 'unobserved',
     });
-    expect(nativeRunner).not.toHaveBeenCalled();
+    expect(nativeRunner).toHaveBeenCalledTimes(1);
   });
 
   it('does not materialize intent or state paths while reading missing state', async () => {
