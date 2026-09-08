@@ -1,0 +1,13 @@
+{
+  "name": "aw-development-toolkit",
+  "version": "0.1.0-beta.1",
+  "description": "创建和维护 AW Catalog/Plugin，按对象分支只读评审 AW 项目，并通过 manual-only 入口发布 Catalog。",
+  "interface": {
+    "displayName": "AW Development Toolkit",
+    "shortDescription": "开发、评审和显式发布 AW Catalog 与 Plugin",
+    "capabilities": [
+      "Skills"
+    ]
+  },
+  "skills": "./codex/skills"
+}

@@ -3,15 +3,14 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "agent-skill-toolkit",
-    "version": "0.1.0-beta.1"
+    "version": "0.1.0-beta.2"
   },
   "requiredCapabilities": [
     "aw.plugin-build-config.v1",
     "aw.plugin-manifest.v3",
     "aw.plugin-skills.v1",
     "aw.review-publication.v1",
-    "aw.runtime-imports.v1",
-    "aw.skill-validation.v1"
+    "aw.runtime-imports.v1"
   ],
-  "digest": "sha256:8a3f8b531c0d53cc657e73e538e1700b29577e295c854dce68305a8363c22bee"
+  "digest": "sha256:a1b87a2b61b7e4af446592ab2422142a4d36131c2be78e166db494e69fbdac17"
 }

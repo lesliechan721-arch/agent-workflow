@@ -1,0 +1,7 @@
+interface:
+  display_name: "Simplify Agent Skill"
+  short_description: "用最小行为合同和 ablation 安全简化 Agent Skill"
+  default_prompt: "使用 $simplify-agent-skill 简化当前 Agent Skill，并避免行为回归。"
+
+policy:
+  allow_implicit_invocation: true

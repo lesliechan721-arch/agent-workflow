@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "agent-content-toolkit",
+    "version": "0.1.0-beta.2"
+  },
+  "requiredCapabilities": [
+    "aw.plugin-manifest.v3",
+    "aw.plugin-skills.v1"
+  ],
+  "digest": "sha256:202e2b36fc772c123693e52df24fbdc78a96c16c147471bf614ff78a8724bf18"
+}

@@ -1,14 +1,7 @@
-# review-agent-skill
+# Review Agent Skill
 
-只读评审一个 Agent Skill package，包括其直接拥有的 references、scripts、assets、Eval 定义和已有证据。
+只读评审一个已有 Skill，帮助判断它是否有价值、职责是否清楚、内容和资源是否必要，以及结论有多少证据支持。
 
-## 结果
+默认聚焦用户问题；也可请求完整评审、变更复核或评分。结果是人读报告，区分已证实的问题、改进建议和未知项。需要时可追踪结构化输出的消费者；搜索不到用途不等于可以自动删除。
 
-评审会给出机器检查结果、设计与复杂度判断、证据支持的关键 findings、高价值改进和会改变结论的 unknown。quick 模式默认只回答用户关注点和直接相关领域，不生成维度记录、分数、coverage 或总体 confidence。full 模式还完成固定 12 维评分，并在主报告显示总分、coverage 和 confidence 摘要。它不修改目标，也不输出发布资格。
-
-## 选择边界
-
-- 跨多个 Skill 的有界用户工作流使用 `review-agent-workflow`。
-- 一个 AW plugin 使用 `review-aw-plugin`。
-- 跨多个 AW plugin 的有界用户工作流使用 `review-aw-workflow`。
-- 未界定的整个仓库或系统应先拆成明确 workflow，不能由本 Skill 给出全局通过结论。
+例如：“只读审核这个 Skill，重点检查引用结构和不必要的控制。”不会修改目标或给出项目发布资格。新模型实验须具备明确授权与运行条件；用户明确要求时可归档顶层报告。多个组件的整体架构使用 `review-agent-architecture`。

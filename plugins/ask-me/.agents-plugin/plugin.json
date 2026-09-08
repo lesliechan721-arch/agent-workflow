@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "ask-me",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
   "marketplace": {
     "category": "workflow",
@@ -9,6 +9,16 @@
     "policy": {
       "installation": "AVAILABLE",
       "authentication": "ON_INSTALL"
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-build-config.v1",
+        "aw.plugin-config.v2",
+        "aw.plugin-manifest.v3",
+        "aw.plugin-skills.v1"
+      ]
     }
   },
   "skills": "./skills",
@@ -33,13 +43,19 @@
     }
   },
   "scripts": {},
-  "requires": {
-    "aw": {
-      "capabilities": [
-        "aw.plugin-build-config.v1",
-        "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1"
-      ]
+  "config": {
+    "fields": {
+      "reviewSessionTtlMinutes": {
+        "type": "number",
+        "title": "原型 Review 会话有效期（分钟）",
+        "description": "新建网页原型 Review 会话的有效期。",
+        "default": 30,
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 240
+        }
+      }
     }
   }
 }

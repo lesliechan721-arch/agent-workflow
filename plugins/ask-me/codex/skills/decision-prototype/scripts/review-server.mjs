@@ -22,9 +22,13 @@ import {
   readJsonSchema,
   validateFeedbackAgainstPrototype,
 } from './review-contract.mjs';
+import { MAX_REVIEW_TTL_MS } from './review-config.mjs';
 
 const maxBodyBytes = 2 * 1024 * 1024;
 const reviewShellVersion = 2;
+const shutdownGraceMs = 3_000;
+const extensionMs = 30 * 60 * 1000;
+const openingLeaseMs = 15_000;
 const shellFiles = new Set(['app.js', 'index.html', 'review-policy.mjs', 'styles.css']);
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -164,7 +168,23 @@ function serveFile(request, response, filePath) {
 }
 
 function assertApiRequest(request, token, origin) {
-  if (request.headers.origin !== origin) throw new HttpError(403, 'Invalid Prototype Review origin');
+  let sameOriginBrowserGet = false;
+  if (
+    request.method === 'GET'
+    && request.headers.origin === undefined
+    && request.headers['sec-fetch-site'] === 'same-origin'
+    && typeof request.headers.referer === 'string'
+  ) {
+    try {
+      sameOriginBrowserGet = new URL(request.headers.referer).origin === origin
+        && request.headers.host === new URL(origin).host;
+    } catch {
+      sameOriginBrowserGet = false;
+    }
+  }
+  if (request.headers.origin !== origin && !sameOriginBrowserGet) {
+    throw new HttpError(403, 'Invalid Prototype Review origin');
+  }
   if (request.headers['x-prototype-review-token'] !== token) {
     throw new HttpError(403, 'Invalid Prototype Review session');
   }
@@ -189,10 +209,15 @@ async function startServer(launchPath) {
   const launch = await readRegularJson(launchPath, 'Launch descriptor');
   if (
     !isObject(launch)
+    || launch.schemaVersion !== 2
+    || launch.reviewShellVersion !== reviewShellVersion
     || typeof launch.sessionId !== 'string'
     || !/^[a-f0-9]{32}$/.test(launch.sessionId)
     || typeof launch.token !== 'string'
     || typeof launch.prototypePath !== 'string'
+    || !Number.isInteger(launch.ttlMs)
+    || launch.ttlMs <= 0
+    || launch.ttlMs > MAX_REVIEW_TTL_MS
   ) {
     throw new Error('Invalid launch descriptor');
   }
@@ -234,9 +259,78 @@ async function startServer(launchPath) {
   };
   const feedbackPath = path.join(prototype.prototypeRoot, 'feedback.json');
   const sessionPath = path.join(sessionDir, 'session.json');
+  const terminalPath = path.join(sessionDir, 'terminal.json');
   const waiters = new Set();
   const activeSubmissions = new Set();
+  const sockets = new Set();
+  const createdAtMs = Date.now();
+  const createdAtMonotonic = performance.now();
+  const maxExpiresAtMs = createdAtMs + MAX_REVIEW_TTL_MS;
+  const maxExpiresAtMonotonic = createdAtMonotonic + MAX_REVIEW_TTL_MS;
+  let expiresAtMs = createdAtMs + launch.ttlMs;
+  let expiresAtMonotonic = createdAtMonotonic + launch.ttlMs;
   let stopping = false;
+  let finalStatus = null;
+  let finalization = null;
+  let expiryTimer = null;
+  let pageConnected = false;
+  let opening = null;
+  let lastOpen = null;
+  let origin;
+  let server;
+  let finishLifetime;
+  const lifetime = new Promise((resolve) => {
+    finishLifetime = resolve;
+  });
+
+  function deadlinePassed() {
+    return Date.now() >= expiresAtMs || performance.now() >= expiresAtMonotonic;
+  }
+
+  function assertSubmissionDeadline() {
+    if (deadlinePassed()) {
+      throw new HttpError(410, 'Prototype Review session expired before feedback was saved');
+    }
+  }
+
+  function refreshOpening() {
+    if (
+      opening
+      && (Date.now() >= opening.expiresAtMs || performance.now() >= opening.expiresAtMonotonic)
+    ) {
+      opening = null;
+      lastOpen = {
+        status: 'failed',
+        method: 'system-browser',
+        reason: 'The previous browser open request did not finish',
+      };
+    }
+  }
+
+  function presentation() {
+    refreshOpening();
+    return {
+      pageConnected,
+      openRequested: lastOpen?.status === 'requested',
+      openInProgress: opening !== null,
+      openStatus: lastOpen?.status || null,
+      ...(lastOpen?.reason ? { openReason: lastOpen.reason } : {}),
+    };
+  }
+
+  function stateReceipt(status, extra = {}) {
+    return {
+      ok: true,
+      status,
+      prototypeId: prototype.config.id,
+      revision: prototype.config.revision,
+      createdAt: new Date(createdAtMs).toISOString(),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      maxExpiresAt: new Date(maxExpiresAtMs).toISOString(),
+      presentation: presentation(),
+      ...extra,
+    };
+  }
 
   async function currentPrototype() {
     await assertDirectoryIdentity(prototype.prototypeRoot, prototypeRootIdentity, 'Prototype root');
@@ -322,6 +416,7 @@ async function startServer(launchPath) {
         throw new Error('Feedback temporary is outside the Prototype root');
       }
       await currentPrototype();
+      assertSubmissionDeadline();
       try {
         await link(temporary, feedbackPath);
       } catch (error) {
@@ -341,33 +436,126 @@ async function startServer(launchPath) {
   function notifyWaiters(status) {
     for (const waiter of waiters) {
       clearTimeout(waiter.timer);
-      sendJson(waiter.response, 200, { ok: true, status });
+      try {
+        sendJson(waiter.response, 200, { ok: true, status });
+      } catch {
+        waiter.response.destroy();
+      }
     }
     waiters.clear();
   }
 
-  let origin;
-  const server = http.createServer(async (request, response) => {
+  async function canonicalFeedbackExists() {
     try {
-      const requestUrl = new URL(request.url || '/', origin);
-      if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
-        assertApiRequest(request, launch.token, origin);
-        await currentPrototype();
-        const feedback = await readCanonicalFeedback({ allowMissing: true });
-        sendJson(response, 200, {
-          ok: true,
-          status: feedback ? 'submitted' : 'ready',
+      return await readCanonicalFeedback({ allowMissing: true }) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  function closeServerBounded() {
+    return new Promise((resolve) => {
+      let settled = false;
+      let forceTimer;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(forceTimer);
+        resolve();
+      };
+      forceTimer = setTimeout(() => {
+        if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+        for (const socket of sockets) socket.destroy();
+        setTimeout(finish, 50);
+      }, shutdownGraceMs);
+      server.close(finish);
+      if (typeof server.closeIdleConnections === 'function') server.closeIdleConnections();
+    });
+  }
+
+  function finalize(requestedStatus) {
+    stopping = true;
+    if (expiryTimer) clearTimeout(expiryTimer);
+    if (finalization) return finalization;
+    finalization = (async () => {
+      const submissions = await Promise.allSettled([...activeSubmissions]);
+      const submitted = requestedStatus === 'submitted'
+        || submissions.some((result) => result.status === 'fulfilled')
+        || await canonicalFeedbackExists();
+      finalStatus = submitted ? 'submitted' : requestedStatus;
+      notifyWaiters(finalStatus);
+      await closeServerBounded();
+      try {
+        await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
+        await writeAtomicJson(terminalPath, {
+          schemaVersion: 1,
+          sessionId: launch.sessionId,
+          prototypePath: prototype.prototypePath,
+          prototypeRoot: prototype.prototypeRoot,
           prototypeId: prototype.config.id,
           revision: prototype.config.revision,
+          status: finalStatus,
+          resourcesClosed: true,
+          endedAt: new Date().toISOString(),
+        }, { compact: true });
+      } catch (error) {
+        console.error(`Cannot persist Prototype Review terminal receipt: ${error.message}`);
+      }
+      process.off('SIGINT', handleSignal);
+      process.off('SIGTERM', handleSignal);
+      finishLifetime();
+      return finalStatus;
+    })();
+    return finalization;
+  }
+
+  function handleSignal() {
+    void finalize('cancelled');
+  }
+
+  function scheduleExpiry() {
+    if (expiryTimer) clearTimeout(expiryTimer);
+    const remaining = Math.min(expiresAtMs - Date.now(), expiresAtMonotonic - performance.now());
+    if (remaining <= 0) {
+      void finalize('expired');
+      return;
+    }
+    expiryTimer = setTimeout(() => scheduleExpiry(), Math.max(1, remaining));
+  }
+
+  server = http.createServer(async (request, response) => {
+    try {
+      const requestUrl = new URL(request.url || '/', origin);
+      if (deadlinePassed()) {
+        if (requestUrl.pathname.startsWith('/api/')) {
+          assertApiRequest(request, launch.token, origin);
+        }
+        const readableTerminalRequest = (
+          request.method === 'GET'
+          && ['/api/status', '/api/wait'].includes(requestUrl.pathname)
+        ) || (request.method === 'POST' && requestUrl.pathname === '/api/stop');
+        sendJson(response, readableTerminalRequest ? 200 : 410, stateReceipt('expired'));
+        void finalize('expired');
+        return;
+      }
+      if (request.method === 'GET' && requestUrl.pathname === '/api/status') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        await currentPrototype();
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        sendJson(response, 200, stateReceipt(feedback ? 'submitted' : 'ready', {
           ...(feedback ? feedbackReceipt(feedback, feedbackPath) : {}),
           url: `${origin}/review/index.html`,
-        });
+        }));
         return;
       }
       if (request.method === 'GET' && requestUrl.pathname === '/api/wait') {
         assertApiRequest(request, launch.token, origin);
         if (stopping) {
-          sendJson(response, 200, { ok: true, status: 'cancelled' });
+          sendJson(response, 200, { ok: true, status: finalStatus || 'stopping' });
           return;
         }
         await currentPrototype();
@@ -392,6 +580,137 @@ async function startServer(launchPath) {
         });
         return;
       }
+      if (request.method === 'POST' && requestUrl.pathname === '/api/page-connected') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        await currentPrototype();
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        if (feedback) {
+          sendJson(response, 200, stateReceipt('submitted', feedbackReceipt(feedback, feedbackPath)));
+          return;
+        }
+        assertSubmissionDeadline();
+        if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
+        pageConnected = true;
+        sendJson(response, 200, stateReceipt('ready'));
+        return;
+      }
+      if (request.method === 'POST' && requestUrl.pathname === '/api/extend') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        await currentPrototype();
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        if (feedback) {
+          sendJson(response, 200, stateReceipt('submitted', feedbackReceipt(feedback, feedbackPath)));
+          return;
+        }
+        assertSubmissionDeadline();
+        if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
+        const nextExpiresAtMs = Math.min(expiresAtMs + extensionMs, maxExpiresAtMs);
+        const deltaMs = nextExpiresAtMs - expiresAtMs;
+        expiresAtMs = nextExpiresAtMs;
+        expiresAtMonotonic = Math.min(expiresAtMonotonic + deltaMs, maxExpiresAtMonotonic);
+        scheduleExpiry();
+        sendJson(response, 200, stateReceipt('ready'));
+        return;
+      }
+      if (request.method === 'POST' && requestUrl.pathname === '/api/open-reserve') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+          throw new HttpError(415, 'Browser open reservation must use application/json');
+        }
+        await currentPrototype();
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        if (feedback) {
+          sendJson(response, 200, stateReceipt('submitted', feedbackReceipt(feedback, feedbackPath)));
+          return;
+        }
+        const body = await receiveJson(request);
+        if (!isObject(body) || (body.retry !== undefined && typeof body.retry !== 'boolean')) {
+          throw new HttpError(400, 'Invalid browser open reservation');
+        }
+        assertSubmissionDeadline();
+        if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
+        refreshOpening();
+        const retry = body.retry === true;
+        if (opening) {
+          sendJson(response, 200, stateReceipt('opening'));
+          return;
+        }
+        if (pageConnected && !retry) {
+          sendJson(response, 200, stateReceipt('connected'));
+          return;
+        }
+        if (lastOpen && !retry) {
+          sendJson(response, 200, stateReceipt(
+            lastOpen.status === 'requested' ? 'open-requested' : lastOpen.status,
+          ));
+          return;
+        }
+        const reservation = randomBytes(16).toString('hex');
+        lastOpen = null;
+        opening = {
+          reservation,
+          expiresAtMs: Date.now() + openingLeaseMs,
+          expiresAtMonotonic: performance.now() + openingLeaseMs,
+        };
+        sendJson(response, 200, stateReceipt('reserved', { reservation }));
+        return;
+      }
+      if (request.method === 'POST' && requestUrl.pathname === '/api/open-complete') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        if (!request.headers['content-type']?.toLowerCase().startsWith('application/json')) {
+          throw new HttpError(415, 'Browser open completion must use application/json');
+        }
+        await currentPrototype();
+        const body = await receiveJson(request);
+        if (
+          !isObject(body)
+          || typeof body.reservation !== 'string'
+          || !['requested', 'unavailable', 'failed'].includes(body.status)
+          || body.method !== 'system-browser'
+          || (body.reason !== undefined && (typeof body.reason !== 'string' || body.reason.length > 500))
+        ) {
+          throw new HttpError(400, 'Invalid browser open completion');
+        }
+        assertSubmissionDeadline();
+        refreshOpening();
+        if (!opening || opening.reservation !== body.reservation) {
+          throw new HttpError(409, 'Browser open reservation is no longer current');
+        }
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        if (feedback) {
+          opening = null;
+          sendJson(response, 200, stateReceipt('submitted', feedbackReceipt(feedback, feedbackPath)));
+          return;
+        }
+        assertSubmissionDeadline();
+        if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
+        opening = null;
+        lastOpen = {
+          status: body.status,
+          method: body.method,
+          ...(body.reason ? { reason: body.reason } : {}),
+        };
+        sendJson(response, 200, stateReceipt(
+          pageConnected ? 'connected' : (body.status === 'requested' ? 'open-requested' : body.status),
+        ));
+        return;
+      }
       if (request.method === 'POST' && requestUrl.pathname === '/api/feedback') {
         assertApiRequest(request, launch.token, origin);
         if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
@@ -399,6 +718,7 @@ async function startServer(launchPath) {
           throw new HttpError(415, 'Feedback must use application/json');
         }
         const feedback = normalizeAndValidate(await receiveJson(request), feedbackSchema, 'feedback');
+        assertSubmissionDeadline();
         if (stopping) throw new HttpError(409, 'Prototype Review session is stopping');
         if (
           feedback.prototypeId !== prototype.config.id
@@ -415,35 +735,53 @@ async function startServer(launchPath) {
         } finally {
           activeSubmissions.delete(submission);
         }
+        stopping = true;
         sendJson(response, 200, {
           ok: true,
           status: 'submitted',
           accepted: committed.accepted,
           ...feedbackReceipt(committed.feedback, feedbackPath),
         });
-        notifyWaiters('submitted');
+        void finalize('submitted');
         return;
       }
       if (request.method === 'POST' && requestUrl.pathname === '/api/stop') {
         assertApiRequest(request, launch.token, origin);
         if (stopping) {
-          sendJson(response, 200, { ok: true, status: 'cancelled' });
+          sendJson(response, 200, { ok: true, status: finalStatus || 'stopping' });
           return;
         }
         stopping = true;
         const submissions = await Promise.allSettled([...activeSubmissions]);
-        let submitted = submissions.some((result) => result.status === 'fulfilled');
-        if (!submitted) {
-          try {
-            submitted = await readCanonicalFeedback({ allowMissing: true }) !== null;
-          } catch {
-            // Invalid or foreign feedback never changes a cancellation into submission.
-          }
-        }
+        const submitted = submissions.some((result) => result.status === 'fulfilled')
+          || await canonicalFeedbackExists();
         const status = submitted ? 'submitted' : 'cancelled';
         sendJson(response, 200, { ok: true, status });
-        notifyWaiters(status);
-        setImmediate(() => server.close());
+        void finalize(status);
+        return;
+      }
+      if (request.method === 'POST' && requestUrl.pathname === '/api/cancel') {
+        assertApiRequest(request, launch.token, origin);
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        await currentPrototype();
+        assertSubmissionDeadline();
+        if (stopping) {
+          sendJson(response, 200, stateReceipt(finalStatus || 'stopping'));
+          return;
+        }
+        stopping = true;
+        const submissions = await Promise.allSettled([...activeSubmissions]);
+        const feedback = await readCanonicalFeedback({ allowMissing: true });
+        const submitted = submissions.some((result) => result.status === 'fulfilled') || feedback !== null;
+        const status = submitted ? 'submitted' : 'cancelled';
+        sendJson(response, 200, stateReceipt(
+          status,
+          feedback ? feedbackReceipt(feedback, feedbackPath) : {},
+        ));
+        void finalize(status);
         return;
       }
       if (requestUrl.pathname.startsWith('/api/')) throw new HttpError(404, 'API route not found');
@@ -475,7 +813,17 @@ async function startServer(launchPath) {
     } catch (error) {
       const status = error.status || (error.code === 'ENOENT' ? 404 : 400);
       sendJson(response, status, { ok: false, status: 'failed', error: error.message });
+      if (status === 409 && error.message.includes('Prototype revision changed')) {
+        void finalize('cancelled');
+      }
+      if (status === 410 && error.message.includes('Prototype Review session expired')) {
+        void finalize('expired');
+      }
     }
+  });
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
   });
 
   await new Promise((resolve, reject) => {
@@ -486,7 +834,7 @@ async function startServer(launchPath) {
   if (!address || typeof address === 'string') throw new Error('Prototype Review server did not allocate a port');
   origin = `http://127.0.0.1:${address.port}`;
   const descriptor = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     reviewShellVersion,
     sessionId: launch.sessionId,
     token: launch.token,
@@ -496,21 +844,17 @@ async function startServer(launchPath) {
     prototypeRoot: prototype.prototypeRoot,
     prototypeId: prototype.config.id,
     revision: prototype.config.revision,
-    createdAt: new Date().toISOString(),
+    createdAt: new Date(createdAtMs).toISOString(),
+    expiresAt: new Date(expiresAtMs).toISOString(),
   };
   await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
   await writeAtomicJson(sessionPath, descriptor, { compact: true });
   await assertDirectoryIdentity(sessionDir, sessionDirIdentity, 'Prototype Review session directory');
   await rm(launchPath, { force: true });
-
-  const close = () => {
-    if (stopping) return;
-    stopping = true;
-    notifyWaiters('cancelled');
-    server.close();
-  };
-  process.once('SIGINT', close);
-  process.once('SIGTERM', close);
+  process.once('SIGINT', handleSignal);
+  process.once('SIGTERM', handleSignal);
+  scheduleExpiry();
+  await lifetime;
 }
 
 const args = parseArgs(process.argv.slice(2));

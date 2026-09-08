@@ -1,10 +1,10 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.1",
-  "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
+  "version": "0.1.0-beta.2",
+  "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
   "interface": {
     "displayName": "Agent Skill Toolkit",
-    "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+    "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
     "capabilities": [
       "Skills"
     ]

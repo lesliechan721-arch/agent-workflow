@@ -11,10 +11,10 @@
     {
       "name": "agent-content-toolkit",
       "source": "./plugins/agent-content-toolkit",
-      "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
+      "description": "创建、修改或评价给 Agent 读取的内容；统一事实依据、指针、信息层级、最小控制、完成条件、输出需要与剪枝方法。",
       "interface": {
         "displayName": "Agent Content Toolkit",
-        "shortDescription": "创建和评审 Agent-facing 文档，控制上下文负担、指针与完成边界",
+        "shortDescription": "设计和评价最小、可达、可执行的 Agent-facing 内容",
         "capabilities": [
           "Skills"
         ]
@@ -33,10 +33,10 @@
     {
       "name": "agent-skill-toolkit",
       "source": "./plugins/agent-skill-toolkit",
-      "description": "使用共享标准创建或评审单个 Agent Skill，设计或审核 Skill Eval，并评审有界的跨 Skill 工作流。",
+      "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
       "interface": {
         "displayName": "Agent Skill Toolkit",
-        "shortDescription": "创建和评审 Agent Skill，设计和审核 Eval 与跨 Skill 工作流",
+        "shortDescription": "创建、评审、简化 Agent Skill，并审核 Eval 与工作流架构",
         "capabilities": [
           "Skills"
         ]
@@ -71,34 +71,12 @@
       }
     },
     {
-      "name": "aw-catalog-development",
-      "source": "./plugins/aw-catalog-development",
-      "description": "创建、维护和只读评审 AW Catalog Workspace，并通过显式授权发布 Catalog。",
+      "name": "aw-development-toolkit",
+      "source": "./plugins/aw-development-toolkit",
+      "description": "创建和维护 AW Catalog/Plugin，按对象分支只读评审 AW 项目，并通过 manual-only 入口发布 Catalog。",
       "interface": {
-        "displayName": "AW Catalog Development",
-        "shortDescription": "维护、评审和显式发布 AW Catalog Workspace",
-        "capabilities": [
-          "Skills"
-        ]
-      },
-      "category": "workflow",
-      "strict": true,
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL",
-        "products": [
-          "CODEX",
-          "CLAUDE"
-        ]
-      }
-    },
-    {
-      "name": "aw-plugin-development",
-      "source": "./plugins/aw-plugin-development",
-      "description": "创建或维护 AW 插件，评审单个 AW 插件，并评审有界的跨 AW 插件工作流。",
-      "interface": {
-        "displayName": "AW Plugin Development",
-        "shortDescription": "创建、维护和评审 AW 插件及跨插件工作流",
+        "displayName": "AW Development Toolkit",
+        "shortDescription": "开发、评审和显式发布 AW Catalog 与 Plugin",
         "capabilities": [
           "Skills"
         ]
@@ -117,7 +95,7 @@
     {
       "name": "aw-skill-eval-runner",
       "source": "./plugins/aw-skill-eval-runner",
-      "description": "准备、审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证 EvalResult。",
+      "description": "准备、独立审核并通过 aw-skill-eval 执行 Agent Skill Eval，验证结果并按需归因异常。",
       "interface": {
         "displayName": "AW Skill Eval Runner",
         "shortDescription": "准备、审核并执行 Agent Skill Eval，验证结果",

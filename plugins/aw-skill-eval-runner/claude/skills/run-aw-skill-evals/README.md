@@ -1,23 +1,9 @@
 # Run AW Skill Evals
 
-准备、审核并执行 AW Agent Skill Eval。它接受已有 EvalSpec，也可以从 plugin、Skill、suite、profile 和 case 选择生成 EvalSpec。
+准备、验证或执行 AW Skill Eval，并返回可核验的 Spec、Audit 与 Result。
 
-## 适合使用
+例如：“为这个 Skill 准备验证集，先不要运行模型。”只要求准备或验证时会在该阶段结束。真实执行前复用准确绑定的独立 Audit，或请求独立 Auditor，并说明预计调用量、输出位置与副作用。
 
-- 准备或验证一个 AW Skill Eval，但暂不执行模型。
-- 复用已绑定到 provider、workspace、current/previous target、case digest 和 selected cases 的 EvalAudit，或在缺失时取得独立 preflight。
-- 在可见的成本和副作用边界内执行，并得到已验证 EvalResult。
+执行可能使用现有模型凭据、访问模型网络并启动外部进程；不会显示凭据值。成本未知、较多调用或自定义进程需要明确授权。默认执行需要整个会话的 Full Access 语义与进程树检查；单次提权不能代替。只有用户接受本次风险才可使用非受管模式，它不保证后代进程清理，也不能绕过 macOS Codex/keychain 检查。
 
-## 工作方式
-
-执行前只从已验证 Spec/cases 和 validator receipt 显示 case/runs/baseline、预计真实调用数、provider 类别、可能使用 credential、模型网络和输出路径。用户已明确要求且预计不超过 10 次内置模型调用时可直接执行；更高成本或 custom process 会再次确认。
-
-Engine 负责执行预检、隔离和清理。若它阻断运行，Runner 只报告诊断和恢复选项，不复刻检查、不绕过，也不自动重试。只有用户明确接受 Engine 提示的本次 unmanaged 风险后，Runner 才给该次命令增加相应 flag。
-
-clean success 返回已验证 EvalResult 和 Engine 记录的执行模式，不增加额外 triage。只有执行或评分异常、混合结果、baseline 回归，或结果将用于修改生产 Skill 时，才调用独立 Auditor 做 result-triage。
-
-普通成功路径不运行环境 doctor。只有安装或版本升级、用户明确请求诊断，或模型已启动后的执行失败需要定位 provider 环境时，才进入高级诊断分支。
-
-## 边界
-
-本 Skill 不设计 case、不修改生产 Skill、不实现执行引擎，也不作 Quality Review 或发布决定。执行会启动外部进程、访问模型网络并写入已披露的 output 路径。
+失败不自动重试；保留已有诊断和结果。成功后验证结果，只有异常、回归或结果将用于修改 Skill 时才进一步归因。它不作发布决定。

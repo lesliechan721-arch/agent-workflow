@@ -1,7 +1,0 @@
-interface:
-  display_name: "Review Agent Workflow"
-  short_description: "只读评审有界的跨 Skill 工作流、职责交接与最小架构边界"
-  default_prompt: "使用 $review-agent-workflow 审核当前有界工作流。"
-
-policy:
-  allow_implicit_invocation: true

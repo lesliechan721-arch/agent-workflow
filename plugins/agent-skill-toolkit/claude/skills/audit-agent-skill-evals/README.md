@@ -1,16 +1,7 @@
 # Audit Agent Skill Evals
 
-在模型执行前审核 Agent Skill Eval 的现实性、Oracle 和错误代价，或在执行后解释失败、混合结果和 baseline 回归。
+审核 Skill Eval 的前提、Oracle 和错误代价，或解释已有运行中的失败、混合结果与回归。
 
-## 适合使用
+源用例可直接审核，不要求先安装 AW 或执行模型。正式运行准入需要实际运行器提供输入、格式和验证能力；参与同一 Oracle 设计的上下文不能签发独立通过结论。
 
-- `preflight`：从已验证 EvalSpec 的绑定输入生成一份 EvalAudit v1，决定是否允许执行。
-- `result-triage`：从已验证 EvalResult、spec 和 Audit 解释问题来源，给出收集证据或修正 Eval 的建议。
-
-## 工作方式
-
-preflight 保持只读，并且必须由没有参与当前 case/Oracle 设计的上下文完成。机器核对 provider、workspace、current/previous target、case digest 和 selected cases；人工只读 case 明确引用的材料。result-triage 默认在聊天中返回，也可以按用户要求写 `triage.md`。clean success 不需要额外 triage。
-
-## 边界
-
-本 Skill 不创建 case、不运行模型、不修改生产 Skill，也不输出发布资格或机器 gate。实际执行由兼容 Eval Runner 负责。
+例如：“先检查这些用例的预期是否成立，不运行 Eval。”结果按证据强度说明问题和未知；只有真实运行器需要时才生成其 Audit 文件。此 Skill 不修改生产 Skill、不运行模型，也不作发布决定。

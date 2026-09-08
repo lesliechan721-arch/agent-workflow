@@ -1,6 +1,6 @@
 interface:
   display_name: "Decision Shape"
-  short_description: "通过多轮问答和按需原型，塑造完整且当前有效的复杂决策共享理解"
-  default_prompt: "使用 $decision-shape 把当前复杂主题通过问答和必要原型塑造成完整 Shape。"
+  short_description: "在多轮问答与可体验证据间形成完整且当前有效的共享理解"
+  default_prompt: "使用 $decision-shape 收敛当前主题的材料决定，并按需维护 Shape 记录。"
 policy:
   allow_implicit_invocation: true

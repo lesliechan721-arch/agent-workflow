@@ -1,35 +1,27 @@
-# Composition Fitness Audit
+# Skill 组合与输出边界
 
-## 组合轴
+本文件是 Skill 领域共享规则；具体作者动作与审稿证据要求由各自工作流决定。
 
-| 轴 | 问题 |
-| --- | --- |
-| Independent intents | 一个 Skill 是否包含可被用户独立请求的多个结果？ |
-| Permission modes | 一个 Skill 是否混合只读、写入、高成本执行或发布权限？ |
-| Evidence lifecycles | 作者、Oracle、运行证据和独立裁决是否被同一 Skill 同时拥有？ |
-| Environment profiles | 通用 Skill 是否混入单一项目、客户端或 runtime 适配细节？ |
-| Context phases | 是否有某个 branch 需要独立上下文，且应由相邻 Skill 承接？ |
-| Stable handoffs | 拆分后是否可以用短、必要且稳定的输入输出通信？ |
-| Dependency direction | 可复用 standalone/leaf 是否反向依赖 caller 或 orchestrator 拥有的目录、生命周期、阶段、状态名或后续能力？ |
-| Output consumer boundary | 固定输出字段是否有 parser、持久 artifact、独立 actor 或明确的人类决策用途？ |
+## 连贯职责与两种成本
 
-## Verdict
+以用户结果、权限、证据生命周期、目标环境、上下文隔离价值和实际复用判断边界。对象差异常可由 reference 分支处理；独立裁决或可复用能力可以保持公开。能为每个分支起名字，不足以要求新增 Skill。
 
-- `coherent`：一个独立用户意图，权限和证据生命周期一致。
-- `composite-proportionate`：多个不能独立触发的紧密 branch，共享大部分上下文。
-- `overloaded`：多个独立意图或权限、证据、profile 不对称。
-- `orchestrator-needed`：应拆成多个 Skill，由薄入口只管理顺序、授权和最小 handoff。
+同时比较实际读入的 description/正文/参考资料与调用链，以及用户需要记住的入口和内部对象。独立性收益不足以抵消导航和维护时合并；只减少入口数也不能证明一个大 facade 合理。整个插件组合和公开能力面由 Architecture Review 评估。
 
-## 强拆分或过度工程化信号
+## Caller 与 leaf
 
-- 创建或修改与独立 Review 混合。
-- Eval case 设计与 Oracle 审核或运行混合。
-- 通用规则与项目 build、materialization 或 publish 混合。
-- 长时间执行或状态管理与结果裁决混合。
-- 多个 branch 可独立触发且典型请求只需要其中一个。
+通用 leaf 不因单个 caller 就接管其私有目录、状态名、阶段、后续动作或发布政策。调用方按本次任务说明目标、权限和结果重点；同一 Agent 已有的上下文无需重新包装成函数参数。
 
-## 停止规则
+使用公开 Skill 不自动产生新 Agent、新权限或独立证据。需要真正独立审核时由对应 Reviewer/Auditor 或调用方请求新上下文；没有隔离能力就说明限制，不能把作者自检称为独立裁决。具体子代理 schema、等待和生命周期由 harness 或专门调度能力负责。
 
-若一个 Skill 含多个可独立触发的用户结果、权限或证据生命周期，先给最小职责拆分；不要通过增加更多分支和门禁维持单体。
+## 固定输出是否必要
 
-Author 在写正文前完成判定。需要 orchestrator 时，入口只拥有顺序、授权和最小 handoff；可重算事实不形成持久模型合同。
+先识别结果用途：用户明确指定的格式、真实业务 parser、外部文件消费、恢复、授权或跨上下文交接可以需要结构；只有自带 validator 不能自证价值。静态搜索没找到用途只表明待核验，不证明不存在。
+
+仅为同一会话继续使用而增加 `nextSkill`、`artifactPath` 或状态协议，且没有其它消费目的时，优先使用语义完成条件；有明确用户格式要求则遵守，不武断删除 JSON。
+
+人读结果优先可读；子代理由调用处说明本次需要的重点，除非 harness 机械解析，否则不建立通用 schema。机器合同由真实消费者定义最小字段和版本；不要让通用 Skill 预先承诺某个项目的接口。
+
+## 使用这些标准
+
+Author 按它选择分支和输出；Reviewer 验证现有设计是否有必要及依赖是否可达。相同判断只在一个主问题归属，不因同时影响资源、控制、维护而重复计罚。拆分、自动化和取消格式都不是默认目标。

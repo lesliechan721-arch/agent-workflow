@@ -25,9 +25,145 @@ const state = {
   previewCleanups: [],
   nextAnnotationId: 1,
   submitted: false,
+  sessionStatus: 'connecting',
+  expiresAt: null,
+  maxExpiresAt: null,
+  statusTimer: null,
+  remainingTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
+
+function apiHeaders(json = false) {
+  return {
+    ...(json ? { 'content-type': 'application/json' } : {}),
+    'x-prototype-review-token': state.sessionToken,
+  };
+}
+
+function clearSessionTimers() {
+  if (state.statusTimer !== null) window.clearInterval(state.statusTimer);
+  if (state.remainingTimer !== null) window.clearInterval(state.remainingTimer);
+  state.statusTimer = null;
+  state.remainingTimer = null;
+}
+
+function remainingLabel(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
+  if (minutes > 0) return `${minutes} 分钟 ${seconds} 秒`;
+  return `${seconds} 秒`;
+}
+
+function updateRemainingTime() {
+  if (state.sessionStatus !== 'ready' || state.expiresAt === null) return;
+  const remaining = state.expiresAt - Date.now();
+  if (remaining <= 0) {
+    $('sessionRemaining').textContent = '期限已到，正在确认会话状态…';
+    void checkSession();
+    return;
+  }
+  $('sessionRemaining').textContent = `剩余 ${remainingLabel(remaining)}`;
+}
+
+function disableReview() {
+  closeAnnotationDrawer({ restoreFocus: false });
+  for (const control of $('reviewForm').querySelectorAll('button, input, select, textarea')) {
+    control.disabled = true;
+  }
+}
+
+function setTerminalSession(status) {
+  if (['submitted', 'cancelled', 'expired'].includes(state.sessionStatus)) return;
+  const deadlinePassed = state.expiresAt !== null && Date.now() >= state.expiresAt;
+  state.sessionStatus = status;
+  clearSessionTimers();
+  disableReview();
+  $('sessionActions').hidden = true;
+  $('sessionRemaining').textContent = '';
+  const copy = {
+    cancelled: ['评审已取消', '此会话已取消。未生成反馈判断。'],
+    expired: ['评审已到期', '此会话已到期。未生成反馈判断。'],
+    disconnected: deadlinePassed
+      ? ['期限已到，状态待确认', '评审期限已到，但无法连接服务确认结果。请让 Agent 检查会话。']
+      : ['连接已断开', '无法连接评审服务。未保存的内容尚未提交。'],
+    unavailable: ['无法确认会话状态', '评审服务拒绝了状态请求。请关闭本页，并让 Agent 检查会话结果。'],
+  }[status] || ['评审已结束', '此会话不能继续编辑。'];
+  $('sessionState').textContent = copy[0];
+  $('sessionEndedHeading').textContent = copy[0];
+  $('sessionEndedMessage').textContent = copy[1];
+  $('sessionEnded').hidden = false;
+  $('sessionEnded').focus();
+}
+
+function applySessionReceipt(receipt) {
+  if (receipt.status === 'submitted') {
+    markSubmitted({ accepted: receipt.accepted !== false });
+    return;
+  }
+  if (['cancelled', 'expired'].includes(receipt.status)) {
+    setTerminalSession(receipt.status);
+    return;
+  }
+  if (receipt.status !== 'ready') return;
+  if (!['connecting', 'ready'].includes(state.sessionStatus)) return;
+  state.sessionStatus = 'ready';
+  state.expiresAt = Date.parse(receipt.expiresAt);
+  state.maxExpiresAt = Date.parse(receipt.maxExpiresAt);
+  $('sessionState').textContent = receipt.presentation?.pageConnected
+    ? '页面已连接'
+    : '页面正在连接';
+  $('extendSession').disabled = state.expiresAt >= state.maxExpiresAt;
+  $('cancelSession').disabled = false;
+  updateRemainingTime();
+}
+
+async function sessionRequest(path, method = 'GET') {
+  let response;
+  try {
+    response = await fetch(path, { method, headers: apiHeaders() });
+  } catch (error) {
+    error.sessionFailure = 'disconnected';
+    throw error;
+  }
+  let receipt;
+  try {
+    receipt = await response.json();
+  } catch {
+    const error = new Error('评审服务返回了无法识别的响应');
+    error.sessionFailure = 'unavailable';
+    throw error;
+  }
+  if (!response.ok && !['expired', 'cancelled', 'submitted'].includes(receipt.status)) {
+    const error = new Error('评审会话请求失败');
+    error.sessionFailure = 'unavailable';
+    throw error;
+  }
+  return receipt;
+}
+
+async function checkSession() {
+  if (state.sessionStatus !== 'ready') return;
+  try {
+    applySessionReceipt(await sessionRequest('/api/status'));
+  } catch (error) {
+    setTerminalSession(error.sessionFailure || 'unavailable');
+  }
+}
+
+async function connectSession() {
+  try {
+    applySessionReceipt(await sessionRequest('/api/page-connected', 'POST'));
+    if (state.sessionStatus !== 'ready') return;
+    state.statusTimer = window.setInterval(checkSession, 2000);
+    state.remainingTimer = window.setInterval(updateRemainingTime, 1000);
+  } catch (error) {
+    setTerminalSession(error.sessionFailure || 'unavailable');
+  }
+}
 
 function artifactUrl(artifactPath) {
   return new URL(`../${artifactPath}`, window.location.href).href;
@@ -821,18 +957,22 @@ function clientValidation() {
 
 function markSubmitted({ accepted = true } = {}) {
   state.submitted = true;
-  closeAnnotationDrawer({ restoreFocus: false });
+  state.sessionStatus = 'submitted';
+  clearSessionTimers();
+  disableReview();
+  $('sessionPanel').hidden = true;
+  $('sessionEnded').hidden = true;
   $('reviewForm').hidden = true;
   $('success').hidden = false;
   $('successMessage').textContent = accepted
-    ? '反馈已提交。Agent 已收到，可以关闭本页。'
-    : '已有反馈先完成提交。本次内容没有覆盖已提交的结果，可以关闭本页。';
+    ? '反馈已保存。可以关闭本页。'
+    : '已有反馈已保存。本次内容没有覆盖已保存的结果，可以关闭本页。';
   $('success').focus();
 }
 
 async function submitFeedback(event) {
   event.preventDefault();
-  if (state.submitted) return;
+  if (state.submitted || state.sessionStatus !== 'ready') return;
   const result = clientValidation();
   if (!result.valid) {
     result.focus?.focus();
@@ -844,20 +984,21 @@ async function submitFeedback(event) {
   try {
     const response = await fetch('/api/feedback', {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-prototype-review-token': state.sessionToken,
-      },
+      headers: apiHeaders(true),
       body: JSON.stringify(feedback()),
     });
-    if (!response.ok) throw new Error('提交失败');
     const receipt = await response.json();
+    if (['cancelled', 'expired', 'submitted'].includes(receipt.status)) {
+      applySessionReceipt(receipt);
+      return;
+    }
+    if (!response.ok) throw new Error('提交失败');
     markSubmitted({ accepted: receipt.accepted !== false });
   } catch {
-    showFieldError('formError', '反馈未提交。请确认会话仍在运行，然后重试。', $('reviewForm'));
+    showFieldError('formError', '暂时无法确认提交结果。请让 Agent 检查已保存的反馈，再决定是否重试。', $('reviewForm'));
     $('status').textContent = '';
     $('formError').focus();
-    button.disabled = false;
+    if (state.sessionStatus === 'ready') button.disabled = false;
   }
 }
 
@@ -880,6 +1021,7 @@ async function initialize() {
   renderPreviews();
   $('rejectedVerdict').hidden = !state.config.allowOther;
   syncProgressiveFeedback();
+  await connectSession();
 }
 
 $('reviewForm').addEventListener('submit', submitFeedback);
@@ -905,6 +1047,25 @@ for (const input of document.querySelectorAll('input[name="verdict"]')) {
 $('saveAnnotation').onclick = saveAnnotation;
 $('cancelAnnotation').onclick = closeAnnotationDrawer;
 $('closeAnnotation').onclick = closeAnnotationDrawer;
+$('extendSession').onclick = async () => {
+  $('extendSession').disabled = true;
+  $('sessionState').textContent = '正在延长…';
+  try {
+    applySessionReceipt(await sessionRequest('/api/extend', 'POST'));
+  } catch (error) {
+    setTerminalSession(error.sessionFailure || 'unavailable');
+  }
+};
+$('cancelSession').onclick = async () => {
+  $('cancelSession').disabled = true;
+  $('extendSession').disabled = true;
+  $('sessionState').textContent = '正在取消…';
+  try {
+    applySessionReceipt(await sessionRequest('/api/cancel', 'POST'));
+  } catch (error) {
+    setTerminalSession(error.sessionFailure || 'unavailable');
+  }
+};
 $('annotationDrawer').addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeAnnotationDrawer();
 });

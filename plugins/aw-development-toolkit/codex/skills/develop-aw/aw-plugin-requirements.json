@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "aw-plugin-requirements",
+  "plugin": {
+    "name": "aw-development-toolkit",
+    "version": "0.1.0-beta.1"
+  },
+  "requiredCapabilities": [
+    "aw.catalog-authoring.v1",
+    "aw.catalog-dev-source.v1",
+    "aw.catalog-publication.v1",
+    "aw.plugin-authoring.v1",
+    "aw.plugin-build-config.v1",
+    "aw.plugin-manifest.v3",
+    "aw.plugin-skills.v1",
+    "aw.review-inspection.v1",
+    "aw.review-publication.v1",
+    "aw.runtime-imports.v1",
+    "aw.self-check.v1",
+    "aw.skill-validation.v1"
+  ],
+  "digest": "sha256:907b973f6b3fee3de9e0c1241e8ce170449e4d3665d9266ba76a3fef7189c590"
+}

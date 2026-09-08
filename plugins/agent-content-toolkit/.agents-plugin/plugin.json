@@ -1,8 +1,8 @@
 {
   "schemaVersion": 3,
   "name": "agent-content-toolkit",
-  "version": "0.1.0-beta.1",
-  "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
+  "version": "0.1.0-beta.2",
+  "description": "创建、修改或评价给 Agent 读取的内容；统一事实依据、指针、信息层级、最小控制、完成条件、输出需要与剪枝方法。",
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -18,21 +18,17 @@
   "skills": "./skills",
   "interface": {
     "displayName": "Agent Content Toolkit",
-    "shortDescription": "创建和评审 Agent-facing 文档，控制上下文负担、指针与完成边界",
+    "shortDescription": "设计和评价最小、可达、可执行的 Agent-facing 内容",
     "capabilities": [
       "Skills"
     ]
   },
-  "scripts": {
-    "node": {}
-  },
+  "scripts": {},
   "requires": {
     "aw": {
       "capabilities": [
-        "aw.plugin-build-config.v1",
         "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1",
-        "aw.runtime-imports.v1"
+        "aw.plugin-skills.v1"
       ]
     }
   }

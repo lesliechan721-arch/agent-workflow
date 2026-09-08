@@ -28,6 +28,23 @@
       </dl>
     </header>
 
+    <section id="sessionPanel" class="session-panel" aria-labelledby="sessionHeading">
+      <div>
+        <h2 id="sessionHeading">评审会话</h2>
+        <p id="sessionState" class="session-state" role="status" aria-live="polite">正在连接…</p>
+        <p id="sessionRemaining" class="session-remaining"></p>
+      </div>
+      <div id="sessionActions" class="session-actions">
+        <button id="extendSession" type="button" class="secondary" disabled>延长 30 分钟</button>
+        <button id="cancelSession" type="button" class="danger" disabled>取消评审</button>
+      </div>
+    </section>
+
+    <section id="sessionEnded" class="session-ended" tabindex="-1" hidden>
+      <h2 id="sessionEndedHeading">评审已结束</h2>
+      <p id="sessionEndedMessage"></p>
+    </section>
+
     <form id="reviewForm" novalidate>
       <section class="panel preview-workspace" aria-labelledby="candidatesHeading">
         <div class="section-heading">
@@ -116,8 +133,8 @@
     </form>
 
     <section id="success" class="success-panel" tabindex="-1" hidden>
-      <h2>反馈已提交</h2>
-      <p id="successMessage">反馈已提交。Agent 已收到，可以关闭本页。</p>
+      <h2>反馈已保存</h2>
+      <p id="successMessage">反馈已保存。可以关闭本页。</p>
     </section>
   </main>
 
