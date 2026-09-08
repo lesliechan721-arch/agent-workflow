@@ -7,7 +7,9 @@
       "dev-workflow",
       "dev-spec",
       "dev-review-spec",
-      "dev-review-code"
+      "dev-review-code",
+      "dev-build",
+      "dev-breakdown"
     ],
     "policy": {
       "optimization": "balanced",

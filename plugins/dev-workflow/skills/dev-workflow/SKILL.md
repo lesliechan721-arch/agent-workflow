@@ -1,77 +1,35 @@
 ---
 name: dev-workflow
-description: 当用户明确要求使用结构化开发流程、启动或继续跨步骤开发任务，或已有 Shape、Spec、Review、work、diff、branch 或 PR 需要根据生命周期状态选择下一阶段时使用。它是可选宏入口；普通明确的小改动或用户直接请求某个专业能力时不要使用。
+description: 当用户明确要求组织开发流程、启动或恢复跨阶段任务时使用。根据当前共识、风险和记录需求选择路径；小任务也可先短澄清。只需独立实现、分解或审查时直接使用对应能力，不必进入宏流程。
 ---
 
 # Dev Workflow
 
-你是可选的开发生命周期路由器。保障等级决定必需 gate，当前工件决定最早未满足 gate。
+组织从共享理解到交付的生命周期，不把用户说“实现”当成前置决定已经完成。
 
-## 1. 识别目标和工件
+## 选择最低足够路径
 
-读取用户最终目标，以及已有的 Shape/决策记录、Prototype verdict、Spec、Spec Review、批准、`work.md`、实现和 Code Review。
+- **Fast**：范围小、低风险、可逆；必要澄清、实现和验证能在当前有效上下文完成，持久流程记录没有明显价值。
+- **Standard**：需要跨上下文共识、正式规格与批准、工作进度或交接。
+- **Assured**：安全、支付、权限、生产数据迁移或不可逆副作用要求项目提供额外隔离、证据、授权或回滚保障。
 
-用户要求“实现”“开发”或“做一个功能”只表达最终目标，不证明任务已经可以直接实现。
+先作暂定判断，发现规模或风险变化时说明并升级。使用子代理本身不决定保障等级。
 
-## 2. 选择最低足够保障
+## 从当前缺口继续
 
-- **Fast**：结果、范围和验证均明确，风险低、可逆、一个上下文完成，并且没有材料决定或证据缺口。
-- **Standard**：中等范围、需要 Shape、跨会话、正式批准或 Review。
-- **Assured**：安全、权限、支付、持久数据、迁移、生产副作用、不可逆操作、多 Agent 或缺少可靠测试。
+1. 读取用户目标、当前对话和已有 Shape、Spec、批准、work 与 Review。判断依据是材料内容，不只是文件是否存在。
+2. 共识不足时先对齐。一个局部问题用普通提问补齐；一次有界访谈使用 `decision-grill`，一个独立的体验或实验问题使用 `decision-prototype`；复杂塑形、问答与证据切换或跨会话维护共识时使用 `decision-shape`。Fast 可以在当前对话中完成，也可展示低成本候选。
+3. 进入产品修改前，确认预期行为、边界、重要约束和验证方式已足够。Fast 满足后进入 Build，不因缺少 Spec 文件而创建完整流程。
+4. Standard/Assured 按最早缺口进入 `dev-spec`、`dev-review-spec` 或用户批准。已有确认决定直接复用；重要变化重新确认。
+5. 可实施后使用 `dev-build` 完成实施、集成、最终 Code Review 和获授权的有界修复。它返回的有效最终 clean 结果不重复审查。
+6. Build 暴露材料决定或 Spec 缺陷时回到相应上游；Build 已因预算耗尽、不收敛或用户检查点停止时，把决定交还用户，不通过重入刷新修复授权。
 
-## 3. 得出必需 gate
+## 工件与 Review
 
-- Fast：`ready-to-build → build → verify → code-review`。
-- Standard：`shape → spec → spec-review → approval → build → code-review`。
-- Assured：Standard 全部 gate，加项目级隔离、证据、授权、回滚和独立最终审查。
+优先使用用户路径或仓库约定；需要持久记录但无约定时可使用 `docs/dev/<task-slug>/`。只创建当前需要的文件，把路径作为调用上下文提供给专业能力。
 
-Fast 只有以下条件全部成立时才满足 `ready-to-build`：
+Fast 默认不写 Shape、Spec、work 或 Review 历史；源码、测试和临时原型文件不属于这类流程文档。正式 Code Review 仍需完成，可以在对话中报告。
 
-1. 用户可观察结果清楚；
-2. 范围和非目标清楚；
-3. 没有未解决材料决定；
-4. 不需要 Prototype、实验或测量；
-5. 风险低、可逆、影响范围小；
-6. 验证方式清楚可靠；
-7. 预计一个上下文完成。
+已有 blocked Spec Review 且用户授权自动修订时，才读取 [规格修订](references/review-repair.md)。实现 Review 的修复由当前 Build 协调者负责。
 
-任何一项不确定，都不能因为用户使用了“实现”而跳到 Build。
-
-## 4. 进入最早未满足 gate
-
-- Shape 尚不足以支撑后续工作 → `decision-shape`。
-- Shape 已完整，但 Spec 不存在或需要修订 → `dev-spec`。
-- Spec 尚未正式审查，或修订后需要复审 → `dev-review-spec`。
-- Spec Review 为 `clean` 但尚未批准 → 请求用户明确批准。
-- Fast 已满足 ready-to-build，当前 Spec 已批准，或 Code Review 需要实现修复 → `dev-implement`。
-- 实现和验证完成，或修复后需要复审 → `dev-review-code`。
-
-一次只加载当前 gate 的一个专业 Skill。Shape 内部的问答与 Prototype 选择由 `decision-shape` 负责。
-
-## 5. 任务目录
-
-优先使用用户路径或仓库约定。Standard 和 Assured 都没有约定时使用：
-
-```text
-docs/dev/<task-slug>/
-```
-
-进入 Shape 时，把需要的持久路径作为调用上下文提供给 `decision-shape`，例如：
-
-```text
-需要跨会话保存时，把当前 Shape 写到
-`docs/dev/<task-slug>/decisions.md`。
-```
-
-Fast 不为流程本身创建文档。
-
-## 6. Review 结果
-
-- `clean`：Spec Review 后进入批准；Code Review 后进入交付。
-- `blocked`：按 finding 的实质修订 Shape、Spec 或实现。
-- `incomplete`：补足 reviewer、稳定目标或证据后重试。
-- 需要材料决定、风险授权或用户选择时停在人类检查点。
-
-只有存在 `blocked` 正式 Review 且用户授权自动继续时，才读取 [Review 修复](references/review-repair.md)。
-
-选择能力后简短说明当前保障等级、阶段、下一能力和主要依据。进入人类检查点时，不加载后续实现或复审能力。
+简短说明当前路径、主要依据和需要用户决定的下一件事。尊重用户只要求对齐、分解或 Review 的边界。

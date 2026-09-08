@@ -1,94 +1,50 @@
 # Dev Workflow
 
-用轻量、可组合的 Skill 组织中大型开发任务。每个专业 Skill 都可以直接使用；`dev-workflow` 只在需要保障分级、生命周期选路或跨阶段继续时充当宏入口。
-
-## 安装
-
-`dev-workflow` 依赖 `ask-me`，CLI 安装依赖时会一并处理：
+可独立使用的规格、工作分解、实现、协调与审查能力。安装时依赖 ask-me；Skill 本身不取代项目权限、Git 或运行时。
 
 ```bash
 aw install dev-workflow -p both
 ```
 
-## 生命周期
-
-```text
-Shape
-→ Spec
-→ Spec Review
-→ 用户批准
-→ Build
-→ Code Review
-→ 交付
-```
-
-Fast / Standard / Assured 只决定必需 gate 和保障强度。当前阶段由现有工件和最早未满足 gate 决定。
-
-## Skill
-
-| Skill | 作用 |
+| Skill | 用途 |
 | --- | --- |
-| `dev-workflow` | 可选宏入口；选择保障等级并从最早未满足 gate 继续 |
-| `dev-spec` | 把当前 Shape 和已确认决定整理为 Spec |
-| `dev-review-spec` | 用 fresh 独立 reviewer 审查 Spec |
-| `dev-implement` | 实现明确请求、批准 Spec 或 Review 修复 |
-| `dev-review-code` | 用 fresh reviewer 双轴审查实现 |
+| dev-workflow | 从当前共识和工件选择生命周期下一步 |
+| dev-spec | 记录稳定的材料决定和验收 |
+| dev-review-spec | 独立审查 Spec |
+| dev-build | 协调实施、集成、最终 Review 和有界修复 |
+| dev-breakdown | 按需分解成可执行工作项 |
+| dev-implement | 独立实现一个明确工作项并验证 |
+| dev-review-code | 独立审查阶段或最终代码结果 |
 
-Shape 阶段由 `ask-me` 的 `decision-shape` 完成。`dev-workflow` 不直接选择 `decision-grill` 或 `decision-prototype`。
+## 使用路径
 
-## 使用方式
+Fast：必要短澄清 → 直接 Build → 验证 → 最终 Code Review。默认不产生流程文档。
 
-知道当前需要什么时，可以直接调用专业 Skill：
+Standard：必要 Shape → Spec → Spec Review → 用户批准 → Build → 最终 Code Review。需要交接时持久化。
 
-```text
-把当前 Shape 整理成 Spec。
-正式审查这份 Spec 是否可以批准。
-按已批准 Spec 开始实现。
-审查当前 diff 的规格符合度和工程质量。
-```
+Assured：在 Standard 基础上落实项目要求的隔离、权限、备份、证据和回滚。
 
-需要自动选择保障等级和当前 gate 时，显式使用 `dev-workflow`。
+Build 小任务直接实现，大任务按需分解，并优先顺序 fresh worker；只有独立性明确时并行。是否委派、是否提交、是否高保障是不同决定。
 
-## Fast readiness
+## Review 与 checkpoint
 
-只有以下条件全部明确时才可以直接实现：
+阶段 Review 仅在公共基础、重大风险或集成边界使用；最终仍审查累计整体结果。自动修复由 Build 在用户/项目授权预算内逐轮判断；新授权未指定次数时，默认最多三轮，并可提前停止。已有较低授权不自动扩大。
 
-- 用户可观察结果；
-- 范围和非目标；
-- 没有材料未决项；
-- 不需要体验、实验或测量；
-- 风险低、可逆、影响小；
-- 验证方式可靠；
-- 一个上下文可以完成。
+更多审查用于补足明确证据缺口，不等于更多修改。预算耗尽不表示允许交付；当前完整结果仍须验证充分并独立审查通过。
 
-用户使用“实现”“开发”或“做一个功能”只表达最终目标，不表示可以跳过前置 gate。
+正式审查需要可用的独立 reviewer。能力不足时说明缺口；Assured 或用户要求保留历史时，额外保存审查报告版本。
 
-## 默认任务目录
+checkpoint 默认关闭；明确允许后调用现有 Git 能力。保存点不是 Review 通过证明，提交授权也不包含推送或历史重写。
 
-优先使用用户路径或仓库约定。Standard 和 Assured 都没有约定时使用：
+## 工件
+
+优先沿用用户路径、现有 issue 或仓库约定。没有约定而需要本地记录时，可使用 docs/dev/<task-slug>/。Shape、Spec、work 和 Review 各自只保存当前需要的信息；Fast 也可以生成源码、测试或临时原型文件。
+
+## 典型请求
 
 ```text
-docs/dev/<task-slug>/
-├── decisions.md
-├── prototypes/
-├── spec.md
-├── spec-review.md
-├── work.md
-└── code-review.md
+使用 dev-workflow 改进姓名空值显示，先确认显示内容，再实现和验证。
+使用 dev-breakdown 把这份已批准 Spec 拆成可交接工作项，先不要实施。
+使用 dev-build 完成已有工作项的集成和最终审查，不要提交。
+使用 dev-review-code 审查当前权限核心阶段，判断能否开展下游工作。
 ```
-
-路径由 `dev-workflow` 提供给各专业 Skill。`decision-shape` 本身不内置该目录。
-
-## Review
-
-- `clean`：Spec Review 后进入批准；Code Review 后进入交付。
-- `blocked`：根据 finding 的实质修订 Shape、Spec 或实现。
-- `incomplete`：补足 reviewer、稳定目标或证据后重试。
-- 自动修复仍按条件加载 `review-repair.md`，一次自动循环后未 clean 就停在人类检查点。
-- 每个 blocker 必须说明材料影响和可验证关闭条件；偏好性改进不进入批准或交付门槛。
-
-## 输出与工件
-
-- 入口用简短说明告诉用户当前 gate、判断依据和是否需要参与。
-- Spec、work 和 Review 报告只在跨会话或交接有价值时持久化。
-- Review 报告使用 `clean / blocked / incomplete` 表示批准或交付门槛。

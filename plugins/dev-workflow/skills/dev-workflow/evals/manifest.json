@@ -70,6 +70,31 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "fast-build-routing",
+      "kind": "trigger",
+      "cases": "fast-build-routing-cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "fast-build-behavior",
+      "kind": "conversation",
+      "cases": "fast-build-behavior-cases.json",
+      "profiles": [
+        "project-composed"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-breakdown",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-review-code",
+      "decision-shape",
+      "decision-grill",
+      "decision-prototype",
+      "dev-build"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "only_breakdown",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只把已批准 Spec 拆成可交接工作项，先不要执行，不需要完整开发流程。",
+        "expected": {
+          "loadedSkills": [
+            "dev-breakdown"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "独立分解不激活宏流程或实现。",
+        "minimalCounterexample": "要求分解并交付完整结果时使用 dev-build。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "no_breakdown_for_review",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只审查这份已经完成的PR。",
+        "expected": {
+          "loadedSkills": [
+            "dev-review-code"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "审查不是分解。",
+        "minimalCounterexample": "需安排修复工作项时可独立分解。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "no_breakdown_for_unclear_product",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "还不清楚产品要做什么，目标、用户角色和权限策略相互影响，需要在多轮问答和体验证据之间切换，并跨会话维护当前共识。先帮我想清这些取舍，不要拆工作项。",
+        "expected": {
+          "loadedSkills": [
+            "decision-shape"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "未知材料目标不应先切任务。",
+        "minimalCounterexample": "目标已决定才可分解。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    }
+  ]
+}
