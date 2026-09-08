@@ -7,6 +7,8 @@ import type {
   PluginWriteBatchEvidence,
   PluginWriteBatchGroupEvidence,
   PluginWriteOperation,
+  PluginWriteTaskEvidence,
+  PluginWriteTaskSourceEvidence,
 } from './controller.js';
 import type { PluginDependencyOverviewViewModel } from './model.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
@@ -30,7 +32,9 @@ function pluginNameFromId(pluginId: string): string {
 
 function scriptTimeoutChanges(intent: OperationIntent): OperationReviewChange[] {
   let configuredTimeoutMs: number | undefined;
-  if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
+  if (intent.kind === 'pluginWriteTask') {
+    configuredTimeoutMs = intent.scriptTimeoutMs;
+  } else if ((intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch')
     && (intent.action === 'install' || intent.action === 'refreshAndSync'
       || intent.action === 'reinstall' || intent.action === 'sync')) {
     configuredTimeoutMs = intent.scriptTimeoutMs;
@@ -142,6 +146,20 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogManagement') {
+    const labels = {
+      workspaceInit: ['创建 Catalog Workspace', '创建并保存 Catalog Workspace scaffold。', '创建 Workspace', false],
+      workspaceVersion: ['修改 Catalog 版本', '原子修改 Catalog metadata 中的版本。', '修改版本', false],
+      workspaceBuild: ['构建 Catalog snapshot', '验证源码并构建可替换的 Catalog 输出。', '开始构建', false],
+      devActivate: ['启用 Catalog 开发源', '构建或复用 snapshot，并更新共享来源配置和 Active 版本。', '启用开发源', false],
+      devDeactivate: ['停用 Catalog 开发源', '从共享来源配置中移除 Workspace 管理的开发源。', '停用开发源', true],
+      storePrune: ['清理 Catalog 本地存储', '只删除本次选择且执行时仍可安全回收的项目。', '确认清理', true],
+      publishPlan: ['准备 Catalog 发布计划', '构建发布内容、读取远端状态，并保存可恢复的本地发布计划。', '准备发布计划', false],
+      publishApply: ['发布 Catalog', '只应用已保存且身份匹配的发布计划，并核对远端 branch 和 tag。', '确认发布', false],
+    } as const;
+    const [title, description, primaryLabel, destructive] = labels[intent.action];
+    return { title, description, primaryLabel, destructive };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return {
       title: '恢复插件目录来源配置',
@@ -173,6 +191,19 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       primaryLabel: title,
       destructive: intent.action === 'reinstall' || intent.action === 'uninstall'
         || intent.action === 'cleanup',
+    };
+  }
+  if (intent.kind === 'pluginWriteTask') {
+    const targetVersions = [...new Set(intent.targets.flatMap((target) =>
+      target.expectedUpdate ? [target.expectedUpdate.activeVersion] : []))];
+    const updateVersion = targetVersions.length === 1 ? `到 ${targetVersions[0]}` : '';
+    return {
+      title: intent.goal === 'update' ? `确认更新${updateVersion}` : '确认恢复所选插件',
+      description: intent.goal === 'update'
+        ? '使用当前已启用目录中的已确认版本更新所选安装位置。'
+        : '按已确认根因恢复所选安装位置，并保持已安装版本。',
+      primaryLabel: intent.goal === 'update' ? '开始更新' : '开始恢复',
+      destructive: false,
     };
   }
   if (intent.kind === 'pluginWrite') {
@@ -207,6 +238,12 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       uninstall: ['移除插件', '移除 AW 管理的安装内容。配置保持不变。', true],
       cleanup: ['清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。', true],
       sync: ['同步插件', '按已保存使用设置修复当前使用位置。', false],
+    };
+    if (intent.expectedUpdate) return {
+      title: `更新到 ${intent.expectedUpdate.activeVersion}`,
+      description: `使用当前启用目录中已确认的 ${intent.expectedUpdate.activeVersion} 同步所选安装。`,
+      primaryLabel: `更新到 ${intent.expectedUpdate.activeVersion}`,
+      destructive: false,
     };
     const [title, description, destructive] = labels[intent.action];
     return { title, description, primaryLabel: title, destructive };
@@ -298,6 +335,109 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogManagement') {
+    const management = evidence?.catalogManagement;
+    if (!management || management.action !== intent.action) {
+      throw plannerError('catalogManagementUnavailable', '缺少 Catalog 管理确认信息。');
+    }
+    if (intent.action === 'workspaceInit') return [
+      { kind: 'add', title: '创建 Catalog Workspace marker 和源码 scaffold' },
+      { kind: 'change', title: '创建或更新 .gitignore', description: '追加 .aw/ 生成目录规则' },
+      ...(intent.ownerName ? [{ kind: 'add' as const, title: 'Catalog owner', description: '已设置' }] : []),
+      ...(intent.ownerUrl ? [{ kind: 'add' as const, title: 'Catalog owner URL', description: '已设置' }] : []),
+      ...(intent.displayName ? [{ kind: 'add' as const, title: 'Catalog display name', description: '已设置' }] : []),
+      { kind: 'change', title: 'Catalog 初始版本', description: intent.catalogVersion ?? '0.1.0' },
+      ...(intent.force ? [{ kind: 'warning' as const, title: '修复匹配的受管 scaffold' }] : []),
+      { kind: 'keep', title: '不会创建 Git commit 或发布内容' },
+    ];
+    if (intent.action === 'workspaceVersion') return [
+      { kind: 'change', title: '更新 Catalog metadata 版本', description: intent.version ?? `提升 ${intent.bump ?? '未选择'}` },
+      { kind: 'keep', title: '不会自动构建或发布' },
+    ];
+    if (intent.action === 'workspaceBuild') return [
+      { kind: 'change', title: '验证 Workspace、插件依赖和 runtime closure' },
+      { kind: 'change', title: '运行插件构建并生成 Catalog snapshot' },
+      { kind: 'warning', title: '安装插件 package root 依赖并运行作者构建脚本' },
+      ...(intent.force ? [{ kind: 'warning' as const, title: '替换已验证为生成物的现有输出' }] : []),
+      { kind: 'keep', title: '不会修改来源配置或发布远端' },
+    ];
+    if (intent.action === 'devActivate') {
+      const activation = management.devActivation;
+      if (!activation) throw plannerError('catalogDevActivationUnavailable', '缺少开发来源启用确认信息。');
+      const affectedReferences = Object.values(activation.references)
+        .reduce((sum, count) => sum + count, 0);
+      return [
+        { kind: 'keep', title: '使用已单独确认并构建的当前 Catalog snapshot', description: activation.catalogVersion },
+        { kind: 'change', title: '保存 Workspace 管理的 Path 来源', description: activation.sourceId },
+        { kind: 'change', title: '同步并启用开发 Catalog' },
+        { kind: activation.inventoryComplete ? 'change' : 'warning',
+          title: activation.inventoryComplete ? '已检查现有来源引用' : '来源引用清单不完整',
+          description: `${affectedReferences} 个引用` },
+        ...Object.entries(activation.references)
+          .filter(([, count]) => count > 0)
+          .map(([category, count]): OperationReviewChange => ({
+            kind: 'warning', title: `受影响引用 · ${category}`, description: `${count} 个`,
+          })),
+        ...Object.entries(activation.changes)
+          .filter(([, count]) => count > 0)
+          .map(([category, count]): OperationReviewChange => ({
+            kind: 'warning', title: `Catalog 变化 · ${category}`, description: `${count} 个插件`,
+          })),
+        ...(intent.primary || activation.primaryChange
+          ? [{ kind: 'warning' as const, title: '设为共享主来源', description: '会改变默认插件目录选择。' }]
+          : []),
+      ];
+    }
+    if (intent.action === 'devDeactivate') {
+      const impact = management.devImpact;
+      const affectedReferences = impact === undefined
+        ? 0
+        : Object.values(impact.references).reduce((sum, count) => sum + count, 0);
+      return [
+        { kind: 'remove', title: '移除 Workspace 管理的开发来源' },
+        ...(intent.replacementPrimary ? [{ kind: 'change' as const, title: '切换主来源', description: intent.replacementPrimary }] : []),
+        { kind: 'keep', title: '保留 Workspace snapshot 和 Catalog store' },
+        { kind: impact?.inventoryComplete === false ? 'warning' : 'change',
+          title: impact?.inventoryComplete === false ? '来源引用清单不完整' : '已检查现有来源引用',
+          description: `${affectedReferences} 个引用` },
+        ...(impact?.primaryChange ? [{ kind: 'warning' as const, title: '此操作会改变共享主来源' }] : []),
+      ];
+    }
+    if (intent.action === 'storePrune') {
+      const entries = management.store?.entries.filter((entry) =>
+        intent.items.some((item) => item.storeKey === entry.item.storeKey
+          && item.category === entry.item.category)) ?? [];
+      const bytes = entries.every((entry) => entry.reclaimableBytes !== null)
+        ? entries.reduce((sum, entry) => sum + entry.reclaimableBytes!, 0)
+        : null;
+      return [
+        { kind: 'remove', title: `删除 ${entries.length} 个可回收项目`, description: bytes === null ? '大小未知' : `${bytes} bytes` },
+        ...[...new Set(entries.map((entry) => entry.category))].map((category): OperationReviewChange => ({
+          kind: 'remove', title: `Catalog store · ${category}`,
+          description: `${entries.filter((entry) => entry.category === category).length} 项`,
+        })),
+        { kind: 'keep', title: '保留 Active、未到保留期限、foreign 和未选择项目' },
+        { kind: 'warning', title: '执行时逐项重新检查身份、Active 和保留期限' },
+      ];
+    }
+    if (intent.action === 'publishPlan') return [
+      { kind: 'change', title: '构建并完整验证发布 snapshot' },
+      { kind: 'change', title: '读取目标远端 branch 和 immutable tag' },
+      { kind: 'add', title: '保存 version-scoped journal 和隔离 Git repository' },
+      { kind: 'keep', title: '本步骤不会写入远端' },
+      { kind: 'warning', title: '插件构建可运行 Workspace 提供的作者脚本' },
+      ...(management.target?.remote ? [{ kind: 'keep' as const, title: '远端', description: management.target.remote }] : []),
+      { kind: 'keep', title: '发布 branch', description: management.target?.branch ?? 'catalog' },
+    ];
+    return [
+      { kind: 'change', title: '应用已保存的发布计划', description: management.publication?.catalogVersion },
+      { kind: 'change', title: '写入并核对远端 branch 和 annotated tag' },
+      { kind: 'keep', title: '绑定旧 plan digest、Workspace identity、远端和 branch' },
+      { kind: 'keep', title: '不要求当前 HEAD 或 metadata 仍与 plan 相同' },
+      { kind: 'warning', title: management.publication?.state === 'uncertain'
+        ? '对账并恢复结果不确定的发布' : '远端失败或结果未知时保留 recovery journal' },
+    ];
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return [
       { kind: 'add', title: '备份损坏的 catalog-sources.json' },
@@ -750,6 +890,86 @@ function batchGroupEvidence(
   };
 }
 
+function taskSourceEvidence(
+  evidence: PluginWriteTaskEvidence,
+  source: PluginWriteTaskSourceEvidence,
+): OperationEvidence {
+  return {
+    catalog: evidence.catalog,
+    ...(source.preview.dependencyPlan ? { dependencyPlan: source.preview.dependencyPlan } : {}),
+    ...(source.preview.codexReconcilePlans
+      ? { codexReconcilePlans: source.preview.codexReconcilePlans } : {}),
+    ...(source.preview.operationPlan ? { operationPlan: source.preview.operationPlan } : {}),
+  };
+}
+
+function taskReviewChanges(
+  intent: Extract<OperationIntent, { kind: 'pluginWriteTask' }>,
+  evidence: PluginWriteTaskEvidence,
+): OperationReviewChange[] {
+  const requested = evidence.taskPlan.executableTargets.map((target): OperationReviewChange => ({
+    kind: 'change',
+    group: 'requested',
+    pluginId: target.pluginId,
+    sourceId: target.pluginId.slice(0, target.pluginId.indexOf('/')),
+    relation: 'requested',
+    title: pluginNameFromId(target.pluginId),
+    description: `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`
+      + (target.expectedUpdate
+        ? ` · ${target.expectedUpdate.installedVersion} → ${target.expectedUpdate.activeVersion}`
+        : ' · 保持已安装版本'),
+  }));
+  const causes = evidence.taskPlan.causes.map((cause): OperationReviewChange => ({
+    kind: 'change',
+    group: 'dependencies',
+    pluginId: cause.repairTarget.pluginId,
+    sourceId: cause.sourceId,
+    relation: cause.consumers.some((consumer) =>
+      consumer.pluginId === cause.repairTarget.pluginId
+      && consumer.platform === cause.repairTarget.platform
+      && consumer.scope === cause.repairTarget.scope) ? 'requested' : 'direct',
+    title: pluginNameFromId(cause.repairTarget.pluginId),
+    description: `${cause.method === 'reinstall' ? '重新安装' : '同步'} · `
+      + `${platformLabel(cause.repairTarget.platform)} · ${scopeLabel(cause.repairTarget.scope)}`
+      + (cause.restoreVersionEvidence?.state === 'preserved'
+        ? ` · 保持 ${cause.restoreVersionEvidence.installedVersion}`
+        : cause.restoreVersionEvidence?.state === 'absent'
+          ? ` · 补齐 ${cause.restoreVersionEvidence.activeVersion}` : '')
+      + ` · 影响 ${cause.consumers.length} 个所选安装位置`,
+  }));
+  const runtime = evidence.taskPlan.sources.flatMap((source) =>
+    preApplyScopeChanges(operationPreApplyTargets(taskSourceEvidence(evidence, source))));
+  const blocked = evidence.taskPlan.blockedTargets.map((target): OperationReviewChange => ({
+    kind: 'warning',
+    group: 'portableWarnings',
+    pluginId: target.target.pluginId,
+    relation: 'requested',
+    title: `${pluginNameFromId(target.target.pluginId)} 不在本次执行中`,
+    description: `${platformLabel(target.target.platform)} · ${scopeLabel(target.target.scope)}`
+      + (target.errorCodes?.length ? ` · ${target.errorCodes.join('、')}` : ''),
+  }));
+  return [
+    ...scriptTimeoutChanges(intent),
+    ...requested,
+    ...causes,
+    ...runtime,
+    ...blocked,
+    ...(evidence.taskPlan.blockedTargets.length > 0 ? [{
+      kind: 'warning' as const,
+      group: 'portableWarnings' as const,
+      title: `${evidence.taskPlan.blockedTargets.length} 个目标不在本次执行中`,
+      description: '用户已明确选择先处理可执行子集；阻止项保持不变。',
+    }] : []),
+    ...(evidence.taskPlan.executableTargets.some((target) => target.scope === 'user') ? [{
+      kind: 'warning' as const,
+      group: 'requested' as const,
+      title: '包含所有项目安装位置',
+      description: '这些写入可能影响当前项目之外的使用位置。',
+    }] : []),
+    { kind: 'keep', group: 'preserved', title: '插件设置保持不变' },
+  ];
+}
+
 function batchReviewChanges(
   intent: Extract<OperationIntent, { kind: 'pluginWriteBatch' }>,
   evidence: PluginWriteBatchEvidence,
@@ -762,7 +982,7 @@ function batchReviewChanges(
       action: intent.action,
       pluginId: representative,
       platform: group.platform,
-      scope: intent.scope,
+      scope: group.scope,
       ...(intent.scriptTimeoutMs === undefined ? {} : { scriptTimeoutMs: intent.scriptTimeoutMs }),
     }, groupEvidence);
     const targetChanges = group.preview.targetResults.map((target): OperationReviewChange => {
@@ -787,8 +1007,28 @@ function batchReviewChanges(
           ...projected.filter((change) => change.group !== 'requested'
             && change.group !== 'dependencies'),
         ];
+    const withVersionEvidence = effective.map((change): OperationReviewChange => {
+      if (change.group !== 'requested' || !change.pluginId) return change;
+      const version = evidence.targetVersions?.find((target) =>
+        target.pluginId === change.pluginId && target.platform === group.platform
+        && target.scope === group.scope);
+      if (!version) return change;
+      const summary = version.presence === 'installed'
+        ? version.installedVersion
+          ? `已有安装 ${version.installedVersion}`
+          : '已有安装，版本待确认'
+        : version.presence === 'new'
+          ? `新增${version.scope === 'user' ? '所有项目' : '当前项目'}安装`
+          : '现场状态待确认';
+      const available = version.availableVersion
+        ? ` · 目录版本 ${version.availableVersion}` : '';
+      return {
+        ...change,
+        description: `${change.description ? `${change.description} · ` : ''}${summary}${available}`,
+      };
+    });
     return [
-      ...effective.filter((change) => change.title !== 'preApply 脚本超时')
+      ...withVersionEvidence.filter((change) => change.title !== 'preApply 脚本超时')
         .map((change) => ({
           ...change,
           batchGroupId: group.groupId,
@@ -827,6 +1067,15 @@ function technicalDetails(evidence: OperationEvidence): string[] {
       details.push(
         `批量分组：${group.sourceId} · ${group.platform} · ${group.requestedPluginIds.length} 个根插件 · ${group.executable ? `计划 ${short(group.preview.operationPlan!.planFingerprint)}` : '预览失败'}`,
       );
+    }
+  }
+  if ('taskPlan' in evidence) {
+    const task = evidence as PluginWriteTaskEvidence;
+    details.push(`任务目标：${task.taskPlan.requestedTargets.length} 个`);
+    details.push(`可执行目标：${task.taskPlan.executableTargets.length} 个`);
+    details.push(`共享根因：${task.taskPlan.causes.length} 个`);
+    for (const source of task.taskPlan.sources) {
+      details.push(`任务来源：${source.sourceId} · ${source.requestedTargets.length} 个目标 · 计划 ${short(source.preview.operationPlan!.planFingerprint)}`);
     }
   }
   if (evidence.catalog.generationSetDigest) {
@@ -893,10 +1142,16 @@ export function buildOperationReviewProjection(options: {
   const batchEvidence = intent.kind === 'pluginWriteBatch'
     ? evidence as PluginWriteBatchEvidence
     : undefined;
+  const taskEvidence = intent.kind === 'pluginWriteTask'
+    ? evidence as PluginWriteTaskEvidence
+    : undefined;
   const labels = operationLabels(intent, evidence);
   const hasPreApply = intent.kind === 'pluginWriteBatch'
     ? Boolean(batchEvidence?.groups.some((group) =>
         operationPreApplyTargets(batchGroupEvidence(batchEvidence, group)).length > 0))
+    : intent.kind === 'pluginWriteTask'
+      ? Boolean(taskEvidence?.taskPlan.sources.some((source) =>
+          operationPreApplyTargets(taskSourceEvidence(taskEvidence, source)).length > 0))
     : operationPreApplyTargets(evidence).length > 0
       || (evidence.config?.preApplyAuthorization?.length ?? 0) > 0;
   const sharedNativeConfigApply = intent.kind === 'configSave'
@@ -904,8 +1159,11 @@ export function buildOperationReviewProjection(options: {
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
     && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
   const requiresConfirmation = sharedNativeConfigApply
+    || intent.kind === 'catalogManagement'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
+    || Boolean(taskEvidence?.taskPlan.sources.some((source) =>
+      (source.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || (evidence.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)
     || Boolean(evidence.sourceWrite
       && (!evidence.sourceWrite.inventoryComplete || evidence.sourceWrite.referenceCount > 0))
@@ -918,6 +1176,8 @@ export function buildOperationReviewProjection(options: {
   const warning = (evidence.codexReconcilePlans ?? []).find((plan) =>
     plan.review.sharedImpact.warning)?.review.sharedImpact.warning
     ?? batchEvidence?.groups.flatMap((group) => group.preview.codexReconcilePlans ?? [])
+      .find((plan) => plan.review.sharedImpact.warning)?.review.sharedImpact.warning
+    ?? taskEvidence?.taskPlan.sources.flatMap((source) => source.preview.codexReconcilePlans ?? [])
       .find((plan) => plan.review.sharedImpact.warning)?.review.sharedImpact.warning;
   const preparationWarnings = (evidence.preparationWarnings ?? []).map((): OperationReviewChange => ({
     kind: 'warning',
@@ -932,6 +1192,8 @@ export function buildOperationReviewProjection(options: {
       ...preparationWarnings,
       ...(intent.kind === 'pluginWriteBatch'
         ? batchReviewChanges(intent, batchEvidence!)
+        : intent.kind === 'pluginWriteTask'
+          ? taskReviewChanges(intent, taskEvidence!)
         : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
     technicalDetails: technicalDetails(evidence),
@@ -940,6 +1202,8 @@ export function buildOperationReviewProjection(options: {
       : {}),
     primaryLabel: intent.kind === 'pluginWriteBatch'
       ? `${labels.primaryLabel} ${batchEvidence!.requestedPluginIds.length} 个插件`
+      : intent.kind === 'pluginWriteTask'
+        ? `${labels.primaryLabel} ${taskEvidence!.taskPlan.executableTargets.length} 个安装位置`
       : intent.kind === 'pluginWrite' && evidence.dependencyPlan
       ? `${labels.primaryLabel} ${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`
       : labels.primaryLabel,
@@ -951,6 +1215,9 @@ export function buildOperationReviewProjection(options: {
           plan.review.sharedImpact.pluginIds),
         ...(batchEvidence?.groups.flatMap((group) =>
           (group.preview.codexReconcilePlans ?? []).flatMap((plan) =>
+            plan.review.sharedImpact.pluginIds)) ?? []),
+        ...(taskEvidence?.taskPlan.sources.flatMap((source) =>
+          (source.preview.codexReconcilePlans ?? []).flatMap((plan) =>
             plan.review.sharedImpact.pluginIds)) ?? []),
         ...(evidence.sourceWrite?.impact?.affectedReferences ?? []).flatMap((reference) =>
           reference.pluginId ? [reference.pluginId] : []),

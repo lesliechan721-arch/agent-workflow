@@ -3,6 +3,10 @@ import {
   syncCatalogSourceGeneration,
   type CatalogGenerationServiceRuntime,
 } from '../utils/catalog-generation-service.js';
+import type {
+  CatalogGenerationActiveV1,
+  CatalogGenerationCandidateEvidence,
+} from '../types.js';
 
 export async function syncCatalogSourceCommand(options: {
   sourceId: string;
@@ -14,6 +18,10 @@ export async function syncCatalogSourceCommand(options: {
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   runtime?: CatalogGenerationServiceRuntime;
+  expectedCandidate?: CatalogGenerationCandidateEvidence;
+  expectedActive?: CatalogGenerationActiveV1 | null;
+  expectedConfigDigest?: string;
+  expectedImpactDigest?: string;
 }): Promise<Awaited<ReturnType<typeof syncCatalogSourceGeneration>>> {
   const env = options.env ?? process.env;
   return syncCatalogSourceGeneration({ ...options, env });

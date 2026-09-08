@@ -13,6 +13,7 @@ import {
   createTuiControllerDependencies,
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
+import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.js';
 import {
   pluginWriteBatchFailedRequestedTargets,
   TuiConfigInvalidStoreError,
@@ -31,7 +32,11 @@ import {
   replaceCatalogSourcesConfig as replaceCatalogSourcesConfigWithoutActive,
 } from '../../src/utils/catalog-sources.js';
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
-import { readCatalogSnapshotLogicalIdentity } from '../../src/utils/catalog-generation-store.js';
+import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
+import {
+  createCatalogStoreKey,
+  readCatalogSnapshotLogicalIdentity,
+} from '../../src/utils/catalog-generation-store.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import {
   resolvePluginConfigStorePath,
@@ -365,6 +370,160 @@ describe('TUI batch write runtime', () => {
       expect.objectContaining({ platform: 'both', scope: 'user', scriptTimeoutMs: 33_000 }),
       expect.objectContaining({ previewOperationPlan: true }),
     );
+  });
+
+  it('treats configured Codex activation as existing when system CLI evidence is assumed', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-assumed-activation-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const activated = {
+      ...target('user', 'absent'),
+      pluginId: 'team/demo',
+      sourceId: 'team',
+      sourceIdentity: 'identity:team',
+      cwd: isolation.layout.fixtureCwd,
+    };
+    activated.components = [
+      ...activated.components.filter((component) => component.kind !== 'activation'),
+      {
+        kind: 'activation', key: 'user', state: 'enabled',
+        metadata: { evidence: 'assumed', effective: true },
+      },
+      {
+        kind: 'activation', key: 'project', state: 'enabled',
+        metadata: { evidence: 'assumed', effective: true },
+      },
+    ];
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        schemaVersion: 7,
+        catalog: {
+          primarySourceId: 'team', configDigest: configured.digest,
+          compositeDigest: 'sha256:composite', sources: [],
+        },
+        filters: { plugins: ['team/demo'], platform: 'codex', cwd: isolation.layout.fixtureCwd },
+        targets: [activated],
+        errors: [],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
+        sourceIdentity: 'identity:team', dependencyDirectCount: 0, dependencyTotalCount: 0,
+      }],
+      targetRevisions: [],
+    });
+    runtimeMocks.installWriteCommand.mockResolvedValue({
+      platforms: ['codex'], plugins: ['demo'], warnings: [], rebuildResults: [],
+      targetResults: [], overallState: 'succeeded', receiptTargets: [],
+      operationPlan: createOperationPlan({
+        intentChanges: [], actions: [], changes: ['sync'], warnings: [],
+        evidence: {
+          catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+          intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+        },
+      }),
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    await dependencies.loadStatus(new AbortController().signal);
+
+    const evidence = await dependencies.captureEvidence({
+      kind: 'pluginWriteBatch',
+      action: 'sync',
+      selection: {
+        kind: 'targets',
+        targets: [{ pluginId: 'team/demo', platform: 'codex', scope: 'project' }],
+      },
+      platform: 'codex',
+      scope: 'project',
+    }, new AbortController().signal);
+
+    expect(evidence).toMatchObject({
+      targetVersions: [{
+        pluginId: 'team/demo', platform: 'codex', scope: 'project', presence: 'installed',
+      }],
+    });
+  });
+
+  it.each([
+    ['uninstall', 'uninstallWriteCommand'],
+    ['reinstall', 'reinstallWriteCommand'],
+  ] as const)('executes mixed-scope exact targets for %s', async (action, mockName) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, `batch-mixed-${action}`);
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const command = runtimeMocks[mockName];
+    command.mockImplementation(async (pluginIds, options) => {
+      const platform = options.platform as 'codex' | 'claude';
+      const scope = options.scope as 'project' | 'user';
+      const target = {
+        pluginName: 'demo', pluginId: 'team/demo', sourceId: 'team', platform, scope,
+      };
+      return {
+        platforms: [platform], plugins: pluginIds, warnings: [], rebuildResults: [],
+        targetResults: [{ target, action, state: 'completed', requiredBy: [] }],
+        overallState: 'succeeded', receiptTargets: [target],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: [`${platform}:${scope}`], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId: 'team', digest: 'sha256:team' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action,
+      selection: {
+        kind: 'targets' as const,
+        targets: [
+          { pluginId: 'team/demo', platform: 'codex' as const, scope: 'project' as const },
+          { pluginId: 'team/demo', platform: 'claude' as const, scope: 'user' as const },
+        ],
+      },
+      platform: 'codex' as const,
+      scope: 'project' as const,
+    };
+
+    const evidence = await dependencies.captureEvidence(intent, new AbortController().signal);
+    expect(evidence).toMatchObject({
+      groups: expect.arrayContaining([
+        expect.objectContaining({ platform: 'codex', scope: 'project' }),
+        expect.objectContaining({ platform: 'claude', scope: 'user' }),
+      ]),
+    });
+    await dependencies.executeIntent(intent, evidence);
+
+    const actualCalls = command.mock.calls.filter((call) => call[2]?.previewOperationPlan !== true);
+    expect(actualCalls.map((call) => [call[1].platform, call[1].scope])).toEqual([
+      ['claude', 'user'],
+      ['codex', 'project'],
+    ]);
   });
 
   it('retries only the failed actual platform after a project-all sync', async () => {
@@ -723,6 +882,110 @@ describe('TUI batch write runtime', () => {
 });
 
 describe('TUI controller runtime scope conflict validation', () => {
+  it('keeps Catalog dependency declarations unverified without applied-reference evidence', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-overview-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'blocked-consumer', dependencies: ['dependency'] },
+      { name: 'stale-consumer', dependencies: ['dependency'] },
+      { name: 'dependency' },
+    ]);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const statusTarget = (
+      pluginName: string,
+      scope: 'user' | 'project',
+      state: 'present' | 'error',
+    ) => ({
+      ...target(scope, state),
+      pluginName,
+      pluginId: `team/${pluginName}`,
+      sourceId: 'team',
+      sourceIdentity: 'identity:team',
+      cwd: isolation.layout.fixtureCwd,
+    });
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        schemaVersion: 7,
+        catalog: {
+          primarySourceId: 'team',
+          configDigest: configured.digest,
+          compositeDigest: 'sha256:composite',
+          sources: [],
+        },
+        filters: { plugins: [], platform: 'codex', cwd: isolation.layout.fixtureCwd },
+        targets: [
+          statusTarget('blocked-consumer', 'project', 'error'),
+          statusTarget('stale-consumer', 'user', 'present'),
+          statusTarget('dependency', 'user', 'present'),
+        ],
+        errors: [],
+      },
+      pluginSummaries: ['blocked-consumer', 'stale-consumer', 'dependency'].map((pluginName) => ({
+        pluginId: `team/${pluginName}`,
+        pluginName,
+        sourceId: 'team',
+        sourceIdentity: 'identity:team',
+        dependencyDirectCount: pluginName === 'dependency' ? 0 : 1,
+        dependencyTotalCount: pluginName === 'dependency' ? 0 : 1,
+      })),
+      targetRevisions: [{
+        pluginId: 'team/stale-consumer',
+        platform: 'codex',
+        scope: 'user',
+        revision: {
+          state: 'upgradeAvailable',
+          installedVersion: '0.9.0',
+          availableVersion: '1.0.0',
+        },
+      }],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+
+    const loaded = await dependencies.loadStatus(new AbortController().signal);
+    const overviews = loaded.dependencyOverviews ?? [];
+    const blocked = overviews.find((item) => item.pluginId === 'team/blocked-consumer');
+    const stale = overviews.find((item) => item.pluginId === 'team/stale-consumer');
+    expect(blocked?.dependencies).toEqual([
+      expect.objectContaining({ pluginId: 'team/dependency', placementReferences: [] }),
+    ]);
+    expect(stale?.dependencies).toEqual([
+      expect.objectContaining({ pluginId: 'team/dependency', placementReferences: [] }),
+    ]);
+
+    const reverse = buildDependencyGraphProjection({
+      overviews,
+      rootPluginId: 'team/dependency',
+      direction: 'dependents',
+    });
+    expect(reverse.rows.map((row) => row.pluginId)).toEqual(['team/dependency']);
+    expect(reverse.scopeSummary.actualConsumerPluginIds).toEqual([]);
+    expect(reverse.scopeSummary.unknownConsumerPluginIds).toEqual([
+      'team/blocked-consumer',
+      'team/stale-consumer',
+    ]);
+
+    const forward = buildDependencyGraphProjection({
+      overviews,
+      rootPluginId: 'team/stale-consumer',
+      direction: 'dependencies',
+    });
+    expect(forward.rows.map((row) => row.pluginId)).toContain('team/dependency');
+    expect(forward.scopeSummary.unverifiedDependencyPluginIds).toEqual(['team/dependency']);
+  });
+
   it('loads recognizable saved settings without a current Catalog plugin', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await writePluginConfigStore({
@@ -1884,6 +2147,89 @@ describe('TUI controller runtime scope conflict validation', () => {
       source: { sourceId: 'team', pluginVersion: '1.0.0' },
       preparationWarnings: [expect.stringContaining('catalogSourceRefreshFailed: team:')],
     });
+  });
+
+  it('prepares an Active update without following a newer source and rejects an Active version change', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'runtime-active-update-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'active two\n', (manifest) => {
+      manifest.version = '2.0.0';
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configured = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const activeBefore = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    const activeStoreKey = createCatalogStoreKey(
+      activeBefore.logicalIdentity,
+      activeBefore.snapshotDigest,
+    );
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'remote three\n', (manifest) => {
+      manifest.version = '3.0.0';
+    });
+    runtimeMocks.statusCommandV7.mockResolvedValue({
+      payload: {
+        catalog: { configDigest: configured.digest, compositeDigest: 'sha256:composite' },
+        targets: [{
+          ...target('user', 'present'), pluginId: 'team/demo', sourceId: 'team',
+          sourceIdentity: activeBefore.sourceIdentity, version: '2.0.0', cwd: isolation.layout.fixtureCwd,
+        }],
+      },
+      pluginSummaries: [{
+        pluginId: 'team/demo', pluginName: 'demo', sourceId: 'team',
+        sourceIdentity: activeBefore.sourceIdentity, dependencyDirectCount: 0, dependencyTotalCount: 0,
+      }],
+      targetRevisions: [{
+        pluginId: 'team/demo', platform: 'codex', scope: 'user',
+        revision: { state: 'upgradeAvailable', availableVersion: '2.0.0', installedVersion: '1.0.0' },
+      }],
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'sync' as const,
+      pluginId: 'team/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+      expectedUpdate: {
+        installedVersion: '1.0.0',
+        activeVersion: '2.0.0',
+        sourceIdentity: activeBefore.sourceIdentity,
+        generationKey: activeStoreKey,
+      },
+    };
+    const stages: string[] = [];
+
+    const evidence = await dependencies.prepareReviewEvidence!(
+      intent,
+      new AbortController().signal,
+      (stage) => { stages.push(stage); },
+    );
+    expect(evidence.source?.pluginVersion).toBe('2.0.0');
+    expect(stages).not.toContain('refresh');
+    const activeAfterReview = (await readCatalogGenerationState(isolation.env)).sources.team!.active!;
+    expect(createCatalogStoreKey(activeAfterReview.logicalIdentity, activeAfterReview.snapshotDigest))
+      .toBe(activeStoreKey);
+    runtimeMocks.installWriteCommand.mockClear();
+
+    await syncCatalogSourceGeneration({
+      sourceId: 'team', cliVersion: '1.0.0', cwd: isolation.layout.fixtureCwd,
+      env: isolation.env, confirmImpact: true,
+    });
+    await expect(dependencies.executeIntent(intent, evidence)).rejects.toMatchObject({
+      code: 'operationReviewStale',
+    });
+    expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();
   });
 
   it('passes overrides through Phase3 and persists a user-to-project adjustment without cleanup', async () => {

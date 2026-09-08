@@ -53,6 +53,22 @@ export type CatalogPublicationJournal =
   | CatalogPublicationUncertainJournal
   | CatalogPublicationPublishedJournal;
 
+export interface DiscoveredCatalogPublicationJournal {
+  catalogVersion: string;
+  state: CatalogPublicationJournal['state'];
+  journal: CatalogPublicationJournal;
+  localRepositoryState?: 'present';
+}
+
+export interface DamagedCatalogPublicationJournal {
+  catalogVersion: string;
+  state: 'damaged';
+}
+
+export type CatalogPublicationJournalDiscovery =
+  | DiscoveredCatalogPublicationJournal
+  | DamagedCatalogPublicationJournal;
+
 function digest(value: string | Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
@@ -215,6 +231,82 @@ export interface LocatedCatalogPublicationJournal {
 }
 
 const CATALOG_VERSION_DIRECTORY = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/u;
+
+async function localRepositoryExists(directoryPath: string): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(directoryPath, catalogPublicationRepositoryName()));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function discoverCatalogPublicationJournal(
+  catalogVersion: string,
+  directoryPath: string,
+): Promise<CatalogPublicationJournalDiscovery> {
+  const damaged = (): DamagedCatalogPublicationJournal => ({
+    catalogVersion,
+    state: 'damaged',
+  });
+  const directoryStats = await fs.lstat(directoryPath);
+  if (!directoryStats.isDirectory() || directoryStats.isSymbolicLink()) return damaged();
+  const journalPath = path.join(directoryPath, 'journal.json');
+  let journalStats;
+  try {
+    journalStats = await fs.lstat(journalPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return damaged();
+    throw error;
+  }
+  if (!journalStats.isFile() || journalStats.isSymbolicLink()) return damaged();
+  let journal: CatalogPublicationJournal;
+  try {
+    journal = parseCatalogPublicationJournal(await fs.readJson(journalPath), catalogVersion);
+  } catch {
+    return damaged();
+  }
+  const repositoryPath = path.join(directoryPath, catalogPublicationRepositoryName());
+  if (journal.state !== 'published') {
+    let repositoryStats;
+    try {
+      repositoryStats = await fs.lstat(repositoryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return damaged();
+      throw error;
+    }
+    if (!repositoryStats.isDirectory() || repositoryStats.isSymbolicLink()) return damaged();
+    return { catalogVersion, state: journal.state, journal };
+  }
+  return {
+    catalogVersion,
+    state: journal.state,
+    journal,
+    ...(await localRepositoryExists(directoryPath) ? { localRepositoryState: 'present' as const } : {}),
+  };
+}
+
+export async function discoverCatalogPublicationJournals(
+  workspaceRoot: string,
+): Promise<CatalogPublicationJournalDiscovery[]> {
+  const publishRoot = path.join(workspaceRoot, '.aw', 'publish');
+  let entries;
+  try {
+    entries = await fs.readdir(publishRoot, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const versions = entries
+    .filter((entry) => CATALOG_VERSION_DIRECTORY.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  return Promise.all(versions.map((catalogVersion) => discoverCatalogPublicationJournal(
+    catalogVersion,
+    path.join(publishRoot, catalogVersion),
+  )));
+}
 
 export async function findCatalogPublicationJournalByPlanDigest(
   workspaceRoot: string,

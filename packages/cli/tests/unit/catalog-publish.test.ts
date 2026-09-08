@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   catalogPublicationPlanDigest,
@@ -7,6 +11,10 @@ import {
   sanitizedGitEnvironment,
   type CatalogPublicationDescriptor,
 } from '../../src/commands/catalog-publish.js';
+import {
+  discoverCatalogPublicationJournals,
+  type CatalogPublicationJournal,
+} from '../../src/commands/catalog-publication-journal.js';
 
 const descriptor = {
   schemaVersion: 1 as const,
@@ -22,6 +30,27 @@ const descriptor = {
   snapshotDigest: `sha256:${'3'.repeat(64)}`,
 };
 const expectedCommit = '4'.repeat(40);
+const temporaryRoots: string[] = [];
+
+async function temporaryRoot(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-publication-journal-'));
+  temporaryRoots.push(root);
+  return root;
+}
+
+async function writeJournal(
+  workspaceRoot: string,
+  catalogVersion: string,
+  journal: unknown,
+): Promise<string> {
+  const journalPath = path.join(workspaceRoot, '.aw', 'publish', catalogVersion, 'journal.json');
+  await fs.outputJson(journalPath, journal);
+  return journalPath;
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) => fs.remove(root)));
+});
 
 interface JournalOverrides {
   descriptor?: Partial<CatalogPublicationDescriptor>;
@@ -41,6 +70,29 @@ function preparedJournal(overrides: JournalOverrides = {}) {
     display: { catalogVersion: '1.2.3', channel: 'latest' as const, pluginCount: 2 },
     preparedAt: '2026-08-31T00:00:00.000Z',
   };
+}
+
+function journalForState(
+  catalogVersion: string,
+  state: CatalogPublicationJournal['state'],
+) {
+  const journalDescriptor = {
+    ...descriptor,
+    tag: `catalog-v${catalogVersion}`,
+  };
+  const base = {
+    schemaVersion: 2 as const,
+    state,
+    planDigest: catalogPublicationPlanDigest(journalDescriptor, expectedCommit),
+    descriptor: journalDescriptor,
+    expectedCommit,
+    repository: state === 'published' ? null : 'repository',
+    display: { catalogVersion, channel: 'latest' as const, pluginCount: 2 },
+    preparedAt: '2026-08-31T00:00:00.000Z',
+  };
+  if (state === 'uncertain') return { ...base, uncertainAt: '2026-08-31T00:01:00.000Z' };
+  if (state === 'published') return { ...base, publishedAt: '2026-08-31T00:02:00.000Z' };
+  return base;
 }
 
 const invalidCommitValues = [
@@ -176,5 +228,78 @@ describe('public Catalog Git publication safety', () => {
     const journal = preparedJournal({ expectedCommit: value });
     expect(() => parseCatalogPublicationJournal(journal, '1.2.3'))
       .toThrow('publication journal is damaged');
+  });
+
+  it('discovers legal journals in deterministic version order', async () => {
+    const root = await temporaryRoot();
+    const prepared = journalForState('2.0.0', 'prepared');
+    const uncertain = journalForState('1.0.0-beta.2', 'uncertain');
+    const published = journalForState('1.0.0', 'published');
+    await Promise.all([
+      writeJournal(root, '2.0.0', prepared),
+      writeJournal(root, '1.0.0-beta.2', uncertain),
+      writeJournal(root, '1.0.0', published),
+      fs.ensureDir(path.join(root, '.aw', 'publish', '2.0.0', 'repository')),
+      fs.ensureDir(path.join(root, '.aw', 'publish', '1.0.0-beta.2', 'repository')),
+      fs.ensureDir(path.join(root, '.aw', 'publish', '1.0.0', 'repository')),
+    ]);
+
+    await expect(discoverCatalogPublicationJournals(root)).resolves.toEqual([
+      {
+        catalogVersion: '1.0.0',
+        state: 'published',
+        journal: published,
+        localRepositoryState: 'present',
+      },
+      {
+        catalogVersion: '1.0.0-beta.2',
+        state: 'uncertain',
+        journal: uncertain,
+      },
+      {
+        catalogVersion: '2.0.0',
+        state: 'prepared',
+        journal: prepared,
+      },
+    ]);
+  });
+
+  it('marks invalid, missing, symbolic-link, and non-file journals damaged', async () => {
+    const root = await temporaryRoot();
+    const publishRoot = path.join(root, '.aw', 'publish');
+    await writeJournal(root, '1.0.0', { schemaVersion: 2 });
+    await fs.ensureDir(path.join(publishRoot, '1.0.1'));
+    const targetJournal = await writeJournal(root, '1.0.3', journalForState('1.0.3', 'published'));
+    const symbolicLink = path.join(publishRoot, '1.0.2', 'journal.json');
+    await fs.ensureDir(path.dirname(symbolicLink));
+    await fs.symlink(targetJournal, symbolicLink, 'file');
+    await fs.ensureDir(path.join(publishRoot, '1.0.4', 'journal.json'));
+
+    await expect(discoverCatalogPublicationJournals(root)).resolves.toEqual([
+      { catalogVersion: '1.0.0', state: 'damaged' },
+      { catalogVersion: '1.0.1', state: 'damaged' },
+      { catalogVersion: '1.0.2', state: 'damaged' },
+      {
+        catalogVersion: '1.0.3',
+        state: 'published',
+        journal: journalForState('1.0.3', 'published'),
+      },
+      { catalogVersion: '1.0.4', state: 'damaged' },
+    ]);
+  });
+
+  it('marks pending journals with missing or invalid repositories damaged', async () => {
+    const root = await temporaryRoot();
+    const publishRoot = path.join(root, '.aw', 'publish');
+    await Promise.all([
+      writeJournal(root, '1.0.0', journalForState('1.0.0', 'prepared')),
+      writeJournal(root, '1.0.1', journalForState('1.0.1', 'uncertain')),
+      fs.outputFile(path.join(publishRoot, '1.0.1', 'repository'), 'not a repository directory'),
+    ]);
+
+    await expect(discoverCatalogPublicationJournals(root)).resolves.toEqual([
+      { catalogVersion: '1.0.0', state: 'damaged' },
+      { catalogVersion: '1.0.1', state: 'damaged' },
+    ]);
   });
 });

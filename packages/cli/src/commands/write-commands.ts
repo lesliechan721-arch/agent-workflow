@@ -18,8 +18,11 @@ import {
 } from './options.js';
 import {
   runRebuildCommand,
+  runRebuildTaskCommand,
   type RebuildCommandResult,
   type RebuildCommandRuntime,
+  type RebuildTaskCommandOptions,
+  type RebuildTaskTarget,
 } from './rebuild-command.js';
 import { createOperationPlan } from './operation-plan.js';
 import type { ReconcileOperationPlan } from './reconcile-operation-plan.js';
@@ -291,6 +294,35 @@ export async function syncWriteCommand(
     commandOptions,
     runtime,
   });
+}
+
+export async function taskWriteCommand(
+  targets: readonly RebuildTaskTarget[],
+  options: RebuildTaskCommandOptions,
+  runtime: RebuildCommandRuntime = {},
+): Promise<RebuildCommandResult> {
+  const commandOptions = { ...options };
+  delete commandOptions.repairTargets;
+  const taskRuntime = options.allowManagedCodexInstall === true
+    && !runtime.managedCodexAuthorizer
+    ? { ...runtime, managedCodexAuthorizer: async () => true }
+    : runtime;
+  const execution = taskRuntime.previewOperationPlan === true
+    ? runRebuildTaskCommand(targets, options, taskRuntime)
+    : withAwHomeMutationLock({
+        env: taskRuntime.env,
+        token: taskRuntime.awHomeMutationToken,
+        action: (token) => runRebuildTaskCommand(targets, options, {
+          ...taskRuntime,
+          awHomeMutationToken: token,
+        }),
+      });
+  return execution.catch((error) => mergeWriteCommandResults(targets.map((target) =>
+    failedWriteCommandResult(target.method, [target.pluginId], {
+      ...commandOptions,
+      platform: target.platform,
+      scope: target.scope,
+    }, error))));
 }
 
 export async function reinstallWriteCommand(
