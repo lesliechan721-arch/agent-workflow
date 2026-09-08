@@ -7,7 +7,7 @@
       "optimization": "balanced",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "持久化 Artifact 留在主代理会显著污染长任务上下文；无需保存的小示例也委派则会增加等待和模型成本。"
+      "rationale": "检查用户可观察行为与任务边界，不以固定措辞或内部读取顺序作为通过标准。"
     },
     "runtime": {
       "minimumPassRate": 1
@@ -19,11 +19,11 @@
       "split": "validation",
       "tags": [
         "regression",
-        "persistent-artifact",
+        "explicit-builder-request",
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 设置页的信息密度必须看到候选后才能决定。请在 prototypes/settings-density/ 制作第一轮持久化原型：创建 brief.md、schema v2 的 prototype.json，以及 artifact/compact.html 和 artifact/comfortable.html。两个候选都要标明是临时原型。不要创建 verdict.md，不要询问交互式问题，也不要修改其它路径。完成后说明查看路径和当前仍待用户决定的问题，然后结束。"
+        "prompt": "$decision-prototype 用两个静态页面比较设置页的信息密度。本次明确授权且要求委派一个 Builder 创建 prototypes/settings-density/artifact/compact.html, prototypes/settings-density/artifact/comfortable.html；两页都显示“通知”和“语言”这两个设置字段，并在可见文本中标识各自的 compact 或 comfortable ID。主代理创建 brief.md 和 schema v2 prototype.json；brief 用两个 ID 说明正在比较的信息密度。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/settings-density/artifact/compact.html 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/settings-density/；没有交互式用户回复，不创建 verdict.md。随后结束。"
       },
       "expected": {
         "criteria": {
@@ -49,21 +49,35 @@
           ],
           "requiredContent": {
             "prototypes/settings-density/brief.md": [
-              "设置页"
+              "compact",
+              "comfortable",
+              "信息密度"
             ],
             "prototypes/settings-density/artifact/compact.html": [
-              "临时原型"
+              "compact",
+              "通知",
+              "语言"
             ],
             "prototypes/settings-density/artifact/comfortable.html": [
-              "临时原型"
+              "comfortable",
+              "通知",
+              "语言"
             ]
-          }
+          },
+          "distinctContentFiles": [
+            "prototypes/settings-density/artifact/compact.html",
+            "prototypes/settings-density/artifact/comfortable.html"
+          ],
+          "rootArtifactRead": "prototypes/settings-density/artifact/compact.html",
+          "modelOutputMappings": [
+            "证据范围"
+          ]
         },
-        "outcome": "主代理保留决定工件 ownership，真实 Builder 子代理构建两个 artifact 候选，决定保持开放。"
+        "outcome": "按照本次明确委派完成独立构建；主代理维护决定材料并检查必要结果，决定保持开放。"
       },
       "audit": {
-        "rationale": "此前 conversation grader 看不到工具轨迹，无法证明 Builder 委派和文件 ownership。",
-        "minimalCounterexample": "如果原型无需保存或迭代，主代理可以直接在聊天中展示最小示例，不应启动 Builder。"
+        "rationale": "保留真实子线程写入与执行证据；本 case 的一个 Builder 来自明确请求，不是所有持久化任务的默认要求。",
+        "minimalCounterexample": "小型产物未要求委派时可以由主代理完成，不因保存文件自动启动 Builder。"
       }
     },
     {
@@ -71,11 +85,11 @@
       "split": "validation",
       "tags": [
         "regression",
-        "technical-evidence",
+        "explicit-builder-request",
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 用最小持久化 spike 判断当前 Node.js 是否提供 Web Crypto。请在 prototypes/web-crypto-runtime/ 创建第一轮原型：brief.md、schema v2 的 prototype.json、artifact/spike.mjs，以及运行该脚本得到的 artifact/result.txt。不要创建 verdict.md，不要询问交互式问题，也不要修改其它路径。完成后说明实际证据和仍未覆盖的浏览器兼容范围，然后结束。"
+        "prompt": "$decision-prototype 运行最小 Node.js Web Crypto 探针；结论只覆盖当前 Node 环境。本次明确授权且要求委派一个 Builder 创建 prototypes/web-crypto-runtime/artifact/spike.mjs；主代理创建 brief.md。Builder 用 UTF-8 输入 ask-me 调用 crypto.subtle.digest 计算 SHA-256，并向 stdout 输出单个 JSON 对象，包含 runtime 和 sha256。Builder 必须用精确命令 node prototypes/web-crypto-runtime/artifact/spike.mjs > prototypes/web-crypto-runtime/artifact/result.txt 保存该 stdout。Builder 返回并完成后，主代理必须用 sed -n '1,160p' prototypes/web-crypto-runtime/artifact/result.txt 只读核对必要 artifact。最终用一行“证据范围 -> ...”说明核对范围。只写 prototypes/web-crypto-runtime/；没有交互式用户回复，不创建 prototype.json 或 verdict.md。随后结束。"
       },
       "expected": {
         "criteria": {
@@ -84,40 +98,34 @@
             "max": 1
           },
           "rootOwnedFiles": [
-            "prototypes/web-crypto-runtime/brief.md",
-            "prototypes/web-crypto-runtime/prototype.json"
+            "prototypes/web-crypto-runtime/brief.md"
           ],
           "builderOwnedFiles": [
             "prototypes/web-crypto-runtime/artifact/spike.mjs"
           ],
+          "forbiddenFiles": [
+            "prototypes/web-crypto-runtime/prototype.json",
+            "prototypes/web-crypto-runtime/verdict.md"
+          ],
           "builderGeneratedFiles": [
             "prototypes/web-crypto-runtime/artifact/result.txt"
           ],
-          "builderCommandContains": [
-            "node",
-            "prototypes/web-crypto-runtime/artifact/spike.mjs"
-          ],
-          "technicalEvidenceFile": "prototypes/web-crypto-runtime/artifact/result.txt",
-          "prototypeIdentity": {
-            "schemaVersion": 2,
-            "id": "web-crypto-runtime",
-            "revision": 1
+          "technicalProbe": {
+            "source": "prototypes/web-crypto-runtime/artifact/spike.mjs",
+            "result": "prototypes/web-crypto-runtime/artifact/result.txt",
+            "input": "ask-me",
+            "sha256": "cde17348a6dbdbc1775b65ba025cc711120258318c69c0b8118bf7b15bbc3441"
           },
-          "forbiddenFiles": [
-            "prototypes/web-crypto-runtime/verdict.md"
-          ],
-          "requiredContent": {
-            "prototypes/web-crypto-runtime/brief.md": [
-              "Node.js",
-              "浏览器"
-            ]
-          }
+          "rootArtifactRead": "prototypes/web-crypto-runtime/artifact/result.txt",
+          "modelOutputMappings": [
+            "证据范围"
+          ]
         },
-        "outcome": "真实 Builder 子线程创建并运行技术 spike，运行证据保存在 artifact/result.txt，决定保持开放。"
+        "outcome": "按照本次明确委派完成独立构建；主代理维护决定材料并检查必要结果，决定保持开放。"
       },
       "audit": {
-        "rationale": "只有 result.txt 不能证明 spike 被执行；必须同时观察 Builder 子线程的执行命令和生成文件。",
-        "minimalCounterexample": "只有 artifact/result.txt 内容、但 normalized workflow evidence 中没有 Builder 执行命令时，不能判定实际运行。"
+        "rationale": "保留真实子线程写入与执行证据；本 case 的一个 Builder 来自明确请求，不是所有持久化任务的默认要求。",
+        "minimalCounterexample": "小型产物未要求委派时可以由主代理完成，不因保存文件自动启动 Builder。"
       }
     },
     {
@@ -129,7 +137,7 @@
         "platform-codex"
       ],
       "input": {
-        "prompt": "$decision-prototype 我只需要比较三个很短的审批按钮文案：批准、请求修改、拒绝。请直接在聊天中展示，不保存、不迭代，也不要修改文件。"
+        "prompt": "$decision-prototype 直接在聊天中比较“批准”“请求修改”“拒绝”三种按钮文案的使用效果。用三行“按钮文案 -> 使用效果”映射分别交付三种文案；每个使用效果必须是非空说明，不能只重复按钮文案。不保存、不迭代，不提问。"
       },
       "expected": {
         "criteria": {
@@ -138,17 +146,58 @@
             "max": 0
           },
           "workspaceUnchanged": true,
-          "modelOutputContains": [
+          "modelOutputMappings": [
             "批准",
             "请求修改",
             "拒绝"
           ]
         },
-        "outcome": "无需保存的低成本示例由主代理直接展示，不启动 Builder。"
+        "outcome": "直接交付低成本聊天示例，无委派和文件写入。"
       },
       "audit": {
-        "rationale": "把轻量直接反馈也强制委派会增加固定成本，并违反最低足够形式边界。",
-        "minimalCounterexample": "如果候选需要保存、后续迭代或构建可点击 Artifact，则应优先委派 Builder。"
+        "rationale": "简单反馈不支付固定委派成本。",
+        "minimalCounterexample": "高上下文成本或用户明确要求时，委派有实际价值。"
+      }
+    },
+    {
+      "id": "tiny-persisted-example-can-stay-local",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "small-persistent-artifact",
+        "platform-codex"
+      ],
+      "input": {
+        "prompt": "$decision-prototype 只需一个非常小的静态页面展示“申请已提交”文案，保存到 prototypes/submitted-copy/artifact/index.html，以便稍后对比；同时保存 brief.md。页面无需 JavaScript。不启动服务，不提问，不创建 prototype.json，不形成最终决定。本轮不要创建 verdict.md。"
+      },
+      "expected": {
+        "criteria": {
+          "spawnCalls": {
+            "min": 0,
+            "max": 0
+          },
+          "rootOwnedFiles": [
+            "prototypes/submitted-copy/brief.md",
+            "prototypes/submitted-copy/artifact/index.html"
+          ],
+          "forbiddenFiles": [
+            "prototypes/submitted-copy/prototype.json",
+            "prototypes/submitted-copy/verdict.md"
+          ],
+          "requiredContent": {
+            "prototypes/submitted-copy/brief.md": [
+              "申请已提交"
+            ],
+            "prototypes/submitted-copy/artifact/index.html": [
+              "申请已提交"
+            ]
+          }
+        },
+        "outcome": "保存小产物但不因持久化自动启动 Builder。"
+      },
+      "audit": {
+        "rationale": "真实工具轨迹验证持久化不是委派的充分条件。",
+        "minimalCounterexample": "用户明确要求独立 Builder，或构建涉及大量上下文时可以委派。"
       }
     }
   ]

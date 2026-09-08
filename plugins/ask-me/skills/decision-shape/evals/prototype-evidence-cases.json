@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "检查用户可观察行为与任务边界，不以固定措辞或内部读取顺序作为通过标准。"
+    },
+    "participants": [
+      "decision-grill",
+      "decision-prototype"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "prototype-conclusion-keeps-condition",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "继续 planning/crypto-shape.md。用户已说接受“先采用 Web Crypto，但上线前必须完成目标浏览器验证”这个条件性方向。读取 prototypes/crypto/verdict.md 和 evidence.txt，把当前决定归一到 Shape；不要展开下一个问题。",
+      "assertions": [
+        "保留采用方向与上线前浏览器验证条件，不把 Node 探针外推到浏览器",
+        "只记录必要结论和证据指针，不复制端口、构建或 revision 修改日志",
+        "保留与该决定无关的现有约束"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "planning/crypto-shape.md": "# Shape\n\n## 共享决策方向\n安全正确性优先。\n\n## 当前决定\n用户数据不得发送到外部分析服务。\n\n## 开放问题\n加密路线尚待实验。\n",
+          "prototypes/crypto/verdict.md": "# 原型结论\n采用 Web Crypto 作为候选路线；上线前必须验证目标浏览器。当前仅 Node 探针通过。用户明确接受这一条件性决定。\n",
+          "prototypes/crypto/evidence.txt": "环境：Node 22。digest 成功。构建日志：server-port=49152; revision1-layout-tweak; 此项不是产品决定。\n"
+        }
+      },
+      "expected": {
+        "output": "保留采用方向与上线前浏览器验证条件，不把 Node 探针外推到浏览器",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "planning/crypto-shape.md"
+        ],
+        "artifacts": [
+          {
+            "path": "planning/crypto-shape.md",
+            "exists": true,
+            "notContains": [
+              "server-port=49152",
+              "revision1-layout-tweak"
+            ]
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "任务目标或已授权范围不同，可能需要不同方法；本用例只评价给定上下文。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "moving-question-is-reshaped",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "当前 Shape 只在决定审批页风险提示位置。原型已修改多轮，但最新反馈开始同时要求重新设计收费模式、团队权限和历史记录保留期。请先处理这些方向变化；本轮不改文件、不生成原型。 本轮只列出需要重新界定的问题，不提问，随后结束。",
+      "assertions": [
+        "指出问题已超出原来的位置决定，先拆分材料问题或校准方向",
+        "不持续在同一原型里加入完整收费和权限系统",
+        "不使用固定 revision 次数替代是否需要重新塑形的判断"
+      ],
+      "expected": {
+        "output": "指出问题已超出原来的位置决定，先拆分材料问题或校准方向",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "任务目标或已授权范围不同，可能需要不同方法；本用例只评价给定上下文。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    },
+    {
+      "id": "one-bounded-question-can-mix-evidence",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "platform-codex",
+        "platform-claude"
+      ],
+      "prompt": "我们还在决定“审批提交前怎样让用户看见风险”。已有布局候选，但尚需在真实提交流程中操作，确认风险不会一闪而过。继续 Shape，只说明当前需要什么证据，不改文件。",
+      "assertions": [
+        "保持同一个有边界的问题，允许在界面证据上补足操作证据",
+        "向原型能力提供问题、观察和停止条件，而非规定 HTML 类型、CLI 或 session 字段",
+        "不把每个微小布局修改都拆成新 Shape"
+      ],
+      "expected": {
+        "output": "保持同一个有边界的问题，允许在界面证据上补足操作证据",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "保护本次调整对应的行为边界；需要结合真实输出检查，不能由提示中出现关键词判定通过。",
+        "minimalCounterexample": "若新反馈改变审批权限、商业模式或目标，应重新处理材料方向。",
+        "allowedVariance": "标题、措辞、局部文件组织可以变化；必须保持指定的授权范围和语义结果。",
+        "errorCost": "high"
+      }
+    }
+  ]
+}

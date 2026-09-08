@@ -19,6 +19,21 @@
       "Skills"
     ]
   },
+  "config": {
+    "fields": {
+      "reviewSessionTtlMinutes": {
+        "type": "number",
+        "title": "原型 Review 会话有效期（分钟）",
+        "description": "新建网页原型 Review 会话的有效期。",
+        "default": 30,
+        "validation": {
+          "integer": true,
+          "minimum": 1,
+          "maximum": 240
+        }
+      }
+    }
+  },
   "buildConfig": {
     "templates": {
       "include": [
@@ -36,7 +51,16 @@
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",
-        "./scripts/prototype-review.test.mjs"
+        "./scripts/prototype-review.test.mjs",
+        "./scripts/review-config.test.mjs",
+        "./scripts/review-opener.test.mjs"
+      ]
+    }
+  },
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-config.v2"
       ]
     }
   }

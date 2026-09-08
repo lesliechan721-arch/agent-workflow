@@ -101,6 +101,18 @@ function safeRelativePath(value, label) {
   return result;
 }
 
+function technicalProbe(value, label) {
+  const probe = record(value, label);
+  const source = safeRelativePath(probe.source, label + '.source');
+  const result = safeRelativePath(probe.result, label + '.result');
+  const input = nonEmptyString(probe.input, label + '.input');
+  const sha256 = nonEmptyString(probe.sha256, label + '.sha256').toLowerCase();
+  if (!/^[0-9a-f]{64}$/u.test(sha256)) {
+    throw new Error(label + '.sha256 must be a SHA-256 hex digest.');
+  }
+  return { source, result, input, sha256 };
+}
+
 function parseInput(source) {
   const input = record(JSON.parse(source), 'CodexWorkflowAdapterInput');
   if (input.version !== 1 || !['prepare', 'grade'].includes(input.phase)) {
@@ -169,24 +181,51 @@ function parseCase(selectedCase) {
       criteria.modelOutputContains ?? [],
       `${selectedCase.id}.expected.criteria.modelOutputContains`,
     ),
+    modelOutputMappings: stringArray(
+      criteria.modelOutputMappings ?? [],
+      `${selectedCase.id}.expected.criteria.modelOutputMappings`,
+    ),
     requiredContent: record(
       criteria.requiredContent ?? {},
       `${selectedCase.id}.expected.criteria.requiredContent`,
     ),
+    distinctContentFiles: (criteria.distinctContentFiles ?? []).map((entry, index) => safeRelativePath(
+      entry,
+      `${selectedCase.id}.expected.criteria.distinctContentFiles[${index}]`,
+    )),
+    rootArtifactRead: criteria.rootArtifactRead === undefined
+      ? null
+      : safeRelativePath(
+        criteria.rootArtifactRead,
+        `${selectedCase.id}.expected.criteria.rootArtifactRead`,
+      ),
     prototypeIdentity: criteria.prototypeIdentity === undefined
       ? null
       : record(criteria.prototypeIdentity, `${selectedCase.id}.expected.criteria.prototypeIdentity`),
-    technicalEvidenceFile: criteria.technicalEvidenceFile === undefined
+    technicalProbe: criteria.technicalProbe === undefined
       ? null
-      : safeRelativePath(
-        criteria.technicalEvidenceFile,
-        `${selectedCase.id}.expected.criteria.technicalEvidenceFile`,
-      ),
+      : technicalProbe(criteria.technicalProbe, `${selectedCase.id}.expected.criteria.technicalProbe`),
   };
   for (const [file, needles] of Object.entries(result.requiredContent)) {
     safeRelativePath(file, `${selectedCase.id}.expected.criteria.requiredContent path`);
     stringArray(needles, `${selectedCase.id}.expected.criteria.requiredContent.${file}`);
   }
+  if (result.technicalProbe) {
+    if (!result.builderOwnedFiles.includes(result.technicalProbe.source)) {
+      throw new Error(`${selectedCase.id}.expected.criteria.technicalProbe.source must be Builder-owned.`);
+    }
+    if (!result.builderGeneratedFiles.includes(result.technicalProbe.result)) {
+      throw new Error(`${selectedCase.id}.expected.criteria.technicalProbe.result must be Builder-generated.`);
+    }
+  }
+  if (
+    result.rootArtifactRead
+    && ![
+      ...result.rootOwnedFiles,
+      ...result.builderOwnedFiles,
+      ...result.builderGeneratedFiles,
+    ].includes(result.rootArtifactRead)
+  ) throw new Error(`${selectedCase.id}.expected.criteria.rootArtifactRead must be a required artifact.`);
   return result;
 }
 
@@ -213,7 +252,7 @@ export async function prepareBuilderWorkflow(input) {
     model: 'gpt-5.6-luna',
     developerInstructions: [
       'Follow the user request and applicable skills.',
-      'Delegation is authorized only when the applicable Skill requires it.',
+      'Delegation is authorized when explicitly requested by the user or allowed by applicable Skill guidance.',
       'Use apply_patch for all file creation so thread ownership remains observable.',
       'This evaluation has no interactive user reply; do not call a user-input tool.',
       'Keep any unresolved decision open in the final response.',
@@ -251,6 +290,11 @@ async function readEvidence(file) {
   for (const key of ['skillLoads', 'threadGraph', 'collaborationCalls']) {
     if (!Array.isArray(evidence[key])) throw new Error(`workflow evidence.${key} must be an array.`);
   }
+  if (!evidence.collaborationCalls.every((call, index) => (
+    call
+    && Number.isSafeInteger(call.ordinal)
+    && call.ordinal === index + 1
+  ))) throw new Error('workflow evidence does not preserve normalized call order.');
   return evidence;
 }
 
@@ -307,8 +351,8 @@ async function regularFile(root, relative) {
   return Boolean(info?.isFile() && !info.isSymbolicLink());
 }
 
-function terminalResultObserved(calls, descendants) {
-  return calls.some((call) => (
+function builderTerminalCalls(calls, descendants) {
+  return calls.filter((call) => (
     call.tool === 'agent_message'
     && descendants.has(call.linkedThreadId)
     && call.output?.messageType === 'FINAL_ANSWER'
@@ -319,42 +363,86 @@ function terminalResultObserved(calls, descendants) {
   ));
 }
 
-function technicalEvidence(content) {
-  const fixedGlobal = content.includes('globalThis.crypto.present=true');
-  const fixedSubtle = content.includes('crypto.subtle.present=true');
-  const fixedDigest = content.includes('subtle.digest.call=ok')
-    && /^subtle\.digest\.sha256=[0-9a-f]{64}$/imu.test(content);
-  const labeled = new Map();
-  for (const line of content.split('\n')) {
-    const match = /^\s*([^:]+?)\s*:\s*(.*?)\s*$/u.exec(line);
-    if (match) labeled.set(match[1], match[2]);
+function terminalResultObserved(calls, descendants) {
+  return builderTerminalCalls(calls, descendants).length > 0;
+}
+
+function isSuccessfulArtifactRead(call, file) {
+  if (
+    call.status !== 'completed'
+    || call.output?.exitCode !== 0
+    || typeof call.arguments?.cmd !== 'string'
+  ) return false;
+  const pattern = new RegExp(
+    '^\\s*sed\\s+-n\\s+(?:1,160p|[\'"]1,160p[\'"])\\s+[\'"]?'
+      + escapeRegex(file) + '[\'"]?\\s*$',
+    'u',
+  );
+  return pattern.test(call.arguments.cmd);
+}
+
+function visibleHtmlText(content) {
+  const body = /<body\b[^>]*>([\s\S]*?)<\/body>/iu.exec(content)?.[1] ?? content;
+  return body
+    .replace(/<!--[\s\S]*?-->/gu, '')
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/giu, '')
+    .replace(/<[^>]+>/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function normalizedContent(content) {
+  return content.replace(/<!--[\s\S]*?-->/gu, '').replace(/\s+/gu, ' ').trim();
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.|?*+()^$[\]{}\\]/gu, '\\$&');
+}
+
+function isSuccessfulNodeRedirect(call, source, result) {
+  if (
+    call.status !== 'completed'
+    || call.output?.exitCode !== 0
+    || typeof call.arguments?.cmd !== 'string'
+  ) return false;
+  const pattern = new RegExp(
+    '^\\s*node\\s+' + escapeRegex(source) + '\\s*>\\s*' + escapeRegex(result) + '\\s*$',
+    'u',
+  );
+  return pattern.test(call.arguments.cmd);
+}
+
+function isLatestProbeWrite(call, calls, source, result) {
+  return !calls.some((other) => (
+    other.ordinal > call.ordinal
+    && (callWritesFile(other, source) || callWritesFile(other, result))
+  ));
+}
+
+function sourceCallsWebCryptoDigest(source) {
+  return /\b(?:globalThis\.)?crypto\.subtle\.digest\s*\(/u.test(source);
+}
+
+function technicalProbeResult(content, probe) {
+  try {
+    const value = record(JSON.parse(content), 'technical probe result');
+    return typeof value.runtime === 'string'
+      && value.runtime.trim() !== ''
+      && value.sha256 === probe.sha256;
+  } catch {
+    return false;
   }
-  const labeledGlobal = labeled.get('globalThis.crypto')?.toLowerCase() === 'present';
-  const labeledSubtle = labeled.get('crypto.subtle')?.toLowerCase() === 'present';
-  const labeledDigest = labeled.get('digest_sha256_status')?.toLowerCase() === 'ok'
-    && /^[0-9a-f]{64}$/iu.test(labeled.get('digest_sha256_hex') ?? '');
-  const jsonStart = content.indexOf('{');
-  const report = jsonStart === -1
-    ? null
-    : (() => {
-      try {
-        return JSON.parse(content.slice(jsonStart));
-      } catch {
-        return null;
-      }
-    })();
-  const jsonDigest = typeof report?.sha256Probe === 'string'
-    && /^[0-9a-f]{64}$/iu.test(report.sha256Probe);
-  const nestedDigest = report?.probe?.success === true
-    && typeof report.probe.sha256Hex === 'string'
-    && /^[0-9a-f]{64}$/iu.test(report.probe.sha256Hex);
-  return {
-    globalPresent: fixedGlobal || labeledGlobal || report?.globalThisCrypto === true
-      || report?.checks?.globalThisCrypto?.present === true,
-    subtlePresent: fixedSubtle || labeledSubtle || report?.globalThisCryptoSubtle === true
-      || report?.checks?.globalThisCrypto?.hasSubtle === true,
-    digestSucceeded: fixedDigest || labeledDigest || jsonDigest || nestedDigest,
-  };
+}
+
+function hasOutputMapping(output, label) {
+  const pattern = new RegExp(
+    '^\\s*' + escapeRegex(label) + '\\s*(?:->|→|:|：)\\s*(\\S.*?)\\s*$',
+    'gmu',
+  );
+  return [...output.matchAll(pattern)].some((match) => {
+    const effect = match[1].replace(/[\s。.!！?？]/gu, '');
+    return effect !== '' && effect !== label;
+  });
 }
 
 export async function gradeBuilderWorkflow(input) {
@@ -374,6 +462,10 @@ export async function gradeBuilderWorkflow(input) {
   const builderCalls = evidence.collaborationCalls.filter(
     (call) => builderThreads.has(call.threadId),
   );
+  const terminalCalls = builderTerminalCalls(rootCalls, builderThreads);
+  const terminalOrdinal = terminalCalls.length === 0
+    ? null
+    : Math.min(...terminalCalls.map((call) => call.ordinal));
   const spawnCalls = rootCalls.filter((call) => call.tool === 'spawn_agent');
   add(
     assertions,
@@ -404,6 +496,17 @@ export async function gradeBuilderWorkflow(input) {
     );
   }
   const builderCommands = builderCalls.filter((call) => call.tool === 'exec_command');
+  if (evalCase.rootArtifactRead) {
+    add(
+      assertions,
+      'root_artifact_read',
+      terminalOrdinal !== null
+        && rootCalls.some((call) => (
+          call.ordinal > terminalOrdinal && isSuccessfulArtifactRead(call, evalCase.rootArtifactRead)
+        )),
+      `artifact=${evalCase.rootArtifactRead} terminal=${terminalOrdinal ?? 'missing'}`,
+    );
+  }
   for (const file of evalCase.rootOwnedFiles) {
     const rootWrites = rootCalls.filter((call) => callWritesFile(call, file));
     const builderWrites = builderCalls.filter((call) => callWritesFile(call, file));
@@ -460,21 +563,58 @@ export async function gradeBuilderWorkflow(input) {
     add(
       assertions,
       `content:${file}`,
-      needles.every((needle) => content.includes(needle)),
+      needles.every((needle) => (
+        file.endsWith('.html') ? visibleHtmlText(content).includes(needle) : content.includes(needle)
+      )),
       `required=${needles.length}`,
     );
   }
-  if (evalCase.technicalEvidenceFile) {
-    const content = await readFile(
-      path.join(input.paths.workspace, evalCase.technicalEvidenceFile),
-      'utf8',
-    ).catch(() => '');
-    const observed = technicalEvidence(content);
+  if (evalCase.distinctContentFiles.length > 0) {
+    const contents = await Promise.all(evalCase.distinctContentFiles.map((file) =>
+      readFile(path.join(input.paths.workspace, file), 'utf8').catch(() => ''),
+    ));
     add(
       assertions,
-      'technical_runtime_evidence',
-      observed.globalPresent && observed.subtlePresent && observed.digestSucceeded,
-      JSON.stringify(observed),
+      'distinct_artifacts',
+      contents.every((content) => normalizedContent(content) !== '')
+        && new Set(contents.map(normalizedContent)).size === contents.length,
+      `files=${evalCase.distinctContentFiles.length}`,
+    );
+  }
+  if (evalCase.technicalProbe) {
+    const probe = evalCase.technicalProbe;
+    const successfulProbeCalls = builderCommands.filter((call) =>
+      isSuccessfulNodeRedirect(call, probe.source, probe.result),
+    );
+    const [source, result] = await Promise.all([
+      readFile(path.join(input.paths.workspace, probe.source), 'utf8').catch(() => ''),
+      readFile(path.join(input.paths.workspace, probe.result), 'utf8').catch(() => ''),
+    ]);
+    add(
+      assertions,
+      'technical_probe_execution',
+      successfulProbeCalls.length > 0,
+      `source=${probe.source} result=${probe.result}`,
+    );
+    add(
+      assertions,
+      'technical_probe_provenance',
+      successfulProbeCalls.some((call) =>
+        isLatestProbeWrite(call, evidence.collaborationCalls, probe.source, probe.result),
+      ),
+      `source=${probe.source} result=${probe.result}`,
+    );
+    add(
+      assertions,
+      'technical_probe_source',
+      sourceCallsWebCryptoDigest(source),
+      `source=${probe.source}`,
+    );
+    add(
+      assertions,
+      'technical_probe_result',
+      technicalProbeResult(result, probe),
+      `input=${probe.input} sha256=${probe.sha256}`,
     );
   }
   if (evalCase.prototypeIdentity) {
@@ -529,6 +669,14 @@ export async function gradeBuilderWorkflow(input) {
   }
   for (const needle of evalCase.modelOutputContains) {
     add(assertions, `model_output:${needle}`, modelOutput.includes(needle), `contains=${needle}`);
+  }
+  for (const label of evalCase.modelOutputMappings) {
+    add(
+      assertions,
+      `model_output_mapping:${label}`,
+      hasOutputMapping(modelOutput, label),
+      `label=${label}`,
+    );
   }
   add(
     assertions,
