@@ -1315,6 +1315,133 @@ describe('TUI v4 router and ViewModel', () => {
     expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
   });
 
+  it('preserves exact installed targets before blocking missing targets that cannot be installed', async () => {
+    const existing = (pluginName: string): StatusV7Payload['targets'][number] => {
+      const value = target({ pluginName, platform: 'codex', scope: 'project', state: 'present' });
+      value.components.push(
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+      );
+      return value;
+    };
+    const missing = (pluginName: string): StatusV7Payload['targets'][number] =>
+      target({ pluginName, platform: 'claude', scope: 'project', state: 'absent' });
+    const unobserved = target({ pluginName: 'unobserved', platform: 'codex', scope: 'project', state: 'absent' });
+    unobserved.components.push({
+      kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'unobserved' },
+    });
+    const foreign = target({
+      pluginName: 'foreign', platform: 'codex', scope: 'project', state: 'error',
+      errorCode: 'codexSharedNativeForeign',
+    });
+    foreign.components.push({
+      kind: 'sharedNative', key: 'foreign@aw-official', state: 'blocked', metadata: { reason: 'foreign' },
+    });
+    const foldedMissing = target({
+      pluginName: 'folded-missing', platform: 'codex', scope: 'user', state: 'absent',
+    });
+    foldedMissing.components.push(
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'disabled', metadata: { evidence: 'observed' } },
+    );
+    const foldedUser = target({
+      pluginName: 'folded-user', platform: 'codex', scope: 'user', state: 'present',
+    });
+    foldedUser.components.push(
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['user'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'disabled', metadata: { evidence: 'observed' } },
+    );
+    const foldedProject = target({
+      pluginName: 'folded-project', platform: 'codex', scope: 'project', state: 'present',
+    });
+    foldedProject.components.push(
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['project'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+    );
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({
+          sources: [source('official'), source('offline', { error: 'unavailable' })],
+          targets: [
+            existing('capability'), missing('capability'),
+            { ...existing('offline'), sourceId: 'offline', sourceIdentity: 'identity:offline', pluginId: 'offline/offline' },
+            { ...missing('offline'), sourceId: 'offline', sourceIdentity: 'identity:offline', pluginId: 'offline/offline' },
+            existing('compatibility'), missing('compatibility'), unobserved, foreign,
+            foldedMissing, foldedUser, foldedProject,
+          ],
+        }),
+        pluginSummaries: [
+          { ...summaries(['official', 'capability'])[0]!, missingCapabilities: ['aw.future.v1'], supportedTargets: { codex: ['project'], claude: ['project'] } },
+          { ...summaries(['offline', 'offline'])[0]!, supportedTargets: { codex: ['project'], claude: ['project'] } },
+          { ...summaries(['official', 'compatibility'])[0]!, supportedTargets: { codex: [], claude: [] } },
+          { ...summaries(['official', 'unobserved'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'foreign'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'unknown'])[0]!, supportedTargets: { codex: ['project'], claude: [] } },
+          { ...summaries(['official', 'folded-missing'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+          { ...summaries(['official', 'folded-user'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+          { ...summaries(['official', 'folded-project'])[0]!, supportedTargets: { codex: ['user', 'project'], claude: [] } },
+        ],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/capability'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/capability', platform: 'claude', scope: 'project', state: 'blocked', reason: '当前 AW CLI 不支持插件所需功能' },
+      { pluginId: 'official/capability', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['offline/offline'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'offline/offline', platform: 'claude', scope: 'project', state: 'blocked', reason: '插件来源不可用' },
+      { pluginId: 'offline/offline', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/compatibility'], 'both', 'project',
+    )).toEqual([
+      { pluginId: 'official/compatibility', platform: 'claude', scope: 'project', state: 'blocked', reason: '插件不支持所选工具或位置' },
+      { pluginId: 'official/compatibility', platform: 'codex', scope: 'project', state: 'existing' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/unobserved', 'official/foreign'], 'codex', 'project',
+    )).toEqual([
+      { pluginId: 'official/foreign', platform: 'codex', scope: 'project', state: 'blocked', reason: 'safe failure' },
+      { pluginId: 'official/unobserved', platform: 'codex', scope: 'project', state: 'blocked', reason: '无法确认所选位置是否缺失' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/unknown'], 'codex', 'project',
+    )).toEqual([
+      { pluginId: 'official/unknown', platform: 'codex', scope: 'project', state: 'blocked', reason: '无法确认所选位置是否缺失' },
+    ]);
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-missing'], 'codex', 'user',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-missing'], 'codex', 'project',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-user'], 'codex', 'user',
+    )[0]?.state).toBe('existing');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-user'], 'codex', 'project',
+    )[0]?.state).toBe('add');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-project'], 'codex', 'project',
+    )[0]?.state).toBe('existing');
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/folded-project'], 'codex', 'user',
+    )[0]?.state).toBe('add');
+  });
+
   it('keeps a typed per-platform placement draft and delegates scope legality to the preview plan', async () => {
     const previewDependencyPlacement = vi.fn(async (intent: Extract<import('../../src/tui/controller.js').OperationIntent, { kind: 'pluginWrite' }>): Promise<DependencyOperationPlan> => {
       const platforms = intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform];

@@ -40,6 +40,7 @@ import {
   statusTargetActivation,
   statusTargetIntent,
   statusTargetOwnershipState,
+  statusTargetSharedNative,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { RebuildCommandResult } from '../commands/rebuild-command.js';
@@ -2039,6 +2040,7 @@ export class TuiController {
       && result.state === 'succeeded'
       && 'returnRoute' in result
       && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.goal === result.summary.task?.goal
       && result.returnRoute.batchOrigin?.owner === 'batch-write') {
       return { name: 'pluginList', mode: 'installed' };
     }
@@ -2132,6 +2134,7 @@ export class TuiController {
       && intent.kind === 'pluginWriteTask'
       && 'returnRoute' in result
       && result.returnRoute?.name === 'pluginWriteTask'
+      && result.returnRoute.goal === result.summary.task?.goal
       && result.returnRoute.batchOrigin?.owner === 'batch-write'
       ? result.returnRoute.batchOrigin.flowId
       : undefined;
@@ -2983,6 +2986,20 @@ export class TuiController {
       const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
       return platforms.map((targetPlatform): PluginInstallBatchTarget => {
         const target = { pluginId, platform: targetPlatform, scope };
+        const statusTargets = this.#status?.payload.targets.filter((entry) =>
+          entry.pluginId === pluginId && entry.platform === targetPlatform) ?? [];
+        const exactTarget = statusTargets.find((entry) => entry.scope === scope);
+        const alreadyConfigured = statusTargets.some((entry) => {
+          const activation = statusTargetActivation(entry);
+          return statusTargetIntent(entry).scopes.includes(scope)
+            || (targetPlatform === 'codex'
+              && activation?.evidence === 'observed'
+              && activation[scope] === true);
+        });
+        const exactOwnership = exactTarget ? statusTargetOwnershipState(exactTarget) : 'absent';
+        if (alreadyConfigured || exactOwnership === 'present' || exactOwnership === 'partial') {
+          return { ...target, state: 'existing' };
+        }
         if (!plugin) return { ...target, state: 'blocked', reason: '插件已不在当前状态中' };
         if (plugin.configOnly) {
           return { ...target, state: 'blocked', reason: '来源中没有可信插件定义' };
@@ -2998,15 +3015,34 @@ export class TuiController {
         if (!option?.compatible) {
           return { ...target, state: 'blocked', reason: option?.disabled ?? '插件不支持所选工具或位置' };
         }
-        const statusTargets = this.#status?.payload.targets.filter((entry) =>
-          entry.pluginId === pluginId && entry.platform === targetPlatform) ?? [];
-        const exactTarget = statusTargets.find((entry) => entry.scope === scope);
-        const alreadyConfigured = statusTargets.some((entry) =>
-          statusTargetIntent(entry).scopes.includes(scope)
-          || (targetPlatform === 'codex' && statusTargetActivation(entry)?.[scope] === true));
-        if (alreadyConfigured
-          || exactTarget && statusTargetOwnershipState(exactTarget) !== 'absent') {
-          return { ...target, state: 'existing' };
+        const representativeTarget = targetPlatform === 'codex' ? statusTargets[0] : exactTarget;
+        const uncertainObservation = statusTargets.some((entry) =>
+          statusTargetActivation(entry)?.evidence === 'unobserved'
+          || statusTargetSharedNative(entry)?.state === 'unobserved');
+        if (uncertainObservation) {
+          return { ...target, state: 'blocked', reason: '无法确认所选位置是否缺失' };
+        }
+        if (!representativeTarget || representativeTarget.state === 'blocked') {
+          return {
+            ...target,
+            state: 'blocked',
+            reason: representativeTarget?.reasons.find((reason) => reason.severity === 'blocking')?.message
+              ?? '无法确认所选位置是否缺失',
+          };
+        }
+        if (targetPlatform === 'codex') {
+          const intent = statusTargetIntent(representativeTarget);
+          const activation = statusTargetActivation(representativeTarget);
+          const confirmedMissing = activation?.evidence === 'observed' && activation[scope] === false
+            || intent.enabled && !intent.scopes.includes(scope)
+            || representativeTarget.state === 'absent'
+              && statusTargetOwnershipState(representativeTarget) === 'absent'
+              && !intent.enabled;
+          if (!confirmedMissing) {
+            return { ...target, state: 'blocked', reason: '无法确认所选位置是否缺失' };
+          }
+        } else if (representativeTarget.state !== 'absent') {
+          return { ...target, state: 'blocked', reason: '无法确认所选位置是否缺失' };
         }
         return { ...target, state: 'add' };
       });

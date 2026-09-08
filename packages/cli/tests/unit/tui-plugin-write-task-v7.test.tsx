@@ -776,6 +776,8 @@ describe('TUI plugin write task', () => {
       targetKeys: ['official/demo\0codex\0user'],
       batchOrigin: { owner: 'batch-write', flowId: expect.any(String) },
     });
+    const batchFlowId = (outerTask as Extract<typeof outerTask, { name: 'pluginWriteTask' }>)
+      .batchOrigin!.flowId;
     expect(value.hasSessionDraft).toBe(true);
 
     await write(instance, '\r');
@@ -803,6 +805,7 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual(outerTask);
+    expect(value.snapshot.router.currentFlowId).toBe(batchFlowId);
     expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual(outerTask);
@@ -811,6 +814,7 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
     await write(instance, '\r');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });

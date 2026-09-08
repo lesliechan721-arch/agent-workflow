@@ -322,6 +322,75 @@ describe('dependency graph v7', () => {
     expect(instance.lastFrame()).toContain('已检查的使用位置 4 个');
   });
 
+  it('paginates complete long canonical reference IDs at 60 columns', async () => {
+    const controller = new DependencyControllerStub();
+    const sourceId = 'source-abcdefghijklmnopqrstuvwxy';
+    const consumerId = `${sourceId}/consumer-${'c'.repeat(200)}`;
+    const dependencyId = `${sourceId}/dependency-${'d'.repeat(200)}`;
+    const dependent = controller.dependencies[0]!.dependents[0]!;
+    dependent.placementReferences = [{
+      consumer: { pluginId: consumerId, platform: 'codex', scope: 'project', project: 'current' },
+      dependency: { pluginId: dependencyId, platform: 'claude', scope: 'user', project: null },
+    }, {
+      consumer: { pluginId: consumerId, platform: 'claude', scope: 'user', project: null },
+      dependency: { pluginId: dependencyId, platform: 'codex', scope: 'project', project: 'current' },
+    }];
+    controller.route = {
+      name: 'pluginDependencyNode', pluginId: 'official/root',
+      nodePluginId: 'official/consumer', direction: 'dependents',
+      nodePathPluginIds: ['official/root', 'official/consumer'], view: 'references',
+    };
+    const instance = render(<ConsoleAppV4
+      controller={controller as unknown as TuiController}
+      size={{ columns: 60, rows: 18 }}
+    />);
+    await input(instance, '', '', '');
+
+    const readCurrentReference = async (): Promise<{
+      consumer: string;
+      dependency: string;
+      text: string;
+    }> => {
+      const chunks = { consumer: [] as string[], dependency: [] as string[] };
+      const pages: string[] = [];
+      while (true) {
+        const frame = instance.lastFrame() ?? '';
+        pages.push(frame);
+        expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+        expect(frame).toContain('PgUp/PgDn 查看当前位置详情');
+        for (const line of frame.split('\n')) {
+          const match = /^\s*(consumer|dependency) · (\S+)\s*$/u.exec(line);
+          if (!match || match[2]!.startsWith('platform=') || match[2]!.startsWith('project=')) continue;
+          chunks[match[1] as 'consumer' | 'dependency'].push(match[2]!);
+        }
+        if (!frame.includes('↓ 后面还有')) break;
+        await input(instance, '\u001b[6~');
+      }
+      return {
+        consumer: chunks.consumer.join(''),
+        dependency: chunks.dependency.join(''),
+        text: pages.join('\n'),
+      };
+    };
+
+    const first = await readCurrentReference();
+    expect(first.consumer).toBe(consumerId);
+    expect(first.dependency).toBe(dependencyId);
+    expect(first.text).toContain('consumer · platform=Codex · scope=project');
+    expect(first.text).toContain('consumer · project=current');
+    expect(first.text).toContain('dependency · platform=Claude Code · scope=user');
+    expect(first.text).toContain('dependency · project=none');
+
+    await input(instance, '\u001b[B');
+    const second = await readCurrentReference();
+    expect(second.consumer).toBe(consumerId);
+    expect(second.dependency).toBe(dependencyId);
+    expect(second.text).toContain('consumer · platform=Claude Code · scope=user');
+    expect(second.text).toContain('consumer · project=none');
+    expect(second.text).toContain('dependency · platform=Codex · scope=project');
+    expect(second.text).toContain('dependency · project=current');
+  });
+
   it.each([[80, 24], [60, 18]] as const)(
     'renders and operates the directional tree at %ix%i',
     async (columns, rows) => {

@@ -1,6 +1,7 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
+import stringWidth from 'string-width';
 import {
   validatePluginConfigValue,
 } from '@lesliechan721/aw-plugin-core/manifest';
@@ -532,6 +533,27 @@ function moveFocus(actions: ActionItem[], current: number, direction: -1 | 1): n
 function moveIndex(count: number, current: number, direction: -1 | 1): number {
   if (count === 0) return 0;
   return (current + direction + count) % count;
+}
+
+function wrapConsoleText(value: string, columns: number): string[] {
+  const width = Math.max(1, columns);
+  const graphemes = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(value)]
+    .map((part) => part.segment);
+  const lines: string[] = [];
+  let line = '';
+  let lineWidth = 0;
+  for (const grapheme of graphemes) {
+    const graphemeWidth = stringWidth(grapheme);
+    if (line && lineWidth + graphemeWidth > width) {
+      lines.push(line);
+      line = '';
+      lineWidth = 0;
+    }
+    line += grapheme;
+    lineWidth += graphemeWidth;
+  }
+  if (line || lines.length === 0) lines.push(line);
+  return lines;
 }
 
 function actionViewport(
@@ -2102,6 +2124,7 @@ export function ConsoleAppV4(props: {
   let help = '↑↓ 移动 · Enter 选择 · ? 帮助 · q 退出';
   let content: React.ReactNode;
   let actions: ActionItem[] = [];
+  let referenceDetailPagination: { total: number; pageRows: number } | undefined;
   let pluginRows: PluginListRowViewModel[] = [];
   let visibleConfigTabs: ConfigTab[] = [];
   let activeConfigTabId: string | undefined;
@@ -4417,17 +4440,41 @@ export function ConsoleAppV4(props: {
       const referenceViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
         responsiveBudget(3, 6));
       const selectedReference = references[Math.min(focus, references.length - 1)];
-      help = '↑↓ 查看全部位置 · Enter 选择 · Esc 返回节点详情';
+      const referenceIdLines = (label: 'consumer' | 'dependency', pluginId: string): string[] => {
+        const prefix = `${label} · `;
+        return wrapConsoleText(pluginId, Math.max(1, size.columns - 10 - stringWidth(prefix)))
+          .map((line) => `${prefix}${line}`);
+      };
+      const referenceDetailLines = selectedReference ? [
+        ...referenceIdLines('consumer', selectedReference.consumer.pluginId),
+        `consumer · platform=${platformLabel(selectedReference.consumer.platform)} · scope=${selectedReference.consumer.scope}`,
+        `consumer · project=${selectedReference.consumer.project ?? 'none'}`,
+        ...referenceIdLines('dependency', selectedReference.dependency.pluginId),
+        `dependency · platform=${platformLabel(selectedReference.dependency.platform)} · scope=${selectedReference.dependency.scope}`,
+        `dependency · project=${selectedReference.dependency.project ?? 'none'}`,
+      ] : [];
+      const referenceDetailPageRows = referenceDetailLines.length <= 6
+        ? 6
+        : responsiveBudget(4, 8);
+      const referenceDetailOffset = Math.min(batchTargetOffset,
+        Math.max(0, referenceDetailLines.length - 1));
+      const visibleReferenceDetailLines = referenceDetailLines.slice(
+        referenceDetailOffset,
+        referenceDetailOffset + referenceDetailPageRows,
+      );
+      referenceDetailPagination = {
+        total: referenceDetailLines.length,
+        pageRows: referenceDetailPageRows,
+      };
+      help = 'PgUp/PgDn 查看当前位置详情 · ↑↓ 查看全部位置 · Enter 选择 · Esc 返回节点详情';
       content = <Box flexDirection="column">
         <StaticRow title="证据边界" description="这里只显示已确认的现场引用；readiness 不计入引用" status="muted" compact />
-        {selectedReference ? <>
-          <StaticRow title={`consumer · ${selectedReference.consumer.pluginId}`} compact />
-          <StaticRow title={`consumer · platform=${platformLabel(selectedReference.consumer.platform)} · scope=${selectedReference.consumer.scope}`} compact />
-          <StaticRow title={`consumer · project=${selectedReference.consumer.project ?? 'none'}`} compact />
-          <StaticRow title={`dependency · ${selectedReference.dependency.pluginId}`} compact />
-          <StaticRow title={`dependency · platform=${platformLabel(selectedReference.dependency.platform)} · scope=${selectedReference.dependency.scope}`} compact />
-          <StaticRow title={`dependency · project=${selectedReference.dependency.project ?? 'none'}`} compact />
-        </> : null}
+        {referenceDetailOffset > 0
+          ? <StaticRow title={`↑ 前面还有 ${referenceDetailOffset} 行`} status="muted" compact /> : null}
+        {visibleReferenceDetailLines.map((line, index) =>
+          <StaticRow key={`${referenceDetailOffset + index}:${line}`} title={line} compact />)}
+        {referenceDetailOffset + visibleReferenceDetailLines.length < referenceDetailLines.length
+          ? <StaticRow title={`↓ 后面还有 ${referenceDetailLines.length - referenceDetailOffset - visibleReferenceDetailLines.length} 行`} status="muted" compact /> : null}
         <SemanticRows actions={actions} focus={focus} kind="action" compact
           offset={referenceViewport.offset} limit={referenceViewport.limit} />
       </Box>;
@@ -8596,6 +8643,16 @@ export function ConsoleAppV4(props: {
       return;
     }
     if ((key.pageUp || key.pageDown)
+      && route.name === 'pluginDependencyNode' && route.view === 'references'
+      && referenceDetailPagination) {
+      const { total, pageRows } = referenceDetailPagination;
+      setBatchTargetOffset((value) => Math.min(
+        Math.max(0, total - 1),
+        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
+      ));
+      return;
+    }
+    if ((key.pageUp || key.pageDown)
       && route.name === 'pluginWriteTask') {
       const total = props.controller.listPluginWriteTaskCandidates(route.goal)
         .filter((candidate) => candidate.target.pluginId === route.pluginId
@@ -9374,6 +9431,9 @@ export function ConsoleAppV4(props: {
       const candidate = snapshot.portableDraft?.candidates[focus];
       if (candidate) props.controller.togglePortableSkill(candidate.name);
     } else if (key.upArrow || input.toLowerCase() === 'k') {
+      if (route.name === 'pluginDependencyNode' && route.view === 'references') {
+        setBatchTargetOffset(0);
+      }
       setFocus((value) => {
         const current = route.name === 'batchSelection' && batchDraft?.stage === 'select'
           ? normalizedEffectiveFocus : dynamicActionIds ? effectiveFocus : value;
@@ -9433,6 +9493,9 @@ export function ConsoleAppV4(props: {
         return next;
       });
     } else if (key.downArrow || input.toLowerCase() === 'j') {
+      if (route.name === 'pluginDependencyNode' && route.view === 'references') {
+        setBatchTargetOffset(0);
+      }
       setFocus((value) => {
         const current = route.name === 'batchSelection' && batchDraft?.stage === 'select'
           ? normalizedEffectiveFocus : dynamicActionIds ? effectiveFocus : value;
