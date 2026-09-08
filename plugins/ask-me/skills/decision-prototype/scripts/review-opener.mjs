@@ -92,18 +92,28 @@ function runOpener(command, args, { spawnProcess, timeoutMs }) {
     let child;
     let settled = false;
     let timer;
+    let stderr = '';
+    const diagnostic = (message) => {
+      const detail = stderr
+        .replace(/token=[^\s"'<>]*/gi, 'token=[redacted]')
+        .split(new URL(args.at(-1)).hash.slice('#token='.length)).join('[redacted]')
+        .split(os.homedir()).join('~')
+        .replace(/\s+/g, ' ').trim();
+      return `${message}${detail ? ` ${detail}` : ''}`.slice(0, 500);
+    };
 
     const finish = (value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      child?.stderr?.destroy();
       resolve(value);
     };
 
     try {
       child = spawnProcess(command, args, {
         shell: false,
-        stdio: 'ignore',
+        stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true,
       });
     } catch {
@@ -111,16 +121,22 @@ function runOpener(command, args, { spawnProcess, timeoutMs }) {
       return;
     }
 
+    child.stderr?.on('data', (chunk) => {
+      if (stderr.length < 8_192) stderr += chunk.toString();
+    });
     child.once('error', (error) => {
       if (error?.code === 'ENOENT') {
         finish(result('unavailable', 'The system browser opener is not available.'));
       } else {
-        finish(result('failed', 'The system browser opener could not start.'));
+        const code = ['EACCES', 'EPERM'].includes(error?.code) ? ` (${error.code})` : '';
+        finish(result('failed', `The system browser opener could not start${code}.`));
       }
     });
-    child.once('close', (code) => {
+    child.once('close', (code, signal) => {
       if (code === 0) finish(result('requested'));
-      else finish(result('failed', 'The system browser opener did not accept the request.'));
+      else finish(result('failed', diagnostic(
+        `The system browser opener did not accept the request (${signal ? `signal ${signal}` : `exit ${code}`}).`,
+      )));
     });
     timer = setTimeout(() => {
       // A desktop opener may remain attached to the user application.

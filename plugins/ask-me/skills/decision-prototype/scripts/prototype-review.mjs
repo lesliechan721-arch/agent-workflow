@@ -50,7 +50,7 @@ function globalHelp() {
   return `Usage:
   prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
   prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
-  prototype-review.mjs wait --session <session.json> [--timeout 30s]
+  prototype-review.mjs wait --session <session.json> [--timeout 5m]
   prototype-review.mjs status --session <session.json>
   prototype-review.mjs stop --session <session.json>
 
@@ -65,7 +65,9 @@ Options:
   start without --ttl reads the effective AW setting; --plugin selects its ask-me source.
   --new-session preserves an unknown old session; it does not stop it or renew a healthy session.
   open --timeout limits only the page-connection wait; it does not wait for feedback.
-  open --retry requests the browser again after the previous request has finished.`;
+  open --retry requests the browser again after the previous request has finished.
+  wait --timeout should use a long window within the calling tool limits; avoid short polling.
+  submitted receipts include validated feedbackData and the feedback file path.`;
 }
 
 function commandHelp(command) {
@@ -78,7 +80,7 @@ Without --ttl, start reads the effective AW setting; --plugin selects its ask-me
 
 --timeout limits only the page-connection wait; it does not wait for feedback.
 --retry requests the browser again after the previous request has finished.`,
-    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 30s]',
+    wait: 'Usage: prototype-review.mjs wait --session <session.json> [--timeout 5m]',
     status: 'Usage: prototype-review.mjs status --session <session.json>',
     stop: 'Usage: prototype-review.mjs stop --session <session.json>',
   };
@@ -132,7 +134,7 @@ function parseCommand(argv) {
   return values;
 }
 
-function parseTimeout(value = '30s') {
+function parseTimeout(value = '5m') {
   const match = /^(\d+)(ms|s|m|h)?$/.exec(value);
   if (!match) throw new UsageError(`Invalid timeout: ${value}`);
   const multipliers = { ms: 1, s: 1000, m: 60_000, h: 3_600_000 };
@@ -163,6 +165,7 @@ function submittedReceipt(feedback, feedbackPath) {
     selectedOptionCount: feedback.selectedOptions.length,
     annotationCount: feedback.annotations.length,
     feedback: feedbackPath,
+    feedbackData: feedback,
   };
 }
 
