@@ -86,6 +86,89 @@ function operationPreApplyTargets(evidence?: OperationEvidence) {
       : []);
 }
 
+function offlineCleanupPlans(evidence: OperationEvidence | undefined): OfflineCleanupTargetEvidence[] {
+  if (!evidence) return [];
+  return evidence.offlineCleanupPlans
+    ?? (evidence.offlineCleanup ? [evidence.offlineCleanup] : []);
+}
+
+function removesOfflineCleanupIntent(
+  plan: NonNullable<OperationEvidence['operationPlan']>,
+  target: OfflineCleanupTargetEvidence,
+): boolean {
+  return plan.changes.includes(
+    `${target.pluginId}:${target.platform}:${target.scope}:removeIntent`,
+  );
+}
+
+function offlineCleanupReviewChanges(evidence: OperationEvidence): OperationReviewChange[] {
+  const operationPlan = evidence.operationPlan;
+  return offlineCleanupPlans(evidence).flatMap((target): OperationReviewChange[] => {
+    const targetDescription = `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
+    const removesIntent = operationPlan !== undefined && removesOfflineCleanupIntent(operationPlan, target);
+    const actions = target.plan.actions.length;
+    return [
+      {
+        kind: 'change' as const,
+        group: 'requested' as const,
+        pluginId: target.pluginId,
+        relation: 'requested' as const,
+        title: '核验当前 AW 管理现场',
+        description: targetDescription,
+      },
+      ...(removesIntent ? [{
+        kind: 'remove' as const,
+        group: 'requested' as const,
+        pluginId: target.pluginId,
+        relation: 'requested' as const,
+        title: '取消已保存的使用设置',
+        description: targetDescription,
+      }] : []),
+      actions > 0 ? {
+        kind: 'remove' as const,
+        group: 'requested' as const,
+        pluginId: target.pluginId,
+        relation: 'requested' as const,
+        title: '移除可验证的 AW 输出',
+        description: `${targetDescription} · ${actions} 项`,
+      } : {
+        kind: 'keep' as const,
+        group: 'preserved' as const,
+        pluginId: target.pluginId,
+        relation: 'requested' as const,
+        title: '没有可验证的 AW 输出',
+        description: removesIntent
+          ? `${targetDescription} · 仍会取消此位置的使用设置`
+          : `${targetDescription} · 不会删除现场内容`,
+      },
+    ];
+  });
+}
+
+function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationReviewChange[] {
+  const plans = offlineCleanupPlans(evidence);
+  if (plans.length === 0) return [];
+  const warnings = evidence.operationPlan?.warnings ?? [];
+  return [
+    ...(warnings.length > 0 ? [{
+      kind: 'warning' as const,
+      group: 'preserved' as const,
+      title: '部分现场残留无法完整核验',
+      description: '这些残留会保留；可在之后重新清理。',
+    }] : []),
+    {
+      kind: 'keep' as const,
+      group: 'preserved' as const,
+      title: '保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置',
+    },
+    {
+      kind: 'keep' as const,
+      group: 'preserved' as const,
+      title: '其他根插件仍可按自己的设置使用或安装此依赖',
+    },
+  ];
+}
+
 function sourceMutationReviewChanges(
   mutation: NonNullable<Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation']>,
 ): OperationReviewChange[] {
@@ -182,7 +265,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       sync: ['批量同步插件', '按已保存的设置同步所选插件。'],
       reinstall: ['批量重新安装插件', '清理 AW 管理的内容后完整重建所选插件。'],
       uninstall: ['批量移除插件', '移除所选插件的 AW 管理安装内容。配置保持不变。'],
-      cleanup: ['批量清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。'],
+      cleanup: ['批量清理插件', '先核验所选位置，再取消其使用设置，并尽力清理可验证的 AW 输出。'],
     } as const;
     const [title, description] = labels[intent.action];
     return {
@@ -211,7 +294,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       if (intent.action === 'cleanup') {
         return {
           title: '清理已安装内容',
-          description: '只清理可证明属于 AW 的现场内容；保留插件设置。',
+          description: '先核验所选位置，再取消其使用设置，并尽力清理可验证的 AW 输出。',
           primaryLabel: '开始清理',
           destructive: true,
         };
@@ -226,7 +309,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
     if (intent.action === 'cleanup' && intent.force === true) {
       return {
         title: '强制清理插件',
-        description: '跳过依赖保护并清理可证明属于 AW 的现场内容。依赖者会变为不完整。配置保持不变。',
+        description: '先核验专属 AW 输出，再取消所选位置的使用设置并尽力清理；插件设置保持不变，依赖者会变为不完整。',
         primaryLabel: '确认强制清理',
         destructive: true,
       };
@@ -236,7 +319,7 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       refreshAndSync: ['刷新并同步', '刷新相关来源后，使用新的当前启用版本同步所选安装。', false],
       reinstall: ['重新安装插件', '清理 AW 管理的内容后完整重建。', true],
       uninstall: ['移除插件', '移除 AW 管理的安装内容。配置保持不变。', true],
-      cleanup: ['清理插件', '只移除可证明属于 AW 的现场内容。配置保持不变。', true],
+      cleanup: ['清理插件', '先核验所选位置，再取消其使用设置，并尽力清理可验证的 AW 输出。', true],
       sync: ['同步插件', '按已保存使用设置修复当前使用位置。', false],
     };
     if (intent.expectedUpdate) return {
@@ -557,6 +640,21 @@ function reviewChanges(
       });
       return [...changes, ...codexChanges, ...runtimeChanges];
     }
+    if (intent.action === 'cleanup' && evidence) {
+      const cleanupChanges = offlineCleanupReviewChanges(evidence);
+      if (cleanupChanges.length > 0) {
+        const changes: OperationReviewChange[] = [
+          ...cleanupChanges,
+          ...offlineCleanupPreservedChanges(evidence),
+        ];
+        if (intent.force === true) changes.push({
+          kind: 'warning',
+          title: '跳过依赖保护',
+          description: '依赖此插件的插件会变为不完整，需重新安装后恢复。',
+        });
+        return [...changes, ...codexChanges, ...runtimeChanges];
+      }
+    }
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
       : [intent.platform];
@@ -570,20 +668,6 @@ function reviewChanges(
         ? '插件设置不会删除。'
         : '执行前会再次检查当前安装状态。',
     }));
-    if (intent.action === 'cleanup' && evidence?.offlineCleanup) {
-      const actionLabels: Record<OfflineCleanupTargetEvidence['plan']['actions'][number]['action'], string> = {
-        removeOwnedOutput: '移除 AW 管理输出',
-        removeNativeRegistration: '移除原生插件注册',
-      };
-      changes.push(...evidence.offlineCleanup.plan.actions.map((action): OperationReviewChange => ({
-        kind: 'remove',
-        group: 'requested',
-        pluginId: evidence.offlineCleanup!.pluginId,
-        relation: 'requested',
-        title: actionLabels[action.action],
-        description: action.target,
-      })));
-    }
     if (intent.action === 'uninstall' || intent.action === 'cleanup') {
       changes.push(...(dependencyOverview?.dependencies ?? []).map((dependency) => ({
         kind: 'keep' as const,
@@ -875,6 +959,9 @@ function batchGroupEvidence(
   const manager = group.preview.codexManagerPreview;
   return {
     catalog: evidence.catalog,
+    ...(group.preview.offlineCleanupPlans
+      ? { offlineCleanupPlans: group.preview.offlineCleanupPlans }
+      : {}),
     ...(group.preview.dependencyPlan ? { dependencyPlan: group.preview.dependencyPlan } : {}),
     ...(group.preview.codexReconcilePlans ? { codexReconcilePlans: group.preview.codexReconcilePlans } : {}),
     ...(group.preview.operationPlan ? { operationPlan: group.preview.operationPlan } : {}),
@@ -1000,7 +1087,7 @@ function batchReviewChanges(
         description: `${group.sourceId} · ${target.target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.target.scope === 'user' ? '所有项目' : '当前项目'}${target.state === 'failed' || target.action === 'skipped' ? ` · 无法执行${target.errorCode ? ` (${target.errorCode})` : ''}` : ''}`,
       };
     });
-    const effective = group.preview.dependencyPlan
+    const effective = intent.action === 'cleanup' || group.preview.dependencyPlan
       ? projected
       : [
           ...targetChanges,
@@ -1090,13 +1177,9 @@ function technicalDetails(evidence: OperationEvidence): string[] {
   }
   if (evidence.targetFingerprint) details.push(`目标状态：${short(evidence.targetFingerprint)}`);
   details.push(...(evidence.preparationWarnings ?? []).map((warning) => `刷新警告：${warning}`));
-  if (evidence.offlineCleanup) {
-    details.push(`离线清理原因：${evidence.offlineCleanup.reason}`);
-    details.push(`离线清理目标：${short(evidence.offlineCleanup.targetFingerprint)}`);
-    details.push(`离线清理计划：${evidence.offlineCleanup.plan.actions.length} 个动作 · ${short(evidence.offlineCleanup.planDigest)}`);
-    for (const action of evidence.offlineCleanup.plan.actions) {
-      details.push(`离线清理动作：${action.action} · ${action.target}`);
-    }
+  for (const target of offlineCleanupPlans(evidence)) {
+    details.push(`离线清理目标：${target.pluginId} · ${target.platform}/${target.scope}`);
+    details.push(`离线清理计划：${target.plan.actions.length} 个动作 · ${short(target.planDigest)}`);
   }
   if (evidence.dependencyPlan) details.push(`安装计划：${evidence.dependencyPlan.resolvedPluginIds.length} 个插件`);
   if (evidence.config) details.push(`设置层：${evidence.config.scope} · ${short(evidence.config.storeDigest)}`);

@@ -6,6 +6,7 @@ import type { RebuildResult } from '../../src/commands/rebuild-operations.js';
 import {
   buildInitReceiptJson,
   buildRebuildReceiptJson,
+  requestedIntentAction,
   renderRebuildReceipt,
 } from '../../src/output/command-receipt.js';
 import type { ReceiptTargetResult } from '../../src/types.js';
@@ -70,6 +71,10 @@ function codexReusePlan(): CodexReconcilePlan {
 }
 
 describe('command receipt v6', () => {
+  it('reports cleanup as removing requested Intent', () => {
+    expect(requestedIntentAction('cleanup')).toBe('remove');
+  });
+
   it('uses one layer-free receipt schema for the five lifecycle write commands', () => {
     for (const command of ['install', 'reinstall', 'uninstall', 'cleanup', 'sync'] as const) {
       const receipt = buildRebuildReceiptJson(command, {

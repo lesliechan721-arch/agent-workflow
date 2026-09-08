@@ -4928,7 +4928,7 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'reinstall') return { label: placement?.state === 'installed' && placement.health === 'incomplete' ? '重新连接缺失内容…' : '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
-      if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容…`, description: '只清理这个插件目标的 AW 管理内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容…`, description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'technical') return typedIssue
         ? { label: '查看对应问题', description: typedIssue.explanation, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }
         : { label: placement?.state === 'installed' && placement.health === 'error' ? '查看安全技术详情' : placement?.state === 'installed' && placement.health === 'incomplete' ? '查看影响' : '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) };
@@ -4944,7 +4944,7 @@ export function ConsoleAppV4(props: {
       && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
       ? {
           label: `清理${scopeLabel(placement.scope)}中的遗留内容…`,
-          description: '离线时也只清理这个插件目标中可证明属于 AW 的内容；完成后如需恢复，请单独确认重新安装。',
+          description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容；恢复需单独确认重新安装。',
           status: 'error' as const,
           run: () => {
             const intent = issueWriteIntent(typedIssue, offlineCleanupAction);
@@ -4958,7 +4958,7 @@ export function ConsoleAppV4(props: {
       && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
       ? {
           label: '检查受限清理…',
-          description: '只在当前单一目标有精确、专属的 AW 管理恢复证据时进入新的确认；不会清理共享或外来内容。',
+          description: '只在当前单一目标有精确、专属的 AW 管理恢复证据时确认；先核验，再取消使用设置并尽力清理；共享和外来内容保留。',
           status: 'warning' as const,
           run: () => beginRestrictedForceCleanup(
             plugin.pluginId,

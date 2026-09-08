@@ -1211,6 +1211,44 @@ describe('ConsoleAppV4', () => {
     const initial = orphanLoadResult();
     const resolved = structuredClone(initial);
     resolved.payload.targets = [];
+    const cleanupEvidence: OperationEvidence = {
+      ...evidence,
+      operationPlan: createOperationPlan({
+        intentChanges: [{ scope: 'user', beforeDigest: 'sha256:before', afterDigest: 'sha256:after' }],
+        actions: [],
+        changes: ['official/retired-tool:codex:user:removeIntent'],
+        warnings: ['inventoryUnreadable: sha256:residual'],
+        evidence: {
+          catalogDigests: [],
+          intentDigests: [{ scope: 'user', digest: 'sha256:intent' }],
+          configDigests: [],
+          targetOwnerFingerprints: [],
+        },
+      }),
+      offlineCleanupPlans: [{
+        reason: 'bundleUnavailable',
+        pluginId: 'official/retired-tool',
+        pluginName: 'retired-tool',
+        sourceId: 'official',
+        sourceIdentity: 'identity:official',
+        platform: 'codex',
+        scope: 'user',
+        plan: {
+          schemaVersion: 1,
+          pluginId: 'official/retired-tool',
+          sourceIdentity: 'identity:official',
+          platform: 'codex',
+          scope: 'user',
+          actions: [{
+            action: 'removeOwnedOutput',
+            kind: 'owned-text-file',
+            target: '/private/aw-home/managed/retired-tool.md',
+          }],
+        },
+        planDigest: 'sha256:offline-plan',
+        targetFingerprint: 'sha256:offline-plan',
+      }],
+    };
     const loadStatus = vi.fn()
       .mockResolvedValueOnce(initial)
       .mockResolvedValueOnce(resolved);
@@ -1218,7 +1256,11 @@ describe('ConsoleAppV4', () => {
       overallState: 'succeeded',
       targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
     });
-    const value = controller({ loadStatus, executeIntent });
+    const value = controller({
+      loadStatus,
+      captureEvidence: vi.fn().mockResolvedValue(cleanupEvidence),
+      executeIntent,
+    });
     await value.load();
 
     expect(value.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId))
@@ -1241,13 +1283,21 @@ describe('ConsoleAppV4', () => {
       originIssue: { actionId: 'cleanup' },
       equivalentCommand: 'aw cleanup official/retired-tool --platform codex --scope user',
     });
-    expect(reviewFrame).toContain('只清理可证明属于 AW 的现场内容');
-    expect(reviewFrame).toContain('保留插件设置');
+    expect(reviewFrame).toContain('先核验所选位置，再取消其使用设置，并尽力清理可验证的 AW 输出');
+    expect(reviewFrame).toContain('核验当前 AW 管理现场');
+    expect(reviewFrame).toContain('取消已保存的使用设置');
+    expect(reviewFrame).toContain('移除可验证的 AW 输出');
+    expect(reviewFrame).toContain('部分现场残留无法完整核验');
+    expect(reviewFrame).toContain('保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置');
+    expect(reviewFrame).toContain('其他根插件仍可按自己的设置使用或安装此依赖');
+    expect(reviewFrame).not.toContain('/private/aw-home/managed/retired-tool.md');
+    expect(reviewFrame).not.toContain('inventoryUnreadable');
     expect(reviewFrame).not.toContain('lifecycle');
     expect(reviewFrame).not.toContain('等价命令：');
     expect(reviewFrame).not.toContain('--force');
     await input(instance, 'd');
     expect(instance.lastFrame()).toContain('等价命令：aw cleanup official/retired-tool --platform codex --scope user');
+    expect(instance.lastFrame()).not.toContain('/private/aw-home/managed/retired-tool.md');
 
     await confirmReview(instance, value);
     await nextTurn(4);
@@ -1258,7 +1308,7 @@ describe('ConsoleAppV4', () => {
       pluginId: 'official/retired-tool',
       platform: 'codex',
       scope: 'user',
-    }), evidence);
+    }), cleanupEvidence);
     expect(executeIntent.mock.calls[0]?.[0]).not.toHaveProperty('force');
     expect(value.listPlugins({ mode: 'browse' })).toEqual([]);
     expect(value.listPlugins({ mode: 'installed' })).toEqual([]);

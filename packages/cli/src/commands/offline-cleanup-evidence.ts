@@ -114,6 +114,32 @@ function calculateOfflineCleanupPlanDigest(plan: OfflineCleanupPlan): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(plan)).digest('hex')}`;
 }
 
+export function intentOnlyOfflineCleanupEvidence(options: {
+  pluginId: string;
+  pluginName: string;
+  sourceId: string;
+  sourceIdentity: string;
+  platform: PlatformName;
+  scope: Scope;
+}): OfflineCleanupTargetEvidence {
+  const plan: OfflineCleanupPlan = {
+    schemaVersion: 1,
+    pluginId: options.pluginId,
+    sourceIdentity: options.sourceIdentity,
+    platform: options.platform,
+    scope: options.scope,
+    actions: [],
+  };
+  const planDigest = calculateOfflineCleanupPlanDigest(plan);
+  return {
+    reason: 'bundleUnavailable',
+    ...options,
+    plan,
+    planDigest,
+    targetFingerprint: planDigest,
+  };
+}
+
 export function offlineCleanupEvidenceFromInventory(options: {
   reason: OfflineCleanupTargetEvidence['reason'];
   pluginId: string;
