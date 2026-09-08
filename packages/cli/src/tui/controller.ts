@@ -33,7 +33,13 @@ import type {
 import type {
   StatusV7Payload,
   StatusV7PluginSummary,
+  StatusV7Target,
   StatusTargetRevision,
+} from '../commands/status-v6.js';
+import {
+  statusTargetActivation,
+  statusTargetIntent,
+  statusTargetOwnershipState,
 } from '../commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../commands/reconcile-operation-plan.js';
 import type { RebuildCommandResult } from '../commands/rebuild-command.js';
@@ -150,6 +156,51 @@ export interface PluginWriteBatchTarget {
   scope: Scope;
 }
 
+export function pluginWriteBatchTargets(
+  action: Exclude<BatchPluginWriteAction, 'install'>,
+  pluginIds: readonly string[],
+  statusTargets: readonly StatusV7Target[],
+): PluginWriteBatchTarget[] {
+  const selected = new Set(pluginIds);
+  const targets: PluginWriteBatchTarget[] = [];
+  const add = (target: StatusV7Target, scope: Scope): void => {
+    targets.push({ pluginId: target.pluginId, platform: target.platform, scope });
+  };
+  for (const target of statusTargets) {
+    if (!selected.has(target.pluginId)) continue;
+    const intent = statusTargetIntent(target);
+    const ownership = statusTargetOwnershipState(target);
+    const activation = statusTargetActivation(target);
+    const hasManagedOutput = ownership !== 'absent';
+    const hasCleanupEvidence = ownership === 'present' || ownership === 'partial'
+      || intent.relation === 'managed';
+    if (action === 'sync' || action === 'reinstall') {
+      intent.scopes.forEach((scope) => add(target, scope));
+      if (hasManagedOutput) add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
+      }
+    } else if (action === 'uninstall') {
+      if (hasManagedOutput) add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
+      }
+    } else if (hasCleanupEvidence) {
+      add(target, target.scope);
+      if (target.platform === 'codex') {
+        if (activation?.user === true) add(target, 'user');
+        if (activation?.project === true) add(target, 'project');
+      }
+    }
+  }
+  return [...new Map(targets.map((target) => [
+    [target.pluginId, target.platform, target.scope].join('\0'), target,
+  ])).values()].sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
+    .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en'));
+}
+
 export interface PluginWriteBatchIntent {
   kind: 'pluginWriteBatch';
   action: BatchPluginWriteAction;
@@ -172,6 +223,11 @@ export interface PluginWriteBatchGroupEvidence {
 export interface PluginWriteBatchEvidence extends OperationEvidence {
   requestedPluginIds: string[];
   groups: PluginWriteBatchGroupEvidence[];
+  targetVersions?: Array<PluginWriteBatchTarget & {
+    presence: 'new' | 'installed' | 'unknown';
+    installedVersion?: string;
+    availableVersion?: string;
+  }>;
 }
 
 export interface PluginWriteBatchGroupResult {
@@ -2365,8 +2421,11 @@ export class TuiController {
     if (origin) return origin;
     if (this.#router.snapshot.current.route.name === 'result'
       && this.#resultAnchor
-      && (this.#resultAnchor.name === 'pluginPreview' || this.#resultAnchor.name === 'pluginDetail')
-      && this.#resultAnchor.pluginId === pluginId) {
+      && (this.#resultAnchor.name === 'pluginPreview' || this.#resultAnchor.name === 'pluginDetail'
+        || this.#resultAnchor.name === 'pluginWriteTask')
+      && (this.#resultAnchor.pluginId === pluginId
+        || this.#resultAnchor.name === 'pluginWriteTask'
+          && this.#resultAnchor.targetKeys?.some((key) => key.startsWith(`${pluginId}\0`)))) {
       return structuredClone(this.#resultAnchor);
     }
     return undefined;
@@ -2771,6 +2830,25 @@ export class TuiController {
     return plugin ? cloneFrozen(plugin) : undefined;
   }
 
+  listCurrentProjectIntentRoots(): string[] {
+    return cloneFrozen([...new Set((this.#status?.payload.targets ?? []).flatMap((target) => {
+      const intent = statusTargetIntent(target);
+      return intent.relation === 'root' && intent.scopes.includes('project')
+        ? [target.pluginId] : [];
+    }))].sort((left, right) => left.localeCompare(right, 'en')));
+  }
+
+  listPluginWriteBatchTargets(
+    action: Exclude<BatchPluginWriteAction, 'install'>,
+    pluginIds: readonly string[],
+  ): PluginWriteBatchTarget[] {
+    return cloneFrozen(pluginWriteBatchTargets(
+      action,
+      pluginIds,
+      this.#status?.payload.targets ?? [],
+    ));
+  }
+
   getPluginDependencyOverview(pluginId: string): PluginDependencyOverviewViewModel | undefined {
     const overview = this.#viewModel?.dependencyOverviews.find((entry) => entry.pluginId === pluginId);
     return overview ? cloneFrozen(overview) : undefined;
@@ -2963,6 +3041,25 @@ export class TuiController {
     return this.startReviewPreparation(intent, returnRoute);
   }
 
+  beginNestedPluginWriteTask(route: Extract<TuiRoute, { name: 'pluginWriteTask' }>): void {
+    this.#assertAcceptingActions();
+    const current = this.#router.snapshot.current.route;
+    if (current.name !== 'pluginWriteTask') {
+      throw new TuiOperationBlockedError('taskOriginUnavailable', '嵌套任务缺少父任务。');
+    }
+    this.#router.beginFlow('pluginWriteTask', current);
+    this.#router.push(route);
+    this.#publish();
+  }
+
+  pluginWriteTaskReturnRoute(route: Extract<TuiRoute, { name: 'pluginWriteTask' }>): TuiRoute {
+    const active = this.#router.activeFlow();
+    return structuredClone(active?.kind === 'pluginWriteTask'
+      && active.returnTarget.name === 'pluginWriteTask'
+      ? active.returnTarget
+      : route);
+  }
+
   retryFailedPluginWriteBatch(): ReviewPreparationSnapshot | undefined {
     if (!this.#batchRetryIntent) return undefined;
     const intent = structuredClone(this.#batchRetryIntent);
@@ -2997,7 +3094,8 @@ export class TuiController {
       && route.targetKeys !== undefined
       && route.targetKeys.length > 0
       && route.batchOrigin !== undefined
-      && activeFlow?.id === route.batchOrigin.flowId
+      && (activeFlow?.id === route.batchOrigin.flowId
+        || activeFlow?.parentFlowId === route.batchOrigin.flowId)
       && this.listPluginWriteTaskCandidates(route.goal).some((candidate) =>
         candidate.sourceId === intent.sourceId
         && candidate.blockReason === 'catalogActivationRequired'

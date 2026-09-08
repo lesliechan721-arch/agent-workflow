@@ -1,3 +1,6 @@
+import path from 'node:path';
+
+import fs from 'fs-extra';
 import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,7 +11,11 @@ import {
   type DependencyOperationPlan,
 } from '../../src/commands/dependency-operation-plan.js';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
+import {
+  createTuiControllerDependencies,
+} from '../../src/tui/controller-runtime.js';
 import {
   CONSOLE_V4_SCREEN_IDS,
   ConsoleAppV4,
@@ -34,7 +41,22 @@ import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.j
 import { SessionConsoleApp } from '../../src/tui/session-console-app.js';
 import { SessionHost } from '../../src/tui/session-host.js';
 import { CatalogProviderCompatibilityError } from '../../src/utils/catalog-public-error.js';
+import { createCatalogManifestV7Entry } from '../../src/utils/catalog-manifest-v7.js';
 import { attachSafeOperationError } from '../../src/utils/safe-operation-diagnostic.js';
+import {
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
+import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import {
+  createEmptyPluginIntentState,
+  readPluginIntentState,
+  upsertPluginIntentRoot,
+  writePluginIntentState,
+} from '../../src/utils/plugin-intent-state.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 afterEach(() => cleanup());
 
@@ -1730,8 +1752,8 @@ describe('ConsoleAppV4', () => {
         resolvedCommit: official ? 'path-next' : 'def456',
         catalogVersion: official ? '1.1.0' : '2.5.0',
         channel: 'latest' as const,
-        manifestDigest: `sha256:${official ? 'b' : 'c'}`,
-        snapshotDigest: `sha256:${official ? 'd' : 'e'}`,
+        manifestDigest: `sha256:${(official ? 'b' : 'c').repeat(64)}`,
+        snapshotDigest: `sha256:${(official ? 'd' : 'e').repeat(64)}`,
       };
       return {
         sourceId,
@@ -1804,41 +1826,106 @@ describe('ConsoleAppV4', () => {
     expect(value.hasSessionDraft).toBe(true);
   });
 
-  it('keeps the recommended project recovery task on project targets for a mixed-scope root', async () => {
-    const loaded = loadResult();
-    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex' && (entry.scope === 'user' || entry.scope === 'project')
-      ? {
-          ...entry,
-          state: 'needsSync' as const,
-          errors: [{ code: 'componentMissing', message: 'safe missing component', severity: 'warning' as const }],
-          recoveryActions: [{ command: 'sync' as const, description: '同步已保存使用设置' }],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
-    loaded.targetRevisions = (['user', 'project'] as const).map((scope) => ({
-      pluginId: 'team-tools/review-gate', platform: 'codex' as const, scope,
-      revision: { state: 'current' as const, installedVersion: '0.4.2', availableVersion: '0.4.2' },
+  it('opens a Review for a new clone from the saved project roots without adding user targets', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'new-clone-review-source');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'review-gate', 'apps.json'), { apps: {} });
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'review-gate', 'codex', 'apps.json'), { apps: {} });
+    await createCatalogSnapshotFixture(sourceRoot, 'review-gate', [], 'review gate\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.apps = './apps.json';
+    });
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'review-gate');
+    const platformManifestPath = path.join(pluginRoot, '.codex-plugin', 'plugin.json');
+    await fs.writeJson(platformManifestPath, {
+      ...await fs.readJson(platformManifestPath), apps: './codex/apps.json',
+    }, { spaces: 2 });
+    const catalogManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
+    const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), {
+      ...catalogManifest, entries: [await createCatalogManifestV7Entry(plugin, pluginRoot)],
+    }, { spaces: 2 });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 2,
+        sources: [{ id: 'team-tools', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await syncCatalogSourceGeneration({
+      sourceId: 'team-tools', cliVersion: '1.0.0', env: isolation.env,
+    });
+    await writePluginIntentState({
+      scope: 'project', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    }, upsertPluginIntentRoot(createEmptyPluginIntentState(), {
+      pluginId: 'team-tools/review-gate', platforms: ['codex'],
     }));
-    const captureEvidence = vi.fn(async (intent: OperationIntent) => evidenceForIntent(intent));
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    const userIntentBefore = await readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const systemRoot = path.join(isolation.layout.fixtureCwd, 'system-codex');
+    const binRoot = path.join(systemRoot, 'bin');
+    const packageRoot = path.join(systemRoot, 'lib', 'node_modules', '@openai', 'codex');
+    const launcher = path.join(packageRoot, 'bin', 'codex.js');
+    await Promise.all([
+      fs.outputJson(path.join(packageRoot, 'package.json'), {
+        name: '@openai/codex', version: '0.151.0', bin: { codex: 'bin/codex.js' },
+      }),
+      fs.outputFile(launcher, '#!/usr/bin/env node\n'),
+    ]);
+    await fs.chmod(launcher, 0o755);
+    await fs.ensureDir(binRoot);
+    await fs.symlink(path.relative(binRoot, launcher), path.join(binRoot, 'codex'));
+    const env = { ...isolation.env, PATH: `${binRoot}:${isolation.env.PATH ?? ''}` };
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({ installed: [], available: [] }),
+      stderr: '',
+    }));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env,
+      interactive: false,
+      nativeCliRunner,
+    }));
+    const captureEvidence = vi.fn(dependencies.captureEvidence);
+    const value = new TuiController({
+      ...dependencies, prepareReviewEvidence: undefined, captureEvidence,
+    });
     await value.load();
     value.push({ name: 'pluginList', mode: 'installed' }, { focusIndex: 0 });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    expect(instance.lastFrame()).toContain('› 恢复本项目…');
+    expect(instance.lastFrame()).toContain('› 按项目清单准备…');
     await input(instance, '\r');
-    const task = instance.lastFrame() ?? '';
-    expect(task).toContain('当前项目');
-    expect(task).not.toContain('所有项目');
-    await input(instance, '\r');
-    await nextTurn(4);
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        pluginId: 'team-tools/review-gate',
+        description: expect.stringContaining('新增当前项目安装'),
+      }),
+    ]));
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'pluginWriteTask',
-      targets: [expect.objectContaining({
-        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
-      })],
+      kind: 'pluginWriteBatch', action: 'sync', scope: 'project', platform: 'both',
+      selection: { kind: 'currentProjectIntentRoots' },
     }), expect.any(AbortSignal));
+    await expect(captureEvidence.mock.results[0]!.value).resolves.toMatchObject({
+      groups: [{
+        platform: 'codex', scope: 'project', executable: true,
+        preview: { overallState: 'succeeded', targetResults: [] },
+      }],
+      targetVersions: [{
+        pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project',
+        presence: 'new', availableVersion: '1.0.0',
+      }],
+    });
+    expect(nativeCliRunner).toHaveBeenCalled();
+    expect(await readPluginIntentState({
+      scope: 'user', cwd: isolation.layout.fixtureCwd, env,
+    })).toEqual(userIntentBefore);
   });
 
   it.each([[60, 18], [80, 24]] as const)(
@@ -1897,6 +1984,134 @@ describe('ConsoleAppV4', () => {
     expect(selectedFrame).toContain('Review Gate');
     expect(selectedFrame.match(/Review Gate/gu)?.length).toBeGreaterThanOrEqual(2);
     expect(selectedFrame.split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('lets each selected plugin be removed after it becomes ineligible or disappears', async () => {
+    const loaded = loadResult();
+    for (const entry of loaded.payload.targets) {
+      if ((entry.pluginId === 'official/agent-lab' || entry.pluginId === 'official/review-gate')
+        && entry.platform === 'codex' && entry.scope === 'user') {
+        entry.state = 'ready';
+        entry.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+      }
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const originalListPlugins = value.listPlugins.bind(value);
+    let unavailable = false;
+    let missing = false;
+    vi.spyOn(value, 'listPlugins').mockImplementation((options) => originalListPlugins(options)
+      .filter((plugin) => !missing || plugin.pluginId !== 'official/review-gate')
+      .map((plugin) => unavailable && plugin.pluginId === 'official/agent-lab'
+        ? { ...plugin, configOnly: true }
+        : plugin));
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（2）');
+    unavailable = true;
+    value.updatePageContext({ focusIndex: 1 });
+    await nextTurn(2);
+    await input(instance, '\u001B[A', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    expect(instance.lastFrame()).toContain('Review Gate');
+
+    missing = true;
+    value.updatePageContext({ focusIndex: 1 });
+    await nextTurn(2);
+    await input(instance, 'c');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('1 个已选插件已不可用');
+    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› ◇ 查看全部已选（1）'); index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('official/review-gate');
+    expect(instance.lastFrame()).toContain('可取消选择');
+    for (let index = 0; index < 10 && !instance.lastFrame()?.includes('› ◆ official/review-gate'); index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    expect(instance.lastFrame()).toContain('› ◆ official/review-gate');
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+  });
+
+  it('keeps Continue and the focused plugin purpose visible for 50 candidates at 60x18', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = Array.from({ length: 50 }, (_, index): StatusV7PluginSummary => ({
+      pluginName: `plugin-${String(index).padStart(2, '0')}`,
+      pluginId: `official/plugin-${String(index).padStart(2, '0')}`,
+      displayName: `Plugin ${String(index).padStart(2, '0')}`,
+      description: `用途说明 ${index}`,
+      version: '1.0.0',
+      supportedTargets: { codex: ['project'], claude: [] },
+      configFieldCount: 0,
+    }));
+    loaded.payload.targets = loaded.pluginSummaries.map((summary) => target({
+      pluginName: summary.pluginName,
+      platform: 'codex',
+      scope: 'project',
+      state: 'present',
+    }));
+    const loadStatus = vi.fn().mockResolvedValue(loaded);
+    const value = controller({ loadStatus });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+    expect(instance.lastFrame()).toContain('用途 · 用途说明 0');
+    await input(instance, ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    await input(instance, ...Array.from({ length: 50 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› ◇ 查看全部已选（1）');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('› 查看确认（1）');
+    await input(instance, '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（0）');
+    expect(instance.lastFrame()).toContain('› ◇ 返回当前结果');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('› 查看确认（0）');
+    await input(instance, '\u001B[B', ' ');
+    expect(instance.lastFrame()).toContain('查看确认（1）');
+    await input(instance, ...Array.from({ length: 20 }, () => '\u001B[B'));
+    loaded.pluginSummaries = loaded.pluginSummaries.slice(0, 2);
+    loaded.payload.targets = loaded.payload.targets.slice(0, 2);
+    await value.load();
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('›');
+    expect((instance.lastFrame()?.match(/›/gu) ?? [])).toHaveLength(1);
+    await input(instance, 'c');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+  });
+
+  it('blocks final batch preparation when a selected plugin disappears on the task page', async () => {
+    const value = controller();
+    await value.load();
+    const originalListPlugins = value.listPlugins.bind(value);
+    let missing = false;
+    vi.spyOn(value, 'listPlugins').mockImplementation((options) => originalListPlugins(options)
+      .filter((plugin) => !missing || plugin.pluginId !== 'team-tools/review-gate'));
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, 'm', ' ', 'c');
+    expect(instance.lastFrame()).toContain('为 1 个插件选择任务');
+    missing = true;
+    value.updatePageContext({ focusIndex: 0 });
+    await nextTurn(2);
+    await focusAction(instance, '移除所选插件…');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    expect(instance.lastFrame()).toContain('已选插件状态已变化');
+    expect(value.snapshot.reviewPreparation).toBeUndefined();
   });
 
   it('keeps an ineligible add candidate focusable for its reason and prevents Space selection', async () => {
@@ -2060,26 +2275,30 @@ describe('ConsoleAppV4', () => {
         : intent.selection.kind === 'targets'
           ? [...new Set(intent.selection.targets.map((target) => target.pluginId))]
           : [];
-      const preview = {
-        platforms: ['codex'], plugins: pluginIds, warnings: [], rebuildResults: [],
-        targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
-        operationPlan: {
-          schemaVersion: 1 as const,
-          kind: 'aw-operation-plan' as const,
-          operation: 'sync' as const,
-          planFingerprint: 'sha256:batch',
-          target: { pluginId: pluginIds[0]!, platform: 'codex' as const, scope: 'project' as const },
-          changes: [],
-        },
-      };
+      const targets = intent.selection.kind === 'targets' ? intent.selection.targets : [];
       return {
         ...evidence,
         requestedPluginIds: pluginIds,
-        groups: [{
-          groupId: 'official:codex', sourceId: 'official', platform: 'codex' as const,
-          scope: 'project' as const,
-          requestedPluginIds: pluginIds, preview, executable: true,
-        }],
+        groups: targets.map((target) => ({
+          groupId: [target.pluginId, target.platform, target.scope].join('\0'),
+          sourceId: target.pluginId.split('/')[0]!,
+          platform: target.platform,
+          scope: target.scope,
+          requestedPluginIds: [target.pluginId],
+          executable: true,
+          preview: {
+            platforms: [target.platform], plugins: [target.pluginId], warnings: [],
+            rebuildResults: [], targetResults: [], receiptTargets: [], overallState: 'succeeded' as const,
+            operationPlan: {
+              schemaVersion: 1 as const,
+              kind: 'aw-operation-plan' as const,
+              operation: 'sync' as const,
+              planFingerprint: `sha256:${target.platform}:${target.scope}`,
+              target,
+              changes: [],
+            },
+          },
+        })),
       };
     });
     const loaded = loadResult();
@@ -2089,7 +2308,17 @@ describe('ConsoleAppV4', () => {
       && entry.scope === 'project');
     expect(secondRoot).toBeDefined();
     secondRoot!.state = 'ready';
-    secondRoot!.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    secondRoot!.components = [
+      { kind: 'ownership', key: 'fixture', state: 'present' },
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['project', 'user'], relation: 'root',
+      } },
+      { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
+    ];
+    loaded.payload.targets.push(target({
+      pluginName: 'review-gate', platform: 'claude', scope: 'project', state: 'present',
+    }));
     const executeIntent = vi.fn().mockResolvedValue({
       platforms: ['codex'], plugins: ['official/review-gate', 'team-tools/review-gate'],
       warnings: [], rebuildResults: [], targetResults: [], receiptTargets: [],
@@ -2128,6 +2357,22 @@ describe('ConsoleAppV4', () => {
     });
     expect(batchIntent.selection.targets.map((target: { pluginId: string }) => target.pluginId))
       .toEqual(expect.arrayContaining(['official/review-gate', 'team-tools/review-gate']));
+    expect(batchIntent.selection.targets.filter((target: { pluginId: string }) =>
+      target.pluginId === 'official/review-gate')).toEqual([
+      { pluginId: 'official/review-gate', platform: 'claude', scope: 'project' },
+      { pluginId: 'official/review-gate', platform: 'codex', scope: 'project' },
+      { pluginId: 'official/review-gate', platform: 'codex', scope: 'user' },
+    ]);
+    const reviewEvidence = await captureEvidence.mock.results.at(-1)!.value as {
+      groups: Array<{ groupId: string; requestedPluginIds: string[] }>;
+    };
+    expect(reviewEvidence.groups.filter((group: { requestedPluginIds: string[] }) =>
+      group.requestedPluginIds.includes('official/review-gate')).map((group: { groupId: string }) =>
+      group.groupId)).toEqual([
+      'official/review-gate\0claude\0project',
+      'official/review-gate\0codex\0project',
+      'official/review-gate\0codex\0user',
+    ]);
     expect(value.snapshot.router.current.route.name).toBe('review');
     const oldReviewToken = value.snapshot.activeReview!.reviewToken;
 
@@ -9191,6 +9436,127 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\u001B[B');
     expect(instance.lastFrame()).toContain('›');
+  });
+
+  it('restores a deep dependency row, expansion, and scroll after detail and normalizes a removed node', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    overview.dependencies.push(
+      {
+        pluginId: 'official/y-branch', displayName: 'Y Branch', relation: 'direct', depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      {
+        pluginId: 'official/y-child', displayName: 'Y Child', relation: 'transitive', depth: 2,
+        requiredBy: [{ pluginId: 'official/y-branch', displayName: 'Y Branch' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      ...Array.from({ length: 7 }, (_, index) => ({
+        pluginId: `official/missing-${index}`, displayName: `Missing ${index}`,
+        relation: 'direct' as const, depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex' as const, state: 'notInstalled' as const, supportedScopes: ['user' as const] }],
+        aggregateStatus: 'notInstalled' as const,
+      })),
+      {
+        pluginId: 'official/z-branch', displayName: 'Z Branch', relation: 'direct', depth: 1,
+        requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+      {
+        pluginId: 'official/z-deep', displayName: 'Z Deep', relation: 'transitive', depth: 2,
+        requiredBy: [{ pluginId: 'official/z-branch', displayName: 'Z Branch' }],
+        placements: [{ platform: 'codex', state: 'installed', scope: 'user', health: 'ready' }],
+        aggregateStatus: 'ready',
+      },
+    );
+    loaded.pluginSummaries!.push(
+      { pluginName: 'y-branch', pluginId: 'official/y-branch', displayName: 'Y Branch', description: 'Y', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'y-child', pluginId: 'official/y-child', displayName: 'Y Child', description: 'Y child', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'z-branch', pluginId: 'official/z-branch', displayName: 'Z Branch', description: 'Z', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+      { pluginName: 'z-deep', pluginId: 'official/z-deep', displayName: 'Z Deep', description: 'Z deep', version: '1.0.0', supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0 },
+    );
+    const loadStatus = vi.fn().mockResolvedValue(loaded);
+    const value = controller({ loadStatus });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    const initialProjection = buildDependencyGraphProjection({
+      overviews: value.listPluginDependencyOverviews(),
+      rootPluginId: 'official/agent-lab',
+    });
+    const yIndex = initialProjection.rows.findIndex((row) => row.pluginId === 'official/y-branch');
+    await input(instance, ...Array.from({ length: yIndex }, () => '\u001B[B'), '\u001B[D');
+    expect(instance.lastFrame()).not.toContain('Y Child');
+    const collapsedProjection = buildDependencyGraphProjection({
+      overviews: value.listPluginDependencyOverviews(),
+      rootPluginId: 'official/agent-lab',
+      expandedPluginIds: initialProjection.defaultExpandedPluginIds.filter((id) => id !== 'official/y-branch'),
+    });
+    const deepIndex = collapsedProjection.rows.findIndex((row) => row.pluginId === 'official/z-deep');
+    await input(instance, ...Array.from({ length: deepIndex - yIndex }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toMatch(/›\s+└─ 必需依赖 · Z Deep/u);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'pluginDependencyNode', nodePluginId: 'official/z-deep' });
+    await input(instance, 'b');
+    const restoredFrame = instance.lastFrame() ?? '';
+    expect(restoredFrame).toMatch(/›\s+└─ 必需依赖 · Z Deep/u);
+    expect(restoredFrame).not.toContain('Y Child');
+    expect(restoredFrame).not.toContain('根插件 · Agent Lab（当前插件）');
+
+    await input(instance, '\r');
+    const invalid = structuredClone(loaded);
+    invalid.pluginSummaries = invalid.pluginSummaries?.filter((summary) => summary.pluginId !== 'official/z-deep');
+    invalid.dependencyOverviews = invalid.dependencyOverviews?.map((entry) => ({
+      ...entry,
+      dependencies: entry.dependencies.filter((dependency) => dependency.pluginId !== 'official/z-deep'),
+    }));
+    loadStatus.mockResolvedValue(invalid);
+    await value.load();
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDependencies', pluginId: 'official/agent-lab', direction: 'dependencies',
+    });
+    expect(instance.lastFrame()).toContain('› 根插件 · Agent Lab（当前插件）');
+  });
+
+  it('restores focus for an unverified reverse relation after its detail', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/skill-toolkit')!;
+    const dependent = overview.dependents.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    dependent.placementReferences = [];
+    for (const entry of loaded.dependencyOverviews!) {
+      for (const item of [...entry.dependencies, ...entry.dependents]) {
+        item.placementReferences = item.placementReferences?.filter((reference) =>
+          reference.consumer.pluginId !== 'official/agent-lab'
+          || reference.dependency.pluginId !== 'official/skill-toolkit');
+      }
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', direction: 'dependents',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› 未验证声明者 · Agent Lab');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginDependencyNode', nodePluginId: 'official/agent-lab', direction: 'dependents',
+    });
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDependencies', pluginId: 'official/skill-toolkit', direction: 'dependents',
+    });
+    expect(instance.lastFrame()).toContain('› 未验证声明者 · Agent Lab');
   });
 
   it.each([

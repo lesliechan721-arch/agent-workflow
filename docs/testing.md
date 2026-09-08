@@ -9,7 +9,7 @@
 日常开发使用以下三个入口：
 
 - 快速反馈：`pnpm test:unit:fast`，运行 command options、command receipt、hooks contract、platform support 和 template engine 五个稳定文件。
-- 修改范围验证：`pnpm --filter @lesliechan721/aw test tests/unit/<file>.test.ts`；将路径替换为本次修改直接影响的 unit 或 integration 文件，必要时再用 `-t <name>` 缩小到用例。
+- 修改范围验证：在 `packages/cli` 中运行 `node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated tests/unit/<file>.test.ts`；integration 文件使用 `--project integration`，process-lifecycle 文件使用对应项目及下方的单 worker 约束。必要时用 `-t <name>` 缩小到用例。不要向 package 的 `test` 脚本追加文件名，该脚本仍会先运行全量 unit。
 - 交付验证：按下方 Validation Matrix 运行所需的完整命令；默认 unit 和 integration 全量入口是 `pnpm test`。Performance、smoke 和需要 single worker 的锁测试继续使用各自的专用 Vitest 配置。
 
 ## Test Layers

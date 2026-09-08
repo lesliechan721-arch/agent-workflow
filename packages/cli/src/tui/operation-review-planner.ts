@@ -1007,8 +1007,28 @@ function batchReviewChanges(
           ...projected.filter((change) => change.group !== 'requested'
             && change.group !== 'dependencies'),
         ];
+    const withVersionEvidence = effective.map((change): OperationReviewChange => {
+      if (change.group !== 'requested' || !change.pluginId) return change;
+      const version = evidence.targetVersions?.find((target) =>
+        target.pluginId === change.pluginId && target.platform === group.platform
+        && target.scope === group.scope);
+      if (!version) return change;
+      const summary = version.presence === 'installed'
+        ? version.installedVersion
+          ? `已有安装 ${version.installedVersion}`
+          : '已有安装，版本待确认'
+        : version.presence === 'new'
+          ? `新增${version.scope === 'user' ? '所有项目' : '当前项目'}安装`
+          : '现场状态待确认';
+      const available = version.availableVersion
+        ? ` · 目录版本 ${version.availableVersion}` : '';
+      return {
+        ...change,
+        description: `${change.description ? `${change.description} · ` : ''}${summary}${available}`,
+      };
+    });
     return [
-      ...effective.filter((change) => change.title !== 'preApply 脚本超时')
+      ...withVersionEvidence.filter((change) => change.title !== 'preApply 脚本超时')
         .map((change) => ({
           ...change,
           batchGroupId: group.groupId,

@@ -51,6 +51,7 @@ import { projectCatalogSourceState } from './catalog-sources/projection.js';
 import { projectLifecycleActionView } from './lifecycle-action-view.js';
 import { compareStrictSemVer, tryParseStrictSemVer } from '../utils/manifest.js';
 import { formatPluginId } from '../utils/multi-source-catalog.js';
+import { createCatalogStoreKey } from '../utils/catalog-generation-store.js';
 
 export type SourceHealthState = 'ready' | 'unavailable';
 
@@ -218,9 +219,10 @@ export function buildPluginUpdateSummary(options: {
       const candidateCompatible = (candidate?.missingCapabilities.length ?? 0) === 0;
       let targetCandidateBlocked = false;
       const candidateEvidence = candidate && options.freshness?.candidate
-        ? [options.sourceId, options.freshness.candidate.sourceIdentity,
+        ? createCatalogStoreKey(
+            options.freshness.candidate.logicalIdentity,
             options.freshness.candidate.snapshotDigest,
-            candidate.manifestDigest, candidate.contentDigest].join(':')
+          )
         : undefined;
       if (!installedValid) {
         return {

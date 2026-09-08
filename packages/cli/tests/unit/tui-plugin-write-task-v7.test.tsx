@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import type { ConfigPageViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import {
   operationEvidenceFingerprint,
   TuiController,
@@ -154,6 +155,70 @@ async function write(instance: ReturnType<typeof render>, input: string): Promis
 }
 
 describe('TUI plugin write task', () => {
+  it('prepares an unambiguous restore once and lets Esc return without a loop', async () => {
+    const { value, dependencies } = controller();
+    await value.load();
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{
+      target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+      displayName: 'Demo', sourceId: 'official', eligible: true,
+      recommendedMethod: 'sync', issueIds: [],
+    }]);
+    value.push({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(dependencies.captureEvidence).toHaveBeenCalledTimes(1);
+    expect(dependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWriteTask', goal: 'restore', executionPolicy: 'all',
+      targets: [{ pluginId: 'official/demo', platform: 'codex', scope: 'user' }],
+    }), expect.any(AbortSignal));
+    await write(instance, 'b');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+    });
+    expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
+    await nextTurn();
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    expect(dependencies.captureEvidence).toHaveBeenCalledTimes(1);
+    value.dispose();
+  });
+
+  it.each(['restore', 'update'] as const)(
+    'does not prepare a %s task when one frozen target disappears',
+    async (goal) => {
+      const { value, dependencies } = controller();
+      await value.load();
+      vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [],
+      }]);
+      const route = {
+        name: 'pluginWriteTask' as const, pluginId: 'official/demo', goal,
+        targetKeys: [
+          'official/demo\0codex\0user',
+          'official/demo\0claude\0project',
+        ],
+      };
+      value.push(route);
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+      await nextTurn();
+      await nextTurn();
+
+      expect(value.snapshot.router.current.route).toEqual(route);
+      expect(instance.lastFrame()).toContain('1 个冻结位置已失效或无需处理');
+      expect(instance.lastFrame()).not.toContain(`确认${goal === 'restore' ? '恢复' : '更新'} 1 个位置`);
+      await write(instance, '\r');
+      expect(dependencies.captureEvidence).not.toHaveBeenCalled();
+      expect(value.snapshot.router.current.route.name).not.toBe('review');
+      value.dispose();
+    },
+  );
+
   it.each([[80, 24], [60, 18]] as const)(
     'uses one task preparation, Review, progress/result chain at %ix%i',
     async (columns, rows) => {
@@ -168,7 +233,9 @@ describe('TUI plugin write task', () => {
       expect(value.snapshot.router.current.route).toEqual({
         name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
         targetKeys: ['official/demo\0codex\0user'],
-        versionEvidence: { 'official/demo\0codex\0user': '2.0.0' },
+        versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
+          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+        }) },
       });
       expect(instance.lastFrame()).toContain('Codex · 所有项目');
       expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
@@ -272,8 +339,353 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({
       ...taskRoute,
-      targetKeys: ['official/demo\0claude\0project', 'official/demo\0codex\0user'],
+      targetKeys: ['official/demo\0claude\0project'],
     });
+    expect(instance.lastFrame()).toContain('维护 Demo · Claude Code · 当前项目');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'platform', pluginId: 'official/demo', platform: 'claude',
+    });
+    expect(instance.lastFrame()).toContain('Demo / Claude Code');
+    value.dispose();
+  });
+
+  it('returns to the frozen restore targets after a nested update without a batch parent flow', async () => {
+    const { value } = controller();
+    await value.load();
+    const restoreTarget = {
+      pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
+    };
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockImplementation((goal) => goal === 'restore'
+      ? [{
+          target: restoreTarget, displayName: 'Demo', sourceId: 'official', eligible: false,
+          blockReason: 'restoreVersionChanged', issueIds: [],
+        }, {
+          target: { pluginId: 'official/demo', platform: 'claude', scope: 'project' },
+          displayName: 'Demo', sourceId: 'official', eligible: false,
+          blockReason: 'manualRecoveryRequired', issueIds: [],
+        }]
+      : [{
+          target, displayName: 'Demo', sourceId: 'official', eligible: true,
+          recommendedMethod: 'sync', issueIds: [],
+        }]);
+    const restoreRoute = {
+      name: 'pluginWriteTask' as const, pluginId: 'official/demo', goal: 'restore' as const,
+      targetKeys: ['official/demo\0codex\0user', 'official/demo\0claude\0project'],
+    };
+    value.push(restoreRoute);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+
+    expect(instance.lastFrame()).toContain('0 个可执行 · 2 个需决定');
+    expect(instance.lastFrame()).toContain('更新并恢复 Demo · Codex · 所有项目');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', goal: 'update', targetKeys: ['official/demo\0codex\0user'],
+    });
+    expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
+    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(instance.lastFrame()).toContain('返回剩余恢复任务');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual(restoreRoute);
+    expect(instance.lastFrame()).toContain('维护 Demo · Claude Code · 当前项目');
+    value.dispose();
+  });
+
+  it('edits and saves a required field from a blocked task, then returns to freshly prepared targets', async () => {
+    let configured = false;
+    const configEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
+      source: {
+        sourceId: 'official', sourceIdentity: 'identity:official',
+        snapshotDigest: 'sha256:snapshot', contentDigest: 'sha256:content',
+      },
+      targetFingerprint: 'sha256:target',
+      config: {
+        scope: 'user', storeDigest: 'sha256:config-store', impactState: 'known',
+        affectedTargets: [{ platform: 'codex', scope: 'user' }],
+      },
+    };
+    const dependencies: TuiControllerDependencies = {
+      loadStatus: vi.fn().mockResolvedValue(loaded()),
+      getConfigPage: vi.fn(async (pluginId, layer): Promise<ConfigPageViewModel> => ({
+        pluginId,
+        layer,
+        storedCount: configured ? 1 : 0,
+        presets: [],
+        groups: [{
+          id: 'required', title: '必填设置', advanced: false,
+          fields: [{
+            key: 'mode', title: '运行模式', type: 'string',
+            definition: {
+              type: 'string',
+              choices: { allowCustom: false, presets: [{ id: 'safe', title: '安全', value: 'safe' }] },
+            },
+            choices: [{ id: 'safe', title: '安全', value: 'safe' }],
+            displayValue: configured ? '安全' : '未设置', required: true, sensitive: false,
+            writable: layer.scope !== 'effective', dirty: false, inherited: !configured,
+            configured, sourceLabel: configured ? '个人默认' : '未设置',
+            effectiveDisplayValue: configured ? '安全' : '未设置',
+            effectiveSourceLabel: configured ? '个人默认' : '未设置',
+            ...(configured ? { value: 'safe', draftValue: 'safe', effectiveValue: 'safe' } : {}),
+            allowCustom: false, advanced: false,
+          }],
+        }],
+      })),
+      captureEvidence: vi.fn(async (intent): Promise<OperationEvidence> => {
+        if (intent.kind === 'configSave') return configEvidence;
+        if (intent.kind === 'pluginWriteTask') return taskEvidence(intent);
+        throw new Error('unexpected intent');
+      }),
+      executeIntent: vi.fn(async (intent) => {
+        if (intent.kind === 'configSave') {
+          configured = true;
+          return {
+            configWrite: 'succeeded' as const, overallState: 'succeeded' as const,
+            apply: { state: 'skipped' as const, reason: 'notRequested' as const, targetResults: [] },
+          };
+        }
+        return preview();
+      }),
+      now: () => 1_000,
+      reviewTtlMs: 10_000,
+    };
+    const value = new TuiController(dependencies);
+    await value.load();
+    const issue = {
+      issueId: 'config:official/demo:mode', category: 'requiredConfigMissing', group: 'config',
+      title: '缺少运行模式', explanation: '必须设置运行模式。', impact: ['插件不能恢复。'],
+      entity: { kind: 'plugin', id: 'official/demo' }, pluginId: 'official/demo',
+      platform: 'codex', scope: 'user', requiredFields: [{
+        key: 'mode', title: '运行模式', type: 'missing-required', source: 'missing', scope: 'user',
+      }],
+      actions: [{ id: 'openConfig', label: '完成设置' }],
+      technicalDetails: [],
+      diagnostic: {
+        severity: 'error', title: '缺少设置', userMessage: '必须设置运行模式。',
+        impact: [{ state: 'blocked', message: '插件不能恢复。' }], nextStep: '完成设置。',
+        technical: { code: 'requiredConfigMissing', stage: 'read-config' },
+      },
+    } as UserIssueViewModel;
+    vi.spyOn(value, 'listUserIssues').mockImplementation(() => configured ? [] : [issue]);
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockImplementation(() => [{
+      target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+      displayName: 'Demo', sourceId: 'official', eligible: configured,
+      ...(configured
+        ? { recommendedMethod: 'sync' as const }
+        : { blockReason: 'manualRecoveryRequired' as const }),
+      issueIds: configured ? [] : [issue.issueId],
+    }]);
+    value.push({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+
+    expect(instance.lastFrame()).toContain('完成设置：运行模式');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configLayer'));
+    await vi.waitFor(() => expect(instance.lastFrame()).toContain('修改“运行模式”'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFieldEditor'));
+    expect(instance.lastFrame()).toContain('安全');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('configFields'));
+    await write(instance, 's');
+    expect(value.snapshot.router.current.route.name).toBe('configSave');
+    await write(instance, '\u001b[B');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(instance.lastFrame()).toContain('返回恢复任务');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, 'b');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', goal: 'restore', targetKeys: ['official/demo\0codex\0user'],
+    });
+    expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
+    await nextTurn();
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    value.dispose();
+  });
+
+  it.each([
+    ['sourceMissing', 'sourceRemoved', 'archive', '重新添加来源 archive', 'issueDetail', '重新添加同一来源'],
+    ['sourceUnavailable', 'sourceUnavailable', 'official', '核对来源 official', 'sourceDetail', '插件来源'],
+  ] as const)('routes %s blockers to a usable source recovery page', async (
+    category,
+    group,
+    sourceId,
+    actionLabel,
+    expectedRoute,
+    expectedFrame,
+  ) => {
+    const { value } = controller();
+    await value.load();
+    const issue = {
+      issueId: `source:${sourceId}:${category}`, category, group,
+      title: category === 'sourceMissing' ? '插件来源已移除' : '插件来源不可用',
+      explanation: '当前不能读取插件来源。', impact: ['不能恢复插件。'],
+      entity: { kind: 'source', id: sourceId }, pluginId: 'official/demo', sourceId,
+      actions: category === 'sourceMissing'
+        ? [{ id: 'reAddSource', label: '重新添加同一来源' }]
+        : [{ id: 'editSource', label: '编辑来源' }],
+      technicalDetails: [],
+      diagnostic: {
+        severity: 'error', title: '来源不可用', userMessage: '当前不能读取插件来源。',
+        impact: [{ state: 'blocked', message: '不能恢复插件。' }], nextStep: '处理来源。',
+        technical: { code: category, stage: 'resolve-source', sourceId },
+      },
+    } as UserIssueViewModel;
+    vi.spyOn(value, 'listUserIssues').mockReturnValue([issue]);
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([{
+      target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+      displayName: 'Demo', sourceId, eligible: false,
+      blockReason: 'restoreVersionUnverified', issueIds: [],
+    }]);
+    value.push({ name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+
+    expect(instance.lastFrame()).toContain(actionLabel);
+    expect(instance.lastFrame()).not.toContain('重新检查 Demo');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe(expectedRoute);
+    expect(instance.lastFrame()).toContain(expectedFrame);
+    value.dispose();
+  });
+
+  it('keeps batch ownership through source activation and nested update, then returns to the frozen restore task', async () => {
+    let activated = false;
+    let updated = false;
+    let reviewedTaskEvidence: PluginWriteTaskEvidence | undefined;
+    const catalogCandidate = {
+      sourceId: 'official', sourceConfigFingerprint: 'sha256:source',
+      sourceIdentity: 'identity:official', logicalIdentity: 'workspace:official',
+      requestedRef: 'path', resolvedCommit: 'path', catalogVersion: '2.0.0',
+      channel: 'latest' as const, manifestDigest: `sha256:${'1'.repeat(64)}`,
+      snapshotDigest: `sha256:${'2'.repeat(64)}`,
+    };
+    const dependencies: TuiControllerDependencies = {
+      loadStatus: vi.fn().mockResolvedValue(loaded()),
+      captureEvidence: vi.fn(async (intent): Promise<OperationEvidence> => {
+        if (intent.kind === 'catalogGeneration') return {
+          catalog: { configDigest: 'sha256:config', compositeDigest: catalogCandidate.snapshotDigest },
+          catalogGeneration: {
+            action: 'update', candidate: catalogCandidate,
+            activationMode: 'normal', configDigest: 'sha256:config',
+          },
+        };
+        if (intent.kind === 'pluginWriteTask') {
+          reviewedTaskEvidence = taskEvidence(intent);
+          return reviewedTaskEvidence;
+        }
+        throw new Error('unexpected intent');
+      }),
+      executeIntent: vi.fn(async (intent): Promise<PluginWriteTaskExecutionResult | { status: 'succeeded' }> => {
+        if (intent.kind === 'catalogGeneration') {
+          activated = true;
+          return { status: 'succeeded' };
+        }
+        if (intent.kind !== 'pluginWriteTask') throw new Error('unexpected intent');
+        if (intent.goal === 'update') updated = true;
+        const result = preview();
+        return {
+          ...result,
+          taskPlan: reviewedTaskEvidence!.taskPlan,
+          sourceResults: [{
+            sourceId: 'official', sourceIdentity: 'identity:official',
+            requestedTargets: reviewedTaskEvidence!.taskPlan.requestedTargets, result,
+          }],
+        };
+      }),
+      now: () => 1_000,
+      reviewTtlMs: 10_000,
+    };
+    const value = new TuiController(dependencies);
+    await value.load();
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockImplementation((goal) => {
+      if (goal === 'restore') return [{
+        target: { pluginId: 'official/demo', platform: 'codex', scope: 'user' },
+        displayName: 'Demo', sourceId: 'official', eligible: updated,
+        ...(updated
+          ? { recommendedMethod: 'sync' as const }
+          : { blockReason: 'restoreVersionChanged' as const }),
+        issueIds: [],
+      }];
+      return [{
+        target: activated ? target : {
+          pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
+        },
+        displayName: 'Demo', sourceId: 'official', eligible: activated,
+        ...(activated
+          ? { recommendedMethod: 'sync' as const }
+          : { blockReason: 'catalogActivationRequired' as const }),
+        issueIds: [],
+      }];
+    });
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+
+    await write(instance, 'm');
+    await write(instance, 'a');
+    await write(instance, 'c');
+    await write(instance, '\u001b[B');
+    await write(instance, '\r');
+    const outerTask = value.snapshot.router.current.route;
+    expect(outerTask).toMatchObject({
+      name: 'pluginWriteTask', goal: 'restore',
+      targetKeys: ['official/demo\0codex\0user'],
+      batchOrigin: { owner: 'batch-write', flowId: expect.any(String) },
+    });
+    expect(value.hasSessionDraft).toBe(true);
+
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'pluginWriteTask', goal: 'update',
+      batchOrigin: (outerTask as Extract<typeof outerTask, { name: 'pluginWriteTask' }>).batchOrigin,
+    });
+    expect(instance.lastFrame()).toContain('先更新来源目录 official');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(instance.lastFrame()).toContain('重新准备插件更新');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'pluginWriteTask', goal: 'update' });
+    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
+
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(instance.lastFrame()).toContain('返回剩余恢复任务');
+    expect(value.hasSessionDraft).toBe(true);
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual(outerTask);
+    expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
+    await nextTurn();
+    expect(value.snapshot.router.current.route).toEqual(outerTask);
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    await write(instance, '\r');
+    await nextTurn();
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(value.hasSessionDraft).toBe(false);
     value.dispose();
   });
 
@@ -355,7 +767,6 @@ describe('TUI plugin write task', () => {
     value.push({ name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
-    await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
@@ -468,7 +879,9 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
       name: 'pluginWriteTask',
-      versionEvidence: { 'official/demo\0codex\0user': '3.0.0' },
+      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
+        version: '3.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+      }) },
     });
     expect(instance.lastFrame()).toContain('确认更新 1 个位置');
     value.dispose();
