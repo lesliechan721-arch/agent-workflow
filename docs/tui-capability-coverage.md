@@ -25,19 +25,6 @@
 | 调整安装前脚本超时 | `--script-timeout` | 会运行脚本的单插件、批量和设置 apply 操作汇总 → 高级选项。改值后重新准备票据，执行只使用确认的值。 |
 | 有限所有权修复 | `cleanup --force` | 单目标受限清理检查 → 新确认。必须有唯一、精确、非空的专属内容证据；没有批量 force cleanup，也不能绕过依赖、非插件内容或被共用内容的保护。 |
 
-## Catalog 全生命周期
-
-目录管理只在用户进入该页后读取所选 Workspace、Store、开发来源或发布记录；普通首页和插件来源浏览不扫描这些对象。
-
-| 用户任务 | CLI 能力 | TUI 入口、确认和恢复 |
-| --- | --- | --- |
-| 选择或创建 Catalog Workspace | `catalog status`、`catalog init` | 插件来源 → 目录管理 → Catalog 工作区 → 选择目录或创建。路径只作为本地草稿；创建显示独立操作汇总。 |
-| 状态、版本、构建和完整验证 | `catalog status/version/build/validate` | Catalog 工作区 → 状态、版本、构建或完整验证。状态和验证只读；版本和构建各自确认。构建只替换已证明为生成物的 `.aw/catalog` 输出。 |
-| 开发来源 | `catalog dev activate/status/deactivate` | 目录管理 → 开发来源。snapshot 未就绪时先构建，再单独确认启用；停用保留引用影响和 replacement primary 检查。 |
-| 本地 Catalog Store | `catalog store status/prune` | 目录管理 → 本地存储 → 选择可回收项 → 确认 → 实际结果。操作汇总只列本次选择的项目；实际 prune 仍在锁内重新检查，结果分别显示 deleted 和 retained。 |
-| 准备发布计划 | `catalog publish plan` | 目录管理 → 发布 → remote 或 direct remote URL 与 branch → 独立确认。确认后才写 version-scoped journal 和隔离发布仓库；取消不写 journal。 |
-| 应用或恢复计划 | `catalog publish apply` | 发布结果或可信 `prepared`/`uncertain` 记录 → 独立应用确认 → 远端结果。apply 以既有 plan digest 定位 journal，不按当前 metadata 版本重建计划；若 direct remote 未留在 journal，重新输入 remote 或 URL 后由后端核对 identity。pending journal 或 repository 缺失、损坏或不匹配时停止并要求提高 Catalog 版本。 |
-
 ## 会话、确认和结果
 
 所有写任务先经过准备 → 操作汇总 → 进度 → 结果。准备只采集证据；只有显式“刷新并同步”会先更新可重建的 Active 弱状态。来源启用成功与插件更新成功是两个结果，前者不会宣称插件已经升级。
@@ -56,7 +43,7 @@
 | `sync --all --scope user` 一键恢复 | 当前 TUI 提供用户选择既有个人目标的批量维护；不提供独立的个人全量一键入口。 |
 | 任意目录的 Skill materialize、validate 和 Eval | 它们属于作者工具，不是向 Agent 安装插件的消费流程。 |
 | 插件 init、add-skill、validate、test、build、requirements | 不建设单插件作者工作区；开发技能调用 CLI。 |
-| Catalog 插件作者 init/add-skill/test/requirements 和 CLI npm 发布 | TUI 覆盖 Catalog Workspace、Store、开发来源和 Catalog 发布；单插件作者流程及 CLI npm 发布继续由开发技能和 CLI 承担。 |
+| Catalog Workspace、Store、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 这些是作者和发布流程，继续由开发技能和 CLI 承担；TUI 不提供这些入口。 |
 | 自描述和任意文件维护 | TUI 不复制机器输出或任意文件操作接口。 |
 
 ## 实现验证索引
@@ -70,9 +57,6 @@
 - `packages/cli/tests/unit/rebuild-task-command.test.ts`
 - `packages/cli/tests/unit/tui-dependency-graph-v7.test.tsx`
 - `packages/cli/tests/unit/tui-config-experience-v7.test.tsx`
-- `packages/cli/tests/unit/tui-catalog-management-v7.test.tsx`
-- `packages/cli/tests/unit/tui-catalog-management-backend.test.ts`
-- `packages/cli/tests/unit/catalog-store.test.ts` 与 `packages/cli/tests/unit/catalog-publish.test.ts`
 - `packages/cli/tests/unit/tui-console-app-v5.test.tsx` 与 `packages/cli/tests/unit/tui-route-registry-v7.test.ts`
 
 新增或改变消费能力时，必须更新本表，说明 TUI 入口和失败恢复路径，或说明保留 CLI 的理由。新增 TUI 路由必须同时接入生产路由定义、渲染、实体失效处理和按键合同。

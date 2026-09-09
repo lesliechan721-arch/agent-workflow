@@ -1,5 +1,4 @@
 import { requestedIntentAction } from '../output/command-receipt.js';
-import { resolveCatalogVersionMutation } from '@lesliechan721/aw-plugin-core';
 import type { PlatformName } from '../types.js';
 import type {
   OperationEvidence,
@@ -21,7 +20,6 @@ import {
 } from '../commands/options.js';
 import { MANAGED_CODEX_VERSION } from '../utils/codex-manager.js';
 import { platformLabel, scopeLabel } from './glossary.js';
-import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 
 function plannerError(code: string, message: string): Error {
   return new Error(`${code}: ${message}`);
@@ -231,20 +229,6 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
-  if (intent.kind === 'catalogManagement') {
-    const labels = {
-      workspaceInit: ['创建 Catalog Workspace', '创建并保存 Catalog Workspace scaffold。', '创建 Workspace', false],
-      workspaceVersion: ['修改 Catalog 版本', '原子修改 Catalog metadata 中的版本。', '修改版本', false],
-      workspaceBuild: ['构建 Catalog snapshot', '验证源码并构建可替换的 Catalog 输出。', '开始构建', false],
-      devActivate: ['启用 Catalog 开发源', '构建或复用 snapshot，并更新多个项目共用的来源设置和 Active 版本。', '启用开发源', false],
-      devDeactivate: ['停用 Catalog 开发源', '从多个项目共用的来源设置中移除 Workspace 管理的开发源。', '停用开发源', true],
-      storePrune: ['清理 Catalog 本地存储', '只删除本次选择且执行时仍可安全回收的项目。', '确认清理', true],
-      publishPlan: ['准备 Catalog 发布计划', '构建发布内容、读取远端状态，并保存可恢复的本地发布计划。', '准备发布计划', false],
-      publishApply: ['发布 Catalog', '只应用已保存且身份匹配的发布计划，并核对远端 branch 和 tag。', '确认发布', false],
-    } as const;
-    const [title, description, primaryLabel, destructive] = labels[intent.action];
-    return { title, description, primaryLabel, destructive };
-  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return {
       title: '恢复插件目录来源配置',
@@ -404,62 +388,6 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   );
 }
 
-function safePublicationRemote(remote: string | null | undefined, remoteUrl?: string): string {
-  if (remote) {
-    return /^[A-Za-z0-9._-]+$/u.test(remote)
-      ? remote : projectCatalogSourceLocation(remote);
-  }
-  return remoteUrl ? '已重新输入' : '未记录';
-}
-
-function catalogConfirmationDetails(
-  intent: Extract<OperationIntent, { kind: 'catalogManagement' }>,
-  evidence: OperationEvidence,
-): string[] {
-  const management = evidence.catalogManagement;
-  if (!management || management.action !== intent.action) return [];
-  if (intent.action === 'workspaceInit') {
-    return [`初始版本：${intent.catalogVersion ?? '0.1.0'}`];
-  }
-  if (intent.action === 'workspaceVersion') {
-    const currentVersion = management.workspace?.catalog.version;
-    const targetVersion = intent.version ?? (currentVersion && intent.bump
-      ? resolveCatalogVersionMutation(currentVersion, { bump: intent.bump })
-      : `提升 ${intent.bump ?? '未选择'}`);
-    return [`版本：${currentVersion ? `${currentVersion} → ${targetVersion}` : targetVersion}`];
-  }
-  if (intent.action === 'workspaceBuild') {
-    return management.workspace?.catalog.version
-      ? [`Catalog 版本：${management.workspace.catalog.version}`] : [];
-  }
-  if (intent.action === 'devActivate') {
-    return [
-      `来源 ID：${management.devActivation?.sourceId ?? intent.sourceId ?? 'catalog-dev'}`,
-      ...(management.devActivation?.catalogVersion
-        ? [`Catalog 版本：${management.devActivation.catalogVersion}`] : []),
-      `主来源：${intent.primary ? '是' : '否'}`,
-    ];
-  }
-  if (intent.action === 'devDeactivate') {
-    return [`替代主来源：${intent.replacementPrimary ?? '不变'}`];
-  }
-  if (intent.action === 'storePrune') {
-    return [`已选项目：${intent.items.length} 项`];
-  }
-  if (intent.action === 'publishPlan') {
-    return [
-      `发布远端：${safePublicationRemote(management.target?.remote ?? intent.remote, intent.remoteUrl)}`,
-      `发布 branch：${management.target?.branch ?? intent.branch ?? 'catalog'}`,
-    ];
-  }
-  return [
-    ...(management.publication?.catalogVersion
-      ? [`发布版本：${management.publication.catalogVersion}`] : []),
-    `发布远端：${safePublicationRemote(management.publication?.remote ?? intent.remote, intent.remoteUrl)}`,
-    `发布 branch：${management.publication?.branch ?? intent.branch ?? 'catalog'}`,
-  ];
-}
-
 function dependencyRelation(
   plan: ReconcileOperationPlan,
   pluginId: string,
@@ -476,118 +404,6 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
-  if (intent.kind === 'catalogManagement') {
-    const management = evidence?.catalogManagement;
-    if (!management || management.action !== intent.action) {
-      throw plannerError('catalogManagementUnavailable', '缺少 Catalog 管理确认信息。');
-    }
-    if (intent.action === 'workspaceInit') return [
-      { kind: 'add', title: '创建 Catalog Workspace marker 和源码 scaffold' },
-      { kind: 'change', title: '创建或更新 .gitignore', description: '追加 .aw/ 生成目录规则' },
-      ...(intent.ownerName ? [{ kind: 'add' as const, title: 'Catalog owner', description: '已设置' }] : []),
-      ...(intent.ownerUrl ? [{ kind: 'add' as const, title: 'Catalog owner URL', description: '已设置' }] : []),
-      ...(intent.displayName ? [{ kind: 'add' as const, title: 'Catalog display name', description: '已设置' }] : []),
-      { kind: 'change', title: 'Catalog 初始版本', description: intent.catalogVersion ?? '0.1.0' },
-      ...(intent.force ? [{ kind: 'warning' as const, title: '修复匹配的受管 scaffold' }] : []),
-      { kind: 'keep', title: '不会创建 Git commit 或发布内容' },
-    ];
-    if (intent.action === 'workspaceVersion') {
-      const currentVersion = management.workspace?.catalog.version;
-      const targetVersion = intent.version ?? (currentVersion && intent.bump
-        ? resolveCatalogVersionMutation(currentVersion, { bump: intent.bump })
-        : `提升 ${intent.bump ?? '未选择'}`);
-      return [
-        { kind: 'change', title: '更新 Catalog metadata 版本', description: currentVersion ? `${currentVersion} → ${targetVersion}` : targetVersion },
-        { kind: 'keep', title: '不会自动构建或发布' },
-      ];
-    }
-    if (intent.action === 'workspaceBuild') return [
-      { kind: 'change', title: '验证 Workspace、插件依赖和 runtime closure' },
-      { kind: 'change', title: '运行插件构建并生成 Catalog snapshot' },
-      { kind: 'warning', title: '安装插件 package root 依赖并运行作者构建脚本' },
-      ...(intent.force ? [{ kind: 'warning' as const, title: '替换已验证为生成物的现有输出' }] : []),
-      { kind: 'keep', title: '不会修改来源配置或发布远端' },
-    ];
-    if (intent.action === 'devActivate') {
-      const activation = management.devActivation;
-      if (!activation) throw plannerError('catalogDevActivationUnavailable', '缺少开发来源启用确认信息。');
-      const affectedReferences = Object.values(activation.references)
-        .reduce((sum, count) => sum + count, 0);
-      return [
-        { kind: 'keep', title: '使用已单独确认并构建的当前 Catalog snapshot', description: activation.catalogVersion },
-        { kind: 'change', title: '保存 Workspace 管理的 Path 来源', description: activation.sourceId },
-        { kind: 'change', title: '同步并启用开发 Catalog' },
-        { kind: activation.inventoryComplete ? 'change' : 'warning',
-          title: activation.inventoryComplete ? '已检查现有来源引用' : '来源引用清单不完整',
-          description: `${affectedReferences} 个引用` },
-        ...Object.entries(activation.references)
-          .filter(([, count]) => count > 0)
-          .map(([category, count]): OperationReviewChange => ({
-            kind: 'warning', title: `受影响引用 · ${category}`, description: `${count} 个`,
-          })),
-        ...Object.entries(activation.changes)
-          .filter(([, count]) => count > 0)
-          .map(([category, count]): OperationReviewChange => ({
-            kind: 'warning', title: `Catalog 变化 · ${category}`, description: `${count} 个插件`,
-          })),
-        ...(intent.primary || activation.primaryChange
-          ? [{ kind: 'warning' as const, title: '设为多个项目共用的主来源', description: '会改变默认插件目录选择。' }]
-          : []),
-      ];
-    }
-    if (intent.action === 'devDeactivate') {
-      const impact = management.devImpact;
-      const affectedReferences = impact === undefined
-        ? 0
-        : Object.values(impact.references).reduce((sum, count) => sum + count, 0);
-      return [
-        { kind: 'remove', title: '移除 Workspace 管理的开发来源' },
-        ...(intent.replacementPrimary ? [{ kind: 'change' as const, title: '切换主来源', description: intent.replacementPrimary }] : []),
-        { kind: 'keep', title: '保留 Workspace snapshot 和 Catalog store' },
-        { kind: impact?.inventoryComplete === false ? 'warning' : 'change',
-          title: impact?.inventoryComplete === false ? '来源引用清单不完整' : '已检查现有来源引用',
-          description: `${affectedReferences} 个引用` },
-        ...(impact?.primaryChange ? [{ kind: 'warning' as const, title: '此操作会改变多个项目共用的主来源' }] : []),
-      ];
-    }
-    if (intent.action === 'storePrune') {
-      const entries = management.store?.entries.filter((entry) =>
-        intent.items.some((item) => item.storeKey === entry.item.storeKey
-          && item.category === entry.item.category)) ?? [];
-      const bytes = entries.every((entry) => entry.reclaimableBytes !== null)
-        ? entries.reduce((sum, entry) => sum + entry.reclaimableBytes!, 0)
-        : null;
-      return [
-        { kind: 'remove', title: `删除 ${entries.length} 个可回收项目`, description: bytes === null ? '大小未知' : `${bytes} bytes` },
-        ...[...new Set(entries.map((entry) => entry.category))].map((category): OperationReviewChange => ({
-          kind: 'remove', title: `Catalog store · ${category}`,
-          description: `${entries.filter((entry) => entry.category === category).length} 项`,
-        })),
-        { kind: 'keep', title: '保留正在使用、未到保留期限、不属于插件的内容和未选择项目' },
-        { kind: 'warning', title: '执行时逐项重新检查身份、Active 和保留期限' },
-      ];
-    }
-    if (intent.action === 'publishPlan') return [
-      { kind: 'change', title: '构建并完整验证发布 snapshot' },
-      { kind: 'change', title: '读取目标远端 branch 和 immutable tag' },
-      { kind: 'add', title: '保存 version-scoped journal 和隔离 Git repository' },
-      { kind: 'keep', title: '本步骤不会写入远端' },
-      { kind: 'warning', title: '插件构建可运行 Workspace 提供的作者脚本' },
-      ...(management.target?.remote ? [{ kind: 'keep' as const, title: '远端', description: management.target.remote }] : []),
-      { kind: 'keep', title: '发布 branch', description: management.target?.branch ?? 'catalog' },
-    ];
-    const publishRemote = safePublicationRemote(management.publication?.remote, intent.remoteUrl);
-    return [
-      { kind: 'change', title: '应用已保存的发布计划', description: management.publication?.catalogVersion },
-      { kind: 'change', title: '写入并核对远端 branch 和 annotated tag' },
-      { kind: 'keep', title: '发布远端', description: publishRemote },
-      { kind: 'keep', title: '发布 branch', description: management.publication?.branch ?? intent.branch ?? 'catalog' },
-      { kind: 'keep', title: '绑定旧 plan digest、Workspace identity、远端和 branch' },
-      { kind: 'keep', title: '不要求当前 HEAD 或 metadata 仍与 plan 相同' },
-      { kind: 'warning', title: management.publication?.state === 'uncertain'
-        ? '对账并恢复结果不确定的发布' : '远端失败或结果未知时保留 recovery journal' },
-    ];
-  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return [
       { kind: 'add', title: '备份损坏的 catalog-sources.json' },
@@ -1309,7 +1125,6 @@ export function buildOperationReviewProjection(options: {
     && (evidence.config?.sharedNativeRenderTargets?.length ?? 0) > 0
     && (evidence.config?.affectedTargets.some((target) => target.platform === 'codex') ?? false);
   const requiresConfirmation = sharedNativeConfigApply
-    || intent.kind === 'catalogManagement'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || Boolean(taskEvidence?.taskPlan.sources.some((source) =>
@@ -1346,9 +1161,6 @@ export function buildOperationReviewProjection(options: {
           ? taskReviewChanges(intent, taskEvidence!)
         : reviewChanges(intent, evidence, options.dependencyOverview)),
     ],
-    ...(intent.kind === 'catalogManagement'
-      ? { confirmationDetails: catalogConfirmationDetails(intent, evidence) }
-      : {}),
     technicalDetails: technicalDetails(evidence),
     ...(intent.kind === 'pluginWrite'
       ? { equivalentCommand: `aw ${intent.action === 'refreshAndSync' ? 'sync' : intent.action} ${intent.pluginId} --platform ${intent.platform} --scope ${intent.scope}${intent.action === 'refreshAndSync' ? ' --refresh' : ''}${scriptTimeoutChanges(intent).length > 0 ? ` --script-timeout ${parseScriptTimeoutMs(intent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS)}` : ''}${(intent.dependencyScopeOverrides ?? []).map((override) => ` --dependency-scope ${override.pluginId}#${override.platform}=${override.scope}`).join('')}${intent.action === 'cleanup' && intent.force === true ? ' --force' : ''}${evidence.codexManager?.state === 'requires-install' ? ' --allow-managed-codex-install' : ''}${requiresConfirmation || hasPreApply ? ' --yes' : ''}` }

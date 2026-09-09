@@ -151,15 +151,6 @@ export type TuiRoute =
   | { name: 'configSave'; pluginId: string; layer: { scope: Scope }; view?: 'summary' | 'changes' }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
-  | { name: 'catalogManagement' }
-  | {
-      name: 'catalogWorkspace';
-      view: 'overview' | 'select' | 'create' | 'version';
-      step?: 'ownerName' | 'ownerUrl' | 'displayName' | 'catalogVersion';
-    }
-  | { name: 'catalogDev'; step?: 'overview' | 'sourceId' | 'replacementPrimary' }
-  | { name: 'catalogStore' }
-  | { name: 'catalogPublish'; step: 'overview' | 'target' | 'branch' }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'operationHistory' }
@@ -195,8 +186,7 @@ export interface TuiRouterSnapshot {
 }
 
 export type TuiFlowKind = 'pluginInstall' | 'pluginMaintenance' | 'configEdit'
-  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask'
-  | 'catalogManagement';
+  | 'sourceEdit' | 'sourceRecovery' | 'portableInstall' | 'batchWrite' | 'pluginWriteTask';
 
 export interface TuiFlowScope {
   id: string;

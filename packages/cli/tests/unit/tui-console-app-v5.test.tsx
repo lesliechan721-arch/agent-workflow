@@ -1083,8 +1083,8 @@ async function chooseSourceSave(
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(127);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 127);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(113);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 113);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -1099,8 +1099,7 @@ describe('ConsoleAppV4', () => {
       'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
       'D18', 'D19', 'D20',
       'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
-      'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07', 'K08', 'K09', 'K10', 'K11',
-      'K12', 'K13', 'K14', 'K15',
+      'K02',
       'B01', 'B02',
       'T01', 'T02', 'T03', 'T04', 'T05',
     ]);
@@ -2991,13 +2990,14 @@ describe('ConsoleAppV4', () => {
     instance.unmount();
   });
 
-  it('runs the explicit all-source check without leaving the source list', async () => {
+  it('keeps Catalog authoring out of the source list and runs the all-source check', async () => {
     const value = controller();
     await value.load();
     value.push({ name: 'sourceList' });
     const checkAll = vi.spyOn(value, 'recheckAllCatalogSources').mockResolvedValue();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
+    expect(instance.lastFrame()).not.toContain('目录管理');
 
     await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     expect(checkAll).toHaveBeenCalledTimes(1);

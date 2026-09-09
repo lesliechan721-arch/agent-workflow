@@ -35,13 +35,6 @@ import {
   SCRIPT_TIMEOUT_MIN_MS,
 } from '../commands/options.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
-import type {
-  CatalogDevManagementViewModel,
-  CatalogPublicationManagementViewModel,
-  CatalogStoreManagementViewModel,
-  CatalogValidationViewModel,
-  CatalogWorkspaceManagementViewModel,
-} from './catalog-management.js';
 import {
   ActionRow,
   Callout,
@@ -95,12 +88,6 @@ import {
   catalogSourceFreshnessLabel,
   catalogSourceListPresentation,
 } from './catalog-sources/screens.js';
-import {
-  CatalogManagementIntro,
-  CatalogPublicationSummary,
-  CatalogStoreSummary,
-  CatalogWorkspaceSummary,
-} from './catalog-management-screens.js';
 import {
   operationDiagnosticLineCount,
   operationHistoryMeta,
@@ -198,7 +185,6 @@ function sourceOperationBlockLabel(reason: SourceOperationBlockReason): string {
     case 'configDraft': return '未保存的插件设置';
     case 'sourceDraft': return '未保存的来源修改';
     case 'batchDraft': return '未完成的批量操作选择';
-    case 'catalogDraft': return '未完成的 Catalog 管理输入';
     case 'portableDraft': return '未完成的通用 Skills 选择';
     case 'activeReview': return '等待确认的操作';
     case 'reviewPreparation': return '正在准备确认信息的操作';
@@ -350,20 +336,6 @@ interface DependencyGraphSessionContext {
   scrollAnchorActionId?: string;
 }
 
-interface CatalogWorkspaceDraft {
-  ownerName: string;
-  ownerUrl: string;
-  displayName: string;
-  catalogVersion: string;
-}
-
-interface CatalogPublishDraft {
-  targetKind: 'remote' | 'remoteUrl';
-  target: string;
-  branch: string;
-  expectedPlanDigest?: string;
-}
-
 function isCharacterInputMode(route: TuiRoute, searchMode: boolean): boolean {
   if (routeDefinition(route).keymap !== 'menuOrTextInput') return false;
   return searchMode
@@ -374,11 +346,6 @@ function isCharacterInputMode(route: TuiRoute, searchMode: boolean): boolean {
     || route.name === 'configObjectPropertyEditor'
       && (route.stage === 'key' || route.stage === 'custom')
     || route.name === 'sourceAdd' && route.step !== 'type' && route.step !== 'refPolicy'
-    || route.name === 'catalogWorkspace'
-      && (route.view === 'select' || route.view === 'create'
-        || route.view === 'version' && route.step === 'catalogVersion')
-    || route.name === 'catalogDev' && route.step !== undefined && route.step !== 'overview'
-    || route.name === 'catalogPublish' && route.step !== 'overview'
     || route.name === 'scriptTimeout';
 }
 
@@ -1517,21 +1484,6 @@ export function ConsoleAppV4(props: {
   const [expandedDependencyPluginIds, setExpandedDependencyPluginIds] = useState<Set<string>>();
   const [sourceInput, setSourceInput] = useState('');
   const [sourceInputError, setSourceInputError] = useState<string>();
-  const [catalogInput, setCatalogInput] = useState('');
-  const [catalogInputError, setCatalogInputError] = useState<string>();
-  const [catalogWorkspace, setCatalogWorkspace] = useState<CatalogWorkspaceManagementViewModel>();
-  const [catalogValidation, setCatalogValidation] = useState<CatalogValidationViewModel>();
-  const [catalogDev, setCatalogDev] = useState<CatalogDevManagementViewModel>();
-  const [catalogStore, setCatalogStore] = useState<CatalogStoreManagementViewModel>();
-  const [catalogPublication, setCatalogPublication] = useState<CatalogPublicationManagementViewModel>();
-  const [catalogLoading, setCatalogLoading] = useState(false);
-  const [catalogWorkspaceDraft, setCatalogWorkspaceDraft] = useState<CatalogWorkspaceDraft>({
-    ownerName: '', ownerUrl: '', displayName: '', catalogVersion: '0.1.0',
-  });
-  const [catalogPublishDraft, setCatalogPublishDraft] = useState<CatalogPublishDraft>({
-    targetKind: 'remote', target: '', branch: 'catalog',
-  });
-  const [catalogDevSourceId, setCatalogDevSourceId] = useState('');
   const [pendingReviewIntent, setPendingReviewIntent] = useState<OperationIntent>();
   const pendingReviewIntentRef = useRef<OperationIntent | undefined>(undefined);
   const pendingActionFocus = useRef<string | undefined>(undefined);
@@ -1549,10 +1501,9 @@ export function ConsoleAppV4(props: {
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
   const dependencyGraphContexts = useRef(new Map<string, DependencyGraphSessionContext>());
-  const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0, catalog: 0 });
+  const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0 });
   const previousExternalDraftValues = useRef({
     draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
-    catalogInput, catalogWorkspaceDraft, catalogPublishDraft, catalogDevSourceId,
   });
   const externalDraftFlowIds = useRef(new Map<string, string>());
   const exitSent = useRef(false);
@@ -1661,88 +1612,12 @@ export function ConsoleAppV4(props: {
     setDirty(false);
   }, [batchDraft?.flowId, route.name, snapshot.result]);
   useEffect(() => {
-    if (route.name !== 'result'
-      || snapshot.result?.state !== 'succeeded'
-      || snapshot.result.operationKind !== 'catalogManagement') return;
-    const action = snapshot.result.summary.catalogManagement?.action;
-    if (action === 'workspaceInit') {
-      setCatalogInput('');
-      setCatalogWorkspaceDraft({
-        ownerName: '', ownerUrl: '', displayName: '', catalogVersion: '0.1.0',
-      });
-    }
-    if (action === 'publishApply') {
-      setCatalogInput('');
-      setCatalogPublishDraft({ targetKind: 'remote', target: '', branch: 'catalog' });
-    }
-  }, [route.name, snapshot.result]);
-  useEffect(() => {
     if (!batchDraft || (route.name !== 'batchSelection' && route.name !== 'batchPlacement')) return;
     setDirty(true);
   }, [batchDraft, route.name]);
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
   }, [route.name]);
-  useEffect(() => {
-    if (route.name !== 'catalogWorkspace' || route.view !== 'overview') return;
-    let current = true;
-    setCatalogLoading(true);
-    setCatalogInputError(undefined);
-    void props.controller.getCatalogWorkspaceManagement()
-      .then((value) => { if (current) setCatalogWorkspace(value); })
-      .catch((error: unknown) => {
-        if (current) setCatalogInputError(sanitizeDiagnosticText(
-          error instanceof Error ? error.message : String(error), [], [catalogInput],
-        ));
-      })
-      .finally(() => { if (current) setCatalogLoading(false); });
-    return () => { current = false; };
-  }, [props.controller, route.name, route.name === 'catalogWorkspace' ? route.view : '']);
-  useEffect(() => {
-    if (route.name !== 'catalogDev' || route.step && route.step !== 'overview') return;
-    let current = true;
-    setCatalogLoading(true);
-    setCatalogInputError(undefined);
-    void props.controller.getCatalogDevManagement()
-      .then((value) => { if (current) setCatalogDev(value); })
-      .catch((error: unknown) => {
-        if (current) setCatalogInputError(sanitizeDiagnosticText(
-          error instanceof Error ? error.message : String(error), [], [catalogInput],
-        ));
-      })
-      .finally(() => { if (current) setCatalogLoading(false); });
-    return () => { current = false; };
-  }, [props.controller, route.name, route.name === 'catalogDev' ? route.step : '']);
-  useEffect(() => {
-    if (route.name !== 'catalogStore') return;
-    let current = true;
-    setCatalogLoading(true);
-    setCatalogInputError(undefined);
-    void props.controller.getCatalogStoreManagement()
-      .then((value) => { if (current) setCatalogStore(value); })
-      .catch((error: unknown) => {
-        if (current) setCatalogInputError(sanitizeDiagnosticText(
-          error instanceof Error ? error.message : String(error), [], [],
-        ));
-      })
-      .finally(() => { if (current) setCatalogLoading(false); });
-    return () => { current = false; };
-  }, [props.controller, route.name]);
-  useEffect(() => {
-    if (route.name !== 'catalogPublish' || route.step !== 'overview') return;
-    let current = true;
-    setCatalogLoading(true);
-    setCatalogInputError(undefined);
-    void props.controller.getCatalogPublicationManagement()
-      .then((value) => { if (current) setCatalogPublication(value); })
-      .catch((error: unknown) => {
-        if (current) setCatalogInputError(sanitizeDiagnosticText(
-          error instanceof Error ? error.message : String(error), [], [catalogPublishDraft.target],
-        ));
-      })
-      .finally(() => { if (current) setCatalogLoading(false); });
-    return () => { current = false; };
-  }, [props.controller, route.name, route.name === 'catalogPublish' ? route.step : '']);
   useEffect(() => {
     if (route.name === 'operationReportPreview') return;
     setReportSaveMode(false);
@@ -1782,13 +1657,8 @@ export function ConsoleAppV4(props: {
     }
     if (previous.sourceDraft !== sourceDraft) externalDraftRevision.current.source += 1;
     if (previous.batchDraft !== batchDraft) externalDraftRevision.current.batch += 1;
-    if (previous.catalogInput !== catalogInput
-      || previous.catalogWorkspaceDraft !== catalogWorkspaceDraft
-      || previous.catalogPublishDraft !== catalogPublishDraft
-      || previous.catalogDevSourceId !== catalogDevSourceId) externalDraftRevision.current.catalog += 1;
     previousExternalDraftValues.current = {
       draftUpdates, draftRemoves, objectDrafts, changedObjectDraftKeys, sourceDraft, batchDraft,
-      catalogInput, catalogWorkspaceDraft, catalogPublishDraft, catalogDevSourceId,
     };
     const currentFlowId = snapshot.router.currentFlowId;
     if (currentFlowId && configRouteOwner) {
@@ -1816,25 +1686,10 @@ export function ConsoleAppV4(props: {
         flowId: batchDraft.flowId,
       });
     }
-    const catalogWorkspaceDirty = catalogWorkspaceDraft.ownerName !== ''
-      || catalogWorkspaceDraft.ownerUrl !== '' || catalogWorkspaceDraft.displayName !== '';
-    const catalogPublishDirty = catalogPublishDraft.target !== '';
-    const catalogDraftActive = route.name === 'catalogWorkspace'
-      && (route.view === 'create' || route.view === 'version' && route.step === 'catalogVersion')
-      || route.name === 'catalogPublish' && route.step !== 'overview'
-      || route.name === 'catalogDev' && route.step !== undefined && route.step !== 'overview'
-      || route.name === 'catalogWorkspace' && route.view === 'overview' && catalogWorkspaceDirty
-      || route.name === 'catalogPublish' && route.step === 'overview' && catalogPublishDirty;
-    if (catalogDraftActive) drafts.push({
-      kind: 'catalogDraft', owner: 'catalog-management', revision: externalDraftRevision.current.catalog,
-    });
     props.controller.setExternalDraftState(drafts);
   }, [
     props.controller, batchDraft, changedObjectDraftKeys, configRouteOwner, dirty, draftOwner,
-    draftRemoves, draftUpdates, objectDrafts, snapshot.router.currentFlowId, sourceDraft,
-    catalogInput, catalogWorkspaceDraft, catalogPublishDraft, catalogDevSourceId, route.name,
-    route.name === 'catalogWorkspace' ? `${route.view}:${route.step ?? ''}` : '',
-    route.name === 'catalogPublish' || route.name === 'catalogDev' ? route.step : '',
+    draftRemoves, draftUpdates, objectDrafts, route.name, snapshot.router.currentFlowId, sourceDraft,
   ]);
   useEffect(() => () => props.controller.setExternalDraftState(), [props.controller]);
   const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
@@ -2001,7 +1856,7 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     let count: number | undefined;
-    if (route.name === 'sourceList') count = props.controller.listSources().length + 3;
+    if (route.name === 'sourceList') count = props.controller.listSources().length + 2;
     else if (route.name === 'issueList') {
       const issueCount = props.controller.listUserIssues().length;
       count = issueCount || 2;
@@ -6582,211 +6437,6 @@ export function ConsoleAppV4(props: {
           <SemanticRows actions={actions} focus={focus} kind="action" compact />
         </Box>
       : <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical={showTechnical} compact={policy.mode === 'compact'} />{unsupportedRows}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
-  } else if (route.name === 'catalogManagement') {
-    breadcrumb = '插件来源 / 目录管理';
-    title = '目录管理';
-    description = '选择任务后才读取对应的本地状态。';
-    actions = [
-      { label: 'Catalog 工作区', description: '选择、创建、查看状态、修改版本、构建和验证', run: () => go({ name: 'catalogWorkspace', view: 'overview' }) },
-      { label: '开发来源', description: '查看、启用或停用当前 Workspace 的开发来源', run: () => go({ name: 'catalogDev' }) },
-      { label: '本地存储', description: '查看保留项并预览可安全清理的空间', run: () => go({ name: 'catalogStore' }) },
-      { label: 'Catalog 发布', description: '准备计划、独立应用和恢复可信 pending 计划', run: () => go({ name: 'catalogPublish', step: 'overview' }) },
-    ];
-    content = <Box flexDirection="column"><CatalogManagementIntro /><SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} /></Box>;
-  } else if (route.name === 'catalogWorkspace' && route.view === 'overview') {
-    const model = catalogWorkspace ? {
-      label: catalogWorkspace.label,
-      state: catalogWorkspace.state,
-      workspaceIdentity: catalogWorkspace.identity ?? undefined,
-      catalogVersion: catalogWorkspace.catalog.version ?? undefined,
-      channel: catalogWorkspace.catalog.channel ?? undefined,
-      pluginCount: catalogWorkspace.plugins.length,
-      snapshotState: catalogWorkspace.snapshot.state,
-      gitState: !catalogWorkspace.git.checked ? '未检查'
-        : !catalogWorkspace.git.hasHead ? '没有 HEAD'
-          : catalogWorkspace.git.clean ? 'clean' : '有未提交变化',
-      issues: catalogWorkspace.issues.map((issue) => issue.message),
-    } : undefined;
-    breadcrumb = '目录管理 / Catalog 工作区';
-    title = 'Catalog 工作区';
-    description = '状态读取不会 build、fetch、创建生成目录或运行插件代码。';
-    actions = [
-      { label: '选择其他工作区…', description: '输入路径；界面只显示目录名', run: () => { setCatalogInput(''); go({ name: 'catalogWorkspace', view: 'select' }); } },
-      ...(catalogWorkspace?.state !== 'ready' ? [{
-        label: '在所选目录创建工作区…', description: '输入 owner、显示名称和初始 Catalog 版本',
-        run: () => { setCatalogInput(catalogWorkspaceDraft.ownerName); go({ name: 'catalogWorkspace', view: 'create', step: 'ownerName' }); },
-      }] : []),
-      ...(catalogWorkspace?.state === 'ready' ? [
-        { label: '修改 Catalog 版本…', description: '选择 bump，或输入稳定版和精确 beta 版本', run: () => go({ name: 'catalogWorkspace', view: 'version' }) },
-        ...(catalogWorkspace.snapshot.state === 'absent' ? [{
-          label: '构建 Catalog…', description: `bundle 并验证 ${catalogWorkspace.plugins.length} 个 canonical plugins；写入 .aw/catalog`,
-          run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceBuild' }),
-        }] : catalogWorkspace.snapshot.valid ? [{
-          label: '重新构建 Catalog…', description: '替换已证明为生成物的 .aw/catalog；不删除其他内容',
-          status: 'warning' as const,
-          run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceBuild', force: true }),
-        }] : [{
-          label: '生成目录无效，不能自动替换', description: '请检查问题并移开无法证明为生成物的目录后再构建',
-          status: 'error' as const, disabled: '现有生成目录未通过安全验证',
-        }]),
-        { label: '完整验证生成目录', description: '只读验证现有 .aw/catalog，不重新构建', run: async () => {
-          setCatalogLoading(true); setCatalogValidation(undefined); setCatalogInputError(undefined);
-          try { setCatalogValidation(await props.controller.validateCatalogWorkspace()); }
-          catch (error) { setCatalogInputError(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), [], [])); }
-          finally { setCatalogLoading(false); }
-        } },
-      ] : []),
-    ];
-    const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(6));
-    content = <Box flexDirection="column"><CatalogWorkspaceSummary model={model} loading={catalogLoading} />
-      {catalogValidation ? <SectionCard title="完整验证结果"><StaticRow title={catalogValidation.state === 'valid' ? '生成目录有效' : catalogValidation.state === 'absent' ? '生成目录不存在' : '生成目录无效'} meta={catalogValidation.catalogVersion ?? undefined} status={catalogValidation.state === 'valid' ? 'success' : 'warning'} compact />{catalogValidation.issues.map((issue) => <StaticRow key={issue.code} title={issue.message} meta={issue.code} status="warning" compact />)}</SectionCard> : null}
-      {catalogInputError ? <Callout status="error" title="无法读取工作区" description={catalogInputError} /> : null}
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} /></Box>;
-  } else if (route.name === 'catalogWorkspace' && route.view === 'select') {
-    breadcrumb = '目录管理 / Catalog 工作区 / 选择';
-    title = '输入 Workspace 路径';
-    description = '相对路径从当前目录解析；输入保持在本地，不写入配置。';
-    help = '输入 · Enter 选择 · Ctrl-U 清空 · Esc 取消';
-    content = <InputCard focused title={<InputDisplay value={privatePathInput(catalogInput)} columns={Math.max(8, size.columns - 8)} />} description={catalogInputError ?? '留空可恢复从当前目录自动发现。'} status={catalogInputError ? 'error' : undefined} />;
-  } else if (route.name === 'catalogWorkspace' && route.view === 'create') {
-    const step = route.step ?? 'ownerName';
-    breadcrumb = '目录管理 / Catalog 工作区 / 创建';
-    context = ({ ownerName: '第 1 步，共 4 步', ownerUrl: '第 2 步，共 4 步', displayName: '第 3 步，共 4 步', catalogVersion: '第 4 步，共 4 步' } as const)[step];
-    title = ({ ownerName: '输入 owner 名称', ownerUrl: '输入 owner URL', displayName: '输入 Catalog 显示名称', catalogVersion: '输入初始 Catalog 版本' } as const)[step];
-    description = step === 'catalogVersion' ? '允许稳定 x.y.z 或精确 x.y.z-beta.N。' : '所有字段会在创建确认中再次显示。';
-    help = '输入 · Enter 继续 · Ctrl-U 清空 · Esc 取消';
-    const displayValue = step === 'ownerUrl'
-      ? catalogInput ? `已输入 owner URL（${Array.from(catalogInput).length} 字符）` : ''
-      : catalogInput;
-    content = <InputCard focused title={<InputDisplay value={displayValue} columns={Math.max(8, size.columns - 8)} />} description={catalogInputError ?? '按 Enter 继续。'} status={catalogInputError ? 'error' : undefined} />;
-  } else if (route.name === 'catalogWorkspace' && route.view === 'version') {
-    breadcrumb = '目录管理 / Catalog 工作区 / 版本';
-    title = route.step === 'catalogVersion' ? '输入精确 Catalog 版本' : '修改 Catalog 版本';
-    description = route.step === 'catalogVersion' ? '允许稳定 x.y.z 或精确 x.y.z-beta.N。' : `当前版本：${catalogWorkspace?.catalog.version ?? '未知'}`;
-    if (route.step === 'catalogVersion') {
-      help = '输入 · Enter 确认 · Ctrl-U 清空 · Esc 取消';
-      content = <InputCard focused title={<InputDisplay value={catalogInput} columns={Math.max(8, size.columns - 8)} />} description={catalogInputError ?? '此动作会进入独立确认。'} status={catalogInputError ? 'error' : undefined} />;
-    } else {
-      actions = [
-        { label: '提高 patch 版本', run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceVersion', bump: 'patch' }, { name: 'catalogWorkspace', view: 'overview' }) },
-        { label: '提高 minor 版本', run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceVersion', bump: 'minor' }, { name: 'catalogWorkspace', view: 'overview' }) },
-        { label: '提高 major 版本', run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceVersion', bump: 'major' }, { name: 'catalogWorkspace', view: 'overview' }) },
-        { label: '输入精确版本…', description: '用于指定稳定版或精确 beta.N', run: () => { setCatalogInput(''); go({ name: 'catalogWorkspace', view: 'version', step: 'catalogVersion' }); } },
-      ];
-      content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
-    }
-  } else if (route.name === 'catalogDev' && (!route.step || route.step === 'overview')) {
-    const snapshotReady = catalogDev?.snapshot.state === 'current' && catalogDev.snapshot.valid;
-    breadcrumb = '目录管理 / 开发来源';
-    title = '开发来源';
-    description = '状态只读取所选 Workspace、managed Path source 和 Active digest。';
-    actions = [
-      { label: '设置开发来源 ID…', description: catalogDevSourceId || '使用安全默认值', run: () => { setCatalogInput(catalogDevSourceId); go({ name: 'catalogDev', step: 'sourceId' }); } },
-      ...!snapshotReady ? catalogDev?.snapshot.state === 'absent' ? [
-        { label: '先构建 Catalog…', description: '先完成独立构建确认；构建成功后返回此页再确认启用',
-          run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceBuild' }, { name: 'catalogDev' }) },
-      ] : catalogDev?.snapshot.state === 'stale' && catalogDev.snapshot.valid ? [
-        { label: '先重新构建 Catalog…', description: '独立确认替换受管的旧 .aw/catalog；成功后返回此页再确认启用',
-          status: 'warning' as const,
-          run: () => beginReview({ kind: 'catalogManagement', action: 'workspaceBuild', force: true }, { name: 'catalogDev' }) },
-      ] : [
-        { label: '生成目录无效，不能自动替换', description: '请先在 Workspace 管理页检查问题；移开无法证明为生成物的目录后再构建',
-          status: 'error' as const, disabled: '现有生成目录未通过安全验证' },
-      ] : catalogDev?.source.exists ? [
-        ...!catalogDev.ready && snapshotReady ? [{
-          label: '重新启用并同步开发来源…', description: '来源配置已存在；重新使用当前有效 snapshot 完成 sync 和 Active 切换',
-          status: 'warning' as const,
-          run: () => beginReview({ kind: 'catalogManagement', action: 'devActivate',
-            ...(catalogDevSourceId ? { sourceId: catalogDevSourceId } : {}) }, { name: 'catalogDev' }),
-        }] : [],
-        { label: '停用开发来源…', description: '保留 .aw/catalog；检查安装、设置和 Marketplace 引用', run: () => beginReview({ kind: 'catalogManagement', action: 'devDeactivate' }) },
-        { label: '停用并选择替代主来源…', description: '开发来源为主来源时使用', run: () => { setCatalogInput(''); go({ name: 'catalogDev', step: 'replacementPrimary' }); } },
-      ] : [
-        { label: '启用开发来源…', description: '使用当前有效 snapshot 注册 managed Path source 并 sync', run: () => beginReview({ kind: 'catalogManagement', action: 'devActivate', ...(catalogDevSourceId ? { sourceId: catalogDevSourceId } : {}) }) },
-        { label: '启用并设为主来源…', description: '将来源启用和主来源变化放在同一影响确认中', run: () => beginReview({ kind: 'catalogManagement', action: 'devActivate', primary: true, ...(catalogDevSourceId ? { sourceId: catalogDevSourceId } : {}) }) },
-      ],
-    ];
-    content = <Box flexDirection="column"><StatusCard status={catalogDev?.ready ? 'success' : catalogDev?.state === 'needsAttention' ? 'warning' : 'info'} title={catalogLoading ? '正在读取开发来源' : catalogDev?.ready ? '开发来源可用' : catalogDev?.state === 'inactive' ? '开发来源未启用' : '开发来源需要处理'}>
-      {catalogDev ? <><StaticRow title="生成目录" meta={catalogDev.snapshot.state} compact /><StaticRow title="来源" meta={catalogDev.source.id ?? '未注册'} compact /><StaticRow title="Active" meta={catalogDev.active.ready ? '可用' : catalogDev.active.exists ? '需要处理' : '不存在'} compact /></> : null}
-    </StatusCard>{catalogInputError ? <Callout status="error" title="无法读取开发来源" description={catalogInputError} /> : null}<SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
-  } else if (route.name === 'catalogDev') {
-    const replacement = route.step === 'replacementPrimary';
-    breadcrumb = '目录管理 / 开发来源 / 输入';
-    title = replacement ? '输入替代主来源 ID' : '输入开发来源 ID';
-    description = replacement ? '停用和主来源变化会进入同一次影响确认。' : '留空可使用安全默认 ID。';
-    help = '输入 · Enter 继续 · Ctrl-U 清空 · Esc 取消';
-    content = <InputCard focused title={<InputDisplay value={catalogInput} columns={Math.max(8, size.columns - 8)} />} description={catalogInputError ?? '按 Enter 继续。'} status={catalogInputError ? 'error' : undefined} />;
-  } else if (route.name === 'catalogStore') {
-    const entries = catalogStore?.entries ?? [];
-    const pageRows = responsiveBudget(3, 7);
-    const entryOffset = Math.min(batchTargetOffset, Math.max(0, entries.length - 1));
-    const entryEnd = Math.min(entries.length, entryOffset + pageRows);
-    const reclaimable = entries.filter((entry) => entry.status === 'reclaimable');
-    breadcrumb = '目录管理 / 本地存储';
-    title = '本地 Catalog Store';
-    description = '只清理已确认且执行时仍安全的可重建内容；未知、不属于插件的内容和当前使用的内容始终保留。';
-    if (entries.length > pageRows) help = 'PgUp/PgDn 查看全部条目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
-    actions = [{
-      label: '预览并清理可安全释放的空间…',
-      description: `${reclaimable.length} 项；确认后新增候选不进入本次删除集合`,
-      disabled: reclaimable.length ? undefined : '当前没有可安全清理的条目',
-      run: () => beginReview({ kind: 'catalogManagement', action: 'storePrune', items: reclaimable.map((entry) => entry.item) }),
-    }];
-    content = <Box flexDirection="column">{catalogStore ? <CatalogStoreSummary
-      reclaimableCount={catalogStore.totals.reclaimableEntries}
-      reclaimableBytes={catalogStore.totals.reclaimableBytes ?? 0}
-      retainedCount={catalogStore.totals.retainedEntries}
-      entries={entries.map((entry) => ({ key: entry.itemKey, title: `${entry.category} · ${entry.itemKey}`, meta: `${entry.reason}${entry.reclaimableBytes === null ? '' : ` · ${entry.reclaimableBytes} bytes`}`, status: entry.status === 'error' ? 'unsafe' : entry.status === 'active' ? 'retained' : entry.status }))}
-      before={entryOffset} after={entryEnd}
-    /> : <StatusCard status="info" title="正在读取本地 Catalog Store" />}
-      {catalogInputError ? <Callout status="error" title="无法读取 Store" description={catalogInputError} /> : null}
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
-  } else if (route.name === 'catalogPublish' && route.step === 'overview') {
-    const records = catalogPublication?.records ?? [];
-    const pageRows = responsiveBudget(3, 7);
-    const recordOffset = Math.min(batchTargetOffset, Math.max(0, records.length - 1));
-    const recordEnd = Math.min(records.length, recordOffset + pageRows);
-    breadcrumb = '目录管理 / Catalog 发布';
-    title = 'Catalog 发布';
-    description = '准备计划与应用计划是两个独立写入动作。';
-    if (records.length > pageRows) help = 'PgUp/PgDn 查看全部记录 · ↑↓ 移动 · Enter 选择 · Esc 返回';
-    actions = [
-      { label: '准备新发布计划…', description: '下一步输入 remote 或 URL 与 branch；执行 plan 会写 version-scoped journal 和隔离仓库', run: () => { setCatalogInput(catalogPublishDraft.expectedPlanDigest ? '' : catalogPublishDraft.target); setCatalogPublishDraft((draft) => draft.expectedPlanDigest ? { targetKind: 'remote', target: '', branch: 'catalog' } : draft); go({ name: 'catalogPublish', step: 'target' }); } },
-      ...records.filter((record) => record.canApply && record.planDigest).map((record) => ({
-        label: `${record.state === 'uncertain' ? '对账或继续' : '应用'} ${record.catalogVersion}…`,
-        description: record.requiresRemoteInput
-          ? '重新输入原 remote 名称或 URL；只恢复现有可信 plan digest'
-          : '只使用现有可信 plan digest；不会从当前源码重建计划',
-        status: record.state === 'uncertain' ? 'warning' as const : undefined,
-        run: () => record.requiresRemoteInput
-          ? (() => {
-              setCatalogPublishDraft({ targetKind: 'remote', target: '', branch: record.branch ?? 'catalog', expectedPlanDigest: record.planDigest! });
-              setCatalogInput('');
-              go({ name: 'catalogPublish', step: 'target' });
-            })()
-          : beginReview({ kind: 'catalogManagement', action: 'publishApply', expectedPlanDigest: record.planDigest!, ...(record.remote ? { remote: record.remote } : {}), ...(record.branch ? { branch: record.branch } : {}) }, { name: 'catalogPublish', step: 'overview' }),
-      })),
-      ...records.filter((record) => record.mustIncreaseVersion).map((record) => ({
-        label: `${record.catalogVersion} 无法恢复`, description: 'journal 或 pending repository 缺失或损坏；请提高 Catalog 版本后创建新计划', status: 'error' as const, disabled: '不能重建或复用此版本',
-      })),
-    ];
-    const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(5));
-    content = <Box flexDirection="column">{catalogPublication ? <CatalogPublicationSummary records={records.map((record) => ({ key: `${record.catalogVersion}:${record.state}`, catalogVersion: record.catalogVersion, state: record.state, branch: record.branch ?? undefined, message: record.issue?.message }))} before={recordOffset} after={recordEnd} /> : <StatusCard status="info" title="正在读取本地发布记录" />}
-      {catalogInputError ? <Callout status="error" title="无法读取发布记录" description={catalogInputError} /> : null}
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} /></Box>;
-  } else if (route.name === 'catalogPublish') {
-    breadcrumb = '目录管理 / Catalog 发布 / 准备计划';
-    title = route.step === 'target' ? '输入 remote 名称或 remote URL' : '输入发布 branch';
-    description = route.step === 'target'
-      ? catalogPublishDraft.expectedPlanDigest
-        ? '重新输入原目标。后端会与现有 plan digest 中的目标身份核对。'
-        : 'URL 只显示脱敏摘要；remote 名称按原样使用。'
-      : '留空使用固定默认 branch：catalog。';
-    help = '输入 · Enter 继续 · Ctrl-U 清空 · Esc 取消';
-    const displayValue = route.step === 'target'
-      ? catalogInput ? `已输入远程目标（${Array.from(catalogInput).length} 字符）` : ''
-      : catalogInput;
-    content = <InputCard focused title={<InputDisplay value={displayValue} columns={Math.max(8, size.columns - 8)} />} description={catalogInputError ?? (route.step === 'branch' ? '执行 plan 会写 publication journal 和隔离仓库；取消 Review 不写入。' : '按 Enter 继续。')} status={catalogInputError ? 'error' : undefined} />;
   } else if (route.name === 'sourceList') {
     breadcrumb = '插件来源';
     title = '插件来源';
@@ -6821,14 +6471,9 @@ export function ConsoleAppV4(props: {
         description: '并行检查各来源；结果不会自动启用待检查版本',
         run: () => props.controller.recheckAllCatalogSources(),
       },
-      {
-        label: '目录管理…',
-        description: 'Catalog 工作区、开发来源、本地存储和发布',
-        run: () => go({ name: 'catalogManagement' }),
-      },
     ];
     const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(8, 12));
-    const sourceCount = Math.max(0, actions.length - 3);
+    const sourceCount = Math.max(0, actions.length - 2);
     content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind={focus < sourceCount ? 'section' : 'action'} compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} /></Box>;
   } else if (route.name === 'sourceDetail') {
     const overview = props.controller.getSourceOverview(route.sourceId);
@@ -7736,7 +7381,6 @@ export function ConsoleAppV4(props: {
       : review.pluginAction === 'install' ? snapshot.installPlacementDraft?.pluginId : undefined;
     const batchReview = review.operationKind === 'pluginWriteBatch';
     const taskReview = review.operationKind === 'pluginWriteTask';
-    const catalogManagementReview = review.operationKind === 'catalogManagement';
     breadcrumb = `${review.subject.name} / ${review.title}`;
     title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}${review.operationKind === 'portableInstall' || taskReview
       ? review.title : `确认${review.title}`} ${review.subject.name}`;
@@ -8027,10 +7671,9 @@ export function ConsoleAppV4(props: {
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
-      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={catalogManagementReview ? '! 需要确认本次写入' : '! 需要确认会影响其他项目的内容'} meta={!catalogManagementReview && review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={catalogManagementReview ? review.description : review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! 需要确认会影响其他项目的内容" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
-    const catalogManagementOperation = snapshot.activeReview?.operationKind === 'catalogManagement';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configReset';
@@ -8038,7 +7681,7 @@ export function ConsoleAppV4(props: {
       || snapshot.activeReview?.operationKind === 'catalogGeneration'
       || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     const issueOperation = snapshot.activeReview?.originIssue;
-    breadcrumb = catalogManagementOperation ? '目录管理 / 进度' : taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    breadcrumb = taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
     const configApply = snapshot.activeReview?.operationKind === 'configSave'
       && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
     const progressAction = snapshot.activeReview?.taskGoal === 'restore' ? '恢复'
@@ -8052,16 +7695,13 @@ export function ConsoleAppV4(props: {
                     : snapshot.activeReview?.pluginAction === 'sync' ? '同步' : '处理';
     const catalogGenerationOperation = snapshot.activeReview?.operationKind === 'catalogGeneration';
     const catalogSourcesRecovery = snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
-    title = catalogManagementOperation
-      ? `正在${snapshot.activeReview?.title.replace(/^确认/u, '') ?? '完成目录管理任务'}`
-      : taskOperation ? `正在${progressAction}插件` : portableOperation ? '正在安装通用 Skills' : issueOperation ? `正在${progressAction}插件`
+    title = taskOperation ? `正在${progressAction}插件` : portableOperation ? '正在安装通用 Skills' : issueOperation ? `正在${progressAction}插件`
       : catalogGenerationOperation ? '正在验证并启用目录版本'
         : catalogSourcesRecovery ? '正在恢复插件来源配置'
         : sourceOperation ? '正在保存来源配置'
           : configOperation ? configApply ? '正在保存并应用设置' : '正在保存设置'
             : `正在${progressAction}插件`;
-    description = catalogManagementOperation ? '正在完成已确认的目录管理任务。'
-      : issueOperation ? '完成后会重新读取状态并检查问题。'
+    description = issueOperation ? '完成后会重新读取状态并检查问题。'
       : catalogGenerationOperation ? '正在验证并应用已确认的目录版本操作。'
         : catalogSourcesRecovery ? '正在备份损坏配置并恢复官方默认来源。'
         : sourceOperation ? '只原子保存来源配置，不访问网络。'
@@ -8168,14 +7808,7 @@ export function ConsoleAppV4(props: {
       return step === 2 ? '正在安装' : step === 3 ? '正在验证' : step === 1 ? '正在生成' : '正在检查';
     };
     const compactPortableProgress = policy.mode === 'compact' && showTechnical;
-    content = catalogManagementOperation ? <StatusCard status={failedProgress ? 'error' : 'info'} title="目录管理">
-      <ProgressRow title="确认计划" meta="完成" state="complete" />
-      <ProgressRow title={currentPhase || '准备执行'} description={progress.current?.target} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : currentPhase ? 'active' : 'pending'} compact={policy.mode === 'compact'} />
-      <ProgressRow title="验证并记录结果" state={validationActive ? 'active' : 'pending'} />
-      {!showTechnical && latestMessage ? <StaticRow title={latestMessage} status="muted" compact /> : null}
-      {showTechnical ? technicalMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={message} compact />) : null}
-      {exitAfterBusy ? <Callout status="warning" title="操作完成后退出" /> : null}
-    </StatusCard> : portableOperation ? <StatusCard status={failedProgress ? 'error' : 'info'} title="Skills CLI">
+    content = portableOperation ? <StatusCard status={failedProgress ? 'error' : 'info'} title="Skills CLI">
       <ProgressRow title="检查插件和依赖" description={`${snapshot.activeReview?.subject.name ?? '当前插件'} · ${portableDraft?.dependencySummary?.directCount ?? 0} 个直接依赖`} meta={portableProgressMeta(0)} state={portableProgressState(0)} compact={compactPortableProgress} />
       <ProgressRow title="生成已选候选 Skills" description={`${portableProviderCount} 个来源或依赖插件提供 ${portableSelectedCount} 个 Skills`} meta={portableProgressMeta(1)} state={portableProgressState(1)} compact={compactPortableProgress} />
       <ProgressRow title={`安装已选择的 ${portableSelectedCount} 个 Skills`} description={`Agent：${portableDraft?.agentMode === 'explicit' ? portableDraft.requestedAgents.join('、') : 'Skills CLI 默认选择'}`} meta={portableProgressMeta(2)} state={portableProgressState(2)} compact={compactPortableProgress} />
@@ -8216,9 +7849,6 @@ export function ConsoleAppV4(props: {
       : result.state === 'blocked' ? result.summary : undefined;
     const action = resultSummary?.action;
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
-    const catalogManagementOperation = operationKind === 'catalogManagement';
-    const catalogManagementResult = catalogManagementOperation
-      ? resultSummary?.catalogManagement : undefined;
     const taskOperation = operationKind === 'pluginWriteTask';
     const taskSummary = resultSummary?.task;
     const taskBlockedCount = taskSummary?.blockedTargets.length ?? 0;
@@ -8277,14 +7907,7 @@ export function ConsoleAppV4(props: {
       cleanup: '✓ 插件清理完成',
       sync: '✓ 插件同步完成',
     }[action ?? 'install'];
-    title = catalogManagementOperation
-      ? blocked ? '× Catalog 管理操作未完成'
-        : partial ? '! Catalog 管理操作只完成了一部分'
-          : catalogManagementResult?.action === 'publishPlan' ? '✓ 发布计划已准备'
-            : catalogManagementResult?.action === 'publishApply' ? '✓ Catalog 发布完成'
-              : catalogManagementResult?.action === 'storePrune' ? '✓ Store 清理完成'
-                : '✓ Catalog 管理操作完成'
-      : taskOperation
+    title = taskOperation
       ? blocked ? `× 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}没有完成`
         : partial ? `! 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}只完成了一部分`
           : `✓ 插件${pluginWriteTaskLabel(taskSummary?.goal ?? 'restore')}完成`
@@ -8320,9 +7943,7 @@ export function ConsoleAppV4(props: {
       : partial ? '! 插件操作只完成了一部分'
         : blocked ? result.code === 'operationFailed' ? '× 插件操作没有完成' : '× 插件操作未完成'
           : completedTitle;
-    description = catalogManagementOperation
-      ? blocked ? result.message : resultSummary?.message ?? 'Catalog 状态已更新。'
-      : taskOperation
+    description = taskOperation
       ? blocked ? '任务被安全阻止。已完成和未完成目标按实际结果保留。'
         : partial ? `${taskSummary?.retryTargets?.length ?? 0} 个失败目标可重试 · ${taskBlockedCount} 个目标需要决定。`
           : `${taskSummary?.rootResults.length ?? 0} 个所选插件已处理；下方显示使用位置。`
@@ -8418,7 +8039,7 @@ export function ConsoleAppV4(props: {
     const retryAction = failedPluginId && failedTarget && failedTargetState
       ? selectLifecycleRetryAction({
           operationKind: operationKind === 'catalogSourcesRecovery' || operationKind === 'pluginWriteBatch'
-            || operationKind === 'pluginWriteTask' || operationKind === 'catalogManagement'
+            || operationKind === 'pluginWriteTask'
             ? undefined : operationKind,
           originalAction: action,
           target: {
@@ -8439,43 +8060,7 @@ export function ConsoleAppV4(props: {
         && (candidate.platform ?? failedIssue.platform) === failedTarget?.platform
         && (candidate.scope ?? failedIssue.scope) === failedTarget?.scope)
       : undefined;
-    const preparedPublication = catalogManagementResult?.action === 'publishPlan'
-      && catalogManagementResult.planDigest && catalogManagementResult.publication
-      ? catalogManagementResult : undefined;
-    actions = catalogManagementOperation
-      ? [
-          ...(preparedPublication ? [{
-            label: '应用此发布计划…',
-            description: '进入独立确认；取消确认不会写入远端',
-            status: 'success' as const,
-            run: () => beginReview({
-              kind: 'catalogManagement',
-              action: 'publishApply',
-              expectedPlanDigest: preparedPublication.planDigest!,
-              ...(catalogPublishDraft.target
-                ? catalogPublishDraft.targetKind === 'remote'
-                  ? { remote: catalogPublishDraft.target }
-                  : { remoteUrl: catalogPublishDraft.target }
-                : {}),
-              branch: catalogPublishDraft.branch,
-            }, { name: 'catalogPublish', step: 'overview' }),
-          }] : []),
-          { label: catalogManagementResult?.action === 'storePrune' ? '返回本地存储'
-              : catalogManagementResult?.action === 'devActivate' || catalogManagementResult?.action === 'devDeactivate' ? '返回开发来源'
-                : catalogManagementResult?.action === 'publishPlan' || catalogManagementResult?.action === 'publishApply' ? '返回发布管理'
-                  : '返回 Catalog 工作区',
-            run: () => leaveResult(catalogManagementResult?.action === 'storePrune'
-              ? { name: 'catalogStore' }
-              : catalogManagementResult?.action === 'devActivate' || catalogManagementResult?.action === 'devDeactivate'
-                ? { name: 'catalogDev' }
-                : catalogManagementResult?.action === 'publishPlan' || catalogManagementResult?.action === 'publishApply'
-                  ? { name: 'catalogPublish', step: 'overview' }
-                  : 'returnRoute' in result && result.returnRoute ? result.returnRoute
-                    : { name: 'catalogManagement' }) },
-          { label: '查看本次记录', run: () => result.operationRecordId
-            && go({ name: 'operationDiagnostic', recordId: result.operationRecordId }) },
-        ]
-      : taskOperation
+    actions = taskOperation
       ? [
           ...(nestedTaskReturn && taskReturnRoute ? [{
             label: '返回剩余恢复任务',
@@ -8825,22 +8410,7 @@ export function ConsoleAppV4(props: {
       || prioritizedPortableSkills.length > portableSkillLimit) {
       help = 'PgUp/PgDn 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = catalogManagementOperation ? <Box flexDirection="column">
-      <ResultCard status={resultStatus} title={resultSummary?.message ?? '目录管理结果'}>
-        {catalogManagementResult?.catalogVersion ? <StaticRow title="目录版本" meta={catalogManagementResult.catalogVersion} compact /> : null}
-        {catalogManagementResult?.store ? <>
-          <StaticRow title="实际删除" meta={`${catalogManagementResult.store.deletedEntries} 项 · ${catalogManagementResult.store.deletedBytes} bytes`} status="success" compact />
-          <StaticRow title="实际保留" meta={`${catalogManagementResult.store.retainedEntries} 项`} compact />
-        </> : null}
-        {catalogManagementResult?.publication ? <>
-          <StaticRow title="发布状态" meta={catalogManagementResult.publication.state} status={catalogManagementResult.publication.state === 'uncertain' ? 'warning' : 'success'} compact />
-          <StaticRow title="目标" meta={`${catalogManagementResult.publication.remote} · ${catalogManagementResult.publication.branch}`} compact />
-          <StaticRow title="计划标识" meta={catalogManagementResult.publication.planDigest.slice(0, 15)} compact />
-        </> : catalogManagementResult?.planDigest ? <StaticRow title="计划已准备" meta={catalogManagementResult.planDigest.slice(0, 15)} status="success" compact /> : null}
-        {visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}
-      </ResultCard>
-      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
-    </Box> : taskOperation || batchOperation ? <Box flexDirection="column">
+    content = taskOperation || batchOperation ? <Box flexDirection="column">
       <ResultCard status={resultStatus} title="所选插件结果">
         {taskResultOffset > 0 ? <StaticRow title={`↑ 前面还有 ${taskResultOffset} 项`} status="muted" compact /> : null}
         {visibleTaskResultRows}
@@ -8950,7 +8520,6 @@ export function ConsoleAppV4(props: {
         unavailable = missingIssue ? 'issue' : 'flow';
         break;
       case 'sourceAdd': case 'sourceSave': case 'scriptTimeout':
-      case 'catalogWorkspace':
       case 'reviewPreparing': case 'review': case 'result':
         unavailable = 'flow';
         break;
@@ -9119,10 +8688,6 @@ export function ConsoleAppV4(props: {
     setObjectError(undefined);
     setSourceDraft(undefined);
     setBatchDraft(undefined);
-    setCatalogInput('');
-    setCatalogWorkspaceDraft({ ownerName: '', ownerUrl: '', displayName: '', catalogVersion: '0.1.0' });
-    setCatalogPublishDraft({ targetKind: 'remote', target: '', branch: 'catalog' });
-    setCatalogDevSourceId('');
   }
 
   function continueEditingFromSessionNavigation(): void {
@@ -9500,18 +9065,6 @@ export function ConsoleAppV4(props: {
       ));
       return;
     }
-    if ((key.pageUp || key.pageDown) && (route.name === 'catalogStore'
-      || route.name === 'catalogPublish' && route.step === 'overview')) {
-      const total = route.name === 'catalogStore'
-        ? catalogStore?.entries.length ?? 0
-        : catalogPublication?.records.length ?? 0;
-      const pageRows = responsiveBudget(3, 7);
-      setBatchTargetOffset((value) => Math.min(
-        Math.max(0, total - pageRows),
-        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
-      ));
-      return;
-    }
     if ((key.pageUp || key.pageDown) && route.name === 'pluginDependencies' && plugin) {
       const overview = dependencyOverview(plugin);
       const dependents = route.view === 'removeBlocked' && route.platform && route.scope
@@ -9652,142 +9205,6 @@ export function ConsoleAppV4(props: {
       else if (key.backspace || key.delete) setSourceInput(removeLastGrapheme);
       else if (input && !key.ctrl && !key.meta && input >= ' ') setSourceInput((value) => value + input);
       setSourceInputError(undefined);
-      return;
-    }
-    if (route.name === 'catalogWorkspace' && (route.view === 'select'
-      || route.view === 'create' || route.view === 'version' && route.step === 'catalogVersion')) {
-      if (key.escape) {
-        if (route.view === 'create') {
-          const step = route.step ?? 'ownerName';
-          const next = { ...catalogWorkspaceDraft, [step]: catalogInput };
-          setCatalogWorkspaceDraft(next);
-          const previous = ({ ownerUrl: 'ownerName', displayName: 'ownerUrl', catalogVersion: 'displayName' } as const)[step as 'ownerUrl' | 'displayName' | 'catalogVersion'];
-          if (previous) {
-            setCatalogInput(next[previous]);
-            props.controller.replace({ ...route, step: previous });
-          } else back();
-        } else back();
-        return;
-      }
-      if (key.return) {
-        const value = catalogInput.trim();
-        setCatalogInputError(undefined);
-        if (route.view === 'select') {
-          setCatalogLoading(true);
-          void props.controller.selectCatalogWorkspace(value || undefined).then((workspace) => {
-            setCatalogWorkspace(workspace);
-            props.controller.replace({ name: 'catalogWorkspace', view: 'overview' });
-            setFocus(0); setScrollOffset(0); setCatalogInput('');
-          }).catch((error: unknown) => setCatalogInputError(sanitizeDiagnosticText(
-            error instanceof Error ? error.message : String(error), [], [catalogInput],
-          ))).finally(() => setCatalogLoading(false));
-          return;
-        }
-        if (route.view === 'version') {
-          if (!/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/u.test(value)) {
-            setCatalogInputError('版本必须是 x.y.z 或精确 x.y.z-beta.N。');
-            return;
-          }
-          beginReview({ kind: 'catalogManagement', action: 'workspaceVersion', version: value }, { name: 'catalogWorkspace', view: 'overview' });
-          return;
-        }
-        const step = route.step ?? 'ownerName';
-        if (!value) { setCatalogInputError('此字段不能为空。'); return; }
-        if (step === 'ownerUrl') {
-          try {
-            const url = new URL(value);
-            if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error();
-          } catch { setCatalogInputError('请输入有效的 HTTP 或 HTTPS owner URL。'); return; }
-        }
-        if (step === 'catalogVersion' && !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/u.test(value)) {
-          setCatalogInputError('版本必须是 x.y.z 或精确 x.y.z-beta.N。');
-          return;
-        }
-        const next = { ...catalogWorkspaceDraft, [step]: value };
-        setCatalogWorkspaceDraft(next);
-        setCatalogInput('');
-        if (step === 'ownerName') props.controller.replace({ ...route, step: 'ownerUrl' });
-        else if (step === 'ownerUrl') props.controller.replace({ ...route, step: 'displayName' });
-        else if (step === 'displayName') { setCatalogInput('0.1.0'); props.controller.replace({ ...route, step: 'catalogVersion' }); }
-        else beginReview({ kind: 'catalogManagement', action: 'workspaceInit', ...next }, { name: 'catalogWorkspace', view: 'overview' });
-        return;
-      }
-      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setCatalogInput('');
-      else if (key.backspace || key.delete) setCatalogInput(removeLastGrapheme);
-      else if (input && !key.ctrl && !key.meta && input >= ' ') setCatalogInput((value) => value + input);
-      setCatalogInputError(undefined);
-      return;
-    }
-    if (route.name === 'catalogDev' && route.step && route.step !== 'overview') {
-      if (key.escape) { back(); return; }
-      if (key.return) {
-        const value = catalogInput.trim();
-        if (value && !CATALOG_SOURCE_ID_PATTERN.test(value)) {
-          setCatalogInputError('格式必须是小写字母、数字或连字符，最多 32 字符。');
-          return;
-        }
-        if (route.step === 'sourceId') {
-          setCatalogDevSourceId(value);
-          back();
-        } else {
-          if (!value) { setCatalogInputError('请输入替代主来源 ID。'); return; }
-          beginReview({ kind: 'catalogManagement', action: 'devDeactivate', replacementPrimary: value }, { name: 'catalogDev' });
-        }
-        return;
-      }
-      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setCatalogInput('');
-      else if (key.backspace || key.delete) setCatalogInput(removeLastGrapheme);
-      else if (input && !key.ctrl && !key.meta && input >= ' ') setCatalogInput((value) => value + input);
-      setCatalogInputError(undefined);
-      return;
-    }
-    if (route.name === 'catalogPublish' && route.step !== 'overview') {
-      if (key.escape) {
-        if (route.step === 'branch') {
-          setCatalogPublishDraft((draft) => ({ ...draft, branch: catalogInput.trim() || 'catalog' }));
-          setCatalogInput(catalogPublishDraft.target);
-          props.controller.replace({ name: 'catalogPublish', step: 'target' });
-        } else {
-          const value = catalogInput.trim();
-          const targetKind = value.includes('://') || /^[^@\s]+@[^:\s]+:/u.test(value) || value.startsWith('/')
-            ? 'remoteUrl' as const : 'remote' as const;
-          setCatalogPublishDraft((draft) => ({ ...draft, targetKind, target: value }));
-          back();
-        }
-        return;
-      }
-      if (key.return) {
-        const value = catalogInput.trim();
-        if (route.step === 'target') {
-          if (/\s/u.test(value)) { setCatalogInputError('remote 名称或 URL 不能包含空白。'); return; }
-          const targetKind = value.includes('://') || /^[^@\s]+@[^:\s]+:/u.test(value) || value.startsWith('/')
-            ? 'remoteUrl' as const : 'remote' as const;
-          setCatalogPublishDraft((draft) => ({ ...draft, targetKind, target: value }));
-          setCatalogInput(catalogPublishDraft.expectedPlanDigest ? catalogPublishDraft.branch : 'catalog');
-          props.controller.replace({ name: 'catalogPublish', step: 'branch' });
-        } else {
-          const branch = value || 'catalog';
-          if (/\s|\.\.|[~^:?*\[\\]/u.test(branch) || branch.startsWith('-') || branch.endsWith('/')) {
-            setCatalogInputError('请输入安全的 Git branch 名称。');
-            return;
-          }
-          const draft = { ...catalogPublishDraft, branch };
-          setCatalogPublishDraft(draft);
-          const target = draft.target
-            ? draft.targetKind === 'remote' ? { remote: draft.target } : { remoteUrl: draft.target }
-            : {};
-          beginReview(draft.expectedPlanDigest
-            ? { kind: 'catalogManagement', action: 'publishApply', expectedPlanDigest: draft.expectedPlanDigest,
-                ...target, branch }
-            : { kind: 'catalogManagement', action: 'publishPlan', ...target, branch },
-          { name: 'catalogPublish', step: 'overview' });
-        }
-        return;
-      }
-      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) setCatalogInput('');
-      else if (key.backspace || key.delete) setCatalogInput(removeLastGrapheme);
-      else if (input && !key.ctrl && !key.meta && input >= ' ') setCatalogInput((value) => value + input);
-      setCatalogInputError(undefined);
       return;
     }
     if (route.name === 'configFieldEditor'

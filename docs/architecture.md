@@ -118,14 +118,6 @@ Git provider 保持非交互，并保留 timeout、protocol/ref/temp validation�
 
 primary development deactivate 把 remove 和 primary change 放入同一 inventory、impact digest、mutation lock 和最终 config CAS。Catalog dev deactivate Receipt v4 使用 inventory v2 的脱敏 `impact`。
 
-### TUI Catalog 管理
-
-Catalog 管理是与插件消费来源页分开的按需工作流。用户进入该页后才读取所选 Workspace、Store、开发来源或 publication journal；状态和完整验证保持只读。Workspace 创建、版本修改、构建、开发来源启停、Store prune、publish plan 和 publish apply 都通过独立 Review、执行前证据复核和 Result 执行；取消 Review 不写入。
-
-Store prune Review 只授权当时列出的精确 reclaimable item。实际 prune 继续用现有 `catalog store prune` 锁内重新检查，新增、漂移、foreign 或无法证明安全的 item 保留，结果分别报告 deleted 和 retained。TUI 不提供任意路径删除或 Store 的 force 入口。
-
-Catalog publication plan 在确认后准备 version-scoped journal 和隔离 repository；apply 只用 `expected-plan-digest` 唯一选择既有 schema v2 journal，不以当前 metadata version 或当前 HEAD 重建计划。只有可信 `prepared` 或 `uncertain` record 可以进入 apply Review。journal 或 pending repository 缺失、损坏或与已授权 Workspace、remote identity、branch 不匹配时，TUI 停止并要求提高 Catalog version；direct remote 未保存在 journal 时，必须重新输入 remote 或 URL 并重新核对 identity。TUI 不覆盖单 Plugin 作者流程或 CLI/npm 发布。
-
 ## Write Pipeline
 
 需要 Catalog 的公开写命令和 `config ... --apply` 使用同一条 rebuild 流程：

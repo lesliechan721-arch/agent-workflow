@@ -37,12 +37,6 @@ describe('TUI route registry', () => {
     expect(routeDefinition({
       name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'restore',
     })).toMatchObject({ entity: 'plugin', rendererFamily: 'task', keymap: 'menu' });
-    expect(routeDefinition({ name: 'catalogManagement' }))
-      .toMatchObject({ entity: 'none', rendererFamily: 'catalog', keymap: 'menu' });
-    expect(routeDefinition({ name: 'catalogWorkspace', view: 'select' }))
-      .toMatchObject({ entity: 'none', rendererFamily: 'catalog', keymap: 'menuOrTextInput' });
-    expect(routeDefinition({ name: 'catalogPublish', step: 'target' }))
-      .toMatchObject({ entity: 'none', rendererFamily: 'catalog', keymap: 'menuOrTextInput' });
     expect(new Set(TUI_SCREEN_IDS).size).toBe(TUI_SCREEN_IDS.length);
     expect(TUI_SCREEN_IDS).not.toContain('C11');
     expect(routeSupportsCharacterInput({ name: 'pluginList', mode: 'browse' })).toBe(true);

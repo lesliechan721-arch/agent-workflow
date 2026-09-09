@@ -1,16 +1,5 @@
 import crypto from 'node:crypto';
 
-import {
-  CatalogManagementError,
-  type CatalogDevManagementViewModel,
-  type CatalogManagementIntent,
-  type CatalogManagementReviewEvidence,
-  type CatalogManagementService,
-  type CatalogPublicationManagementViewModel,
-  type CatalogStoreManagementViewModel,
-  type CatalogValidationViewModel,
-  type CatalogWorkspaceManagementViewModel,
-} from './catalog-management.js';
 import type {
   CatalogActivationMode,
   CatalogSource,
@@ -128,11 +117,11 @@ export type {
 } from './plugin-write-task.js';
 
 type CatalogActivationBlockReason =
-  | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'catalogDraft' | 'portableDraft'
+  | 'configDraft' | 'sourceDraft' | 'batchDraft' | 'portableDraft'
   | 'activeReview' | 'reviewPreparation' | 'writeProgress';
 
 export interface ExternalDraftState {
-  kind: 'configDraft' | 'sourceDraft' | 'batchDraft' | 'catalogDraft';
+  kind: 'configDraft' | 'sourceDraft' | 'batchDraft';
   owner: string;
   flowId?: string;
   revision: number;
@@ -381,9 +370,7 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogSourcesRecovery';
-    }
-  | CatalogManagementIntent
-  ;
+    };
 
 export interface OperationEvidence {
   catalog: {
@@ -465,7 +452,6 @@ export interface OperationEvidence {
     sourceMutation?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['sourceMutation'];
     setPrimaryAfterActivation?: boolean;
   };
-  catalogManagement?: CatalogManagementReviewEvidence;
   portable?: PortableReview;
 }
 
@@ -626,24 +612,6 @@ export interface OperationResultSummary {
   pluginId?: string;
   action?: PluginWriteOperation;
   catalogAction?: Extract<OperationIntent, { kind: 'catalogGeneration' }>['action'];
-  catalogManagement?: {
-    action: CatalogManagementIntent['action'];
-    state: 'succeeded' | 'partial';
-    catalogVersion?: string;
-    planDigest?: string;
-    store?: {
-      deletedEntries: number;
-      deletedBytes: number;
-      retainedEntries: number;
-    };
-    publication?: {
-      catalogVersion: string;
-      planDigest: string;
-      state: 'prepared' | 'uncertain' | 'published';
-      remote: string;
-      branch: string;
-    };
-  };
   catalogGeneration?: Pick<CatalogGenerationSyncResult,
     'activeChanged' | 'outcome'> & { catalogVersion: string };
   elapsedMs?: number;
@@ -777,7 +745,6 @@ export interface SourceReferenceSummaryViewModel {
 }
 
 export interface TuiControllerDependencies {
-  catalogManagement?: CatalogManagementService;
   beginCatalogSession?: (options?: {
     reuseValidatedGenerations?: boolean;
   }) => void;
@@ -954,17 +921,6 @@ function normalizeOperationIntent(intent: OperationIntent): OperationIntent {
   }
   if (intent.kind === 'pluginWriteTask') {
     return { ...intent, targets: canonicalPluginWriteTaskTargets(intent.targets) };
-  }
-  if (intent.kind === 'catalogManagement' && intent.action === 'storePrune') {
-    const items = [...new Map(intent.items.map((item) => [
-      `${item.category}\0${item.storeKey}`,
-      item,
-    ])).values()].sort((left, right) =>
-      `${left.category}\0${left.storeKey}`.localeCompare(
-        `${right.category}\0${right.storeKey}`,
-        'en',
-      ));
-    return { ...intent, items };
   }
   if (intent.kind !== 'pluginWriteBatch') return intent;
   if (intent.selection.kind === 'targets') {
@@ -1188,12 +1144,6 @@ export function pluginWriteTaskFailedRequestedTargets(
 }
 
 function collectOperationSensitiveValues(intent: OperationIntent): string[] {
-  if (intent.kind === 'catalogManagement') {
-    return [
-      ...('ownerUrl' in intent && intent.ownerUrl ? [intent.ownerUrl] : []),
-      ...('remoteUrl' in intent && intent.remoteUrl ? [intent.remoteUrl] : []),
-    ];
-  }
   if (intent.kind !== 'configSave') return [];
   const sensitiveKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
   const values: string[] = [];
@@ -1241,22 +1191,6 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
-  if (evidence.catalogManagement) {
-    const management = evidence.catalogManagement;
-    return crypto.createHash('sha256')
-      .update(JSON.stringify(stableValue(management.action === 'storePrune'
-        ? {
-            action: management.action,
-            workspaceBinding: management.workspaceBinding,
-            authorizedStoreItems: management.authorizedStoreItems,
-          }
-        : {
-            action: management.action,
-            workspaceBinding: management.workspaceBinding,
-            evidenceDigest: management.evidenceDigest,
-          })))
-      .digest('hex');
-  }
   if ('taskPlan' in evidence) {
     const task = (evidence as PluginWriteTaskEvidence).taskPlan;
     return crypto.createHash('sha256')
@@ -1405,7 +1339,6 @@ function issueCode(error: unknown): string {
   const safeOperationError = readSafeOperationError(error);
   if (safeOperationError) return safeDiagnosticCode(safeOperationError.code, 'operationBlocked');
   if (error instanceof TuiOperationBlockedError) return error.code;
-  if (error instanceof CatalogManagementError) return error.code;
   if (error instanceof CatalogGenerationError) return error.code;
   if (error instanceof Error && error.name === 'CatalogSourcesConfigConflictError') {
     return 'operationReviewStale';
@@ -1995,11 +1928,6 @@ export class TuiController {
 
   #ensureOperationFlow(intent: OperationIntent): void {
     const active = this.#router.activeFlow();
-    if (intent.kind === 'catalogManagement') {
-      if (active?.kind === 'catalogManagement') return;
-      this.#router.beginFlow('catalogManagement', this.#router.snapshot.current.route);
-      return;
-    }
     if (intent.kind === 'pluginWriteTask') {
       if (active?.kind === 'pluginWriteTask') return;
       this.#router.beginFlow('pluginWriteTask', this.#router.snapshot.current.route);
@@ -2086,16 +2014,6 @@ export class TuiController {
         return this.#normalizeRoute(result.returnRoute);
       }
       return this.#normalizeRoute({ name: 'sourceDetail', sourceId: intent.sourceId });
-    }
-    if (intent.kind === 'catalogManagement') {
-      if (intent.action === 'devActivate' || intent.action === 'devDeactivate') {
-        return { name: 'catalogDev', step: 'overview' };
-      }
-      if (intent.action === 'storePrune') return { name: 'catalogStore' };
-      if (intent.action === 'publishPlan' || intent.action === 'publishApply') {
-        return { name: 'catalogPublish', step: 'overview' };
-      }
-      return { name: 'catalogWorkspace', view: 'overview' };
     }
     return { name: 'sourceList' };
   }
@@ -3257,7 +3175,7 @@ export class TuiController {
   }
 
   setExternalDraftState(states: ExternalDraftState[] = []): void {
-    const priority = { sourceDraft: 0, batchDraft: 1, catalogDraft: 2, configDraft: 3 } as const;
+    const priority = { sourceDraft: 0, batchDraft: 1, configDraft: 2 } as const;
     this.#externalDrafts = structuredClone(states).sort((left, right) =>
       priority[left.kind] - priority[right.kind] || left.owner.localeCompare(right.owner, 'en'));
     this.#publish();
@@ -3448,80 +3366,6 @@ export class TuiController {
     )));
   }
 
-  async selectCatalogWorkspace(
-    workspaceRoot?: string,
-  ): Promise<CatalogWorkspaceManagementViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(
-      this.dependencies.catalogManagement.selectWorkspace(workspaceRoot),
-    ));
-  }
-
-  async getCatalogWorkspaceManagement(): Promise<CatalogWorkspaceManagementViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getWorkspace()));
-  }
-
-  async validateCatalogWorkspace(): Promise<CatalogValidationViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(
-      this.dependencies.catalogManagement.validateWorkspace(),
-    ));
-  }
-
-  async getCatalogDevManagement(): Promise<CatalogDevManagementViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getDev()));
-  }
-
-  async getCatalogStoreManagement(): Promise<CatalogStoreManagementViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(this.dependencies.catalogManagement.getStore()));
-  }
-
-  async getCatalogPublicationManagement(): Promise<CatalogPublicationManagementViewModel> {
-    this.#assertAcceptingActions();
-    if (!this.dependencies.catalogManagement) {
-      throw new TuiOperationBlockedError(
-        'catalogManagementUnavailable',
-        'Catalog management is unavailable.',
-      );
-    }
-    return cloneFrozen(await this.#trackRead(
-      this.dependencies.catalogManagement.getPublication(),
-    ));
-  }
-
   async previewConfigSaveImpact(
     intent: Extract<OperationIntent, { kind: 'configSave' }>,
     signal?: AbortSignal,
@@ -3658,35 +3502,6 @@ export class TuiController {
   }
 
   #validateReviewIntent(intent: OperationIntent): void {
-    if (intent.kind === 'catalogManagement') {
-      if (intent.action === 'storePrune' && intent.items.length === 0) {
-        throw new TuiOperationBlockedError(
-          'catalogStoreSelectionInvalid',
-          'Select at least one reclaimable Catalog store item.',
-        );
-      }
-      if (intent.action === 'workspaceVersion'
-        && (intent.version === undefined) === (intent.bump === undefined)) {
-        throw new TuiOperationBlockedError(
-          'catalogVersionSelectionInvalid',
-          'Select exactly one Catalog version or bump level.',
-        );
-      }
-      if ((intent.action === 'publishPlan' || intent.action === 'publishApply')
-        && intent.remote !== undefined && intent.remoteUrl !== undefined) {
-        throw new TuiOperationBlockedError(
-          'catalogPublicationTargetInvalid',
-          'Select a Git remote name or one direct remote URL.',
-        );
-      }
-      if (intent.action === 'publishApply'
-        && !/^sha256:[0-9a-f]{64}$/u.test(intent.expectedPlanDigest)) {
-        throw new TuiOperationBlockedError(
-          'catalogPublicationPlanInvalid',
-          'Select an exact prepared Catalog publication plan.',
-        );
-      }
-    }
     if (intent.kind === 'pluginWriteTask') {
       if (intent.targets.length === 0
         || JSON.stringify(intent.targets) !== JSON.stringify(canonicalPluginWriteTaskTargets(intent.targets))) {
@@ -3728,7 +3543,6 @@ export class TuiController {
   }
 
   #reviewPreparationLabel(intent: OperationIntent): string {
-    if (intent.kind === 'catalogManagement') return 'Catalog 管理';
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
     if (intent.kind === 'pluginWriteTask') return `${intent.targets.length} 个安装位置`;
     if (intent.kind === 'pluginWriteBatch') {
@@ -4165,65 +3979,6 @@ export class TuiController {
         ...executionProjection,
         sensitiveValues: collectOperationSensitiveValues(ticket.intent),
       });
-      if (ticket.intent.kind === 'catalogManagement') {
-        if (ticket.intent.action === 'devActivate' || ticket.intent.action === 'devDeactivate') {
-          this.dependencies.beginCatalogSession?.();
-          generation = ++this.#generation;
-          try {
-            const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
-            if (!this.#operationIsCurrent(generation)) {
-              return this.#detachedBlocked(operationId, ticket.intent);
-            }
-            this.#applyStatus(refreshed);
-          } catch (reloadError) {
-            if (!this.#operationIsCurrent(generation)) {
-              return this.#detachedBlocked(operationId, ticket.intent);
-            }
-            await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
-              privateConfigOperation: true,
-            });
-            this.#status = undefined;
-            this.#viewModel = undefined;
-            this.#phase = 'error';
-            this.#loadError = {
-              code: 'tuiStateReloadFailed',
-              message: 'Catalog 来源已变更，但插件状态刷新失败。请重新加载后再继续操作。',
-            };
-            return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
-              intent: ticket.intent,
-              navigation: 'result',
-              returnRoute: ticket.returnRoute,
-              writeMayHaveCompleted: true,
-            });
-          }
-        }
-        const baseSummary = operationResultSummary(ticket.intent, execution);
-        const summary: OperationResultSummary = {
-          ...baseSummary,
-          elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
-          messages: [...this.#progress.messages, ...(baseSummary.messages ?? [])].slice(-8)
-            .map((message) => sanitizeDiagnosticText(
-              message,
-              [],
-              collectOperationSensitiveValues(ticket.intent),
-            )),
-        };
-        const projection = this.#operationDiagnostics.get(operationId);
-        if (projection) projection.effects.finalVerification = 'completed';
-        this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
-        const result: OperationExecuteResult = {
-          state: summary.code === 'operationPartial' ? 'partial' : 'succeeded',
-          operationId,
-          summary,
-          operationKind: ticket.intent.kind,
-          returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
-        };
-        this.#result = result;
-        this.#activeReview = undefined;
-        this.#showResult(result, ticket.intent);
-        this.#publish();
-        return cloneFrozen(result);
-      }
       if (ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update') {
         const confirmedAutoCheck = catalogSourceAutoCheckOnlyValue(ticket.intent.update);
         if (confirmedAutoCheck !== undefined) {
@@ -4511,14 +4266,6 @@ export class TuiController {
       if (code === 'operationReviewStale' || code === 'catalogGenerationReviewStale') {
         return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
-      if (ticket.intent.kind === 'catalogManagement') {
-        return this.#setBlocked(operationId, code, {
-          intent: ticket.intent,
-          navigation: 'result',
-          returnRoute: ticket.returnRoute,
-          writeMayHaveCompleted: true,
-        });
-      }
       generation = ++this.#generation;
       let finalVerification: OperationEffectFacts['finalVerification'] = 'completed';
       try {
@@ -4624,39 +4371,6 @@ export class TuiController {
     currentEvidence?: OperationEvidence,
     generation = this.#generation,
   ): Promise<OperationExecuteResult> {
-    if (ticket.intent.kind === 'catalogManagement') {
-      let evidence = currentEvidence;
-      try {
-        evidence ??= await this.dependencies.captureEvidence(
-          structuredClone(ticket.intent),
-          this.#abort.signal,
-        );
-      } catch (error) {
-        const code = issueCode(error);
-        this.#appendThrownProjection(operationId, error, code, 'reviewPreparation', ticket.intent);
-        await this.#logOperationError(error, code, ticket.intent);
-        return this.#setBlocked(operationId, code, {
-          intent: ticket.intent,
-          returnRoute: ticket.returnRoute,
-        });
-      }
-      const review = this.#storeOperationReview(
-        ticket.intent,
-        evidence,
-        'replace',
-        ticket.returnRoute,
-      );
-      const result: OperationExecuteResult = {
-        state: 'stale',
-        operationId,
-        review,
-        ...this.#operationIdentity(ticket.intent),
-      };
-      this.#recordStaleAttempt(operationId, ticket.intent);
-      this.#result = result;
-      this.#publish();
-      return cloneFrozen(result);
-    }
     this.dependencies.beginCatalogSession?.();
     generation = ++this.#generation;
     try {
@@ -4818,22 +4532,6 @@ export class TuiController {
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
-  if (intent.kind === 'catalogManagement') {
-    const result = execution as import('./catalog-management.js').CatalogManagementExecutionResult;
-    return {
-      code: result.state === 'partial' ? 'operationPartial' : 'operationSucceeded',
-      message: result.message,
-      messages: result.messages,
-      catalogManagement: {
-        action: result.action,
-        state: result.state,
-        ...(result.catalogVersion ? { catalogVersion: result.catalogVersion } : {}),
-        ...(result.planDigest ? { planDigest: result.planDigest } : {}),
-        ...(result.store ? { store: structuredClone(result.store) } : {}),
-        ...(result.publication ? { publication: structuredClone(result.publication) } : {}),
-      },
-    };
-  }
   if (intent.kind === 'catalogSourcesRecovery') {
     const result = execution as { backupPath: string };
     return {
