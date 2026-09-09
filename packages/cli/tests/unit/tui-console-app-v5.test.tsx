@@ -2450,6 +2450,12 @@ describe('ConsoleAppV4', () => {
       target.pluginId === 'team-tools/review-gate')) {
       target.state = 'ready';
       target.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+      if (target.platform === 'codex') {
+        for (const placement of target.placements) {
+          placement.state = 'ready';
+          placement.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+        }
+      }
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();

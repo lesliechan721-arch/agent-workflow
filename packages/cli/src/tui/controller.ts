@@ -3045,10 +3045,11 @@ export class TuiController {
         if (!option?.compatible) {
           return { ...target, state: 'blocked', reason: option?.disabled ?? '插件不支持所选工具或位置' };
         }
-        const representativeTarget = targetPlatform === 'codex' ? statusTargets[0] : exactTarget;
-        const uncertainObservation = statusTargets.some((entry) =>
-          statusTargetActivation(entry)?.evidence === 'unobserved'
-          || statusTargetSharedNative(entry)?.state === 'unobserved');
+        const representativeTarget = exactTarget
+          ?? (targetPlatform === 'codex' ? statusTargets[0] : undefined);
+        const uncertainObservation = (representativeTarget
+          && statusTargetActivation(representativeTarget)?.evidence === 'unobserved')
+          || statusTargets.some((entry) => statusTargetSharedNative(entry)?.state === 'unobserved');
         if (uncertainObservation) {
           return { ...target, state: 'blocked', reason: '无法确认所选位置是否缺失' };
         }

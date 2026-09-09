@@ -1369,6 +1369,32 @@ describe('TUI v4 router and ViewModel', () => {
     expect(controller.listPlugins({ mode: 'browse', installFilter: 'uninstalled' })).toEqual([]);
   });
 
+  it('classifies each Codex batch install scope from its exact placement', async () => {
+    const codex = target({ platform: 'codex', scope: 'project', state: 'error' });
+    if (codex.platform !== 'codex') throw new Error('expected Codex target');
+    codex.placements.push({
+      scope: 'user', state: 'absent',
+      components: [{ kind: 'ownership', key: 'fixture-user', state: 'absent' }],
+      reasons: [], recoveryActions: [],
+    });
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status({ targets: [codex] }),
+        pluginSummaries: [{
+          ...summaries(['official', 'demo'])[0]!,
+          supportedTargets: { codex: ['project', 'user'], claude: [] },
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.listPluginInstallBatchTargets(
+      ['official/demo'], 'codex', 'user',
+    )).toEqual([
+      { pluginId: 'official/demo', platform: 'codex', scope: 'user', state: 'add' },
+    ]);
+  });
+
   it('preserves exact installed targets before blocking missing targets that cannot be installed', async () => {
     const existing = (pluginName: string): StatusV7Payload['targets'][number] => {
       const value = target({ pluginName, platform: 'codex', scope: 'project', state: 'present' });
