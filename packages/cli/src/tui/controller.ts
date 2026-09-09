@@ -500,6 +500,7 @@ export interface OperationReviewModel {
     version?: string;
   };
   changes: OperationReviewChange[];
+  confirmationDetails?: string[];
   technicalDetails?: string[];
   equivalentCommand?: string;
   primaryLabel: string;
