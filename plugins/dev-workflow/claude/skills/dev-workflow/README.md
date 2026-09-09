@@ -1,11 +1,15 @@
-# Dev Workflow
+# 开发工作流
 
-按保障等级和生命周期 gate 组织开发任务。它从最早未满足阶段继续，不把用户的“实现”措辞直接等同于 implementation-ready。
+从当前共识、风险和已有工件判断开发任务的下一步。适合启动或恢复跨阶段任务；只需实现、分解或审查时，可以直接使用对应 Skill。
 
-Shape 阶段只调用 `decision-shape`；该 Skill 的内部问答和 Prototype 组合不由本入口管理。
+小任务可以先澄清一个选择，再保持 Fast 完成实施、验证和正式代码审查，默认不创建流程文档。需要正式规格、批准或跨会话交接时，使用 Standard；高风险任务采用 Assured，并落实项目要求的保障。
 
-固定生命周期是 Shape → Spec → Spec Review → User Approval → Build → Code Review → Delivery。Fast / Standard / Assured 只决定需要经过哪些 gate 和保障强度，不直接决定当前 Skill。
+普通局部问题直接提问，有界访谈使用 decision-grill，独立体验问题使用 decision-prototype；复杂塑形或持续维护共识使用 decision-shape。已有确认决定直接复用。
 
-只有用户可观察结果、范围与非目标、验证方式都清楚，且没有材料未决、体验证据需求或高风险时，任务才可以走 Fast。新功能请求没有 Shape、Spec 或明确验收时，会先进入 `decision-shape`。
+可实施后由 dev-build 负责实施、集成和代码审查闭环。遇到材料决定、批准或修复停止点时，会说明缺口并交还用户；恢复任务不会刷新修复预算。
 
-其它专业 Skill 仍可被直接调用。路由时会简短说明当前保障、阶段、下一能力和依据。
+```text
+使用 dev-workflow 继续这个任务，依据现有 Spec、工作记录和 Review 判断下一步。
+```
+
+需要持久记录时优先沿用用户路径或仓库约定。实现、子代理、Git 和外部动作遵守现有授权。执行说明见 [SKILL.md](SKILL.md)。

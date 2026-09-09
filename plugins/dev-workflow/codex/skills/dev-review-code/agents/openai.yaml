@@ -1,6 +1,6 @@
 interface:
-  display_name: "Dev Review Code"
-  short_description: "按保障等级用 fresh reviewer 完成双轴实现审查"
-  default_prompt: "使用 $dev-review-code 按当前保障等级创建 fresh reviewer，完成 Spec fidelity 与 Engineering quality 审查。"
+  display_name: "代码审查"
+  short_description: "独立审查阶段或最终代码的需求符合度与工程质量，报告证据和阻塞问题"
+  default_prompt: "使用 $dev-review-code 处理当前请求；按实际授权、输入和已有工件执行。"
 policy:
   allow_implicit_invocation: true

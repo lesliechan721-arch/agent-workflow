@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.10",
+  "catalogVersion": "0.1.0-beta.11",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "3ad813b8a83e2a94f9723c7a32eb66b20026ce21"
+    "sourceHead": "154c3a72d3f59586ac6c282dde9b2915a191891e"
   },
   "entries": [
     {
@@ -115,7 +115,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.2",
+      "version": "0.1.0-beta.3",
       "dependencies": [],
       "requires": {
         "aw": {
@@ -127,9 +127,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:013cebf540ac6af3f8eafbc08c2be250891274c879c4f7f123dcad23f45a2400",
-      "manifestDigest": "sha256:5d1940736360fcf9a95d559e2d49710321628e3cc1ef391ac9ad93e260b3004a",
-      "contentDigest": "sha256:c49d04d80a087b85b6d349f1b27204af16e8a9ea357a0ad143bcfbdb982a56ce"
+      "artifactDigest": "sha256:7e08f9624b381aedf58c4487a66ebcabb566cd8f5a6580124149f7012633d670",
+      "manifestDigest": "sha256:a830355265b049a71ad0c70fac28545b976a5b47426b1e6c2476eec0b5cf092e",
+      "contentDigest": "sha256:5e50e74d81b5b3fd492f2abdd7ef27c6eaf41485cf6c722634f1e0fb97d1c5ea"
     },
     {
       "name": "aw-development-toolkit",
@@ -264,10 +264,10 @@
     {
       "name": "dev-workflow",
       "source": "./plugins/dev-workflow",
-      "description": "按保障等级和生命周期 gate 组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+      "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",
       "interface": {
         "displayName": "Dev Workflow",
-        "shortDescription": "从最早未满足的生命周期 gate 继续开发任务",
+        "shortDescription": "轻量对齐，按需分解与协调实施，独立审查后交付",
         "capabilities": [
           "Skills"
         ]
@@ -284,7 +284,7 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [
         "ask-me"
       ],
@@ -296,9 +296,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:a9e8b4d68642219b43a7890137573cfacf55b7ec452fa3634367cbd8af7ccedd",
-      "manifestDigest": "sha256:e9d4d6a729b752f38a94286633b934bbbd23c25b648b36360b43cf4023bf53b3",
-      "contentDigest": "sha256:77607810e02ea2276e5bc2707fd1ec7fbd8cf8c087a97ced89c04e60b8ac6f8e"
+      "artifactDigest": "sha256:ad1ff217e436e7782eb8492fbff7eeb16e5c2f6e916b45aad7838cb4e1388cf1",
+      "manifestDigest": "sha256:c215b9bec45617444b0d83d0a868bb2df8ba57d59e6e31cdc98908d1aeda51ef",
+      "contentDigest": "sha256:20db1b61ae5370b442f2df8356db548f83b41f1050b88ac108da57ef47eddd19"
     },
     {
       "name": "git-toolkit",

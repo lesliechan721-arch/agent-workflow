@@ -1,10 +1,10 @@
 {
   "name": "dev-workflow",
-  "version": "0.1.0-beta.1",
-  "description": "按保障等级和生命周期 gate 组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
+  "version": "0.1.0-beta.2",
+  "description": "按共识、风险和记录需求组织开发，并以独立工作分解、实现协调及审查完成交付。",
   "interface": {
     "displayName": "Dev Workflow",
-    "shortDescription": "从最早未满足的生命周期 gate 继续开发任务",
+    "shortDescription": "轻量对齐，按需分解与协调实施，独立审查后交付",
     "capabilities": [
       "Skills"
     ]
