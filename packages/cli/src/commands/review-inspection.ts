@@ -1109,7 +1109,7 @@ export async function inspectReviewTarget(options: {
       category: 'missing',
       code: 'requiredFinalMissing',
       message: `No current final is available for ${required.plugin}/${required.skill}/${required.profile}.`,
-      blocking: true,
+      blocking: false,
       subjectKey: required.key,
     })
   }
@@ -1203,7 +1203,8 @@ export async function inspectReviewTarget(options: {
     schemaVersion: 1,
     command: 'review:inspect',
     ok,
-    completeness: ok ? 'complete' : 'incomplete',
+    completeness: ok && requiredFinals.every((entry) => entry.status === 'resolved')
+      ? 'complete' : 'incomplete',
     target: { kind: target.kind, id: target.id, path: target.path },
     workspace: {
       root: workspace.workspaceRoot,

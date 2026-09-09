@@ -231,7 +231,7 @@ describe('AW Review static inspection', () => {
     ]))
     expect(receipt.requiredEvals).toEqual([])
     expect(receipt.issues.filter((entry) => entry.code === 'requiredEvalManifestMissing')).toEqual([])
-    expect(receipt.ok).toBe(false)
+    expect(receipt).toMatchObject({ ok: true, completeness: 'incomplete' })
   })
 
   it('uses only a current snapshot and keeps equal leaf digests distinct by profile', async () => {
@@ -250,7 +250,7 @@ describe('AW Review static inspection', () => {
     const current = await inspectReviewTarget({ cwd: root, target: './plugins/static' })
     const finals = current.requiredFinals.filter((entry) => entry.skill === 'shared')
     expect(current.snapshot.state).toBe('current')
-    expect(current.ok).toBe(true)
+    expect(current).toMatchObject({ ok: true, completeness: 'complete' })
     expect(finals.map((entry) => entry.profile)).toEqual(['codex-project', 'codex-user'])
     expect(new Set(finals.map((entry) => entry.digest)).size).toBe(1)
     expect(new Set(finals.map((entry) => entry.key)).size).toBe(2)
@@ -258,11 +258,12 @@ describe('AW Review static inspection', () => {
     await fs.appendFile(path.join(skillRoot, 'SKILL.md'), '\nChanged.\n')
     const stale = await inspectReviewTarget({ cwd: root, target: 'static' })
     expect(stale.snapshot.state).toBe('stale')
+    expect(stale).toMatchObject({ ok: true, completeness: 'incomplete' })
     expect(stale.requiredFinals.every((entry) => entry.status === 'missing')).toBe(true)
     expect(stale.subjects.some((entry) => entry.origin === 'catalog-snapshot')).toBe(false)
     expect(stale.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'snapshotStale', blocking: false }),
-      expect.objectContaining({ code: 'requiredFinalMissing', blocking: true }),
+      expect.objectContaining({ code: 'requiredFinalMissing', blocking: false }),
     ]))
   })
 
@@ -715,6 +716,7 @@ describe('AW Review static inspection', () => {
       issues: receipt.issues.filter((issue) => issue.code === 'materializedFinalDigestAmbiguous'),
     })
     expect(ambiguityView(forward)).toEqual(ambiguityView(reverse))
+    expect(forward).toMatchObject({ ok: false, completeness: 'incomplete' })
     expect(ambiguityView(forward)).toMatchObject({
       required: { status: 'unknown', path: null, digest: null },
       issues: [{ category: 'unknown', blocking: true }],

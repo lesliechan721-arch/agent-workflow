@@ -500,9 +500,14 @@ test('uses current inspection subjects for Plugin and Catalog release states', a
 
   await rm(path.join(fixture.root, '.aw', 'catalog'), { recursive: true, force: true });
   const sourceInspection = await inspect(fixture);
+  assert.equal(sourceInspection.ok, true);
+  assert.equal(sourceInspection.completeness, 'incomplete');
+  assert.equal(sourceInspection.issues.some((entry) => entry.blocking), false);
   const sourceEvidence = await writeEvidence(sourceInspection);
   const sourceRun = await runChecker(fixture, sourceEvidence);
   assert.equal(sourceRun.code, 3, sourceRun.stderr);
+  assert.equal(jsonOutput(sourceRun).status, 'incomplete');
+  assert.equal(jsonOutput(sourceRun).ready, false);
   assert.equal(jsonOutput(sourceRun).missing.some((entry) => entry.code === 'requiredFinalMissing'), true);
 
   if (process.platform !== 'win32') {

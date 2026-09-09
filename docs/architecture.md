@@ -395,6 +395,8 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 
 `aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... --json` 为 Plugin 或 Catalog 的 Review 与 Release Check 提供机器事实。`aw.review-inspection.v1` 表示该能力。它读取当前 source inventory、已有 snapshot、适用 profile、Skill digest 和当前 manifest 的必需 Eval；不判断语义质量或发布 readiness。Catalog target 覆盖全部当前插件，Plugin target 只覆盖所选插件。缺少 materialized final 时保留 source 事实并报告缺口，不阻断普通源码 Review。
 
+`ok` 表示 inspection 执行及输入校验没有阻断错误，退出码据此为 0 或 1；`completeness` 单独表示所需证据是否完整。仅缺少 final 时，`requiredFinalMissing` 为非阻断缺口，返回 `ok: true`、`completeness: incomplete` 和退出码 0。无效输入、来源绑定损坏或漂移、产物歧义仍保留原有诊断和阻断。完整证据不代表语义质量或发布 readiness 通过；Release Checker 独立要求每个 required final 为 `resolved` 且具有 matched final，不依赖缺口的 `blocking` 字段。
+
 Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验和官方 Eval parser，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。相同内容的不同 profile 仍是独立覆盖项；相同物化身份的重复凭据可去重，产物摘要冲突时报告歧义，不按参数顺序选择。`profile` 表示平台和 scope；有 `materializationProfile` 时，消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分实际配置身份，不只按平台合并。缺失、陈旧或无法建立来源关系的 final 不能成为当前版本的通过证据。
 
 必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。AW prepare 当前提供 Codex 目标；Claude 和 portable 的 final 覆盖不自动产生对应平台的 Eval 要求。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。

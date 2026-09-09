@@ -41,7 +41,7 @@ afterEach(async () => {
 })
 
 describe('review inspect CLI entry', () => {
-  it('emits one incomplete JSON receipt and exit 1 for source-only finals', async () => {
+  it('emits one successful incomplete JSON receipt and exit 0 for source-only finals', async () => {
     const root = await tempRoot()
     const outside = await tempRoot()
     const pluginRoot = path.join(root, 'plugins', 'fixture')
@@ -73,17 +73,17 @@ describe('review inspect CLI entry', () => {
       io: output.io,
     })
 
-    expect(code).toBe(1)
+    expect(code).toBe(0)
     expect(output.stderr()).toBe('')
     expect(JSON.parse(output.stdout())).toMatchObject({
       schemaVersion: 1,
       command: 'review:inspect',
-      ok: false,
+      ok: true,
       completeness: 'incomplete',
       target: { kind: 'plugin', id: 'fixture', path: pluginRoot },
       snapshot: { state: 'absent' },
       issues: expect.arrayContaining([
-        expect.objectContaining({ code: 'requiredFinalMissing', blocking: true }),
+        expect.objectContaining({ code: 'requiredFinalMissing', blocking: false }),
       ]),
     })
   })
@@ -172,7 +172,7 @@ describe('review inspect CLI entry', () => {
     expect(JSON.parse(ambientOutput.stdout()).materializations[0].state).toBe('drifted')
 
     const injectedOutput = capture()
-    expect(await runCli(args, { cwd: root, env: injectedEnv, io: injectedOutput.io })).toBe(1)
+    expect(await runCli(args, { cwd: root, env: injectedEnv, io: injectedOutput.io })).toBe(0)
     expect(JSON.parse(injectedOutput.stdout()).materializations[0].state).toBe('verified')
   })
 })
