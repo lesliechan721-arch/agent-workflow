@@ -548,6 +548,7 @@ export interface ReviewPreparationSnapshot {
   currentStage?: ReviewPreparationStageId;
   code?: 'reviewPreparationFailed';
   message?: string;
+  operationRecordId?: string;
 }
 
 function reviewPreparationStageLabel(stage: ReviewPreparationStageId): string {
@@ -2969,9 +2970,11 @@ export class TuiController {
     installFilter?: PluginInstallFilter;
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
+    const catalogPluginIds = new Set(this.#status?.pluginSummaries.map((plugin) => plugin.pluginId));
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
-      && (options.mode === 'browse' || hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
+      && (options.mode === 'browse' ? catalogPluginIds.has(plugin.pluginId)
+        : hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
       && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
@@ -3579,6 +3582,7 @@ export class TuiController {
     } catch (error) {
       const code = issueCode(error);
       await this.#logOperationError(error, code, intent);
+      if (error instanceof TuiOperationBlockedError && error.diagnostics?.length) throw error;
       throw new TuiOperationBlockedError(
         code,
         code === 'catalogGenerationUnavailable'
@@ -3822,6 +3826,7 @@ export class TuiController {
         ? '本次加载时 Catalog 来源不可用。请刷新来源并重新加载后重试。'
         : '无法准备确认信息。请返回检查选择，或重试。';
       const preparationRecordId = `${this.#sessionEpoch}:${active.snapshot.id}`;
+      active.snapshot.operationRecordId = preparationRecordId;
       const carriedDiagnostics = error instanceof TuiOperationBlockedError
         ? error.diagnostics : undefined;
       if (carriedDiagnostics?.length) {

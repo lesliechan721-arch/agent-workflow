@@ -1368,7 +1368,7 @@ describe('ConsoleAppV4', () => {
     await value.load();
 
     expect(value.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId))
-      .toEqual(['official/retired-tool']);
+      .toEqual([]);
     expect(value.listPlugins({ mode: 'installed' }).map((plugin) => plugin.pluginId))
       .toEqual(['official/retired-tool']);
     const issue = value.listUserIssues()[0]!;
@@ -3110,6 +3110,33 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('installTargets');
     expect(value.snapshot.activeReview).toBeUndefined();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('shows a blocked dependency and opens its recovery page before installation', async () => {
+    const failure = new TuiOperationBlockedError('dependencyScopeConflict', 'Dependency blocked.', [{
+      id: 'dependency-block', code: 'dependencyScopeConflict', stage: 'dependencyPlan',
+      safeMessage: '这个依赖的安装位置存在冲突，需要先选择保留的位置。',
+      target: { pluginId: 'official/review-gate', platform: 'codex', scope: 'user' },
+      causes: [], detailLines: [],
+    }]);
+    const executeIntent = vi.fn();
+    const value = controller({ captureEvidence: vi.fn().mockRejectedValue(failure), executeIntent });
+    await value.load();
+    const intent = {
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    } as const;
+    await expect(value.buildOperationReview(intent)).rejects.toBe(failure);
+    value.startReviewPreparation(intent);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 32 }} />);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('official/review-gate');
+    expect(instance.lastFrame()).toContain('安装位置存在冲突');
+    await focusAction(instance, `处理 ${value.getPluginOverview('official/review-gate')!.displayName}`);
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'platform', pluginId: 'official/review-gate', platform: 'codex',
+    });
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
@@ -9376,6 +9403,60 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\r');
     await nextTurn(3);
     expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
+  it.each(['project', 'user'] as const)('offers recovery for ineffective or orphaned %s activation from plugin issues', async (scope) => {
+    // Risk: orphaned activation marks the plugin unhealthy but leaves its issue page without recovery.
+    const loaded = loadResult();
+    const projectOverride = scope === 'project';
+    const desiredScope = scope === 'project' ? 'user' : 'project';
+    const codex = aggregateCodexTargets((['project', 'user'] as const).map((targetScope) => target({
+      pluginName: 'agent-lab', platform: 'codex', scope: targetScope, state: 'present',
+    })))[0] as StatusV8CodexTarget;
+    codex.components = [{ kind: 'sharedNative', key: 'agent-lab@aw-official', state: 'usable' }];
+    for (const targetScope of ['project', 'user'] as const) {
+      updatePlacement(codex, targetScope, {
+        state: targetScope === scope ? projectOverride ? 'needsSync' : 'orphaned' : 'ready',
+        components: [
+          { kind: 'intent', key: 'desired', state: targetScope === scope ? 'absent' : 'desired',
+            metadata: { enabled: targetScope === desiredScope, scopes: [desiredScope], relation: 'root' } },
+          { kind: 'activation', key: 'user', state: 'enabled',
+            metadata: { effective: !projectOverride, evidence: 'observed' } },
+          { kind: 'activation', key: 'project', state: projectOverride ? 'disabled' : 'enabled',
+            metadata: { effective: !projectOverride, evidence: 'observed' } },
+        ],
+        reasons: targetScope === scope ? [{
+          code: 'codexActivationDrift', severity: 'warning',
+          message: `${targetScope} expected=false, actual=true.`,
+        }] : [],
+        recoveryActions: targetScope === scope ? [{
+          command: projectOverride ? 'sync' : 'cleanup', scope: 'user', description: 'Restore selected activation.',
+        }] : [],
+      });
+    }
+    loaded.payload.targets = [codex];
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    expect(value.getPluginOverview('official/agent-lab')?.aggregateStatus).toBe('needsAttention');
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 100, rows: 32 }} />);
+    await nextTurn(2);
+    await focusAction(instance, '查看处理建议');
+    await input(instance, '\r');
+    await nextTurn(2);
+
+    expect(value.snapshot.router.current.route.name).toBe('issueDetail');
+    expect(instance.lastFrame()).toContain(projectOverride
+      ? '插件在当前项目被关闭' : '所有项目有多余的启用记录');
+    await focusAction(instance, projectOverride ? '恢复在当前项目使用' : '清理多余的启用记录');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite', action: projectOverride ? 'sync' : 'cleanup',
+      pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    }), expect.any(AbortSignal));
+    expect(value.snapshot.router.current.route.name).toBe('review');
   });
 
   it.each([

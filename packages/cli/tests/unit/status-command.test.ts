@@ -1751,12 +1751,15 @@ describe('status v8 current behavior', () => {
     }
   });
 
-  it('shows scope and activation differences without leaking Codex components into Claude status', async () => {
+  it.each([[true, false], [false, false], [false, true]])('checks effective project activation %s with extensions %s without leaking Codex components into Claude status', async (projectEnabled, withExtensions) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'activation-diagnostic-source');
     await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.app.json'), { apps: {} });
     await createCatalogSnapshotFixture(sourceRoot, 'demo', [], 'demo\n', (manifest) => {
       manifest.apps = './.app.json';
+      if (withExtensions) manifest.extensions = {
+        instructions: [{ name: 'demo-instruction', title: 'Demo', content: 'Use demo.' }],
+      };
     });
     const { env, sourceIdentity } = await configurePathSource(sourceRoot);
     await writePluginIntentState({ scope: 'user', cwd: isolation.layout.fixtureCwd, env }, {
@@ -1768,7 +1771,7 @@ describe('status v8 current behavior', () => {
     });
     await applyCodexConfigTransactionFile(
       resolveCodexPaths(isolation.layout.fixtureCwd, 'project', env).configTomlPath,
-      { upsertPluginActivations: { 'demo@aw-local': true } },
+      { upsertPluginActivations: { 'demo@aw-local': projectEnabled } },
     );
     const binRoot = await writeSystemCodexPackage({
       root: path.join(isolation.layout.fixtureCwd, 'activation-diagnostic-prefix'),
@@ -1788,14 +1791,22 @@ describe('status v8 current behavior', () => {
 
     expect(result.output).toContain('local/demo claude (project): absent');
     expect(result.output).toContain('local/demo claude (user): absent');
-    expect(result.output).toContain('local/demo codex: orphaned');
-    expect(result.output).toContain('project expected=false, actual=true');
+    expect(result.output).toContain(`local/demo codex: ${projectEnabled ? 'ready' : 'needsSync'}`);
     expect(result.output).not.toContain('codexActivationDrift: codexActivationDrift:');
     const codex = result.payload.targets.find((target) => target.platform === 'codex')!;
     expect(codex.placements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ scope: 'user', state: 'ready' }),
-      expect.objectContaining({ scope: 'project', state: 'orphaned' }),
+      expect.objectContaining({ scope: 'user', state: withExtensions ? 'needsSync' : 'ready' }),
+      expect.objectContaining({ scope: 'project', state: projectEnabled ? 'ready' : 'needsSync' }),
     ]));
+    const project = codex.placements.find((entry) => entry.scope === 'project')!;
+    expect(statusTargetActivation(project)?.effective).toBe(projectEnabled);
+    if (projectEnabled) {
+      expect(codex.reasons).not.toContainEqual(expect.objectContaining({ code: 'codexActivationDrift' }));
+      expect(project.recoveryActions).toEqual([]);
+    } else {
+      expect(project.reasons).toContainEqual(expect.objectContaining({ code: 'codexActivationDrift' }));
+      expect(project.recoveryActions).toContainEqual(expect.objectContaining({ command: 'sync', scope: 'user' }));
+    }
     for (const target of result.payload.targets.filter((candidate) => candidate.platform === 'claude')) {
       expect(target.components).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'sharedNative' }),
@@ -2102,7 +2113,7 @@ describe('status v8 current behavior', () => {
         plugins: ['local/demo'], cwd: projectCwd, env, platform: 'codex',
         json: true, nativeCliRunner: nativeRunner,
       });
-      expect(drifted.payload.targets[0]?.placements[0]?.reasons).toContainEqual(
+      expect(drifted.payload.targets[0]?.placements[0]?.reasons).not.toContainEqual(
         expect.objectContaining({ code: 'codexActivationDrift' }),
       );
     }

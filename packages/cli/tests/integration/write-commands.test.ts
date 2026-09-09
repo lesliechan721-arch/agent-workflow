@@ -5729,6 +5729,9 @@ describe('five namespaced write commands', () => {
     await expect(installWriteCommand(['official/agent-content-toolkit'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await applyCodexConfigTransactionFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'), {
+      upsertPluginActivations: { 'agent-content-toolkit@aw': true },
+    });
 
     const installed = await installWriteCommand(['official/aw-catalog-development'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
@@ -5802,7 +5805,7 @@ describe('five namespaced write commands', () => {
     );
   });
 
-  it('removes stale project activation when reinstalling a user dependency of a project root', async () => {
+  it.each([true, false])('removes project activation %s when restoring a user dependency of a project root', async (projectEnabled) => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'stale-project-activation-source');
     await createNativeDependencyCatalog(sourceRoot, [
@@ -5828,10 +5831,10 @@ describe('five namespaced write commands', () => {
     }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
     const projectConfigPath = path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml');
     await applyCodexConfigTransactionFile(projectConfigPath, {
-      upsertPluginActivations: { 'leaf@aw': true },
+      upsertPluginActivations: { 'leaf@aw': projectEnabled },
     });
 
-    const result = await reinstallWriteCommand(['official/leaf'], {
+    const result = await (projectEnabled ? reinstallWriteCommand : syncCommand)(['official/leaf'], {
       ...options, scope: 'user',
     }, runtime);
 
@@ -7441,6 +7444,40 @@ describe('five namespaced write commands', () => {
     expect(upgraded.dependencyPlan?.targets).toEqual(expect.arrayContaining([
       expect.objectContaining({ pluginId: 'team/leaf', relation: 'dependency', action: 'install' }),
     ]));
+  });
+
+  it('keeps the blocked dependency identity and reason in TUI preparation diagnostics', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-blocked-dependency-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf', configureManifest: (manifest) => {
+        manifest.extensions = { agents: [{
+          name: 'leaf-role', description: 'Leaf role.', prompt: 'Use leaf.',
+        }] };
+      } },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const foreignPath = path.join(isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-leaf-leaf-role.toml');
+    await fs.outputFile(foreignPath, 'developer_instructions = "foreign"\n');
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    }));
+    await expect(dependencies.captureEvidence({
+      kind: 'pluginWrite', action: 'install', pluginId: 'team/root', platform: 'codex', scope: 'project',
+    })).rejects.toMatchObject({
+      code: 'artifactCollision',
+      diagnostics: [expect.objectContaining({
+        code: 'artifactCollision', stage: 'dependencyPlan',
+        target: { pluginId: 'team/leaf', platform: 'codex', scope: 'project' },
+      })],
+    });
+    await expect(fs.readFile(foreignPath, 'utf8')).resolves.toBe('developer_instructions = "foreign"\n');
   });
 
   it('executes dependency installation through the reviewed TUI backend', async () => {

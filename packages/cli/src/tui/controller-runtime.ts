@@ -2558,9 +2558,21 @@ export function createTuiControllerDependencies(
         }
         const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
         if (blocker) {
+          const code = blocker.errorCode ?? 'dependencyNotReady';
+          const reason = code === 'dependencyScopeConflict' || code === 'codexExtensionScopeConflict'
+            ? '这个依赖的安装位置存在冲突，需要先选择保留的位置。'
+            : code === 'artifactCollision' || code === 'exclusiveOwnerEvidenceInvalid'
+              ? '这个依赖的安装位置被其他内容占用，需要先检查并处理冲突。'
+              : '这个依赖尚不可用，需要先检查并恢复后再安装。';
           throw new TuiOperationBlockedError(
-            blocker.errorCode ?? 'dependencyNotReady',
-            `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+            code,
+            `${blocker.pluginId}：${reason}`,
+            [{
+              id: `dependency:${blocker.pluginId}:${blocker.platform}:${blocker.resolvedScope}`,
+              code, stage: 'dependencyPlan', safeMessage: reason,
+              target: { pluginId: blocker.pluginId, platform: blocker.platform, scope: blocker.resolvedScope },
+              causes: [], detailLines: [],
+            }],
           );
         }
       }

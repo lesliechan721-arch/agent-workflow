@@ -2353,7 +2353,7 @@ async function statusCommandV8InSession(options: {
                     ...(userActivation !== undefined ? { user: userActivation } : {}),
                     ...(projectActivation !== undefined ? { project: projectActivation } : {}),
                     ...((userActivation !== undefined || projectActivation !== undefined)
-                      ? { effective: projectActivation === true || userActivation === true }
+                      ? { effective: (projectActivation ?? userActivation) === true }
                       : {}),
                     evidence: activationObserved ? 'observed' : 'assumed',
                   },
@@ -2846,12 +2846,22 @@ async function statusCommandV8InSession(options: {
       && desired.scopes.includes('user')
       && desired.scopes.includes('project');
     const expectedEnabled = desired.scopes.includes(target.scope);
+    const inheritedUserActivation = target.platform === 'codex'
+      && target.scope === 'project'
+      && !expectedEnabled
+      && desiredAll.scopes.includes('user')
+      && activation?.user === true
+      && (codex?.nativeKinds.length ?? 0) > 0;
+    const projectDisablesUserActivation = inheritedUserActivation && activation?.project === false;
+    const redundantProjectActivation = inheritedUserActivation && activation?.project === true
+      && (codex?.extensionKinds.length ?? 0) === 0;
     const activationDrift = target.platform === 'codex'
       && (codexConfigErrors.some((error) =>
         error.scope === 'user' || observationScopes.includes(error.scope))
         || ((codex?.nativeKinds.length ?? 0) > 0
           && (expectedEnabled && activation?.[target.scope] !== true
-            || !expectedEnabled && activation?.[target.scope] === true)));
+            || !expectedEnabled && activation?.[target.scope] === true && !redundantProjectActivation
+            || projectDisablesUserActivation)));
     const extensionComponents = observedTargets.flatMap((candidate) => candidate.components).filter(
       (component) => component.key !== 'native'
         && !component.key.startsWith('activation-')
@@ -2935,6 +2945,10 @@ async function statusCommandV8InSession(options: {
             ? 'blocked'
           : sharedNative?.state === 'replaceable' && sharedNative.reason === 'damaged'
             ? 'needsSync'
+          : projectDisablesUserActivation
+            ? 'needsSync'
+          : redundantProjectActivation && sharedNative?.state === 'usable' && !hasScopedExtensionResidue
+            ? 'ready'
           : !desiredEnabled
             ? (target.platform === 'codex'
                 ? actualScopeEnabled || hasScopedExtensionResidue
@@ -2969,7 +2983,9 @@ async function statusCommandV8InSession(options: {
         : []),
       ...(activationDrift && sharedNative?.state !== 'missing' && sharedNative?.state !== 'unobserved'
         ? [warning('codexActivationDrift',
-            `${target.pluginId} activation differs from desired intent: `
+            projectDisablesUserActivation
+            ? `${target.pluginId} is enabled for the user but disabled by the current project.`
+            : `${target.pluginId} activation differs from desired intent: `
             + `${target.scope} expected=${expectedEnabled}, `
             + `actual=${activation?.[target.scope] ?? 'unset'}.`)]
         : []),
@@ -3102,7 +3118,10 @@ async function statusCommandV8InSession(options: {
       state,
       components,
       reasons: dedupedErrors,
-      recoveryActions: statusRecovery({
+      recoveryActions: projectDisablesUserActivation && state === 'needsSync' ? [{
+        command: 'sync', scope: 'user',
+        description: '移除当前项目的关闭设置，恢复使用所有项目已启用的插件。',
+      }] : statusRecovery({
         state,
         desired,
         platform: target.platform,

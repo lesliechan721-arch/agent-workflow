@@ -7483,6 +7483,17 @@ export function ConsoleAppV4(props: {
       ? 'Esc 取消 · Ctrl-C 完成后退出'
       : '↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = preparation.state === 'failed' ? [
+      ...[...new Map((preparation.operationRecordId
+        ? props.controller.getOperationDiagnostic(preparation.operationRecordId)?.diagnostics ?? []
+        : []).flatMap((diagnostic) => diagnostic.stage === 'dependencyPlan'
+          && diagnostic.target?.pluginId
+          && props.controller.getPluginOverview(diagnostic.target.pluginId)
+          ? [[`${diagnostic.target.pluginId}:${diagnostic.target.platform}`, diagnostic.target] as const]
+          : [])).values()].map((target): ActionItem => ({
+            label: `处理 ${props.controller.getPluginOverview(target.pluginId!)!.displayName}`,
+            description: '查看这个依赖的问题和可用的恢复操作',
+            run: () => go({ name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
+          })),
       { label: '重试', description: '重新读取和验证当前状态', run: () => {
         props.controller.retryReviewPreparation();
         setFocus(0);

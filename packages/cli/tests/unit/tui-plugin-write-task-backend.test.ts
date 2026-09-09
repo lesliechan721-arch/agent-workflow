@@ -143,6 +143,34 @@ describe('plugin write task planning', () => {
     });
   });
 
+  it('leaves a cross-scope activation repair to its exact issue action instead of syncing an undesired project', () => {
+    const demo = plugin('demo');
+    demo.update.targets.push({
+      platform: 'codex', scope: 'user', installedVersion: '1.0.0',
+      activeVersion: '1.0.0', eligibility: 'allowed',
+    });
+    const model: Pick<TuiViewModel, 'plugins' | 'issues'> = {
+      plugins: [demo],
+      issues: [{
+        ...sharedMissingDependencyIssue(),
+        category: 'incompleteInstallation', pluginId: 'official/demo',
+        dependencyPluginId: undefined, dependencyPlatform: undefined, dependencyScope: undefined,
+        rootEntity: { pluginId: 'official/demo', platform: 'codex', scope: 'project' },
+        affectedTargets: [{ pluginId: 'official/demo', platform: 'codex', scope: 'project', relationship: 'direct' }],
+        actions: [{ id: 'sync', label: '恢复在当前项目使用', writeAction: 'sync',
+          pluginId: 'official/demo', platform: 'codex', scope: 'user' }],
+      }],
+    };
+    const candidates = buildPluginWriteTaskCandidates(model, 'restore');
+    const draft = buildPluginWriteTaskDraft({
+      kind: 'pluginWriteTask', goal: 'restore', executionPolicy: 'all',
+      targets: candidates.map((candidate) => candidate.target),
+    }, model, candidates);
+    expect(draft.executableTargets).toEqual([]);
+    expect(draft.blockedTargets).toEqual([expect.objectContaining({ reason: 'manualRecoveryRequired' })]);
+    expect(draft.causes).toEqual([]);
+  });
+
   it('deduplicates one missing dependency cause across installed root consumers', () => {
     const model: Pick<TuiViewModel, 'plugins' | 'issues'> = {
       plugins: [plugin('root-a'), plugin('root-b'), plugin('shared', '')],
