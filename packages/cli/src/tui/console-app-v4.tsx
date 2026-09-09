@@ -1534,6 +1534,7 @@ export function ConsoleAppV4(props: {
   const [catalogDevSourceId, setCatalogDevSourceId] = useState('');
   const [pendingReviewIntent, setPendingReviewIntent] = useState<OperationIntent>();
   const pendingReviewIntentRef = useRef<OperationIntent | undefined>(undefined);
+  const pendingActionFocus = useRef<string | undefined>(undefined);
   const [scriptTimeoutInput, setScriptTimeoutInput] = useState(String(SCRIPT_TIMEOUT_DEFAULT_MS));
   const [scriptTimeoutError, setScriptTimeoutError] = useState<string>();
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
@@ -3812,6 +3813,7 @@ export function ConsoleAppV4(props: {
         }
       };
       const continueAction: ActionItem = {
+        actionId: 'batch-selection-continue',
         label: `查看确认（${batchDraft.selectedPluginIds.length}）`,
         description: batchDraft.selectedPluginIds.length > 0
           ? batchDraft.recommendedGoal ? '重新读取更新证据并建立 Review' : '继续选择任务和确认范围'
@@ -4008,6 +4010,12 @@ export function ConsoleAppV4(props: {
       ? '默认沿用进入此页时的现有位置。可以取消位置，也可以恢复本次集合中的位置。'
       : '分别选择使用范围和工具。确认页会重新读取状态并冻结实际计划。';
     let installPlacementTargets: ReturnType<TuiController['listPluginInstallBatchTargets']> = [];
+    let installPlacementGroups: Array<{
+      title?: string;
+      kind: SemanticRowKind;
+      actions: ActionItem[];
+    }> = [];
+    let installPlacementActions: ActionItem[] = [];
     let maintenanceTargetCount = 0;
     if (!batchDraft?.action && !batchDraft?.maintenanceGoal) {
       actions = [{ label: '返回批量选择', run: back }];
@@ -4077,6 +4085,92 @@ export function ConsoleAppV4(props: {
       const addTargets = installPlacementTargets.filter((target) => target.state === 'add');
       const blockedTargets = installPlacementTargets.filter((target) => target.state === 'blocked');
       const existingTargets = installPlacementTargets.filter((target) => target.state === 'existing');
+      installPlacementGroups = [
+        {
+          kind: 'action',
+          actions: [
+            ...(installPlacementTargets.length > 0 ? [{
+              actionId: 'batch-placement-details',
+              label: '查看全部位置和受阻原因…',
+              description: `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`,
+              run: () => {
+                setBatchDraft((current) => current ? { ...current, showPlacementTargets: true } : current);
+                setFocus(0);
+                setScrollOffset(0);
+              },
+            }] : []),
+            {
+              actionId: 'batch-placement-confirm',
+              label: batchDraft.action === 'install' && blockedTargets.length > 0
+                ? `仅添加可执行的 ${addTargets.length} 个位置`
+                : `查看批量${batchActionLabel(batchDraft.action!)}确认`,
+              description: batchDraft.action === 'install'
+                ? `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`
+                : `${batchDraft.selection === 'selected' ? `${batchDraft.selectedPluginIds.length} 个所选插件` : '当前项目全部保存目标'} · ${scopeLabel(batchDraft.scope)}`,
+              disabled: batchDraft.selection === 'selected' && batchDraft.selectedPluginIds.length === 0
+                ? '请至少选择一个插件'
+                : batchDraft.action === 'install' && addTargets.length === 0
+                  ? '所选工具和位置没有可添加目标'
+                  : undefined,
+              run: () => {
+                if (invalidBatchSelection(batchDraft).length > 0) {
+                  setActionError('已选插件状态已变化。请返回选择页检查并取消失效项。');
+                  return;
+                }
+                const intent: OperationIntent = {
+                  kind: 'pluginWriteBatch',
+                  action: batchDraft.action!,
+                  selection: batchDraft.action === 'install'
+                    ? { kind: 'targets', targets: addTargets.map(({ pluginId, platform, scope }) => ({
+                        pluginId, platform, scope,
+                      })) }
+                    : batchDraft.selection === 'selected'
+                    ? {
+                        kind: 'selected',
+                        pluginIds: [...new Set(batchDraft.selectedPluginIds)]
+                          .sort((left, right) => left.localeCompare(right, 'en')),
+                      }
+                    : { kind: 'currentProjectIntentRoots' },
+                  platform: addTargets[0]?.platform ?? batchDraft.platform,
+                  scope: addTargets[0]?.scope ?? batchDraft.scope,
+                };
+                beginReview(intent);
+                setDirty(false);
+                setFocus(0);
+                setScrollOffset(0);
+              },
+            },
+          ],
+        },
+        {
+          title: '在哪里使用',
+          kind: 'choice',
+          actions: [
+            {
+              actionId: 'batch-placement-scope-project',
+              label: '当前项目', selected: batchDraft.scope === 'project',
+              run: () => setBatchDraft((current) => current ? { ...current, scope: 'project' } : current),
+            },
+            {
+              actionId: 'batch-placement-scope-user',
+              label: '所有项目', selected: batchDraft.scope === 'user',
+              disabled: projectIntent ? '项目全部同步固定使用当前项目' : undefined,
+              run: () => setBatchDraft((current) => current ? { ...current, scope: 'user' } : current),
+            },
+          ],
+        },
+        {
+          title: '用于哪个工具',
+          kind: 'choice',
+          actions: (['codex', 'claude', 'both'] as const).map((platform) => ({
+            actionId: `batch-placement-platform-${platform}`,
+            label: platform === 'both' ? 'Codex 和 Claude Code' : platformLabel(platform),
+            selected: batchDraft.platform === platform,
+            run: () => setBatchDraft((current) => current ? { ...current, platform } : current),
+          })),
+        },
+      ];
+      installPlacementActions = installPlacementGroups.flatMap((group) => group.actions);
       if (batchDraft.showPlacementTargets) {
         actions = [
           ...installPlacementTargets.map((target) => ({
@@ -4090,76 +4184,11 @@ export function ConsoleAppV4(props: {
             label: '返回位置选择',
             run: () => {
               setBatchDraft((current) => current ? { ...current, showPlacementTargets: false } : current);
-              setFocus(5);
-              setScrollOffset(0);
+              restoreActionFocus('batch-placement-details');
             },
           },
         ];
-      } else actions = [
-        {
-          label: '当前项目', selected: batchDraft.scope === 'project',
-          run: () => setBatchDraft((current) => current ? { ...current, scope: 'project' } : current),
-        },
-        {
-          label: '所有项目', selected: batchDraft.scope === 'user',
-          disabled: projectIntent ? '项目全部同步固定使用当前项目' : undefined,
-          run: () => setBatchDraft((current) => current ? { ...current, scope: 'user' } : current),
-        },
-        ...(['codex', 'claude', 'both'] as const).map((platform) => ({
-          label: platform === 'both' ? 'Codex 和 Claude Code' : platformLabel(platform),
-          selected: batchDraft.platform === platform,
-          run: () => setBatchDraft((current) => current ? { ...current, platform } : current),
-        })),
-        ...(installPlacementTargets.length > 0 ? [{
-          label: '查看全部位置和受阻原因…',
-          description: `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`,
-          run: () => {
-            setBatchDraft((current) => current ? { ...current, showPlacementTargets: true } : current);
-            setFocus(0);
-            setScrollOffset(0);
-          },
-        }] : []),
-        {
-          label: batchDraft.action === 'install' && blockedTargets.length > 0
-            ? `仅添加可执行的 ${addTargets.length} 个位置`
-            : `查看批量${batchActionLabel(batchDraft.action!)}确认`,
-          description: batchDraft.action === 'install'
-            ? `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`
-            : `${batchDraft.selection === 'selected' ? `${batchDraft.selectedPluginIds.length} 个所选插件` : '当前项目全部保存目标'} · ${scopeLabel(batchDraft.scope)}`,
-          disabled: batchDraft.selection === 'selected' && batchDraft.selectedPluginIds.length === 0
-            ? '请至少选择一个插件'
-            : batchDraft.action === 'install' && addTargets.length === 0
-              ? '所选工具和位置没有可添加目标'
-              : undefined,
-          run: () => {
-            if (invalidBatchSelection(batchDraft).length > 0) {
-              setActionError('已选插件状态已变化。请返回选择页检查并取消失效项。');
-              return;
-            }
-            const intent: OperationIntent = {
-              kind: 'pluginWriteBatch',
-              action: batchDraft.action!,
-              selection: batchDraft.action === 'install'
-                ? { kind: 'targets', targets: addTargets.map(({ pluginId, platform, scope }) => ({
-                    pluginId, platform, scope,
-                  })) }
-                : batchDraft.selection === 'selected'
-                ? {
-                    kind: 'selected',
-                    pluginIds: [...new Set(batchDraft.selectedPluginIds)]
-                      .sort((left, right) => left.localeCompare(right, 'en')),
-                  }
-                : { kind: 'currentProjectIntentRoots' },
-              platform: addTargets[0]?.platform ?? batchDraft.platform,
-              scope: addTargets[0]?.scope ?? batchDraft.scope,
-            };
-            beginReview(intent);
-            setDirty(false);
-            setFocus(0);
-            setScrollOffset(0);
-          },
-        },
-      ];
+      } else actions = installPlacementActions;
     }
     context = batchDraft?.selection === 'selected'
       ? maintenanceMode
@@ -4207,12 +4236,22 @@ export function ConsoleAppV4(props: {
       </Box>;
     } else if (!placementDetail && batchDraft?.action === 'install') {
       content = <Box flexDirection="column">
-        <SemanticRows actions={actions.slice(5)} focus={focus - 5} kind="action"
-          compact={policy.mode === 'compact'} />
-        <Text color={tuiTheme.colors.muted}>在哪里使用</Text>
-        <SemanticRows actions={actions.slice(0, 2)} focus={focus} kind="choice" compact />
-        <Text color={tuiTheme.colors.muted}>用于哪个工具</Text>
-        <SemanticRows actions={actions.slice(2, 5)} focus={focus - 2} kind="choice" compact />
+        {installPlacementGroups.map((group) => {
+          const groupOffset = installPlacementActions.findIndex((action) =>
+            action.actionId === group.actions[0]?.actionId);
+          const localOffset = Math.max(0, viewport.offset - groupOffset);
+          const localLimit = Math.max(0, Math.min(
+            group.actions.length - localOffset,
+            viewport.offset + viewport.limit - groupOffset - localOffset,
+          ));
+          if (localLimit === 0) return null;
+          return <Box key={group.title ?? 'actions'} flexDirection="column">
+            {group.title ? <Text color={tuiTheme.colors.muted}>{group.title}</Text> : null}
+            <SemanticRows actions={group.actions} focus={focus - groupOffset} kind={group.kind}
+              compact={group.kind === 'choice' || policy.mode === 'compact'}
+              offset={localOffset} limit={localLimit} />
+          </Box>;
+        })}
       </Box>;
     } else content = <SemanticRows
         actions={actions}
@@ -8965,6 +9004,15 @@ export function ConsoleAppV4(props: {
   }, [batchSelectionActionSignature, focus, scrollOffset]);
 
   useEffect(() => {
+    if (!pendingActionFocus.current) return;
+    const nextFocus = actions.findIndex((action) => action.actionId === pendingActionFocus.current);
+    if (nextFocus < 0) return;
+    pendingActionFocus.current = undefined;
+    setFocus(nextFocus);
+    setScrollOffset(0);
+  });
+
+  useEffect(() => {
     if (!targetActionSignature || !actions[focus]?.disabled) return;
     const firstEnabled = actions.findIndex((action) => !action.disabled);
     if (firstEnabled < 0) return;
@@ -9000,6 +9048,21 @@ export function ConsoleAppV4(props: {
       showSafeUiFailure(error, 'tuiActionFailed', 'ui-action');
     }
   };
+
+  function requestConfirmedExit(closeModal?: () => void): void {
+    closeModal?.();
+    const hasDrafts = dirty || props.controller.hasSessionDraft
+      || (discardDraftConfirmation?.length ?? 0) > 0;
+    setOverlayFocus(0);
+    setDiscardForExit(hasDrafts);
+    setOverlay(hasDrafts ? 'discard' : 'exit');
+  }
+
+  function restoreActionFocus(actionId: string): void {
+    pendingActionFocus.current = actionId;
+    setFocus(0);
+    setScrollOffset(0);
+  }
 
   function requestSessionNavigation(
     navigation: SessionNavigation,
@@ -9123,9 +9186,11 @@ export function ConsoleAppV4(props: {
       }
       return;
     }
-    if (tooSmall) {
+    if (tooSmall && !overlay) {
       if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
-        requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+        setOperationConfirmation(undefined);
+        setSourceTransportOverlay(undefined);
+        requestConfirmedExit();
       }
       return;
     }
@@ -9139,13 +9204,8 @@ export function ConsoleAppV4(props: {
       };
       if (key.escape || input.toLowerCase() === 'b') {
         closeConfirmation();
-      } else if (key.ctrl && input.toLowerCase() === 'c') {
-        closeConfirmation();
-        requestExit({ code: 0, reason: 'user' });
-      } else if (input.toLowerCase() === 'q') {
-        closeConfirmation();
-        setDiscardForExit(dirty);
-        setOverlay(dirty ? 'discard' : 'exit');
+      } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        requestConfirmedExit(closeConfirmation);
       } else if (props.onSessionNavigation && (input === 'h' || input === 'H')) {
         const navigation = input === 'H' ? 'reload' : 'home';
         closeConfirmation();
@@ -9181,9 +9241,17 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (sourceTransportOverlay) {
-      if (key.escape || input.toLowerCase() === 'b') {
+      const closeTransportOverlay = (): void => {
         setSourceTransportOverlay(undefined);
         setOverlayFocus(0);
+      };
+      if (key.escape || input.toLowerCase() === 'b') {
+        closeTransportOverlay();
+      } else if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        requestConfirmedExit(closeTransportOverlay);
+      } else if (props.onSessionNavigation && (input === 'h' || input === 'H')) {
+        closeTransportOverlay();
+        requestSessionNavigation(input === 'H' ? 'reload' : 'home');
       } else if (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) {
         setOverlayFocus((value) => moveIndex(2, value, key.upArrow || key.leftArrow ? -1 : 1));
       } else if (key.return && route.name === 'sourceEdit') {
@@ -9198,14 +9266,16 @@ export function ConsoleAppV4(props: {
           setDirty(true);
           props.controller.replace({ name: 'sourceEdit', sourceId: route.sourceId, owner: current.owner });
         }
-        setSourceTransportOverlay(undefined);
-        setOverlayFocus(0);
+        closeTransportOverlay();
       }
       return;
     }
     if (overlay) {
       if (key.ctrl && input.toLowerCase() === 'c') {
-        requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+        if (overlay === 'sessionNavigation') continueEditingFromSessionNavigation();
+        setDiscardForSessionNavigation(undefined);
+        setDiscardDraftConfirmation(undefined);
+        requestConfirmedExit(overlay === 'help' ? () => setOverlay(undefined) : undefined);
         return;
       }
       if (overlay === 'help' && input.toLowerCase() === 'o') {
@@ -9266,7 +9336,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
-      requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+      requestConfirmedExit();
       return;
     }
     if (route.name === 'operationReportPreview' && reportSaveMode) {
@@ -9946,9 +10016,7 @@ export function ConsoleAppV4(props: {
       setOverlayFocus(0);
       setOverlay('help');
     } else if (globalAction === 'exit') {
-      setOverlayFocus(0);
-      setDiscardForExit(dirty);
-      setOverlay(dirty ? 'discard' : 'exit');
+      requestConfirmedExit();
     } else if (input.toLowerCase() === 'd' && supportsTechnicalDetails) {
       toggleTechnical();
     } else if (globalAction === 'back'
@@ -9963,8 +10031,7 @@ export function ConsoleAppV4(props: {
     } else if (globalAction === 'back' && route.name === 'batchPlacement') {
       if (batchDraft?.showPlacementTargets) {
         setBatchDraft((current) => current ? { ...current, showPlacementTargets: false } : current);
-        setFocus(5);
-        setScrollOffset(0);
+        restoreActionFocus('batch-placement-details');
       } else back();
     } else if (globalAction === 'back'
       && route.name === 'batchSelection'
@@ -10024,19 +10091,7 @@ export function ConsoleAppV4(props: {
         ])],
       } : current);
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'c') {
-      if (batchDraft.selectedPluginIds.length > 0) {
-        const invalid = invalidBatchSelection(batchDraft);
-        if (invalid.length > 0) {
-          setActionError(`${invalid.length} 个已选插件已不可用。请先在“查看全部已选”中取消选择。`);
-          return;
-        }
-        if (batchDraft.mode === 'browse') {
-          setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
-          props.controller.push({ name: 'batchPlacement' });
-          setFocus(0);
-          setScrollOffset(0);
-        } else moveBatchStage('task');
-      } else setActionError('请至少选择一个插件。');
+      runAction(actions.find((action) => action.actionId === 'batch-selection-continue'));
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input === ' ') {
       const action = actions[normalizedEffectiveFocus];
       if (action?.pluginId
@@ -10244,7 +10299,7 @@ export function ConsoleAppV4(props: {
     }
   });
 
-  if (tooSmall) {
+  if (tooSmall && !overlay) {
     return (
       <ScreenFrame title="终端空间不足" breadcrumb="终端空间不足" context={`${size.columns} × ${size.rows}`} help="q 退出" size={size}>
         <Callout status="warning" title="↔ 请将终端调整到至少 60 × 18" description="调整后会返回原页面，不会丢失当前选择。" />
@@ -10357,7 +10412,8 @@ export function ConsoleAppV4(props: {
           : '退出控制台？'}>
         {overlay === 'help'
           ? <>{helpRows.map(([key, value]) => <StaticRow key={key} title={`${key}  ${value}`} compact />)}</>
-          : <StaticRow title={overlay === 'discard' ? '放弃后将返回上一页。'
+          : <StaticRow title={overlay === 'discard'
+            ? discardForExit ? '放弃后将退出控制台。' : '放弃后将返回上一页。'
             : overlay === 'sessionNavigation'
               ? `放弃后将${discardForSessionNavigation === 'reload' ? '重新读取本地状态' : '返回首页'}。`
               : '进行中的写操作会先完成。'} status="muted" />}

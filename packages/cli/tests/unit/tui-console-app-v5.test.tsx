@@ -2045,6 +2045,49 @@ describe('ConsoleAppV4', () => {
     ]);
   });
 
+  it.each(['button', 'shortcut'] as const)(
+    'uses the visible recommended-update continuation for the %s path',
+    async (activation) => {
+      const loaded = loadResult();
+      const roots = ['official/review-gate', 'team-tools/review-gate'];
+      keepOnlyReadyCodexUserTargets(loaded, roots);
+      loaded.targetRevisions = roots.map((pluginId) => ({
+        pluginId, platform: 'codex' as const, scope: 'user' as const,
+        revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
+      }));
+      const captureEvidence = vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteTask'
+        ? pluginWriteTaskEvidence(intent)
+        : evidenceForIntent(intent));
+      const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+      await value.load();
+      value.push({ name: 'pluginList', mode: 'installed' });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await nextTurn(3);
+
+      await focusAction(instance, '更新 2 个插件…');
+      await input(instance, '\r');
+      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+      await focusAction(instance, '调整选择（2）');
+      await input(instance, '\r');
+      expect(value.snapshot.router.current.route.name).toBe('batchSelection');
+      if (activation === 'button') {
+        await focusAction(instance, '查看确认（2）');
+        await input(instance, '\r');
+      } else await input(instance, 'c');
+      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+
+      const intent = captureEvidence.mock.calls.at(-1)?.[0];
+      expect(intent).toMatchObject({
+        kind: 'pluginWriteTask',
+        goal: 'update',
+        targets: [
+          expect.objectContaining({ pluginId: 'official/review-gate', platform: 'codex', scope: 'user' }),
+          expect.objectContaining({ pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user' }),
+        ],
+      });
+    },
+  );
+
   it('completes a real select-many update and removes only its parent batch draft', async () => {
     const loaded = loadResult();
     const roots = ['official/review-gate', 'team-tools/review-gate'];
@@ -3152,7 +3195,7 @@ describe('ConsoleAppV4', () => {
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('keeps the same-scope target selection after Back and lets Ctrl-C exit from help', async () => {
+  it('keeps the same-scope target selection after Back and confirms Ctrl-C from help', async () => {
     const exit = vi.fn();
     const value = controller();
     value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
@@ -3168,18 +3211,66 @@ describe('ConsoleAppV4', () => {
     expect(exit).not.toHaveBeenCalled();
 
     await input(instance, '?', '\u0003');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(exit).not.toHaveBeenCalled();
+    await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
-  it('lets Ctrl-C exit while the ordinary exit overlay is open', async () => {
+  it('keeps the ordinary exit overlay explicit after Ctrl-C', async () => {
     const exit = vi.fn();
     const value = controller();
     value.push({ name: 'installTargets', pluginId: 'official/agent-lab' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
     await input(instance, '\r', 'q', '\u0003');
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(exit).not.toHaveBeenCalled();
+    await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
+
+  it.each(['page', 'help', 'discard', 'sessionNavigation', 'tooSmall'] as const)(
+    'keeps the batch draft until explicit exit confirmation from %s',
+    async (origin) => {
+      const exit = vi.fn();
+      const navigate = vi.fn().mockResolvedValue('draftBlocked');
+      const value = controller();
+      await value.load();
+      value.push({ name: 'pluginList', mode: 'installed' });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
+        onExit={exit} onSessionNavigation={navigate} />);
+      await nextTurn(3);
+      await input(instance, 'm');
+      expect(value.hasSessionDraft).toBe(true);
+
+      if (origin === 'help') await input(instance, '?');
+      if (origin === 'discard') await escape(instance);
+      if (origin === 'sessionNavigation') {
+        await input(instance, 'h');
+        await vi.waitFor(() => expect(instance.lastFrame()).toContain('放弃未保存修改？'));
+      }
+      if (origin === 'tooSmall') {
+        instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 59, rows: 17 }}
+          onExit={exit} onSessionNavigation={navigate} />);
+        await nextTurn(2);
+        expect(instance.lastFrame()).toContain('终端空间不足');
+      }
+
+      await input(instance, '\u0003');
+      expect(instance.lastFrame()).toContain('放弃未保存修改？');
+      expect(instance.lastFrame()).toContain('放弃后将退出控制台。');
+      expect(exit).not.toHaveBeenCalled();
+      expect(value.hasSessionDraft).toBe(true);
+      await input(instance, '\u0003');
+      expect(exit).not.toHaveBeenCalled();
+      expect(value.hasSessionDraft).toBe(true);
+
+      await input(instance, '\u001B[B', '\r');
+      expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
+      expect(value.hasSessionDraft).toBe(false);
+    },
+  );
 
   it('uses Enter for each target and only confirms from the visible confirmation action', async () => {
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
@@ -3486,6 +3577,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(3);
     expect(instance.lastFrame()).toContain('无法读取插件状态');
     await input(instance, '\u0003');
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(exit).not.toHaveBeenCalled();
+    await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledWith({ code: 1, reason: 'initialError' });
     instance.unmount();
     expect(value.snapshot.phase).toBe('error');
@@ -3540,15 +3634,20 @@ describe('ConsoleAppV4', () => {
     instance.unmount();
   });
 
-  it('handles Ctrl-C before search input and exits without changing the query', async () => {
+  it('handles Ctrl-C before search input and confirms without changing the query', async () => {
     const exit = vi.fn();
     const value = controller();
     value.push({ name: 'pluginList', mode: 'browse' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
     await input(instance, '/', '\u0003');
-    expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(exit).not.toHaveBeenCalled();
+    await input(instance, '\r');
     expect(instance.lastFrame()).toContain('/ 输入搜索内容');
+    await input(instance, '\u0003');
+    await input(instance, '\u001B[B', '\r');
+    expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
   });
 
   it('exits once after a busy stale operation returns to Review', async () => {
@@ -4934,6 +5033,42 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it.each([[60, 18], [80, 24]] as const)(
+    'moves through batch install placement actions in visual order at %ix%i',
+    async (columns, rows) => {
+      const value = controller();
+      await value.load();
+      value.push({ name: 'pluginList', mode: 'browse', sourceId: 'official' });
+      const size = { columns, rows };
+      const instance = render(<ConsoleAppV4 controller={value} size={size} />);
+      await nextTurn(3);
+
+      await input(instance, 'm', 'a', 'c');
+      const expected = [
+        /查看全部位置和受阻原因/u,
+        /查看批量添加确认|仅添加可执行/u,
+        /当前项目/u,
+        /所有项目/u,
+        /Codex$/u,
+        /Claude Code$/u,
+        /Codex 和 Claude Code$/u,
+      ];
+      for (const [index, label] of expected.entries()) {
+        const frame = instance.lastFrame() ?? '';
+        expect(frame.split('\n').find((line) => line.includes('›')) ?? '').toMatch(label);
+        expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+        if (index < expected.length - 1) await input(instance, '\u001B[B');
+      }
+
+      instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+      await nextTurn(2);
+      expect((instance.lastFrame() ?? '').split('\n').find((line) => line.includes('›')) ?? '')
+        .toMatch(/Codex 和 Claude Code$/u);
+      await input(instance, '\u001B[B');
+      expect(instance.lastFrame()).toContain('› 查看全部位置和受阻原因…');
+    },
+  );
+
   it.each([
     ['来源不可用', 'sourceUnavailable'],
     ['能力不足', 'capabilityUnsupported'],
@@ -5399,6 +5534,9 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\u001B[B', '\r');
     expect(value.snapshot.router.current.route.name).toBe('pluginList');
     await input(instance, 'q');
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(exit).not.toHaveBeenCalled();
+    await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledOnce();
   });
 
@@ -8138,6 +8276,72 @@ describe('ConsoleAppV4', () => {
     await writeAcceptanceTrace('source-edit/official/https', trace);
   });
 
+  it.each([
+    { key: 'q', expected: 'exit' },
+    { key: '\u0003', expected: 'exit' },
+    { key: 'h', expected: 'home' },
+    { key: 'H', expected: 'reload' },
+  ] as const)('routes $key from the transport picker through the parent draft guard', async ({ key, expected }) => {
+    const loaded = loadResult();
+    loaded.payload.catalog.sources[0] = {
+      id: 'official', identity: 'identity:official-workspace', type: 'git', primary: true,
+      requestedRef: 'refs/heads/catalog/latest', resolvedCommit: 'abc123', freshness: 'active',
+    };
+    loaded.configuredSources![0] = {
+      id: 'official', type: 'git', primary: true,
+      url: 'https://github.com/lesliechan721-arch/agent-workflow.git',
+      refPolicy: { type: 'cliChannel' }, autoCheck: true,
+    };
+    const navigate = vi.fn().mockResolvedValue('draftBlocked');
+    const exit = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    value.push({ name: 'sourceEdit', sourceId: 'official' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }}
+      onExit={exit} onSessionNavigation={navigate} />);
+    await nextTurn(4);
+
+    await input(instance, '\r', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('SSH');
+    expect(value.hasSessionDraft).toBe(true);
+    await input(instance, '\r', key);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    expect(value.snapshot.router.current.route.name).toBe('sourceEdit');
+    expect(value.hasSessionDraft).toBe(true);
+    expect(exit).not.toHaveBeenCalled();
+    if (expected === 'exit') expect(navigate).not.toHaveBeenCalled();
+    else expect(navigate).toHaveBeenCalledWith(expected, { discardDrafts: false });
+
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('SSH');
+    expect(value.hasSessionDraft).toBe(true);
+  });
+
+  it.each(['q', '\u0003'] as const)(
+    'asks for an ordinary exit from a clean transport picker with %s',
+    async (key) => {
+      const loaded = loadResult();
+      loaded.configuredSources![0] = {
+        id: 'official', type: 'git', primary: true,
+        url: 'https://github.com/lesliechan721-arch/agent-workflow.git',
+        refPolicy: { type: 'cliChannel' }, autoCheck: true,
+      };
+      const exit = vi.fn();
+      const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+      value.push({ name: 'sourceEdit', sourceId: 'official' });
+      const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
+      await nextTurn(4);
+
+      await input(instance, '\r', key);
+
+      expect(instance.lastFrame()).toContain('退出控制台？');
+      expect(instance.lastFrame()).not.toContain('放弃未保存修改？');
+      expect(value.snapshot.router.current.route.name).toBe('sourceEdit');
+      expect(exit).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps a custom official mirror as an editable address', async () => {
     const loaded = loadResult();
     loaded.configuredSources![0] = {
@@ -9524,6 +9728,11 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     instance.rerender(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
+    await input(instance, '\u0003');
+    expect(instance.lastFrame()).toContain('退出控制台？');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await input(instance, '\r', '\r');
+    expect(instance.lastFrame()).toContain('返回检查');
     await input(instance, 'q');
     expect(instance.lastFrame()).toContain('退出控制台？');
     expect(executeIntent).not.toHaveBeenCalled();
