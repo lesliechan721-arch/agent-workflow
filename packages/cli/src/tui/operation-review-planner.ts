@@ -161,7 +161,7 @@ function offlineCleanupPreservedChanges(evidence: OperationEvidence): OperationR
     {
       kind: 'keep' as const,
       group: 'preserved' as const,
-      title: '保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置',
+      title: '保留不属于插件或被共用的内容、插件设置、依赖使用范围和其他平台或位置',
     },
     {
       kind: 'keep' as const,
@@ -236,8 +236,8 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
       workspaceInit: ['创建 Catalog Workspace', '创建并保存 Catalog Workspace scaffold。', '创建 Workspace', false],
       workspaceVersion: ['修改 Catalog 版本', '原子修改 Catalog metadata 中的版本。', '修改版本', false],
       workspaceBuild: ['构建 Catalog snapshot', '验证源码并构建可替换的 Catalog 输出。', '开始构建', false],
-      devActivate: ['启用 Catalog 开发源', '构建或复用 snapshot，并更新共享来源配置和 Active 版本。', '启用开发源', false],
-      devDeactivate: ['停用 Catalog 开发源', '从共享来源配置中移除 Workspace 管理的开发源。', '停用开发源', true],
+      devActivate: ['启用 Catalog 开发源', '构建或复用 snapshot，并更新多个项目共用的来源设置和 Active 版本。', '启用开发源', false],
+      devDeactivate: ['停用 Catalog 开发源', '从多个项目共用的来源设置中移除 Workspace 管理的开发源。', '停用开发源', true],
       storePrune: ['清理 Catalog 本地存储', '只删除本次选择且执行时仍可安全回收的项目。', '确认清理', true],
       publishPlan: ['准备 Catalog 发布计划', '构建发布内容、读取远端状态，并保存可恢复的本地发布计划。', '准备发布计划', false],
       publishApply: ['发布 Catalog', '只应用已保存且身份匹配的发布计划，并核对远端 branch 和 tag。', '确认发布', false],
@@ -531,7 +531,7 @@ function reviewChanges(
             kind: 'warning', title: `Catalog 变化 · ${category}`, description: `${count} 个插件`,
           })),
         ...(intent.primary || activation.primaryChange
-          ? [{ kind: 'warning' as const, title: '设为共享主来源', description: '会改变默认插件目录选择。' }]
+          ? [{ kind: 'warning' as const, title: '设为多个项目共用的主来源', description: '会改变默认插件目录选择。' }]
           : []),
       ];
     }
@@ -547,7 +547,7 @@ function reviewChanges(
         { kind: impact?.inventoryComplete === false ? 'warning' : 'change',
           title: impact?.inventoryComplete === false ? '来源引用清单不完整' : '已检查现有来源引用',
           description: `${affectedReferences} 个引用` },
-        ...(impact?.primaryChange ? [{ kind: 'warning' as const, title: '此操作会改变共享主来源' }] : []),
+        ...(impact?.primaryChange ? [{ kind: 'warning' as const, title: '此操作会改变多个项目共用的主来源' }] : []),
       ];
     }
     if (intent.action === 'storePrune') {
@@ -563,7 +563,7 @@ function reviewChanges(
           kind: 'remove', title: `Catalog store · ${category}`,
           description: `${entries.filter((entry) => entry.category === category).length} 项`,
         })),
-        { kind: 'keep', title: '保留 Active、未到保留期限、foreign 和未选择项目' },
+        { kind: 'keep', title: '保留正在使用、未到保留期限、不属于插件的内容和未选择项目' },
         { kind: 'warning', title: '执行时逐项重新检查身份、Active 和保留期限' },
       ];
     }
@@ -652,7 +652,7 @@ function reviewChanges(
         pluginId: action.pluginId,
         title: action.codexPluginId,
         description: action.action === 'reuse'
-          ? '复用完全相同的平台共享内容'
+          ? '复用完全相同的由平台共用内容'
           : `${({
               install: '添加',
               update: '更新',
@@ -660,7 +660,7 @@ function reviewChanges(
               replace: '替换',
               remove: '移除',
               none: '保持不变',
-            } as const)[action.action]}平台共享内容${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
+            } as const)[action.action]}由平台共用的内容${action.affectsOtherScopes ? ' · 可能影响其他项目' : ''}`,
       })),
       ...codexPlan.activationActions.user.map((action): OperationReviewChange => ({
         kind: action.action === 'none' ? 'keep' : action.desired ? 'change' : 'remove',
@@ -941,7 +941,7 @@ function reviewChanges(
             {
               kind: 'change', group: 'configImpact',
               title: `重新生成 ${sharedNativeTargets.map((target) => target.skillKey).join('、')} 动态 Skill`,
-              description: '配置来源为个人默认；更新 Codex 平台共享内容会影响所有启用项目。',
+              description: '配置来源为个人默认；更新 Codex 由平台共用的内容会影响所有启用项目。',
             },
             { kind: 'keep', group: 'preserved', title: '保留所有项目和当前项目的启用位置' },
             { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
@@ -949,10 +949,10 @@ function reviewChanges(
         : [
             {
               kind: 'warning', group: 'configImpact',
-              title: 'Codex 平台共享内容待同步',
+              title: 'Codex 由平台共用的内容待同步',
               description: '个人默认已保存；动态 Skill 尚未重新生成。',
             },
-            { kind: 'keep', group: 'preserved', title: '当前平台共享内容和启用位置保持不变' },
+            { kind: 'keep', group: 'preserved', title: '当前由平台共用的内容和启用位置保持不变' },
             { kind: 'keep', group: 'preserved', title: '当前项目 Agent role 继续使用当前项目配置' },
           ];
     return [
@@ -1227,7 +1227,7 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     const task = evidence as PluginWriteTaskEvidence;
     details.push(`任务目标：${task.taskPlan.requestedTargets.length} 个`);
     details.push(`可执行目标：${task.taskPlan.executableTargets.length} 个`);
-    details.push(`共享根因：${task.taskPlan.causes.length} 个`);
+    details.push(`共同原因：${task.taskPlan.causes.length} 个`);
     for (const source of task.taskPlan.sources) {
       details.push(`任务来源：${source.sourceId} · ${source.requestedTargets.length} 个目标 · 计划 ${short(source.preview.operationPlan!.planFingerprint)}`);
     }
@@ -1382,7 +1382,7 @@ export function buildOperationReviewProjection(options: {
       ])],
       ...(warning ? { warning }
         : sharedNativeConfigApply
-          ? { warning: '更新共享 Codex native 动态 Skill 会影响所有启用项目。' }
+          ? { warning: '更新被共用的 Codex native 动态 Skill 会影响所有启用项目。' }
         : requiresConfirmation && (evidence.sourceWrite
           || evidence.catalogGeneration?.impact
           || evidence.catalogGeneration?.primaryImpact)

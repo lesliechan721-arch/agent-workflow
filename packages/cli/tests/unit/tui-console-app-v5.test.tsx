@@ -1175,12 +1175,12 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['codexSharedNativeCorrupt', 'Codex 平台共享生成内容缺失或损坏。'],
-    ['codexSharedNativeRenderDrift', 'Codex 平台共享生成内容与当前渲染输入不一致。'],
+    ['codexSharedNativeCorrupt', 'Codex 平台由多个项目共用的生成内容缺失或损坏。'],
+    ['codexSharedNativeRenderDrift', 'Codex 平台由多个项目共用的生成内容与当前渲染输入不一致。'],
     ['codexSharedNativeUnobserved', '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。'],
     ['codexNativeObservationFailed', '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。'],
     ['codexActivationDrift', 'Codex 激活配置与期望的使用范围不一致。'],
-    ['codexSharedNativeUpdateRequired', '已安装的 Codex 平台共享内容版本与当前插件版本不一致。'],
+    ['codexSharedNativeUpdateRequired', '已安装的 Codex 由平台共用的内容版本与当前插件版本不一致。'],
   ] as const)('shows typed shared-native reason %s in a mounted issue page', async (
     code,
     explanation,
@@ -1207,7 +1207,7 @@ describe('ConsoleAppV4', () => {
 
     expect(instance.lastFrame()).toContain(explanation);
     if (code === 'codexSharedNativeCorrupt' || code === 'codexSharedNativeRenderDrift') {
-      expect(instance.lastFrame()).toContain('运行同步可重新生成平台共享 Skill。');
+      expect(instance.lastFrame()).toContain('运行同步可重新生成由平台共用的 Skill。');
     } else {
       expect(instance.lastFrame()).not.toContain('安装不完整');
       expect(instance.lastFrame()).not.toContain('必要内容缺失');
@@ -1391,7 +1391,7 @@ describe('ConsoleAppV4', () => {
     expect(reviewFrame).toContain('取消已保存的使用设置');
     expect(reviewFrame).toContain('移除可验证的 AW 输出');
     expect(reviewFrame).toContain('部分现场残留无法完整核验');
-    expect(reviewFrame).toContain('保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置');
+    expect(reviewFrame).toContain('保留不属于插件或被共用的内容、插件设置、依赖使用范围和其他平台或位置');
     expect(reviewFrame).toContain('其他根插件仍可按自己的设置使用或安装此依赖');
     expect(reviewFrame).not.toContain('/private/aw-home/managed/retired-tool.md');
     expect(reviewFrame).not.toContain('inventoryUnreadable');
@@ -1915,7 +1915,9 @@ describe('ConsoleAppV4', () => {
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const compactSize = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={value} size={compactSize} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(3);
     const first = instance.lastFrame() ?? '';
     expect(first).toContain('Codex');
@@ -1923,6 +1925,7 @@ describe('ConsoleAppV4', () => {
     expect(first).toContain('当前项目需要同步');
     expect(first).toContain('›');
     expect(first.split('\n').length).toBeLessThanOrEqual(18);
+    trace.push(acceptanceTraceStep(instance, compactSize, '混合范围首屏', []));
 
     await input(instance, '\u001B[6~');
     const second = instance.lastFrame() ?? '';
@@ -1931,6 +1934,8 @@ describe('ConsoleAppV4', () => {
     expect(second).toContain('当前项目可用');
     expect(second).toContain('›');
     expect(second.split('\n').length).toBeLessThanOrEqual(18);
+    trace.push(acceptanceTraceStep(instance, compactSize, '翻页后显示其余范围', ['PageDown']));
+    await writeAcceptanceTrace('plugin-detail/mixed-scope', trace);
   });
 
   it('does not claim saved settings make an uninstalled plugin usable', async () => {
@@ -7460,9 +7465,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     await nextTurn(4);
 
-    expect(instance.lastFrame()).toContain('不再支持的');
-    expect(instance.lastFrame()).toContain('project override');
-    expect(instance.lastFrame()).toContain('user/default');
+    expect(instance.lastFrame()).toContain('本项目旧值不再使用');
+    expect(instance.lastFrame()).toContain('当前继承个人或插件默认');
     expect(instance.lastFrame()).toContain('删除旧值');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({
@@ -7535,7 +7539,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
 
     const frame = (instance.lastFrame() ?? '').replace(/\s+/gu, '');
-    expect(frame).toContain('个人默认控制平台共享内容');
+    expect(frame).toContain('个人默认控制被各项目共用的内容');
     expect(frame).toContain('项目不可改');
     expect(frame).toContain('影响所有项目');
     await input(instance, '\r');
@@ -7968,10 +7972,12 @@ describe('ConsoleAppV4', () => {
     snapshot.activeReview.requiresConfirmation = true;
     snapshot.activeReview.sharedImpact = {
       pluginIds: ['team-tools/review-gate'],
-      warning: '共享内容需要明确确认。',
+      warning: '被共用的内容需要明确确认。',
     };
     Object.defineProperty(value, 'snapshot', { configurable: true, get: () => snapshot });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const compactSize = { columns: 60, rows: 18 };
+    const instance = render(<ConsoleAppV4 controller={value} size={compactSize} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(2);
     const frame = instance.lastFrame() ?? '';
     expect(frame).toContain('共同风险原因');
@@ -7981,6 +7987,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('↑↓ 移动');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(snapshot.activeReview.requiresConfirmation).toBe(true);
+    trace.push(acceptanceTraceStep(instance, compactSize, '操作汇总核心风险', []));
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('独立授权');
     let riskFrames = instance.lastFrame() ?? '';
@@ -7992,6 +7999,8 @@ describe('ConsoleAppV4', () => {
     expect(riskFrames).toContain('风险 12');
     expect(riskFrames).toContain('完整结尾标记');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    trace.push(acceptanceTraceStep(instance, compactSize, '风险说明完整结尾', ['Enter', 'PageDown × 50']));
+    await writeAcceptanceTrace('review/user-fields/paged-technical', trace);
   });
 
   it.each(['cleanup', 'uninstall'] as const)('does not offer script timeout for %s Review', async (action) => {
@@ -9213,9 +9222,9 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(availableScreens).toContain('D03');
     expect(placement.lastFrame()).toContain('依赖位置');
-    expect(placement.lastFrame()).toContain('依赖将采用推荐位置');
-    expect(placement.lastFrame()).toContain('这里只选择根插件位置');
-    expect(placement.lastFrame()).toContain('Review 中可查看或调整');
+    expect(placement.lastFrame()).toContain('依赖将自动安排合适位置');
+    expect(placement.lastFrame()).toContain('这里只选择根插件的安装位置');
+    expect(placement.lastFrame()).toContain('可在操作汇总中查看或调整');
     expect(placement.lastFrame()).not.toContain('缺失依赖使用同一个位置');
     expect(placement.lastFrame()?.match(/›/gu)).toHaveLength(1);
     placement.unmount();
@@ -9622,7 +9631,7 @@ describe('ConsoleAppV4', () => {
           requiresConfirmation: true,
           sharedImpact: {
             pluginIds: ['agent-lab@aw-official'],
-            warning: '共享 native 内容会影响其他项目。',
+            warning: '被共用的 native 内容会影响其他项目。',
           },
         },
       }] as unknown as NonNullable<OperationEvidence['codexReconcilePlans']>;
@@ -9644,7 +9653,7 @@ describe('ConsoleAppV4', () => {
       await nextTurn(2);
 
       const initial = instance.lastFrame() ?? '';
-      expect(initial).toContain('需要确认共享影响');
+      expect(initial).toContain('需要确认会影响其他项目的内容');
       for (const layer of [
         'Project intent', 'User intent', 'Shared Codex native',
         'User activation', 'Project activation', 'AW extensions',
@@ -9862,7 +9871,7 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     expect(instance.lastFrame()).toContain('有效设置输入不变');
-    expect(instance.lastFrame()).not.toContain('请先确认共享影响');
+    expect(instance.lastFrame()).not.toContain('请先确认会影响其他项目的内容');
     expect(instance.lastFrame()).not.toContain('动态 Skill');
     await input(instance, '\r');
     await nextTurn(3);
@@ -10018,7 +10027,7 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.activeReview?.changes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         group: 'sharedCodexNative', kind: 'keep',
-        description: '复用完全相同的平台共享内容',
+        description: '复用完全相同的由平台共用内容',
       }),
       expect.objectContaining({
         group: addedScope === 'user' ? 'userActivation' : 'projectActivation',
@@ -10028,7 +10037,7 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'd');
     const technicalReviewFrame = instance.lastFrame() ?? '';
     expect(technicalReviewFrame).toContain('Codex 平台共享内容');
-    expect(technicalReviewFrame).toContain('复用完全相同的平台共享内');
+    expect(technicalReviewFrame).toContain('复用完全相同的由平台共用');
     expect(technicalReviewFrame).not.toContain('claim');
     expect(technicalReviewFrame).not.toContain('install · shared');
 
@@ -10950,6 +10959,9 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('↑↓ 选择');
     expect(frame.match(/›/gu)).toHaveLength(1);
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+    await writeAcceptanceTrace('dependency-graph/current-available', [
+      acceptanceTraceStep(instance, { columns: 60, rows: 18 }, '本次检查可用关系', []),
+    ]);
   });
 
   it('mounts the dependency issue list and invalid graph recovery page as D13 and D17', async () => {

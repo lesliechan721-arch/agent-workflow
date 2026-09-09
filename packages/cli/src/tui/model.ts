@@ -1321,12 +1321,12 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
     const codes = new Set(sharedReasons.map((reason) => reason.code));
     const sharedNative = statusTargetSharedNative(target);
     const statusIssue = codes.has('codexSharedNativeForeign')
-      ? { title: '平台共享内容被占用', explanation: 'Codex 平台共享位置包含 foreign 内容。' }
+      ? { title: '平台由多个项目共用的内容被占用', explanation: 'Codex 平台位置含有不属于插件的内容。' }
       : codes.has('codexSharedNativeUpdateRequired')
-        ? { title: '版本待同步', explanation: 'Codex 平台共享内容版本与当前插件版本不一致。' }
+        ? { title: '版本待同步', explanation: 'Codex 由平台共用的内容版本与当前插件版本不一致。' }
         : codes.has('codexSharedNativeUnobserved')
-          ? { title: '状态未确认', explanation: '未取得有效的 Codex 共享内容状态证据。' }
-          : { title: '平台共享内容待同步', explanation: 'Codex 平台共享内容缺失、损坏或与当前渲染输入不一致。' };
+          ? { title: '状态未确认', explanation: '未取得有效的 Codex 被共用内容的状态证据。' }
+          : { title: '由平台共用的内容待同步', explanation: 'Codex 由平台共用的内容缺失、损坏或与当前渲染输入不一致。' };
     const recoveryActions = target.recoveryActions.flatMap((recovery) => {
       if (!recovery.scope) return [];
       const scopedTarget = statusTargets.find((candidate) => candidate.pluginId === target.pluginId
@@ -1341,8 +1341,8 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
       title: `${target.pluginId} · Codex · ${statusIssue.title}`,
       explanation: statusIssue.explanation,
       impact: [sharedNative?.state === 'blocked'
-        ? '共享内容恢复前，当前插件不能安全同步。'
-        : '共享内容恢复前，相关 Codex 使用位置可能不可用。'],
+        ? '被共用的内容恢复前，当前插件不能安全同步。'
+        : '被共用的内容恢复前，相关 Codex 使用位置可能不可用。'],
       entity: { kind: 'plugin', id: target.pluginId },
       pluginId: target.pluginId,
       platform: target.platform,
@@ -1392,7 +1392,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
         : codes.has('codexActivationDrift')
           ? { title: '激活范围不一致', explanation: 'Codex 激活配置与期望的使用范围不一致。' }
           : codes.has('codexSharedNativeUpdateRequired')
-            ? { title: '版本待同步', explanation: '已安装的 Codex 平台共享内容版本与当前插件版本不一致。' }
+            ? { title: '版本待同步', explanation: '已安装的 Codex 由平台共用的内容版本与当前插件版本不一致。' }
             : sharedNativeDamaged || contentMissing
               ? { title: '安装不完整', explanation: '必要内容缺失或损坏，需要运行同步。' }
               : { title: '状态待同步', explanation: '现场状态与期望状态不一致，需要重新检查并同步。' };
@@ -1581,7 +1581,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '由平台共用的内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1597,9 +1597,9 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
               : ''}未就绪；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
             : `依赖检查未通过；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
           : sharedNativeDamaged
-          ? 'Codex 平台共享生成内容缺失或损坏。'
+          ? 'Codex 平台由多个项目共用的生成内容缺失或损坏。'
           : sharedNativeRenderDrift
-          ? 'Codex 平台共享生成内容与当前渲染输入不一致。'
+          ? 'Codex 平台由多个项目共用的生成内容与当前渲染输入不一致。'
           : target.state === 'needsSync' || statusUnconfirmed || systemConsumer?.state === 'incompatible'
           ? statusIssue.explanation
           : bundleUnavailable
@@ -1608,7 +1608,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
               ? '当前插件目录不能解析这个已保存的使用设置。'
             : '当前目标不能安全分类为正常安装。',
         impact: [sharedNativeProjectionIssue
-          ? '运行同步可重新生成平台共享 Skill。'
+          ? '运行同步可重新生成由平台共用的 Skill。'
           : root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable || codexIntentSourceUnavailable || root.code === 'catalogSourceUnavailable'
@@ -1721,7 +1721,7 @@ function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[
         issueId: `config:${summary.pluginId}:unsupported-project-layer`,
         category: 'configLayerUnsupported' as const,
         title: `${summary.displayName ?? summary.pluginName} · 项目设置包含旧值`,
-        explanation: '这些 project override 已不再受支持，实际使用个人默认或 manifest 默认值。',
+        explanation: '本项目旧值不再受支持；当前继承个人或插件默认。',
         impact: ['旧值不会参与生成。可以进入项目设置删除旧值。'],
         entity: { kind: 'plugin' as const, id: summary.pluginId },
         pluginId: summary.pluginId,
@@ -1877,7 +1877,7 @@ function issueDiagnostic(
         '再次运行状态检查。',
       ]
     : configLayerUnsupported
-      ? ['打开项目设置。', '删除不再支持的 project override。', '重新检查插件设置。']
+      ? ['打开项目设置。', '删除本项目旧值。', '重新检查插件设置。']
     : sourceUnavailable
     ? ['检查 Git URL、ref 或本地目录。', '确认当前终端具备来源授权。', '运行“重新检查来源”验证修复。']
     : dependency

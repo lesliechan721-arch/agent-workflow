@@ -2795,9 +2795,9 @@ describe('TUI v4 router and ViewModel', () => {
 
     const issue = view.issues[0]!;
     expect(issue).toMatchObject({
-      title: expect.stringContaining('平台共享内容待同步'),
-      explanation: 'Codex 平台共享生成内容与当前渲染输入不一致。',
-      impact: ['运行同步可重新生成平台共享 Skill。'],
+      title: expect.stringContaining('由平台共用的内容待同步'),
+      explanation: 'Codex 平台由多个项目共用的生成内容与当前渲染输入不一致。',
+      impact: ['运行同步可重新生成由平台共用的 Skill。'],
       technicalDetails: [{
         code: 'codexSharedNativeRenderDrift',
         message: '状态检查报告了这个安全错误代码。',
@@ -2823,9 +2823,9 @@ describe('TUI v4 router and ViewModel', () => {
     });
 
     expect(view.issues[0]).toMatchObject({
-      title: expect.stringContaining('平台共享内容待同步'),
-      explanation: 'Codex 平台共享生成内容缺失或损坏。',
-      impact: ['运行同步可重新生成平台共享 Skill。'],
+      title: expect.stringContaining('由平台共用的内容待同步'),
+      explanation: 'Codex 平台由多个项目共用的生成内容缺失或损坏。',
+      impact: ['运行同步可重新生成由平台共用的 Skill。'],
     });
   });
 
@@ -4097,7 +4097,7 @@ describe('TUI v4 Review safety', () => {
     expect(review.changes).toContainEqual(expect.objectContaining({
       group: 'sharedCodexNative',
       kind: 'keep',
-      description: '复用完全相同的平台共享内容',
+      description: '复用完全相同的由平台共用内容',
     }));
     expect(JSON.stringify(review.changes)).not.toContain('claim');
   });
@@ -4165,7 +4165,7 @@ describe('TUI v4 Review safety', () => {
         kind: 'warning', title: '部分现场残留无法完整核验',
       }),
       expect.objectContaining({
-        kind: 'keep', title: '保留外来、共享内容、插件设置、依赖范围覆盖和其他平台或使用位置',
+        kind: 'keep', title: '保留不属于插件或被共用的内容、插件设置、依赖使用范围和其他平台或位置',
       }),
       expect.objectContaining({
         kind: 'keep', title: '其他根插件仍可按自己的设置使用或安装此依赖',
@@ -5899,8 +5899,8 @@ describe('TUI v4 Review safety', () => {
   });
 
   it.each([
-    [false, ['Codex 平台共享内容待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
-    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新 Codex 平台共享内容会影响所有启用项目。'],
+    [false, ['Codex 由平台共用的内容待同步'], '个人默认已保存；动态 Skill 尚未重新生成。'],
+    [true, ['重新生成 codex-explore、codex-subagent-guide 动态 Skill'], '配置来源为个人默认；更新 Codex 由平台共用的内容会影响所有启用项目。'],
   ] as const)('describes shared native render impact when apply=%s', async (apply, impactTitles, description) => {
     const evidence: OperationEvidence = {
       ...baseEvidence,

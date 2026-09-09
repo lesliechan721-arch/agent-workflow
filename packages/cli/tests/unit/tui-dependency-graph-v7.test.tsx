@@ -252,8 +252,8 @@ describe('dependency graph v7', () => {
       nodePluginId: 'official/a',
       nodePathPluginIds: ['official/c', 'official/b', 'official/a'],
     });
-    expect(instance.lastFrame()).toContain('A 通过 B 连续依赖 C，且各段当前可用');
-    expect(instance.lastFrame()).not.toContain('当前可用关系未检查通过');
+    expect(instance.lastFrame()).toContain('A 通过 B 需要 C，且各段依赖当前可用');
+    expect(instance.lastFrame()).not.toContain('本次尚未确认依赖可用');
   });
 
   it('describes a forward declaration in the consumer-to-dependency direction', async () => {
@@ -306,8 +306,8 @@ describe('dependency graph v7', () => {
     />);
     await input(instance, '', '', '', '\r');
     expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'references' });
-    expect(instance.lastFrame()).toContain('当前可用位置 4 个');
-    expect(instance.lastFrame()).toContain('当前依赖者在当前项目的Codex中依赖它');
+    expect(instance.lastFrame()).toContain('当前可用依赖位置 4 个');
+    expect(instance.lastFrame()).toContain('当前依赖者 · 当前项目 · Codex');
     expect(instance.lastFrame()).not.toContain('consumer · platform=');
     await input(instance, 'd');
     const expectedPlacements = [
@@ -329,7 +329,7 @@ describe('dependency graph v7', () => {
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
-    expect(instance.lastFrame()).toContain('当前可用位置 4 个');
+    expect(instance.lastFrame()).toContain('当前可用依赖位置 4 个');
   });
 
   it('paginates complete long canonical reference IDs at 60 columns', async () => {
@@ -436,7 +436,7 @@ describe('dependency graph v7', () => {
 
       await input(instance, ...Array.from({ length: 5 }, () => '\u001b[B'), '\r');
       expect(controller.route).toMatchObject({ name: 'pluginDependencies', direction: 'dependents' });
-      expect(instance.lastFrame()).toContain('下面的插件当前可通过依赖关系使用上面的插件');
+      expect(instance.lastFrame()).toContain('下面的插件在本次检查中需要上面的插件');
       expect(instance.lastFrame()).toContain('当前依赖者');
       expect(instance.lastFrame()).toContain('未验证声明者 · 1 个');
       expect(instance.lastFrame()).toContain('未安装声明者');
@@ -447,7 +447,7 @@ describe('dependency graph v7', () => {
       expect(controller.route).toMatchObject({
         name: 'pluginDependencyNode', nodePluginId: 'official/not-installed',
       });
-      expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前可用关系未检查通过');
+      expect(instance.lastFrame()).toContain('声明需要当前插件，但本次尚未确认依赖可用');
       expect(instance.lastFrame()).not.toContain('已安装位置实际引用当前插件');
     },
   );
@@ -530,7 +530,7 @@ describe('dependency graph v7', () => {
     const completeText = pages.join('\n').replace(/\s/gu, '');
     expect(completeText).toContain('非根用途唯一结尾');
     expect(completeText).toContain('为何需要');
-    expect(completeText).toContain('根插件的当前位置直接依赖此插件，且依赖当前可用。');
+    expect(completeText).toContain('根插件在本次检查的位置需要此插件，所需依赖当前可用。');
     expect(completeText).toContain('影响已可用');
     await input(instance, 'b');
     expect(controller.route).toMatchObject({
@@ -561,7 +561,7 @@ describe('dependency graph v7', () => {
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
-    expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前可用关系未检查通过');
+    expect(instance.lastFrame()).toContain('声明需要当前插件，但本次尚未确认依赖可用');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 });

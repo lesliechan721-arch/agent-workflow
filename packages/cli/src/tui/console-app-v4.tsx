@@ -1361,7 +1361,7 @@ function dependencyReferenceUsageLabel(
   const location = reference.consumer.scope === 'user'
     ? '所有项目'
     : reference.consumer.project === 'current' ? '当前项目' : '其他项目';
-  return `${consumerName}在${location}的${platformLabel(reference.consumer.platform)}中依赖它`;
+  return `${consumerName} · ${location} · ${platformLabel(reference.consumer.platform)}`;
 }
 
 function dependencySummaryText(summary: NonNullable<PluginListItemViewModel['dependencySummary']>): string {
@@ -2854,7 +2854,7 @@ export function ConsoleAppV4(props: {
       selectedScope,
     );
     if (!candidate) {
-      setActionError('当前没有可安全确认的受限清理目标。共享、外来、符号链接和原生内容会保持不变。');
+      setActionError('当前没有可安全确认的受限清理目标。不属于插件、被共用、符号链接和原生内容会保持不变。');
       return;
     }
     try {
@@ -3753,7 +3753,7 @@ export function ConsoleAppV4(props: {
     description = batchDraft?.stage === 'select'
       ? 'Space 切换选择，Enter 查看插件。选择会跨来源、搜索和筛选保留。'
       : batchDraft?.stage === 'task'
-        ? '更新和恢复使用现有精确位置；移除会明确使用已有位置。'
+        ? '更新和恢复沿用已经添加的位置；移除会逐项显示已有位置。'
         : '同步、重新安装和普通清理使用所选插件的已有位置。';
     if (!batchDraft) {
       actions = [{ label: '返回插件列表', run: back }];
@@ -3816,7 +3816,7 @@ export function ConsoleAppV4(props: {
         actionId: 'batch-selection-continue',
         label: `查看确认（${batchDraft.selectedPluginIds.length}）`,
         description: batchDraft.selectedPluginIds.length > 0
-          ? batchDraft.recommendedGoal ? '重新读取更新证据并建立 Review' : '继续选择任务和确认范围'
+          ? batchDraft.recommendedGoal ? '重新读取更新信息并显示操作汇总' : '继续选择任务和确认范围'
           : '先选择至少一个插件',
         disabled: batchDraft.selectedPluginIds.length === 0 ? '先选择至少一个插件' : undefined,
         run: continueSelection,
@@ -3954,7 +3954,7 @@ export function ConsoleAppV4(props: {
         actions = [
           { label: '同步已保存使用设置…', description: `重新应用 ${syncTargets.length} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
           { label: '重新安装…', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
-          { label: '清理遗留内容…', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个有受管证据的位置；保留 foreign 和 shared 内容`, run: () => startExistingBatch('cleanup') },
+          { label: '清理遗留内容…', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个已核验位置；保留不属于插件或被共用的内容`, run: () => startExistingBatch('cleanup') },
           {
             label: '返回任务选择',
             run: () => moveBatchStage('task'),
@@ -3968,13 +3968,13 @@ export function ConsoleAppV4(props: {
         actions = [
           ...(updates.length > 0 ? [{
             label: `更新所选中的 ${updateRoots} 个可更新插件…`,
-            description: '使用已验证版本和现有精确位置',
+            description: '使用已验证版本和已经添加的位置',
             status: 'warning' as const,
             run: () => openSelectedPluginTask('update', selectedIds),
           }] : []),
           ...(restores.length > 0 ? [{
             label: `恢复所选中的 ${restoreRoots} 个插件…`,
-            description: '按当前问题和现有精确位置准备方案',
+            description: '按当前问题检查已经添加的位置',
             status: 'warning' as const,
             run: () => openSelectedPluginTask('restore', selectedIds),
           }] : []),
@@ -4008,7 +4008,7 @@ export function ConsoleAppV4(props: {
       : `设置批量${batchDraft?.action ? batchActionLabel(batchDraft.action) : ''}位置`;
     description = maintenanceMode
       ? '默认沿用进入此页时的现有位置。可以取消位置，也可以恢复本次集合中的位置。'
-      : '分别选择使用范围和工具。确认页会重新读取状态并冻结实际计划。';
+      : '分别选择使用范围和工具。操作汇总会重新读取状态；本次安装位置变化时需要重新确认。';
     let installPlacementTargets: ReturnType<TuiController['listPluginInstallBatchTargets']> = [];
     let installPlacementGroups: Array<{
       title?: string;
@@ -4600,7 +4600,7 @@ export function ConsoleAppV4(props: {
       title = hasInstalledPlacement(plugin) ? '依赖与当前可用关系' : '安装所需插件';
       description = direction === 'dependencies'
         ? '每一层表示上面的插件需要下面的插件。'
-        : '每一层表示下面的插件当前可通过依赖关系使用上面的插件。';
+        : '每一层表示下面的插件在本次检查中需要上面的插件。';
       const rowActions: ActionItem[] = visibleRows.map((row) => {
         const state = row.depth === 0
           ? { value: statusText(plugin), status: plugin.aggregateStatus === 'needsAttention'
@@ -4641,7 +4641,7 @@ export function ConsoleAppV4(props: {
             const declared = overview?.dependents.find((entry) => entry.pluginId === pluginId);
             return {
               label: declared?.displayName ?? pluginId,
-              description: '有依赖声明，但当前可用关系未检查通过',
+              description: '有依赖声明，但本次尚未确认依赖可用',
               meta: declared?.aggregateStatus === 'notInstalled' ? '仅声明 · 未安装' : '仅声明 · 未验证',
               status: 'muted' as const,
               run: () => {
@@ -4685,16 +4685,12 @@ export function ConsoleAppV4(props: {
         },
         { label: showTechnical ? '隐藏检查详情' : '查看检查详情', run: () => toggleTechnical() },
       ];
-      const scopeText = projection.scopeSummary.references.length > 0
-        ? projection.scopeSummary.references.map((entry) =>
-            `${platformLabel(entry.platform)} · ${scopeLabel(entry.scope)}`).join('；')
-        : '当前加载范围；其他项目引用未检查';
       const relationViewport = actionViewport(actions, policy.mode === 'compact', focus,
         scrollOffset, showTechnical ? responsiveBudget(2, 5) : responsiveBudget(5, 9));
       const focusedGraphRow = focus < rowActions.length ? visibleRows[focus] : undefined;
       help = '↑↓ 选择 · → 展开 · ← 收起 · Enter 节点详情 · Esc 返回';
       content = <Box flexDirection="column">
-        <StaticRow title={`当前检查范围 · ${scopeText}`} status="muted" compact />
+        <StaticRow title="检查范围" value="只检查当前项目和个人位置；其他项目未检查" status="muted" compact />
         {projection.status.state === 'invalid'
           ? <Callout status="error" title="依赖关系无效" description={projection.status.message} /> : null}
         {unverifiedConsumerActions.length > 0
@@ -4745,18 +4741,18 @@ export function ConsoleAppV4(props: {
       ? '这是当前关系图的根插件。'
       : relationship === 'directAvailable'
         ? route.direction === 'dependencies'
-          ? `${plugin.displayName} 的当前位置直接依赖此插件，且依赖当前可用。`
-          : `${node?.displayName ?? route.nodePluginId} 的当前位置直接依赖当前插件，且依赖当前可用。`
+          ? `${plugin.displayName} 在本次检查的位置需要此插件，所需依赖当前可用。`
+          : `${node?.displayName ?? route.nodePluginId} 在本次检查的位置需要当前插件，所需依赖当前可用。`
         : relationship === 'indirectAvailable'
           ? route.direction === 'dependencies'
-            ? `${plugin.displayName} 通过 ${intermediateNames.join('、')} 连续依赖 ${node?.displayName ?? route.nodePluginId}，且各段当前可用。`
-            : `${node?.displayName ?? route.nodePluginId} 通过 ${intermediateNames.join('、')} 连续依赖 ${plugin.displayName}，且各段当前可用。`
+            ? `${plugin.displayName} 通过 ${intermediateNames.join('、')} 需要 ${node?.displayName ?? route.nodePluginId}，且各段依赖当前可用。`
+            : `${node?.displayName ?? route.nodePluginId} 通过 ${intermediateNames.join('、')} 需要 ${plugin.displayName}，且各段依赖当前可用。`
           : relationship === 'unknown'
-            ? '当前可用位置不能组成连续路径，不能显示这项间接关系。'
+            ? '本次检查的位置不能组成连续路径，不能显示这项间接关系。'
             : relationship === 'declared'
               ? route.direction === 'dependencies'
-                ? `${declaringPluginName} 声明需要 ${node?.displayName ?? route.nodePluginId}，但当前可用关系未检查通过。`
-                : `${node?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前可用关系未检查通过。`
+                ? `${declaringPluginName} 声明需要 ${node?.displayName ?? route.nodePluginId}，但本次尚未确认依赖可用。`
+                : `${node?.displayName ?? route.nodePluginId} 声明需要当前插件，但本次尚未确认依赖可用。`
               : '当前数据不足，不能判断这项依赖关系。';
     const references = selectedRow?.edge?.availablePlacementReferences
       ?? item?.availablePlacementReferences ?? [];
@@ -4765,7 +4761,7 @@ export function ConsoleAppV4(props: {
         ?? reference.consumer.pluginId.split('/').at(-1)!;
       return {
         label: dependencyReferenceUsageLabel(reference, consumerName),
-        meta: '当前可用',
+        meta: '依赖当前可用',
       };
     });
     if (route.view === 'details') {
@@ -4798,10 +4794,10 @@ export function ConsoleAppV4(props: {
     } else if (route.view === 'references') {
       breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId} / 使用位置`;
       context = showTechnical ? '技术详情' : '使用位置';
-      title = `当前可用位置 ${references.length} 个`;
+      title = `当前可用依赖位置 ${references.length} 个`;
       description = showTechnical
         ? '显示当前选择的完整引用字段。'
-        : '这些位置的依赖状态为 ready，且声明边和当前现场证据匹配。';
+        : '这些位置的所需依赖当前可用，且本次检查发现它们同时满足依赖声明和安装位置。';
       actions = [...referenceActions, { label: '返回节点详情', run: back }];
       const referenceViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
         responsiveBudget(3, 6));
@@ -4837,7 +4833,7 @@ export function ConsoleAppV4(props: {
         : '↑↓ 查看全部位置 · d 技术详情 · Enter 返回节点详情 · Esc 返回节点详情';
       content = <Box flexDirection="column">
         {showTechnical ? null
-          : <StaticRow title="证据边界" description="这里只显示当前可用依赖关系；这不表示已确认调用或历史绑定" status="muted" compact />}
+          : <StaticRow title="本次检查" value="只检查当前项目和个人位置；其他项目未检查" status="muted" compact />}
         {showTechnical && referenceDetailOffset > 0
           ? <StaticRow title={`↑ 前面还有 ${referenceDetailOffset} 行`} status="muted" compact /> : null}
         {showTechnical ? visibleReferenceDetailLines.map((line, index) =>
@@ -4851,7 +4847,7 @@ export function ConsoleAppV4(props: {
       actions = [
         ...(references.length > 0 ? [{
           label: `查看全部位置（${references.length}）`,
-          description: '查看每个已检查位置及证据状态',
+          description: '查看每个位置的当前可用依赖',
           run: () => go({ ...route, view: 'references' }),
         }] : []),
         ...(route.nodePluginId !== plugin.pluginId ? [{
@@ -4882,7 +4878,7 @@ export function ConsoleAppV4(props: {
           <StaticRow title="影响" value={state?.value ?? (node ? statusText(node) : '尚未检查当前状态')}
             status={state?.status ?? 'muted'} compact />
           {references.length > 0
-            ? <StaticRow title={`当前可用位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
+            ? <StaticRow title={`当前可用依赖位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
             : null}
         </SectionCard>
         <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
@@ -4899,7 +4895,7 @@ export function ConsoleAppV4(props: {
     title = `你希望在哪里使用 ${plugin.displayName}？`;
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '这里只选择根插件位置。依赖将采用 planner 推荐位置，并在 Review 中显示。'
+      ? '这里只选择根插件的安装位置。依赖会自动安排合适位置，并在操作汇总中显示。'
       : '选择位置后，再选择一个或多个目标平台。';
     const availableScopes = (['user', 'project'] as const).filter((candidateScope) =>
       props.controller.listInstallTargets(plugin.pluginId, candidateScope)
@@ -4910,7 +4906,7 @@ export function ConsoleAppV4(props: {
         selected: candidateScope === scope,
         description: candidateScope === 'user'
           ? hasDependencies ? '根插件在任意项目中可用；依赖位置自动计算' : '在任意项目中可使用，适合个人常用能力'
-          : hasDependencies ? '根插件只在当前项目使用；Review 会说明更宽的依赖位置' : '仅在当前项目中使用，适合团队共享',
+          : hasDependencies ? '根插件只在当前项目使用；操作汇总会说明依赖是否需要用于更多项目' : '仅在当前项目中使用，适合团队共享',
         meta: candidateScope === 'user' ? '推荐' : undefined,
         run: () => {
           const choices = props.controller.listInstallTargets(plugin.pluginId, candidateScope);
@@ -4935,7 +4931,7 @@ export function ConsoleAppV4(props: {
     ];
     content = <Box flexDirection="column">
       <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
-      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将采用推荐位置`} description="Review 中可查看或调整" status="info" /></SectionCard> : null}
+      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将自动安排合适位置`} description="可在操作汇总中查看或调整" status="info" /></SectionCard> : null}
     </Box>;
   } else if (route.name === 'installTargets' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
@@ -4943,8 +4939,8 @@ export function ConsoleAppV4(props: {
     title = '选择目标平台';
     const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
     description = hasDependencies
-      ? '根插件必须支持所选位置；确认后会自动规划依赖并进入 Review。'
-      : '目标平台按所选位置验证；仅含平台共享内容的插件可同时启用两个位置。';
+      ? '根插件必须支持所选位置；确认后会自动安排依赖并显示操作汇总。'
+      : '目标平台按所选位置验证；只含由平台共用内容的插件可同时启用两个位置。';
     const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
     const validSelectedTargets = selectedTargets.filter((platform) =>
       choices.some((choice) => choice.platform === platform && choice.compatible));
@@ -5041,7 +5037,7 @@ export function ConsoleAppV4(props: {
       ...dependencyActions,
       {
         label: '继续到确认',
-        description: draft?.canContinue ? '使用这些最终位置准备 Review' : undefined,
+        description: draft?.canContinue ? '使用这些最终位置显示操作汇总' : undefined,
         disabled: !draft?.canContinue ? draft?.error?.message ?? '依赖位置尚未就绪' : undefined,
         run: () => beginReview(props.controller.installPlacementIntent()),
       },
@@ -5067,7 +5063,7 @@ export function ConsoleAppV4(props: {
     const promotedCount = draft?.targets.filter((target) =>
       target.assignmentSource === 'consumerPromotion').length ?? 0;
     const reasonSummary = [
-      ...(defaultCount > 0 ? [`默认 project ${defaultCount} 项`] : []),
+      ...(defaultCount > 0 ? [`默认当前项目 ${defaultCount} 项`] : []),
       ...(reusedCount > 0 ? [`复用健康的所有项目安装 ${reusedCount} 项`] : []),
       ...(promotedCount > 0 ? [`因依赖自动调整 ${promotedCount} 项`] : []),
     ].join('；');
@@ -5197,7 +5193,7 @@ export function ConsoleAppV4(props: {
         if (updateCandidates.length > 0 && updatePlugin) {
           return [[`update:${pluginWriteTaskTargetKey(candidate)}`, {
             label: `更新并恢复 ${targetLabel}…`,
-            description: '改用当前候选版本建立新任务；进入 Review 前仍会重新检查证据',
+            description: '改用当前候选版本建立新任务；显示操作汇总前仍会重新检查状态',
             status: 'warning',
             run: () => props.controller.beginNestedPluginWriteTask({
               name: 'pluginWriteTask',
@@ -5277,7 +5273,7 @@ export function ConsoleAppV4(props: {
     const taskLabel = pluginWriteTaskLabel(route.goal);
     const startTaskReview = (executionPolicy: 'all' | 'executableSubset'): void => {
       if (targetSetChanged) {
-        setActionError('冻结的精确位置已变化。请返回调整后重新开始。');
+        setActionError('本次安装位置已变化。请返回调整后重新开始。');
         return;
       }
       props.controller.startPluginWriteTaskReview({
@@ -5370,12 +5366,12 @@ export function ConsoleAppV4(props: {
         ? '可以先处理可执行项，或进入下方对应入口处理受阻位置。'
         : '请进入下方对应入口处理；返回后会重新读取当前证据。'} compact={policy.mode === 'compact'} /> : null}
       {missingTargetKeys.length > 0 ? <Callout status="warning"
-        title={`${missingTargetKeys.length} 个冻结位置已失效或无需处理`}
+        title={`${missingTargetKeys.length} 个本次安装位置已失效或无需处理`}
         description="不会把这些位置当作已完成，也不会自动缩小本次范围。请返回调整选择后重新开始。"
         compact={policy.mode === 'compact'} /> : null}
       {addedTargetKeys.length > 0 ? <Callout status="warning"
         title={`${addedTargetKeys.length} 个新位置需要重新确认`}
-        description="不会把刷新后新增的位置自动加入冻结范围。请返回调整选择后重新开始。"
+        description="不会把刷新后新增的位置自动加入本次操作。请返回调整选择后重新开始。"
         compact={policy.mode === 'compact'} /> : null}
       {versionEvidenceChanged ? <Callout status="warning" title="插件目标版本已变化" description="不会沿用来源启用前的版本证据，也不会自动执行新版本。" compact={policy.mode === 'compact'} /> : null}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={taskViewport.offset} limit={taskViewport.limit} />
@@ -5681,7 +5677,7 @@ export function ConsoleAppV4(props: {
       } };
       if (action.id === 'addScope') return {
         label: `在${scopeLabel(action.scope)}中启用…`,
-        description: '增加这个使用位置；现有共享内容保持不变',
+        description: '增加这个使用位置；已被其它项目共用的内容保持不变',
         run: () => beginSecondScope(plugin, action.platform, action.scope),
       };
       if (action.id === 'about') return { label: '查看支持信息', description: '插件定义与平台支持', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
@@ -5720,7 +5716,7 @@ export function ConsoleAppV4(props: {
         description: placement?.state === 'installed'
           ? (placement.scopedPlacements?.find((entry) => entry.scope === action.scope)?.recovery
             ?? placement.recovery)?.find((entry) => entry.command === 'sync')?.description
-            ?? '进入现有 Review、进度和结果链修复 needsSync 或 drift'
+            ?? '重新检查已保存位置，并在操作汇总中显示需要处理的项目'
           : undefined,
         run: () => placement?.state === 'installed'
           ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope })
@@ -5758,7 +5754,7 @@ export function ConsoleAppV4(props: {
       && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
       ? {
           label: '检查受限清理…',
-          description: '只在当前单一目标有精确、专属的 AW 管理恢复证据时确认；先核验，再取消使用设置并尽力清理；共享和外来内容保留。',
+          description: '只在当前单一位置能确认内容只属于此插件时提供；先核验，再取消使用设置并尽力清理；被共用或不属于插件的内容保留。',
           status: 'warning' as const,
           run: () => beginRestrictedForceCleanup(
             plugin.pluginId,
@@ -5950,10 +5946,10 @@ export function ConsoleAppV4(props: {
         ? (activeGroup?.fields ?? []).filter((field) => field.sharedNativeRender && !field.writable)
         : [];
       if (projectSharedNativeFields.length > 0) {
-        description += ' 此设置由个人默认控制平台共享内容；当前项目不可改。更改影响所有项目。';
+        description += ' 此设置由个人默认控制被各项目共用的内容；当前项目不可改。更改影响所有项目。';
       }
       if (projectSharedNativeFields.some(configFieldCanUnset)) {
-        description += ' 发现不再支持的 project override；实际使用 user/default；请删除旧值。';
+        description += ' 本项目旧值不再使用；当前继承个人或插件默认。请删除旧值。';
       }
       if (!readonly && configDraftIssues.length > 0) {
         description += ' 字段已变化；失效草稿不会保存。';
@@ -5984,7 +5980,7 @@ export function ConsoleAppV4(props: {
               : readonly
               ? field.sourceLabel === '未设置' ? '没有任何位置提供值' : `来自${field.sourceLabel}`
               : !configFieldCanSet(field) && configFieldCanUnset(field)
-                ? '不再支持的 project override · 实际使用 user/default · 可删除旧值'
+                ? '本项目旧值不再使用 · 当前继承个人或插件默认 · 可删除旧值'
                 : `${field.description ? `${field.description} · ` : ''}当前有效：${effectiveFieldDisplay(field)} · ${field.effectiveSourceLabel}`,
             meta: readonly ? effectiveFieldDisplay(field) : currentFieldDisplay(field),
             configKey: field.key,
@@ -6258,7 +6254,7 @@ export function ConsoleAppV4(props: {
         ? <StaticRow title="当前覆盖无效" meta={activeField.invalidOverrideIssue} status="warning" />
         : null}
       {!configFieldCanSet(activeField) && configFieldCanUnset(activeField)
-        ? <StaticRow title="不再支持的 project override" meta="实际使用 user/default；删除旧值后保持继承" status="warning" />
+        ? <StaticRow title="本项目旧值不再使用" meta="当前继承个人或插件默认；删除旧值后保持继承" status="warning" />
         : null}
       <StaticRow title={`${layer}中的值`} meta={currentFieldDisplay(activeField)} />
       <StaticRow title="当前实际生效" meta={`${effectiveFieldDisplay(activeField)} · 来自${activeField.effectiveSourceLabel}`} />
@@ -6717,7 +6713,7 @@ export function ConsoleAppV4(props: {
     const reclaimable = entries.filter((entry) => entry.status === 'reclaimable');
     breadcrumb = '目录管理 / 本地存储';
     title = '本地 Catalog Store';
-    description = '只清理已确认且执行时仍安全的弱状态；未知、foreign 和 Active 内容始终保留。';
+    description = '只清理已确认且执行时仍安全的可重建内容；未知、不属于插件的内容和当前使用的内容始终保留。';
     if (entries.length > pageRows) help = 'PgUp/PgDn 查看全部条目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = [{
       label: '预览并清理可安全释放的空间…',
@@ -7305,9 +7301,9 @@ export function ConsoleAppV4(props: {
     context = '毫秒';
     title = '设置脚本超时';
     description = `输入 ${SCRIPT_TIMEOUT_MIN_MS}–${SCRIPT_TIMEOUT_MAX_MS} 毫秒。默认 ${SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒。`;
-    help = '输入 · Enter 应用并重新准备 Review · Ctrl-U 清空 · Esc 取消';
+    help = '输入 · Enter 应用并重新显示操作汇总 · Ctrl-U 清空 · Esc 取消';
     content = <Box flexDirection="column">
-      <InputCard focused title={<InputDisplay value={scriptTimeoutInput} columns={Math.max(8, size.columns - 8)} />} description={scriptTimeoutError ?? '此值将绑定本次 Review。'} status={scriptTimeoutError ? 'error' : undefined} />
+      <InputCard focused title={<InputDisplay value={scriptTimeoutInput} columns={Math.max(8, size.columns - 8)} />} description={scriptTimeoutError ?? '此值只用于本次操作汇总。'} status={scriptTimeoutError ? 'error' : undefined} />
     </Box>;
   } else if (route.name === 'sourceRemoveBlocked') {
     breadcrumb = `插件来源 / ${route.sourceId} / 移除`;
@@ -7736,7 +7732,7 @@ export function ConsoleAppV4(props: {
       ? '当前状态已变化。请检查新的变化后再次确认。'
       : review.description;
     if (taskReview) {
-      context = '精确目标 · 用户任务';
+      context = '本次选择 · 用户任务';
       help = 'PgUp/PgDn 查看全部影响 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     } else if (batchReview) {
       context = `${review.batch?.requestedPluginIds.length ?? 0} 个根插件 · ${review.batch?.groupCount ?? 0} 组`;
@@ -7771,7 +7767,7 @@ export function ConsoleAppV4(props: {
         && batchDraft?.frozenPluginIds ? [{
           label: `调整选择（${new Set(pendingReviewIntent.targets
             .map((target) => target.pluginId)).size}）`,
-          description: '只可删减或恢复本次冻结的推荐插件；调整后重新读取证据并建立 Review',
+          description: '只可删减或恢复本次推荐插件；调整后重新读取状态并显示操作汇总',
           run: () => {
             if (!props.controller.returnToPluginWriteTaskBatchSelection(batchDraft.flowId)) {
               setActionError('推荐选择已失效。请返回我的插件重新开始。');
@@ -7827,7 +7823,7 @@ export function ConsoleAppV4(props: {
       ...(installReviewPluginId
         && (snapshot.installPlacementDraft?.targets.length ?? 0) > 0 ? [{
           label: '查看/调整依赖位置',
-          description: '当前已采用 planner 推荐位置；调整后会重新建立 Review',
+          description: '当前已自动安排依赖位置；调整后会重新显示操作汇总',
           run: () => {
             props.controller.push({
               name: 'dependencyPlacement',
@@ -8019,7 +8015,7 @@ export function ConsoleAppV4(props: {
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
-      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={catalogManagementReview ? '! 需要确认本次写入' : '! 需要确认共享影响'} meta={!catalogManagementReview && review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={catalogManagementReview ? review.description : review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={catalogManagementReview ? '! 需要确认本次写入' : '! 需要确认会影响其他项目的内容'} meta={!catalogManagementReview && review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={catalogManagementReview ? review.description : review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const catalogManagementOperation = snapshot.activeReview?.operationKind === 'catalogManagement';
@@ -8329,7 +8325,7 @@ export function ConsoleAppV4(props: {
       : portableOperation
       ? blocked
         ? result.code === 'operationReviewExpired' || result.code === 'reviewTicketExpired'
-          ? 'Review 已过期，写入未开始。请返回修改并重新确认。'
+          ? '确认信息已过期，写入未开始。请返回修改并重新确认。'
           : result.code === 'operationReviewStale'
             ? '安装证据已变化，写入被阻止。请返回修改并重新确认。'
             : result.writeMayHaveCompleted
@@ -8471,7 +8467,7 @@ export function ConsoleAppV4(props: {
       ? [
           ...(nestedTaskReturn && taskReturnRoute ? [{
             label: '返回剩余恢复任务',
-            description: '保留父任务的冻结目标；返回后重新读取当前证据',
+            description: '保留父任务已选择的位置；返回后重新读取当前状态',
             status: 'success' as const,
             run: () => leaveResult(taskReturnRoute),
           }] : []),
@@ -8595,7 +8591,7 @@ export function ConsoleAppV4(props: {
       ? [
           ...(configRetryAvailable ? [{
             label: '重试应用',
-            description: '先重新进入 Review，并重新采集当前证据',
+            description: '先重新显示操作汇总，并重新读取当前状态',
             run: () => beginReview({
               kind: 'configSave',
               pluginId: configResultPluginId!,

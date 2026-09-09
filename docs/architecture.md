@@ -177,7 +177,7 @@ Codex manager 解析也在同一个 `AW_HOME` mutation lock 内完成，并在�
 
 TUI preview 只读，并且只在最终计划含 Codex native 操作时探测 manager。若需要获取或重建 runtime，Review 明确显示 `@openai/codex`、固定版本和 AW-managed cache；执行该 Review 即授权本次获取，不再显示第二次确认。
 
-TUI 的依赖关系页只解释当前数据，不改变 placement。正向边来自当前 source 的 manifest declaration；反向“谁在使用它”只来自已验证的 placement reference。已声明但没有实际引用的使用者和没有 reference 的声明依赖都保留为 unknown 或 unverified，不能按 `depth` 推断一条边。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，也不提供绕过依赖保护的删除入口。
+TUI 的依赖关系页只解释当前数据，不改变 placement。正向声明边来自当前 source 的 manifest。Controller 从 Status v8 的 dependency component 读取 dependency ID、platform、scope、project 和 state；只有声明边有效、dependency state 为 `ready`，且 consumer 有当前现场 scope evidence（复用 `hasActualScopeEvidence`，不接受纯 Intent）时，才写入内部 `availablePlacementReferences`。它不重新计算 scope 选择。反向“哪些插件依赖它”只沿这些可用关系展开；无位置的声明仍可阅读，并保留为 unknown 或 unverified，不能按 `depth` 推断一条边。默认页面把它说明为本次状态检查：只检查当前项目和个人位置，其他项目未检查；它不表示插件已被调用，也不表示历史安装关系已经确认。共享节点明确标记为同一节点；graph blocker 或环显示为无效，不能渲染为正常树。该页不恢复已安装依赖迁移，不提供绕过依赖保护的删除入口，也不改变 `getBlockingDependents`、移除或 cleanup 门禁。
 
 依赖执行顺序只在本次命令内存在。Receipt v6 的 `overallState` 只能是 `succeeded | partial | failed`；结果使用 `changes`、`targetResults`、`warnings`、`recoveryActions` 和适用时的 `planFingerprint` 表达，不使用六层 `layers`。Receipt 顶层保留 requested/resolved plugin ID 和 dependency edge；`targetResults` 保留 relation、requiredBy、target state 和恢复建议。partial 或 failed 结果不能丢失目标关系和恢复信息。精确匹配的现有 shared native 公开为 `reuse`，并明确不建立 ownership ledger。receipt 不公开持久计划、锁或来源内部证据。
 
@@ -250,7 +250,7 @@ ownership health 只表示当前 live 组件是否完整。Status v8 的 shared 
 
 TUI 的 `PluginUpdateProjection` 把 runtime 的 target revision 与当前 session 的已验证 Catalog candidate 合并为插件级更新事实，并与 health 分开显示。它只在 installed version、目标 Active 或 candidate version、source identity、generation key、manifest/content evidence 和 capability compatibility 都可验证时提供“更新到 X”；Catalog version、ref commit 或未验证 candidate 本身都不能作为插件更新。candidate 需要切换 Active 时，来源切换 Review 与重新规划后的精确插件更新 Review 是两个确认边界。来源切换成功只说明 Active 已改变；插件写入失败仍单独报告。更新 intent 绑定 installed/active version、source identity 和 generation key；锁内任一项改变时返回 stale，不得无声跟随新 candidate。该 projection 和 candidate overlay 都是 session-private 数据，不改变 Status v8 JSON。
 
-TUI 依赖关系区分当前 Catalog 声明与已确认的现场引用。dependency readiness 只说明当前声明要求的依赖是否就绪，owner、激活或版本相等均不能单独证明该依赖边及位置已应用。当前 runtime 缺少这类绑定证据，不生成实际 placement reference；声明者保留在可访问的未验证分组，不计入实际使用者。图的证据分类不放宽锁内写入与依赖删除保护，不增加持久依赖记录或额外现场扫描。
+TUI 依赖关系区分三类数据。Catalog declaration 说明插件声明需要什么；`availablePlacementReferences` 说明本次 Status v8 检查中，声明边、依赖 `ready` 状态和 consumer 当前现场位置可以同时匹配；历史 applied binding 则需要证明某次安装已把该边应用到该位置。历史 binding 尚未实现，因此不会填充 `placementReferences`，也不会把可用关系称为实际调用或已确认安装关系。`availablePlacementReferences` 只是 TUI 内部投影，不新增 Status JSON、I/O、持久记录、锁或现场扫描。图的证据分类不放宽锁内写入与依赖删除保护。
 
 Codex native refresh key 是 user-only。遗留 project override 保留在 store，但不参与 effective value。Status v8 使用非阻断 `configLayerUnsupported` warning 提示用户删除。TUI 禁止在 project 层设置该 key，只允许删除当前 project store 中确实存在的旧值。
 
@@ -311,6 +311,17 @@ TUI 浏览历史的每一帧有会话内稳定 ID。安装、插件维护、配�
 状态刷新后，Controller 必须按实体 ID 校验当前路由和逐层恢复的祖先。插件、来源或问题消失时回对应安全列表；来源筛选失效时回同模式的未筛选列表。所有包含插件或来源实体的 route 都遵守该规则。依赖移除阻断页只说明依赖者和返回路径，不提供绕过依赖保护的强制清理入口。
 
 控制台进程由一个 Session Host 持有当前 Controller、进度 feed 和 session epoch。`h` 只清除当前导航 flow、Review ticket、临时进度和草稿，并回到唯一根帧；它保留本次加载的状态 snapshot、来源检查时间和 session cache。`H` 先保护所有草稿，再取消并等待本 session 的只读请求；确认没有写操作后，才销毁旧订阅并用新的 runtime dependencies、进度 feed 和 Controller 读取本地状态。迟到响应必须同时受 session epoch 和 Controller 内的 flow、frame 或 request identity 保护。执行中 `h`/`H` 只覆盖一个待处理导航；Esc 只撤销该导航。只有 succeeded Result 才自动执行待处理导航，且先把结果交给共享 history owner；partial、stale、blocked 或无法确认清理结果都停留在 Result。Session Host 不用取消 signal 中断写操作，也不新增持久状态。正常退出和异常退出都必须在 session reporter 仍绑定时封闭新入口，等待现有写操作，再取消并等待只读请求，最后释放 Controller。
+
+### TUI v7.2 投影与键盘修复
+
+v7.2 只调整 TUI 的页面投影、阅读和键盘路径。它不新增 CLI 入口、Status JSON、I/O、持久记录、锁或恢复状态机。
+
+- R01：批量 sync、reinstall、uninstall 和 cleanup 的“修改处理范围”只删减或恢复本次已有位置。重新检查后出现的新位置不会自动加入；位置变化时用户必须重新确认；空集合不执行，也不补造缺失位置。
+- R02：静态行在 compact 页面仍显示核心 value；辅助说明要么在默认页可读，要么有完整阅读入口。长节点、来源和设置前后值使用分页 reader；行高预算按实际渲染计算，小屏不以截断代替完整阅读。
+- R03：同一插件的不同平台和 scope 分别显示结论和严重度。平台汇总只用于排序和建议，不把一个范围的问题复制到另一个范围。
+- R04：下载方式和风险确认层共享局部返回规则；Esc 或 `b` 恢复原上下文，`h`、`H`、`q` 和 Ctrl-C 都经过草稿守卫。Ctrl-C 与 `q` 在有草稿时要求同一确认；写入进行中仍等待完成后退出，输入框的普通字符处理不变。
+- R05：可见确认按钮和 `c` 复用同一稳定 action ID 与 handler，包括推荐更新、选择校验、目标和导航。
+- R06：批量安装用同一有序分组模型决定渲染和导航：顶部操作、使用范围、工具。初始焦点落在首个可操作项，视口随焦点移动。
 
 ### TUI 诊断投影与脱敏边界
 
