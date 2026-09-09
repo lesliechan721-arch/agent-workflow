@@ -75,7 +75,7 @@ export type TuiRoute =
       nodePluginId: string;
       direction: 'dependencies' | 'dependents';
       nodePathPluginIds?: string[];
-      view?: 'summary' | 'references';
+      view?: 'summary' | 'references' | 'details';
     }
   | { name: 'installPlacement'; pluginId: string }
   | {
@@ -147,8 +147,8 @@ export type TuiRoute =
   | { name: 'sourceTechnical'; sourceId: string }
   | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string; returnToDraft?: true }
   | { name: 'sourceEdit'; sourceId: string; owner?: string }
-  | { name: 'sourceSave'; owner: string }
-  | { name: 'configSave'; pluginId: string; layer: { scope: Scope } }
+  | { name: 'sourceSave'; owner: string; view?: 'summary' | 'changes' }
+  | { name: 'configSave'; pluginId: string; layer: { scope: Scope }; view?: 'summary' | 'changes' }
   | { name: 'scriptTimeout'; owner: string }
   | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'catalogManagement' }

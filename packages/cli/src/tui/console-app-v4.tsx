@@ -286,14 +286,10 @@ function batchPluginVersionSummary(plugin: PluginListItemViewModel): string {
     : `${updates.length} 个位置版本不同（Enter 查看）`;
 }
 
-function pluginPlacementConclusion(placement: PlatformPlacementSummary): {
+function scopedPluginPlacementConclusion(placement: Extract<PlatformPlacementSummary, { state: 'installed' }>, location: string): {
   text: string;
   status: 'success' | 'warning' | 'error' | 'muted';
 } {
-  if (placement.state === 'notInstalled') return { text: '未添加', status: 'muted' };
-  if (placement.state === 'blocked') return { text: '无法添加：输出位置有冲突', status: 'error' };
-  if (placement.state === 'scopeConflict') return { text: '使用位置冲突，需要选择一个位置', status: 'warning' };
-  const location = placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope);
   if (placement.blockingReason === 'artifactCollision' || placement.actualState === 'blocked') {
     return { text: `${location}暂时不可用`, status: 'error' };
   }
@@ -302,6 +298,45 @@ function pluginPlacementConclusion(placement: PlatformPlacementSummary): {
   }
   if (placement.health === 'error') return { text: `${location}状态未知`, status: 'warning' };
   return { text: `${location}可用`, status: 'success' };
+}
+
+function pluginPlacementConclusions(placement: PlatformPlacementSummary): Array<{
+  text: string;
+  status: 'success' | 'warning' | 'error' | 'muted';
+}> {
+  if (placement.state === 'notInstalled') return [{ text: '未添加', status: 'muted' }];
+  if (placement.state === 'blocked') return [{ text: '无法添加：输出位置有冲突', status: 'error' }];
+  if (placement.state === 'scopeConflict') return [{ text: '使用位置冲突，需要选择一个位置', status: 'warning' }];
+  if (!placement.scopedPlacements?.length) {
+    const location = placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope);
+    return [scopedPluginPlacementConclusion(placement, location)];
+  }
+  const grouped = new Map<string, {
+    scopes: Scope[];
+    status: 'success' | 'warning' | 'error' | 'muted';
+    suffix: string;
+  }>();
+  for (const scoped of placement.scopedPlacements) {
+    const conclusion = scopedPluginPlacementConclusion({
+      platform: placement.platform,
+      state: 'installed',
+      scope: scoped.scope,
+      health: scoped.health,
+      revision: scoped.revision,
+      desiredScopes: [scoped.scope],
+      ...(scoped.actualState ? { actualState: scoped.actualState } : {}),
+      ...(scoped.recovery ? { recovery: scoped.recovery } : {}),
+      ...(scoped.blockingReason ? { blockingReason: scoped.blockingReason } : {}),
+    }, '');
+    const key = `${conclusion.status}\0${conclusion.text}`;
+    const current = grouped.get(key);
+    if (current) current.scopes.push(scoped.scope);
+    else grouped.set(key, { scopes: [scoped.scope], status: conclusion.status, suffix: conclusion.text });
+  }
+  return [...grouped.values()].map((entry) => ({
+    text: `${entry.scopes.map(scopeLabel).join('、')}${entry.suffix}`,
+    status: entry.status,
+  }));
 }
 
 interface BatchSelectionCandidate {
@@ -345,6 +380,18 @@ function isCharacterInputMode(route: TuiRoute, searchMode: boolean): boolean {
     || route.name === 'catalogDev' && route.step !== undefined && route.step !== 'overview'
     || route.name === 'catalogPublish' && route.step !== 'overview'
     || route.name === 'scriptTimeout';
+}
+
+function supportsScriptTimeout(
+  intent: OperationIntent | undefined,
+): intent is OperationIntent & { scriptTimeoutMs?: number } {
+  return intent?.kind === 'pluginWrite'
+    && (intent.action === 'install' || intent.action === 'sync'
+      || intent.action === 'refreshAndSync' || intent.action === 'reinstall')
+    || intent?.kind === 'pluginWriteBatch'
+      && (intent.action === 'install' || intent.action === 'sync' || intent.action === 'reinstall')
+    || intent?.kind === 'pluginWriteTask'
+    || intent?.kind === 'configSave' && intent.apply;
 }
 
 function helpRowsForRoute(
@@ -620,6 +667,21 @@ function wrapConsoleText(value: string, columns: number): string[] {
   }
   if (line || lines.length === 0) lines.push(line);
   return lines;
+}
+
+function changeDetailLines(
+  changes: ReadonlyArray<{ title: string; before?: string; after?: string }>,
+  columns: number,
+): string[] {
+  const valueLines = (label: string, value: string | undefined): string[] => [
+    label,
+    ...wrapConsoleText(value ?? '未设置', Math.max(1, columns - 4)).map((line) => `  ${line}`),
+  ];
+  return changes.flatMap((change) => [
+    `修改项 · ${change.title}`,
+    ...valueLines('修改前', change.before),
+    ...valueLines('修改后', change.after),
+  ]);
 }
 
 function operationRiskWarnings(review: OperationReviewModel): string[] {
@@ -2236,6 +2298,7 @@ export function ConsoleAppV4(props: {
   let content: React.ReactNode;
   let actions: ActionItem[] = [];
   let referenceDetailPagination: { total: number; pageRows: number } | undefined;
+  let placementConclusionPagination: { total: number; pageRows: number } | undefined;
   let pluginRows: PluginListRowViewModel[] = [];
   let visibleConfigTabs: ConfigTab[] = [];
   let activeConfigTabId: string | undefined;
@@ -2421,16 +2484,8 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const beginReview = (intent: OperationIntent, returnRoute?: TuiRoute): void => {
-    const supportsScriptTimeout = intent.kind === 'pluginWrite'
-      && (intent.action === 'install' || intent.action === 'sync'
-        || intent.action === 'refreshAndSync' || intent.action === 'reinstall')
-      || intent.kind === 'pluginWriteBatch'
-        && (intent.action === 'install' || intent.action === 'sync' || intent.action === 'reinstall')
-      || intent.kind === 'pluginWriteTask'
-      || intent.kind === 'configSave' && intent.apply;
-    const pendingIntent = supportsScriptTimeout ? intent : undefined;
-    pendingReviewIntentRef.current = pendingIntent;
-    setPendingReviewIntent(pendingIntent);
+    pendingReviewIntentRef.current = intent;
+    setPendingReviewIntent(intent);
     const underlyingResultRoute = returnRoute ?? (route.name === 'result' && snapshot.result && 'returnRoute' in snapshot.result
       ? snapshot.result.returnRoute
       : undefined);
@@ -4596,7 +4651,7 @@ export function ConsoleAppV4(props: {
             `${platformLabel(entry.platform)} · ${scopeLabel(entry.scope)}`).join('；')
         : '当前加载范围；其他项目引用未检查';
       const relationViewport = actionViewport(actions, policy.mode === 'compact', focus,
-        scrollOffset, showTechnical ? responsiveBudget(3, 6) : responsiveBudget(6, 10));
+        scrollOffset, showTechnical ? responsiveBudget(2, 5) : responsiveBudget(5, 9));
       const focusedGraphRow = focus < rowActions.length ? visibleRows[focus] : undefined;
       help = '↑↓ 选择 · → 展开 · ← 收起 · Enter 节点详情 · Esc 返回';
       content = <Box flexDirection="column">
@@ -4606,7 +4661,7 @@ export function ConsoleAppV4(props: {
         {unverifiedConsumerActions.length > 0
           ? <StaticRow title={`未验证声明者 · ${unverifiedConsumerActions.length} 个`} description="以下声明者不计入实际使用者" status="muted" compact />
           : null}
-        {focusedGraphRow ? <StaticRow title="用途" description={props.controller
+        {focusedGraphRow ? <StaticRow title="用途" value={props.controller
           .getPluginOverview(focusedGraphRow.pluginId)?.description ?? '当前目录没有用途说明'} compact /> : null}
         <SemanticRows actions={actions} focus={focus} kind="action" compact
           offset={relationViewport.offset} limit={relationViewport.limit} />
@@ -4673,7 +4728,34 @@ export function ConsoleAppV4(props: {
         meta: '已确认使用',
       };
     });
-    if (route.view === 'references') {
+    if (route.view === 'details') {
+      const detailSections = [
+        ['用途', node?.description ?? '当前目录没有用途说明'],
+        ['为何需要', description],
+        ['影响', state?.value ?? (node ? statusText(node) : '尚未检查当前状态')],
+      ] as const;
+      const detailLines = detailSections.flatMap(([label, value]) => [
+        label,
+        ...wrapConsoleText(value, Math.max(1, size.columns - 6)).map((line) => `  ${line}`),
+      ]);
+      const pageRows = responsiveBudget(5, 10);
+      const detailOffset = Math.min(batchTargetOffset, Math.max(0, detailLines.length - 1));
+      const visibleDetailLines = detailLines.slice(detailOffset, detailOffset + pageRows);
+      referenceDetailPagination = { total: detailLines.length, pageRows };
+      breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId} / 完整说明`;
+      context = `${Math.min(detailOffset + 1, detailLines.length)}–${Math.min(detailOffset + visibleDetailLines.length, detailLines.length)} / ${detailLines.length}`;
+      title = `${node?.displayName ?? route.nodePluginId} 的完整说明`;
+      description = '用途、关系原因和当前影响。';
+      help = 'PgUp/PgDn 阅读 · Enter 返回节点详情 · Esc 返回节点详情';
+      actions = [{ label: '返回节点详情', run: back }];
+      content = <Box flexDirection="column">
+        {detailOffset > 0 ? <StaticRow title={`↑ 前面还有 ${detailOffset} 行`} status="muted" compact /> : null}
+        {visibleDetailLines.map((line, index) => <StaticRow key={`${detailOffset + index}:${line}`} title={line} compact />)}
+        {detailOffset + visibleDetailLines.length < detailLines.length
+          ? <StaticRow title={`↓ 后面还有 ${detailLines.length - detailOffset - visibleDetailLines.length} 行`} status="muted" compact /> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact />
+      </Box>;
+    } else if (route.view === 'references') {
       breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId} / 使用位置`;
       context = showTechnical ? '技术详情' : '使用位置';
       title = `已检查的使用位置 ${references.length} 个`;
@@ -4741,21 +4823,30 @@ export function ConsoleAppV4(props: {
             direction: route.direction,
           }),
         }] : []),
+        {
+          label: '阅读完整说明',
+          description: '分页查看用途、为何需要和影响',
+          run: () => {
+            setBatchTargetOffset(0);
+            go({ ...route, view: 'details' });
+          },
+        },
         { label: '返回关系图', run: back },
       ];
+      const nodeActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
+        scrollOffset, responsiveBudget(2, 4));
       content = <Box flexDirection="column">
         <SectionCard title="节点状态">
-          <StaticRow title={node?.displayName ?? route.nodePluginId}
-            meta={state?.value ?? (node ? statusText(node) : '未检查')} status={state?.status ?? 'muted'} compact />
-          <StaticRow title="用途" description={node?.description ?? '当前目录没有用途说明'} compact />
-          <StaticRow title="为何需要" description={description} compact />
-          <StaticRow title="影响" description={state?.value ?? (node ? statusText(node) : '尚未检查当前状态')}
+          <StaticRow title="用途" value={node?.description ?? '当前目录没有用途说明'} compact />
+          <StaticRow title="为何需要" value={description} compact />
+          <StaticRow title="影响" value={state?.value ?? (node ? statusText(node) : '尚未检查当前状态')}
             status={state?.status ?? 'muted'} compact />
           {references.length > 0
             ? <StaticRow title={`已检查的使用位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
             : null}
         </SectionCard>
-        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
+          offset={nodeActionViewport.offset} limit={nodeActionViewport.limit} />
         {showTechnical ? <TechnicalDetails>
           <StaticRow title="pluginId" meta={route.nodePluginId} compact />
           <StaticRow title="relationship" meta={relationship ?? 'unknown'} compact />
@@ -5358,16 +5449,28 @@ export function ConsoleAppV4(props: {
       && dependencyOverviewForDetail.summary.totalCount > 0
       ? `使用 ${dependencyOverviewForDetail.summary.totalCount} 个所需插件；尚未确认它们在这些位置的实际使用状态。`
       : undefined;
-    const placementConclusions = plugin.installedPlacements.map((placement) => ({
-      platform: placement.platform,
-      ...pluginPlacementConclusion(placement),
-    }));
+    const placementConclusions = plugin.installedPlacements.flatMap((placement) =>
+      pluginPlacementConclusions(placement).map((conclusion, index) => ({
+        platform: placement.platform,
+        key: `${placement.platform}:${index}`,
+        ...conclusion,
+      })));
     const hasUnavailablePlacement = placementConclusions.some((placement) => placement.status === 'error');
     const hasUncertainPlacement = placementConclusions.some((placement) => placement.status === 'warning');
     const confirmedAvailablePlacements = placementConclusions.filter((placement) =>
       placement.status === 'success');
+    const placementPageRows = policy.mode === 'compact' ? 2 : placementConclusions.length;
+    const placementOffset = Math.min(batchTargetOffset,
+      Math.max(0, placementConclusions.length - placementPageRows));
+    const visiblePlacementConclusions = placementConclusions.slice(
+      placementOffset, placementOffset + placementPageRows);
+    placementConclusionPagination = placementConclusions.length > placementPageRows
+      ? { total: placementConclusions.length, pageRows: placementPageRows } : undefined;
+    if (placementConclusionPagination) {
+      help = 'PgUp/PgDn 查看全部使用位置 · ↑↓ 移动 · Enter 选择 · Esc 返回';
+    }
     const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
-      pageActionBudget(Math.min(placementConclusions.length, 2) + 4));
+      pageActionBudget(Math.min(visiblePlacementConclusions.length, 2) + 4));
     content = <Box flexDirection="column">
       <StatusCard
         status={hasUnavailablePlacement ? 'error'
@@ -5376,9 +5479,12 @@ export function ConsoleAppV4(props: {
         title={hasUnavailablePlacement ? '部分使用位置暂时不可用'
           : hasUncertainPlacement ? '部分使用位置需要处理'
             : confirmedAvailablePlacements.length > 0 ? '已确认的使用位置可用' : '尚未确认使用位置'}
+        meta={placementConclusionPagination
+          ? `${placementOffset + 1}–${placementOffset + visiblePlacementConclusions.length}/${placementConclusions.length}`
+          : undefined}
       >
-        {placementConclusions.map((placement) => <StaticRow
-          key={placement.platform}
+        {visiblePlacementConclusions.map((placement) => <StaticRow
+          key={placement.key}
           title={platformLabel(placement.platform)}
           meta={placement.text}
           status={placement.status}
@@ -5967,8 +6073,30 @@ export function ConsoleAppV4(props: {
     }
   } else if (route.name === 'configSave' && plugin && currentConfigPage) {
     const changes = configChanges();
+    if (route.view === 'changes') {
+      const lines = changeDetailLines(changes, size.columns - 4);
+      const pageRows = responsiveBudget(5, 10);
+      const detailOffset = Math.min(batchTargetOffset, Math.max(0, lines.length - 1));
+      const visibleLines = lines.slice(detailOffset, detailOffset + pageRows);
+      referenceDetailPagination = { total: lines.length, pageRows };
+      breadcrumb = `${plugin.displayName} / 设置 / 完整变化`;
+      context = `${Math.min(detailOffset + 1, lines.length)}–${Math.min(detailOffset + visibleLines.length, lines.length)} / ${lines.length}`;
+      title = '完整设置变化';
+      description = '逐项显示修改前和修改后的完整值。';
+      help = 'PgUp/PgDn 阅读 · Enter 返回保存汇总 · Esc 返回保存汇总';
+      actions = [{ label: '返回保存汇总', run: back }];
+      content = <Box flexDirection="column">
+        {detailOffset > 0 ? <StaticRow title={`↑ 前面还有 ${detailOffset} 行`} status="muted" compact /> : null}
+        {visibleLines.map((line, index) => <StaticRow key={`${detailOffset + index}:${line}`} title={line} compact />)}
+        {detailOffset + visibleLines.length < lines.length
+          ? <StaticRow title={`↓ 后面还有 ${lines.length - detailOffset - visibleLines.length} 行`} status="muted" compact /> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact />
+      </Box>;
+    } else {
     const affectedTargets = configSaveImpact?.affectedTargets ?? [];
     const hasConsumers = configSaveImpact?.impactState === 'known' && affectedTargets.length > 0;
+    const visibleChanges = policy.mode === 'compact' ? changes.slice(0, 1) : changes;
+    const visibleAffectedTargets = policy.mode === 'compact' ? affectedTargets.slice(0, 1) : affectedTargets;
     const targetSummary = affectedTargets
       .map((target) => `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`)
       .join('、');
@@ -6013,18 +6141,34 @@ export function ConsoleAppV4(props: {
       }] : []),
       { label: '返回修改', run: back },
     ] : [{ label: '返回修改', run: back }];
-    content = <Box flexDirection="column"><SectionCard title="设置变更" compact={policy.mode === 'compact'}>
-      {changes.map((change) => <ReviewChangeRow
+    actions.splice(Math.max(0, actions.length - 1), 0, {
+      label: '阅读完整设置变化',
+      description: '分页查看每项修改前和修改后的完整值',
+      run: () => {
+        setBatchTargetOffset(0);
+        go({ ...route, view: 'changes' });
+      },
+    });
+    const configSaveActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
+      scrollOffset, responsiveBudget(2, 4));
+    const changeSectionTitle = visibleChanges.length < changes.length
+      ? `设置变更 · 显示 ${visibleChanges.length}/${changes.length}（另 ${changes.length - visibleChanges.length} 项）`
+      : '设置变更';
+    const impactSectionTitle = hasConsumers && visibleAffectedTargets.length < affectedTargets.length
+      ? `应用影响 · 显示 ${visibleAffectedTargets.length}/${affectedTargets.length}（另 ${affectedTargets.length - visibleAffectedTargets.length} 个）`
+      : '应用影响';
+    content = <Box flexDirection="column"><SectionCard title={changeSectionTitle} compact={policy.mode === 'compact'}>
+      {visibleChanges.map((change) => <ReviewChangeRow
         key={change.key}
         title={`~ ${draftRemoves.includes(change.key) ? `删除 ${change.title} 中的值` : change.title}`}
-        description={`${change.before} → ${change.after}`}
+        value={`${change.before} → ${change.after}`}
         compact={policy.mode === 'compact'}
       />)}
-    </SectionCard><SectionCard title="应用影响" compact={policy.mode === 'compact'}>
+    </SectionCard><SectionCard title={impactSectionTitle} compact={policy.mode === 'compact'}>
       {!configSaveImpact && !configSaveImpactError
         ? <ProgressRow title="分析实际配置消费者" state="active" />
         : hasConsumers
-          ? affectedTargets.map((target) => <StaticRow
+          ? visibleAffectedTargets.map((target) => <StaticRow
               key={`${target.platform}:${target.scope}`}
               title={`${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`}
               meta="需要重新应用"
@@ -6041,7 +6185,9 @@ export function ConsoleAppV4(props: {
               compact
             />}
       <StaticRow title="其他设置层保持不变" status="success" compact />
-    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
+      offset={configSaveActionViewport.offset} limit={configSaveActionViewport.limit} /></Box>;
+    }
   } else if (route.name === 'configFieldAction' && plugin && activeField) {
     const layer = configLayerLabel(route.layer);
     breadcrumb = `${plugin.displayName} / 设置 / ${layer} / ${activeField.title}`;
@@ -7030,13 +7176,13 @@ export function ConsoleAppV4(props: {
           setSourceTransportOverlay({ owner: active.owner });
           setOverlayFocus(officialTransport === 'HTTPS' ? 0 : 1);
         },
-      }] : [{ label: draft?.type === 'path' || detail?.type === 'path' ? '本地目录' : 'Git 仓库地址', description: locationSummary, run: () => startDraftField('location') }]),
+      }] : [{ label: draft?.type === 'path' || detail?.type === 'path' ? '本地目录' : 'Git 仓库地址', meta: locationSummary, run: () => startDraftField('location') }]),
       ...(draft?.type === 'git' || !draft && detail?.type === 'git' ? [
-        { label: '版本引用', description: draft ? draft.refPolicy === 'explicit' ? `固定：${draft.ref}` : '跟随 AW 版本通道' : detail?.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startDraftField('refPolicy') },
-        { label: '高级：Catalog 子目录', description: catalogSubdir === '' || catalogSubdir === undefined
+        { label: '版本引用', meta: draft ? draft.refPolicy === 'explicit' ? `固定：${draft.ref}` : '跟随 AW 版本通道' : detail?.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startDraftField('refPolicy') },
+        { label: '高级：Catalog 子目录', meta: catalogSubdir === '' || catalogSubdir === undefined
           ? '仓库根目录' : catalogSubdir, run: () => startDraftField('subdir') },
       ] : []),
-      { label: '自动检查更新', description: (draft?.autoCheck ?? detail?.autoCheck) ? '已开启' : '已关闭', selected: draft?.autoCheck ?? detail?.autoCheck, run: () => {
+      { label: '自动检查更新', meta: (draft?.autoCheck ?? detail?.autoCheck) ? '已开启' : '已关闭', selected: draft?.autoCheck ?? detail?.autoCheck, run: () => {
         if (!draft) {
           const source = props.controller.getConfiguredSource(route.sourceId);
           if (!source) return;
@@ -7062,6 +7208,26 @@ export function ConsoleAppV4(props: {
     </SectionCard><SemanticRows actions={actions} focus={sourceTransportOverlay ? -1 : focus} kind="section" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceSave' && sourceDraft?.owner === route.owner) {
     const changes = sourceDraftChanges(sourceDraft);
+    if (route.view === 'changes') {
+      const lines = changeDetailLines(changes, size.columns - 4);
+      const pageRows = responsiveBudget(5, 10);
+      const detailOffset = Math.min(batchTargetOffset, Math.max(0, lines.length - 1));
+      const visibleLines = lines.slice(detailOffset, detailOffset + pageRows);
+      referenceDetailPagination = { total: lines.length, pageRows };
+      breadcrumb = `插件来源 / ${sourceDraft.sourceId} / 完整变化`;
+      context = `${Math.min(detailOffset + 1, lines.length)}–${Math.min(detailOffset + visibleLines.length, lines.length)} / ${lines.length}`;
+      title = '完整来源变化';
+      description = '逐项显示修改前和修改后的完整值。';
+      help = 'PgUp/PgDn 阅读 · Enter 返回修改汇总 · Esc 返回修改汇总';
+      actions = [{ label: '返回修改汇总', run: back }];
+      content = <Box flexDirection="column">
+        {detailOffset > 0 ? <StaticRow title={`↑ 前面还有 ${detailOffset} 行`} status="muted" compact /> : null}
+        {visibleLines.map((line, index) => <StaticRow key={`${detailOffset + index}:${line}`} title={line} compact />)}
+        {detailOffset + visibleLines.length < lines.length
+          ? <StaticRow title={`↓ 后面还有 ${lines.length - detailOffset - visibleLines.length} 行`} status="muted" compact /> : null}
+        <SemanticRows actions={actions} focus={focus} kind="action" compact />
+      </Box>;
+    } else {
     const savedSource = props.controller.getConfiguredSource(sourceDraft.sourceId);
     const protocolOnly = changes.length === 1 && changes[0]?.title === 'Git 仓库地址'
       && savedSource?.type === 'git'
@@ -7077,11 +7243,23 @@ export function ConsoleAppV4(props: {
       ...(protocolOnly ? [] : [{ label: '保存并启用', description: '保存来源配置，再验证并切换当前目录版本', status: 'success' as const, run: () => beginSourceReview(sourceDraft, true) }]),
       { label: protocolOnly ? '只保存下载方式' : '只保存', description: '只保存来源配置；当前目录版本保持不变', status: protocolOnly ? 'success' : undefined, run: () => beginSourceReview(sourceDraft, false) },
       ...(protocolOnly ? [{ label: '保存并启用…', description: '保存后验证并切换当前目录版本', run: () => beginSourceReview(sourceDraft, true) }] : []),
+      { label: '阅读完整来源变化', description: '分页查看每项修改前和修改后的完整值', run: () => {
+        setBatchTargetOffset(0);
+        go({ ...route, view: 'changes' });
+      } },
       { label: '返回修改', run: back },
     ];
-    content = <Box flexDirection="column"><SectionCard title="来源变化" compact={policy.mode === 'compact'}>
-      {changes.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} description={`${change.before ?? '未设置'} → ${change.after}`} compact={policy.mode === 'compact'} />)}
-    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    const visibleChanges = policy.mode === 'compact' ? changes.slice(0, 1) : changes;
+    const sourceSaveActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
+      scrollOffset, responsiveBudget(2, 4));
+    const changeSectionTitle = visibleChanges.length < changes.length
+      ? `来源变化 · 显示 ${visibleChanges.length}/${changes.length}（另 ${changes.length - visibleChanges.length} 项）`
+      : '来源变化';
+    content = <Box flexDirection="column"><SectionCard title={changeSectionTitle} compact={policy.mode === 'compact'}>
+      {visibleChanges.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} value={`${change.before ?? '未设置'} → ${change.after}`} compact={policy.mode === 'compact'} />)}
+    </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
+      offset={sourceSaveActionViewport.offset} limit={sourceSaveActionViewport.limit} /></Box>;
+    }
   } else if (route.name === 'scriptTimeout' && pendingReviewIntent) {
     breadcrumb = '高级选项 / 安装前检查脚本';
     context = '毫秒';
@@ -7619,17 +7797,7 @@ export function ConsoleAppV4(props: {
             setScrollOffset(0);
           },
         }] : []),
-      ...((pendingReviewIntent?.kind === 'pluginWrite'
-        && (pendingReviewIntent.action === 'install'
-          || pendingReviewIntent.action === 'refreshAndSync'
-          || pendingReviewIntent.action === 'reinstall'
-          || pendingReviewIntent.action === 'sync')
-        || pendingReviewIntent?.kind === 'pluginWriteBatch'
-          && (pendingReviewIntent.action === 'install'
-            || pendingReviewIntent.action === 'sync'
-            || pendingReviewIntent.action === 'reinstall')
-        || pendingReviewIntent?.kind === 'pluginWriteTask'
-        || pendingReviewIntent?.kind === 'configSave' && pendingReviewIntent.apply) ? [{
+      ...(supportsScriptTimeout(pendingReviewIntent) ? [{
         label: '高级选项：脚本超时',
         description: `${pendingReviewIntent.scriptTimeoutMs ?? SCRIPT_TIMEOUT_DEFAULT_MS} 毫秒`,
         run: () => {
@@ -9133,8 +9301,20 @@ export function ConsoleAppV4(props: {
       setReportSaveError(undefined);
       return;
     }
+    if ((key.pageUp || key.pageDown) && route.name === 'pluginDetail'
+      && placementConclusionPagination) {
+      const { total, pageRows } = placementConclusionPagination;
+      setBatchTargetOffset((value) => Math.min(
+        Math.max(0, total - pageRows),
+        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
+      ));
+      return;
+    }
     if ((key.pageUp || key.pageDown)
-      && route.name === 'pluginDependencyNode' && route.view === 'references'
+      && (route.name === 'pluginDependencyNode'
+          && (route.view === 'references' || route.view === 'details')
+        || route.name === 'configSave' && route.view === 'changes'
+        || route.name === 'sourceSave' && route.view === 'changes')
       && referenceDetailPagination) {
       const { total, pageRows } = referenceDetailPagination;
       setBatchTargetOffset((value) => Math.min(
@@ -9771,6 +9951,10 @@ export function ConsoleAppV4(props: {
       setOverlay(dirty ? 'discard' : 'exit');
     } else if (input.toLowerCase() === 'd' && supportsTechnicalDetails) {
       toggleTechnical();
+    } else if (globalAction === 'back'
+      && (route.name === 'configSave' || route.name === 'sourceSave')
+      && route.view === 'changes') {
+      back();
     } else if (globalAction === 'back'
       && (route.name === 'configFieldEditor'
         || route.name === 'configObjectPropertyEditor'

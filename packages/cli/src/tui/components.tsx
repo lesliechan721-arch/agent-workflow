@@ -495,6 +495,7 @@ export function ActionRow(props: InteractiveRowProps): React.JSX.Element {
 
 export interface StaticRowProps {
   title: ReactNode;
+  value?: ReactNode;
   description?: ReactNode;
   meta?: ReactNode;
   status?: TuiStatus;
@@ -519,6 +520,9 @@ function StaticRowView(props: StaticRowProps & { marker?: string }): React.JSX.E
             )
           : null}
       </Box>
+      {props.value !== undefined && props.value !== null
+        ? <Text color={color} wrap={props.compact ? 'truncate-end' : 'wrap'}>  {props.value}</Text>
+        : null}
       {props.description && !props.compact
         ? <Text color={tuiTheme.colors.muted} wrap="truncate-end">  {props.description}</Text>
         : null}

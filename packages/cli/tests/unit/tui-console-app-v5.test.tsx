@@ -1763,9 +1763,174 @@ describe('ConsoleAppV4', () => {
 
     expect(frame).toContain('已确认的使用位置可用');
     expect(frame).toContain('Codex');
-    expect(frame).toContain('所有项目可用');
+    expect(frame).toContain('所有项目、当前项目可用');
     expect(frame).toContain('尚未确认它们在这些位置的实际使用状态');
     expect(frame.match(/使用说明/gu)).toHaveLength(1);
+  });
+
+  it.each([
+    ['ready', 'needsSync', ['所有项目可用', '当前项目需要同步']],
+    ['needsSync', 'ready', ['所有项目需要同步', '当前项目可用']],
+    ['ready', 'absent', ['所有项目可用']],
+    ['needsSync', 'needsSync', ['所有项目、当前项目需要同步']],
+  ] as const)('keeps scoped Status v8 conclusions for user=%s and project=%s', async (
+    userState, projectState, expected,
+  ) => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
+      entry.pluginId === 'official/review-gate');
+    const target = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    loaded.payload.targets = [target];
+    for (const [scope, state] of [['user', userState], ['project', projectState]] as const) {
+      updatePlacement(target, scope, {
+        state,
+        components: state === 'absent' ? [{ kind: 'ownership', key: `fixture-${scope}`, state: 'absent' }] : [
+          { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+            enabled: true, scopes: [scope], relation: 'root',
+          } },
+          { kind: 'ownership', key: `fixture-${scope}`, state: 'present' },
+        ],
+        reasons: state === 'needsSync'
+          ? [{ code: 'missingContent', message: 'safe fixture', severity: 'warning' }] : [],
+        recoveryActions: [],
+      });
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    const frame = instance.lastFrame() ?? '';
+
+    for (const text of expected) expect(frame).toContain(text);
+    if (userState !== projectState) expect(frame).not.toContain('所有项目、当前项目需要同步');
+  });
+
+  it('keeps one shared failure conclusion for both Status v8 scopes', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
+      entry.pluginId === 'official/review-gate');
+    const target = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    if (target.platform !== 'codex') throw new Error('expected Codex target');
+    loaded.payload.targets = [target];
+    target.components = [{
+      kind: 'sharedNative', key: 'review-gate@aw-official', state: 'replaceable',
+      metadata: { shared: true, reason: 'renderDrift', version: '0.2.1' },
+    }];
+    for (const scope of ['user', 'project'] as const) updatePlacement(target, scope, {
+      state: 'needsSync',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: [scope], relation: 'root',
+        } },
+        { kind: 'ownership', key: `fixture-${scope}`, state: 'present' },
+      ],
+      reasons: [],
+      recoveryActions: [{ command: 'sync', scope, description: 'Synchronize shared content.' }],
+    });
+    target.reasons = [{
+      code: 'codexSharedNativeRenderDrift', message: 'safe shared drift', severity: 'warning',
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    expect(instance.lastFrame()).toContain('所有项目、当前项目需要同步');
+  });
+
+  it('does not copy one scoped collision to the ready Status v8 scope', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
+      entry.pluginId === 'official/review-gate');
+    const target = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    loaded.payload.targets = [target];
+    updatePlacement(target, 'user', {
+      state: 'ready',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['user'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-user', state: 'present' },
+      ],
+      reasons: [], recoveryActions: [],
+    });
+    updatePlacement(target, 'project', {
+      state: 'blocked',
+      components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture-project', state: 'present' },
+      ],
+      reasons: [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }],
+      recoveryActions: [],
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    const frame = instance.lastFrame() ?? '';
+
+    expect(frame).toContain('所有项目可用');
+    expect(frame).toContain('当前项目暂时不可用');
+    expect(frame).not.toContain('所有项目、当前项目暂时不可用');
+  });
+
+  it('keeps four scoped platform conclusions and the primary action reachable at 60x18', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
+      entry.pluginId === 'team-tools/review-gate');
+    loaded.payload.targets = loaded.payload.targets.filter((entry) =>
+      entry.pluginId === 'team-tools/review-gate');
+    for (const target of loaded.payload.targets) {
+      const targetScopes = target.platform === 'codex'
+        ? target.placements.map((entry) => entry.scope) : [target.scope];
+      for (const targetScope of targetScopes) {
+        const nextState = target.platform === 'codex' && targetScope === 'project'
+          ? 'needsSync' as const
+          : target.platform === 'claude' && targetScope === 'user'
+            ? 'blocked' as const : 'ready' as const;
+        updatePlacement(target, targetScope, {
+          state: nextState,
+          components: [
+            { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+              enabled: true, scopes: [targetScope], relation: 'root',
+            } },
+            { kind: 'ownership', key: `fixture-${target.platform}-${targetScope}`, state: 'present' },
+          ],
+          reasons: nextState === 'needsSync'
+            ? [{ code: 'missingContent', message: 'safe missing content', severity: 'warning' }]
+            : nextState === 'blocked'
+              ? [{ code: 'artifactCollision', message: 'safe collision', severity: 'blocking' }] : [],
+          recoveryActions: [],
+        });
+      }
+    }
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    const first = instance.lastFrame() ?? '';
+    expect(first).toContain('Codex');
+    expect(first).toContain('所有项目可用');
+    expect(first).toContain('当前项目需要同步');
+    expect(first).toContain('›');
+    expect(first.split('\n').length).toBeLessThanOrEqual(18);
+
+    await input(instance, '\u001B[6~');
+    const second = instance.lastFrame() ?? '';
+    expect(second).toContain('Claude Code');
+    expect(second).toContain('所有项目暂时不可用');
+    expect(second).toContain('当前项目可用');
+    expect(second).toContain('›');
+    expect(second.split('\n').length).toBeLessThanOrEqual(18);
   });
 
   it('does not claim saved settings make an uninstalled plugin usable', async () => {
@@ -4804,7 +4969,14 @@ describe('ConsoleAppV4', () => {
     });
   });
 
-  it('lets batch maintenance remove an exact existing location without adding another platform', async () => {
+  it.each([
+    ['sync', '同步已保存使用设置…', true],
+    ['reinstall', '重新安装…', true],
+    ['uninstall', '移除所选插件…', false],
+    ['cleanup', '清理遗留内容…', true],
+  ] as const)('lets batch %s edit exact existing locations without adding another platform', async (
+    expectedAction, actionLabel, opensMaintenance,
+  ) => {
     const loaded = loadResult();
     const live = loaded.payload.targets.find((target) =>
       target.pluginId === 'team-tools/review-gate' && target.platform === 'codex')!;
@@ -4830,28 +5002,47 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
 
     await input(instance, 'm', ' ', 'c');
-    await focusAction(instance, '其他维护方式…');
-    await input(instance, '\r');
-    await focusAction(instance, '同步已保存使用设置…');
+    if (opensMaintenance) {
+      await focusAction(instance, '其他维护方式…');
+      await input(instance, '\r');
+    }
+    await focusAction(instance, actionLabel);
     await input(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    const oldReviewToken = value.snapshot.activeReview!.reviewToken;
     expect(instance.lastFrame()).toContain('修改处理范围');
     await focusAction(instance, '修改处理范围');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('3/3 个位置');
 
+    if (expectedAction === 'sync') {
+      const captureCount = captureEvidence.mock.calls.length;
+      await input(instance, '\r', '\u001B[B', '\r', '\u001B[B', '\r');
+      expect(instance.lastFrame()).toContain('0/3 个位置');
+      expect(instance.lastFrame()).toContain('请至少保留一个处理位置');
+      expect(value.snapshot.router.current.route.name).toBe('batchPlacement');
+      expect(captureEvidence).toHaveBeenCalledTimes(captureCount);
+      await input(instance, '\r', '\u001B[A', '\r', '\u001B[A', '\r');
+      expect(instance.lastFrame()).toContain('3/3 个位置');
+    }
+
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('2/3 个位置');
-    await focusAction(instance, '查看批量同步确认');
+    await focusAction(instance, `查看批量${{
+      sync: '同步', reinstall: '重新安装', uninstall: '卸载', cleanup: '清理',
+    }[expectedAction]}确认`);
     await input(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     const intent = captureEvidence.mock.calls.at(-1)?.[0];
-    expect(intent).toMatchObject({ kind: 'pluginWriteBatch', action: 'sync' });
+    expect(intent).toMatchObject({ kind: 'pluginWriteBatch', action: expectedAction });
     expect(intent && intent.kind === 'pluginWriteBatch' && intent.selection.kind === 'targets'
       ? intent.selection.targets : []).toEqual([
       { pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'project' },
       { pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user' },
     ]);
+    await expect(value.executeOperation(oldReviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
   });
 
   it('distinguishes global, source, query, and update empty plugin lists', async () => {
@@ -7240,6 +7431,7 @@ describe('ConsoleAppV4', () => {
   it('stages a stored field removal without executing a write and shows inherited Review text', async () => {
     const page = configPage();
     const level = page.groups[0]!.fields[0]!;
+    level.displayValue = `严格${'并保留当前项目的完整配置'.repeat(18)}。设置修改前唯一结尾。`;
     level.fallbackDisplayValue = '平衡';
     level.fallbackSourceLabel = '个人默认';
     const executeIntent = vi.fn();
@@ -7248,7 +7440,7 @@ describe('ConsoleAppV4', () => {
       executeIntent,
     });
     value.push({ name: 'configFields', pluginId: page.pluginId, layer: { scope: 'project', projectLayer: 'shared' } });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(4);
 
     await input(instance, '\r', '\u001B[B', '\r');
@@ -7261,10 +7453,88 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route.name).toBe('configFields');
     expect(instance.lastFrame()).toContain('1 项未保存');
     await openConfigSave(instance, value);
-    expect(instance.lastFrame()).toContain('设置变更');
-    expect(instance.lastFrame()).toContain('恢复继承（平衡 · 个人默认）');
-    expect(instance.lastFrame()).toContain('应用影响');
+    expect(instance.lastFrame()).toContain('严格并保留当前项目的完整配置');
+    expect(instance.lastFrame()).toContain('Codex · 当前项目');
     expect(instance.lastFrame()).toContain('保持不变');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    expect(instance.lastFrame()).not.toContain('设置修改前唯一结尾');
+    await focusAction(instance, '阅读完整设置变化');
+    await input(instance, '\r');
+    const detailPages: string[] = [];
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const frame = instance.lastFrame() ?? '';
+      detailPages.push(frame);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      if (!frame.includes('↓ 后面还有')) break;
+      await input(instance, '\u001B[6~');
+    }
+    expect(detailPages.join('\n').replace(/\s/gu, '')).toContain('设置修改前唯一结尾');
+    expect(detailPages.join('\n')).toContain('恢复继承（平衡 · 个人默认）');
+    await input(instance, 'b');
+    expect(instance.lastFrame()).toContain('› 阅读完整设置变化');
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('keeps a multi-field config summary and its complete final change reachable at 60x18', async () => {
+    const page = configPage();
+    const fields = page.groups[0]!.fields;
+    fields[2]!.title = '最后设置字段';
+    fields[2]!.displayValue = '设置最后修改前唯一值';
+    fields[2]!.fallbackDisplayValue = '设置最后修改后唯一值';
+    fields[2]!.fallbackSourceLabel = '个人默认';
+    const executeIntent = vi.fn();
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      const captured = evidenceForIntent(intent);
+      if (intent.kind !== 'configSave') return captured;
+      return {
+        ...captured,
+        config: {
+          scope: intent.scope,
+          storeDigest: 'sha256:config-store',
+          impactState: 'known',
+          affectedTargets: [
+            { platform: 'codex', scope: 'user' },
+            { platform: 'codex', scope: 'project' },
+            { platform: 'claude', scope: 'user' },
+            { platform: 'claude', scope: 'project' },
+          ],
+        },
+      };
+    });
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+      captureEvidence,
+      executeIntent,
+    });
+    value.push({
+      name: 'configFields', pluginId: page.pluginId,
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+
+    await input(instance, 'u', '\u001B[B', 'u', '\u001B[B', 'u');
+    expect(instance.lastFrame()).toContain('3 项未保存');
+    await openConfigSave(instance, value);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('显示 1/3（另 2 项）');
+    expect(instance.lastFrame()).toContain('显示 1/4（另 3 个）');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await focusAction(instance, '阅读完整设置变化');
+    expect(instance.lastFrame()).toContain('› 阅读完整设置变化');
+    await input(instance, '\r');
+    const pages: string[] = [];
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const frame = instance.lastFrame() ?? '';
+      pages.push(frame);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      if (!frame.includes('↓ 后面还有')) break;
+      await input(instance, '\u001B[6~');
+    }
+    const completeText = pages.join('\n').replace(/\s/gu, '');
+    expect(completeText).toContain('修改项·最后设置字段');
+    expect(completeText).toContain('设置最后修改前唯一值');
+    expect(completeText).toContain('设置最后修改后唯一值');
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
@@ -7891,9 +8161,16 @@ describe('ConsoleAppV4', () => {
   });
 
   it('shows an explicitly cleared Catalog subdirectory as the repository root', async () => {
-    const value = controller();
+    const loaded = loadResult();
+    const longSubdir = `catalog/${'团队来源目录/'.repeat(18)}来源修改前唯一结尾`;
+    const configured = loaded.configuredSources?.find((source) => source.id === 'team-tools');
+    if (configured?.type !== 'git') throw new Error('expected Git source fixture');
+    configured.subdir = longSubdir;
+    const detail = loaded.sourceDetails?.find((source) => source.id === 'team-tools');
+    if (detail) detail.subdir = longSubdir;
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(3);
 
     await input(instance, '\u001B[B', '\u001B[B', '\r', '\u0015', '\r');
@@ -7901,7 +8178,61 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('Catalog 子目录\n     catalog');
     await focusAction(instance, '查看修改汇总');
     await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('catalog → 仓库根目录');
+    expect(instance.lastFrame()).toContain('Catalog 子目录');
+    expect(instance.lastFrame()).not.toContain('来源修改前唯一结尾');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await focusAction(instance, '阅读完整来源变化');
+    await input(instance, '\r');
+    const detailPages: string[] = [];
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const frame = instance.lastFrame() ?? '';
+      detailPages.push(frame);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      if (!frame.includes('↓ 后面还有')) break;
+      await input(instance, '\u001B[6~');
+    }
+    expect(detailPages.join('\n').replace(/\s/gu, '')).toContain('来源修改前唯一结尾');
+    expect(detailPages.join('\n')).toContain('仓库根目录');
+    await input(instance, 'b');
+    expect(instance.lastFrame()).toContain('› 阅读完整来源变化');
+  });
+
+  it('keeps a multi-field source summary and its complete final change reachable at 60x18', async () => {
+    const loaded = loadResult();
+    const configured = loaded.configuredSources?.find((source) => source.id === 'team-tools');
+    if (configured?.type !== 'git') throw new Error('expected Git source fixture');
+    configured.subdir = 'before/来源最后修改前唯一值';
+    const detail = loaded.sourceDetails?.find((source) => source.id === 'team-tools');
+    if (detail) detail.subdir = configured.subdir;
+    const executeIntent = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), executeIntent });
+    value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+
+    const nextUrl = `https://example.test/${'nested/'.repeat(12)}catalog.git`;
+    await input(instance, '\r', '\u0015', nextUrl, '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u0015', 'after/来源最后修改后唯一值', '\r');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('显示 1/2（另 1 项）');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await focusAction(instance, '阅读完整来源变化');
+    expect(instance.lastFrame()).toContain('› 阅读完整来源变化');
+    await input(instance, '\r');
+    const pages: string[] = [];
+    for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+      const frame = instance.lastFrame() ?? '';
+      pages.push(frame);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      if (!frame.includes('↓ 后面还有')) break;
+      await input(instance, '\u001B[6~');
+    }
+    const completeText = pages.join('\n').replace(/\s/gu, '');
+    expect(completeText).toContain('修改项·Catalog子目录');
+    expect(completeText).toContain('来源最后修改前唯一值');
+    expect(completeText).toContain('来源最后修改后唯一值');
+    expect(executeIntent).not.toHaveBeenCalled();
   });
 
   it('cancels a fixed-ref field without changing its parent source draft', async () => {
