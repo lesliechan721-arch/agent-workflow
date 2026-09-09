@@ -72,7 +72,8 @@ describe('TUI Active Catalog session', () => {
     await controller.load();
     controller.push({ name: 'sourceDetail', sourceId: 'official' });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(instance.lastFrame()).toContain('获取并启用');
+    expect(instance.lastFrame()).toContain('恢复来源');
+    expect(instance.lastFrame()).toContain('取得并验证可用目录后再启用');
     expect(instance.lastFrame()).not.toContain('aw catalog source sync official');
   });
 

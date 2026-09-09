@@ -1,6 +1,6 @@
 interface:
-  display_name: "Dev Implement"
-  short_description: "实现明确请求或已确认 Spec，并按需使用纵向切片和实际验证"
-  default_prompt: "使用 $dev-implement 实现当前明确请求或已确认 Spec，并运行实际验证。"
+  display_name: "实现工作项"
+  short_description: "实现当前明确工作项并运行相关验证，保持任务边界并报告未解决问题"
+  default_prompt: "使用 $dev-implement 处理当前请求；按实际授权、输入和已有工件执行。"
 policy:
   allow_implicit_invocation: true

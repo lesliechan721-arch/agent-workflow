@@ -93,18 +93,25 @@ function page(layer: ConfigPageViewModel['layer']): ConfigPageViewModel {
 
 function controller(options: {
   affectedTargets?: NonNullable<OperationEvidence['config']>['affectedTargets'];
+  impactState?: 'known' | 'unknown';
+  failImpactAttempts?: number;
 } = {}): { value: TuiController; captured: OperationIntent[] } {
   const captured: OperationIntent[] = [];
+  let configImpactAttempts = 0;
   const dependencies: TuiControllerDependencies = {
     loadStatus: vi.fn().mockResolvedValue(status()),
     captureEvidence: vi.fn(async (intent: OperationIntent) => {
       captured.push(intent);
+      if (intent.kind === 'configSave' && configImpactAttempts < (options.failImpactAttempts ?? 0)) {
+        configImpactAttempts += 1;
+        throw new Error('impact read failed');
+      }
       return {
         catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
         config: {
           scope: intent.kind === 'configSave' ? intent.scope : 'project',
           storeDigest: 'sha256:store',
-          impactState: 'known',
+          impactState: options.impactState ?? 'known',
           affectedTargets: options.affectedTargets ?? [],
         },
       };
@@ -214,5 +221,33 @@ describe('TUI config experience v7', () => {
     await input(instance, '\r');
     await nextTurn(3);
     expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'project', apply: true });
+  });
+
+  it('labels unknown impact as unknown and only saves the selected settings layer', async () => {
+    const { value, captured } = controller({ impactState: 'unknown' });
+    await value.load();
+    const instance = await openChangedProjectSave(value, 80, 24);
+
+    const frame = instance.lastFrame() ?? '';
+    expect(frame).toContain('仅保存设置（应用范围尚未确认）');
+    expect(frame).toContain('重新检查影响');
+    expect(frame).not.toContain('没有需要重新应用的已安装目标');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(captured.at(-1)).toMatchObject({ kind: 'configSave', scope: 'project', apply: false });
+  });
+
+  it('keeps a failed impact check read-only until an explicit retry succeeds', async () => {
+    const { value } = controller({ failImpactAttempts: 1 });
+    await value.load();
+    const instance = await openChangedProjectSave(value, 80, 24);
+
+    expect(instance.lastFrame()).toContain('影响检查失败；设置尚未保存');
+    expect(instance.lastFrame()).toContain('重新检查影响');
+    expect(instance.lastFrame()).not.toContain('保存设置');
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('没有需要重新应用的已安装目标');
+    expect(instance.lastFrame()).toContain('保存设置');
   });
 });

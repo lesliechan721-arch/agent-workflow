@@ -152,7 +152,9 @@ describe('Portable Skills TUI V1', () => {
     });
     const instance = render(<SessionConsoleApp host={host} />);
     await tick(4);
-    expect(instance.lastFrame()).toContain('最近成功读取状态');
+    expect(instance.lastFrame()).toContain('添加插件');
+    expect(instance.lastFrame()).toContain('插件来源');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
     first.value.push({ name: 'pluginList', mode: 'browse' });
 
     await send(instance, 'h');
@@ -669,8 +671,10 @@ describe('Portable Skills TUI V1', () => {
     value.push({ name: 'pluginPreview', pluginId: 'official/toolkit' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await tick();
-    expect(instance.lastFrame()).toContain('可安装 · 1 个插件依赖');
-    expect(instance.lastFrame()).toContain('选择 Skill 和 Agent 后交给 Skills CLI 安装');
+    expect(instance.lastFrame()).toContain('自动使用 1 个所需插件；0 个可复用');
+    expect(instance.lastFrame()).toContain('Codex · Claude Code');
+    expect(instance.lastFrame()).toContain('也可安装通用 Skills');
+    expect(instance.lastFrame()).toContain('安装方式、依赖、通用 Skills、来源和诊断');
     expect(instance.lastFrame()).not.toContain('3 个候选');
     expect(capture).not.toHaveBeenCalled();
 

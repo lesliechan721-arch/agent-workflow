@@ -12,17 +12,24 @@ export function catalogSourceListPresentation(options: {
   primary: boolean;
 }): CatalogSourceListPresentation {
   const state = options.freshness?.state;
-  const label = state === 'checking' ? '检查中'
+  const activeAvailable = options.activeVersion !== undefined && options.health === 'ready';
+  const label = options.health === 'unavailable'
+    ? options.activeVersion
+      ? state === 'checkFailed' ? '检查失败 · Active 不可用' : 'Active 不可用'
+      : '无法读取'
+    : state === 'checking' ? '检查中'
     : state === 'updateAvailable'
       ? `可更新到 ${options.freshness?.candidate?.catalogVersion ?? '新版本'}`
       : state === 'localChangesAvailable' ? '本地内容有变化'
         : state === 'versionConflict' ? '版本冲突'
           : state === 'rollbackDetected' ? '检测到回退'
-            : state === 'checkFailed' ? '检查失败 · Active 可用'
+            : state === 'checkFailed' ? activeAvailable
+              ? '检查失败 · Active 可用' : '检查失败 · Active 不可用'
               : state === 'incompatible' ? '候选不兼容'
                 : options.activeVersion ? `Active ${options.activeVersion}`
                   : options.health === 'ready' ? '当前使用' : '无法读取';
   const status = !options.activeVersion || options.health === 'unavailable' || state === 'incompatible'
+    || (state === 'checkFailed' && !activeAvailable)
     ? 'error' as const
     : state === 'checkFailed' ? 'warning' as const
       : state === 'updateAvailable' || state === 'localChangesAvailable'

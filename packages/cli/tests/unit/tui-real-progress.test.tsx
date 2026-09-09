@@ -15,7 +15,11 @@ import {
 } from '../../src/commands/runtime.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
-import { TuiController, type OperationEvidence } from '../../src/tui/controller.js';
+import {
+  TuiController,
+  type OperationEvidence,
+  type TuiControllerSnapshot,
+} from '../../src/tui/controller.js';
 import type { PluginMeta } from '../../src/types.js';
 
 afterEach(() => cleanup());
@@ -31,7 +35,91 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
+class ProgressControllerStub {
+  listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
+
+  constructor(readonly value: TuiControllerSnapshot) {}
+
+  get snapshot(): TuiControllerSnapshot { return this.value; }
+  get externalDrafts(): [] { return []; }
+  subscribe(listener: (snapshot: TuiControllerSnapshot) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.snapshot);
+    return () => this.listeners.delete(listener);
+  }
+  getPluginOverview(): { displayName: string } { return { displayName: '进度插件' }; }
+  listPluginWriteTaskCandidates(): [] { return []; }
+  listUserIssues(): [] { return []; }
+  listPlugins(): [] { return []; }
+  listSources(): [] { return []; }
+  setExternalDraftState(): void {}
+  updatePageContext(): void {}
+}
+
 describe('real ConsoleAppV4 progress chain', () => {
+  it.each([
+    ['install', undefined, '正在添加'],
+    ['refreshAndSync', undefined, '正在更新'],
+    ['reinstall', undefined, '正在恢复'],
+    ['uninstall', undefined, '正在移除'],
+    ['cleanup', undefined, '正在清理'],
+    [undefined, 'update', '正在更新'],
+    [undefined, 'restore', '正在恢复'],
+    [undefined, undefined, '正在应用设置', true],
+  ] as const)('shows the user action for running targets: %s/%s', async (
+    pluginAction,
+    taskGoal,
+    expected,
+    configApply = false,
+  ) => {
+    const operationKind = configApply ? 'configSave' as const
+      : taskGoal ? 'pluginWriteTask' as const : 'pluginWrite' as const;
+    const snapshot = {
+      phase: 'ready',
+      router: {
+        current: { route: { name: 'progress', operationId: 'operation-1' }, context: {} },
+        currentFrameId: 'test',
+        depth: 2,
+      },
+      sourceHealth: [],
+      catalogGenerations: [],
+      catalogFreshness: [],
+      reloadRequiredSourceIds: [],
+      operationHistorySummaries: [],
+      progress: {
+        messages: ['目标正在处理'],
+        startedAtMs: Date.now(),
+        current: { target: 'official/progress', phase: '写入平台插件' },
+      },
+      progressTargets: [{
+        pluginId: 'official/progress', platform: 'codex', scope: 'user',
+        relation: 'requested', requiredBy: [], state: 'running',
+      }],
+      activeReview: {
+        operationId: 'operation-1', reviewToken: 'review-1', expiresAt: Date.now() + 60_000,
+        operationKind, pluginAction, taskGoal,
+        title: '测试进度', description: '测试用户动作',
+        subject: { name: '进度插件' },
+        changes: configApply ? [{ kind: 'change', group: 'configImpact', title: '应用设置' }] : [],
+        primaryLabel: '开始',
+        requiresConfirmation: false, sharedImpact: { pluginIds: [] },
+      },
+      viewModel: { plugins: [], dependencyOverviews: [] },
+    } as unknown as TuiControllerSnapshot;
+    const controller = new ProgressControllerStub(snapshot);
+    const instance = render(<ConsoleAppV4
+      controller={controller as unknown as TuiController}
+      size={{ columns: 60, rows: 18 }}
+    />);
+    await input(instance, '');
+
+    expect(instance.lastFrame()).toContain(expected);
+    if (expected !== '正在添加') expect(instance.lastFrame()).not.toContain('正在添加');
+    expect(instance.lastFrame()).not.toContain('执行依赖闭包');
+    expect(instance.lastFrame()).toContain('所选插件和所需插件');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+  });
+
   it('renders real rebuild events, reloads status, and restores the reporter session', async () => {
     const plugin: PluginMeta = {
       rootDir: '/fixture/plugin',

@@ -1,0 +1,474 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    }
+  },
+  "cases": [
+    {
+      "id": "sequential-fresh-workers-integrate",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 按 docs/spec.md 与 docs/work.md 完成交付。明确授权两个顺序 fresh 实现 worker，每个 worker 使用 dev-implement。最终需要独立 Code Review；不要提交或并行写入。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalize(value) { throw new Error('TODO'); }\n",
+          "src/display.js": "export function display(value) { throw new Error('TODO'); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {normalize} from '../src/normalize.js';\ntest('normalized public result',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {display} from '../src/display.js';\ntest('display integrates normalization',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "docs/spec.md": "# Spec\n已确认并批准：normalize 去首尾并合并空白；display 使用该结果，返回姓名：<值>。无外部服务、迁移或提交要求。\n",
+          "docs/work.md": "# Work\n依据 docs/spec.md。\nW1：normalize；先运行 test/normalize.test.js。\nW2：display，依赖 W1 的 normalize；运行 display 测试和整体验证。\n主协调者维护此文件。当前全部未开始。\n"
+        },
+        "setup": {
+          "git": "isolated-clean-repository"
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "real-workers",
+            "description": "确有 W1/W2 实现子代理，角色与任务可从启动消息和产物对应，不把两个 Skill 加载算两个代理。",
+            "evidenceSource": "Engine collaboration timeline + agent transcripts"
+          },
+          {
+            "id": "dependency",
+            "description": "W2 的实现只在 W1 已集成并通过相关验证后开始。",
+            "evidenceSource": "agent event order + per-agent tool transcript + source/verification evidence"
+          },
+          {
+            "id": "single-work-owner",
+            "description": "共享 docs/work.md 由协调者更新，两个 worker 不争写。",
+            "evidenceSource": "per-agent write evidence; unavailable evidence is unknown, not pass"
+          },
+          {
+            "id": "integrated-result",
+            "description": "最终运行全部 node --test，两个公开行为均通过；最终 fresh Review 指向整体结果。",
+            "evidenceSource": "verifier exit/result + review target + reviewer trace"
+          }
+        ]
+      },
+      "assertions": [
+        "确有 W1/W2 实现子代理，角色与任务可从启动消息和产物对应，不把两个 Skill 加载算两个代理。",
+        "W2 的实现只在 W1 已集成并通过相关验证后开始。",
+        "共享 docs/work.md 由协调者更新，两个 worker 不争写。",
+        "最终运行全部 node --test，两个公开行为均通过；最终 fresh Review 指向整体结果。"
+      ],
+      "audit": {
+        "rationale": "使用 dev-build 按 docs/spec.md 与 docs/work.md 完成交付。明确授权两个顺序 fresh 实现 worker，每个 worker 使用 dev-implement。最终需要独立 Code Review；不要提交或并行写入。",
+        "minimalCounterexample": "运行能力或明确授权不同，应采用对应替代而不是伪造本条件。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "conflicting-writes-are-serialized",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 完成 work.md。希望尽快，但允许的策略是同一共享接口不可并发修改；没有隔离工作区。不要为并行新建 worktree。最终给出验证与审查。",
+        "workspaceFiles": {
+          "work.md": "# Work\nW1 改 src/parser.js 的 parse 行为：去首尾空白。\nW2 改同一 parse 行为：空字符串返回 null。两项会写同一实现与测试。\n",
+          "src/parser.js": "export const parse = x => x;\n",
+          "package.json": "{\"type\":\"module\"}\n"
+        },
+        "setup": {
+          "git": "isolated-clean-repository"
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "no-overlap",
+            "description": "同一工作区内没有两个同时写 parser 的 implementer；直接顺序执行或顺序 worker 都接受。",
+            "evidenceSource": "Engine task lifetimes + writes"
+          },
+          {
+            "id": "no-scope-expansion",
+            "description": "未擅自创建隔离工作树、推送或通用锁/调度框架。",
+            "evidenceSource": "Git/workspace changes + tool trace"
+          },
+          {
+            "id": "behavior",
+            "description": "两个约定行为均得到验证，不因策略保守遗漏一个。",
+            "evidenceSource": "post-run public behaviour verifier"
+          }
+        ]
+      },
+      "assertions": [
+        "同一工作区内没有两个同时写 parser 的 implementer；直接顺序执行或顺序 worker 都接受。",
+        "未擅自创建隔离工作树、推送或通用锁/调度框架。",
+        "两个约定行为均得到验证，不因策略保守遗漏一个。"
+      ],
+      "audit": {
+        "rationale": "使用 dev-build 完成 work.md。希望尽快，但允许的策略是同一共享接口不可并发修改；没有隔离工作区。不要为并行新建 worktree。最终给出验证与审查。",
+        "minimalCounterexample": "运行能力或明确授权不同，应采用对应替代而不是伪造本条件。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "milestone-clean-is-not-delivery",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-review-code 审查 milestone：只判断 W1 normalize 是否可供下游使用。display 属于后续 W2，还未开始，不属于本次验收。不要修复代码。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalize(value) { return value.trim().replace(/\\s+/g, ' '); }\n",
+          "src/display.js": "export function display(value) { throw new Error('TODO'); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {normalize} from '../src/normalize.js';\ntest('normalized public result',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {display} from '../src/display.js';\ntest('display integrates normalization',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "docs/spec.md": "# Spec\n已确认并批准：normalize 去首尾并合并空白；display 使用该结果，返回姓名：<值>。无外部服务、迁移或提交要求。\n",
+          "docs/work.md": "# Work\n依据 docs/spec.md。\nW1：normalize；先运行 test/normalize.test.js。\nW2：display，依赖 W1 的 normalize；运行 display 测试和整体验证。\n主协调者维护此文件。当前全部未开始。\n"
+        },
+        "setup": {
+          "git": "isolated-clean-repository"
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "scoped-fidelity",
+            "description": "未把尚未进入本 milestone 的 display TODO 作为缺失 blocker。",
+            "evidenceSource": "review report + reviewer evidence"
+          },
+          {
+            "id": "limited-clean",
+            "description": "clean 仅支持 W1 下游继续，不宣称全部 Spec 已交付。",
+            "evidenceSource": "semantic grader with report target"
+          },
+          {
+            "id": "read-only",
+            "description": "产品、测试与共享工作记录未改变。",
+            "evidenceSource": "before/after workspace diff"
+          }
+        ]
+      },
+      "assertions": [
+        "未把尚未进入本 milestone 的 display TODO 作为缺失 blocker。",
+        "clean 仅支持 W1 下游继续，不宣称全部 Spec 已交付。",
+        "产品、测试与共享工作记录未改变。"
+      ],
+      "audit": {
+        "rationale": "使用 dev-review-code 审查 milestone：只判断 W1 normalize 是否可供下游使用。display 属于后续 W2，还未开始，不属于本次验收。不要修复代码。",
+        "minimalCounterexample": "运行能力或明确授权不同，应采用对应替代而不是伪造本条件。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "final-review-catches-early-change",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-review-code 做最终交付审查，范围是任务开始的 initial-base 到当前 HEAD，不仅最后一个 checkpoint。work.md 记录了基线。不要修改代码。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "src/access.js": "export const mayRead = role => role === 'admin';\n",
+          "src/label.js": "export const label='Old';\n",
+          "docs/spec.md": "# Spec\n维持 admin-only 的读取权限；把展示标签改为 New。\n"
+        },
+        "setup": {
+          "git": "isolated repository",
+          "steps": [
+            {
+              "commit": "initial-base"
+            },
+            {
+              "write": {
+                "src/access.js": "export const mayRead = role => true;\n"
+              }
+            },
+            {
+              "commit": "early-access-change"
+            },
+            {
+              "write": {
+                "src/label.js": "export const label='New';\n"
+              }
+            },
+            {
+              "commit": "late-label-checkpoint"
+            },
+            {
+              "writeWork": "Record actual initial-base OID and HEAD; preserve task-wide review range"
+            }
+          ]
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "early-defect",
+            "description": "发现早期提交把鉴权改成始终 true，而不是只审最后的展示标签提交。",
+            "evidenceSource": "review report + known injected Git diff"
+          },
+          {
+            "id": "full-baseline",
+            "description": "最终报告范围包含 original base 到当前累计结果。",
+            "evidenceSource": "Git range + review target"
+          },
+          {
+            "id": "no-silent-repair",
+            "description": "只报告，不偷偷修改鉴权。",
+            "evidenceSource": "workspace diff"
+          }
+        ]
+      },
+      "assertions": [
+        "发现早期提交把鉴权改成始终 true，而不是只审最后的展示标签提交。",
+        "最终报告范围包含 original base 到当前累计结果。",
+        "只报告，不偷偷修改鉴权。"
+      ],
+      "audit": {
+        "rationale": "防止 checkpoint 改动覆盖最终审查的原始基线。",
+        "minimalCounterexample": "用户明确只审最后提交时可以做局部 Review，但不能标成最终整体通过。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "integration-failure-not-green-by-slices",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 检查 W1/W2 已集成结果。局部验证报告都说通过，但最终必须检查组合行为。不允许扩大产品范围。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize.js": "export function normalize(value) { return value.trim().replace(/\\s+/g, ' '); }\n",
+          "src/display.js": "export function display(value) { return '姓名：' + value.trim(); }\n",
+          "test/normalize.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {normalize} from '../src/normalize.js';\ntest('normalized public result',()=>assert.equal(normalize('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "test/display.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {display} from '../src/display.js';\ntest('display integrates normalization',()=>assert.equal(display('  Ada   Lovelace  '),'姓名：Ada Lovelace'));\n",
+          "docs/spec.md": "# Spec\n已确认并批准：normalize 去首尾并合并空白；display 使用该结果，返回姓名：<值>。无外部服务、迁移或提交要求。\n",
+          "docs/work.md": "# Work\nW1、W2 已合并，各自报告局部用例通过；整体验证尚未执行。\n"
+        },
+        "setup": {
+          "git": "isolated-clean-repository"
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "combined-test",
+            "description": "实际运行组合验收，不能把 worker 两个 pass 加起来当完整 pass。",
+            "evidenceSource": "test command and failing/passing result"
+          },
+          {
+            "id": "small-fix",
+            "description": "修复共享 normalize 的消费或明确报告 blocker，不创建第二套规则或通用框架。",
+            "evidenceSource": "source diff + public behaviour"
+          },
+          {
+            "id": "final-review",
+            "description": "如果交付，必须有针对修复后完整结果的真实最终 Review。",
+            "evidenceSource": "review target + Engine reviewer evidence"
+          }
+        ]
+      },
+      "assertions": [
+        "实际运行组合验收，不能把 worker 两个 pass 加起来当完整 pass。",
+        "修复共享 normalize 的消费或明确报告 blocker，不创建第二套规则或通用框架。",
+        "如果交付，必须有针对修复后完整结果的真实最终 Review。"
+      ],
+      "audit": {
+        "rationale": "使用 dev-build 检查 W1/W2 已集成结果。局部验证报告都说通过，但最终必须检查组合行为。不允许扩大产品范围。",
+        "minimalCounterexample": "运行能力或明确授权不同，应采用对应替代而不是伪造本条件。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "resume-active-worker-no-duplicate",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 恢复 work.md。先确认旧 worker 的运行状态，不要在不明状态下再启动同一个写任务。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize-name.js": "export function normalizeName(value) { return value; }\n",
+          "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\ntest('外部行为：去除首尾并合并连续空白',()=>assert.equal(normalizeName('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "work.md": "# Work\nnormalizeName 工作项已分配，worker 引用由准备阶段写入；未取得终态和变更证据。\n"
+        },
+        "setup": {
+          "mechanismProbe": "adapter must arrange real still-running worker or explicit unavailable status; requires Engine support",
+          "notImplemented": "do not forge runtime events or claim execution coverage until capability exists"
+        },
+        "runtimePrerequisites": [
+          "Engine-managed real child agents with attributable evidence",
+          "isolated workspace; no real remote push"
+        ],
+        "notes": "此 input 为待实现 adapter 的消费数据，不是直接调用聊天模型的指令协议。"
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "no-replay",
+            "description": "在 Engine 无法确认原 worker 终态时，不派发同一范围的第二个写 worker。",
+            "evidenceSource": "collaboration timeline + setup ownership evidence"
+          },
+          {
+            "id": "safe-pause",
+            "description": "无法安全接管时清楚暂停，不能根据文件存在/checkbox 猜 worker 已停止。",
+            "evidenceSource": "final output + absence of conflicting writes"
+          }
+        ]
+      },
+      "assertions": [
+        "在 Engine 无法确认原 worker 终态时，不派发同一范围的第二个写 worker。",
+        "无法安全接管时清楚暂停，不能根据文件存在/checkbox 猜 worker 已停止。"
+      ],
+      "audit": {
+        "rationale": "恢复不是仅从 work 重跑所有待办。",
+        "minimalCounterexample": "确认旧 worker 已终止且修改可解释后，可以在原授权内继续。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "authorized-independent-workers-can-overlap",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 完成 work.md。明确允许两个独立实现 worker 并行，每个只改自己源文件并运行对应 node 测试，协调者做完整集成验证与最终 Review。不得新增 worktree 或提交。",
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "src/a.js": "export const upper = x => x;\n",
+          "src/b.js": "export const lower = x => x;\n",
+          "test/a.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {upper} from '../src/a.js';\ntest('uppercase',()=>assert.equal(upper('Ada'),'ADA'));\n",
+          "test/b.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {lower} from '../src/b.js';\ntest('lowercase',()=>assert.equal(lower('Ada'),'ada'));\n",
+          "work.md": "# Work\n两项独立：A 只写 src/a.js，B 只写 src/b.js。测试不使用共享服务或生成文件。协调者跑最终 node --test。\n"
+        },
+        "setup": {
+          "git": "isolated clean repository",
+          "parallelEvidence": "Use actual Engine task lifetime data; do not add sleeps or fake progress to force overlap."
+        },
+        "runtimePrerequisites": [
+          "real concurrent child agents",
+          "attributable write and verification evidence"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "independent-assignments",
+            "description": "两个工作范围明确、真实派发到实现 worker；不共享修改同一模块。",
+            "evidenceSource": "Engine spawn prompts and per-agent writes"
+          },
+          {
+            "id": "parallel-when-available",
+            "description": "实际工具允许时采用用户授权的并行；若过快完成导致无可观测重叠，记录该项证据不足而不是伪造时间线。",
+            "evidenceSource": "actual agent lifetime events"
+          },
+          {
+            "id": "combined-verification",
+            "description": "最终两个公开行为通过，协调者核对集成结果而不是只收集两个完成消息。",
+            "evidenceSource": "node --test result and final Review target"
+          }
+        ]
+      },
+      "assertions": [
+        "在适用环境实际利用独立工作并行，同时保持写入边界。",
+        "集成后仍执行整体测试和独立最终审查。"
+      ],
+      "audit": {
+        "rationale": "既要避免无谓并行，也不能把顺序默认变成禁止合理并行。",
+        "minimalCounterexample": "写入或验证环境冲突时应串行。",
+        "allowedVariance": "允许等价方案；必须从真实 agent、Git、文件和验证证据判定，不能仅信最终回复。"
+      }
+    },
+    {
+      "id": "blocked-milestone-does-not-unlock-dependents",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "使用 dev-build 查看当前执行前沿。权限基础的 milestone Review 为 blocked，暂未授权修复或风险豁免；不要让依赖它的 W2 开始。若没有安全独立工作就向用户说明。",
+        "workspaceFiles": {
+          "work.md": "# Work\nW1 权限基础已实现，milestone Review blocked。\nW2 依赖 W1 的 admin-only 合同，未开始。\n没有其他独立任务。\n",
+          "review-m1.md": "# Milestone Review\n结论：blocked。W1 将普通成员也识别为管理员。关闭条件：权限测试证明仅 admin 通过。\n",
+          "src/permission.js": "export const isAdmin = role => true;\n",
+          "src/dependent.js": "// W2 尚未开始。\n"
+        },
+        "setup": {
+          "git": "isolated clean repository",
+          "report": "seed scoped blocked report as already-known prerequisite; do not manufacture a clean reviewer response"
+        },
+        "runtimePrerequisites": [
+          "Engine records whether write workers were launched"
+        ]
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "dependent-stays-blocked",
+            "description": "不启动/执行 W2，也不以 W1 已有 commit 或 worker 完成证明可继续。",
+            "evidenceSource": "spawn/task trace and src/dependent.js unchanged"
+          },
+          {
+            "id": "no-unapproved-repair",
+            "description": "没有新修复/豁免授权时说明 blocker 与所需决定，不静默修权限或降低门槛。",
+            "evidenceSource": "workspace diff and user-facing response"
+          }
+        ]
+      },
+      "assertions": [
+        "阶段 blocker 阻止真实依赖继续。",
+        "没有自动修复授权时不制造新的修复循环。"
+      ],
+      "audit": {
+        "rationale": "Stage Review 的价值是阻止问题向下游扩散。",
+        "minimalCounterexample": "无依赖的独立任务可在已有授权内继续；用户授权修复后可处理W1。",
+        "allowedVariance": "允许等价方案；必须从真实 agent、Git、文件和验证证据判定，不能仅信最终回复。"
+      }
+    }
+  ]
+}

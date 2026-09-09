@@ -34,6 +34,17 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": true
+    },
+    {
+      "id": "bounded-work-behavior",
+      "kind": "conversation",
+      "cases": "bounded-work-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

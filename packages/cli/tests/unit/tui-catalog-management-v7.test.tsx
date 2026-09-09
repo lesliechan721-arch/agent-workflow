@@ -286,12 +286,28 @@ async function waitFor(check: () => boolean): Promise<void> {
 
 async function confirmReview(instance: ReturnType<typeof render>, value: TuiController): Promise<void> {
   await waitFor(() => value.snapshot.activeReview !== undefined);
-  if (value.snapshot.activeReview?.requiresConfirmation) await input(instance, '\r');
-  await input(instance, '\r');
+  if (value.snapshot.activeReview?.requiresConfirmation) {
+    await input(instance, '\r', '\u001B[B', '\r');
+  } else await input(instance, '\r');
   await waitFor(() => value.snapshot.result !== undefined);
 }
 
 describe('TUI Catalog management v7', () => {
+  it('shows the exact target version in the Workspace risk authorization', async () => {
+    const { value, executeIntent } = catalogController();
+    await value.load();
+    value.push({ name: 'catalogWorkspace', view: 'overview' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+
+    await input(instance, '\u001B[B', '\r', '\r');
+    await waitFor(() => value.snapshot.activeReview?.title === '修改 Catalog 版本');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('操作：修改 Catalog 版本');
+    expect(instance.lastFrame()).toContain('版本：1.2.3 → 1.2.4');
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
   it('opens Catalog management from sources and applies an explicitly entered workspace root', async () => {
     const selectedRoots: Array<string | undefined> = [];
     const { value } = catalogController({ onSelect: (root) => selectedRoots.push(root) });
@@ -483,6 +499,13 @@ describe('TUI Catalog management v7', () => {
     await waitFor(() => value.snapshot.activeReview?.operationKind === 'catalogManagement'
       && value.snapshot.activeReview?.title === '发布 Catalog');
     expect(executeIntent).toHaveBeenCalledTimes(1);
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('操作：发布 Catalog');
+    expect(instance.lastFrame()).toContain('1.2.3');
+    expect(instance.lastFrame()).toContain('origin');
+    expect(instance.lastFrame()).toContain('catalog/release');
+    instance.stdin.write('\u001B');
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await input(instance, 'b');
     await waitFor(() => value.snapshot.router.current.route.name === 'catalogPublish'
       && value.snapshot.activeReview === undefined);
@@ -562,7 +585,7 @@ describe('TUI Catalog management v7', () => {
     editController.push({ name: 'sourceEdit', sourceId: 'official' });
     const edit = render(<ConsoleAppV4 controller={editController} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
-    await input(edit, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
+    await input(edit, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
     expect(editController.snapshot.router.current.route.name).toBe('sourceSave');
     await input(edit, '\u001B[B', '\r');
     await waitFor(() => captureEvidence.mock.calls.length === 1);

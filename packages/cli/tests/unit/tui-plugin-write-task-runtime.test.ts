@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import fs from 'fs-extra';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
@@ -9,6 +10,7 @@ import type { StatusV8Payload } from '../../src/commands/status-v6.js';
 import {
   createTuiControllerDependencies,
 } from '../../src/tui/controller-runtime.js';
+import { projectExecutionDiagnostics } from '../../src/tui/diagnostic-projection.js';
 import type {
   PluginWriteTaskEvidence,
   PluginWriteTaskExecutionResult,
@@ -72,6 +74,52 @@ async function configureCatalog(): Promise<{
     configDigest: config.digest,
     sourceIdentity: active.sourceIdentity,
     generationKey: createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
+  };
+}
+
+async function configureMixedCatalog(): Promise<{
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  configDigest: string;
+  sources: Record<'team' | 'lab', { sourceIdentity: string; generationKey: string }>;
+}> {
+  const isolation = getCurrentSourceTestIsolation();
+  const roots = {
+    team: path.join(isolation.layout.fixtureCwd, 'task-runtime-team-source'),
+    lab: path.join(isolation.layout.fixtureCwd, 'task-runtime-lab-source'),
+  };
+  await Promise.all([
+    createDependencyCatalogSnapshotFixture(roots.team, [{ name: 'alpha' }]),
+    createDependencyCatalogSnapshotFixture(roots.lab, [{ name: 'gamma' }]),
+  ]);
+  const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+  await replaceCatalogSourcesConfig({
+    config: {
+      schemaVersion: 2,
+      sources: [
+        { id: 'team', type: 'path', primary: true, path: roots.team },
+        { id: 'lab', type: 'path', primary: false, path: roots.lab },
+      ],
+    },
+    expectedDigest: initial.digest,
+    env: isolation.env,
+  });
+  await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+  await syncCatalogSourceGeneration({ sourceId: 'lab', cliVersion: '1.0.0', env: isolation.env });
+  const config = await readCatalogSourcesConfigSnapshot(isolation.env);
+  const state = await readCatalogGenerationState(isolation.env);
+  const source = (sourceId: 'team' | 'lab') => {
+    const active = state.sources[sourceId]!.active!;
+    return {
+      sourceIdentity: active.sourceIdentity,
+      generationKey: createCatalogStoreKey(active.logicalIdentity, active.snapshotDigest),
+    };
+  };
+  return {
+    cwd: isolation.layout.fixtureCwd,
+    env: isolation.env,
+    configDigest: config.digest,
+    sources: { team: source('team'), lab: source('lab') },
   };
 }
 
@@ -345,6 +393,204 @@ describe('plugin write task runtime', () => {
     });
     expect(runtimeMocks.taskWriteCommand.mock.calls.filter((call) =>
       call[2]?.previewOperationPlan !== true)).toEqual([]);
+  });
+
+  it('carries a transient locked source root cause through the stale boundary', async () => {
+    const catalog = await configureCatalog();
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    const intent = updateIntent(catalog);
+    const evidence = await dependencies.captureEvidence(
+      intent, new AbortController().signal,
+    ) as PluginWriteTaskEvidence;
+    await fs.remove(path.join(catalog.env.AW_HOME!, 'catalog-store', catalog.generationKey));
+    dependencies.beginCatalogSession?.();
+
+    await expect(dependencies.executeIntent(intent, evidence)).rejects.toMatchObject({
+      code: 'operationReviewStale',
+      diagnostics: [
+        expect.objectContaining({
+          code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/alpha' }),
+        }),
+        expect.objectContaining({
+          code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/beta' }),
+        }),
+      ],
+    });
+  });
+
+  it('keeps a source failure that occurs after a successful status read', async () => {
+    const catalog = await configureCatalog();
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    await dependencies.loadStatus(new AbortController().signal);
+    await fs.remove(path.join(catalog.env.AW_HOME!, 'catalog-store', catalog.generationKey));
+    dependencies.beginCatalogSession?.();
+
+    await expect(dependencies.captureEvidence(
+      updateIntent(catalog),
+      new AbortController().signal,
+    )).rejects.toMatchObject({
+      code: 'taskNoExecutableTargets',
+      diagnostics: [
+        expect.objectContaining({
+          code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/alpha' }),
+        }),
+        expect.objectContaining({
+          code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/beta' }),
+        }),
+      ],
+    });
+  });
+
+  it('keeps structured target failures when preview returns no operation plan', async () => {
+    const catalog = await configureCatalog();
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => {
+      const result = commandResult(targets);
+      return {
+        ...result,
+        operationPlan: undefined,
+        overallState: 'failed',
+        rebuildResults: [{
+          status: 'failed',
+          target: { pluginId: 'team/alpha', platform: 'codex', scope: 'user' },
+          actions: [{ name: 'preflight.inspect', status: 'failed' }],
+          error: {
+            phase: 'preflight.inspect',
+            message: 'argv --token private-value /Users/private/source',
+            operationDiagnostic: {
+              code: 'issueVerificationFailed', stage: 'preflight.inspect',
+              safeMessage: 'The target inspection could not verify the current target.',
+            },
+          },
+        }],
+      };
+    });
+
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    const error = await dependencies.captureEvidence(
+      updateIntent(catalog), new AbortController().signal,
+    ).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      code: 'taskNoExecutableTargets',
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'issueVerificationFailed', stage: 'preflight.inspect', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/alpha' }),
+        }),
+        expect.objectContaining({
+          code: 'taskOperationPlanMissing', stage: 'dependencyPlan', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/beta' }),
+        }),
+      ]),
+    });
+    const diagnostics = (error as { diagnostics: Array<{ code: string; target?: { pluginId?: string } }> }).diagnostics;
+    expect(diagnostics.filter((diagnostic) => diagnostic.code === 'issueVerificationFailed'))
+      .toEqual([expect.objectContaining({ target: expect.objectContaining({ pluginId: 'team/alpha' }) })]);
+    expect(JSON.stringify(error)).not.toContain('private-value');
+    expect(JSON.stringify(error)).not.toContain('/Users/private');
+  });
+
+  it('keeps one failed source diagnostic while executing another source subset', async () => {
+    const catalog = await configureMixedCatalog();
+    const lab = catalog.sources.lab;
+    const labStatus = status({
+      cwd: catalog.cwd,
+      configDigest: catalog.configDigest,
+      sourceIdentity: lab.sourceIdentity,
+    });
+    labStatus.payload.catalog.primarySourceId = 'team';
+    labStatus.payload.catalog.sources = [{
+      id: 'lab', identity: lab.sourceIdentity, type: 'path', primary: false,
+      requestedRef: 'path', freshness: 'active', catalogVersion: '1.0.0',
+    }];
+    for (const target of labStatus.payload.targets) {
+      target.pluginName = 'gamma';
+      target.pluginId = 'lab/gamma';
+      target.sourceId = 'lab';
+    }
+    labStatus.payload.targets = [labStatus.payload.targets[0]!];
+    labStatus.pluginSummaries = [{
+      pluginName: 'gamma', pluginId: 'lab/gamma', displayName: 'Gamma',
+      description: 'Gamma', version: '1.0.0',
+      supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0,
+    }];
+    labStatus.targetRevisions = [{
+      pluginId: 'lab/gamma', platform: 'codex', scope: 'user',
+      revision: { state: 'upgradeAvailable', installedVersion: '0.9.0', availableVersion: '1.0.0' },
+    }];
+    runtimeMocks.statusCommandV8.mockResolvedValue(labStatus);
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    await fs.remove(path.join(
+      catalog.env.AW_HOME!, 'catalog-store', catalog.sources.team.generationKey,
+    ));
+    dependencies.beginCatalogSession?.();
+    const expected = (sourceId: 'team' | 'lab') => ({
+      installedVersion: '0.9.0', activeVersion: '1.0.0',
+      sourceIdentity: catalog.sources[sourceId].sourceIdentity,
+      generationKey: catalog.sources[sourceId].generationKey,
+    });
+    const intent: PluginWriteTaskIntent = {
+      kind: 'pluginWriteTask', goal: 'update', executionPolicy: 'executableSubset',
+      targets: [
+        { pluginId: 'team/alpha', platform: 'codex', scope: 'user', expectedUpdate: expected('team') },
+        { pluginId: 'lab/gamma', platform: 'codex', scope: 'user', expectedUpdate: expected('lab') },
+      ],
+    };
+
+    const evidence = await dependencies.captureEvidence(
+      intent, new AbortController().signal,
+    ) as PluginWriteTaskEvidence;
+    expect(evidence.taskPlan.executableTargets.map((target) => target.pluginId)).toEqual(['lab/gamma']);
+    expect(evidence.taskPlan.blockedTargets).toEqual([
+      expect.objectContaining({
+        target: expect.objectContaining({ pluginId: 'team/alpha' }),
+        diagnostics: [expect.objectContaining({
+          code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+        })],
+      }),
+    ]);
+    const execution = await dependencies.executeIntent(intent, evidence) as PluginWriteTaskExecutionResult;
+    expect(execution.sourceResults).toHaveLength(1);
+    expect(execution.sourceResults[0]).toMatchObject({ sourceId: 'lab' });
+    const projection = projectExecutionDiagnostics(execution, 'mixed-task', [], 'pluginWriteTask');
+    expect(projection.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'catalogGenerationMetadataInvalid', stage: 'source', sourceId: 'team',
+      target: expect.objectContaining({ pluginId: 'team/alpha' }),
+    }));
+  });
+
+  it('keeps an aborted preparation as cancellation', async () => {
+    const catalog = await configureCatalog();
+    const abort = new AbortController();
+    abort.abort();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+
+    await expect(dependencies.captureEvidence(updateIntent(catalog), abort.signal))
+      .rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('moves a blocked requested plan target out of the executable subset and repreviews', async () => {

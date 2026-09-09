@@ -10,13 +10,15 @@
       "dev-review-code",
       "decision-shape",
       "decision-grill",
-      "decision-prototype"
+      "decision-prototype",
+      "dev-build",
+      "dev-breakdown"
     ],
     "policy": {
       "optimization": "precision-first",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在一次自动修复后继续无界循环，会造成错误写入、规格漂移和不必要工作。"
+      "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或越过已有修复预算或停止点继续循环，会造成错误写入、规格漂移和不必要工作。"
     },
     "runtime": {
       "isolation": "strict"
@@ -30,7 +32,7 @@
         "representative",
         "prototype-to-spec-handoff"
       ],
-      "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。",
+      "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
         "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
         "Shape 和 Spec 使用 docs/dev/approval-layout/；不要求 Router 决定 Prototype 的内部路径",
@@ -149,10 +151,11 @@
       ],
       "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。请先判断当前是否需要我决定，不要自动修改文件。",
       "assertions": [
-        "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
+        "trace 只使用 dev-workflow 判断当前状态，不加载 dev-build、dev-implement 或 dev-review-code；本次请求没有新的自动修复授权",
         "不读取 review-repair.md；根据当前 blocked Review 和无新授权进入用户检查点",
         "向用户说明最新 blocker、关闭条件和需要重新决定的动作；没有新授权时停止",
-        "用户选择停止后不修改 Spec、Review 或产品代码"
+        "用户选择停止后不修改 Spec、Review 或产品代码",
+        "新版未指定预算默认三轮，不扩大旧的一轮授权，也不解除原有人类停止点"
       ],
       "input": {
         "scriptedReplies": [
@@ -166,7 +169,7 @@
         ],
         "workspaceFiles": {
           "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
-          "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
+          "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- 原授权上限：一轮；已用：一轮。\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
           "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now > invitation.expiresAt) throw new Error('expired');\n  return { accepted: true };\n}\n"
         }
       },
@@ -184,7 +187,7 @@
         ]
       },
       "audit": {
-        "rationale": "一次自动修复和完整复审后仍 blocked；宏入口应停止继续实现，并把最新 finding 交给用户决定。",
+        "rationale": "旧授权明确只有一轮，已完成修复和完整复审且仍 blocked；宏入口不得套用新版默认三轮继续。",
         "allowedVariance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
         "minimalCounterexample": "若第一次复审为 clean，则可以进入交付。"
       }
@@ -196,7 +199,7 @@
         "regression",
         "route-visibility"
       ],
-      "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。",
+      "prompt": "使用 dev-workflow 判断这个任务的下一阶段。Shape 已完整，没有 Spec。只说明路由结果和理由；不要修改工作区。本任务需要正式规格和用户批准。",
       "assertions": [
         "说明当前最早未满足的 gate 和主要依据",
         "说明下一能力、接下来会发生什么以及用户是否需要参与",

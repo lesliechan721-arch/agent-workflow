@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-breakdown",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "independent-breakdown-with-real-edges",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "把 docs/spec.md 拆成适合多人交接的工作项，写到 docs/work.md。只做分解，不修改产品，不启动 worker，不给每个切片都加 Review 或 commit。",
+      "assertions": [
+        "分解直接从 Spec 和代码得出，不依赖 dev-build 私有状态。",
+        "工作项有交付结果、真实依赖、上下文和验证。",
+        "共享筛选语义不能被独立 CSV/页面实现成不同规则。",
+        "不强制每切片审查、提交或再审批。",
+        "保持产品源码不变。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/spec.md": "# 导出筛选结果 Spec\n\n用户已确认：列表与导出使用同一筛选含义；本次做内存实现，不接数据库或远端。\n\n## 已决定\n- 名称不区分大小写；空查询返回全部。\n- CSV 只包含当前筛选结果，第一行为 name。\n- UI 中用户可以预览筛选结果，再下载 CSV。\n- 允许内部函数和文件组织由实现者决定。\n\n## 验收\n- 查询 ada 时 Ada Lovelace 出现在列表和导出里；Grace Hopper 不出现。\n- 空查询的列表与导出均包含两人。\n\n## 非目标\n权限系统、通用数据框架、服务端分页、外部依赖。\n",
+          "src/select.js": "export function selectRows(rows, query) { throw new Error('not implemented'); }\n",
+          "src/export.js": "export function toCsv(rows) { throw new Error('not implemented'); }\n",
+          "src/page.js": "// 当前页面将直接消费 selectRows 与 toCsv；没有另一套筛选规则。\n",
+          "README.md": "# 示例\n已批准 docs/spec.md。还没有 work 或 tickets。\n"
+        }
+      },
+      "expected": {
+        "output": "在一个 work 中形成过滤、导出与页面集成等可验证结果，说明共用筛选语义依赖；不创建批准合同或机械逐文件计划。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "分解必须独立可用，不能只为宏调度器服务。",
+        "minimalCounterexample": "已有合理 tickets 时应复用而非重新生成。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "single-item-no-forced-work-file",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "帮我判断 normalizeName 去首尾空白并合并连续空格这个任务要怎么分解。已有一个失败测试；只要建议，不要实现或写文件。",
+      "assertions": [
+        "不为满足技能名字而制造切片。",
+        "不修改代码或创建 work.md。",
+        "只指出单个结果和相应测试。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize-name.js": "export function normalizeName(value) { return value; }\n",
+          "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\ntest('外部行为：去除首尾并合并连续空白',()=>assert.equal(normalizeName('  Ada   Lovelace  '),'Ada Lovelace'));\n"
+        }
+      },
+      "expected": {
+        "output": "判断为单个自然工作项，给简短建议，不拆出多个阶段或工作文件。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "防止分解能力自身过度设计。",
+        "minimalCounterexample": "多个需交接结果时应形成工作项。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "wide-refactor-uses-real-migration",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "根据当前 API，把内部 getName 改为 resolveName，调用点很多，不能一次落所有调用方。写 docs/work.md；生产改动留到后面。公开行为不变，兼容内部两个名字只用于本次迁移。",
+      "assertions": [
+        "迁移安排保持现有调用方可运行。",
+        "临时别名有本次消费者和移除条件，不扩成通用兼容框架。",
+        "没有实施生产代码。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "src/api.js": "export const getName = x => x.name;\n",
+          "src/consumer.js": "import {getName} from './api.js';\nexport const render = x => getName(x);\n",
+          "docs/decision.md": "# 决定\n内部改名，公开行为不变；迁移期间允许临时别名。\n"
+        }
+      },
+      "expected": {
+        "output": "提出有限的兼容扩展、调用方迁移和收缩，明确删除临时别名的完成条件；不强迫所有批次为完整UI切片。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "docs/work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/work.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "纵向切片不能成为所有重构的唯一程序。",
+        "minimalCounterexample": "一次小范围可完成的重命名不需要多阶段兼容。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    }
+  ]
+}

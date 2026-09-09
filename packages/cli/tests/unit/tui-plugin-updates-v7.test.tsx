@@ -1,6 +1,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type {
   StatusTargetRevision,
   StatusV8Payload,
@@ -8,7 +9,11 @@ import type {
 } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
+  operationEvidenceFingerprint,
   TuiController,
+  type OperationEvidence,
+  type OperationIntent,
+  type PluginWriteTaskEvidence,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
@@ -264,7 +269,51 @@ describe('TUI plugin update evidence', () => {
   });
 
   it('shows the canonical update count, list version difference, detail CTA, and update filter', async () => {
-    const controllerDependencies = dependencies();
+    const captureEvidence = vi.fn(async (intent: OperationIntent): Promise<OperationEvidence> => {
+      if (intent.kind !== 'pluginWriteTask') {
+        return { catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' } };
+      }
+      const receiptTarget = {
+        pluginName: 'demo', pluginId: 'official/demo', sourceId: 'official',
+        platform: 'codex' as const, scope: 'user' as const,
+      };
+      const preview = {
+        platforms: ['codex'], plugins: ['demo'], warnings: [], rebuildResults: [],
+        targetResults: [{ target: receiptTarget, action: 'sync' as const, state: 'completed' as const }],
+        overallState: 'succeeded' as const,
+        receiptTargets: [receiptTarget],
+        operationPlan: createOperationPlan({
+          intentChanges: [], actions: [], changes: ['official/demo:codex:user'], warnings: [],
+          evidence: {
+            catalogDigests: [{ sourceId: 'official', digest: 'sha256:catalog' }],
+            intentDigests: [], configDigests: [], targetOwnerFingerprints: [],
+          },
+        }),
+      };
+      const evidence: PluginWriteTaskEvidence = {
+        catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
+        taskPlan: {
+          goal: intent.goal,
+          requestedTargets: intent.targets,
+          executableTargets: intent.targets,
+          causes: [],
+          blockedTargets: [],
+          sources: [{
+            sourceId: 'official',
+            sourceIdentity: 'identity:official',
+            requestedTargets: intent.targets,
+            causes: [],
+            preview,
+            executable: true,
+          }],
+          targetFingerprint: 'sha256:target',
+          planFingerprint: '',
+        },
+      };
+      evidence.taskPlan.planFingerprint = operationEvidenceFingerprint(evidence);
+      return evidence;
+    });
+    const controllerDependencies = dependencies({ captureEvidence });
     const controller = new TuiController(controllerDependencies);
     const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await controller.load();
@@ -288,16 +337,10 @@ describe('TUI plugin update evidence', () => {
     const detail = render(<ConsoleAppV4 controller={controller} size={{ columns: 80, rows: 24 }} />);
     await nextTurn();
     detail.stdin.write('\r');
-    await nextTurn();
-    expect(controller.snapshot.router.current.route).toEqual({
-      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
-      targetKeys: ['official/demo\0codex\0user'],
-      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
-        version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
-      }) },
+    await vi.waitFor(() => expect(controller.snapshot.router.current.route.name).toBe('review'));
+    expect(controller.snapshot.activeReview).toMatchObject({
+      operationKind: 'pluginWriteTask', taskGoal: 'update',
     });
-    detail.stdin.write('\r');
-    await nextTurn();
     expect(controllerDependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWriteTask', goal: 'update', executionPolicy: 'all',
       targets: [{

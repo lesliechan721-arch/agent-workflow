@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-review-code",
+      "decision-shape"
+    ],
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "only_build_coordination",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "已批准 Spec，请协调多个工作项、集成验证和最终 Review；委派已获准，不要重新对齐需求。",
+        "expected": {
+          "loadedSkills": [
+            "dev-build"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "Build 是独立宏能力，不要求先调用 dev-workflow。",
+        "minimalCounterexample": "单项改动直接 dev-implement。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "no_router_for_code_edit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "改这个明确的小函数并运行测试即可。",
+        "expected": {
+          "loadedSkills": [
+            "dev-implement"
+          ]
+        }
+      },
+      "audit": {
+        "rationale": "小项不需要Build宏。",
+        "minimalCounterexample": "用户要求完整协调时才Build。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    },
+    {
+      "id": "build_only_advice",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "帮我讨论是否值得使用子代理，不要调度或实施。",
+        "expected": {
+          "loadedSkills": []
+        }
+      },
+      "audit": {
+        "rationale": "仅讨论不触发执行技能。",
+        "minimalCounterexample": "请求按已批准工作图实际执行时可触发。",
+        "allowedVariance": "仅测首次能力选择，不用 trigger 结果证明流程执行成功。"
+      }
+    }
+  ]
+}

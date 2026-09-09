@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-implement",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "worker-bounded-scope-and-real-test",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "你负责一个已授权工作项：实现 src/normalize-name.js，使提供的公开行为测试通过。读取 work.md 了解上下文，但全局进度由协调者维护。不要处理 W2。运行 node --test，报告改动和真实验证。",
+      "assertions": [
+        "只修改本次目标，实现 trim 与空白合并。",
+        "实际运行 node --test；不修改测试迎合结果。",
+        "work.md 和 W2 产品文件保持原样。",
+        "不自行开启最终 Review/提交或调度更多 worker。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize-name.js": "export function normalizeName(value) { return value; }\n",
+          "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\ntest('外部行为：去除首尾并合并连续空白',()=>assert.equal(normalizeName('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "work.md": "# Work\n\n协调者正在管理其他工作项。\n\n- W1：实现 normalizeName。\n- W2：之后完成 UI，当前未分配。\n\n这是共享进度，由协调者根据真实结果更新。\n",
+          "src/ui.js": "export const label = 'Name';\n"
+        }
+      },
+      "expected": {
+        "output": "修正 normalizeName，保留共享 work 和 UI，不越权开展后续任务。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize-name.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "拆分以后叶子负责一个单元，不争写全局进度。",
+        "minimalCounterexample": "用户独立要求完整小需求时可完成整个需求，不必等待宏流程。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "repair-only-assigned-blocker",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "修复 review.md 中的帮助选项 blocker。另一个 CSV blocker 由其它工作项负责，本次不要修改。相关测试可更新，运行 node --test。",
+      "assertions": [
+        "只覆盖被分配的 blocker 和必要验证。",
+        "不把“修复全部 blocker”理解成每个 worker 都越权处理全局。",
+        "不实现非阻塞通用化、snapshot/hash 建议。",
+        "实际验证并披露剩余事项归属。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\"}\n",
+          "review.md": "# Review\n帮助 blocker：help() 未展示 --json。关闭条件：公开函数包含该选项。\nCSV blocker：CSV 转义错误，由 W2 处理。\n建议：以后可以建立通用 HelpRenderer 并对全文 snapshot。\n",
+          "src/help.js": "export const help = () => 'Usage: aw status';\n",
+          "src/csv.js": "export const csv = x => x.join(',');\n",
+          "test/help.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {help} from '../src/help.js';\ntest('help exists',()=>assert.match(help(),/Usage/));\n"
+        }
+      },
+      "expected": {
+        "output": "只修帮助选项及稳定公共行为验证，不扩大到 CSV、框架或全文 hash 测试；说明其他 blocker 不属于当前工作项。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/help.js",
+          "test/help.test.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/help.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "原有“全部 blocker”需要收窄为分配给该 worker 的集合。",
+        "minimalCounterexample": "用户将两个相关 blocker 同时分配时，应覆盖两者。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    }
+  ]
+}

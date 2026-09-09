@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-build",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "验证真实工作结果和范围边界；避免用固定措辞、测试数量或复杂流程的存在证明质量。"
+    },
+    "participants": [
+      "dev-implement",
+      "dev-breakdown",
+      "dev-review-code"
+    ],
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "recover-facts-not-checkboxes",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "使用 dev-build 恢复当前任务。work.md 勾选说 normalizeName 已完成，但没有验证记录。先确认真实情况再决定是否可以交付；没有子代理权限时不要模拟 reviewer。",
+      "assertions": [
+        "不以 work checkbox 为完成证据。",
+        "检查真实源码与测试并披露失败或修复后结果。",
+        "未获得 fresh Review 不能伪造最终 clean。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize-name.js": "export function normalizeName(value) { return value; }\n",
+          "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\ntest('外部行为：去除首尾并合并连续空白',()=>assert.equal(normalizeName('  Ada   Lovelace  '),'Ada Lovelace'));\n",
+          "work.md": "# Work\nSpec：当前请求——去首尾并合并连续空白。\n- [x] normalizeName 完成（未记录验证）\n下一步：交付。\n"
+        }
+      },
+      "expected": {
+        "output": "读取实际代码并运行验证，发现勾选不能证明完成；在已有实现授权内处理或说明缺口，不声称整体已通过。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize-name.js",
+          "work.md"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "恢复读取工件但仍需校验事实。",
+        "minimalCounterexample": "已有可核对验证与有效最终 Review 时可报告完成。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "material-issue-before-dispatch",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "使用 dev-build 实现 docs/spec.md。用户尚未决定旧接口保留多久。请先检查是否可以开始。",
+      "assertions": [
+        "不修改产品。",
+        "不为未知兼容策略创建精确实施图。",
+        "明确需要用户决定的后果。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/spec.md": "# Spec\n新旧 token 迁移。\n旧接口兼容窗口未决定，直接影响旧客户端验收。\n",
+          "src/token.js": "export const version = 1;\n"
+        }
+      },
+      "expected": {
+        "output": "说明材料问题并暂停，不用分解或子代理数量掩盖未知需求。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "Build 准备度与规模不同。",
+        "minimalCounterexample": "兼容策略已确认并批准时可以实施。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    },
+    {
+      "id": "no-delegation-permission-no-fake-workers",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "behavior"
+      ],
+      "prompt": "使用 dev-build 完成这个明确的小函数。当前环境不允许创建实现子代理；可以在当前上下文直接实现并运行测试。不要提交。正式审查能力若不足请明确告知。",
+      "assertions": [
+        "没有声称创建不存在的实现子代理。",
+        "实现正确并实际验证。",
+        "没有自动 Git 提交。",
+        "说明最终正式 Review 的真实状态。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/normalize-name.js": "export function normalizeName(value) { return value; }\n",
+          "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\ntest('外部行为：去除首尾并合并连续空白',()=>assert.equal(normalizeName('  Ada   Lovelace  '),'Ada Lovelace'));\n"
+        }
+      },
+      "expected": {
+        "output": "直接完成函数和实际验证，禁止虚构委派、提交或审查；不因无法派 worker 就发明多阶段状态。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "src/normalize-name.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "direct 与 delegation 是执行选择，不是固定门禁。",
+        "minimalCounterexample": "用户明确只准子代理实施时应说明能力缺失并暂停。",
+        "allowedVariance": "允许不同中文表达和等价实现；按实际副作用、可观察行为及证据判断。"
+      }
+    }
+  ]
+}

@@ -158,7 +158,136 @@ async function write(instance: ReturnType<typeof render>, input: string): Promis
   await nextTurn();
 }
 
+async function focusAction(
+  instance: ReturnType<typeof render>,
+  label: string,
+  limit = 24,
+): Promise<void> {
+  for (let index = 0; index < limit; index += 1) {
+    const frame = instance.lastFrame();
+    if (frame?.includes(`› ${label}`) || frame?.includes(`› ○ ${label}`)
+      || frame?.includes(`› ● ${label}`)) return;
+    await write(instance, '\u001B[B');
+  }
+  throw new Error(`Action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
+}
+
 describe('TUI plugin write task', () => {
+  it('prepares a complete recommended update Review and reissues it after adjusting the frozen selection', async () => {
+    const { value, dependencies } = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+
+    await focusAction(instance, '更新 1 个插件…');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+
+    expect(dependencies.captureEvidence).toHaveBeenCalledOnce();
+    expect(dependencies.captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWriteTask',
+      goal: 'update',
+      executionPolicy: 'all',
+      targets: [expect.objectContaining({
+        pluginId: 'official/demo', platform: 'codex', scope: 'user',
+      })],
+    }), expect.any(AbortSignal));
+    expect(dependencies.executeIntent).not.toHaveBeenCalled();
+    const oldToken = value.snapshot.activeReview!.reviewToken;
+    expect(instance.lastFrame()).toContain('调整选择（1）');
+
+    await focusAction(instance, '调整选择（1）');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route.name).toBe('batchSelection');
+    expect(instance.lastFrame()).toContain('已选 1 个');
+    await expect(value.executeOperation(oldToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
+
+    await focusAction(instance, '查看确认（1）');
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+
+    expect(dependencies.captureEvidence).toHaveBeenCalledTimes(2);
+    expect(value.snapshot.activeReview!.reviewToken).not.toBe(oldToken);
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
+    expect(value.snapshot.result).toMatchObject({
+      state: 'succeeded',
+      returnRoute: { name: 'pluginWriteTask', batchOrigin: { owner: 'batch-write' } },
+    });
+
+    await focusAction(instance, '完成，返回我的插件');
+    await write(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
+
+    value.push({
+      name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
+      targetKeys: ['official/demo\0codex\0user'],
+      versionEvidence: {
+        'official/demo\0codex\0user': JSON.stringify({
+          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+        }),
+      },
+      recommendedPluginIds: ['official/demo'],
+    });
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    await write(instance, '\r');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
+    expect(value.snapshot.result).toMatchObject({
+      state: 'succeeded',
+      returnRoute: { name: 'pluginWriteTask', goal: 'update' },
+    });
+    expect((value.snapshot.result as { returnRoute?: { batchOrigin?: unknown } }).returnRoute)
+      .not.toHaveProperty('batchOrigin');
+    value.dispose();
+  });
+
+  it('does not expand a frozen recommendation when a refreshed target appears', async () => {
+    const { value, dependencies } = controller();
+    await value.load();
+    vi.spyOn(value, 'listPluginWriteTaskCandidates').mockReturnValue([
+      {
+        target, displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [],
+      },
+      {
+        target: {
+          ...target,
+          platform: 'claude',
+          scope: 'project',
+        },
+        displayName: 'Demo', sourceId: 'official', eligible: true,
+        recommendedMethod: 'sync', issueIds: [],
+      },
+    ]);
+    value.push({
+      name: 'pluginWriteTask',
+      pluginId: 'official/demo',
+      goal: 'update',
+      targetKeys: ['official/demo\0codex\0user'],
+      versionEvidence: {
+        'official/demo\0codex\0user': JSON.stringify({
+          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
+        }),
+      },
+      recommendedPluginIds: ['official/demo'],
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn();
+    await nextTurn();
+
+    expect(value.snapshot.router.current.route.name).toBe('pluginWriteTask');
+    expect(dependencies.captureEvidence).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('1 个新位置需要重新确认');
+    expect(instance.lastFrame()).not.toContain('确认更新 1 个位置');
+    value.dispose();
+  });
+
   it('prepares an unambiguous restore once and lets Esc return without a loop', async () => {
     const { value, dependencies } = controller();
     await value.load();
@@ -234,21 +363,11 @@ describe('TUI plugin write task', () => {
 
       expect(instance.lastFrame()).toContain('更新到 2.0.0');
       await write(instance, '\r');
-      expect(value.snapshot.router.current.route).toEqual({
-        name: 'pluginWriteTask', pluginId: 'official/demo', goal: 'update',
-        targetKeys: ['official/demo\0codex\0user'],
-        versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
-          version: '2.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
-        }) },
-      });
-      expect(instance.lastFrame()).toContain('Codex · 所有项目');
-      expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
+      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+      expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
       expect(Math.max(...(instance.lastFrame() ?? '').split('\n').map(stringWidth))).toBeLessThanOrEqual(columns);
 
-      await write(instance, '\r');
-      await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
-      expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
       await write(instance, '\r');
       await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
       expect(dependencies.executeIntent).toHaveBeenCalledWith(
@@ -258,7 +377,7 @@ describe('TUI plugin write task', () => {
         expect.objectContaining({ taskPlan: expect.any(Object) }),
       );
       expect(instance.lastFrame()).toContain('插件更新完成');
-      expect(instance.lastFrame()).toContain('根插件结果');
+      expect(instance.lastFrame()).toContain('所选插件结果');
       expect(instance.lastFrame()).toContain('Demo');
       expect(instance.lastFrame()).toContain('Codex · 所有项目');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
@@ -383,12 +502,6 @@ describe('TUI plugin write task', () => {
 
     expect(instance.lastFrame()).toContain('0 个可执行 · 2 个需决定');
     expect(instance.lastFrame()).toContain('更新并恢复 Demo · Codex · 所有项目');
-    await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'pluginWriteTask', goal: 'update', targetKeys: ['official/demo\0codex\0user'],
-    });
-    expect(instance.lastFrame()).toContain('1.0.0 → 2.0.0');
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     expect(instance.lastFrame()).toContain('确认更新到 2.0.0');
@@ -651,6 +764,8 @@ describe('TUI plugin write task', () => {
       targetKeys: ['official/demo\0codex\0user'],
       batchOrigin: { owner: 'batch-write', flowId: expect.any(String) },
     });
+    const batchFlowId = (outerTask as Extract<typeof outerTask, { name: 'pluginWriteTask' }>)
+      .batchOrigin!.flowId;
     expect(value.hasSessionDraft).toBe(true);
 
     await write(instance, '\r');
@@ -665,10 +780,6 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     expect(instance.lastFrame()).toContain('重新准备插件更新');
     await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({ name: 'pluginWriteTask', goal: 'update' });
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
-
-    await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
@@ -678,6 +789,7 @@ describe('TUI plugin write task', () => {
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
     await write(instance, 'b');
     expect(value.snapshot.router.current.route).toEqual(outerTask);
+    expect(value.snapshot.router.currentFlowId).toBe(batchFlowId);
     expect(instance.lastFrame()).toContain('确认恢复 1 个位置');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual(outerTask);
@@ -686,6 +798,7 @@ describe('TUI plugin write task', () => {
     await write(instance, '\r');
     await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('result'));
     await vi.waitFor(() => expect(value.hasSessionDraft).toBe(false));
+    expect(value.snapshot.router.currentFlowId).toBeUndefined();
     await write(instance, '\r');
     await nextTurn();
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
@@ -881,13 +994,8 @@ describe('TUI plugin write task', () => {
     expect(instance.lastFrame()).toContain('使用当前版本重新准备');
     expect(instance.lastFrame()).not.toContain('确认更新 1 个位置');
     await write(instance, '\r');
-    expect(value.snapshot.router.current.route).toMatchObject({
-      name: 'pluginWriteTask',
-      versionEvidence: { 'official/demo\0codex\0user': JSON.stringify({
-        version: '3.0.0', sourceIdentity: 'identity:official', binding: 'official/active',
-      }) },
-    });
-    expect(instance.lastFrame()).toContain('确认更新 1 个位置');
+    await vi.waitFor(() => expect(value.snapshot.router.current.route.name).toBe('review'));
+    expect(instance.lastFrame()).toContain('确认更新到 3.0.0');
     value.dispose();
   });
 
