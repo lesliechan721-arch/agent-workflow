@@ -61,7 +61,6 @@ import {
 import { syncCatalogSourceGeneration } from '../../src/utils/catalog-generation-service.js';
 import { readCatalogGenerationState } from '../../src/utils/catalog-generation-state.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { canonicalizePathThroughExistingAncestor } from '../../src/utils/state-paths.js';
 import {
   calculateCodexNativeRenderPayloadDigest,
   calculateCodexSharedNativePayloadDigest,
@@ -683,7 +682,7 @@ describe('rebuild adapter integration', () => {
       .toMatchObject({ state: 'absent' });
   });
 
-  it('installs prewarmed Codex static Skills and reinstalls after legacy marker loss', async () => {
+  it('installs and rebuilds Codex static native Skills without exclusive owner markers', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
@@ -802,40 +801,13 @@ describe('rebuild adapter integration', () => {
     });
     expect(installedResult.status, JSON.stringify(installedResult.failures)).toBe('succeeded');
 
-    const staticSkills = installTarget.artifacts.filter((artifact) => artifact.kind === 'skill');
-    expect(staticSkills.length).toBeGreaterThan(0);
-    const removeLegacyMarkers = async (): Promise<void> => {
-      for (const artifact of staticSkills) {
-        await fs.remove(path.join(artifact.path, SKILL_OWNER_MARKER));
-        await fs.remove(path.join(
-          cacheRoot,
-          path.relative(
-            path.join(isolation.layout.awHomeDir, 'plugins', plugin.manifest.name),
-            artifact.path,
-          ),
-          SKILL_OWNER_MARKER,
-        ));
-      }
-    };
-    await removeLegacyMarkers();
-
-    const cleanupTarget = await build('cleanup');
-    const cleanupResult = await executeRebuildOperation({
-      command: 'cleanup',
-      target: cleanupTarget,
-      driver: integration.driver,
-    });
-    expect(cleanupResult.status, JSON.stringify(cleanupResult.failures)).toBe('succeeded');
-    const recoveredInstallTarget = await build('install');
-    const recoveredInstallResult = await executeRebuildOperation({
-      command: 'install',
-      target: recoveredInstallTarget,
-      driver: integration.driver,
-    });
-    expect(recoveredInstallResult.status, JSON.stringify(recoveredInstallResult.failures))
-      .toBe('succeeded');
-
-    await removeLegacyMarkers();
+    const skillRoot = path.join(isolation.layout.awHomeDir, 'plugins', plugin.manifest.name,
+      'codex', 'skills', 'decision-grill');
+    const skillFile = path.join(skillRoot, 'SKILL.md');
+    const original = await fs.readFile(skillFile, 'utf8');
+    expect(original).not.toBe('');
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
+    await fs.appendFile(skillFile, '\nlocal edit to rebuildable native content\n');
 
     const reinstallTarget = await build('reinstall');
     const reinstalledResult = await executeRebuildOperation({
@@ -844,56 +816,8 @@ describe('rebuild adapter integration', () => {
       driver: integration.driver,
     });
     expect(reinstalledResult.status, JSON.stringify(reinstalledResult.failures)).toBe('succeeded');
-    for (const artifact of staticSkills) {
-      await expect(fs.pathExists(path.join(artifact.path, SKILL_OWNER_MARKER))).resolves.toBe(true);
-    }
-  });
-
-  it('does not let an active marketplace fallback self-authorize markerless Skill drift', async () => {
-    const isolation = getCurrentSourceTestIsolation();
-    const catalogRoot = await createSyntheticCatalog({
-      root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
-    });
-    await prewarmActiveMarketplace(catalogRoot, isolation.layout.awHomeDir);
-    const plugin = await readPluginManifest(path.join(
-      isolation.layout.awHomeDir,
-      'plugins',
-      'ask-me',
-    ), { mode: 'bundle' });
-    await fs.appendFile(path.join(
-      plugin.rootDir,
-      'codex',
-      'skills',
-      'decision-grill',
-      'SKILL.md',
-    ), '\nforeign drift\n');
-
-    const inspected = await inspectRebuildTarget({
-      plugin,
-      platform: 'codex',
-      scope: 'user',
-      cwd: isolation.layout.fixtureCwd,
-      catalog: { rootDir: isolation.layout.awHomeDir, source: 'local' },
-      context: createCommandExecutionContext({
-        env: isolation.env,
-        nativeCliRunner: async () => ({
-          exitCode: 0,
-          stdout: JSON.stringify({ installed: [], available: [] }),
-          stderr: '',
-        }),
-      }),
-    });
-    expect(inspected.inspection.state).toBe('absent');
-    expect(inspected.inspection.components).toContainEqual(expect.objectContaining({
-      state: 'foreign',
-      diagnostic: expect.stringContaining('foreign collision'),
-      collision: expect.objectContaining({
-        reason: 'unownedContent',
-        artifactKind: 'skill-directory',
-        artifactKey: 'decision-grill',
-      }),
-    }));
+    await expect(fs.readFile(skillFile, 'utf8')).resolves.toBe(original);
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
   });
 
   it.each([
@@ -1622,7 +1546,7 @@ describe('rebuild adapter integration', () => {
     expect(await fs.readdir(cwd)).toEqual(before);
   });
 
-  it('builds Codex user inspection writes below the selected namespaced marketplace root', async () => {
+  it('inspects namespaced Codex native registration without exclusive Skill ownership', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
@@ -1650,12 +1574,11 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: catalogRoot, source: 'local' },
       readOnlyInspectionPlan: true,
     });
-    const skillPaths = target.ownedComponents.flatMap((component) =>
-      component.kind === 'skill-directory' && 'path' in component ? [component.path] : []);
-    const canonicalMarketplaceRoot = await canonicalizePathThroughExistingAncestor(marketplaceRoot);
-    expect(skillPaths.length).toBeGreaterThan(0);
-    expect(skillPaths.every((entry) => entry.startsWith(`${canonicalMarketplaceRoot}${path.sep}`)))
-      .toBe(true);
+    expect(target.ownedComponents.some((component) => component.kind === 'skill-directory'))
+      .toBe(false);
+    expect(target.ownedComponents).toContainEqual(expect.objectContaining({
+      kind: 'native-plugin', pluginId: 'ask-me@aw-team',
+    }));
   });
 
   it('writes platform-specific product enums to namespaced marketplace manifests', async () => {
@@ -5404,52 +5327,30 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
     });
     const installedTarget = await build('install');
-    let reviewedSkillExecutions = 0;
-    let reviewedSkillActions = 0;
-    const countReviewedSkillWrites = (target: typeof installedTarget) => {
-      if (_kind !== 'static') return;
-      for (const action of target.operationActions ?? []) {
-        if (action.kind !== 'writeOwnedArtifact' || action.artifactKind !== 'skill-directory') continue;
-        const files = action.files;
-        reviewedSkillActions += 1;
-        Object.defineProperty(action, 'files', {
-          configurable: true,
-          get: () => {
-            reviewedSkillExecutions += 1;
-            return files;
-          },
-        });
-      }
-    };
-    countReviewedSkillWrites(installedTarget);
     expect((await executeRebuildOperation({
       command: 'install', target: installedTarget, driver: integration.driver,
     })).status).toBe('succeeded');
     const reinstallTarget = await build('reinstall');
-    countReviewedSkillWrites(reinstallTarget);
     const result = await executeRebuildOperation({
       command: 'reinstall', target: reinstallTarget, driver: integration.driver,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    const requiredSkills = reinstallTarget.artifacts.filter((artifact) =>
-      artifact.kind === 'skill' && artifact.state !== 'disabled' && artifact.artifactKey);
     if (_kind === 'slash') {
       expect(installedTarget.requiresNative).toBe(false);
       expect(reinstallTarget.requiresNative).toBe(false);
       expect(await fs.pathExists(cacheRoot)).toBe(false);
       return;
     }
-    expect(requiredSkills.length).toBeGreaterThan(0);
-    expect(reviewedSkillExecutions).toBe(reviewedSkillActions);
     const cacheManifest = await fs.readJson(path.join(cacheRoot, '.codex-plugin', 'plugin.json'));
     const skillsRoot = cacheManifest.skills.replace(/^\.\//u, '');
-    for (const artifact of requiredSkills) {
-      expect(await fs.pathExists(path.join(
-        cacheRoot,
-        ...skillsRoot.split('/'),
-        artifact.artifactKey!,
-        'SKILL.md',
-      ))).toBe(true);
+    const sourceSkills = path.join(plugin.rootDir, ...skillsRoot.split('/'));
+    const skillKeys = await fs.readdir(sourceSkills);
+    expect(skillKeys.length).toBeGreaterThan(0);
+    for (const key of skillKeys) {
+      const cachedSkillRoot = path.join(cacheRoot, ...skillsRoot.split('/'), key);
+      await expect(fs.readFile(path.join(cachedSkillRoot, 'SKILL.md'), 'utf8'))
+        .resolves.toBe(await fs.readFile(path.join(sourceSkills, key, 'SKILL.md'), 'utf8'));
+      await expect(fs.pathExists(path.join(cachedSkillRoot, SKILL_OWNER_MARKER))).resolves.toBe(false);
     }
   });
 

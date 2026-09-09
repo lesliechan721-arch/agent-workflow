@@ -3824,6 +3824,14 @@ export class TuiController {
       const preparationRecordId = `${this.#sessionEpoch}:${active.snapshot.id}`;
       const carriedDiagnostics = error instanceof TuiOperationBlockedError
         ? error.diagnostics : undefined;
+      if (carriedDiagnostics?.length) {
+        active.snapshot.message = `无法准备确认信息：${carriedDiagnostics.slice(0, 3)
+          .map((diagnostic) => sanitizeDiagnosticText(
+            `${diagnostic.target?.pluginId ? `${diagnostic.target.pluginId}：` : ''}${diagnostic.safeMessage}（${safeDiagnosticCode(diagnostic.code, 'operationBlocked')}）`,
+            [],
+            collectOperationSensitiveValues(intent),
+          )).join('；')}`;
+      }
       const preparationDiagnostics = carriedDiagnostics?.length
         ? carriedDiagnostics.map((diagnostic, index) => ({
             ...structuredClone(diagnostic),

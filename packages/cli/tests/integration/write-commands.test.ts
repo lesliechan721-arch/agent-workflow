@@ -3821,6 +3821,45 @@ describe('five namespaced write commands', () => {
     await expect(fs.lstat(payloadLink)).resolves.toMatchObject({});
   });
 
+  it('updates a markerless static native plugin after another plugin rebuilds the marketplace', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'static-upgrade-source');
+    await createNativeDependencyCatalog(sourceRoot, [{ name: 'alpha' }, { name: 'beta' }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    const options = { cwd: isolation.layout.fixtureCwd, platform: 'codex' as const, scope: 'user' as const };
+    for (const name of ['alpha', 'beta']) {
+      const installed = await installWriteCommand([`team/${name}`], options, runtime);
+      expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    }
+    const skillRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team', 'plugins',
+      'alpha', 'skills', 'alpha-skill');
+    await expect(fs.pathExists(path.join(skillRoot, '.agent-workflows-owner.json'))).resolves.toBe(false);
+    await fs.appendFile(path.join(skillRoot, 'SKILL.md'), '\nlocal edit in rebuildable native copy\n');
+    await createNativeDependencyCatalog(sourceRoot, [
+      { name: 'alpha', configureManifest: (manifest) => { manifest.version = '2.0.0'; } },
+      { name: 'beta' },
+    ]);
+    await syncCatalogSourceGeneration({ sourceId: 'team', cliVersion: '1.0.0', env: isolation.env });
+    const preview = await syncWriteCommand(['team/alpha'], options, { ...runtime, previewOperationPlan: true });
+    expect(preview.dependencyPlan?.targets).toContainEqual(expect.objectContaining({
+      pluginId: 'team/alpha', action: expect.not.stringMatching('block'),
+    }));
+    const result = await syncWriteCommand(['team/alpha'], { ...options, yes: true }, runtime);
+    expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
+    const expectedSkill = await fs.readFile(path.join(sourceRoot, 'plugins', 'alpha', 'skills',
+      'alpha-skill', 'SKILL.md'), 'utf8');
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe(expectedSkill);
+    await expect(fs.readFile(path.join(isolation.env.AW_CODEX_HOME!, 'plugins', 'cache',
+      'aw', 'alpha', '2.0.0', 'skills', 'alpha-skill', 'SKILL.md'), 'utf8')).resolves.toBe(expectedSkill);
+    expect(runtime.installed.has('beta@aw')).toBe(true);
+  });
+
   it('installs over cache-only Codex residue with add and no remove or cache deletion', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cache-only-install-source');

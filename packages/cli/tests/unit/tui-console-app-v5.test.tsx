@@ -31,6 +31,7 @@ import {
 import {
   TuiConfigInvalidStoreError,
   TuiController,
+  TuiOperationBlockedError,
   operationEvidenceFingerprint,
   userIssueKey,
   type OperationEvidence,
@@ -3134,6 +3135,54 @@ describe('ConsoleAppV4', () => {
       targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
     });
     await nextTurn(3);
+  });
+
+  it('shows the actual dependency collision on the failed preparation page', async () => {
+    const value = controller({
+      prepareReviewEvidence: async (_intent, _signal, onStage) => {
+        await onStage('dependencyPlan');
+        throw new TuiOperationBlockedError('taskNoExecutableTargets', 'private raw error', [{
+          id: 'collision', code: 'artifactCollision', stage: 'dependencyPlan',
+          target: { pluginId: 'team-tools/review-gate', platform: 'codex', scope: 'user' },
+          safeMessage: '输出位置存在外来内容，无法覆盖。', causes: [], detailLines: [],
+        }]);
+      },
+    });
+    value.startReviewPreparation({
+      kind: 'pluginWrite', action: 'reinstall', pluginId: 'team-tools/review-gate',
+      platform: 'codex', scope: 'user',
+    });
+    await nextTurn(2);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 120, rows: 32 }} />);
+    await nextTurn(2);
+    const frame = instance.lastFrame()!;
+    expect(frame).toContain('输出位置存在外来内容');
+    expect(frame).toContain('artifactCollision');
+    expect(frame).not.toContain('private raw error');
+  });
+
+  it.each(['0.9.0', '2.0.0'])('shows native version %s without claiming saved settings differ', async (installedVersion) => {
+    const loaded = loadResult();
+    const native = loaded.payload.targets.find((entry): entry is StatusV8CodexTarget =>
+      entry.pluginId === 'team-tools/review-gate' && entry.platform === 'codex')!;
+    native.state = 'needsSync';
+    native.components = [{ kind: 'sharedNative', key: 'review-gate@aw-team-tools',
+      state: 'replaceable', metadata: { reason: 'outdated', version: installedVersion, desiredVersion: '1.0.0' } }];
+    native.reasons = [{ code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning' }];
+    updatePlacement(native, 'user', { state: 'needsSync' });
+    loaded.targetRevisions = [{
+      pluginId: native.pluginId, platform: 'codex', scope: 'user',
+      revision: { state: installedVersion === '0.9.0' ? 'upgradeAvailable' : 'current',
+        installedVersion, availableVersion: '1.0.0' },
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'platform', pluginId: 'team-tools/review-gate', platform: 'codex' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 120, rows: 40 }} />);
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain(installedVersion === '0.9.0' ? '有更新' : '版本待同步');
+    expect(instance.lastFrame()).toContain('已安装版本与当前 Catalog 版本不一致');
+    expect(instance.lastFrame()).not.toContain('当前安装与已保存设置不一致');
   });
 
   it('renders a safe failed preparation with focused retry and Back actions', async () => {

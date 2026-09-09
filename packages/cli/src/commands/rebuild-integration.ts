@@ -235,7 +235,6 @@ export interface RebuildIntegration {
       scope: Scope;
       disposition: 'remove' | 'disable';
     }>;
-    preserveCodexSharedNativePayload?: boolean;
   }): Promise<DesiredTarget>;
 }
 
@@ -1576,106 +1575,6 @@ async function resolveCodexSkillsRelativeRoot(
   return normalized;
 }
 
-async function buildBundledCodexSkillWrites(options: {
-  plugin: PluginMeta;
-  env: NodeJS.ProcessEnv;
-  marketplaceRoot?: string;
-  marketplaceName?: string;
-  shallow?: boolean;
-}): Promise<PlannedWrite[]> {
-  const relativeRoot = await resolveCodexSkillsRelativeRoot(options.plugin);
-  const sourceRoot = path.join(options.plugin.rootDir, ...relativeRoot.split('/'));
-  if (!await fs.pathExists(sourceRoot)) return [];
-  const dynamicKeys = new Set(
-    (options.plugin.manifest.artifacts?.targets ?? [])
-      .filter((target) => target.target === 'codex.skill' && target.skillKey)
-      .map((target) => target.skillKey!),
-  );
-  const targetRoot = await canonicalizePathThroughExistingAncestor(path.join(
-    options.marketplaceRoot ?? resolveAwHome(options.env),
-    'plugins',
-    options.plugin.manifest.name,
-    ...relativeRoot.split('/'),
-  ));
-  const writes: PlannedWrite[] = [];
-  for (const entry of await fs.readdir(sourceRoot, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) {
-      throw new Error(`Codex skills source 不能包含符号链接：${entry.name}`);
-    }
-    if (!entry.isDirectory() || dynamicKeys.has(entry.name)) continue;
-    const skillSource = path.join(sourceRoot, entry.name);
-    if (!await fs.pathExists(path.join(skillSource, 'SKILL.md'))) continue;
-    const skillPath = path.join(targetRoot, entry.name);
-    const identity = ownerIdentity(
-      options.plugin.manifest.name,
-      entry.name,
-      'codex',
-      'user',
-    );
-    if (options.shallow) {
-      writes.push({
-        artifact: {
-          path: skillPath,
-          kind: 'skill',
-          platform: 'codex',
-          artifactKey: entry.name,
-        },
-        component: pathComponent({
-          kind: 'skill-directory',
-          path: skillPath,
-          allowedRoot: targetRoot,
-          identity,
-        }),
-      });
-      continue;
-    }
-    const tree = await createCodexSkillExpectedTree({
-      artifact: {
-        target: 'codex.skill',
-        skillKey: entry.name,
-        state: 'present',
-        content: { files: {} },
-      },
-      sourceDirs: [skillSource],
-      sourceRequirementsReceiptPolicy: 'allow',
-    });
-    const canRecoverPristine = await canonicalizePathThroughExistingAncestor(skillSource)
-      !== path.resolve(skillPath);
-    const component = pathComponent({
-      kind: 'skill-directory',
-      path: skillPath,
-      allowedRoot: targetRoot,
-      identity,
-      ...(canRecoverPristine
-        ? {
-            pristineTree: pristineTreeDescriptor(tree),
-          }
-        : {}),
-    });
-    writes.push({
-      artifact: {
-        path: skillPath,
-        paths: Object.keys(tree.files).map((relativePath) => path.join(skillPath, relativePath)),
-        kind: 'skill',
-        platform: 'codex',
-        artifactKey: entry.name,
-      },
-      component,
-      action: skillWriteAction({
-        plugin: options.plugin,
-        platform: 'codex',
-        scope: 'user',
-        path: skillPath,
-        allowedRoot: targetRoot,
-        identity,
-        tree,
-        allowPristineUnowned: canRecoverPristine,
-      }),
-    });
-  }
-  return writes;
-}
-
 async function buildClaudeWrites(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -1785,13 +1684,6 @@ async function buildCodexWrites(options: {
   const dynamicRoles = dynamic.artifacts.filter((entry) => entry.target === 'codex.agentRole');
   const dynamicSkills = dynamic.artifacts.filter((entry) => entry.target === 'codex.skill');
   const repoRoot = await resolveRepoRoot(options.cwd);
-  if (options.scope === 'user') {
-    writes.push(...await buildBundledCodexSkillWrites({
-      plugin: options.plugin,
-      env: options.env,
-      marketplaceRoot: options.marketplaceRoot,
-    }));
-  }
   const skillRoot = options.scope === 'user'
     ? path.join(getCodexHome(options.env), 'skills')
     : path.join(repoRoot, '.agents', 'skills');
@@ -2072,7 +1964,6 @@ async function buildInspectionWrites(options: {
   marketplaceRoot?: string;
   marketplaceName?: string;
   userActivationDesired?: ReadonlySet<string>;
-  shallow?: boolean;
 }): Promise<PlannedWrite[]> {
   const writes: PlannedWrite[] = [];
   if (options.platform === 'claude') {
@@ -2142,13 +2033,6 @@ async function buildInspectionWrites(options: {
 
   const paths = resolveCodexPaths(options.cwd, options.scope, options.env);
   const repoRoot = await resolveRepoRoot(options.cwd);
-  if (options.scope === 'user' && options.shallow !== true) {
-    writes.push(...await buildBundledCodexSkillWrites({
-      plugin: options.plugin,
-      env: options.env,
-      marketplaceRoot: options.marketplaceRoot,
-    }));
-  }
   const instructions = resolvePlatformEntries(options.plugin.manifest.extensions?.instructions, 'codex');
   const targets = (options.plugin.manifest.artifacts?.targets ?? []).filter((target) =>
     target.platform === 'codex' && target.scopes.includes(options.scope));
@@ -4128,7 +4012,6 @@ function createNativeDriver(options: {
   const codexNativeStates = new Map<string, 'present' | 'absent'>();
   const pendingCodexNativeStates = new Map<string, 'present' | 'absent'>();
   const codexMutationMarketplaces = new Set<string>();
-  const completedNativeSkillWrites = new WeakSet<OperationAction>();
   const committedNativeGroups = new Set<string>();
   let nativeMarketplaceEligibleTargets: ReadonlySet<DesiredTarget> | undefined;
   let deferredPostchecks: Array<{
@@ -4154,37 +4037,6 @@ function createNativeDriver(options: {
     return options.targets.filter((candidate) =>
       nativeGroupKey(candidate) === key
       && (nativeMarketplaceEligibleTargets?.has(candidate) ?? true));
-  };
-  const nativeSkillOverlay = async (target: DesiredTarget): Promise<{
-    marketplaceRoot: string;
-    writes: Array<Extract<OperationAction, { kind: 'writeOwnedArtifact' }>>;
-  }> => {
-    const canonicalMarketplaceRoot = await canonicalizePathThroughExistingAncestor(
-      target.identity.marketplaceRoot ?? resolveAwHome(options.context.env),
-    );
-    const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
-      canonicalMarketplaceRoot,
-      'plugins',
-      target.identity.pluginName,
-    ));
-    const desiredSkillPaths = new Set((target.desiredOwnedComponents ?? [])
-      .filter((component) => component.kind === 'skill-directory')
-      .map((component) => path.resolve(component.path)));
-    const enabledSkillPaths = new Set(target.artifacts
-      .filter((artifact) => artifact.kind === 'skill' && artifact.state !== 'disabled')
-      .map((artifact) => path.resolve(artifact.path)));
-    return {
-      marketplaceRoot: canonicalMarketplaceRoot,
-      writes: (target.operationActions ?? []).filter((action): action is Extract<
-        OperationAction,
-        { kind: 'writeOwnedArtifact' }
-      > => action.kind === 'writeOwnedArtifact'
-        && action.artifactKind === 'skill-directory'
-        && desiredSkillPaths.has(path.resolve(action.path))
-        && enabledSkillPaths.has(path.resolve(action.path))
-        && target.identity.scope === 'user'
-        && !path.relative(nativePluginRoot, action.path).startsWith('..')),
-    };
   };
   const asNativeGroupFailure = (error: unknown): Error & {
     nativeMarketplaceGroupFailure: true;
@@ -4271,12 +4123,6 @@ function createNativeDriver(options: {
           right.identity.scope,
           right.identity.cwd,
         ].join('\0'), 'en'));
-        const nativeSkillOverlays = new Map(await Promise.all(
-          materializationTargets.map(async (candidate) => [
-            candidate,
-            await nativeSkillOverlay(candidate),
-          ] as const),
-        ));
         const transaction = await mirrorCatalog(
           first.catalog,
           options.context.env,
@@ -4284,20 +4130,7 @@ function createNativeDriver(options: {
           first.plugin.catalogLogicalIdentity,
           first.identity.platform === 'codex' ? async (stagingRoot) => {
             for (const candidate of materializationTargets) {
-              const overlay = nativeSkillOverlays.get(candidate)!;
-              const requiredSkillWrites = overlay.writes;
-              for (const action of requiredSkillWrites) {
-                await applyPlannedOperationAction({
-                  ...action,
-                  path: path.join(stagingRoot, path.relative(overlay.marketplaceRoot, action.path)),
-                  allowedRoot: path.join(
-                    stagingRoot,
-                    path.relative(overlay.marketplaceRoot, action.allowedRoot!),
-                  ),
-                });
-              }
-              const hasStaticSkills = candidate.plugin.manifest.skills !== undefined
-                || requiredSkillWrites.length > 0;
+              const hasStaticSkills = candidate.plugin.manifest.skills !== undefined;
               const preparedNativeRender = await requirePreparedCodexNativeRender({
                 context: options.context,
                 plugin: candidate.plugin,
@@ -4352,11 +4185,6 @@ function createNativeDriver(options: {
             }
           }
           throw error;
-        }
-        for (const candidate of materializationTargets) {
-          for (const action of nativeSkillOverlays.get(candidate)?.writes ?? []) {
-            completedNativeSkillWrites.add(action);
-          }
         }
         committedNativeGroups.add(key);
       })().catch((error) => {
@@ -5109,7 +4937,6 @@ function createNativeDriver(options: {
     },
     writeArtifacts: async (target) => {
       for (const operationAction of target.operationActions ?? []) {
-        if (completedNativeSkillWrites.has(operationAction)) continue;
         if (operationAction.kind === 'writeOwnedArtifact'
           || operationAction.kind === 'updateSharedConfig'
           || operationAction.kind === 'setActivation') {
@@ -5217,7 +5044,6 @@ export function createRebuildIntegration(options: {
             marketplaceRoot: input.marketplaceRoot,
             marketplaceName: input.marketplaceName,
             userActivationDesired: options.context.codexUserActivationDesired,
-            shallow: input.readOnlyShallowInspectionPlan,
           });
         } else if (input.platform === 'codex') {
           writes = await buildCodexWrites({
@@ -5265,10 +5091,6 @@ export function createRebuildIntegration(options: {
           ...(write.component ? [write.component] : []),
         ]);
       const optionalComponentKeys = new Set(optionalComponents.map(componentIdentityKey));
-      const preserveCodexSharedNativePayload = input.platform === 'codex'
-        && (input.command === 'cleanup'
-          || input.command === 'uninstall'
-          || input.preserveCodexSharedNativePayload === true);
       const configDir = input.platform === 'codex'
         ? resolveCodexPaths(input.cwd, input.scope, options.context.env).configDir
         : resolveClaudePaths(input.cwd, input.scope, options.context.env).configDir;
@@ -5290,16 +5112,7 @@ export function createRebuildIntegration(options: {
               && input.readOnlyInspectionPlan !== true)
             ? [path.join(input.cwd, '.agents', 'skills')]
             : []
-          : [
-              path.join(getCodexHome(options.context.env), 'skills'),
-              ...(preserveCodexSharedNativePayload || input.readOnlyShallowInspectionPlan === true
-                ? []
-                : [await canonicalizePathThroughExistingAncestor(path.join(
-                    input.marketplaceRoot ?? resolveAwHome(options.context.env),
-                    'plugins',
-                    input.plugin.manifest.name,
-                  ))]),
-            ]
+          : [path.join(getCodexHome(options.context.env), 'skills')]
         : [path.join(configDir, 'skills')];
       const scanSkills = () => Promise.all(skillRoots.map((root) => scanOwnedSkills({
         sourceId: input.sourceId,
@@ -5355,7 +5168,7 @@ export function createRebuildIntegration(options: {
         artifacts: historicalArtifacts,
         command: input.command,
       });
-      if (preserveCodexSharedNativePayload) {
+      if (input.platform === 'codex') {
         const nativePluginRoot = await canonicalizePathThroughExistingAncestor(path.join(
           input.marketplaceRoot ?? resolveAwHome(options.context.env),
           'plugins',

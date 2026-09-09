@@ -5633,14 +5633,21 @@ export function ConsoleAppV4(props: {
       <StaticRow
         title="状态"
         meta={placement.actualState === 'ready' ? '可用'
-          : placement.actualState === 'needsSync' ? '需要同步'
+          : placement.actualState === 'needsSync'
+            ? placement.sharedNative?.reason === 'outdated'
+              ? placement.revision.state === 'upgradeAvailable' ? '有更新' : '版本待同步'
+              : '需要同步'
             : placement.actualState === 'blocked' ? '已阻断'
               : placement.health === 'incomplete' ? '需要处理' : '暂时不可用'}
         status={placement.actualState === 'ready' ? 'success' : placement.actualState === 'blocked' ? 'error' : 'warning'}
         compact
       />
       {placement.health !== 'ready'
-        ? <StaticRow title="原因" meta={placement.blockingReason === 'artifactCollision' ? '输出位置存在冲突内容' : '当前安装与已保存设置不一致'} status="warning" compact />
+        ? <StaticRow title="原因" meta={placement.blockingReason === 'artifactCollision'
+          ? '输出位置存在冲突内容'
+          : placement.sharedNative?.reason === 'outdated'
+            ? '已安装版本与当前 Catalog 版本不一致'
+            : typedIssue?.explanation ?? '安装状态需要同步，请查看问题详情'} status="warning" compact />
         : null}
     </> : null;
     if (plugin.aggregateStatus === 'unavailable') {

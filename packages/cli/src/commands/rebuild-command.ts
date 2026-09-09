@@ -1670,7 +1670,6 @@ async function cleanupOfflineOwnedComponents(options: {
           channel: 'beta',
         },
         includeNativeCleanupCandidate: target.nativeRegistration === true,
-        preserveCodexSharedNativePayload: target.platform === 'codex',
         ...(activationAction
           ? {
               codexActivationCleanup: [{
@@ -4389,10 +4388,6 @@ async function runRebuildCommandInSession(
                 cwd: options.commandOptions.cwd,
                 command: buildCommand,
                 catalog: toCatalogResolution(entry.source),
-                preserveCodexSharedNativePayload: platform === 'codex'
-                  && (buildCommand === 'cleanup'
-                    || buildCommand === 'uninstall'
-                    || preserveSharedNative),
               }),
             );
             if (plannedNative) {
