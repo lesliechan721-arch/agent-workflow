@@ -2877,9 +2877,6 @@ async function statusCommandV8InSession(options: {
             ? 'conflict'
             : extensionComponents.some((component) => component.error?.code === 'artifactCollision')
               ? 'conflict'
-              : observedTargets.some((candidate) =>
-                  candidate.state === 'partial' || candidate.state === 'error')
-                ? 'drifted'
               : extensionComponents.some((component) =>
                   component.state === 'partial' || component.state === 'error')
               ? 'drifted'

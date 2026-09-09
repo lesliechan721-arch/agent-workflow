@@ -38,6 +38,7 @@ import {
   setTuiControllerRuntimeTestHooksForTests,
 } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
+import { buildTuiViewModel } from '../../src/tui/model.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
@@ -5731,6 +5732,57 @@ describe('five namespaced write commands', () => {
     ]));
     await expect(fs.readFile(path.join(isolation.env.AW_HOME!, 'pre-apply-count-leaf.txt'), 'utf8'))
       .resolves.toBe('3');
+  });
+
+  it('keeps an absent project placement out of extension repair for a healthy user install', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'user-extension-status-source');
+    await createNativeDependencyCatalog(sourceRoot, [{
+      name: 'demo',
+      configureManifest: (manifest) => {
+        manifest.extensions = {
+          agents: [{ name: 'worker', description: 'Worker role.', prompt: 'Work.' }],
+        };
+      },
+    }]);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 2, sources: [
+        { id: 'team', type: 'path', primary: true, path: sourceRoot },
+      ] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const runtime = createCodexNativeTestRuntime(isolation);
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const binRoot = await writeStatusSystemCodexPackage(
+      path.join(isolation.layout.fixtureCwd, 'user-extension-status-prefix'), '0.151.0',
+    );
+    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
+    try {
+      const status = await statusCommandV8({
+        cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: binRoot },
+        plugins: ['team/demo'], cliVersion: '1.0.0', platform: 'codex', json: true,
+      });
+      expect(status.payload.targets).toEqual([expect.objectContaining({
+        state: 'ready', reasons: [], recoveryActions: [],
+        placements: expect.arrayContaining([
+          expect.objectContaining({ scope: 'user', state: 'ready', reasons: [] }),
+          expect.objectContaining({ scope: 'project', state: 'absent', reasons: [], recoveryActions: [] }),
+        ]),
+      })]);
+      const view = buildTuiViewModel({ status: status.payload, pluginSummaries: [] });
+      expect(view.plugins).toEqual([expect.objectContaining({
+        aggregateStatus: 'installed',
+        installedPlacements: [expect.objectContaining({
+          scope: 'user', health: 'ready', actualScopes: ['user'], desiredScopes: ['user'],
+        })],
+      })]);
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
   });
 
   it('reuses a user native dependency through a project transitive consumer in status and TUI', async () => {

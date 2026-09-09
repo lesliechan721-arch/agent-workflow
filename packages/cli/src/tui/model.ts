@@ -755,6 +755,7 @@ function hasScopedExtensionOwnership(target: StatusScopedTarget): boolean {
 }
 
 function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
+  if (target.state === 'absent') return false;
   const activation = statusTargetActivation(target);
   const extensions = statusTargetExtensions(target);
   return statusTargetIntent(target).enabled
@@ -769,6 +770,7 @@ function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
 }
 
 export function hasActualScopeEvidence(target: StatusScopedTarget): boolean {
+  if (target.state === 'absent') return false;
   const activation = statusTargetActivation(target);
   const extensions = statusTargetExtensions(target);
   return target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
