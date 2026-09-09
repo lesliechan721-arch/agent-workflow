@@ -1,0 +1,6 @@
+interface:
+  display_name: "Decision Prototype"
+  short_description: "用最低足够的可体验证据帮助用户决定，并可靠取得原型反馈"
+  default_prompt: "使用 $decision-prototype 为当前问题选择合适原型，展示给用户并记录答案及证据。"
+policy:
+  allow_implicit_invocation: true

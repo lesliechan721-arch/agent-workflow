@@ -1,6 +1,6 @@
 {
   "schemaVersion": 7,
-  "catalogVersion": "0.1.0-beta.11",
+  "catalogVersion": "0.1.0-beta.12",
   "channel": "beta",
   "requires": {
     "aw": {
@@ -20,7 +20,7 @@
   },
   "release": {
     "state": "published",
-    "sourceHead": "154c3a72d3f59586ac6c282dde9b2915a191891e"
+    "sourceHead": "fd3f1e64ce74aafe484174994d063636fcc26307"
   },
   "entries": [
     {
@@ -115,21 +115,20 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "version": "0.1.0-beta.3",
+      "version": "0.1.0-beta.4",
       "dependencies": [],
       "requires": {
         "aw": {
           "capabilities": [
-            "aw.plugin-build-config.v1",
-            "aw.plugin-config.v2",
             "aw.plugin-manifest.v3",
-            "aw.plugin-skills.v1"
+            "aw.plugin-skills.v1",
+            "aw.portable-skills.v1"
           ]
         }
       },
-      "artifactDigest": "sha256:7e08f9624b381aedf58c4487a66ebcabb566cd8f5a6580124149f7012633d670",
-      "manifestDigest": "sha256:a830355265b049a71ad0c70fac28545b976a5b47426b1e6c2476eec0b5cf092e",
-      "contentDigest": "sha256:5e50e74d81b5b3fd492f2abdd7ef27c6eaf41485cf6c722634f1e0fb97d1c5ea"
+      "artifactDigest": "sha256:8fc1a6880b825024ea7beb83df006924c254a02c1262eee032080b7c2a1e9de0",
+      "manifestDigest": "sha256:1ec4f8cca83e8ca26104f14f2899b0c5f1cd82765379f26c5dfaa52148b0497c",
+      "contentDigest": "sha256:35b765c4c7cbc5d7cf1f987f34c52e941411c01400e1396c9318ae5bdfa161da"
     },
     {
       "name": "aw-development-toolkit",
@@ -152,7 +151,7 @@
           "CLAUDE"
         ]
       },
-      "version": "0.1.0-beta.1",
+      "version": "0.1.0-beta.2",
       "dependencies": [
         "agent-content-toolkit",
         "agent-skill-toolkit"
@@ -175,9 +174,9 @@
           ]
         }
       },
-      "artifactDigest": "sha256:588f0e935c6590ee66bddab607d6689b7030ec28ba87a47d9c6b322389752c38",
-      "manifestDigest": "sha256:14b07365231f863b9d6cbacf0243e7910fdcde8d5b18e1e6dbcfc2f561953cd9",
-      "contentDigest": "sha256:e8cd072b6056d304036a111da79ea4f67658ad42259789d090b63458b7649ba8"
+      "artifactDigest": "sha256:8f0ae1badb64565ee882860df14f0d66212ed29c268c44d800864b2956f78a12",
+      "manifestDigest": "sha256:f6dd9725acbb540aa29911c95f12732c92d459f74864843c4a1756c3ccd8a237",
+      "contentDigest": "sha256:24f3ccc8b7de83e751cc8c15c13bf763cc61804a4dcd9c6a421e0cfb9f12762c"
     },
     {
       "name": "aw-skill-eval-runner",

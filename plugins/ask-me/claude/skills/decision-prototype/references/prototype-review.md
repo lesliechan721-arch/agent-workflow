@@ -4,13 +4,23 @@
 
 ## 启动与展示
 
-从 Skill 根运行 `node scripts/prototype-review.mjs --help` 查看可用操作和参数。启动当前配置对应的会话；若运行时已返回匹配的提交结果，直接消费该结果，不重复打开页面。
+从 Skill 根运行以下命令；`<session.json>` 使用 `start` 回执中的 `session` 路径：
+
+```sh
+node scripts/prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--new-session]
+node scripts/prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
+node scripts/prototype-review.mjs wait --session <session.json> [--timeout 5m]
+node scripts/prototype-review.mjs status --session <session.json>
+node scripts/prototype-review.mjs stop --session <session.json>
+```
+
+启动会话；未指定 `--ttl` 时期限为 30 分钟。若运行时已返回匹配的提交结果，直接消费该结果，不重复打开页面。
 
 优先使用当前环境**能向用户展示可操作页面**的原生浏览器、预览或端口能力。仅供 agent 截图、检查 DOM 或自动化操作的浏览器，不等于用户可以看到的界面。
 
 已有用户可见能力时先使用它，并核对会话的页面连接信息。没有该能力或发生技术失败时，使用脚本的 `open` 操作兜底打开同一会话。脚本因技术问题打开失败时，使用当前系统浏览器打开能力，打开会话中的同一 URL；不要重新启动会话。若通过脚本重试，使用 `--retry`，普通重复调用会复用已有打开结果。自动打开均失败时，输出会话 URL，让用户自行打开，然后继续等待反馈。打开进程成功只表示已发出请求；页面连接只表示加载就绪，都不表示用户已经阅读或决定。
 
-用户拒绝打开或平台拒绝权限时停止，不换工具绕过。远程或无桌面环境不能在用户侧展示时，优先采用已提供的安全转发或预览；仍不可用则说明环境限制，保留原型与问题。输出 URL 时说明尚未解决的可达性限制，不把远程 localhost 说成用户本机地址，不声称已经打开，不默认公开服务。
+沙箱或执行权限限制导致打开失败时，使用权限审批流程（如有）重试同一会话，若被拒时停止，不换工具绕过。远程或无桌面环境不能在用户侧展示时，优先采用已提供的安全转发或预览；仍不可用则说明环境限制，保留原型与问题。输出 URL 时说明尚未解决的可达性限制，不把远程 localhost 说成用户本机地址，不声称已经打开，不默认公开服务。
 
 ## 等待与继续
 

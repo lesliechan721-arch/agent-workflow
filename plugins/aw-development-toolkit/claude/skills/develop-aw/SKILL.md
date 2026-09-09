@@ -55,3 +55,5 @@ metadata:
 ## 完成
 
 返回实际 source 修改、AW CLI receipts、单插件和 Catalog 聚合验证、materialized 产物、development activation 状态及未完成项。不得输出独立 Review、Eval Audit、模型 Eval 或发布成功。
+
+执行 preparation/materialization 后，交付 receipts 中全部 `sourceBindingPath` 及对应 profile、产物位置和未覆盖项，供后续 Reviewer 使用。

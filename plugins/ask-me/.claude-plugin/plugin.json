@@ -1,6 +1,6 @@
 {
   "name": "ask-me",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
   "interface": {
     "displayName": "Ask Me",

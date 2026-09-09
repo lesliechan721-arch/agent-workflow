@@ -35,7 +35,9 @@ metadata:
 | 插件/Skill 公开能力组合 | `references/portfolio-review.md` + `review-agent-architecture` portfolio |
 | Eval 证据影响结论 | `audit-agent-skill-evals` |
 
-相同 production digest 且影响判断的 profile/权限/适用规范相同时可复用 leaf 内容 Review；profile 适配仍逐项检查，不能只按 digest 丢掉环境差异。没有 materialized final 时只评价可见 source，不推断不可见产物。
+相同 production digest 且影响判断的 profile/权限/适用规范相同时可复用 leaf 内容 Review；profile 适配仍逐项检查，不能只按 digest 丢掉环境差异。普通 Review 不要求 materialization receipt；`requiredFinalMissing` 只记为 evidence gap，继续评价可见 source，明确 final 未验证。
+
+完整 profile/final 审核或 Release Check 要求所需 final 均有当前可验证证据。缺项时暂不作完整结论，由独立的 `develop-aw` 阶段补齐；仅在已有授权未覆盖 preparation/materialization 时请求授权。随后通过 `--materialization` 只读消费返回的 `sourceBindingPath`。
 
 ## 普通 Review 输出
 

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Decision Shape"
+  short_description: "在多轮问答与可体验证据间形成完整且当前有效的共享理解"
+  default_prompt: "使用 $decision-shape 收敛当前主题的材料决定，并按需维护 Shape 记录。"
+policy:
+  allow_implicit_invocation: true

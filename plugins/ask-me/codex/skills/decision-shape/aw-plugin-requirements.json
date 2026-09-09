@@ -3,13 +3,12 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "ask-me",
-    "version": "0.1.0-beta.3"
+    "version": "0.1.0-beta.4"
   },
   "requiredCapabilities": [
-    "aw.plugin-build-config.v1",
-    "aw.plugin-config.v2",
     "aw.plugin-manifest.v3",
-    "aw.plugin-skills.v1"
+    "aw.plugin-skills.v1",
+    "aw.portable-skills.v1"
   ],
-  "digest": "sha256:02555e33191390502663e451e7f9840c6ffdd79121bf8dbe7db7d3993023bd31"
+  "digest": "sha256:0b60d532e34080a08d893b4228854c6e97801a2c3990f553b377f8b813d83b3a"
 }

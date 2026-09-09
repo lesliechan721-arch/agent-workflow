@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "ask-me",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
   "marketplace": {
     "category": "workflow",
@@ -11,17 +11,12 @@
       "authentication": "ON_INSTALL"
     }
   },
-  "requires": {
-    "aw": {
-      "capabilities": [
-        "aw.plugin-build-config.v1",
-        "aw.plugin-config.v2",
-        "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1"
-      ]
+  "skills": "./skills",
+  "distributions": {
+    "agentSkills": {
+      "skills": "./agent-skills/skills"
     }
   },
-  "skills": "./skills",
   "interface": {
     "displayName": "Ask Me",
     "shortDescription": "通过问答、原型或完整 Shape 塑造重要决定",
@@ -29,33 +24,14 @@
       "Skills"
     ]
   },
-  "buildConfig": {
-    "templates": {
-      "vars": {
-        "questionTool": {
-          "claude": "`AskUserQuestion`",
-          "codex": "`request_user_input`"
-        }
-      },
-      "include": [
-        "skills/**/*.md"
-      ]
-    }
-  },
   "scripts": {},
-  "config": {
-    "fields": {
-      "reviewSessionTtlMinutes": {
-        "type": "number",
-        "title": "原型 Review 会话有效期（分钟）",
-        "description": "新建网页原型 Review 会话的有效期。",
-        "default": 30,
-        "validation": {
-          "integer": true,
-          "minimum": 1,
-          "maximum": 240
-        }
-      }
+  "requires": {
+    "aw": {
+      "capabilities": [
+        "aw.plugin-manifest.v3",
+        "aw.plugin-skills.v1",
+        "aw.portable-skills.v1"
+      ]
     }
   }
 }
