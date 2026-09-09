@@ -3,7 +3,7 @@
   "kind": "aw-plugin-intents",
   "roots": [
     {
-      "pluginId": "official/aw-plugin-development",
+      "pluginId": "official/aw-development-toolkit",
       "platforms": [
         "codex"
       ]
