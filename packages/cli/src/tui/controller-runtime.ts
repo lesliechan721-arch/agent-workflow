@@ -104,6 +104,7 @@ import {
   buildConfigPage,
   buildTuiViewModel,
   hasActualScopeEvidence,
+  isDirectCodexVersionUpgrade,
   projectPlatformPlacement,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
@@ -1644,6 +1645,8 @@ export function createTuiControllerDependencies(
                 && revision.revision.installedVersion === expected.installedVersion
                 && revision.revision.availableVersion === expected.activeVersion
                 && revision.revision.state === 'upgradeAvailable');
+              const directVersionUpgrade = live !== undefined && revision !== undefined
+                && isDirectCodexVersionUpgrade(live, revision.revision);
               return {
                 target,
                 displayName: model.plugins.find((plugin) => plugin.pluginId === target.pluginId)
@@ -1651,7 +1654,8 @@ export function createTuiControllerDependencies(
                 sourceId,
                 eligible,
                 ...(!eligible ? { blockReason: 'updateEvidenceIncomplete' as const } : {}),
-                recommendedMethod: live?.state === 'ready' ? 'sync' : 'reinstall',
+                recommendedMethod: live?.state === 'ready' || directVersionUpgrade
+                  ? 'sync' : 'reinstall',
                 issueIds: [],
               };
             });

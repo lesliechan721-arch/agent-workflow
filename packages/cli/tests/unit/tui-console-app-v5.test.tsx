@@ -3508,6 +3508,89 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('当前安装与已保存设置不一致');
   });
 
+  it('routes an outdated native plugin through the update task instead of issue recovery', async () => {
+    const loaded = platformLoadResult('upgradeAvailable');
+    const native = loaded.payload.targets.find((entry): entry is StatusV8CodexTarget =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    native.state = 'needsSync';
+    native.components = [{ kind: 'sharedNative', key: 'review-gate@aw',
+      state: 'replaceable', metadata: {
+        reason: 'outdated', version: '0.2.1', desiredVersion: '0.3.0',
+      } }];
+    updatePlacement(native, 'user', { state: 'needsSync', reasons: [{
+      code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning',
+    }] });
+    const captureEvidence = vi.fn(async (intent: OperationIntent) => intent.kind === 'pluginWriteTask'
+      ? pluginWriteTaskEvidence(intent)
+      : evidenceForIntent(intent));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: native.pluginId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 120, rows: 40 }} />);
+    await nextTurn(2);
+
+    expect(value.listUserIssues().some((issue) => issue.issueId === `sharedNative:${native.pluginId}`))
+      .toBe(false);
+    expect(instance.lastFrame()).toContain('更新到 0.3.0…');
+    expect(instance.lastFrame()).not.toContain('恢复正常…');
+    expect(instance.lastFrame()).not.toContain('查看处理建议');
+
+    await input(instance, '\r');
+    await vi.waitFor(() => expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWriteTask', goal: 'update', targets: [expect.objectContaining({
+        pluginId: native.pluginId, platform: 'codex', scope: 'user',
+      })],
+    }), expect.any(AbortSignal)));
+  });
+
+  it('keeps shared-native recovery visible when its version evidence conflicts with the update', async () => {
+    const loaded = platformLoadResult('upgradeAvailable');
+    const native = loaded.payload.targets.find((entry): entry is StatusV8CodexTarget =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    native.components = [{ kind: 'sharedNative', key: 'review-gate@aw',
+      state: 'replaceable', metadata: {
+        reason: 'outdated', version: '2.0.0', desiredVersion: '0.3.0',
+      } }];
+    updatePlacement(native, 'user', { state: 'needsSync', reasons: [{
+      code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning',
+    }] });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: native.pluginId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 120, rows: 40 }} />);
+    await nextTurn(2);
+
+    expect(value.listUserIssues().some((issue) => issue.issueId === `sharedNative:${native.pluginId}`))
+      .toBe(true);
+    expect(instance.lastFrame()).toContain('查看处理建议');
+    expect(instance.lastFrame()).not.toContain('更新到 0.3.0…');
+  });
+
+  it('keeps the shared-native issue when installed Codex scopes disagree about the update', async () => {
+    const loaded = platformLoadResult('upgradeAvailable');
+    const native = loaded.payload.targets.find((entry): entry is StatusV8CodexTarget =>
+      entry.pluginId === 'official/review-gate' && entry.platform === 'codex')!;
+    native.components = [{ kind: 'sharedNative', key: 'review-gate@aw',
+      state: 'replaceable', metadata: {
+        reason: 'outdated', version: '0.2.1', desiredVersion: '0.3.0',
+      } }];
+    const reason = {
+      code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning' as const,
+    };
+    updatePlacement(native, 'user', { state: 'needsSync', reasons: [reason] });
+    native.placements.push({ ...structuredClone(native.placements[0]!), scope: 'project' });
+    updatePlacement(native, 'project', { state: 'needsSync', reasons: [reason] });
+    loaded.targetRevisions.push({
+      pluginId: native.pluginId, platform: 'codex', scope: 'project',
+      revision: { state: 'unknown', installedVersion: '0.4.0', availableVersion: '0.3.0' },
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+
+    expect(value.listUserIssues().some((issue) => issue.issueId === `sharedNative:${native.pluginId}`))
+      .toBe(true);
+  });
+
   it('renders a safe failed preparation with focused retry and Back actions', async () => {
     const validateIntent = vi.fn()
       .mockRejectedValueOnce(new Error('/Users/private/raw failure'))

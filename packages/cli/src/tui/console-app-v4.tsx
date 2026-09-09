@@ -5301,7 +5301,8 @@ export function ConsoleAppV4(props: {
           status: 'warning',
           run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }),
         }
-      : plugin.aggregateStatus === 'needsAttention' && !restoreAction ? {
+      : plugin.aggregateStatus === 'needsAttention' && !restoreAction
+        && (!updateAction || issuesForPlugin.length > 0) ? {
           label: '查看处理建议',
           description: '当前问题需要先确认原因或处理方式',
           status: 'warning',

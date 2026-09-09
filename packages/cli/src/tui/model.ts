@@ -223,7 +223,8 @@ export function buildPluginUpdateSummary(options: {
       const activeVersion = entry.revision.availableVersion;
       const liveTarget = options.targets.find((target) => target.pluginId === entry.pluginId
         && target.platform === entry.platform && target.scope === entry.scope);
-      const needsRepair = liveTarget !== undefined && liveTarget.state !== 'ready';
+      const needsRepair = liveTarget !== undefined && liveTarget.state !== 'ready'
+        && !isDirectCodexVersionUpgrade(liveTarget, entry.revision);
       const installedValid = installedVersion !== undefined && tryParseStrictSemVer(installedVersion) !== null;
       const activeValid = activeVersion !== undefined && tryParseStrictSemVer(activeVersion) !== null;
       const candidateValid = candidate !== undefined && tryParseStrictSemVer(candidate.version) !== null;
@@ -688,6 +689,25 @@ function targetHealth(target: StatusScopedTarget): 'ready' | 'incomplete' | 'err
   if (target.state === 'ready') return 'ready';
   if (target.state === 'needsSync' || target.state === 'orphaned') return 'incomplete';
   return target.state === 'blocked' ? 'error' : 'incomplete';
+}
+
+export function isDirectCodexVersionUpgrade(
+  target: StatusScopedTarget,
+  revision: TargetRevisionState,
+): boolean {
+  const sharedNative = statusTargetSharedNative(target);
+  const reasons = [...target.reasons, ...(target.sharedReasons ?? [])];
+  return target.platform === 'codex'
+    && target.state === 'needsSync'
+    && revision.state === 'upgradeAvailable'
+    && sharedNative?.reason === 'outdated'
+    && typeof sharedNative.version === 'string'
+    && typeof sharedNative.desiredVersion === 'string'
+    && sharedNative.version === revision.installedVersion
+    && sharedNative.desiredVersion === revision.availableVersion
+    && compareStrictSemVer(sharedNative.version, sharedNative.desiredVersion) < 0
+    && reasons.length > 0
+    && reasons.every((reason) => reason.code === 'codexSharedNativeUpdateRequired');
 }
 
 export function isPureNativeCodexTarget(target: StatusScopedTarget): boolean {
@@ -1255,7 +1275,10 @@ function lifecycleIssueActions(
   });
 }
 
-function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
+function targetIssues(
+  payload: StatusV8Payload,
+  targetRevisions: readonly StatusTargetRevision[] = [],
+): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
   const statusTargets = flattenStatusTargets(payload.targets);
   const canonicalRootsByEntity = new Map<string, string>();
@@ -1321,6 +1344,14 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
     const sharedReasons = target.reasons.filter((reason) =>
       reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved');
     if (sharedReasons.length === 0 || target.state === 'ready' || target.state === 'absent') continue;
+    const installedTargets = statusTargets.filter((candidate) => candidate.pluginId === target.pluginId
+      && candidate.platform === 'codex' && candidate.state !== 'absent');
+    const directUpgrade = installedTargets.length > 0 && installedTargets.every((candidate) => {
+      const revision = targetRevisions.find((entry) => entry.pluginId === candidate.pluginId
+        && entry.platform === candidate.platform && entry.scope === candidate.scope);
+      return revision !== undefined && isDirectCodexVersionUpgrade(candidate, revision.revision);
+    });
+    if (directUpgrade) continue;
     const codes = new Set(sharedReasons.map((reason) => reason.code));
     const sharedNative = statusTargetSharedNative(target);
     const statusIssue = codes.has('codexSharedNativeForeign')
@@ -1366,6 +1397,9 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
     });
   }
   for (const target of statusTargets) {
+    const revision = targetRevisions.find((entry) => entry.pluginId === target.pluginId
+      && entry.platform === target.platform && entry.scope === target.scope);
+    if (revision && isDirectCodexVersionUpgrade(target, revision.revision)) continue;
     if (target.reasons.length === 0 && (target.sharedReasons?.length ?? 0) > 0
       && isPureNativeCodexTarget(target)) continue;
     const incomplete = target.state === 'needsSync' || target.state === 'orphaned';
@@ -2223,7 +2257,7 @@ export function buildTuiViewModel(options: {
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
-  const allTargetIssues = targetIssues(options.status);
+  const allTargetIssues = targetIssues(options.status, options.targetRevisions);
   const mergedTargetIssues = new Map<string, UserIssueDraft[]>();
   for (const issue of allTargetIssues) {
     if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;

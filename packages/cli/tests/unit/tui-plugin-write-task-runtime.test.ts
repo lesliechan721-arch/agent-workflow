@@ -353,7 +353,18 @@ describe('plugin write task runtime', () => {
 
   it('previews and executes mixed platform/scope methods once for one source', async () => {
     const catalog = await configureCatalog();
-    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
+    const current = status(catalog);
+    const codex = current.payload.targets.find((target) => target.platform === 'codex')!;
+    codex.state = 'needsSync';
+    codex.components = [{
+      kind: 'sharedNative', key: 'alpha@aw', state: 'replaceable',
+      metadata: { reason: 'outdated', version: '0.9.0', desiredVersion: '1.0.0' },
+    }];
+    codex.reasons = [{
+      code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning',
+    }];
+    codex.placements[0]!.state = 'needsSync';
+    runtimeMocks.statusCommandV8.mockImplementation(async () => current);
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
     const dependencies = createTuiControllerDependencies(createCliExecutionContext({
       cwd: catalog.cwd,
@@ -391,6 +402,37 @@ describe('plugin write task runtime', () => {
       preApplyConfirmed: true,
       preApplyExecutionCache: expect.any(Map),
     }));
+  });
+
+  it('does not sync an update when shared-native version evidence disagrees', async () => {
+    const catalog = await configureCatalog();
+    const current = status(catalog);
+    const codex = current.payload.targets.find((target) => target.platform === 'codex')!;
+    codex.state = 'needsSync';
+    codex.components = [{
+      kind: 'sharedNative', key: 'alpha@aw', state: 'replaceable',
+      metadata: { reason: 'outdated', version: '2.0.0', desiredVersion: '1.0.0' },
+    }];
+    codex.reasons = [{
+      code: 'codexSharedNativeUpdateRequired', message: 'update required', severity: 'warning',
+    }];
+    codex.placements[0]!.state = 'needsSync';
+    runtimeMocks.statusCommandV8.mockImplementation(async () => current);
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => commandResult(targets));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd,
+      env: catalog.env,
+      interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    const intent = updateIntent(catalog);
+    intent.targets = intent.targets.slice(0, 1);
+
+    await dependencies.captureEvidence(intent, new AbortController().signal);
+
+    expect(runtimeMocks.taskWriteCommand).toHaveBeenCalledWith([
+      { pluginId: 'team/alpha', platform: 'codex', scope: 'user', method: 'reinstall' },
+    ], expect.any(Object), expect.objectContaining({ previewOperationPlan: true }));
   });
 
   it('rejects a changed installed version during the lock-time evidence check', async () => {
