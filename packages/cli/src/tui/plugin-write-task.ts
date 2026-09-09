@@ -245,6 +245,11 @@ function restoreCandidate(options: {
   if (!blockReason && (matchingIssues.length === 0 || actionable.some((method) => method === undefined))) {
     blockReason = 'manualRecoveryRequired';
   }
+  if (!blockReason && matchingIssues.some((issue) => issue.actions.some((action) =>
+    (action.writeAction === 'sync' || action.writeAction === 'reinstall')
+    && action.pluginId === options.target.pluginId && action.scope !== options.target.scope))) {
+    blockReason = 'manualRecoveryRequired';
+  }
   const methods = new Set(actionable.filter((method): method is PluginWriteTaskMethod => Boolean(method)));
   return {
     target: options.target,

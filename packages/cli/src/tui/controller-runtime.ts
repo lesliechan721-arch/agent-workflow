@@ -1881,7 +1881,7 @@ export function createTuiControllerDependencies(
             target.action === 'block' || target.errorCode !== undefined);
           if (blockedPlanTargets.length === 0) break;
           const requestedKeys = new Set(draft.executableTargets.map(pluginWriteTaskTargetKey));
-          const errorCodesByRoot = new Map<string, Set<string>>();
+          const blockedPlansByRoot = new Map<string, typeof blockedPlanTargets>();
           for (const blockedPlanTarget of blockedPlanTargets) {
             const pending = [blockedPlanTarget];
             const visited = new Set<string>();
@@ -1926,28 +1926,48 @@ export function createTuiControllerDependencies(
               );
             }
             for (const key of mappedRoots) {
-              const codes = errorCodesByRoot.get(key) ?? new Set<string>();
-              codes.add(blockedPlanTarget.errorCode ?? 'writePlanBlocked');
-              errorCodesByRoot.set(key, codes);
+              const plans = blockedPlansByRoot.get(key) ?? [];
+              plans.push(blockedPlanTarget);
+              blockedPlansByRoot.set(key, plans);
             }
           }
           blockedTargets.push(...draft.executableTargets.flatMap((target) => {
-            const codes = errorCodesByRoot.get(pluginWriteTaskTargetKey(target));
-            return codes ? [{
+            const plans = blockedPlansByRoot.get(pluginWriteTaskTargetKey(target));
+            return plans ? [{
               target,
               reason: 'targetUnavailable' as const,
               issueIds: draft.causes.filter((cause) => cause.consumers.some((consumer) =>
                 pluginWriteTaskTargetKey(consumer) === pluginWriteTaskTargetKey(target)))
                 .map((cause) => cause.issueId),
-              errorCodes: [...codes].sort((left, right) => left.localeCompare(right, 'en')),
+              errorCodes: [...new Set(plans.map((plan) => plan.errorCode ?? 'writePlanBlocked'))]
+                .sort((left, right) => left.localeCompare(right, 'en')),
+              diagnostics: plans.map((plan, index) => ({
+                id: `task-plan:${sourceId}:${target.pluginId}:${target.platform}:${target.scope}:${index}`,
+                code: plan.errorCode ?? 'writePlanBlocked',
+                stage: 'dependencyPlan',
+                sourceId,
+                target: {
+                  pluginId: plan.pluginId, platform: plan.platform,
+                  scope: plan.requestedScope ?? plan.resolvedScope,
+                },
+                causes: [],
+                detailLines: [],
+                safeMessage: plan.errorCode === 'artifactCollision'
+                  ? '输出位置存在外来内容，无法覆盖。'
+                  : plan.errorCode === 'exclusiveOwnerEvidenceInvalid'
+                    ? '独立扩展的归属标记缺失或损坏。'
+                    : plan.errorCode === 'dependencyNotReady'
+                      ? '依赖安装状态无法读取。'
+                      : '依赖计划阻止了此目标。',
+              })),
             }] : [];
           }));
           draft.executableTargets = draft.executableTargets.filter((target) =>
-            !errorCodesByRoot.has(pluginWriteTaskTargetKey(target)));
+            !blockedPlansByRoot.has(pluginWriteTaskTargetKey(target)));
           draft.causes = draft.causes.map((cause) => ({
             ...cause,
             consumers: cause.consumers.filter((consumer) =>
-              !errorCodesByRoot.has(pluginWriteTaskTargetKey(consumer))),
+              !blockedPlansByRoot.has(pluginWriteTaskTargetKey(consumer))),
           })).filter((cause) => cause.consumers.length > 0);
         }
         if (!preview?.operationPlan || draft.executableTargets.length === 0) continue;
@@ -2572,9 +2592,21 @@ export function createTuiControllerDependencies(
         }
         const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
         if (blocker) {
+          const code = blocker.errorCode ?? 'dependencyNotReady';
+          const reason = code === 'dependencyScopeConflict' || code === 'codexExtensionScopeConflict'
+            ? '这个依赖的安装位置存在冲突，需要先选择保留的位置。'
+            : code === 'artifactCollision' || code === 'exclusiveOwnerEvidenceInvalid'
+              ? '这个依赖的安装位置被其他内容占用，需要先检查并处理冲突。'
+              : '这个依赖尚不可用，需要先检查并恢复后再安装。';
           throw new TuiOperationBlockedError(
-            blocker.errorCode ?? 'dependencyNotReady',
-            `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+            code,
+            `${blocker.pluginId}：${reason}`,
+            [{
+              id: `dependency:${blocker.pluginId}:${blocker.platform}:${blocker.resolvedScope}`,
+              code, stage: 'dependencyPlan', safeMessage: reason,
+              target: { pluginId: blocker.pluginId, platform: blocker.platform, scope: blocker.resolvedScope },
+              causes: [], detailLines: [],
+            }],
           );
         }
       }

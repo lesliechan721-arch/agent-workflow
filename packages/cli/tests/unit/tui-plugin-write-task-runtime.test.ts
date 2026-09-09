@@ -318,6 +318,39 @@ function sharedDependencyRestoreStatus(options: {
 describe('plugin write task runtime', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('carries dependency plan collision diagnostics into a failed update Review', async () => {
+    const catalog = await configureCatalog();
+    runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
+    runtimeMocks.taskWriteCommand.mockImplementation(async (targets: RebuildTaskTarget[]) => ({
+      ...commandResult(targets),
+      dependencyPlan: {
+        requestedPluginIds: ['team/alpha'], resolvedPluginIds: ['team/alpha'],
+        dependencyEdges: [], scopeOverrides: [],
+        targets: [{
+          pluginId: 'team/alpha', pluginName: 'alpha', platform: 'codex',
+          relation: 'requested', requestedScope: 'user', resolvedScope: 'user',
+          state: 'partial', action: 'block', errorCode: 'artifactCollision',
+          requiredBy: [], requiredByTargets: [], order: 0,
+        }],
+      },
+    }));
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: catalog.cwd, env: catalog.env, interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    }));
+    const intent = updateIntent(catalog);
+    intent.targets = intent.targets.slice(0, 1);
+    await expect(dependencies.prepareReviewEvidence!(intent, new AbortController().signal, () => {}))
+      .rejects.toMatchObject({
+        code: 'taskNoExecutableTargets',
+        diagnostics: [expect.objectContaining({
+          code: 'artifactCollision', stage: 'dependencyPlan', sourceId: 'team',
+          target: expect.objectContaining({ pluginId: 'team/alpha', scope: 'user' }),
+          safeMessage: '输出位置存在外来内容，无法覆盖。',
+        })],
+      });
+  });
+
   it('previews and executes mixed platform/scope methods once for one source', async () => {
     const catalog = await configureCatalog();
     runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
@@ -648,7 +681,7 @@ describe('plugin write task runtime', () => {
     ]);
   });
 
-  it('maps a blocked shared dependency only to its connected root', async () => {
+  it('keeps each blocked dependency identity while blocking only its connected root', async () => {
     const catalog = await configureCatalog();
     runtimeMocks.statusCommandV8.mockImplementation(async () => status(catalog));
     runtimeMocks.taskWriteCommand.mockImplementation(async (targets) => {
@@ -658,18 +691,20 @@ describe('plugin write task runtime', () => {
         ...result,
         dependencyPlan: {
           requestedPluginIds: ['team/alpha', 'team/beta'],
-          resolvedPluginIds: ['team/alpha', 'team/beta', 'team/shared'],
-          dependencyEdges: [{ from: 'team/alpha', to: 'team/shared', platform: 'codex' }],
+          resolvedPluginIds: ['team/alpha', 'team/beta', 'team/shared', 'team/other'],
+          dependencyEdges: ['team/shared', 'team/other'].map((to) => ({
+            from: 'team/alpha', to, platform: 'codex',
+          })),
           scopeOverrides: [],
-          targets: [{
-            pluginId: 'team/shared', pluginName: 'shared', platform: 'codex',
+          targets: ['shared', 'other'].map((name) => ({
+            pluginId: `team/${name}`, pluginName: name, platform: 'codex',
             relation: 'dependency', depth: 1, requiredBy: ['team/alpha'],
             requiredByTargets: [{ pluginId: 'team/alpha', platform: 'codex', scope: 'user' }],
             rootScope: 'user', minimumScope: 'user', resolvedScope: 'user',
             allowedScopes: ['user'], assignmentSource: 'consumerPromotion', locked: false,
             affectsOtherProjects: true, state: 'error', action: 'block',
-            errorCode: 'dependencyNotReady', order: 0,
-          }],
+            errorCode: 'artifactCollision', order: 0,
+          })),
         },
       };
     });
@@ -686,9 +721,20 @@ describe('plugin write task runtime', () => {
     expect(evidence.taskPlan.blockedTargets).toEqual([
       expect.objectContaining({
         target: expect.objectContaining({ pluginId: 'team/alpha' }),
-        errorCodes: ['dependencyNotReady'],
+        errorCodes: ['artifactCollision'],
+        diagnostics: ['team/shared', 'team/other'].map((pluginId) => expect.objectContaining({
+          code: 'artifactCollision', target: { pluginId, platform: 'codex', scope: 'user' },
+        })),
       }),
     ]);
+    await expect(dependencies.prepareReviewEvidence!({
+      ...updateIntent(catalog), executionPolicy: 'all',
+    }, new AbortController().signal, () => {})).rejects.toMatchObject({
+      code: 'taskHasBlockedTargets',
+      diagnostics: ['team/shared', 'team/other'].map((pluginId) => expect.objectContaining({
+        code: 'artifactCollision', target: { pluginId, platform: 'codex', scope: 'user' },
+      })),
+    });
   });
 
   it('does not restore a user dependency over an older project installation', async () => {

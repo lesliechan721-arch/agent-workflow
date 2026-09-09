@@ -758,6 +758,7 @@ function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
   const activation = statusTargetActivation(target);
   const extensions = statusTargetExtensions(target);
   return statusTargetIntent(target).enabled
+    || target.state === 'needsSync' && target.reasons.some((reason) => reason.code === 'codexActivationDrift')
     || target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
       || statusTargetOwnershipState(target) === 'partial')
     || target.platform === 'codex' && hasScopedExtensionOwnership(target)
@@ -1365,10 +1366,18 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
   for (const target of statusTargets) {
     if (target.reasons.length === 0 && (target.sharedReasons?.length ?? 0) > 0
       && isPureNativeCodexTarget(target)) continue;
-    if (target.state !== 'needsSync' && target.state !== 'blocked'
+    const incomplete = target.state === 'needsSync' || target.state === 'orphaned';
+    if (!incomplete && target.state !== 'blocked'
       && !target.reasons.some((error) => error.code === 'artifactCollision'
         || error.dependencyPluginId !== undefined && error.rootIssueId !== undefined)) continue;
     const codes = new Set(target.reasons.map((error) => error.code));
+    const orphanedActivation = target.state === 'orphaned'
+      && codes.has('codexActivationDrift') && isPureNativeCodexTarget(target);
+    const locationLabel = target.scope === 'project' ? '当前项目' : '所有项目';
+    const projectDisablesUserActivation = target.platform === 'codex'
+      && target.scope === 'project' && codes.has('codexActivationDrift')
+      && statusTargetActivation(target)?.user === true
+      && statusTargetActivation(target)?.project === false;
     const sharedNativeRenderDrift = target.state === 'needsSync'
       && codes.has('codexSharedNativeRenderDrift');
     const sharedNativeDamaged = target.state === 'needsSync'
@@ -1389,13 +1398,25 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
       ? { title: 'Codex 版本不兼容', explanation: '当前 Codex 版本低于要求，请升级后重试。' }
       : statusUnconfirmed
         ? { title: '状态未确认', explanation: '未取得有效的 Codex 状态证据，暂时无法确认插件是否可用。' }
+        : projectDisablesUserActivation
+          ? {
+              title: '插件在当前项目被关闭',
+              explanation: '这个插件已为所有项目启用，但当前项目的设置将它关闭了，因此在这里无法使用。',
+            }
+        : orphanedActivation
+          ? {
+              title: `${locationLabel}有多余的启用记录`,
+              explanation: `按当前使用设置，不需要在${locationLabel}单独启用这个插件，但 Codex 仍保留着这条启用记录。`,
+            }
         : codes.has('codexActivationDrift')
           ? { title: '激活范围不一致', explanation: 'Codex 激活配置与期望的使用范围不一致。' }
-          : codes.has('codexSharedNativeUpdateRequired')
-            ? { title: '版本待同步', explanation: '已安装的 Codex 由平台共用的内容版本与当前插件版本不一致。' }
-            : sharedNativeDamaged || contentMissing
-              ? { title: '安装不完整', explanation: '必要内容缺失或损坏，需要运行同步。' }
-              : { title: '状态待同步', explanation: '现场状态与期望状态不一致，需要重新检查并同步。' };
+          : target.state === 'orphaned'
+            ? { title: '有多余的插件内容', explanation: '按当前使用设置，这个位置不再需要安装此插件，但仍留有插件配置或文件。' }
+            : codes.has('codexSharedNativeUpdateRequired')
+              ? { title: '版本待同步', explanation: '已安装的 Codex 由平台共用的内容版本与当前插件版本不一致。' }
+              : sharedNativeDamaged || contentMissing
+                ? { title: '安装不完整', explanation: '必要内容缺失或损坏，需要运行同步。' }
+                : { title: '状态待同步', explanation: '现场状态与期望状态不一致，需要重新检查并同步。' };
 
     const dependencyCodes = [
       'dependencyMissing',
@@ -1465,7 +1486,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
               ]
           : ordinaryDependencyRoots.length > 0
             ? ordinaryDependencyRoots
-            : target.state === 'needsSync'
+            : incomplete
               ? [{ code: 'partial', category: 'incompleteInstallation', mergeEligible: false }]
           : [
               { code: 'targetDiagnostic' as const, category: 'diagnostic' as const, mergeEligible: false },
@@ -1479,7 +1500,16 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
       const dependencyScope = rootError?.dependencyScope;
       const dependencyProject = rootError?.dependencyProject;
       const dependencyCategory = root.category.startsWith('dependency');
-      const directLifecycleActions = lifecycleIssueActions(target);
+      const directLifecycleActions = lifecycleIssueActions(target).map((action) =>
+        projectDisablesUserActivation && action.id === 'sync' ? {
+          ...action,
+          label: '恢复在当前项目使用',
+          description: '移除当前项目的关闭设置，沿用所有项目的启用设置。',
+        } : orphanedActivation && action.id === 'cleanup' ? {
+          ...action,
+          label: '清理多余的启用记录',
+          description: `清理${locationLabel}的多余记录；保留其他位置的使用设置和插件文件。`,
+        } : action);
       const desiredConsumer = statusTargetIntent(target).enabled
         && statusTargetIntent(target).scopes.includes(target.scope);
       const consumerRecoveryActions = dependencyCategory
@@ -1587,7 +1617,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
           dependencyTargetUnsupported: '依赖目标不兼容',
           dependencyStillRequired: '依赖仍被使用',
           dependencyGraphInvalid: '依赖关系无效',
-        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : target.state === 'needsSync' || statusUnconfirmed || systemConsumer?.state === 'incompatible' ? statusIssue.title : bundleUnavailable ? '当前插件目录不再包含此插件' : codexIntentSourceUnavailable ? '已保存使用设置不能解析' : '检查失败'}`,
+        }[root.category as Exclude<UserIssueCategory, 'artifactCollision' | 'incompleteInstallation' | 'sourceUnavailable' | 'sourceMissing' | 'sourceIdentityChanged' | 'requiredConfigMissing' | 'configLayerUnsupported' | 'scopeConflict' | 'legacyState' | 'diagnostic'>] : incomplete || statusUnconfirmed || systemConsumer?.state === 'incompatible' ? statusIssue.title : bundleUnavailable ? '当前插件目录不再包含此插件' : codexIntentSourceUnavailable ? '已保存使用设置不能解析' : '检查失败'}`,
         explanation: root.category === 'artifactCollision'
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
@@ -1600,7 +1630,7 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
           ? 'Codex 平台由多个项目共用的生成内容缺失或损坏。'
           : sharedNativeRenderDrift
           ? 'Codex 平台由多个项目共用的生成内容与当前渲染输入不一致。'
-          : target.state === 'needsSync' || statusUnconfirmed || systemConsumer?.state === 'incompatible'
+          : incomplete || statusUnconfirmed || systemConsumer?.state === 'incompatible'
           ? statusIssue.explanation
           : bundleUnavailable
             ? '当前插件目录不再包含此插件，但仍发现 AW 管理的已安装内容。'
@@ -1609,6 +1639,10 @@ function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
             : '当前目标不能安全分类为正常安装。',
         impact: [sharedNativeProjectionIssue
           ? '运行同步可重新生成由平台共用的 Skill。'
+          : projectDisablesUserActivation
+          ? '恢复后，当前项目可以继续使用已经安装的插件。'
+          : orphanedActivation
+          ? '清理只移除多余的启用记录，不会删除其他位置正在使用的插件。'
           : root.category === 'artifactCollision'
           ? '请先移除或迁移冲突内容，然后重试安装或重新安装。'
           : bundleUnavailable || codexIntentSourceUnavailable || root.code === 'catalogSourceUnavailable'

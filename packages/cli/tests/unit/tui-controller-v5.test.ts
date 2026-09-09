@@ -887,6 +887,7 @@ describe('TUI v4 router and ViewModel', () => {
     }));
     return controller.load().then(() => {
       expect(controller.listPlugins({ mode: 'installed' })).toHaveLength(1);
+      expect(controller.listPlugins({ mode: 'browse' })).toEqual([]);
       expect(controller.listInstallTargets('removed/demo', 'user')).toEqual([]);
       expect(buildPluginDetailActions(controller.getPluginOverview('removed/demo')!)
         .map((action) => action.id)).toEqual(['settings', 'sourceProblem', 'about']);

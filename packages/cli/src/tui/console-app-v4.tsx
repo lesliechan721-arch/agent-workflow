@@ -5638,14 +5638,21 @@ export function ConsoleAppV4(props: {
       <StaticRow
         title="状态"
         meta={placement.actualState === 'ready' ? '可用'
-          : placement.actualState === 'needsSync' ? '需要同步'
+          : placement.actualState === 'needsSync'
+            ? placement.sharedNative?.reason === 'outdated'
+              ? placement.revision.state === 'upgradeAvailable' ? '有更新' : '版本待同步'
+              : '需要同步'
             : placement.actualState === 'blocked' ? '已阻断'
               : placement.health === 'incomplete' ? '需要处理' : '暂时不可用'}
         status={placement.actualState === 'ready' ? 'success' : placement.actualState === 'blocked' ? 'error' : 'warning'}
         compact
       />
       {placement.health !== 'ready'
-        ? <StaticRow title="原因" meta={placement.blockingReason === 'artifactCollision' ? '输出位置存在冲突内容' : '当前安装与已保存设置不一致'} status="warning" compact />
+        ? <StaticRow title="原因" meta={placement.blockingReason === 'artifactCollision'
+          ? '输出位置存在冲突内容'
+          : placement.sharedNative?.reason === 'outdated'
+            ? '已安装版本与当前 Catalog 版本不一致'
+            : typedIssue?.explanation ?? '安装状态需要同步，请查看问题详情'} status="warning" compact />
         : null}
     </> : null;
     if (plugin.aggregateStatus === 'unavailable') {
@@ -7347,6 +7354,17 @@ export function ConsoleAppV4(props: {
       ? 'Esc 取消 · Ctrl-C 完成后退出'
       : '↑↓ 移动 · Enter 选择 · Esc 返回';
     actions = preparation.state === 'failed' ? [
+      ...[...new Map((preparation.operationRecordId
+        ? props.controller.getOperationDiagnostic(preparation.operationRecordId)?.diagnostics ?? []
+        : []).flatMap((diagnostic) => diagnostic.stage === 'dependencyPlan'
+          && diagnostic.target?.pluginId
+          && props.controller.getPluginOverview(diagnostic.target.pluginId)
+          ? [[`${diagnostic.target.pluginId}:${diagnostic.target.platform}`, diagnostic.target] as const]
+          : [])).values()].map((target): ActionItem => ({
+            label: `处理 ${props.controller.getPluginOverview(target.pluginId!)!.displayName}`,
+            description: '查看这个依赖的问题和可用的恢复操作',
+            run: () => go({ name: 'platform', pluginId: target.pluginId!, platform: target.platform }),
+          })),
       { label: '重试', description: '重新读取和验证当前状态', run: () => {
         props.controller.retryReviewPreparation();
         setFocus(0);
