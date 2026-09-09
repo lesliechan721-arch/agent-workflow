@@ -605,7 +605,7 @@ describe('Portable Skills TUI V1', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await tick();
     expect(instance.lastFrame()).toContain('通用 Skills 安装被阻止');
-    expect(instance.lastFrame()).toContain('Review 已过期，写入未开始');
+    expect(instance.lastFrame()).toContain('确认信息已过期，写入未开始');
     expect(instance.lastFrame()).not.toContain('通用 Skills 已安装');
     expect(instance.lastFrame()).not.toContain('已通过安装验证');
     for (const label of ['返回修改', '重试', '返回插件详情']) {

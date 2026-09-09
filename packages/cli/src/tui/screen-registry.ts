@@ -16,8 +16,7 @@ export const TUI_SCREEN_IDS = [
   'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
   'D18', 'D19', 'D20',
   'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
-  'K01', 'K02', 'K03', 'K04', 'K05', 'K06', 'K07', 'K08', 'K09', 'K10', 'K11',
-  'K12', 'K13', 'K14', 'K15',
+  'K02',
   'B01', 'B02',
   'T01', 'T02', 'T03', 'T04', 'T05',
 ] as const;
@@ -27,7 +26,7 @@ export type TuiRouteName = TuiRoute['name'];
 export type TuiRouteEntity = 'none' | 'plugin' | 'source' | 'issue' | 'historyRecord' | 'activeOperation';
 export type TuiRendererFamily =
   | 'home' | 'pluginList' | 'batch' | 'plugin' | 'portable' | 'dependency'
-  | 'config' | 'source' | 'catalog' | 'issue' | 'operation' | 'history' | 'task';
+  | 'config' | 'source' | 'issue' | 'operation' | 'history' | 'task';
 export type TuiRouteKeymap = 'menu' | 'menuOrTextInput';
 
 export interface RouteEntityState {
@@ -83,7 +82,6 @@ const fixed = <Name extends TuiRouteName>(id: TuiScreenId) =>
 
 function reviewScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
-  if (review?.operationKind === 'catalogManagement') return 'K12';
   if (review?.operationKind === 'pluginWriteTask') return 'T02';
   if (review?.originIssue) return 'I10';
   const dependencyOperation = review?.operationKind === 'pluginWrite'
@@ -107,7 +105,6 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
 
 function progressScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
-  if (review?.operationKind === 'catalogManagement') return 'K13';
   if (review?.operationKind === 'pluginWriteTask') return 'T03';
   if (context.snapshot.progressTargets.length > 0) return 'D06';
   if (review?.originIssue) return 'I11';
@@ -119,9 +116,6 @@ function progressScreen(context: RouteScreenContext): TuiScreenId {
 
 function resultScreen(context: RouteScreenContext): TuiScreenId {
   const result = context.snapshot.result;
-  if (result?.operationKind === 'catalogManagement') {
-    return result.state === 'succeeded' ? 'K14' : 'K15';
-  }
   if (result?.operationKind === 'pluginWriteTask') {
     return result.state === 'succeeded' ? 'T04' : 'T05';
   }
@@ -218,14 +212,6 @@ export const TUI_ROUTE_DEFINITIONS = {
   configSave: { entity: 'plugin', rendererFamily: 'config', keymap: 'menu', normalize: plugin, screenId: fixed('C12') },
   scriptTimeout: { entity: 'none', rendererFamily: 'operation', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('P07') },
   sourceRemoveBlocked: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S17') },
-  catalogManagement: { entity: 'none', rendererFamily: 'catalog', keymap: 'menu', normalize: keep, screenId: fixed('K01') },
-  catalogWorkspace: { entity: 'none', rendererFamily: 'catalog', keymap: 'menuOrTextInput', normalize: keep, screenId: (route) =>
-    route.view === 'select' ? 'K03' : route.view === 'create' ? 'K04'
-      : route.view === 'version' ? 'K05' : 'K06' },
-  catalogDev: { entity: 'none', rendererFamily: 'catalog', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('K07') },
-  catalogStore: { entity: 'none', rendererFamily: 'catalog', keymap: 'menu', normalize: keep, screenId: fixed('K08') },
-  catalogPublish: { entity: 'none', rendererFamily: 'catalog', keymap: 'menuOrTextInput', normalize: keep, screenId: (route) =>
-    route.step === 'target' ? 'K09' : route.step === 'branch' ? 'K10' : 'K11' },
   issueList: { entity: 'none', rendererFamily: 'issue', keymap: 'menu', normalize: keep, screenId: (_route, { controller }) => {
     const issues = controller.listUserIssues();
     return issues.length === 0 ? 'I02' : issues.some((entry) => entry.category.startsWith('dependency')) ? 'D13' : 'I01';

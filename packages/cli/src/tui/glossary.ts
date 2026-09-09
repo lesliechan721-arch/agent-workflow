@@ -8,7 +8,7 @@ export const productTerms = {
   desired: '已保存使用设置',
   desiredPlacement: '计划使用位置',
   actualPlacement: '当前使用位置',
-  sharedNative: '平台共享内容',
+  sharedNative: '由平台共用的内容',
   activation: '启用位置',
   awOnly: 'AW 管理附加能力',
   awOwned: 'AW 管理内容',

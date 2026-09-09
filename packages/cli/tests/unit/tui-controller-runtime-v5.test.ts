@@ -1,7 +1,9 @@
 import path from 'node:path';
 import fs from 'fs-extra';
+import { createElement } from 'react';
+import { cleanup, render } from 'ink-testing-library';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flattenStatusTargets, type StatusV8Payload } from '../../src/commands/status-v6.js';
 import type { ReconcileOperationPlan } from '../../src/commands/reconcile-operation-plan.js';
@@ -14,6 +16,7 @@ import {
   statusTargetFingerprint,
 } from '../../src/tui/controller-runtime.js';
 import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.js';
+import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
   pluginWriteBatchFailedRequestedTargets,
   TuiConfigInvalidStoreError,
@@ -48,6 +51,8 @@ import {
 } from '../../src/utils/plugin-intent-state.js';
 
 const OFFLINE_SOURCE_IDENTITY = `sha256:${'1'.repeat(64)}`;
+
+afterEach(() => cleanup());
 
 async function replaceCatalogSourcesConfig(
   options: Parameters<typeof replaceCatalogSourcesConfigWithoutActive>[0],
@@ -1144,11 +1149,14 @@ describe('TUI batch write runtime', () => {
 });
 
 describe('TUI controller runtime scope conflict validation', () => {
-  it('does not turn ready dependency checks into applied references', async () => {
+  it('projects ready dependency checks as current availability without creating applied references', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-overview-source');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'blocked-consumer', dependencies: ['dependency'] },
+      { name: 'cross-scope-consumer', dependencies: ['dependency'] },
+      { name: 'intent-consumer', dependencies: ['dependency'] },
+      { name: 'mismatched-source-consumer', dependencies: ['dependency'] },
       { name: 'stale-consumer', dependencies: ['dependency'] },
       { name: 'dependency' },
     ]);
@@ -1188,6 +1196,32 @@ describe('TUI controller runtime scope conflict validation', () => {
         targets: [
           statusTarget('blocked-consumer', 'project', 'error'),
           {
+            ...statusTarget('cross-scope-consumer', 'project', 'present'),
+            components: [{
+              kind: 'dependency', key: 'team/dependency', state: 'ready',
+              metadata: { platform: 'codex', scope: 'user', project: 'none' },
+            }],
+          },
+          {
+            ...statusTarget('intent-consumer', 'user', 'present'),
+            placements: [statusPlacement('user', 'absent')],
+            components: [{
+              kind: 'intent', key: 'desired', state: 'desired',
+              metadata: { enabled: true, scopes: ['user'], relation: 'root' },
+            }, {
+              kind: 'dependency', key: 'team/dependency', state: 'ready',
+              metadata: { platform: 'codex', scope: 'user', project: 'none' },
+            }],
+          },
+          {
+            ...statusTarget('mismatched-source-consumer', 'user', 'present'),
+            sourceIdentity: 'sha256:mismatched-source',
+            components: [{
+              kind: 'dependency', key: 'team/dependency', state: 'ready',
+              metadata: { platform: 'codex', scope: 'user', project: 'none' },
+            }],
+          },
+          {
             ...statusTarget('stale-consumer', 'user', 'present'),
             components: [{
               kind: 'dependency', key: 'team/dependency', state: 'ready',
@@ -1198,7 +1232,14 @@ describe('TUI controller runtime scope conflict validation', () => {
         ],
         errors: [],
       },
-      pluginSummaries: ['blocked-consumer', 'stale-consumer', 'dependency'].map((pluginName) => ({
+      pluginSummaries: [
+        'blocked-consumer',
+        'cross-scope-consumer',
+        'intent-consumer',
+        'mismatched-source-consumer',
+        'stale-consumer',
+        'dependency',
+      ].map((pluginName) => ({
         pluginId: `team/${pluginName}`,
         pluginName,
         sourceId: 'team',
@@ -1223,27 +1264,60 @@ describe('TUI controller runtime scope conflict validation', () => {
       interactive: false,
     }));
 
-    const loaded = await dependencies.loadStatus(new AbortController().signal);
-    const overviews = loaded.dependencyOverviews ?? [];
+    const controller = new TuiController(dependencies);
+    await controller.load();
+    const overviews = controller.listPluginDependencyOverviews();
     const blocked = overviews.find((item) => item.pluginId === 'team/blocked-consumer');
     const stale = overviews.find((item) => item.pluginId === 'team/stale-consumer');
+    const crossScope = overviews.find((item) => item.pluginId === 'team/cross-scope-consumer');
+    const intentOnly = overviews.find((item) => item.pluginId === 'team/intent-consumer');
+    const mismatchedSource = overviews.find((item) =>
+      item.pluginId === 'team/mismatched-source-consumer');
     expect(blocked?.dependencies).toEqual([
-      expect.objectContaining({ pluginId: 'team/dependency', placementReferences: [] }),
+      expect.objectContaining({
+        pluginId: 'team/dependency',
+        placementReferences: [],
+        availablePlacementReferences: [],
+      }),
     ]);
     expect(stale?.dependencies).toEqual([
-      expect.objectContaining({ pluginId: 'team/dependency', placementReferences: [] }),
+      expect.objectContaining({
+        pluginId: 'team/dependency',
+        placementReferences: [],
+        availablePlacementReferences: [{
+          consumer: {
+            pluginId: 'team/stale-consumer', platform: 'codex', scope: 'user', project: null,
+          },
+          dependency: {
+            pluginId: 'team/dependency', platform: 'codex', scope: 'user', project: null,
+          },
+        }],
+      }),
     ]);
+    expect(crossScope?.dependencies[0]?.availablePlacementReferences).toEqual([{
+      consumer: {
+        pluginId: 'team/cross-scope-consumer', platform: 'codex', scope: 'project', project: 'current',
+      },
+      dependency: {
+        pluginId: 'team/dependency', platform: 'codex', scope: 'user', project: null,
+      },
+    }]);
+    expect(intentOnly?.dependencies[0]?.availablePlacementReferences).toEqual([]);
+    expect(mismatchedSource?.dependencies[0]?.availablePlacementReferences).toEqual([]);
 
     const reverse = buildDependencyGraphProjection({
       overviews,
       rootPluginId: 'team/dependency',
       direction: 'dependents',
     });
-    expect(reverse.rows.map((row) => row.pluginId)).toEqual(['team/dependency']);
-    expect(reverse.scopeSummary.actualConsumerPluginIds).toEqual([]);
+    expect(reverse.rows.map((row) => row.pluginId)).toEqual([
+      'team/dependency', 'team/cross-scope-consumer', 'team/stale-consumer',
+    ]);
+    expect(reverse.scopeSummary.availableConsumerPluginIds).toEqual([
+      'team/cross-scope-consumer', 'team/stale-consumer',
+    ]);
     expect(reverse.scopeSummary.unknownConsumerPluginIds).toEqual([
-      'team/blocked-consumer',
-      'team/stale-consumer',
+      'team/blocked-consumer', 'team/intent-consumer', 'team/mismatched-source-consumer',
     ]);
 
     const forward = buildDependencyGraphProjection({
@@ -1252,7 +1326,30 @@ describe('TUI controller runtime scope conflict validation', () => {
       direction: 'dependencies',
     });
     expect(forward.rows.map((row) => row.pluginId)).toContain('team/dependency');
-    expect(forward.scopeSummary.unverifiedDependencyPluginIds).toEqual(['team/dependency']);
+    expect(forward.scopeSummary.unverifiedDependencyPluginIds).toEqual([]);
+    expect(controller.getBlockingDependents('team/dependency', 'codex', 'user')).toEqual([]);
+    controller.push({
+      name: 'pluginDependencies', pluginId: 'team/dependency', direction: 'dependents',
+    });
+    const mounted = render(createElement(ConsoleAppV4, {
+      controller,
+      size: { columns: 80, rows: 24 },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mounted.lastFrame()).toContain('依赖与当前可用关系');
+    expect(mounted.lastFrame()).toContain('cross-scope-consumer');
+    mounted.unmount();
+
+    const refreshed = structuredClone(await runtimeMocks.statusCommandV8.mock.results.at(-1)!.value);
+    const refreshedStale = refreshed.payload.targets.find((entry) =>
+      entry.pluginId === 'team/stale-consumer')!;
+    refreshedStale.components.find((component) => component.kind === 'dependency')!.state = 'incomplete';
+    runtimeMocks.statusCommandV8.mockResolvedValue(refreshed);
+    await controller.load();
+    expect(controller.getPluginDependencyOverview('team/stale-consumer')
+      ?.dependencies[0]?.availablePlacementReferences).toEqual([]);
+    expect(controller.getPluginDependencyOverview('team/stale-consumer')
+      ?.dependencies[0]?.placementReferences).toEqual([]);
   });
 
   it('loads recognizable saved settings without a current Catalog plugin', async () => {

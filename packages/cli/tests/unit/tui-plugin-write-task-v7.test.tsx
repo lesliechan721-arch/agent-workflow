@@ -343,7 +343,7 @@ describe('TUI plugin write task', () => {
       await nextTurn();
 
       expect(value.snapshot.router.current.route).toEqual(route);
-      expect(instance.lastFrame()).toContain('1 个冻结位置已失效或无需处理');
+      expect(instance.lastFrame()).toContain('1 个本次安装位置已失效或无需处理');
       expect(instance.lastFrame()).not.toContain(`确认${goal === 'restore' ? '恢复' : '更新'} 1 个位置`);
       await write(instance, '\r');
       expect(dependencies.captureEvidence).not.toHaveBeenCalled();

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
+import { createElement } from 'react';
+import { render } from 'ink-testing-library';
 
 import {
   cleanupWriteCommand,
@@ -36,6 +38,7 @@ import {
   setTuiControllerRuntimeTestHooksForTests,
 } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
+import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { createCodexNativeObservationSession } from '../../src/utils/codex-native-observation.js';
 import { runCli } from '../../src/index.js';
@@ -4237,6 +4240,28 @@ describe('five namespaced write commands', () => {
     })));
     try {
       await controller.load();
+      const availableBridge = controller.getPluginDependencyOverview('team/root')
+        ?.dependencies.find((dependency) => dependency.pluginId === 'team/bridge');
+      expect(availableBridge?.placementReferences).toEqual([]);
+      expect(availableBridge?.availablePlacementReferences).toEqual([{
+        consumer: {
+          pluginId: 'team/root', platform: 'codex', scope: 'project', project: 'current',
+        },
+        dependency: {
+          pluginId: 'team/bridge', platform: 'codex', scope: 'project', project: 'current',
+        },
+      }]);
+      controller.push({
+        name: 'pluginDependencies', pluginId: 'team/root', direction: 'dependencies',
+      });
+      const mounted = render(createElement(ConsoleAppV4, {
+        controller,
+        size: { columns: 80, rows: 24 },
+      }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mounted.lastFrame()).toContain('依赖与当前可用关系');
+      expect(mounted.lastFrame()).toContain('bridge');
+      mounted.unmount();
       const migrationIssue = controller.listUserIssues().find((issue) =>
         issue.category === 'incompleteInstallation'
         && issue.pluginId === 'team/root'

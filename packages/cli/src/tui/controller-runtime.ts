@@ -103,6 +103,7 @@ import {
   buildConfigGroups,
   buildConfigPage,
   buildTuiViewModel,
+  hasActualScopeEvidence,
   projectPlatformPlacement,
   type PlatformPlacementSummary,
   type PluginDependencyOverviewViewModel,
@@ -115,10 +116,6 @@ import {
   type PluginWriteTaskTarget,
 } from './plugin-write-task.js';
 import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
-import {
-  createCatalogManagementService,
-  type CatalogManagementProgressStage,
-} from './catalog-management.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import {
   calculateCatalogSourceConfigFingerprint,
@@ -586,6 +583,7 @@ async function runBatchWriteGroup(options: {
 
 interface DependencyCatalogNode {
   pluginId: string;
+  sourceIdentity: string;
   displayName: string;
   dependencies: string[];
 }
@@ -611,6 +609,7 @@ async function loadDependencyOverviews(options: {
                 sourceId: item.resolution!.sourceId,
                 pluginName: entry.name,
               }),
+              sourceIdentity: item.resolution!.sourceIdentity,
               displayName: entry.interface?.displayName ?? entry.name,
               dependencies: entry.dependencies.map((pluginName) =>
                 formatPluginId({ sourceId: item.resolution!.sourceId, pluginName })),
@@ -638,6 +637,54 @@ async function loadDependencyOverviews(options: {
   const unsupportedPluginIds = new Set(options.status.pluginSummaries
     .filter((summary) => (summary.missingCapabilities?.length ?? 0) > 0)
     .map((summary) => summary.pluginId));
+  const availableReferencesFor = (
+    consumerPluginId: string,
+    dependencyPluginId: string,
+  ): PluginDependencyOverviewViewModel['dependencies'][number]['availablePlacementReferences'] => {
+    const consumerSourceId = parsePluginId(consumerPluginId).sourceId;
+    const dependencySourceId = parsePluginId(dependencyPluginId).sourceId;
+    const consumerNode = nodes.get(consumerPluginId);
+    const dependencyNode = nodes.get(dependencyPluginId);
+    if (consumerSourceId !== dependencySourceId
+      || !nodes.get(consumerPluginId)?.dependencies.includes(dependencyPluginId)) return [];
+    return (targetsByPlugin.get(consumerPluginId) ?? []).flatMap((consumer) => {
+      if (!hasActualScopeEvidence(consumer)
+        || consumer.sourceId !== consumerSourceId
+        || consumer.sourceIdentity !== consumerNode?.sourceIdentity) return [];
+      return [...consumer.components, ...(consumer.sharedComponents ?? [])].flatMap((component) => {
+        if (component.kind !== 'dependency'
+          || component.key !== dependencyPluginId
+          || component.state !== 'ready') return [];
+        const platform = component.metadata?.platform;
+        const scope = component.metadata?.scope;
+        const project = component.metadata?.project;
+        if ((platform !== 'codex' && platform !== 'claude')
+          || (scope !== 'user' && scope !== 'project')
+          || project !== (scope === 'project' ? 'current' : 'none')) return [];
+        const dependency = (targetsByPlugin.get(dependencyPluginId) ?? []).find((target) =>
+          target.platform === platform
+          && target.scope === scope
+          && target.sourceId === dependencySourceId
+          && target.sourceIdentity === dependencyNode?.sourceIdentity
+          && target.sourceIdentity === consumer.sourceIdentity);
+        if (!dependency) return [];
+        return [{
+          consumer: {
+            pluginId: consumerPluginId,
+            platform: consumer.platform,
+            scope: consumer.scope,
+            project: consumer.scope === 'project' ? 'current' : null,
+          },
+          dependency: {
+            pluginId: dependencyPluginId,
+            platform,
+            scope,
+            project: scope === 'project' ? 'current' : null,
+          },
+        }];
+      });
+    });
+  };
   const placementsFor = (pluginId: string): PlatformPlacementSummary[] => {
     const targets = targetsByPlugin.get(pluginId) ?? [];
     if (targets.length > 0) {
@@ -708,6 +755,7 @@ async function loadDependencyOverviews(options: {
         placements,
         aggregateStatus: aggregateFor(dependency.pluginId, placements),
         placementReferences: [],
+        availablePlacementReferences: availableReferencesFor(pluginId, dependency.pluginId),
       };
     });
     const dependentIds = [...new Set(reverse.get(pluginId) ?? [])].sort();
@@ -722,6 +770,7 @@ async function loadDependencyOverviews(options: {
         placements,
         aggregateStatus: aggregateFor(dependentId, placements),
         placementReferences: [],
+        availablePlacementReferences: availableReferencesFor(dependentId, pluginId),
       };
     });
     const targetBlockers = (targetsByPlugin.get(pluginId) ?? []).flatMap((target) =>
@@ -818,7 +867,6 @@ export function createTuiControllerDependencies(
     catalogGenerationRuntime?: CatalogGenerationServiceRuntime;
   } = {},
 ): TuiControllerDependencies {
-  const catalogManagement = createCatalogManagementService(context);
   const readInventory = options.inventoryCatalogSourceReferences
     ?? inventoryCatalogSourceReferences;
   const validatedStoreEntries = new Map<string, CatalogStoreEntry>();
@@ -1081,20 +1129,6 @@ export function createTuiControllerDependencies(
       } finally {
         await observationSession.dispose();
       }
-    }
-    if (intent.kind === 'catalogManagement') {
-      signal?.throwIfAborted();
-      await preparation?.reporter.emit('validate');
-      const managementEvidence = await catalogManagement.captureEvidence(intent);
-      signal?.throwIfAborted();
-      await preparation?.reporter.emit('evidence');
-      return {
-        catalog: {
-          configDigest: managementEvidence.workspaceBinding ?? 'catalog-store',
-          compositeDigest: managementEvidence.evidenceDigest,
-        },
-        catalogManagement: managementEvidence,
-      };
     }
     if (intent.kind === 'configReset') {
       const parsed = parsePluginId(intent.pluginId);
@@ -2678,7 +2712,6 @@ export function createTuiControllerDependencies(
   };
 
   const dependencies: TuiControllerDependencies = {
-    catalogManagement,
     beginCatalogSession(sessionOptions) {
       sessionCatalogOperationContext = undefined;
       if (sessionOptions?.reuseValidatedGenerations !== true) {
@@ -2784,10 +2817,6 @@ export function createTuiControllerDependencies(
       return evidence.dependencyPlan;
     },
     async validateIntent(intent, signal) {
-      if (intent.kind === 'catalogManagement') {
-        signal.throwIfAborted();
-        return;
-      }
       if (intent.kind === 'catalogSourcesRecovery') {
         signal.throwIfAborted();
         return;
@@ -3036,31 +3065,6 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence, signal) {
-      if (intent.kind === 'catalogManagement') {
-        signal?.throwIfAborted();
-        if (!expectedEvidence.catalogManagement) {
-          throw new TuiOperationBlockedError(
-            'operationReviewStale',
-            'Catalog management Review evidence is missing.',
-          );
-        }
-        const progressLabels: Record<CatalogManagementProgressStage, string> = {
-          validate: '验证 Catalog 状态',
-          build: '构建 Catalog snapshot',
-          source: '更新开发来源',
-          sync: '同步开发来源',
-          prune: '清理 Catalog store',
-          prepare: '准备发布计划',
-          remote: '写入 Catalog 远端',
-          verify: '验证操作结果',
-        };
-        return catalogManagement.execute(intent, expectedEvidence.catalogManagement, (stage) => {
-          progressFeed?.setCurrent(
-            { target: 'Catalog 管理', phase: progressLabels[stage] },
-            `Catalog 管理：${progressLabels[stage]}`,
-          );
-        });
-      }
       if (intent.kind === 'catalogSourcesRecovery') {
         signal?.throwIfAborted();
         return recoverInvalidCatalogSourcesConfig({ env: context.env });

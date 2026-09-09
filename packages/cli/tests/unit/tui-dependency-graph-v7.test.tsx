@@ -8,7 +8,7 @@ import type {
   PluginDependencyOverviewViewModel,
   PluginListItemViewModel,
 } from '../../src/tui/model.js';
-import type { TuiRoute } from '../../src/tui/router.js';
+import type { TuiPageContext, TuiRoute } from '../../src/tui/router.js';
 
 afterEach(() => cleanup());
 
@@ -16,7 +16,7 @@ const plugin = (pluginId: string, displayName: string): PluginListItemViewModel 
   pluginId,
   sourceId: pluginId.split('/')[0]!,
   displayName,
-  description: '依赖图测试插件',
+  description: pluginId === 'official/root' ? '生成团队审查规则' : '依赖图测试插件',
   version: '1.0.0',
   configFieldCount: 0,
   sourceLabel: pluginId.split('/')[0]!,
@@ -36,7 +36,7 @@ const reference = (consumer: string, dependency: string) => ({
   dependency: { pluginId: dependency, platform: 'codex' as const, scope: 'project' as const, project: 'current' as const },
 });
 
-// Synthetic confirmed references exercise the projection contract only. Runtime readiness does not produce them.
+// Synthetic current-availability references exercise the projection contract.
 function chainOverviews(mismatched = false): PluginDependencyOverviewViewModel[] {
   const aToB = reference('official/a', 'official/b');
   const bToC = reference('official/b', 'official/c');
@@ -46,7 +46,7 @@ function chainOverviews(mismatched = false): PluginDependencyOverviewViewModel[]
     pluginId: string,
     relation: 'direct' | 'transitive' | 'dependent',
     depth: number,
-    placementReferences: ReturnType<typeof reference>[],
+    availablePlacementReferences: ReturnType<typeof reference>[],
     requiredBy: Array<{ pluginId: string; displayName: string }> = [],
   ) => ({
     pluginId,
@@ -56,7 +56,7 @@ function chainOverviews(mismatched = false): PluginDependencyOverviewViewModel[]
     requiredBy,
     placements: [],
     aggregateStatus: 'ready' as const,
-    placementReferences,
+    availablePlacementReferences,
   });
   return [{
     pluginId: 'official/a', summary,
@@ -83,13 +83,13 @@ function overviews(): PluginDependencyOverviewViewModel[] {
         pluginId: 'official/left', displayName: '左分支', relation: 'direct', depth: 1,
         requiredBy: [{ pluginId: 'official/root', displayName: '根插件' }],
         placements: [], aggregateStatus: 'ready',
-        placementReferences: [reference('official/root', 'official/left')],
+        availablePlacementReferences: [reference('official/root', 'official/left')],
       },
       {
         pluginId: 'official/right', displayName: '右分支', relation: 'direct', depth: 1,
         requiredBy: [{ pluginId: 'official/root', displayName: '根插件' }],
         placements: [], aggregateStatus: 'ready',
-        placementReferences: [reference('official/root', 'official/right')],
+        availablePlacementReferences: [reference('official/root', 'official/right')],
       },
       {
         pluginId: 'official/shared', displayName: '共享组件', relation: 'transitive', depth: 2,
@@ -101,9 +101,9 @@ function overviews(): PluginDependencyOverviewViewModel[] {
       },
     ],
     dependents: [{
-      pluginId: 'official/consumer', displayName: '实际使用者', relation: 'dependent', depth: 1,
+      pluginId: 'official/consumer', displayName: '当前依赖者', relation: 'dependent', depth: 1,
       requiredBy: [], placements: [], aggregateStatus: 'ready',
-      placementReferences: [reference('official/consumer', 'official/root')],
+      availablePlacementReferences: [reference('official/consumer', 'official/root')],
     }, {
       pluginId: 'official/not-installed', displayName: '未安装声明者', relation: 'dependent', depth: 1,
       requiredBy: [], placements: [], aggregateStatus: 'notInstalled',
@@ -118,18 +118,19 @@ class DependencyControllerStub {
     plugin('official/left', '左分支'),
     plugin('official/right', '右分支'),
     plugin('official/shared', '共享组件'),
-    plugin('official/consumer', '实际使用者'),
+    plugin('official/consumer', '当前依赖者'),
   ];
   readonly dependencies = overviews();
   listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
   route: TuiRoute = { name: 'pluginDependencies', pluginId: 'official/root' };
-  previousRoutes: TuiRoute[] = [];
+  context: TuiPageContext = {};
+  previousRoutes: Array<{ route: TuiRoute; context: TuiPageContext }> = [];
 
   get snapshot(): TuiControllerSnapshot {
     return {
       phase: 'ready',
       router: {
-        current: { route: this.route, context: {} }, currentFrameId: 'test', depth: 2,
+        current: { route: this.route, context: this.context }, currentFrameId: 'test', depth: 2,
       },
       sourceHealth: [],
       catalogGenerations: [],
@@ -169,12 +170,18 @@ class DependencyControllerStub {
   listPlugins(): PluginListItemViewModel[] { return this.plugins; }
   listSources(): [] { return []; }
   setExternalDraftState(): void {}
-  updatePageContext(): void {}
-  push(route: TuiRoute): void { this.previousRoutes.push(this.route); this.route = route; this.publish(); }
+  updatePageContext(context: Partial<TuiPageContext>): void { Object.assign(this.context, context); }
+  push(route: TuiRoute): void {
+    this.previousRoutes.push({ route: this.route, context: this.context });
+    this.route = route;
+    this.context = {};
+    this.publish();
+  }
   replace(route: TuiRoute): void { this.route = route; this.publish(); }
   back(): void {
-    this.route = this.previousRoutes.pop()
-      ?? { name: 'pluginDependencies', pluginId: 'official/root' };
+    const previous = this.previousRoutes.pop();
+    this.route = previous?.route ?? { name: 'pluginDependencies', pluginId: 'official/root' };
+    this.context = previous?.context ?? {};
     this.publish();
   }
 }
@@ -220,7 +227,7 @@ describe('dependency graph v7', () => {
       overviews: chainOverviews(), rootPluginId: 'official/c', direction: 'dependents',
     });
     expect(continuous.rows.find((row) => row.pluginId === 'official/a'))
-      .toMatchObject({ relationship: 'indirectVerified', pathPluginIds: ['official/c', 'official/b', 'official/a'] });
+      .toMatchObject({ relationship: 'indirectAvailable', pathPluginIds: ['official/c', 'official/b', 'official/a'] });
 
     const discontinuous = buildDependencyGraphProjection({
       overviews: chainOverviews(true), rootPluginId: 'official/c', direction: 'dependents',
@@ -245,13 +252,13 @@ describe('dependency graph v7', () => {
       nodePluginId: 'official/a',
       nodePathPluginIds: ['official/c', 'official/b', 'official/a'],
     });
-    expect(instance.lastFrame()).toContain('A 通过 B 间接使用 C');
-    expect(instance.lastFrame()).not.toContain('没有实际引用证据');
+    expect(instance.lastFrame()).toContain('A 通过 B 需要 C，且各段依赖当前可用');
+    expect(instance.lastFrame()).not.toContain('本次尚未确认依赖可用');
   });
 
   it('describes a forward declaration in the consumer-to-dependency direction', async () => {
     const controller = new DependencyControllerStub();
-    controller.dependencies[0]!.dependencies[0]!.placementReferences = [];
+    controller.dependencies[0]!.dependencies[0]!.availablePlacementReferences = [];
     controller.route = {
       name: 'pluginDependencyNode', pluginId: 'official/root',
       nodePluginId: 'official/left', direction: 'dependencies',
@@ -270,7 +277,7 @@ describe('dependency graph v7', () => {
   it('keeps four placement references reachable and returns to the selected node', async () => {
     const controller = new DependencyControllerStub();
     const dependent = controller.dependencies[0]!.dependents[0]!;
-    dependent.placementReferences = [
+    dependent.availablePlacementReferences = [
       {
         consumer: { pluginId: 'official/consumer', platform: 'codex', scope: 'project', project: 'current' },
         dependency: { pluginId: 'official/root', platform: 'codex', scope: 'user', project: null },
@@ -299,8 +306,8 @@ describe('dependency graph v7', () => {
     />);
     await input(instance, '', '', '', '\r');
     expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'references' });
-    expect(instance.lastFrame()).toContain('已检查的使用位置 4 个');
-    expect(instance.lastFrame()).toContain('实际使用者在当前项目的Codex中使用它');
+    expect(instance.lastFrame()).toContain('当前可用依赖位置 4 个');
+    expect(instance.lastFrame()).toContain('当前依赖者 · 当前项目 · Codex');
     expect(instance.lastFrame()).not.toContain('consumer · platform=');
     await input(instance, 'd');
     const expectedPlacements = [
@@ -322,7 +329,7 @@ describe('dependency graph v7', () => {
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
-    expect(instance.lastFrame()).toContain('已检查的使用位置 4 个');
+    expect(instance.lastFrame()).toContain('当前可用依赖位置 4 个');
   });
 
   it('paginates complete long canonical reference IDs at 60 columns', async () => {
@@ -331,7 +338,7 @@ describe('dependency graph v7', () => {
     const consumerId = `${sourceId}/consumer-${'c'.repeat(200)}`;
     const dependencyId = `${sourceId}/dependency-${'d'.repeat(200)}`;
     const dependent = controller.dependencies[0]!.dependents[0]!;
-    dependent.placementReferences = [{
+    dependent.availablePlacementReferences = [{
       consumer: { pluginId: consumerId, platform: 'codex', scope: 'project', project: 'current' },
       dependency: { pluginId: dependencyId, platform: 'claude', scope: 'user', project: null },
     }, {
@@ -420,6 +427,7 @@ describe('dependency graph v7', () => {
       expect(instance.lastFrame()).toContain('用途');
       expect(instance.lastFrame()).toContain('为何需要');
       expect(instance.lastFrame()).toContain('影响');
+      expect(instance.lastFrame()).toContain('生成团队审查规则');
       expect(instance.lastFrame()).not.toContain('official/root');
       await input(instance, 'd');
       expect(instance.lastFrame()).toContain('official/root');
@@ -428,8 +436,8 @@ describe('dependency graph v7', () => {
 
       await input(instance, ...Array.from({ length: 5 }, () => '\u001b[B'), '\r');
       expect(controller.route).toMatchObject({ name: 'pluginDependencies', direction: 'dependents' });
-      expect(instance.lastFrame()).toContain('下面的插件正在使用上面的插件');
-      expect(instance.lastFrame()).toContain('实际使用者');
+      expect(instance.lastFrame()).toContain('下面的插件在本次检查中需要上面的插件');
+      expect(instance.lastFrame()).toContain('当前依赖者');
       expect(instance.lastFrame()).toContain('未验证声明者 · 1 个');
       expect(instance.lastFrame()).toContain('未安装声明者');
       expect(instance.lastFrame()).toContain('仅声明 · 未安装');
@@ -439,15 +447,102 @@ describe('dependency graph v7', () => {
       expect(controller.route).toMatchObject({
         name: 'pluginDependencyNode', nodePluginId: 'official/not-installed',
       });
-      expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前没有实际引用证据');
+      expect(instance.lastFrame()).toContain('声明需要当前插件，但本次尚未确认依赖可用');
       expect(instance.lastFrame()).not.toContain('已安装位置实际引用当前插件');
     },
   );
 
+  it.each([[80, 24], [60, 18]] as const)(
+    'keeps long node explanations readable at %ix%i and restores node focus',
+    async (columns, rows) => {
+      const controller = new DependencyControllerStub();
+      const root = controller.plugins.find((entry) => entry.pluginId === 'official/root')!;
+      root.description = `生成团队审查规则${'，并保留完整的项目审查依据'.repeat(18)}。依赖说明唯一结尾。`;
+      const instance = render(<ConsoleAppV4
+        controller={controller as unknown as TuiController}
+        size={{ columns, rows }}
+      />);
+      await input(instance, '', '', '', '\r');
+      expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', nodePluginId: 'official/root' });
+      expect(instance.lastFrame()).not.toContain('依赖说明唯一结尾');
+      expect(instance.lastFrame()).toContain('› 阅读完整说明');
+      await input(instance, '\r');
+      expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'details' });
+      const pages: string[] = [];
+      for (let page = 0; page < 20; page += 1) {
+        const frame = instance.lastFrame() ?? '';
+        pages.push(frame);
+        expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
+        if (!frame.includes('↓ 后面还有')) break;
+        await input(instance, '\u001b[6~');
+      }
+      expect(pages.join('\n')).toContain('生成团队审查规则');
+      expect(pages.join('\n')).toContain('依赖说明唯一结尾');
+      const completeText = pages.join('\n').replace(/\s/gu, '');
+      expect(completeText).toContain('为何需要这是当前关系图的根插件。');
+      expect(completeText).toContain('影响可用');
+      await input(instance, 'b');
+      expect(controller.route).toMatchObject({
+        name: 'pluginDependencyNode', nodePluginId: 'official/root',
+      });
+      expect(instance.lastFrame()).toContain('› 阅读完整说明');
+    },
+  );
+
+  it('keeps every referenced non-root node action and its full explanation reachable at 60x18', async () => {
+    const controller = new DependencyControllerStub();
+    const left = controller.plugins.find((entry) => entry.pluginId === 'official/left')!;
+    left.description = `提供依赖检查${'，保留每一个完整依据'.repeat(18)}。非根用途唯一结尾。`;
+    controller.route = {
+      name: 'pluginDependencyNode',
+      pluginId: 'official/root',
+      nodePluginId: 'official/left',
+      direction: 'dependencies',
+      nodePathPluginIds: ['official/root', 'official/left'],
+    };
+    const instance = render(<ConsoleAppV4
+      controller={controller as unknown as TuiController}
+      size={{ columns: 60, rows: 18 }}
+    />);
+    await input(instance, '');
+
+    const expectedActions = [
+      '› 查看全部位置（1）',
+      '› 以此节点查看关系',
+      '› 阅读完整说明',
+      '› 返回关系图',
+    ];
+    for (const [index, expected] of expectedActions.entries()) {
+      expect(instance.lastFrame()).toContain(expected);
+      expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+      if (index < expectedActions.length - 1) await input(instance, '\u001b[B');
+    }
+    await input(instance, '\u001b[A', '\r');
+    expect(controller.route).toMatchObject({ name: 'pluginDependencyNode', view: 'details' });
+    const pages: string[] = [];
+    for (let page = 0; page < 20; page += 1) {
+      const frame = instance.lastFrame() ?? '';
+      pages.push(frame);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      if (!frame.includes('↓ 后面还有')) break;
+      await input(instance, '\u001b[6~');
+    }
+    const completeText = pages.join('\n').replace(/\s/gu, '');
+    expect(completeText).toContain('非根用途唯一结尾');
+    expect(completeText).toContain('为何需要');
+    expect(completeText).toContain('根插件在本次检查的位置需要此插件，所需依赖当前可用。');
+    expect(completeText).toContain('影响已可用');
+    await input(instance, 'b');
+    expect(controller.route).toMatchObject({
+      name: 'pluginDependencyNode', nodePluginId: 'official/left',
+    });
+    expect(instance.lastFrame()).toContain('› 阅读完整说明');
+  });
+
   it('keeps every unverified declarer accessible without counting it as an actual consumer', async () => {
     const controller = new DependencyControllerStub();
     controller.dependencies[0]!.dependents.forEach((dependent) => {
-      dependent.placementReferences = [];
+      dependent.availablePlacementReferences = [];
     });
     controller.route = {
       name: 'pluginDependencies', pluginId: 'official/root', direction: 'dependents',
@@ -459,14 +554,14 @@ describe('dependency graph v7', () => {
     await input(instance, '', '', '');
 
     expect(instance.lastFrame()).toContain('未验证声明者 · 2 个');
-    expect(instance.lastFrame()).not.toContain('└─ 实际使用者');
+    expect(instance.lastFrame()).not.toContain('└─ 当前依赖者');
     await input(instance, 'd');
-    expect(instance.lastFrame()).toContain('0 个实际使用者');
+    expect(instance.lastFrame()).toContain('0 个当前可用依赖者');
     await input(instance, '\u001b[B', '\r');
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });
-    expect(instance.lastFrame()).toContain('声明依赖当前插件，但当前没有实际引用证据');
+    expect(instance.lastFrame()).toContain('声明需要当前插件，但本次尚未确认依赖可用');
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 });
