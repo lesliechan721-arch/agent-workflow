@@ -27,8 +27,8 @@
 | 修复 | 行为测试 | 轨迹 fixtureId |
 | --- | --- | --- |
 | R01：维护范围 | `tui-console-app-v5.test.tsx`：`lets batch %s edit exact existing locations without adding another platform` | `batch-selection/update-hidden-selected` |
-| R02：核心内容、完整阅读和小屏分页 | `tui-console-app-v5.test.tsx`：`keeps a multi-field config summary and its complete final change reachable at 60x18`、`keeps a multi-field source summary and its complete final change reachable at 60x18`；`tui-dependency-graph-v7.test.tsx`：`keeps every referenced non-root node action and its full explanation reachable at 60x18`、`paginates complete long canonical reference IDs at 60 columns` | `review/user-fields/paged-technical` |
-| R03：混合范围 | `tui-console-app-v5.test.tsx`：`keeps four scoped platform conclusions and the primary action reachable at 60x18`、`does not copy one scoped collision to the ready Status v8 scope` | `plugin-detail/mixed-scope` |
+| R02：核心内容、完整阅读和小屏分页 | `tui-console-app-v5.test.tsx`：`keeps a multi-field config summary and its complete final change reachable at %ix%i`、`keeps a multi-field source summary and its complete final change reachable at %ix%i`；`tui-dependency-graph-v7.test.tsx`：`keeps every referenced non-root node action and its full explanation reachable at 60x18`、`paginates complete long canonical reference IDs at 60 columns` | `review/user-fields/paged-technical` |
+| R03：混合范围 | `tui-console-app-v5.test.tsx`：`keeps four scoped platform conclusions and all detail actions reachable at %ix%i`、`does not copy one scoped collision to the ready Status v8 scope` | `plugin-detail/mixed-scope-60x18`、`plugin-detail/mixed-scope-80x24` |
 | R04：草稿退出守卫 | `tui-console-app-v5.test.tsx`：`keeps the same-scope target selection after Back and confirms Ctrl-C from help`、`routes $key from the transport picker through the parent draft guard` | `source-edit/official/https` |
 | R05：可见继续动作和 `c` | `tui-console-app-v5.test.tsx`：`uses the visible recommended-update continuation for the %s path` | `batch-selection/update-hidden-selected` |
 | R06：批量安装焦点和分组 | `tui-console-app-v5.test.tsx`：`moves through batch install placement actions in visual order at %ix%i` | `batch-selection/update-hidden-selected` |
@@ -70,7 +70,7 @@ cd packages/cli
 AW_TUI_ACCEPTANCE_TRACE_DIR="$PWD/../../.tmp/tui-v7-2-followup/production-acceptance" \
   node ../../scripts/test/run-vitest.mjs run --project filesystem-isolated \
   tests/unit/tui-console-app-v5.test.tsx \
-  -t '\[batch-selection/update-hidden-selected\]|\[source-edit/official/https\]|\[review/shared-risk/stale\]|keeps four scoped platform conclusions and the primary action reachable at 60x18|summarizes many kept and warning Review rows without clipping actions or HelpBar|budgets D10 with dependency and dependent rows and projects mixed placement status consistently'
+  -t '\[batch-selection/update-hidden-selected\]|\[source-edit/official/https\]|\[review/shared-risk/stale\]|keeps four scoped platform conclusions and all detail actions reachable|keeps a multi-field (config|source) summary and its complete final change reachable|summarizes many kept and warning Review rows without clipping actions or HelpBar|budgets D10 with dependency and dependent rows and projects mixed placement status consistently'
 ```
 
 轨迹使用现有 `writeAcceptanceTrace` helper，记录 `fixtureId`、终端尺寸、输入和真实 Ink Frame。它不是逐字 golden，也不提交到仓库。

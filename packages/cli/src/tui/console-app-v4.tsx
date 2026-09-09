@@ -5495,7 +5495,7 @@ export function ConsoleAppV4(props: {
     const hasUncertainPlacement = placementConclusions.some((placement) => placement.status === 'warning');
     const confirmedAvailablePlacements = placementConclusions.filter((placement) =>
       placement.status === 'success');
-    const placementPageRows = policy.mode === 'compact' ? 2 : placementConclusions.length;
+    const placementPageRows = Math.min(2, placementConclusions.length);
     const placementOffset = Math.min(batchTargetOffset,
       Math.max(0, placementConclusions.length - placementPageRows));
     const visiblePlacementConclusions = placementConclusions.slice(
@@ -5505,8 +5505,12 @@ export function ConsoleAppV4(props: {
     if (placementConclusionPagination) {
       help = 'PgUp/PgDn 查看全部使用位置 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
+    const detailStaticRows = 3 + visiblePlacementConclusions.length
+      + (updateDescription ? policy.mode === 'compact' ? 1 : 4 : 0)
+      + (dependencyDetailText ? 1 : 0)
+      + 3;
     const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
-      pageActionBudget(Math.min(visiblePlacementConclusions.length, 2) + 4));
+      pageActionBudget(detailStaticRows));
     content = <Box flexDirection="column">
       <StatusCard
         status={hasUnavailablePlacement ? 'error'
@@ -5527,7 +5531,11 @@ export function ConsoleAppV4(props: {
           compact
         />)}
       </StatusCard>
-      {updateDescription ? <Callout status="warning" title="有可用更新" description={updateDescription} /> : null}
+      {updateDescription
+        ? policy.mode === 'compact'
+          ? <StaticRow title="有可用更新" meta={updateDescription} status="warning" compact />
+          : <Callout status="warning" title="有可用更新" description={updateDescription} />
+        : null}
       {dependencyDetailText ? <StaticRow
         title={dependencyDetailText}
         status="muted"
@@ -6131,8 +6139,10 @@ export function ConsoleAppV4(props: {
     } else {
     const affectedTargets = configSaveImpact?.affectedTargets ?? [];
     const hasConsumers = configSaveImpact?.impactState === 'known' && affectedTargets.length > 0;
-    const visibleChanges = policy.mode === 'compact' ? changes.slice(0, 1) : changes;
-    const visibleAffectedTargets = policy.mode === 'compact' ? affectedTargets.slice(0, 1) : affectedTargets;
+    const visibleAffectedTargets = affectedTargets.slice(0, 1);
+    const impactRowCount = 2;
+    const configSummaryLimit = 1;
+    const visibleChanges = changes.slice(0, configSummaryLimit);
     const targetSummary = affectedTargets
       .map((target) => `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`)
       .join('、');
@@ -6185,8 +6195,9 @@ export function ConsoleAppV4(props: {
         go({ ...route, view: 'changes' });
       },
     });
+    const configSaveStaticRows = 6 + visibleChanges.length * 2 + impactRowCount;
     const configSaveActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
-      scrollOffset, responsiveBudget(2, 4));
+      scrollOffset, pageActionBudget(configSaveStaticRows));
     const changeSectionTitle = visibleChanges.length < changes.length
       ? `设置变更 · 显示 ${visibleChanges.length}/${changes.length}（另 ${changes.length - visibleChanges.length} 项）`
       : '设置变更';
@@ -6198,7 +6209,7 @@ export function ConsoleAppV4(props: {
         key={change.key}
         title={`~ ${draftRemoves.includes(change.key) ? `删除 ${change.title} 中的值` : change.title}`}
         value={`${change.before} → ${change.after}`}
-        compact={policy.mode === 'compact'}
+        compact
       />)}
     </SectionCard><SectionCard title={impactSectionTitle} compact={policy.mode === 'compact'}>
       {!configSaveImpact && !configSaveImpactError
@@ -7285,14 +7296,15 @@ export function ConsoleAppV4(props: {
       } },
       { label: '返回修改', run: back },
     ];
-    const visibleChanges = policy.mode === 'compact' ? changes.slice(0, 1) : changes;
+    const sourceSummaryLimit = 1;
+    const visibleChanges = changes.slice(0, sourceSummaryLimit);
     const sourceSaveActionViewport = actionViewport(actions, policy.mode === 'compact', focus,
-      scrollOffset, responsiveBudget(2, 4));
+      scrollOffset, pageActionBudget(3 + visibleChanges.length * 2));
     const changeSectionTitle = visibleChanges.length < changes.length
       ? `来源变化 · 显示 ${visibleChanges.length}/${changes.length}（另 ${changes.length - visibleChanges.length} 项）`
       : '来源变化';
     content = <Box flexDirection="column"><SectionCard title={changeSectionTitle} compact={policy.mode === 'compact'}>
-      {visibleChanges.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} value={`${change.before ?? '未设置'} → ${change.after}`} compact={policy.mode === 'compact'} />)}
+      {visibleChanges.map((change) => <ReviewChangeRow key={change.title} title={`~ ${change.title}`} value={`${change.before ?? '未设置'} → ${change.after}`} compact />)}
     </SectionCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
       offset={sourceSaveActionViewport.offset} limit={sourceSaveActionViewport.limit} /></Box>;
     }

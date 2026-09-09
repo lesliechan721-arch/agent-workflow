@@ -1882,7 +1882,9 @@ describe('ConsoleAppV4', () => {
     expect(frame).not.toContain('所有项目、当前项目暂时不可用');
   });
 
-  it('keeps four scoped platform conclusions and the primary action reachable at 60x18', async () => {
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps four scoped platform conclusions and all detail actions reachable at %ix%i',
+    async (columns, rows) => {
     const loaded = loadResult();
     loaded.pluginSummaries = loaded.pluginSummaries.filter((entry) =>
       entry.pluginId === 'team-tools/review-gate');
@@ -1912,20 +1914,37 @@ describe('ConsoleAppV4', () => {
         });
       }
     }
-    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    loaded.targetRevisions = loaded.payload.targets.map((target) => ({
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: target.scope,
+      revision: {
+        state: 'upgradeAvailable' as const,
+        installedVersion: '0.2.1',
+        availableVersion: '0.3.0',
+      },
+    }));
+    loaded.dependencyOverviews = [{
+      ...dependencyOverview()[0]!,
+      pluginId: 'team-tools/review-gate',
+    }];
+    const executeIntent = vi.fn();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), executeIntent });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
-    const compactSize = { columns: 60, rows: 18 };
-    const instance = render(<ConsoleAppV4 controller={value} size={compactSize} />);
+    const size = { columns, rows };
+    const instance = render(<ConsoleAppV4 controller={value} size={size} />);
     const trace: AcceptanceTraceStep[] = [];
     await nextTurn(3);
     const first = instance.lastFrame() ?? '';
     expect(first).toContain('Codex');
     expect(first).toContain('所有项目可用');
     expect(first).toContain('当前项目需要同步');
+    expect(first).toContain('有可用更新');
+    expect(first).toContain('当前可用关系按当前范围检查');
     expect(first).toContain('›');
-    expect(first.split('\n').length).toBeLessThanOrEqual(18);
-    trace.push(acceptanceTraceStep(instance, compactSize, '混合范围首屏', []));
+    expect(first.split('\n').length).toBeLessThanOrEqual(rows);
+    trace.push(acceptanceTraceStep(instance, size, '混合范围首屏', []));
 
     await input(instance, '\u001B[6~');
     const second = instance.lastFrame() ?? '';
@@ -1933,10 +1952,26 @@ describe('ConsoleAppV4', () => {
     expect(second).toContain('所有项目暂时不可用');
     expect(second).toContain('当前项目可用');
     expect(second).toContain('›');
-    expect(second.split('\n').length).toBeLessThanOrEqual(18);
-    trace.push(acceptanceTraceStep(instance, compactSize, '翻页后显示其余范围', ['PageDown']));
-    await writeAcceptanceTrace('plugin-detail/mixed-scope', trace);
-  });
+    expect(second.split('\n').length).toBeLessThanOrEqual(rows);
+    trace.push(acceptanceTraceStep(instance, size, '翻页后显示其余范围', ['PageDown']));
+
+    const focusedActions = new Set<string>();
+    for (let index = 0; index < 3; index += 1) {
+      const actionFrame = instance.lastFrame() ?? '';
+      const focusedAction = actionFrame.match(/› ([^\n]+)/u)?.[1];
+      expect(focusedAction).toBeDefined();
+      focusedActions.add(focusedAction!);
+      expect(actionFrame.split('\n').length).toBeLessThanOrEqual(rows);
+      trace.push(acceptanceTraceStep(instance, size, `插件动作 ${index + 1}`, index === 0 ? [] : ['ArrowDown']));
+      await input(instance, '\u001B[B');
+    }
+    expect(focusedActions).toHaveLength(3);
+    expect([...focusedActions].join('\n')).toContain('插件设置');
+    expect([...focusedActions].join('\n')).toContain('更多操作');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await writeAcceptanceTrace(`plugin-detail/mixed-scope-${columns}x${rows}`, trace);
+    },
+  );
 
   it('does not claim saved settings make an uninstalled plugin usable', async () => {
     const loaded = loadResult();
@@ -7617,7 +7652,9 @@ describe('ConsoleAppV4', () => {
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
-  it('keeps a multi-field config summary and its complete final change reachable at 60x18', async () => {
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps a multi-field config summary and its complete final change reachable at %ix%i',
+    async (columns, rows) => {
     const page = configPage();
     const fields = page.groups[0]!.fields;
     fields[2]!.title = '最后设置字段';
@@ -7652,7 +7689,8 @@ describe('ConsoleAppV4', () => {
       name: 'configFields', pluginId: page.pluginId,
       layer: { scope: 'user', projectLayer: 'shared' },
     });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(4);
 
     await input(instance, 'u', '\u001B[B', 'u', '\u001B[B', 'u');
@@ -7661,7 +7699,14 @@ describe('ConsoleAppV4', () => {
     await nextTurn(4);
     expect(instance.lastFrame()).toContain('显示 1/3（另 2 项）');
     expect(instance.lastFrame()).toContain('显示 1/4（另 3 个）');
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, '设置汇总与影响计数', []));
+    for (const label of ['保存并生效', '只保存，稍后应用', '阅读完整设置变化', '返回修改']) {
+      await focusAction(instance, label);
+      expect(instance.lastFrame()).toContain(`› ${label}`);
+      expect(executeIntent).not.toHaveBeenCalled();
+      trace.push(acceptanceTraceStep(instance, { columns, rows }, `聚焦 ${label}`, ['ArrowDown']));
+    }
     await focusAction(instance, '阅读完整设置变化');
     expect(instance.lastFrame()).toContain('› 阅读完整设置变化');
     await input(instance, '\r');
@@ -7669,7 +7714,7 @@ describe('ConsoleAppV4', () => {
     for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
       const frame = instance.lastFrame() ?? '';
       pages.push(frame);
-      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
       if (!frame.includes('↓ 后面还有')) break;
       await input(instance, '\u001B[6~');
     }
@@ -7678,7 +7723,10 @@ describe('ConsoleAppV4', () => {
     expect(completeText).toContain('设置最后修改前唯一值');
     expect(completeText).toContain('设置最后修改后唯一值');
     expect(executeIntent).not.toHaveBeenCalled();
-  });
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, '完整设置变化尾部', ['Enter', 'PageDown']));
+    await writeAcceptanceTrace(`config-save/multi-field-${columns}x${rows}`, trace);
+    },
+  );
 
   it.each([
     ['secret', 'token'],
@@ -8410,7 +8458,9 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('› 阅读完整来源变化');
   });
 
-  it('keeps a multi-field source summary and its complete final change reachable at 60x18', async () => {
+  it.each([[60, 18], [80, 24]] as const)(
+    'keeps a multi-field source summary and its complete final change reachable at %ix%i',
+    async (columns, rows) => {
     const loaded = loadResult();
     const configured = loaded.configuredSources?.find((source) => source.id === 'team-tools');
     if (configured?.type !== 'git') throw new Error('expected Git source fixture');
@@ -8420,7 +8470,8 @@ describe('ConsoleAppV4', () => {
     const executeIntent = vi.fn();
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), executeIntent });
     value.push({ name: 'sourceEdit', sourceId: 'team-tools' });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    const trace: AcceptanceTraceStep[] = [];
     await nextTurn(3);
 
     const nextUrl = `https://example.test/${'nested/'.repeat(12)}catalog.git`;
@@ -8429,7 +8480,14 @@ describe('ConsoleAppV4', () => {
     await focusAction(instance, '查看修改汇总');
     await input(instance, '\r');
     expect(instance.lastFrame()).toContain('显示 1/2（另 1 项）');
-    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, '来源汇总与变化计数', []));
+    for (const label of ['保存并启用', '只保存', '阅读完整来源变化', '返回修改']) {
+      await focusAction(instance, label);
+      expect(instance.lastFrame()).toContain(`› ${label}`);
+      expect(executeIntent).not.toHaveBeenCalled();
+      trace.push(acceptanceTraceStep(instance, { columns, rows }, `聚焦 ${label}`, ['ArrowDown']));
+    }
     await focusAction(instance, '阅读完整来源变化');
     expect(instance.lastFrame()).toContain('› 阅读完整来源变化');
     await input(instance, '\r');
@@ -8437,7 +8495,7 @@ describe('ConsoleAppV4', () => {
     for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
       const frame = instance.lastFrame() ?? '';
       pages.push(frame);
-      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
       if (!frame.includes('↓ 后面还有')) break;
       await input(instance, '\u001B[6~');
     }
@@ -8446,7 +8504,10 @@ describe('ConsoleAppV4', () => {
     expect(completeText).toContain('来源最后修改前唯一值');
     expect(completeText).toContain('来源最后修改后唯一值');
     expect(executeIntent).not.toHaveBeenCalled();
-  });
+    trace.push(acceptanceTraceStep(instance, { columns, rows }, '完整来源变化尾部', ['Enter', 'PageDown']));
+    await writeAcceptanceTrace(`source-save/multi-field-${columns}x${rows}`, trace);
+    },
+  );
 
   it('cancels a fixed-ref field without changing its parent source draft', async () => {
     const loaded = loadResult();
