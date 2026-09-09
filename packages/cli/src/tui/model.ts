@@ -357,6 +357,7 @@ export interface PluginDependencyItemViewModel {
   placements: PlatformPlacementSummary[];
   aggregateStatus: 'ready' | 'notInstalled' | 'needsAttention' | 'unavailable';
   placementReferences?: DependencyPlacementReferenceViewModel[];
+  availablePlacementReferences?: DependencyPlacementReferenceViewModel[];
 }
 
 export interface PluginDependencyBlockerViewModel {
@@ -766,7 +767,7 @@ function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
     || extensions?.state === 'conflict';
 }
 
-function hasActualScopeEvidence(target: StatusScopedTarget): boolean {
+export function hasActualScopeEvidence(target: StatusScopedTarget): boolean {
   const activation = statusTargetActivation(target);
   const extensions = statusTargetExtensions(target);
   return target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'

@@ -604,7 +604,7 @@ function dependencyOverview(options: {
       pluginId: 'official/agent-lab',
       summary: { directCount: 1, transitiveCount: 1, totalCount: 2, readyCount: 1, missingCount: 1, issueCount: options.blockers?.length ?? 0 },
       dependencies: [
-        { pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit', relation: 'direct', depth: 1, requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }], placements: [notInstalled('codex'), notInstalled('claude')], aggregateStatus: 'notInstalled', placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
+        { pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit', relation: 'direct', depth: 1, requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }], placements: [notInstalled('codex'), notInstalled('claude')], aggregateStatus: 'notInstalled', placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }], availablePlacementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
         { pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', relation: 'transitive', depth: 2, requiredBy: [{ pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit' }], placements: [readyUser('codex'), readyUser('claude')], aggregateStatus: 'ready' },
       ],
       dependents: [],
@@ -617,7 +617,7 @@ function dependencyOverview(options: {
         { pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', relation: 'direct', depth: 1, requiredBy: [{ pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit' }], placements: [readyUser('codex'), readyUser('claude')], aggregateStatus: 'ready' },
       ],
       dependents: [
-        { pluginId: 'official/agent-lab', displayName: 'Agent Lab', relation: 'dependent', depth: 1, requiredBy: [], placements: rootState === 'ready' ? [readyUser('codex')] : [notInstalled('codex')], aggregateStatus: rootState, placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
+        { pluginId: 'official/agent-lab', displayName: 'Agent Lab', relation: 'dependent', depth: 1, requiredBy: [], placements: rootState === 'ready' ? [readyUser('codex')] : [notInstalled('codex')], aggregateStatus: rootState, placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }], availablePlacementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
       ],
       blockers: [],
     },
@@ -1739,7 +1739,7 @@ describe('ConsoleAppV4', () => {
       name: 'pluginMore', pluginId: 'team-tools/review-gate',
     });
     expect(more).toContain('Codex 平台与维护');
-    expect(more).toContain('依赖与被使用情况');
+    expect(more).toContain('依赖与当前可用关系');
     expect(more).toContain('诊断与受管内容');
     expect(more.split('\n').length).toBeLessThanOrEqual(24);
 
@@ -1764,7 +1764,7 @@ describe('ConsoleAppV4', () => {
     expect(frame).toContain('已确认的使用位置可用');
     expect(frame).toContain('Codex');
     expect(frame).toContain('所有项目、当前项目可用');
-    expect(frame).toContain('尚未确认它们在这些位置的实际使用状态');
+    expect(frame).toContain('当前可用关系按当前范围检查，未显示的关系尚未检查通过');
     expect(frame.match(/使用说明/gu)).toHaveLength(1);
   });
 
@@ -9004,7 +9004,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('planDigest');
     await focusAction(instance, '更多操作…');
     await input(instance, '\r');
-    await focusAction(instance, '依赖与被使用情况');
+    await focusAction(instance, '依赖与当前可用关系');
     await input(instance, '\r');
     expect(screens).toContain('D02');
     expect(instance.lastFrame()).toContain('安装所需插件');
@@ -9100,7 +9100,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('› 添加插件');
     await focusAction(instance, '更多操作…');
     await input(instance, '\r');
-    for (const label of ['在其他 Agent 使用', '依赖与被使用情况', '查看插件来源']) {
+    for (const label of ['在其他 Agent 使用', '依赖与当前可用关系', '查看插件来源']) {
       await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain('↑↓ 移动');
@@ -9144,8 +9144,8 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['D09', dependencyLoadResult({ rootState: 'present' }), 'official/agent-lab', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与被使用情况', '在其他 Agent 使用', '诊断与受管内容']],
-    ['P13', loadResult(), 'team-tools/review-gate', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与被使用情况', '在其他 Agent 使用', '插件设置', '诊断与受管内容']],
+    ['D09', dependencyLoadResult({ rootState: 'present' }), 'official/agent-lab', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与当前可用关系', '在其他 Agent 使用', '诊断与受管内容']],
+    ['P13', loadResult(), 'team-tools/review-gate', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与当前可用关系', '在其他 Agent 使用', '插件设置', '诊断与受管内容']],
   ] as const)('keeps every %s action and HelpBar visible while moving through a mounted 60x18 detail', async (
     expectedScreen,
     loaded,
@@ -9173,8 +9173,8 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['D09', dependencyLoadResult({ rootState: 'present' }), 'official/agent-lab', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与被使用情况', '在其他 Agent 使用', '诊断与受管内容', '使用说明']],
-    ['P13', loadResult(), 'team-tools/review-gate', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与被使用情况', '在其他 Agent 使用', '插件设置', '诊断与受管内容', '使用说明']],
+    ['D09', dependencyLoadResult({ rootState: 'present' }), 'official/agent-lab', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与当前可用关系', '在其他 Agent 使用', '诊断与受管内容', '使用说明']],
+    ['P13', loadResult(), 'team-tools/review-gate', ['Codex 平台与维护', 'Claude Code 平台与维护', '依赖与当前可用关系', '在其他 Agent 使用', '插件设置', '诊断与受管内容', '使用说明']],
   ] as const)('keeps every %s action and HelpBar visible while moving through a mounted 80x24 detail', async (
     expectedScreen,
     loaded,
@@ -9238,7 +9238,7 @@ describe('ConsoleAppV4', () => {
     expect(installedScreens).toContain('D09');
     await focusAction(detail, '更多操作…');
     await input(detail, '\r');
-    expect(detail.lastFrame()).toContain('依赖与被使用情况');
+    expect(detail.lastFrame()).toContain('依赖与当前可用关系');
     expect(detail.lastFrame()).toContain('1 个直接 · 2 个总计');
     detail.unmount();
 
@@ -9246,7 +9246,7 @@ describe('ConsoleAppV4', () => {
     const relations = render(<ConsoleAppV4 controller={installed} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => installedScreens.add(screen)} />);
     await nextTurn(2);
     expect(installedScreens).toContain('D10');
-    expect(relations.lastFrame()).toContain('依赖与被使用情况');
+    expect(relations.lastFrame()).toContain('依赖与当前可用关系');
     expect(relations.lastFrame()).toContain('Agent Lab（当前插件）');
     expect(relations.lastFrame()).not.toContain('› Agent Skill Toolkit');
   });
@@ -10928,6 +10928,10 @@ describe('ConsoleAppV4', () => {
         consumer: { pluginId: 'official/consumer', platform: 'codex', scope: 'user', project: null },
         dependency: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'user', project: null },
       }],
+      availablePlacementReferences: [{
+        consumer: { pluginId: 'official/consumer', platform: 'codex', scope: 'user', project: null },
+        dependency: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'user', project: null },
+      }],
     });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -11164,10 +11168,10 @@ describe('ConsoleAppV4', () => {
     const loaded = dependencyLoadResult({ rootState: 'present' });
     const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/skill-toolkit')!;
     const dependent = overview.dependents.find((entry) => entry.pluginId === 'official/agent-lab')!;
-    dependent.placementReferences = [];
+    dependent.availablePlacementReferences = [];
     for (const entry of loaded.dependencyOverviews!) {
       for (const item of [...entry.dependencies, ...entry.dependents]) {
-        item.placementReferences = item.placementReferences?.filter((reference) =>
+        item.availablePlacementReferences = item.availablePlacementReferences?.filter((reference) =>
           reference.consumer.pluginId !== 'official/agent-lab'
           || reference.dependency.pluginId !== 'official/skill-toolkit');
       }
@@ -11226,6 +11230,10 @@ describe('ConsoleAppV4', () => {
       placements: [{ platform: 'codex' as const, state: 'installed' as const, scope: 'user' as const, health: 'ready' as const }],
       aggregateStatus: 'ready' as const,
       placementReferences: [{
+        consumer: { pluginId: `official/high-dependent-${index}`, platform: 'codex' as const, scope: 'user' as const, project: null },
+        dependency: { pluginId: 'official/agent-lab', platform: 'codex' as const, scope: 'user' as const, project: null },
+      }],
+      availablePlacementReferences: [{
         consumer: { pluginId: `official/high-dependent-${index}`, platform: 'codex' as const, scope: 'user' as const, project: null },
         dependency: { pluginId: 'official/agent-lab', platform: 'codex' as const, scope: 'user' as const, project: null },
       }],

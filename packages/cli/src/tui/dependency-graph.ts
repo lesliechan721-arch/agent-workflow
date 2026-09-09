@@ -27,7 +27,7 @@ export interface DependencyGraphScopeSummary {
     project: DependencyPlacementReferenceViewModel['consumer']['project'];
     count: number;
   }>;
-  actualConsumerPluginIds: string[];
+  availableConsumerPluginIds: string[];
   unknownConsumerPluginIds: string[];
   unverifiedDependencyPluginIds: string[];
 }
@@ -51,11 +51,11 @@ export interface DependencyGraphRow {
   focused: boolean;
   sharedWithRowId?: string;
   pathPluginIds: string[];
-  relationship: 'root' | 'directVerified' | 'indirectVerified' | 'declared' | 'unknown';
+  relationship: 'root' | 'directAvailable' | 'indirectAvailable' | 'declared' | 'unknown';
   pathReferences: DependencyPlacementReferenceViewModel[][];
   edge?: {
     declared: boolean;
-    placementReferences: DependencyPlacementReferenceViewModel[];
+    availablePlacementReferences: DependencyPlacementReferenceViewModel[];
   };
 }
 
@@ -96,7 +96,7 @@ interface EdgeRecord {
   fromPluginId: string;
   toPluginId: string;
   declared: boolean;
-  placementReferences: DependencyPlacementReferenceViewModel[];
+  availablePlacementReferences: DependencyPlacementReferenceViewModel[];
 }
 
 interface GraphFacts {
@@ -154,7 +154,7 @@ function extendPlacementPaths(
   direction: DependencyGraphDirection,
   direct: boolean,
 ): DependencyPlacementReferenceViewModel[][] {
-  const references = edge.placementReferences;
+  const references = edge.availablePlacementReferences;
   if (direct) return references.map((reference) => [reference]);
   return paths.flatMap((path) => {
     const previous = path.at(-1);
@@ -228,11 +228,11 @@ function graphFacts(overviews: readonly PluginDependencyOverviewViewModel[]): Gr
       fromPluginId,
       toPluginId,
       declared: false,
-      placementReferences: [],
+      availablePlacementReferences: [],
     };
     edge.declared ||= declared;
-    if (reference && !edge.placementReferences.some((entry) => referenceKey(entry) === referenceKey(reference))) {
-      edge.placementReferences.push(reference);
+    if (reference && !edge.availablePlacementReferences.some((entry) => referenceKey(entry) === referenceKey(reference))) {
+      edge.availablePlacementReferences.push(reference);
       references.set(referenceKey(reference), reference);
     }
     edges.set(key, edge);
@@ -243,7 +243,7 @@ function graphFacts(overviews: readonly PluginDependencyOverviewViewModel[]): Gr
       addNode(nodes, parent.pluginId, parent.displayName);
       addEdge(parent.pluginId, item.pluginId, true);
     }
-    for (const reference of item.placementReferences ?? []) {
+    for (const reference of item.availablePlacementReferences ?? []) {
       addNode(nodes, reference.consumer.pluginId);
       addNode(nodes, reference.dependency.pluginId);
       addEdge(reference.consumer.pluginId, reference.dependency.pluginId, false, reference);
@@ -258,7 +258,7 @@ function graphFacts(overviews: readonly PluginDependencyOverviewViewModel[]): Gr
   const reverse = new Map<string, EdgeRecord[]>();
   for (const edge of edges.values()) {
     forward.set(edge.fromPluginId, [...(forward.get(edge.fromPluginId) ?? []), edge]);
-    if (edge.placementReferences.length > 0) {
+    if (edge.availablePlacementReferences.length > 0) {
       reverse.set(edge.toPluginId, [...(reverse.get(edge.toPluginId) ?? []), edge]);
     }
   }
@@ -428,13 +428,14 @@ function scopeSummary(
       count: 1,
     });
   }
-  const actualConsumerPluginIds = [...new Set((facts.reverse.get(rootPluginId) ?? [])
-    .flatMap((edge) => edge.placementReferences.map((reference) => reference.consumer.pluginId)))].sort();
+  const availableConsumerPluginIds = [...new Set((facts.reverse.get(rootPluginId) ?? [])
+    .flatMap((edge) => edge.availablePlacementReferences
+      .map((reference) => reference.consumer.pluginId)))].sort();
   const declaredConsumers = overview?.dependents.map((item) => item.pluginId) ?? [];
   const unknownConsumerPluginIds = [...new Set(declaredConsumers
-    .filter((pluginId) => !actualConsumerPluginIds.includes(pluginId)))].sort();
+    .filter((pluginId) => !availableConsumerPluginIds.includes(pluginId)))].sort();
   const unverifiedDependencyPluginIds = [...new Set((facts.forward.get(rootPluginId) ?? [])
-    .filter((edge) => edge.declared && edge.placementReferences.length === 0)
+    .filter((edge) => edge.declared && edge.availablePlacementReferences.length === 0)
     .map((edge) => edge.toPluginId))].sort();
   return {
     references: [...scoped.values()].sort((left, right) =>
@@ -442,7 +443,7 @@ function scopeSummary(
         `${right.platform}\0${right.scope}\0${right.project ?? ''}`,
         'en',
       )),
-    actualConsumerPluginIds,
+    availableConsumerPluginIds,
     unknownConsumerPluginIds,
     unverifiedDependencyPluginIds,
   };
@@ -546,14 +547,14 @@ export function buildDependencyGraphProjection(
       pathPluginIds: input.pathPluginIds,
       relationship: input.depth === 0 ? 'root'
         : input.pathReferences.length > 0
-          ? input.depth === 1 ? 'directVerified' : 'indirectVerified'
-          : (input.edge?.placementReferences.length ?? 0) > 0 ? 'unknown' : 'declared',
+          ? input.depth === 1 ? 'directAvailable' : 'indirectAvailable'
+          : (input.edge?.availablePlacementReferences.length ?? 0) > 0 ? 'unknown' : 'declared',
       pathReferences: input.pathReferences,
       ...(sharedWithRowId ? { sharedWithRowId } : {}),
       ...(input.edge ? {
         edge: {
           declared: input.edge.declared,
-          placementReferences: [...input.edge.placementReferences],
+          availablePlacementReferences: [...input.edge.availablePlacementReferences],
         },
       } : {}),
     };

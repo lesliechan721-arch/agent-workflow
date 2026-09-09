@@ -1361,7 +1361,7 @@ function dependencyReferenceUsageLabel(
   const location = reference.consumer.scope === 'user'
     ? '所有项目'
     : reference.consumer.project === 'current' ? '当前项目' : '其他项目';
-  return `${consumerName}在${location}的${platformLabel(reference.consumer.platform)}中使用它`;
+  return `${consumerName}在${location}的${platformLabel(reference.consumer.platform)}中依赖它`;
 }
 
 function dependencySummaryText(summary: NonNullable<PluginListItemViewModel['dependencySummary']>): string {
@@ -4596,11 +4596,11 @@ export function ConsoleAppV4(props: {
         ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
       });
       const visibleRows = projection.rows;
-      context = direction === 'dependencies' ? '它需要的' : '谁在使用它';
-      title = hasInstalledPlacement(plugin) ? '依赖与被使用情况' : '安装所需插件';
+      context = direction === 'dependencies' ? '它需要的' : '哪些插件依赖它';
+      title = hasInstalledPlacement(plugin) ? '依赖与当前可用关系' : '安装所需插件';
       description = direction === 'dependencies'
         ? '每一层表示上面的插件需要下面的插件。'
-        : '每一层表示下面的插件正在使用上面的插件；只显示已确认的引用。';
+        : '每一层表示下面的插件当前可通过依赖关系使用上面的插件。';
       const rowActions: ActionItem[] = visibleRows.map((row) => {
         const state = row.depth === 0
           ? { value: statusText(plugin), status: plugin.aggregateStatus === 'needsAttention'
@@ -4614,7 +4614,7 @@ export function ConsoleAppV4(props: {
             ? `${row.label}（当前插件）`
             : `${compactBranch}${row.label}${row.sharedWithRowId ? '（共用，见上方）' : ''}`,
           description: row.hiddenDescendantCount > 0
-            ? `另有 ${row.hiddenDescendantCount} 个${direction === 'dependencies' ? '所需插件' : '实际使用者'}`
+            ? `另有 ${row.hiddenDescendantCount} 个${direction === 'dependencies' ? '所需插件' : '当前可用依赖者'}`
             : row.depth === 0 ? '当前插件' : undefined,
           meta: state.value,
           status: state.status,
@@ -4641,7 +4641,7 @@ export function ConsoleAppV4(props: {
             const declared = overview?.dependents.find((entry) => entry.pluginId === pluginId);
             return {
               label: declared?.displayName ?? pluginId,
-              description: '仅有依赖声明，尚未确认实际使用',
+              description: '有依赖声明，但当前可用关系未检查通过',
               meta: declared?.aggregateStatus === 'notInstalled' ? '仅声明 · 未安装' : '仅声明 · 未验证',
               status: 'muted' as const,
               run: () => {
@@ -4666,7 +4666,7 @@ export function ConsoleAppV4(props: {
         ...rowActions,
         ...unverifiedConsumerActions,
         {
-          label: direction === 'dependencies' ? '切换到“谁在使用它”' : '切换到“它需要的”',
+          label: direction === 'dependencies' ? '切换到“哪些插件依赖它”' : '切换到“它需要的”',
           description: '切换关系方向',
           run: () => {
             persistDependencyGraphContext(
@@ -4698,14 +4698,14 @@ export function ConsoleAppV4(props: {
         {projection.status.state === 'invalid'
           ? <Callout status="error" title="依赖关系无效" description={projection.status.message} /> : null}
         {unverifiedConsumerActions.length > 0
-          ? <StaticRow title={`未验证声明者 · ${unverifiedConsumerActions.length} 个`} description="以下声明者不计入实际使用者" status="muted" compact />
+          ? <StaticRow title={`未验证声明者 · ${unverifiedConsumerActions.length} 个`} description="以下声明者不计入当前可用关系" status="muted" compact />
           : null}
         {focusedGraphRow ? <StaticRow title="用途" value={props.controller
           .getPluginOverview(focusedGraphRow.pluginId)?.description ?? '当前目录没有用途说明'} compact /> : null}
         <SemanticRows actions={actions} focus={focus} kind="action" compact
           offset={relationViewport.offset} limit={relationViewport.limit} />
         {showTechnical ? <TechnicalDetails>
-          <StaticRow title={`${dependencyCount} 个依赖 · ${projection.scopeSummary.actualConsumerPluginIds.length} 个实际使用者`} meta={plugin.pluginId} compact />
+          <StaticRow title={`${dependencyCount} 个依赖 · ${projection.scopeSummary.availableConsumerPluginIds.length} 个当前可用依赖者`} meta={plugin.pluginId} compact />
           <StaticRow title={`未验证声明者 · ${projection.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
         </TechnicalDetails> : null}
       </Box>;
@@ -4730,10 +4730,10 @@ export function ConsoleAppV4(props: {
         ?.find((entry) => entry.pluginId === route.nodePluginId);
     const state = item ? dependencyStatus(item) : undefined;
     const relationship = selectedRow?.relationship
-      ?? ((item?.placementReferences?.length ?? 0) > 0 ? 'unknown'
+      ?? ((item?.availablePlacementReferences?.length ?? 0) > 0 ? 'unknown'
         : item ? 'declared' : undefined);
     breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId}`;
-    context = route.direction === 'dependencies' ? '它需要的' : '谁在使用它';
+    context = route.direction === 'dependencies' ? '它需要的' : '哪些插件依赖它';
     title = node?.displayName ?? route.nodePluginId;
     const pathPluginIds = selectedRow?.pathPluginIds ?? nodePathPluginIds;
     const intermediateNames = pathPluginIds.slice(1, -1).reverse().map((pluginId) =>
@@ -4743,28 +4743,29 @@ export function ConsoleAppV4(props: {
       ?? declaringPluginId;
     description = relationship === 'root'
       ? '这是当前关系图的根插件。'
-      : relationship === 'directVerified'
+      : relationship === 'directAvailable'
         ? route.direction === 'dependencies'
-          ? `${plugin.displayName} 的已安装位置直接使用这个插件。`
-          : `${node?.displayName ?? route.nodePluginId} 的已安装位置直接使用当前插件。`
-        : relationship === 'indirectVerified'
+          ? `${plugin.displayName} 的当前位置直接依赖此插件，且依赖当前可用。`
+          : `${node?.displayName ?? route.nodePluginId} 的当前位置直接依赖当前插件，且依赖当前可用。`
+        : relationship === 'indirectAvailable'
           ? route.direction === 'dependencies'
-            ? `${plugin.displayName} 通过 ${intermediateNames.join('、')} 间接使用 ${node?.displayName ?? route.nodePluginId}。`
-            : `${node?.displayName ?? route.nodePluginId} 通过 ${intermediateNames.join('、')} 间接使用 ${plugin.displayName}。`
+            ? `${plugin.displayName} 通过 ${intermediateNames.join('、')} 连续依赖 ${node?.displayName ?? route.nodePluginId}，且各段当前可用。`
+            : `${node?.displayName ?? route.nodePluginId} 通过 ${intermediateNames.join('、')} 连续依赖 ${plugin.displayName}，且各段当前可用。`
           : relationship === 'unknown'
-            ? '引用位置不能组成连续路径，不能确认这项间接使用。'
+            ? '当前可用位置不能组成连续路径，不能显示这项间接关系。'
             : relationship === 'declared'
               ? route.direction === 'dependencies'
-                ? `${declaringPluginName} 声明需要 ${node?.displayName ?? route.nodePluginId}，但当前没有实际引用证据。`
-                : `${node?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前没有实际引用证据。`
+                ? `${declaringPluginName} 声明需要 ${node?.displayName ?? route.nodePluginId}，但当前可用关系未检查通过。`
+                : `${node?.displayName ?? route.nodePluginId} 声明依赖当前插件，但当前可用关系未检查通过。`
               : '当前数据不足，不能判断这项依赖关系。';
-    const references = selectedRow?.edge?.placementReferences ?? item?.placementReferences ?? [];
+    const references = selectedRow?.edge?.availablePlacementReferences
+      ?? item?.availablePlacementReferences ?? [];
     const referenceActions: ActionItem[] = references.map((reference) => {
       const consumerName = props.controller.getPluginOverview(reference.consumer.pluginId)?.displayName
         ?? reference.consumer.pluginId.split('/').at(-1)!;
       return {
         label: dependencyReferenceUsageLabel(reference, consumerName),
-        meta: '已确认使用',
+        meta: '当前可用',
       };
     });
     if (route.view === 'details') {
@@ -4797,10 +4798,10 @@ export function ConsoleAppV4(props: {
     } else if (route.view === 'references') {
       breadcrumb = `${plugin.displayName} / 依赖关系 / ${node?.displayName ?? route.nodePluginId} / 使用位置`;
       context = showTechnical ? '技术详情' : '使用位置';
-      title = `已检查的使用位置 ${references.length} 个`;
+      title = `当前可用位置 ${references.length} 个`;
       description = showTechnical
         ? '显示当前选择的完整引用字段。'
-        : '这些位置有连续、已确认的实际引用。';
+        : '这些位置的依赖状态为 ready，且声明边和当前现场证据匹配。';
       actions = [...referenceActions, { label: '返回节点详情', run: back }];
       const referenceViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
         responsiveBudget(3, 6));
@@ -4836,7 +4837,7 @@ export function ConsoleAppV4(props: {
         : '↑↓ 查看全部位置 · d 技术详情 · Enter 返回节点详情 · Esc 返回节点详情';
       content = <Box flexDirection="column">
         {showTechnical ? null
-          : <StaticRow title="证据边界" description="这里只显示已确认的实际引用；插件状态不作为引用" status="muted" compact />}
+          : <StaticRow title="证据边界" description="这里只显示当前可用依赖关系；这不表示已确认调用或历史绑定" status="muted" compact />}
         {showTechnical && referenceDetailOffset > 0
           ? <StaticRow title={`↑ 前面还有 ${referenceDetailOffset} 行`} status="muted" compact /> : null}
         {showTechnical ? visibleReferenceDetailLines.map((line, index) =>
@@ -4881,7 +4882,7 @@ export function ConsoleAppV4(props: {
           <StaticRow title="影响" value={state?.value ?? (node ? statusText(node) : '尚未检查当前状态')}
             status={state?.status ?? 'muted'} compact />
           {references.length > 0
-            ? <StaticRow title={`已检查的使用位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
+            ? <StaticRow title={`当前可用位置 ${references.length} 个`} description="选择“查看全部位置”可逐项查看" compact />
             : null}
         </SectionCard>
         <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
@@ -5486,7 +5487,7 @@ export function ConsoleAppV4(props: {
     const dependencyOverviewForDetail = dependencyOverview(plugin);
     const dependencyDetailText = dependencyOverviewForDetail
       && dependencyOverviewForDetail.summary.totalCount > 0
-      ? `使用 ${dependencyOverviewForDetail.summary.totalCount} 个所需插件；尚未确认它们在这些位置的实际使用状态。`
+      ? `需要 ${dependencyOverviewForDetail.summary.totalCount} 个插件；当前可用关系按当前范围检查，未显示的关系尚未检查通过。`
       : undefined;
     const placementConclusions = plugin.installedPlacements.flatMap((placement) =>
       pluginPlacementConclusions(placement).map((conclusion, index) => ({
@@ -5591,7 +5592,7 @@ export function ConsoleAppV4(props: {
             run: () => beginScopeConflictRecovery(action),
           };
           if (action.id === 'dependencies') return {
-            label: '依赖与被使用情况',
+            label: '依赖与当前可用关系',
             description: dependencySummary?.issueCount ? `${dependencySummary.issueCount} 项需要处理` : '查看完整关系',
             meta: dependencySummary ? dependencySummaryText(dependencySummary) : undefined,
             run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
@@ -5622,8 +5623,8 @@ export function ConsoleAppV4(props: {
           };
         }),
       ...(!detailMenu.some((action) => action.id === 'dependencies') ? [{
-        label: '依赖与被使用情况',
-        description: '查看必需依赖和已知使用者；当前没有声明的必需依赖',
+        label: '依赖与当前可用关系',
+        description: '查看必需依赖、声明者和当前可用关系；当前没有声明的必需依赖',
         run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
       }] : []),
       { label: '使用说明', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) },
