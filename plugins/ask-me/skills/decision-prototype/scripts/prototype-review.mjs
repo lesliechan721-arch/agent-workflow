@@ -48,7 +48,7 @@ class CommandError extends Error {
 
 function globalHelp() {
   return `Usage:
-  prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
+  prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--new-session]
   prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
   prototype-review.mjs wait --session <session.json> [--timeout 5m]
   prototype-review.mjs status --session <session.json>
@@ -62,7 +62,7 @@ Commands:
   stop    Stop the session and report success only after shutdown is confirmed.
 
 Options:
-  start without --ttl reads the effective AW setting; --plugin selects its ask-me source.
+  start without --ttl uses 30 minutes.
   --new-session preserves an unknown old session; it does not stop it or renew a healthy session.
   open --timeout limits only the page-connection wait; it does not wait for feedback.
   open --retry requests the browser again after the previous request has finished.
@@ -72,9 +72,9 @@ Options:
 
 function commandHelp(command) {
   const lines = {
-    start: `Usage: prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--plugin ask-me] [--new-session]
+    start: `Usage: prototype-review.mjs start --prototype <prototype.json> [--ttl 30m] [--new-session]
 
-Without --ttl, start reads the effective AW setting; --plugin selects its ask-me source.
+Without --ttl, start uses 30 minutes.
 --new-session preserves an unknown old session. It does not stop it or renew a healthy session.`,
     open: `Usage: prototype-review.mjs open --session <session.json> [--timeout 10s] [--retry]
 
@@ -101,7 +101,6 @@ function parseCommand(argv) {
     if (value === '--help' || value === '-h') values.help = true;
     else if (value === '--prototype' && command === 'start') values.prototype = argv[++index];
     else if (value === '--ttl' && command === 'start') values.ttl = argv[++index];
-    else if (value === '--plugin' && command === 'start') values.plugin = argv[++index];
     else if (value === '--new-session' && command === 'start') values.newSession = true;
     else if (value === '--session' && command !== 'start') values.session = argv[++index];
     else if (value === '--timeout' && ['open', 'wait'].includes(command)) values.timeout = argv[++index];
@@ -113,7 +112,6 @@ function parseCommand(argv) {
     ['prototype', '--prototype'],
     ['session', '--session'],
     ['ttl', '--ttl'],
-    ['plugin', '--plugin'],
     ['timeout', '--timeout'],
   ]) {
     if (name in values && (typeof values[name] !== 'string' || values[name].startsWith('--'))) {
@@ -123,9 +121,6 @@ function parseCommand(argv) {
   if (command === 'start' && !values.prototype) throw new UsageError('start requires --prototype');
   if (command === 'start' && values.ttl === undefined && argv.includes('--ttl')) {
     throw new UsageError('start requires a value for --ttl');
-  }
-  if (command === 'start' && values.plugin === undefined && argv.includes('--plugin')) {
-    throw new UsageError('start requires a value for --plugin');
   }
   if (['open', 'wait'].includes(command) && values.timeout === undefined && argv.includes('--timeout')) {
     throw new UsageError(`${command} requires a value for --timeout`);
@@ -765,11 +760,7 @@ async function startCommand(options) {
     if (existingReceipt) return existingReceipt;
     const reusable = await findReusableSession(prototype, { allowUnknown: options.newSession === true });
     if (reusable) return reusable;
-    const ttlMs = await resolveReviewTtl({
-      prototypePath: prototype.prototypePath,
-      ttlMs: explicitTtlMs,
-      pluginSelector: options.plugin || 'ask-me',
-    });
+    const ttlMs = await resolveReviewTtl({ ttlMs: explicitTtlMs });
     const { sessionDir, sessionId, location } = await createSessionDirectory();
     const sessionPath = path.join(sessionDir, 'session.json');
     const launchPath = path.join(sessionDir, 'launch.json');

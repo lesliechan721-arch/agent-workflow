@@ -15,7 +15,6 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
 const requiredSkills = ['decision-grill', 'decision-prototype', 'decision-shape'];
 const leafSkills = ['decision-grill', 'decision-prototype'];
-const questionToolSkills = new Set(['decision-grill']);
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -101,7 +100,8 @@ test('manifest exposes the three decision Skills', async () => {
   assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.extensions?.instructions?.length ?? 0, 0);
-  assert.equal(manifest.config?.fields?.reviewSessionTtlMinutes?.type, 'number');
+  assert.equal(manifest.config, undefined);
+  assert.deepEqual(manifest.distributions, { agentSkills: { skills: './skills' } });
   assert.equal(manifest.artifacts, undefined);
   assert.equal(manifest.scripts.artifacts, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
@@ -960,17 +960,14 @@ test('prepared bundle renders the three static Skills', async () => {
   );
   assert.equal(platformManifest.name, 'ask-me');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
-  const expectedTool = context.platform === 'codex' ? '`request_user_input`' : '`AskUserQuestion`';
-  const otherTool = context.platform === 'codex' ? '`AskUserQuestion`' : '`request_user_input`';
-
   for (const skillName of requiredSkills) {
     const skill = await readFile(
       path.join(context.bundleRoot, context.platform, 'skills', skillName, 'SKILL.md'),
       'utf8',
     );
-    // Static contract exception: a materialized Skill must name only its target platform question tool; behavior test is not suitable because the platform-specific tool name is consumer-read Skill text.
-    assert.equal(skill.includes(expectedTool), questionToolSkills.has(skillName));
-    assert.equal(skill.includes(otherTool), false);
+    // Static contract exception: portable Skill text must not bind questioning to a platform tool name; behavior tests cannot observe consumer-read Skill text.
+    assert.equal(skill.includes('`request_user_input`'), false);
+    assert.equal(skill.includes('`AskUserQuestion`'), false);
     assert.equal(skill.includes('{{questionTool}}'), false);
   }
 

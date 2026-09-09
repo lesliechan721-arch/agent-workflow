@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "description": "通过独立决策访谈、可体验原型或可选 Shape 工作流形成准确共享理解。",
   "skills": "./skills",
+  "distributions": {
+    "agentSkills": {
+      "skills": "./skills"
+    }
+  },
   "marketplace": {
     "category": "workflow",
     "strict": true,
@@ -19,34 +24,6 @@
       "Skills"
     ]
   },
-  "config": {
-    "fields": {
-      "reviewSessionTtlMinutes": {
-        "type": "number",
-        "title": "原型 Review 会话有效期（分钟）",
-        "description": "新建网页原型 Review 会话的有效期。",
-        "default": 30,
-        "validation": {
-          "integer": true,
-          "minimum": 1,
-          "maximum": 240
-        }
-      }
-    }
-  },
-  "buildConfig": {
-    "templates": {
-      "include": [
-        "skills/**/*.md"
-      ],
-      "vars": {
-        "questionTool": {
-          "claude": "`AskUserQuestion`",
-          "codex": "`request_user_input`"
-        }
-      }
-    }
-  },
   "scripts": {
     "tests": {
       "node": [
@@ -54,13 +31,6 @@
         "./scripts/prototype-review.test.mjs",
         "./scripts/review-config.test.mjs",
         "./scripts/review-opener.test.mjs"
-      ]
-    }
-  },
-  "requires": {
-    "aw": {
-      "capabilities": [
-        "aw.plugin-config.v2"
       ]
     }
   }
