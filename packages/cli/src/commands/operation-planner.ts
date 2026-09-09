@@ -1,7 +1,7 @@
 import type {
   StatusTargetRevision,
-  StatusV7RecoveryAction,
-  StatusV7State,
+  StatusV8RecoveryAction,
+  StatusV8State,
 } from './status-v6.js';
 import type { RebuildReceiptJson } from '../output/command-receipt.js';
 import type { PlatformName, Scope } from '../types.js';
@@ -37,8 +37,8 @@ export interface LifecycleTargetFacts {
   pluginId: string;
   platform: PlatformName;
   scope: Scope;
-  state: StatusV7State;
-  recoveryActions: StatusV7RecoveryAction[];
+  state: StatusV8State;
+  recoveryActions: StatusV8RecoveryAction[];
   revision?: StatusTargetRevision['revision'];
   installable?: boolean;
   uninstallable?: boolean;
@@ -46,7 +46,7 @@ export interface LifecycleTargetFacts {
 
 function recoveryAction(options: {
   target: LifecycleTargetFacts;
-  recovery: StatusV7RecoveryAction;
+  recovery: StatusV8RecoveryAction;
 }): AllowedLifecycleAction | undefined {
   const scope = options.recovery.scope ?? options.target.scope;
   const common = {

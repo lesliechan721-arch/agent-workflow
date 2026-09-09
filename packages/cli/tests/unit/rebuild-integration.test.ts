@@ -11,7 +11,7 @@ import {
   inspectCodexSharedNativeLive,
   inspectRebuildTarget,
 } from '../../src/commands/rebuild-integration.js';
-import { projectTargetRevision, statusCommandV7 } from '../../src/commands/status-v6.js';
+import { projectTargetRevision, statusCommandV8 } from '../../src/commands/status-v6.js';
 import {
   executeRebuildOperation,
 } from '../../src/commands/rebuild-operations.js';

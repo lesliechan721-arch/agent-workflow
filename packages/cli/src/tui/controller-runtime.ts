@@ -4,12 +4,14 @@ import path from 'node:path';
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { CatalogSourceResolution, PluginConfigSchema, PluginMeta, Scope } from '../types.js';
 import {
-  statusCommandV7,
+  flattenStatusTargets,
+  statusCommandV8,
   statusTargetActivation,
   statusTargetIntent,
   statusTargetOwnershipState,
   type StatusTargetRevision,
-  type StatusV7Target,
+  type StatusScopedTarget,
+  type StatusV8Target,
 } from '../commands/status-v6.js';
 import {
   addCatalogSourceCommand,
@@ -245,7 +247,7 @@ function digest(value: unknown): string {
 }
 
 export function statusTargetFingerprint(
-  targets: StatusV7Target[],
+  targets: StatusScopedTarget[],
   revisions: StatusTargetRevision[] = [],
 ): string {
   return digest({
@@ -256,7 +258,15 @@ export function statusTargetFingerprint(
       scope: target.scope,
       state: target.state,
       errors: target.reasons.map((error) => error.code).sort(),
+      sharedReasons: [...(target.sharedReasons ?? [])]
+        .sort((left, right) => `${left.code}\0${left.message}`.localeCompare(
+          `${right.code}\0${right.message}`, 'en',
+        )),
       components: target.components.map((component) => [component.key, component.state])
+        .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
+      sharedComponents: (target.sharedComponents ?? [])
+        .map((component): [string, string, typeof component.metadata] =>
+          [component.key, component.state, component.metadata])
         .sort(([left], [right]) => left!.localeCompare(right!, 'en')),
     })).sort((left, right) => [left.pluginId, left.platform, left.scope].join('\0')
       .localeCompare([right.pluginId, right.platform, right.scope].join('\0'), 'en')),
@@ -271,12 +281,12 @@ export function statusTargetFingerprint(
 }
 
 export function configAffectedStatusTargets(
-  targets: StatusV7Target[],
+  targets: StatusV8Target[],
   pluginId: string,
   configScope: 'user' | 'project',
-): StatusV7Target[] {
-  const affected = new Map<string, StatusV7Target>();
-  for (const target of targets) {
+): StatusScopedTarget[] {
+  const affected = new Map<string, StatusScopedTarget>();
+  for (const target of flattenStatusTargets(targets)) {
     const intent = statusTargetIntent(target);
     if (target.pluginId !== pluginId || !intent.enabled) continue;
     for (const scope of intent.scopes) {
@@ -304,7 +314,7 @@ function configRetrySharedNativeRenderTargets(
 
 function configImpactVisibleTargets(
   pluginName: string,
-  targets: readonly StatusV7Target[],
+  targets: readonly StatusScopedTarget[],
 ) {
   return targets.map((target) => ({
     pluginName,
@@ -583,7 +593,7 @@ interface DependencyCatalogNode {
 async function loadDependencyOverviews(options: {
   context: CliExecutionContext;
   cliVersion: string;
-  status: Awaited<ReturnType<typeof statusCommandV7>>;
+  status: Awaited<ReturnType<typeof statusCommandV8>>;
   signal: AbortSignal;
   catalogOperationContext?: CatalogOperationContext;
 }): Promise<PluginDependencyOverviewViewModel[]> {
@@ -621,8 +631,8 @@ async function loadDependencyOverviews(options: {
       reverse.set(dependency, [...(reverse.get(dependency) ?? []), node.pluginId]);
     }
   }
-  const targetsByPlugin = new Map<string, typeof options.status.payload.targets>();
-  for (const target of options.status.payload.targets) {
+  const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
+  for (const target of flattenStatusTargets(options.status.payload.targets)) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
   const unsupportedPluginIds = new Set(options.status.pluginSummaries
@@ -851,7 +861,7 @@ export function createTuiControllerDependencies(
   >();
   const codexManagerByEvidence = new WeakMap<OperationEvidence, CodexManager>();
   let sessionCatalogOperationContext: CatalogOperationContext | undefined;
-  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV7>> | undefined;
+  let sessionStatusResult: Awaited<ReturnType<typeof statusCommandV8>> | undefined;
   const sessionContextForPlugin = (pluginId: string): CatalogOperationContext | undefined => {
     const sourceId = parsePluginId(pluginId).sourceId;
     if (!sourceId || !sessionCatalogOperationContext) return undefined;
@@ -933,7 +943,7 @@ export function createTuiControllerDependencies(
       });
     if (catalogOperationContext) sessionCatalogOperationContext = catalogOperationContext;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const result = await statusCommandV7({
+      const result = await statusCommandV8({
         cwd: context.cwd,
         env: context.env,
         nativeCliRunner: context.nativeCliRunner,
@@ -1515,7 +1525,7 @@ export function createTuiControllerDependencies(
       const executableTargets: PluginWriteTaskTarget[] = [];
       const causes: PluginWriteTaskEvidence['taskPlan']['causes'] = [];
       const blockedTargets: PluginWriteTaskEvidence['taskPlan']['blockedTargets'] = [];
-      const observedTargets: StatusV7Target[] = [];
+      const observedTargets: StatusScopedTarget[] = [];
       const observedRevisions: StatusTargetRevision[] = [];
       const operationContexts = new Map<string, CatalogOperationContext>();
       await preparation?.reporter.emit('catalog');
@@ -1563,7 +1573,7 @@ export function createTuiControllerDependencies(
           continue;
         }
         operationContexts.set(sourceId, catalogOperation);
-        const status = await statusCommandV7({
+        const status = await statusCommandV8({
           plugins: [...new Set(requestedTargets.map((target) => target.pluginId))],
           cwd: context.cwd,
           env: context.env,
@@ -1573,7 +1583,7 @@ export function createTuiControllerDependencies(
           catalogOperationContext: catalogOperation,
           inventoryCatalogSourceReferences: operationInventory,
         });
-        observedTargets.push(...status.payload.targets);
+        observedTargets.push(...flattenStatusTargets(status.payload.targets));
         observedRevisions.push(...status.targetRevisions);
         const model = buildTuiViewModel({
           status: status.payload,
@@ -1587,7 +1597,7 @@ export function createTuiControllerDependencies(
               const revision = status.targetRevisions.find((entry) =>
                 entry.pluginId === target.pluginId && entry.platform === target.platform
                 && entry.scope === target.scope);
-              const live = status.payload.targets.find((entry) => {
+              const live = flattenStatusTargets(status.payload.targets).find((entry) => {
                 if (entry.pluginId !== target.pluginId || entry.platform !== target.platform) return false;
                 const desired = statusTargetIntent(entry);
                 return entry.scope === target.scope || desired.scopes.includes(target.scope);
@@ -2085,7 +2095,7 @@ export function createTuiControllerDependencies(
         if (group.platform === 'both') return [];
         const platform = group.platform;
         return group.requestedPluginIds.map((pluginId) => {
-          const live = sessionStatusResult?.payload.targets.find((target) =>
+          const live = flattenStatusTargets(sessionStatusResult?.payload.targets ?? []).find((target) =>
             target.pluginId === pluginId && target.platform === platform
             && (target.scope === group.scope || statusTargetIntent(target).scopes.includes(group.scope)
               || platform === 'codex' && statusTargetActivation(target)?.[group.scope] === true));
@@ -2346,7 +2356,7 @@ export function createTuiControllerDependencies(
     await preparation?.reporter.emit('status');
     const statusCatalogOperation = catalogOperation
       ?? (!freshCatalog ? sessionCatalogOperationContext : undefined);
-    const status = await statusCommandV7({
+    const status = await statusCommandV8({
       plugins: [...new Set([intent.pluginId,
         ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
           ? [intent.originIssue.consumerPluginId] : [])])],
@@ -2561,7 +2571,7 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     const evidenceTargets = intent.kind === 'configSave'
       ? configVisibleTargets
-      : status.payload.targets;
+      : flattenStatusTargets(status.payload.targets);
     const evidenceRevisions = intent.kind === 'configSave'
       ? (status.targetRevisions ?? []).filter((revision) =>
           evidenceTargets.some((target) => target.platform === revision.platform

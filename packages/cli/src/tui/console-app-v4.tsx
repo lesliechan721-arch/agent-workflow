@@ -529,11 +529,31 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
       : placement.actualState === 'blocked' ? '已阻断'
           : placement.health === 'ready' ? '可用'
             : placement.health === 'incomplete' ? '需要处理' : '不可用';
-    const desired = placement.desiredScopes?.length
-      ? placement.desiredScopes.map(scopeLabel).join('+')
-      : scopeLabel(placement.scope);
-    return `${label} · ${desired} · ${health}`;
+    const desired = placement.desiredScopes?.map(scopeLabel).join('+') || '未保存';
+    const actual = placement.actualScopes?.map(scopeLabel).join('+') || '未启用';
+    return placement.desiredScopes?.length
+      ? `${label} · 已保存 ${desired} · 当前 ${actual} · ${health}`
+      : `${label} · 当前 ${actual} · ${health}`;
   }).join('  |  ') || '没有可用平台';
+}
+
+function issueMatchesTarget(
+  issue: UserIssueViewModel,
+  pluginId: string,
+  platform?: PlatformName,
+  scope?: Scope,
+): boolean {
+  if (!platform && !scope && issue.pluginId === pluginId) return true;
+  const matches = [
+    issue.rootEntity,
+    ...(issue.affectedTargets ?? []),
+    ...(issue.pluginId && issue.platform && issue.scope
+      ? [{ pluginId: issue.pluginId, platform: issue.platform, scope: issue.scope }]
+      : []),
+  ].filter((target): target is { pluginId: string; platform: PlatformName; scope: Scope } =>
+    target !== undefined && target.pluginId === pluginId);
+  return matches.some((target) => (!platform || target.platform === platform)
+    && (!scope || target.scope === scope));
 }
 
 function issueGroupLabel(group: UserIssueViewModel['group']): string {
@@ -1208,8 +1228,15 @@ function placementStatus(placement: PlatformPlacementSummary): {
   if (placement.blockingReason === 'artifactCollision') {
     return { value: '输出冲突', status: 'error', description: '只允许查看或安全移除受管内容' };
   }
+  const current = placement.actualScopes?.map(scopeLabel).join('+') || '未启用';
+  const state = placement.actualState === 'needsSync' ? '需要同步'
+    : placement.actualState === 'blocked' ? '已阻断'
+      : placement.health === 'ready' ? '可用'
+        : placement.health === 'incomplete' ? '需要处理' : '不可用';
   return {
-    value: `${placement.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(placement.scope)} · ${placement.actualState === 'needsSync' ? '需要同步' : placement.actualState === 'blocked' ? '已阻断' : placement.health === 'ready' ? '可用' : placement.health === 'incomplete' ? '需要处理' : '不可用'}`,
+    value: placement.desiredScopes?.length
+      ? `已保存 ${placement.desiredScopes.map(scopeLabel).join('+')} · 当前 ${current} · ${state}`
+      : `当前 ${current} · ${state}`,
     status: placement.actualState === 'blocked' ? 'error' : placement.health === 'ready' ? 'success' : placement.health === 'incomplete' ? 'warning' : 'error',
     description: placement.actualState === 'needsSync' ? '已保存的使用设置与当前安装不同；可安全同步'
       : placement.actualState === 'blocked' ? '当前有安全阻断；查看恢复路径'
@@ -1236,11 +1263,8 @@ function dependencyPlacementLabel(item: PluginDependencyItemViewModel): string {
     return modern.map((entry) => {
       if (entry.state !== 'installed') return '';
       const desired = entry.desiredScopes?.map(scopeLabel).join('+') || scopeLabel(entry.scope);
-      const actualScopes = [
-        ...(entry.activation?.user ? ['所有项目'] : []),
-        ...(entry.activation?.project ? ['当前项目'] : []),
-      ];
-      const actual = actualScopes.join('+') || scopeLabel(entry.scope);
+      const actualScopes = entry.actualScopes?.map(scopeLabel) ?? [];
+      const actual = actualScopes.join('+') || '未启用';
       const state = entry.actualState === 'needsSync' ? '需同步'
         : entry.actualState === 'blocked' ? '已阻断'
             : entry.actualState === 'ready' ? '可用' : aggregate.value;
@@ -2803,11 +2827,28 @@ export function ConsoleAppV4(props: {
     action: UserIssueActionViewModel,
   ): OperationIntent | undefined => {
     const pluginId = action.pluginId ?? selectedIssue.pluginId;
-    if (!pluginId || !selectedIssue.platform) return undefined;
+    if (!pluginId) return undefined;
     const selectedScope = action.id === 'keepUserScope'
       ? 'project'
       : action.id === 'keepProjectScope' ? 'user' : action.scope ?? selectedIssue.scope;
     const selectedPlatform = action.platform ?? selectedIssue.platform;
+    const dependencyIssue = selectedIssue.category === 'dependencyMissing'
+      || selectedIssue.category === 'dependencyNotReady';
+    const dependencyTargetAction = action.id === 'installDependency'
+      || action.id === 'reinstallDependency';
+    const sourceTargetCleanup = selectedIssue.entity.kind === 'source'
+      && action.id === 'cleanup'
+      && action.pluginId !== undefined
+      && action.platform !== undefined
+      && action.scope !== undefined;
+    const targetSpecificOrigin = (dependencyIssue && !dependencyTargetAction)
+      || sourceTargetCleanup;
+    const consumerPluginId = targetSpecificOrigin
+      ? pluginId : selectedIssue.pluginId;
+    const consumerPlatform = targetSpecificOrigin
+      ? selectedPlatform : selectedIssue.platform;
+    const consumerScope = targetSpecificOrigin
+      ? selectedScope : selectedIssue.scope;
     const writeAction = action.writeAction ?? (action.id === 'sync'
       ? 'sync'
       : action.id === 'refreshAndSync'
@@ -2836,16 +2877,20 @@ export function ConsoleAppV4(props: {
         issueKey: userIssueKey(selectedIssue),
         category: selectedIssue.category,
         actionId: action.id,
-        ...(selectedIssue.category === 'dependencyMissing' || selectedIssue.category === 'dependencyNotReady'
+        ...(targetSpecificOrigin
           ? {
-              consumerPluginId: selectedIssue.pluginId,
-              consumerSourceIdentity: selectedIssue.sourceIdentity,
-              consumerPlatform: selectedIssue.platform,
-              consumerScope: selectedIssue.scope,
-              dependencyPluginId: selectedIssue.dependencyPluginId,
-              dependencyPlatform: selectedIssue.dependencyPlatform,
-              dependencyScope: selectedIssue.dependencyScope,
-              dependencyProject: selectedIssue.dependencyProject,
+              consumerPluginId,
+              consumerSourceIdentity: consumerPluginId
+                ? props.controller.getPluginSourceIdentity(consumerPluginId)
+                : selectedIssue.sourceIdentity,
+              consumerPlatform,
+              consumerScope,
+              ...(dependencyIssue ? {
+                dependencyPluginId: selectedIssue.dependencyPluginId,
+                dependencyPlatform: selectedIssue.dependencyPlatform,
+                dependencyScope: selectedIssue.dependencyScope,
+                dependencyProject: selectedIssue.dependencyProject,
+              } : {}),
             }
           : {}),
       },
@@ -5254,9 +5299,15 @@ export function ConsoleAppV4(props: {
             setScrollOffset(0);
           },
         } : undefined;
-    const issueForPlugin = props.controller.listUserIssues().find((candidate) =>
-      candidate.pluginId === plugin.pluginId || candidate.rootEntity?.pluginId === plugin.pluginId);
-    const exceptionalAction: ActionItem | undefined = plugin.aggregateStatus === 'unavailable'
+    const issuesForPlugin = props.controller.listUserIssues().filter((candidate) =>
+      issueMatchesTarget(candidate, plugin.pluginId));
+    const configIssue = issuesForPlugin.find((candidate) => candidate.group === 'config');
+    const exceptionalAction: ActionItem | undefined = configIssue ? {
+        label: '查看处理建议',
+        description: '当前插件设置问题需要先完成或修正设置',
+        status: 'warning',
+        run: () => go({ name: 'issueDetail', issueId: configIssue.issueId }),
+      } : plugin.aggregateStatus === 'unavailable'
       ? plugin.capabilityUnsupported && !plugin.sourceUnavailable ? {
           label: '需要升级 AW CLI',
           description: '查看缺少的功能和安全恢复方向',
@@ -5272,9 +5323,11 @@ export function ConsoleAppV4(props: {
           label: '查看处理建议',
           description: '当前问题需要先确认原因或处理方式',
           status: 'warning',
-          run: () => issueForPlugin
-            ? go({ name: 'issueDetail', issueId: issueForPlugin.issueId })
-            : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
+          run: () => issuesForPlugin.length === 1
+            ? go({ name: 'issueDetail', issueId: issuesForPlugin[0]!.issueId })
+            : issuesForPlugin.length > 1
+              ? go({ name: 'issueList' })
+              : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
         } : undefined;
     const aboutAction: ActionItem = {
       actionId: 'about',
@@ -5289,11 +5342,14 @@ export function ConsoleAppV4(props: {
         : primary === settingsAction ? 'settings'
           : primary === updateAction ? 'update'
             : primary === restoreAction ? 'restore' : 'exceptional' },
-      ...(settingsAction && primary !== settingsAction ? [{ ...settingsAction, actionId: 'settings' }] : [aboutAction]),
+      ...(settingsAction && primary !== settingsAction
+        ? [{ ...settingsAction, actionId: 'settings' }] : [aboutAction]),
       {
         actionId: 'more',
         label: '更多操作…',
-        description: '平台维护、依赖、通用 Skills、来源和诊断',
+        description: settingsAction && primary !== settingsAction
+          ? '平台维护、依赖、使用说明、通用 Skills、来源和诊断'
+          : '平台维护、依赖、通用 Skills、来源和诊断',
         run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
       },
     ]);
@@ -5514,16 +5570,17 @@ export function ConsoleAppV4(props: {
         }),
       };
       if (action.id === 'sync') return {
-        label: '同步已保存的使用位置…',
+        label: `同步${scopeLabel(action.scope)}的使用位置…`,
         description: placement?.state === 'installed'
-          ? placement.recovery?.find((entry) => entry.command === 'sync')?.description
+          ? (placement.scopedPlacements?.find((entry) => entry.scope === action.scope)?.recovery
+            ?? placement.recovery)?.find((entry) => entry.command === 'sync')?.description
             ?? '进入现有 Review、进度和结果链修复 needsSync 或 drift'
           : undefined,
         run: () => placement?.state === 'installed'
-          ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: route.platform, scope: placement.scope })
+          ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope })
           : undefined,
       };
-      if (action.id === 'reinstall') return { label: '重新安装…', description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'reinstall') return { label: `重新安装${scopeLabel(action.scope)}位置…`, description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
       if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容…`, description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'technical') return typedIssue
@@ -5571,7 +5628,8 @@ export function ConsoleAppV4(props: {
     ];
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
     const installedPlacementRows = placement?.state === 'installed' ? <>
-      <StaticRow title="位置" meta={placement.desiredScopes?.map(scopeLabel).join('、') || scopeLabel(placement.scope)} compact />
+      <StaticRow title="已保存位置" meta={placement.desiredScopes?.map(scopeLabel).join('、') || '无'} compact />
+      <StaticRow title="当前位置" meta={placement.actualScopes?.map(scopeLabel).join('、') || '未启用'} compact />
       <StaticRow
         title="状态"
         meta={placement.actualState === 'ready' ? '可用'
@@ -7143,10 +7201,10 @@ export function ConsoleAppV4(props: {
       }
       else if (entry.id === 'viewDependencyIssue' && entry.pluginId) {
         const dependencyIssue = props.controller.listUserIssues().find((candidate) =>
-          candidate.pluginId === entry.pluginId
+          issueMatchesTarget(candidate, entry.pluginId!, issue.dependencyPlatform, issue.dependencyScope)
           && candidate.issueId !== issue.issueId);
         if (dependencyIssue) go({ name: 'issueDetail', issueId: dependencyIssue.issueId });
-        else go({ name: 'pluginDependencies', pluginId: entry.pluginId });
+        else if (!showTechnical) toggleTechnical();
       }
       else toggleTechnical();
     };
@@ -8646,7 +8704,7 @@ export function ConsoleAppV4(props: {
     if (prioritizedComponents.length > componentLimit) {
       help = 'PgUp/PgDn 查看全部组件 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
-    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.capabilityUnsupported ? <><StaticRow title="failure code" meta="awCapabilityUnsupported" /><StaticRow title="capability 状态" meta="当前 AW CLI 不支持" status="error" /><StaticRow title="缺少 capability" meta={plugin.missingCapabilities?.join('、') ?? 'Status 未提供具体 capability'} /><StaticRow title="恢复方向" meta={plugin.capabilityRecovery ?? '升级 AW CLI 到支持所需 capability 的版本后重试。'} /></> : null}{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{componentOffset > 0 ? <StaticRow title={`↑ 前面还有 ${componentOffset} 个组件`} status="muted" compact /> : null}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${scopeLabel(component.scope)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`↓ 后面还有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    content = <Box flexDirection="column"><TechnicalDetails><StaticRow title="canonical pluginId" meta={plugin.pluginId} /><StaticRow title="来源" meta={plugin.sourceId} />{plugin.capabilityUnsupported ? <><StaticRow title="failure code" meta="awCapabilityUnsupported" /><StaticRow title="capability 状态" meta="当前 AW CLI 不支持" status="error" /><StaticRow title="缺少 capability" meta={plugin.missingCapabilities?.join('、') ?? 'Status 未提供具体 capability'} /><StaticRow title="恢复方向" meta={plugin.capabilityRecovery ?? '升级 AW CLI 到支持所需 capability 的版本后重试。'} /></> : null}{plugin.installedPlacements.map((placement) => <StaticRow key={placement.platform} title={`${platformLabel(placement.platform)} target`} meta={placementStatus(placement).value} />)}{componentOffset > 0 ? <StaticRow title={`↑ 前面还有 ${componentOffset} 个组件`} status="muted" compact /> : null}{visibleComponents.map((component) => <StaticRow key={`${component.platform}:${component.shared ? 'shared' : component.scope}:${component.key}`} title={`组件 · ${component.state === 'absent' ? '缺失' : component.state}${component.errorCode ? ` · ${component.errorCode}` : ''} · ${component.key} · ${platformLabel(component.platform)} · ${component.shared ? '平台共享' : scopeLabel(component.scope!)}`} />)}{hiddenComponents > 0 ? <StaticRow title={`↓ 后面还有 ${hiddenComponents} 个组件`} status="muted" compact /> : null}</TechnicalDetails><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else {
     const missingPlugin = definition.entity === 'plugin' && plugin === undefined;
     const missingIssue = definition.entity === 'issue' && issue === undefined;

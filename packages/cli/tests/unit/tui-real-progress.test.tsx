@@ -180,7 +180,7 @@ describe('real ConsoleAppV4 progress chain', () => {
     const context = createCliExecutionContext({ cwd: '/workspace', io: { stdout } });
     const status = () => ({
       payload: {
-        schemaVersion: 7 as const,
+        schemaVersion: 8 as const,
         catalog: {
           primarySourceId: 'official',
           configDigest: 'sha256:config',
@@ -195,12 +195,15 @@ describe('real ConsoleAppV4 progress chain', () => {
           sourceIdentity: 'identity:official',
           version: '1.0.0',
           platform: 'codex' as const,
-          scope: 'user' as const,
           cwd: '/workspace',
           state: live === 'present' ? 'ready' as const : 'absent' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: live }],
-          reasons: [],
-          recoveryActions: [],
+          components: [], reasons: [], recoveryActions: [],
+          placements: [{
+            scope: 'user' as const,
+            state: live === 'present' ? 'ready' as const : 'absent' as const,
+            components: [{ kind: 'ownership' as const, key: 'fixture', state: live }],
+            reasons: [], recoveryActions: [],
+          }],
         }],
         errors: [],
       },

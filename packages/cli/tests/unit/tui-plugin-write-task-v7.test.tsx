@@ -3,7 +3,7 @@ import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
-import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
+import type { StatusV8Payload, StatusV8PluginSummary } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import type { ConfigPageViewModel, UserIssueViewModel } from '../../src/tui/model.js';
 import {
@@ -27,15 +27,19 @@ const target = {
   },
 } as const;
 
-const statusTarget: StatusV7Payload['targets'][number] = {
+const statusTarget: StatusV8Payload['targets'][number] = {
   pluginName: 'demo', pluginId: 'official/demo', sourceId: 'official',
-  sourceIdentity: 'identity:official', version: '2.0.0', platform: 'codex', scope: 'user',
+  sourceIdentity: 'identity:official', version: '2.0.0', platform: 'codex',
   cwd: '/workspace', state: 'ready',
-  components: [{ kind: 'ownership', key: 'demo', state: 'present' }],
-  reasons: [], recoveryActions: [],
+  components: [], reasons: [], recoveryActions: [],
+  placements: [{
+    scope: 'user', state: 'ready',
+    components: [{ kind: 'ownership', key: 'demo', state: 'present' }],
+    reasons: [], recoveryActions: [],
+  }],
 };
 
-const summary: StatusV7PluginSummary = {
+const summary: StatusV8PluginSummary = {
   pluginName: 'demo', pluginId: 'official/demo', displayName: 'Demo',
   description: '演示插件', version: '2.0.0',
   supportedTargets: { codex: ['user'], claude: [] }, configFieldCount: 0,
@@ -44,7 +48,7 @@ const summary: StatusV7PluginSummary = {
 function loaded(): TuiStatusLoadResult {
   return {
     payload: {
-      schemaVersion: 7,
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'official', configDigest: 'sha256:config',
         compositeDigest: 'sha256:composite',

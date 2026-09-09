@@ -1,4 +1,4 @@
-import type { StatusV7Payload } from '../../commands/status-v6.js';
+import type { StatusV8Payload } from '../../commands/status-v6.js';
 import type { SourceHealthViewModel, SourceTabViewModel } from '../model.js';
 import type {
   CatalogSourceFreshnessViewModel,
@@ -6,7 +6,7 @@ import type {
 } from './types.js';
 
 export function projectCatalogSourceState(
-  source: StatusV7Payload['catalog']['sources'][number],
+  source: StatusV8Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
   freshness?: CatalogSourceFreshnessViewModel,
   generation?: CatalogSourceGenerationViewModel,

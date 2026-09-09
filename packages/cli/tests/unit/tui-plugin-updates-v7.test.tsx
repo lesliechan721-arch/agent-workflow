@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOperationPlan } from '../../src/commands/operation-plan.js';
 import type {
   StatusTargetRevision,
-  StatusV7Payload,
-  StatusV7PluginSummary,
+  StatusV8Payload,
+  StatusV8PluginSummary,
 } from '../../src/commands/status-v6.js';
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import {
@@ -25,7 +25,7 @@ import {
 
 afterEach(() => cleanup());
 
-const source = (identity = 'identity:official'): StatusV7Payload['catalog']['sources'][number] => ({
+const source = (identity = 'identity:official'): StatusV8Payload['catalog']['sources'][number] => ({
   id: 'official', identity, type: 'git', primary: true,
   requestedRef: 'refs/heads/catalog/latest', resolvedCommit: 'a'.repeat(40),
   catalogVersion: '2.0.0', channel: 'latest', freshness: 'active',
@@ -35,12 +35,20 @@ const target = (
   platform: 'codex' | 'claude',
   scope: 'user' | 'project',
   state: 'ready' | 'needsSync' = 'ready',
-): StatusV7Payload['targets'][number] => ({
-  pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
-  pluginId: 'official/demo', version: '2.0.0', platform, scope, cwd: '/workspace', state,
-  components: [{ kind: 'ownership', key: `${platform}-${scope}`, state: state === 'ready' ? 'present' : 'partial' }],
-  reasons: [], recoveryActions: [],
-});
+): StatusV8Payload['targets'][number] => {
+  const identity = {
+    pluginName: 'demo', sourceId: 'official', sourceIdentity: 'identity:official',
+    pluginId: 'official/demo', version: '2.0.0', cwd: '/workspace',
+  };
+  const placement = {
+    scope, state,
+    components: [{ kind: 'ownership' as const, key: `${platform}-${scope}`, state: state === 'ready' ? 'present' : 'partial' }],
+    reasons: [], recoveryActions: [],
+  };
+  return platform === 'codex'
+    ? { ...identity, platform, state, components: [], reasons: [], recoveryActions: [], placements: [placement] }
+    : { ...identity, platform, ...placement };
+};
 
 const revisions: StatusTargetRevision[] = [{
   pluginId: 'official/demo', platform: 'codex', scope: 'user',
@@ -50,7 +58,7 @@ const revisions: StatusTargetRevision[] = [{
   revision: { state: 'current', installedVersion: '2.0.0', availableVersion: '2.0.0' },
 }];
 
-const summary: StatusV7PluginSummary = {
+const summary: StatusV8PluginSummary = {
   pluginName: 'demo', pluginId: 'official/demo', displayName: 'Demo',
   description: '演示用途', version: '2.0.0',
   supportedTargets: { codex: ['user'], claude: ['project'] },
@@ -58,10 +66,10 @@ const summary: StatusV7PluginSummary = {
 
 function status(
   catalogSource = source(),
-  targets: StatusV7Payload['targets'] = [target('codex', 'user'), target('claude', 'project')],
-): StatusV7Payload {
+  targets: StatusV8Payload['targets'] = [target('codex', 'user'), target('claude', 'project')],
+): StatusV8Payload {
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     catalog: {
       primarySourceId: 'official', configDigest: 'sha256:config',
       compositeDigest: 'sha256:composite', sources: [catalogSource],

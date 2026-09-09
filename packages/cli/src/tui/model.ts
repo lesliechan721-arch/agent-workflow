@@ -19,14 +19,15 @@ import type {
   StatusExtensionProjection,
   StatusIntentProjection,
   StatusSharedNativeProjection,
-  StatusV7Payload,
-  StatusV7PluginSummary,
-  StatusV7Target,
-  StatusV7Component,
+  StatusV8Payload,
+  StatusV8PluginSummary,
+  StatusScopedTarget,
+  StatusV8Component,
   StatusTargetRevision,
   TargetRevisionState,
 } from '../commands/status-v6.js';
 import {
+  flattenStatusTargets,
   statusTargetActivation,
   statusTargetExtensions,
   statusTargetIntent,
@@ -77,13 +78,22 @@ export type PlatformPlacementSummary =
       health: 'ready' | 'incomplete' | 'error';
       revision: TargetRevisionState;
       desiredScopes?: Scope[];
+      actualScopes?: Scope[];
       relation?: StatusIntentProjection['relation'];
-      actualState?: StatusV7Target['state'];
+      actualState?: StatusScopedTarget['state'];
       activation?: StatusActivationProjection;
       sharedNative?: StatusSharedNativeProjection;
       extensions?: StatusExtensionProjection;
-      recovery?: StatusV7Target['recoveryActions'];
+      recovery?: StatusScopedTarget['recoveryActions'];
       blockingReason?: 'artifactCollision';
+      scopedPlacements?: Array<{
+        scope: Scope;
+        health: 'ready' | 'incomplete' | 'error';
+        revision: TargetRevisionState;
+        actualState?: StatusScopedTarget['state'];
+        recovery?: StatusScopedTarget['recoveryActions'];
+        blockingReason?: 'artifactCollision';
+      }>;
     }
   | {
       platform: PlatformName;
@@ -96,7 +106,7 @@ export type PlatformPlacementSummary =
     };
 
 export type PluginMenuAction =
-  | { id: 'add' | 'manage' | 'repair' | 'sync' | 'portableSkills' | 'dependencies' | 'settings'
+  | { id: 'add' | 'manage' | 'repair' | 'portableSkills' | 'dependencies' | 'settings'
       | 'source' | 'sourceProblem' | 'about' | 'refreshSource' | 'technical' | 'back'
       | 'outputCollision' | 'upgradeAwCli' | 'capabilityTechnical' }
   | { id: 'addScope'; platform: PlatformName; scope: Scope }
@@ -118,7 +128,7 @@ export type PluginMenuAction =
       sourceIdentity: string;
       generationKey: string;
     }
-  | { id: 'reinstall' | 'remove' | 'cleanup'; platform: PlatformName; scope: Scope };
+  | { id: 'sync' | 'reinstall' | 'remove' | 'cleanup'; platform: PlatformName; scope: Scope };
 
 export interface PluginListItemViewModel {
   pluginId: string;
@@ -147,9 +157,10 @@ export interface PluginListItemViewModel {
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
-    scope: Scope;
+    scope?: Scope;
+    shared?: true;
     key: string;
-    state: StatusV7Component['state'];
+    state: StatusV8Component['state'];
     errorCode?: string;
   }>;
   update: PluginUpdateSummary;
@@ -196,7 +207,7 @@ export function buildPluginUpdateSummary(options: {
   pluginId: string;
   sourceId: string;
   targetRevisions: StatusTargetRevision[];
-  targets: StatusV7Target[];
+  targets: StatusScopedTarget[];
   freshness?: CatalogSourceFreshnessViewModel;
   sourceIdentity?: string;
   generationKey?: string;
@@ -672,13 +683,13 @@ function compareText(left: string, right: string): number {
   return left.localeCompare(right, 'en');
 }
 
-function targetHealth(target: StatusV7Target): 'ready' | 'incomplete' | 'error' {
+function targetHealth(target: StatusScopedTarget): 'ready' | 'incomplete' | 'error' {
   if (target.state === 'ready') return 'ready';
   if (target.state === 'needsSync' || target.state === 'orphaned') return 'incomplete';
   return target.state === 'blocked' ? 'error' : 'incomplete';
 }
 
-export function isPureNativeCodexTarget(target: StatusV7Target): boolean {
+export function isPureNativeCodexTarget(target: StatusScopedTarget): boolean {
   const sharedNative = statusTargetSharedNative(target);
   const extensions = statusTargetExtensions(target);
   return target.platform === 'codex'
@@ -696,7 +707,7 @@ function isPureNativeCodexPlacement(
 }
 
 function parsedScopedUninstallRecovery(
-  recovery: StatusV7Target['recoveryActions'][number],
+  recovery: StatusScopedTarget['recoveryActions'][number],
   expectedPlatform: PlatformName,
 ): { pluginId: string; scope: Scope; description: string } | undefined {
   if (recovery.command !== 'uninstall' || !recovery.scope) return undefined;
@@ -733,10 +744,38 @@ function missingPureNativeScopes(
     !placement.desiredScopes?.includes(scope) && placement.activation?.[scope] !== true);
 }
 
-function isInstalledScopeEvidence(target: StatusV7Target): boolean {
+function hasScopedExtensionOwnership(target: StatusScopedTarget): boolean {
+  return target.components.some((component) =>
+    component.kind === 'ownership'
+      && component.key !== 'native'
+      && !component.key.startsWith('activation-')
+      && !component.key.startsWith('marketplace-')
+      && (component.state === 'present' || component.state === 'partial'));
+}
+
+function isInstalledScopeEvidence(target: StatusScopedTarget): boolean {
+  const activation = statusTargetActivation(target);
+  const extensions = statusTargetExtensions(target);
   return statusTargetIntent(target).enabled
-    || statusTargetOwnershipState(target) === 'present'
-    || statusTargetOwnershipState(target) === 'partial';
+    || target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
+      || statusTargetOwnershipState(target) === 'partial')
+    || target.platform === 'codex' && hasScopedExtensionOwnership(target)
+    || activation?.[target.scope] === true
+    || extensions?.state === 'ready'
+    || extensions?.state === 'drifted'
+    || extensions?.state === 'conflict';
+}
+
+function hasActualScopeEvidence(target: StatusScopedTarget): boolean {
+  const activation = statusTargetActivation(target);
+  const extensions = statusTargetExtensions(target);
+  return target.platform === 'claude' && (statusTargetOwnershipState(target) === 'present'
+      || statusTargetOwnershipState(target) === 'partial')
+    || target.platform === 'codex' && hasScopedExtensionOwnership(target)
+    || activation?.[target.scope] === true
+    || extensions?.state === 'ready'
+    || extensions?.state === 'drifted'
+    || extensions?.state === 'conflict';
 }
 
 function dependencyAssignmentExplanation(
@@ -783,7 +822,7 @@ function dependencyPluginIdFromMessage(message: string): string | undefined {
 
 function rootPlacementFromIssueId(
   issueId: string | undefined,
-  fallback: Pick<StatusV7Target, 'platform' | 'scope'>,
+  fallback: Pick<StatusScopedTarget, 'platform' | 'scope'>,
 ): Pick<TargetIssueEntityViewModel, 'platform' | 'scope'> {
   if (issueId) {
     for (const platform of ['claude', 'codex'] as const) {
@@ -814,8 +853,8 @@ function rootPluginIdFromIssueId(
 }
 
 function targetIssueRelationship(options: {
-  target: StatusV7Target;
-  error?: StatusV7Target['reasons'][number];
+  target: StatusScopedTarget;
+  error?: StatusScopedTarget['reasons'][number];
   dependencyPluginId?: string;
 }): {
   relationship: 'direct' | 'consumer';
@@ -851,10 +890,10 @@ function targetIssueRelationship(options: {
 
 export function projectPlatformPlacement(
   platform: PlatformName,
-  targets: StatusV7Target[],
+  targets: StatusScopedTarget[],
   revisions: StatusTargetRevision[] = [],
 ): PlatformPlacementSummary {
-  const revisionFor = (target: StatusV7Target): TargetRevisionState =>
+  const revisionFor = (target: StatusScopedTarget): TargetRevisionState =>
     revisions.find((entry) => entry.pluginId === target.pluginId
       && entry.platform === target.platform
       && entry.scope === target.scope)?.revision
@@ -876,6 +915,30 @@ export function projectPlatformPlacement(
       revision: revisionFor(errorTarget),
     };
   }
+  if (installed.length > 1) {
+    const projected = installed.map((target) =>
+      projectPlatformPlacement(platform, [target], revisions) as Extract<
+        PlatformPlacementSummary,
+        { state: 'installed' }
+      >);
+    return {
+      ...(projected.find((placement) => placement.health === 'error')
+        ?? projected.find((placement) => placement.health === 'incomplete')
+        ?? projected[0]!),
+      scopedPlacements: projected.map((placement) => ({
+        scope: placement.scope,
+        health: placement.health,
+        revision: placement.revision,
+        ...(placement.actualState ? { actualState: placement.actualState } : {}),
+        ...(placement.recovery ? { recovery: placement.recovery } : {}),
+        ...(placement.blockingReason ? { blockingReason: placement.blockingReason } : {}),
+      })),
+      desiredScopes: [...new Set(projected.flatMap((placement) =>
+        placement.desiredScopes ?? []))].sort(compareText),
+      actualScopes: [...new Set(installed.filter(hasActualScopeEvidence)
+        .map((target) => target.scope))].sort(compareText),
+    };
+  }
   const target = installed.find((candidate) => candidate.state === 'blocked')
     ?? installed.find((candidate) => candidate.state === 'needsSync')
     ?? installed.find((candidate) => candidate.state === 'orphaned')
@@ -895,6 +958,7 @@ export function projectPlatformPlacement(
     health: targetHealth(target),
     revision: revisionFor(target),
     desiredScopes: [...intent.scopes],
+    actualScopes: hasActualScopeEvidence(target) ? [target.scope] : [],
     relation: intent.relation,
     actualState: target.state,
     ...(activation ? { activation } : {}),
@@ -908,6 +972,9 @@ export function projectPlatformPlacement(
 function hasIncompletePlacement(plugin: PluginListItemViewModel): boolean {
   return plugin.installedPlacements.some((placement) =>
     placement.state === 'scopeConflict'
+    || placement.state === 'installed'
+      && placement.scopedPlacements?.some((entry) => entry.health !== 'ready'
+        || entry.blockingReason !== undefined)
     || placement.state === 'installed'
       && (placement.health !== 'ready' || placement.blockingReason !== undefined));
 }
@@ -1030,6 +1097,17 @@ export function buildPlatformActions(
   }
   if (!placement || placement.state === 'notInstalled') return [{ id: 'add' }, { id: 'about' }];
   if (placement.state === 'scopeConflict') return [{ id: 'scopeConflict', platform }];
+  if (placement.scopedPlacements) {
+    const actions = placement.scopedPlacements.flatMap((entry) => buildPlatformActions({
+      ...plugin,
+      installedPlacements: [{
+        ...placement,
+        ...entry,
+        scopedPlacements: undefined,
+      }],
+    }, platform));
+    return [...new Map(actions.map((action) => [JSON.stringify(action), action])).values()];
+  }
   const scopedRecovery = scopeConflictRecoveryMenuActions(placement);
   if (scopedRecovery.length > 0) return [...scopedRecovery, { id: 'technical' }];
   if (placement.blockingReason === 'artifactCollision') {
@@ -1065,7 +1143,9 @@ export function buildPlatformActions(
           }]
         : [];
     }
-    if (action.id === 'sync') return [{ id: 'sync' }];
+    if (action.id === 'sync') return [{
+      id: 'sync', platform: action.platform, scope: action.scope,
+    }];
     if (action.id === 'reinstall') return [{ id: 'reinstall', platform: action.platform, scope: action.scope }];
     if (action.id === 'uninstall') return [{ id: 'remove', platform: action.platform, scope: action.scope }];
     return [{ id: 'cleanup', platform: action.platform, scope: action.scope }];
@@ -1089,24 +1169,33 @@ export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean 
 
 function sourceIssue(
   health: SourceHealthViewModel,
-  impactedTargets = 0,
+  targetIssues: UserIssueDraft[] = [],
 ): UserIssueDraft | undefined {
   if (health.state !== 'unavailable') return undefined;
   const issueId = health.issueId ?? `source:${health.sourceId}:unavailable`;
+  const affectedTargets = [...new Map(targetIssues.flatMap((issue) => issue.affectedTargets ?? [])
+    .map((target) => [`${target.pluginId}\0${target.platform}\0${target.scope}`, target])).values()]
+    .sort((left, right) => compareText(left.pluginId, right.pluginId)
+      || compareText(left.platform, right.platform)
+      || compareText(left.scope, right.scope));
+  const cleanupActions = targetIssues.flatMap((issue) => issue.actions)
+    .filter((action) => action.id === 'cleanup');
   return {
     issueId,
     category: 'sourceUnavailable',
     title: `${health.sourceId} · 来源不可用`,
     explanation: '来源检查失败。',
     impact: ['当前不能浏览或安装这个来源的插件。',
-      ...(impactedTargets > 0 ? [`${impactedTargets} 个安装位置受此来源根问题影响。`] : [])],
+      ...(affectedTargets.length > 0 ? [`${affectedTargets.length} 个安装位置受此来源根问题影响。`] : [])],
     entity: { kind: 'source', id: health.sourceId },
     sourceId: health.sourceId,
-    actions: [
+    ...(affectedTargets.length > 0 ? { affectedTargets } : {}),
+    actions: dedupeIssueActions([
+      ...cleanupActions,
       { id: 'editSource', label: '编辑来源', description: '检查 URL、路径或 ref' },
       { id: 'refreshSource', label: '稍后重试', description: '只重新检查来源' },
       { id: 'viewTechnical', label: '技术详情' },
-    ],
+    ]),
     technicalDetails: [{
       code: 'catalogSourceUnavailable',
       message: '来源检查失败。',
@@ -1115,7 +1204,7 @@ function sourceIssue(
 }
 
 function lifecycleIssueActions(
-  target: Pick<StatusV7Target,
+  target: Pick<StatusScopedTarget,
     'pluginId' | 'platform' | 'scope' | 'state' | 'recoveryActions'>,
   options: { dependency?: boolean; project?: 'current' | 'other' | null } = {},
 ): UserIssueActionViewModel[] {
@@ -1162,10 +1251,11 @@ function lifecycleIssueActions(
   });
 }
 
-function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
+function targetIssues(payload: StatusV8Payload): UserIssueDraft[] {
   const issues: UserIssueDraft[] = [];
+  const statusTargets = flattenStatusTargets(payload.targets);
   const canonicalRootsByEntity = new Map<string, string>();
-  for (const target of payload.targets) {
+  for (const target of statusTargets) {
     for (const error of target.reasons) {
       if (!error.rootIssueId || !error.rootIssueCode) continue;
       const dependencyPluginId = error.dependencyPluginId
@@ -1185,47 +1275,95 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
     }
   }
   for (const target of payload.targets) {
-    const intent = statusTargetIntent(target);
-    const scopedConflictRecovery = target.reasons.some((reason) =>
-      reason.code === 'codexExtensionScopeConflict')
-      ? target.recoveryActions.flatMap((recovery) => {
-          const parsed = parsedScopedUninstallRecovery(recovery, target.platform);
-          return parsed ? [{ ...parsed, keepScope: parsed.scope === 'user'
-            ? 'project' as const : 'user' as const }] : [];
-        })
-      : [];
-    if (scopedConflictRecovery.length > 0) {
-      issues.push({
-        issueId: `scope:${target.pluginId}:${target.platform}`,
-        category: 'scopeConflict',
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · 扩展位置冲突`,
-        explanation: 'AW 管理附加能力不能同时使用所有项目和当前项目位置。',
-        impact: ['选择要保留的使用位置。系统将移除另一位置，再同步保留的位置。'],
-        entity: { kind: 'plugin', id: target.pluginId },
-        pluginId: target.pluginId,
-        platform: target.platform,
-        scope: target.scope,
-        sourceId: target.sourceId,
-        sourceIdentity: target.sourceIdentity,
-        placements: [...intent.scopes].sort(compareText),
-        actions: [
-          ...scopedConflictRecovery.map((recovery): UserIssueActionViewModel => ({
-            id: recovery.keepScope === 'user' ? 'keepUserScope' : 'keepProjectScope',
-            label: `保留${recovery.keepScope === 'user' ? '所有项目' : '当前项目'}`,
-            description: recovery.description,
-            pluginId: recovery.pluginId,
-            platform: target.platform,
-            scope: recovery.scope,
-            writeAction: 'uninstall',
-          })),
-          { id: 'viewTechnical', label: '查看冲突详情' },
-        ],
-        technicalDetails: [{
-          code: 'codexExtensionScopeConflict',
-          message: '扩展同时使用 user 和 project scope。',
-        }],
-      });
-    }
+    if (target.platform !== 'codex' || !target.reasons.some((reason) =>
+      reason.code === 'codexExtensionScopeConflict')) continue;
+    const recoveries = target.recoveryActions.flatMap((recovery) => {
+      const parsed = parsedScopedUninstallRecovery(recovery, target.platform);
+      return parsed ? [{ ...parsed, keepScope: parsed.scope === 'user'
+        ? 'project' as const : 'user' as const }] : [];
+    });
+    issues.push({
+      issueId: `scope:${target.pluginId}:${target.platform}`,
+      category: 'scopeConflict',
+      title: `${target.pluginId} · Codex · 扩展位置冲突`,
+      explanation: 'AW 管理附加能力不能同时使用所有项目和当前项目位置。',
+      impact: ['选择要保留的使用位置。系统将移除另一位置，再同步保留的位置。'],
+      entity: { kind: 'plugin', id: target.pluginId },
+      pluginId: target.pluginId,
+      platform: target.platform,
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      placements: target.placements.map((placement) => placement.scope).sort(compareText),
+      actions: [
+        ...recoveries.map((recovery): UserIssueActionViewModel => ({
+          id: recovery.keepScope === 'user' ? 'keepUserScope' : 'keepProjectScope',
+          label: `保留${recovery.keepScope === 'user' ? '所有项目' : '当前项目'}`,
+          description: recovery.description,
+          pluginId: recovery.pluginId,
+          platform: target.platform,
+          scope: recovery.scope,
+          writeAction: 'uninstall',
+        })),
+        { id: 'viewTechnical', label: '查看冲突详情' },
+      ],
+      technicalDetails: [{
+        code: 'codexExtensionScopeConflict',
+        message: '扩展同时使用 user 和 project scope。',
+      }],
+    });
+  }
+  for (const target of payload.targets) {
+    if (target.platform !== 'codex') continue;
+    const sharedReasons = target.reasons.filter((reason) =>
+      reason.code.startsWith('codexSharedNative') || reason.code === 'staleCacheObserved');
+    if (sharedReasons.length === 0 || target.state === 'ready' || target.state === 'absent') continue;
+    const codes = new Set(sharedReasons.map((reason) => reason.code));
+    const sharedNative = statusTargetSharedNative(target);
+    const statusIssue = codes.has('codexSharedNativeForeign')
+      ? { title: '平台共享内容被占用', explanation: 'Codex 平台共享位置包含 foreign 内容。' }
+      : codes.has('codexSharedNativeUpdateRequired')
+        ? { title: '版本待同步', explanation: 'Codex 平台共享内容版本与当前插件版本不一致。' }
+        : codes.has('codexSharedNativeUnobserved')
+          ? { title: '状态未确认', explanation: '未取得有效的 Codex 共享内容状态证据。' }
+          : { title: '平台共享内容待同步', explanation: 'Codex 平台共享内容缺失、损坏或与当前渲染输入不一致。' };
+    const recoveryActions = target.recoveryActions.flatMap((recovery) => {
+      if (!recovery.scope) return [];
+      const scopedTarget = statusTargets.find((candidate) => candidate.pluginId === target.pluginId
+        && candidate.platform === target.platform && candidate.scope === recovery.scope);
+      return scopedTarget && isInstalledScopeEvidence(scopedTarget)
+        ? lifecycleIssueActions({ ...scopedTarget, recoveryActions: [recovery] })
+        : [];
+    });
+    issues.push({
+      issueId: `sharedNative:${target.pluginId}`,
+      category: target.state === 'blocked' ? 'diagnostic' : 'incompleteInstallation',
+      title: `${target.pluginId} · Codex · ${statusIssue.title}`,
+      explanation: statusIssue.explanation,
+      impact: [sharedNative?.state === 'blocked'
+        ? '共享内容恢复前，当前插件不能安全同步。'
+        : '共享内容恢复前，相关 Codex 使用位置可能不可用。'],
+      entity: { kind: 'plugin', id: target.pluginId },
+      pluginId: target.pluginId,
+      platform: target.platform,
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      placements: target.placements.map((placement) => placement.scope).sort(compareText),
+      actions: [
+        ...new Map(recoveryActions.map((action) => [
+          `${action.id}\0${action.scope ?? ''}`,
+          action,
+        ])).values(),
+        { id: 'viewTechnical', label: '技术详情' },
+      ],
+      technicalDetails: sharedReasons.map((reason) => ({
+        code: reason.code,
+        message: reason.message,
+      })),
+    });
+  }
+  for (const target of statusTargets) {
+    if (target.reasons.length === 0 && (target.sharedReasons?.length ?? 0) > 0
+      && isPureNativeCodexTarget(target)) continue;
     if (target.state !== 'needsSync' && target.state !== 'blocked'
       && !target.reasons.some((error) => error.code === 'artifactCollision'
         || error.dependencyPluginId !== undefined && error.rootIssueId !== undefined)) continue;
@@ -1269,7 +1407,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
       code: TargetIssueRootCode;
       category: UserIssueCategory;
       mergeEligible: boolean;
-      error?: StatusV7Target['reasons'][number];
+      error?: StatusScopedTarget['reasons'][number];
       dependencyPluginId?: string;
     };
     const dependencyRootMap = new Map<string, TargetIssueRoot>();
@@ -1340,37 +1478,35 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
       const dependencyScope = rootError?.dependencyScope;
       const dependencyProject = rootError?.dependencyProject;
       const dependencyCategory = root.category.startsWith('dependency');
-      const dependencyTarget = dependencyPluginId && dependencyPlatform && dependencyScope
-        ? payload.targets.find((candidate) => candidate.pluginId === dependencyPluginId
-          && candidate.platform === dependencyPlatform && candidate.scope === dependencyScope)
-        : undefined;
-      const dependencyLifecycleActions = dependencyPluginId && dependencyPlatform && dependencyScope
-        ? lifecycleIssueActions(dependencyTarget ?? {
-            pluginId: dependencyPluginId,
-            platform: dependencyPlatform,
-            scope: dependencyScope,
-            state: 'absent',
-            recoveryActions: [],
-          }, { dependency: true, project: dependencyProject })
-        : [];
-      const directLifecycleActions = dependencyCategory ? [] : lifecycleIssueActions(target);
+      const directLifecycleActions = lifecycleIssueActions(target);
+      const desiredConsumer = statusTargetIntent(target).enabled
+        && statusTargetIntent(target).scopes.includes(target.scope);
+      const consumerRecoveryActions = dependencyCategory
+        ? directLifecycleActions.filter((action) => desiredConsumer
+          ? action.id === 'sync' || action.id === 'reinstall' || action.id === 'refreshAndSync'
+          : action.id === 'cleanup')
+        : directLifecycleActions;
       const actions: UserIssueActionViewModel[] = root.category === 'dependencyMissing'
         ? [
-            ...dependencyLifecycleActions,
+            ...consumerRecoveryActions,
+            ...(dependencyPluginId ? [
+              { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
+            ] : []),
             { id: 'viewDependencies', label: '查看依赖关系' },
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'dependencyNotReady'
           ? [
+              ...consumerRecoveryActions,
               ...(dependencyPluginId ? [
                 { id: 'viewDependencyIssue' as const, label: '查看依赖插件问题', pluginId: dependencyPluginId },
               ] : []),
-              ...dependencyLifecycleActions.filter((action) => action.id === 'reinstallDependency'),
               { id: 'viewDependencies', label: '查看依赖关系' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
           : dependencyCategory
             ? [
+                ...consumerRecoveryActions,
                 { id: 'viewDependencies', label: '查看依赖关系' },
                 { id: 'viewTechnical', label: '技术详情' },
               ]
@@ -1381,12 +1517,12 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
                 ]
               : root.category === 'incompleteInstallation'
         ? [
-            ...directLifecycleActions,
+            ...consumerRecoveryActions,
             { id: 'viewTechnical', label: '技术详情' },
           ]
         : root.category === 'sourceMissing'
           ? [
-              ...directLifecycleActions,
+              ...consumerRecoveryActions,
               { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
@@ -1397,7 +1533,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
               ]
               : root.category === 'sourceUnavailable'
               ? [
-                  ...directLifecycleActions.filter((action) => action.id === 'cleanup'),
+                  ...consumerRecoveryActions.filter((action) => action.id === 'cleanup'),
                   { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable'
                     ? '检查当前插件目录或稍后重试'
                     : root.code === 'codexIntentSourceUnavailable'
@@ -1405,7 +1541,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
                       : '修复来源配置或稍后重试' },
                   { id: 'viewTechnical', label: '技术详情' },
                 ]
-              : [...directLifecycleActions,
+              : [...consumerRecoveryActions,
                   { id: 'viewTechnical', label: '技术详情' },
                   { id: 'retryLater', label: '稍后重试' }];
       const bundleUnavailable = root.code === 'bundleUnavailable';
@@ -1444,7 +1580,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           scope: target.scope,
           relationship: relationship.relationship,
         }],
-        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyCategory ? `${target.scope === 'user' ? '所有项目' : '当前项目'} · ` : ''}${sharedNativeProjectionIssue ? '平台共享内容待同步' : root.category === 'artifactCollision' ? '输出冲突' : dependencyCategory ? {
           dependencyMissing: '缺少依赖',
           dependencyNotReady: '依赖安装不完整',
           dependencyTargetUnsupported: '依赖目标不兼容',
@@ -1455,8 +1591,10 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
           ? '目标位置已有不属于当前插件的内容。AW 不会覆盖或删除这些内容。'
           : dependencyCategory
           ? dependencyPluginId
-            ? `${dependencyPluginId} 导致当前依赖检查不能通过。`
-            : '当前依赖检查不能安全通过。'
+            ? `依赖 ${dependencyPluginId}${dependencyPlatform && dependencyScope
+              ? `（${dependencyPlatform === 'codex' ? 'Codex' : 'Claude Code'} · ${dependencyScope === 'user' ? '所有项目' : '当前项目'}）`
+              : ''}未就绪；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
+            : `依赖检查未通过；影响 ${target.pluginId}（${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.scope === 'user' ? '所有项目' : '当前项目'}）。`
           : sharedNativeDamaged
           ? 'Codex 平台共享生成内容缺失或损坏。'
           : sharedNativeRenderDrift
@@ -1508,7 +1646,7 @@ function targetIssues(payload: StatusV7Payload): UserIssueDraft[] {
   return issues;
 }
 
-function statusIssues(payload: StatusV7Payload): UserIssueDraft[] {
+function statusIssues(payload: StatusV8Payload): UserIssueDraft[] {
   const targetCodes = new Set(payload.targets.flatMap((target) =>
     target.reasons.map((error) => error.code)));
   const issues = new Map<string, UserIssueDraft>();
@@ -1551,7 +1689,7 @@ function statusIssues(payload: StatusV7Payload): UserIssueDraft[] {
   return [...issues.values()];
 }
 
-function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[] {
+function configIssues(pluginSummaries: StatusV8PluginSummary[]): UserIssueDraft[] {
   return pluginSummaries.flatMap((summary): UserIssueDraft[] => {
     const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
     const issues: UserIssueDraft[] = [];
@@ -1639,8 +1777,8 @@ function configIssues(pluginSummaries: StatusV7PluginSummary[]): UserIssueDraft[
 
 function dependencyOverviewIssues(
   overviews: PluginDependencyOverviewViewModel[],
-  pluginSummaries: StatusV7PluginSummary[],
-  status: StatusV7Payload,
+  pluginSummaries: StatusV8PluginSummary[],
+  status: StatusV8Payload,
 ): UserIssueDraft[] {
   const summaryById = new Map(pluginSummaries.map((summary) => [summary.pluginId, summary]));
   return overviews.flatMap((overview) => overview.blockers.flatMap((blocker): UserIssueDraft[] => {
@@ -1822,6 +1960,15 @@ function issueReasonPriority(issue: UserIssueDraft): number {
   } as Record<string, number>)[code] ?? 9;
 }
 
+function dedupeIssueActions(actions: UserIssueActionViewModel[]): UserIssueActionViewModel[] {
+  return [...new Map(actions.map((action) => [[
+    action.id,
+    action.pluginId ?? '',
+    action.platform ?? '',
+    action.scope ?? '',
+  ].join('\0'), action])).values()];
+}
+
 function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
   const byId = new Map<string, UserIssueDraft[]>();
   for (const issue of issues) byId.set(issue.issueId, [...(byId.get(issue.issueId) ?? []), issue]);
@@ -1859,13 +2006,14 @@ function collapseRootIssues(issues: UserIssueDraft[]): UserIssueDraft[] {
       impact: [...new Set(ordered.flatMap((issue) => issue.impact))],
       technicalDetails: [...new Map(ordered.flatMap((issue) => issue.technicalDetails)
         .map((detail) => [`${detail.code}\0${detail.message}`, detail])).values()],
+      actions: dedupeIssueActions(ordered.flatMap((issue) => issue.actions)),
     };
   });
 }
 
 export function buildTuiViewModel(options: {
-  status: StatusV7Payload;
-  pluginSummaries: StatusV7PluginSummary[];
+  status: StatusV8Payload;
+  pluginSummaries: StatusV8PluginSummary[];
   targetRevisions?: StatusTargetRevision[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
@@ -1884,8 +2032,8 @@ export function buildTuiViewModel(options: {
     .map((overview) => [overview.pluginId, overview]));
   const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
   const sourceById = new Map(options.status.catalog.sources.map((source) => [source.id, source]));
-  const targetsByPlugin = new Map<string, StatusV7Target[]>();
-  for (const target of options.status.targets) {
+  const targetsByPlugin = new Map<string, StatusScopedTarget[]>();
+  for (const target of flattenStatusTargets(options.status.targets)) {
     targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
   }
   const configScopesByPlugin = new Map<string, Set<Scope>>();
@@ -1908,6 +2056,22 @@ export function buildTuiViewModel(options: {
     const configOnly = summary === undefined && targets.length === 0 && savedConfigScopes.length > 0;
     const placements = (['codex', 'claude'] as const).flatMap((platform) => {
       const platformTargets = targets.filter((target) => target.platform === platform);
+      const aggregateConflict = platform === 'codex' && options.status.targets.some((target) =>
+        target.pluginId === pluginId
+        && target.platform === platform
+        && target.state === 'blocked'
+        && target.reasons.some((reason) => reason.code === 'codexExtensionScopeConflict'));
+      if (aggregateConflict) {
+        const scoped = platformTargets.flatMap((target) => {
+          const projected = projectPlatformPlacement(platform, [target], options.targetRevisions);
+          return projected.state === 'installed' ? [{
+            scope: projected.scope,
+            health: projected.health,
+            revision: projected.revision,
+          }] : [];
+        });
+        return [{ platform, state: 'scopeConflict' as const, placements: scoped }];
+      }
       return platformTargets.length > 0
         ? [projectPlatformPlacement(platform, platformTargets, options.targetRevisions)]
         : [];
@@ -1978,15 +2142,31 @@ export function buildTuiViewModel(options: {
               issueCount: summary.dependencyIssueCount ?? 0,
             } }
           : {}),
-      technicalComponents: targets.flatMap((target) => target.components.map((component) => ({
-        platform: target.platform,
-        scope: target.scope,
-        key: component.key,
-        state: component.state,
-        ...(typeof component.metadata?.errorCode === 'string'
-          ? { errorCode: component.metadata.errorCode }
-          : {}),
-      }))),
+      technicalComponents: [
+        ...targets.flatMap((target) => [
+          ...target.components,
+          ...(target.sharedComponents ?? []).filter((component) => component.kind === 'systemConsumer'),
+        ].map((component) => ({
+          platform: target.platform,
+          scope: target.scope,
+          key: component.key,
+          state: component.state,
+          ...(typeof component.metadata?.errorCode === 'string'
+            ? { errorCode: component.metadata.errorCode }
+            : {}),
+        }))),
+        ...new Map(targets.flatMap((target) => (target.sharedComponents ?? [])
+          .filter((component) => component.kind === 'sharedNative')
+          .map((component) => [`${target.platform}\0${component.key}`, {
+            platform: target.platform,
+            shared: true as const,
+            key: component.key,
+            state: component.state,
+            ...(typeof component.metadata?.errorCode === 'string'
+              ? { errorCode: component.metadata.errorCode }
+              : {}),
+          }] as const))).values(),
+      ],
       update,
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
@@ -2007,10 +2187,10 @@ export function buildTuiViewModel(options: {
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
   const allTargetIssues = targetIssues(options.status);
-  const targetImpactCounts = new Map<string, number>();
+  const mergedTargetIssues = new Map<string, UserIssueDraft[]>();
   for (const issue of allTargetIssues) {
     if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
-    targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
+    mergedTargetIssues.set(issue.sourceId, [...(mergedTargetIssues.get(issue.sourceId) ?? []), issue]);
   }
   const sourceDetails = new Map((options.sourceDetails ?? []).map((detail) => [detail.id, detail]));
   const issueDrafts = [
@@ -2024,7 +2204,7 @@ export function buildTuiViewModel(options: {
       options.status,
     ),
     ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
-      sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
+      sourceIssue(health, mergedTargetIssues.get(health.sourceId) ?? []) ?? []),
   ];
   const stableIssueDrafts = collapseRootIssues(issueDrafts).sort((left, right) =>
     issueGroupOrder[issueGroup(left)] - issueGroupOrder[issueGroup(right)]

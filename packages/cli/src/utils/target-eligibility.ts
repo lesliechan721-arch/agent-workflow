@@ -1,4 +1,4 @@
-import type { StatusV7Target } from '../commands/status-v6.js';
+import type { StatusScopedTarget } from '../commands/status-v6.js';
 import type {
   CommandWizardCommand,
   CommandWizardPluginCandidate,
@@ -6,7 +6,7 @@ import type {
 } from '../commands/wizard.js';
 
 export function targetCanBeUninstalled(
-  targetOrState: StatusV7Target | StatusV7Target['state'],
+  targetOrState: StatusScopedTarget | StatusScopedTarget['state'],
 ): boolean {
   const state = typeof targetOrState === 'string' ? targetOrState : targetOrState.state;
   if (state === 'ready' || state === 'needsSync' || state === 'orphaned') return true;

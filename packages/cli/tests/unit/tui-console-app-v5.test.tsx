@@ -5,7 +5,13 @@ import { cleanup, render } from 'ink-testing-library';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StatusV7Payload, StatusV7PluginSummary } from '../../src/commands/status-v6.js';
+import type {
+  StatusV8CodexTarget,
+  StatusV8Payload,
+  StatusV8Placement,
+  StatusV8PluginSummary,
+  StatusV8Target,
+} from '../../src/commands/status-v6.js';
 import {
   createDependencyPlacementPlan,
   type DependencyOperationPlan,
@@ -157,52 +163,160 @@ function target(options: {
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
   errorCode?: string;
-}): StatusV7Payload['targets'][number] {
+  reasons?: StatusV8Placement['reasons'];
+  recoveryActions?: StatusV8Placement['recoveryActions'];
+}): StatusV8Target {
   const sourceId = options.sourceId ?? 'official';
   const state = options.state === 'present'
     ? 'ready' as const
     : options.state === 'partial'
       ? 'needsSync' as const
       : options.state === 'error' ? 'blocked' as const : 'absent' as const;
-  return {
+  const placement: StatusV8Placement = {
+    scope: options.scope,
+    state,
+    components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
+    reasons: options.reasons ?? (options.state === 'partial'
+      ? [{ code: 'missingContent', message: '安全说明', severity: 'warning' }]
+      : options.state === 'error'
+        ? [{ code: options.errorCode ?? 'targetError', message: '安全说明', severity: 'blocking' }]
+        : []),
+    recoveryActions: options.recoveryActions ?? (options.errorCode === 'sourceMissing'
+      || options.errorCode === 'catalogSourceUnavailable'
+      || options.errorCode === 'bundleUnavailable'
+      ? [
+          { command: 'sync', scope: options.scope, description: '来源恢复后同步 desired intent。' },
+          { command: 'cleanup', scope: options.scope, description: '来源无法恢复时清理可证明属于 AW 的输出。' },
+        ]
+      : []),
+  };
+  const identity = {
     pluginName: options.pluginName,
     pluginId: `${sourceId}/${options.pluginName}`,
     sourceId,
     sourceIdentity: `identity:${sourceId}`,
     version: '0.4.2',
-    platform: options.platform,
-    scope: options.scope,
     cwd: '/workspace',
-    state,
-    components: [{ kind: 'ownership', key: 'fixture', state: options.state }],
-    reasons: options.state === 'partial'
-      ? [{ code: 'missingContent', message: '安全说明', severity: 'warning' }]
-      : options.state === 'error'
-        ? [{ code: options.errorCode ?? 'targetError', message: '安全说明', severity: 'blocking' }]
-        : [],
-    recoveryActions: options.errorCode === 'sourceMissing'
-      || options.errorCode === 'catalogSourceUnavailable'
-      || options.errorCode === 'bundleUnavailable'
-      ? [
-          { command: 'sync', description: '来源恢复后同步 desired intent。' },
-          { command: 'cleanup', description: '来源无法恢复时清理可证明属于 AW 的输出。' },
-        ]
-      : [],
   };
+  if (options.platform === 'claude') return { ...identity, platform: 'claude', ...placement };
+  return {
+    ...identity,
+    platform: 'codex',
+    state,
+    components: [],
+    reasons: [...placement.reasons],
+    recoveryActions: [...placement.recoveryActions],
+    placements: [placement],
+  };
+}
+
+function aggregateCodexTargets(targets: StatusV8Target[]): StatusV8Target[] {
+  const results: StatusV8Target[] = [];
+  const codex = new Map<string, StatusV8CodexTarget>();
+  for (const entry of targets) {
+    if (entry.platform === 'claude') {
+      results.push(entry);
+      continue;
+    }
+    const current = codex.get(entry.pluginId);
+    if (!current) {
+      const clone = structuredClone(entry);
+      codex.set(entry.pluginId, clone);
+      results.push(clone);
+      continue;
+    }
+    current.placements.push(...entry.placements);
+    current.reasons = [...new Map(current.placements.flatMap((placement) => placement.reasons)
+      .map((reason) => [`${reason.code}\0${reason.message}`, reason])).values()];
+    current.recoveryActions = [...new Map(current.placements.flatMap((placement) => placement.recoveryActions)
+      .map((action) => [`${action.command}\0${action.scope ?? ''}\0${action.description}`, action])).values()];
+    current.state = (['blocked', 'needsSync', 'orphaned', 'ready', 'absent'] as const)
+      .find((state) => current.placements.some((placement) => placement.state === state))!;
+  }
+  return results;
+}
+
+function placement(target: StatusV8Target, scope: 'user' | 'project'): StatusV8Placement {
+  if (target.platform === 'claude') {
+    if (target.scope !== scope) throw new Error(`Missing ${scope} fixture placement.`);
+    return target;
+  }
+  const value = target.placements.find((entry) => entry.scope === scope);
+  if (!value) throw new Error(`Missing ${scope} fixture placement.`);
+  return value;
+}
+
+function updatePlacement(
+  target: StatusV8Target,
+  scope: 'user' | 'project',
+  update: Partial<Pick<StatusV8Placement, 'state' | 'components' | 'reasons' | 'recoveryActions'>>,
+): void {
+  Object.assign(placement(target, scope), update);
+  if (target.platform === 'claude') return;
+  target.state = (['blocked', 'needsSync', 'orphaned', 'ready', 'absent'] as const)
+    .find((state) => target.placements.some((entry) => entry.state === state))!;
+  target.reasons = [...new Map(target.placements.flatMap((entry) => entry.reasons)
+    .map((reason) => [`${reason.code}\0${reason.message}`, reason])).values()];
+  target.recoveryActions = [...new Map(target.placements.flatMap((entry) => entry.recoveryActions)
+    .map((action) => [`${action.command}\0${action.scope ?? ''}\0${action.description}`, action])).values()];
+}
+
+function setAllPlacementsAbsent(target: StatusV8Target): StatusV8Target {
+  const clone = structuredClone(target);
+  if (clone.platform === 'claude') {
+    clone.state = 'absent';
+    clone.components = clone.components.map((component) => component.kind === 'ownership'
+      ? { ...component, state: 'absent' } : component);
+    clone.reasons = [];
+    clone.recoveryActions = [];
+    return clone;
+  }
+  for (const entry of clone.placements) {
+    entry.state = 'absent';
+    entry.components = entry.components.map((component) => component.kind === 'ownership'
+      ? { ...component, state: 'absent' } : component);
+    entry.reasons = [];
+    entry.recoveryActions = [];
+  }
+  clone.state = 'absent';
+  clone.reasons = [];
+  clone.recoveryActions = [];
+  return clone;
+}
+
+function keepOnlyReadyCodexUserTargets(
+  loaded: TuiStatusLoadResult,
+  pluginIds: readonly string[],
+): void {
+  loaded.payload.targets = loaded.payload.targets.map((target) => {
+    const clone = setAllPlacementsAbsent(target);
+    if (!pluginIds.includes(clone.pluginId) || clone.platform !== 'codex') return clone;
+    updatePlacement(clone, 'user', {
+      state: 'ready',
+      components: [{ kind: 'ownership', key: 'fixture', state: 'present' }],
+      reasons: [],
+      recoveryActions: [],
+    });
+    return clone;
+  });
 }
 
 function mixedScopeConflictTarget(
   pluginName: string,
   sourceId = 'official',
-): StatusV7Payload['targets'][number] {
-  const value = target({ pluginName, sourceId, platform: 'codex', scope: 'user', state: 'present' });
+): StatusV8CodexTarget {
+  const value = target({ pluginName, sourceId, platform: 'codex', scope: 'user', state: 'present' }) as StatusV8CodexTarget;
+  value.placements.push(structuredClone(value.placements[0]!), { ...structuredClone(value.placements[0]!), scope: 'project' });
+  value.placements.shift();
   value.state = 'blocked';
   value.components.push(
+    { kind: 'sharedNative', key: `${pluginName}@aw-${sourceId}`, state: 'usable', metadata: { shared: true } },
+  );
+  for (const entry of value.placements) entry.components.push(
     {
       kind: 'intent', key: 'desired', state: 'desired',
       metadata: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
     },
-    { kind: 'sharedNative', key: `${pluginName}@aw-${sourceId}`, state: 'usable', metadata: { shared: true } },
     { kind: 'extension', key: 'aw', state: 'conflict', metadata: { kinds: ['instruction'] } },
   );
   value.reasons = [{
@@ -225,121 +339,8 @@ function mixedScopeConflictTarget(
   return value;
 }
 
-type LegacyStatusTargetFixture = StatusV7Payload['targets'][number] & {
-  desired?: {
-    enabled: boolean;
-    scopes: Array<'user' | 'project'>;
-    relation: 'root' | 'dependency' | 'managed' | 'none';
-  };
-  actual?: { state: string };
-  errors?: Array<StatusV7Payload['targets'][number]['reasons'][number] & { severity?: 'warning' | 'blocking' }>;
-  recovery?: StatusV7Payload['targets'][number]['recoveryActions'];
-  sharedNative?: {
-    pluginId: string;
-    state: string;
-    shared?: boolean;
-    reason?: string;
-    version?: string;
-    desiredVersion?: string;
-    diagnostic?: string;
-    staleCacheObserved?: boolean;
-  };
-  activation?: {
-    user?: boolean;
-    project?: boolean;
-    effective?: boolean;
-    evidence: 'observed' | 'assumed' | 'unobserved';
-  };
-  extensions?: { state: string; kinds: string[] };
-};
-
-function bridgeStatusV7Fixtures(result: TuiStatusLoadResult): TuiStatusLoadResult {
-  for (const rawTarget of result.payload.targets) {
-    const legacy = rawTarget as LegacyStatusTargetFixture;
-    const legacyState = legacy.state as string;
-    const actualState = legacy.actual?.state;
-    const state = actualState === 'ready' ? 'ready'
-      : actualState === 'needsSync' ? 'needsSync'
-        : actualState === 'conflict' ? 'blocked'
-          : legacyState === 'present' ? 'ready'
-            : legacyState === 'partial' ? 'needsSync'
-              : legacyState === 'error' ? 'blocked' : legacy.state;
-    legacy.state = state;
-
-    if (legacy.errors !== undefined) {
-      legacy.reasons = legacy.errors.map((reason) => ({
-        ...reason,
-        severity: reason.severity ?? (state === 'needsSync' ? 'warning' : 'blocking'),
-      }));
-    }
-    if (legacy.recovery !== undefined) legacy.recoveryActions = [...legacy.recovery];
-
-    const ownershipState = legacyState === 'present'
-      || legacyState === 'partial'
-      || legacyState === 'error'
-      || legacyState === 'absent'
-      ? legacyState
-      : undefined;
-    legacy.components = legacy.components.map((component) => ({
-      ...component,
-      kind: component.kind ?? 'ownership',
-      ...(ownershipState && (component.kind === undefined || component.kind === 'ownership')
-        ? { state: ownershipState }
-        : {}),
-      ...(!component.kind && 'error' in component && component.error
-        ? { metadata: { errorCode: component.error.code } }
-        : {}),
-    }));
-    if (legacy.desired) {
-      legacy.components.push({
-        kind: 'intent',
-        key: 'desired',
-        state: legacy.desired.enabled ? 'enabled' : 'disabled',
-        metadata: {
-          enabled: legacy.desired.enabled,
-          scopes: legacy.desired.scopes,
-          relation: legacy.desired.relation,
-        },
-      });
-    }
-    if (legacy.sharedNative) {
-      const { pluginId, state: sharedState, shared: _shared, ...metadata } = legacy.sharedNative;
-      legacy.components.push({
-        kind: 'sharedNative',
-        key: pluginId,
-        state: sharedState === 'present' ? 'usable' : sharedState,
-        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-      });
-    }
-    if (legacy.activation) {
-      for (const scope of ['user', 'project'] as const) {
-        const enabled = legacy.activation[scope];
-        if (enabled === undefined) continue;
-        legacy.components.push({
-          kind: 'activation',
-          key: scope,
-          state: enabled ? 'enabled' : 'disabled',
-          metadata: {
-            effective: legacy.activation.effective ?? false,
-            evidence: legacy.activation.evidence,
-          },
-        });
-      }
-    }
-    if (legacy.extensions) {
-      legacy.components.push({
-        kind: 'extension',
-        key: 'aw',
-        state: legacy.extensions.state,
-        metadata: { kinds: legacy.extensions.kinds },
-      });
-    }
-  }
-  return result;
-}
-
 function loadResult(): TuiStatusLoadResult {
-  const summaries: StatusV7PluginSummary[] = [
+  const summaries: StatusV8PluginSummary[] = [
     {
       pluginName: 'agent-lab',
       pluginId: 'official/agent-lab',
@@ -382,8 +383,8 @@ function loadResult(): TuiStatusLoadResult {
           : 'absent',
       }))),
   );
-  const payload: StatusV7Payload = {
-      schemaVersion: 7,
+  const payload: StatusV8Payload = {
+      schemaVersion: 8,
       catalog: {
         primarySourceId: 'official',
         configDigest: 'sha256:config',
@@ -395,7 +396,7 @@ function loadResult(): TuiStatusLoadResult {
         ],
       },
       filters: { plugins: [], platform: 'both', cwd: '/workspace' },
-      targets: allTargets,
+      targets: aggregateCodexTargets(allTargets),
       errors: [],
     };
   return {
@@ -490,15 +491,18 @@ function forceCleanupLoadResult(): TuiStatusLoadResult {
   const loaded = loadResult();
   const offlineTarget = loaded.payload.targets.find((entry) =>
     entry.pluginId === 'team-tools/review-gate'
-    && entry.platform === 'codex' && entry.scope === 'user')!;
+    && entry.platform === 'codex')!;
+  const offlinePlacement = placement(offlineTarget, 'user');
   offlineTarget.state = 'blocked';
-  offlineTarget.reasons = [{
+  offlinePlacement.state = 'blocked';
+  offlineTarget.reasons = offlinePlacement.reasons = [{
     code: 'bundleUnavailable',
     message: 'Catalog no longer contains this plugin.',
     severity: 'blocking',
   }];
-  offlineTarget.recoveryActions = [{
+  offlineTarget.recoveryActions = offlinePlacement.recoveryActions = [{
     command: 'cleanup',
+    scope: 'user',
     description: 'Clean only AW-owned content for this exact target.',
   }];
   return loaded;
@@ -634,16 +638,22 @@ function dependencyLoadResult(options: {
     { pluginName: 'skill-toolkit', pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit', description: '提供 Skill 工具能力', version: '0.3.0', supportedTargets: { codex: ['user', 'project'], claude: [] }, configFieldCount: 0 },
     { pluginName: 'content-toolkit', pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', description: '提供内容工具能力', version: '0.2.0', supportedTargets: { codex: ['user', 'project'], claude: ['user', 'project'] }, configFieldCount: 0 },
   ];
-  initial.payload.targets = [
+  initial.payload.targets = aggregateCodexTargets([
     ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) => ({
-      ...target({ pluginName: 'agent-lab', platform, scope, state: rootState }),
-      errors: rootState === 'error' ? [{ code: options.rootErrorCode ?? 'targetError', message: options.rootErrorMessage ?? '安全说明' }] : [],
+      ...target({
+        pluginName: 'agent-lab', platform, scope, state: rootState,
+        reasons: rootState === 'error' ? [{
+        code: options.rootErrorCode ?? 'targetError',
+        message: options.rootErrorMessage ?? '安全说明',
+        severity: 'blocking' as const,
+      }] : [],
+      }),
     }))),
     ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) =>
       target({ pluginName: 'skill-toolkit', platform, scope, state: 'absent' }))),
     ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) =>
       target({ pluginName: 'content-toolkit', platform, scope, state: scope === 'user' ? 'present' : 'absent' }))),
-  ];
+  ]);
   initial.dependencyOverviews = dependencyOverview({
     rootState: rootState === 'present' ? 'ready' : 'notInstalled',
     blockers: options.blockers,
@@ -667,8 +677,6 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
     reviewTtlMs: 10_000,
     ...overrides,
   };
-  const loadStatus = dependencies.loadStatus;
-  dependencies.loadStatus = async (...args) => bridgeStatusV7Fixtures(await loadStatus(...args));
   return new TuiController(dependencies);
 }
 
@@ -1102,8 +1110,7 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     const conflictTargetIndex = loaded.payload.targets.findIndex((entry) =>
       entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex'
-      && entry.scope === 'user');
+      && entry.platform === 'codex');
     loaded.payload.targets.splice(
       conflictTargetIndex,
       1,
@@ -1154,7 +1161,7 @@ describe('ConsoleAppV4', () => {
 
     const empty = loadResult();
     empty.payload.catalog.sources = [empty.payload.catalog.sources[0]!];
-    empty.payload.targets = empty.payload.targets.map((entry) => ({ ...entry, state: 'absent' as const, errors: [] }));
+    empty.payload.targets = empty.payload.targets.map(setAllPlacementsAbsent);
     empty.payload.errors = [];
     empty.pluginSummaries = empty.pluginSummaries.map(({ configIssues: _issues, ...summary }) => summary);
     const emptyController = controller({ loadStatus: vi.fn().mockResolvedValue(empty) });
@@ -1187,6 +1194,10 @@ describe('ConsoleAppV4', () => {
       }),
       reasons: [{ code, message: 'stable detail', severity: 'warning' }],
     }];
+    const reasonTarget = loaded.payload.targets[0]!;
+    updatePlacement(reasonTarget, 'project', {
+      reasons: [{ code, message: 'stable detail', severity: 'warning' }],
+    });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     const issue = value.listUserIssues()[0]!;
@@ -1254,7 +1265,7 @@ describe('ConsoleAppV4', () => {
     initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
     initial.pluginSummaries = [initial.pluginSummaries[1]!];
     const resolved = structuredClone(initial);
-    resolved.payload.targets[0] = { ...resolved.payload.targets[0]!, state: 'present', errors: [] };
+    updatePlacement(resolved.payload.targets[0]!, 'user', { state: 'ready', reasons: [] });
     const loadStatus = vi.fn()
       .mockResolvedValueOnce(initial)
       .mockResolvedValue(resolved);
@@ -1570,7 +1581,7 @@ describe('ConsoleAppV4', () => {
     await mountRoute({ name: 'installTargets', pluginId: 'official/agent-lab' }, 'P06');
     await mountRoute({ name: 'pluginList', mode: 'installed' }, 'P11');
     const emptyData = loadResult();
-    emptyData.payload.targets = emptyData.payload.targets.map((entry) => ({ ...entry, state: 'absent', errors: [] }));
+    emptyData.payload.targets = emptyData.payload.targets.map(setAllPlacementsAbsent);
     await mountRoute({ name: 'pluginList', mode: 'installed' }, 'P12', controller({
       loadStatus: vi.fn().mockResolvedValue(emptyData),
     }));
@@ -1678,15 +1689,14 @@ describe('ConsoleAppV4', () => {
     const consumer = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'team-tools/review-gate' && entry.platform === 'codex');
     expect(consumer).toBeDefined();
-    consumer!.state = 'partial';
-    consumer!.errors = [{
+    updatePlacement(consumer!, 'user', { state: 'needsSync', reasons: [{
       code: 'dependencyNotReady',
       message: 'safe dependency symptom',
       dependencyPluginId: 'team-tools/toolkit',
       rootIssueId: 'artifactCollision:team-tools/toolkit:codex:user:agent:toolkit',
       rootIssueCode: 'artifactCollision',
       severity: 'warning',
-    }];
+    }] });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginList', mode: 'installed' });
@@ -1701,9 +1711,15 @@ describe('ConsoleAppV4', () => {
 
   it('keeps the plugin detail default small and exposes full maintenance through More', async () => {
     const loaded = loadResult();
-    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
-      ? { ...entry, state: entry.state === 'absent' ? 'absent' as const : 'ready' as const, errors: [] }
-      : entry);
+    for (const entry of loaded.payload.targets.filter((target) => target.pluginId === 'team-tools/review-gate')) {
+      if (entry.platform === 'claude') {
+        if (entry.state !== 'absent') updatePlacement(entry, entry.scope, { state: 'ready', reasons: [] });
+      } else {
+        for (const targetPlacement of entry.placements) {
+          if (targetPlacement.state !== 'absent') updatePlacement(entry, targetPlacement.scope, { state: 'ready', reasons: [] });
+        }
+      }
+    }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -1807,15 +1823,7 @@ describe('ConsoleAppV4', () => {
   it('opens the recommended update task with exact targets from two roots', async () => {
     const loaded = loadResult();
     const roots = ['official/review-gate', 'team-tools/review-gate'];
-    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
-      && entry.platform === 'codex' && entry.scope === 'user'
-      ? {
-          ...entry,
-          state: 'ready' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
-          errors: [],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
+    keepOnlyReadyCodexUserTargets(loaded, roots);
     loaded.targetRevisions = roots.map((pluginId) => ({
       pluginId, platform: 'codex' as const, scope: 'user' as const,
       revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
@@ -1875,14 +1883,7 @@ describe('ConsoleAppV4', () => {
   it('completes a real select-many update and removes only its parent batch draft', async () => {
     const loaded = loadResult();
     const roots = ['official/review-gate', 'team-tools/review-gate'];
-    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
-      && entry.platform === 'codex' && entry.scope === 'user'
-      ? {
-          ...entry, state: 'ready' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
-          errors: [],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
+    keepOnlyReadyCodexUserTargets(loaded, roots);
     loaded.targetRevisions = roots.map((pluginId) => ({
       pluginId, platform: 'codex' as const, scope: 'user' as const,
       revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
@@ -1920,14 +1921,7 @@ describe('ConsoleAppV4', () => {
   it('keeps a select-many task draft for retry and clears it only when partial work is finished', async () => {
     const loaded = loadResult();
     const roots = ['official/review-gate', 'team-tools/review-gate'];
-    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
-      && entry.platform === 'codex' && entry.scope === 'user'
-      ? {
-          ...entry, state: 'ready' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
-          errors: [],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
+    keepOnlyReadyCodexUserTargets(loaded, roots);
     loaded.targetRevisions = roots.map((pluginId) => ({
       pluginId, platform: 'codex' as const, scope: 'user' as const,
       revision: { state: 'upgradeAvailable' as const, installedVersion: '0.2.0', availableVersion: '0.4.2' },
@@ -1964,14 +1958,7 @@ describe('ConsoleAppV4', () => {
   it('activates a selected candidate source only for its owned frozen batch task', async () => {
     const loaded = loadResult();
     const roots = ['official/review-gate', 'team-tools/review-gate'];
-    loaded.payload.targets = loaded.payload.targets.map((entry) => roots.includes(entry.pluginId)
-      && entry.platform === 'codex' && entry.scope === 'user'
-      ? {
-          ...entry, state: 'ready' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'present' }],
-          errors: [],
-        }
-      : { ...entry, state: 'absent' as const, errors: [] });
+    keepOnlyReadyCodexUserTargets(loaded, roots);
     loaded.targetRevisions = roots.map((pluginId) => ({
       pluginId, platform: 'codex' as const, scope: 'user' as const,
       revision: {
@@ -2276,14 +2263,8 @@ describe('ConsoleAppV4', () => {
 
   it('[batch-selection/update-hidden-selected] keeps canonical selections across source and query changes and exposes the complete selected set', async () => {
     const loaded = loadResult();
-    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
-      ? {
-          ...entry,
-          state: 'absent' as const,
-          components: [{ kind: 'ownership' as const, key: 'fixture', state: 'absent' }],
-          reasons: [],
-        }
-      : entry);
+    loaded.payload.targets = loaded.payload.targets.map((entry) =>
+      entry.pluginId === 'team-tools/review-gate' ? setAllPlacementsAbsent(entry) : entry);
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginList', mode: 'browse', sourceId: 'official' }, {
@@ -2329,9 +2310,11 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     for (const entry of loaded.payload.targets) {
       if ((entry.pluginId === 'official/agent-lab' || entry.pluginId === 'official/review-gate')
-        && entry.platform === 'codex' && entry.scope === 'user') {
-        entry.state = 'ready';
-        entry.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+        && entry.platform === 'codex') {
+        updatePlacement(entry, 'user', {
+          state: 'ready',
+          components: [{ kind: 'ownership', key: 'fixture', state: 'present' }],
+        });
       }
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
@@ -2381,7 +2364,7 @@ describe('ConsoleAppV4', () => {
 
   it('keeps Continue and every visible plugin purpose and version visible for 50 candidates at 60x18', async () => {
     const loaded = loadResult();
-    loaded.pluginSummaries = Array.from({ length: 50 }, (_, index): StatusV7PluginSummary => ({
+    loaded.pluginSummaries = Array.from({ length: 50 }, (_, index): StatusV8PluginSummary => ({
       pluginName: `plugin-${String(index).padStart(2, '0')}`,
       pluginId: `official/plugin-${String(index).padStart(2, '0')}`,
       displayName: `Plugin ${String(index).padStart(2, '0')}`,
@@ -2467,6 +2450,12 @@ describe('ConsoleAppV4', () => {
       target.pluginId === 'team-tools/review-gate')) {
       target.state = 'ready';
       target.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+      if (target.platform === 'codex') {
+        for (const placement of target.placements) {
+          placement.state = 'ready';
+          placement.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+        }
+      }
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -2577,7 +2566,7 @@ describe('ConsoleAppV4', () => {
 
   it('guards batch selection for h navigation and keeps 100 narrow-screen candidates reachable', async () => {
     const loaded = loadResult();
-    loaded.pluginSummaries = Array.from({ length: 100 }, (_, index): StatusV7PluginSummary => ({
+    loaded.pluginSummaries = Array.from({ length: 100 }, (_, index): StatusV8PluginSummary => ({
       pluginName: `plugin-${String(index).padStart(3, '0')}`,
       pluginId: `official/plugin-${String(index).padStart(3, '0')}`,
       displayName: `Plugin ${String(index).padStart(3, '0')}`,
@@ -2657,18 +2646,16 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     const secondRoot = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'official/review-gate'
-      && entry.platform === 'codex'
-      && entry.scope === 'project');
+      && entry.platform === 'codex');
     expect(secondRoot).toBeDefined();
-    secondRoot!.state = 'ready';
-    secondRoot!.components = [
+    updatePlacement(secondRoot!, 'project', { state: 'ready', components: [
       { kind: 'ownership', key: 'fixture', state: 'present' },
       { kind: 'intent', key: 'desired', state: 'desired', metadata: {
         enabled: true, scopes: ['project', 'user'], relation: 'root',
       } },
       { kind: 'activation', key: 'user', state: 'enabled', metadata: { evidence: 'observed' } },
       { kind: 'activation', key: 'project', state: 'enabled', metadata: { evidence: 'observed' } },
-    ];
+    ] });
     loaded.payload.targets.push(target({
       pluginName: 'review-gate', platform: 'claude', scope: 'project', state: 'present',
     }));
@@ -3467,12 +3454,15 @@ describe('ConsoleAppV4', () => {
       supportedTargets: { codex: ['user'], claude: [] },
     });
     unavailable.payload.targets = [
-      ...unavailable.payload.targets.map((entry) => entry.pluginId === 'team-tools/review-gate'
-        ? { ...entry, state: entry.platform === 'codex' && entry.scope === 'user' ? 'error' as const : 'absent' as const,
-            errors: entry.platform === 'codex' && entry.scope === 'user'
-              ? [{ code: 'nativeStateUnreadable', message: 'safe live owner failure' }]
-              : [] }
-        : entry),
+      ...unavailable.payload.targets.map((entry) => {
+        if (entry.pluginId !== 'team-tools/review-gate') return entry;
+        const clone = setAllPlacementsAbsent(entry);
+        if (clone.platform === 'codex') updatePlacement(clone, 'user', {
+          state: 'blocked',
+          reasons: [{ code: 'nativeStateUnreadable', message: 'safe live owner failure', severity: 'blocking' }],
+        });
+        return clone;
+      }),
       target({ pluginName: 'catalog-only', sourceId: 'team-tools', platform: 'codex', scope: 'user', state: 'absent' }),
     ];
     const screens = new Set<ConsoleV4ScreenId>();
@@ -3567,14 +3557,13 @@ describe('ConsoleAppV4', () => {
   it('routes platform errors to typed issues without offering reinstall or removal', async () => {
     const loaded = loadResult();
     const failed = loaded.payload.targets.find((entry) => entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex' && entry.scope === 'user');
+      && entry.platform === 'codex');
     if (failed) {
-      failed.state = 'error';
-      failed.errors = [{
+      updatePlacement(failed, 'user', { state: 'blocked', reasons: [{
         code: 'sourceChanged',
         message: '/private/source changed',
         severity: 'blocking',
-      }];
+      }] });
     }
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
@@ -3648,7 +3637,7 @@ describe('ConsoleAppV4', () => {
 
     await value.load();
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('› 重新安装…');
+    expect(instance.lastFrame()).toContain('› 重新安装所有项目位置…');
     expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
 
     await input(instance, '\r');
@@ -3668,10 +3657,11 @@ describe('ConsoleAppV4', () => {
   it('shows only safe verbose component fields on P21 and keeps non-verbose P21 unchanged', async () => {
     const verbose = loadResult();
     const targetWithComponent = verbose.payload.targets.find((entry) => entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex' && entry.scope === 'user');
-    if (targetWithComponent) targetWithComponent.components = [{
-      key: 'skill:review', state: 'error', error: { code: 'componentInspectionFailed', message: '/private/raw component label' },
-    }];
+      && entry.platform === 'codex');
+    if (targetWithComponent) updatePlacement(targetWithComponent, 'user', { components: [{
+      kind: 'ownership', key: 'skill:review', state: 'error',
+      metadata: { errorCode: 'componentInspectionFailed' },
+    }] });
     const verboseValue = controller({ loadStatus: vi.fn().mockResolvedValue(verbose) });
     await verboseValue.load();
     verboseValue.push({ name: 'pluginTechnical', pluginId: 'team-tools/review-gate' });
@@ -3698,15 +3688,16 @@ describe('ConsoleAppV4', () => {
   ) => {
     const loaded = loadResult();
     const selected = loaded.payload.targets.find((entry) => entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex' && entry.scope === 'user')!;
-    selected.components = [
+      && entry.platform === 'codex')!;
+    updatePlacement(selected, 'user', { components: [
       ...Array.from({ length: componentCount - 2 }, (_, index) => ({
+        kind: 'ownership' as const,
         key: `ordinary:${index}`,
         state: 'present' as const,
       })),
-      { key: 'error-code', state: 'error' as const, error: { code: 'componentInspectionFailed', message: '/private/component' } },
-      { key: 'partial-code', state: 'partial' as const },
-    ];
+      { kind: 'ownership', key: 'error-code', state: 'error', metadata: { errorCode: 'componentInspectionFailed' } },
+      { kind: 'ownership', key: 'partial-code', state: 'partial' },
+    ] });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
@@ -4286,18 +4277,16 @@ describe('ConsoleAppV4', () => {
 
   it('uses the shared diagnostic summary from the platform route and preserves its typed issue action', async () => {
     const loaded = loadResult();
-    loaded.payload.targets = loaded.payload.targets.map((entry) => entry.pluginId === 'official/agent-lab'
-      && entry.platform === 'codex' && entry.scope === 'user'
-      ? {
-          ...entry,
-          state: 'error' as const,
-          errors: [{
-            code: 'nativeTargetUnreadable',
-            message: 'native stderr Bearer platform-route-secret /Users/private/platform-route',
-            severity: 'blocking',
-          }],
-        }
-      : entry);
+    const failedTarget = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'codex')!;
+    updatePlacement(failedTarget, 'user', {
+      state: 'blocked',
+      reasons: [{
+        code: 'nativeTargetUnreadable',
+        message: 'native stderr Bearer platform-route-secret /Users/private/platform-route',
+        severity: 'blocking',
+      }],
+    });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
@@ -4335,9 +4324,11 @@ describe('ConsoleAppV4', () => {
     expect(productFrame).not.toContain('dependencyMissing');
     expect(productFrame).not.toContain('dependency-secret');
     await input(instance, 'd');
-    const technicalFrame = instance.lastFrame() ?? '';
+    const firstTechnicalFrame = instance.lastFrame() ?? '';
+    await input(instance, '\u001B[6~');
+    const technicalFrame = `${firstTechnicalFrame}\n${instance.lastFrame() ?? ''}`;
     expect(technicalFrame).toContain('dependencyMissing');
-    expect(technicalFrame).toContain('resolve-dependencies');
+    expect(issue.diagnostic.technical?.stage).toBe('resolve-dependencies');
     expect(technicalFrame).not.toContain('dependency-secret');
     expect(technicalFrame).not.toContain('/tmp/source');
   });
@@ -4479,7 +4470,10 @@ describe('ConsoleAppV4', () => {
         entry.pluginId === 'official/agent-lab'
         && entry.platform === 'claude'
         && entry.scope === 'user');
-      if (targetAfterReload) targetAfterReload.state = 'partial';
+      if (targetAfterReload) updatePlacement(targetAfterReload, 'user', {
+        state: 'needsSync',
+        reasons: [{ code: 'missingContent', message: '安全说明', severity: 'warning' }],
+      });
       const value = controller({
         loadStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after),
         executeIntent: vi.fn().mockResolvedValue({ targetResults: [
@@ -4515,7 +4509,10 @@ describe('ConsoleAppV4', () => {
       entry.pluginId === 'official/agent-lab'
       && entry.platform === 'claude'
       && entry.scope === 'user');
-    if (failed) failed.state = 'partial';
+    if (failed) updatePlacement(failed, 'user', {
+      state: 'needsSync',
+      reasons: [{ code: 'missingContent', message: '安全说明', severity: 'warning' }],
+    });
     const value = controller({
       loadStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after),
       executeIntent: vi.fn().mockResolvedValue({
@@ -4647,10 +4644,11 @@ describe('ConsoleAppV4', () => {
   it('adds only missing exact targets and requires an explicit executable subset choice', async () => {
     const loaded = loadResult();
     const codex = loaded.payload.targets.find((target) =>
-      target.pluginId === 'official/agent-lab'
-      && target.platform === 'codex' && target.scope === 'project')!;
-    codex.state = 'ready';
-    codex.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+      target.pluginId === 'official/agent-lab' && target.platform === 'codex')!;
+    const placement = codex.platform === 'codex'
+      ? codex.placements.find((entry) => entry.scope === 'project')! : undefined;
+    placement!.state = 'ready';
+    placement!.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
     const captureEvidence = vi.fn(async (intent: OperationIntent) => {
       if (intent.kind !== 'pluginWriteBatch' || intent.selection.kind !== 'targets') return evidence;
       const requestedPluginIds = [...new Set(intent.selection.targets.map((target) => target.pluginId))];
@@ -4809,11 +4807,14 @@ describe('ConsoleAppV4', () => {
   it('lets batch maintenance remove an exact existing location without adding another platform', async () => {
     const loaded = loadResult();
     const live = loaded.payload.targets.find((target) =>
-      target.pluginId === 'team-tools/review-gate'
-      && target.platform === 'codex' && target.scope === 'user')!;
+      target.pluginId === 'team-tools/review-gate' && target.platform === 'codex')!;
+    if (live.platform !== 'codex') throw new Error('expected Codex target');
     live.state = 'ready';
+    for (const placement of live.placements) {
+      placement.state = 'ready';
+      placement.components = [{ kind: 'ownership', key: 'fixture', state: 'present' }];
+    }
     live.components = [
-      { kind: 'ownership', key: 'fixture', state: 'present' },
       { kind: 'intent', key: 'desired', state: 'desired', metadata: {
         enabled: true, scopes: ['project', 'user'], relation: 'root',
       } },
@@ -4858,6 +4859,12 @@ describe('ConsoleAppV4', () => {
     for (const target of emptyInstalled.payload.targets) {
       target.state = 'absent';
       target.components = [{ kind: 'ownership', key: 'fixture', state: 'absent' }];
+      if (target.platform === 'codex') {
+        for (const placement of target.placements) {
+          placement.state = 'absent';
+          placement.components = [{ kind: 'ownership', key: 'fixture', state: 'absent' }];
+        }
+      }
     }
     const globalValue = controller({ loadStatus: vi.fn().mockResolvedValue(emptyInstalled) });
     await globalValue.load();
@@ -6286,7 +6293,10 @@ describe('ConsoleAppV4', () => {
       entry.pluginId === 'team-tools/review-gate'
       && entry.platform === 'claude'
       && entry.scope === 'user');
-    if (failedTarget) failedTarget.state = 'partial';
+    if (failedTarget) updatePlacement(failedTarget, 'user', {
+      state: 'needsSync',
+      reasons: [{ code: 'missingContent', message: '安全说明', severity: 'warning' }],
+    });
     const partial = controller({
       loadStatus: vi.fn().mockResolvedValueOnce(loadResult()).mockResolvedValue(partialReload),
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
@@ -8383,9 +8393,11 @@ describe('ConsoleAppV4', () => {
     const after = loadResult();
     const refreshed = after.payload.targets.find((entry) =>
       entry.pluginId === 'team-tools/review-gate'
-      && entry.platform === 'codex'
-      && entry.scope === 'user');
-    if (refreshed) refreshed.state = 'partial';
+      && entry.platform === 'codex');
+    if (refreshed) updatePlacement(refreshed, 'user', {
+      state: 'needsSync',
+      reasons: [{ code: 'missingContent', message: '安全说明', severity: 'warning' }],
+    });
     const value = controller({
       loadStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after),
       executeIntent: vi.fn().mockResolvedValue({
@@ -8811,7 +8823,8 @@ describe('ConsoleAppV4', () => {
     const loaded = dependencyLoadResult();
     for (const entry of loaded.payload.targets.filter((target) =>
       target.pluginId === 'official/skill-toolkit' && target.platform === 'codex')) {
-      entry.state = entry.scope === 'project' ? 'present' : 'absent';
+      updatePlacement(entry, 'user', { state: 'absent' });
+      updatePlacement(entry, 'project', { state: 'ready' });
     }
     const rootOverview = loaded.dependencyOverviews?.find((entry) =>
       entry.pluginId === 'official/agent-lab');
@@ -9316,41 +9329,36 @@ describe('ConsoleAppV4', () => {
     expect(executeIntent).toHaveBeenCalledOnce();
   });
 
-  it('enters the existing Review chain from a mounted needsSync platform action', async () => {
+  it.each([
+    ['project', '当前项目'],
+    ['user', '所有项目'],
+  ] as const)('enters Review for the %s scope from dual needsSync actions', async (scope, scopeLabel) => {
     const loaded = loadResult();
     loaded.payload.targets = loaded.payload.targets.filter((entry) =>
       entry.pluginId !== 'official/agent-lab');
-    loaded.payload.targets.push({
-      pluginName: 'agent-lab',
-      pluginId: 'official/agent-lab',
-      sourceId: 'official',
-      sourceIdentity: 'identity:official',
-      version: '0.4.2',
-      platform: 'codex',
-      scope: 'project',
-      cwd: '/workspace',
-      desired: { enabled: true, scopes: ['project'], relation: 'root' },
-      actual: { state: 'needsSync' },
-      state: 'present',
-      components: [],
-      errors: [],
-      recovery: [{
-        command: 'sync',
-        scope: 'project',
-        description: '同步当前项目 desired intent',
-      }],
-      sharedNative: {
-        pluginId: 'agent-lab@aw-official',
-        state: 'present',
-        shared: true,
-      },
-      activation: {
-        user: false,
-        project: false,
-        effective: false,
-        evidence: 'observed',
-      },
-    });
+    const needsSync = aggregateCodexTargets((['project', 'user'] as const).map((targetScope) => target({
+      pluginName: 'agent-lab', platform: 'codex', scope: targetScope, state: 'partial',
+    })))[0] as StatusV8CodexTarget;
+    needsSync.components = [{ kind: 'sharedNative', key: 'agent-lab@aw-official', state: 'usable' }];
+    for (const targetScope of ['project', 'user'] as const) {
+      updatePlacement(needsSync, targetScope, {
+        components: [
+        { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+          enabled: true, scopes: ['project', 'user'], relation: 'root',
+        } },
+        { kind: 'ownership', key: 'fixture', state: 'partial' },
+        { kind: 'activation', key: targetScope, state: 'disabled', metadata: {
+          effective: false, evidence: 'observed',
+        } },
+        ],
+        recoveryActions: [{
+          command: 'sync',
+          scope: targetScope,
+          description: `同步${targetScope === 'user' ? '所有项目' : '当前项目'} desired intent`,
+        }],
+      });
+    }
+    loaded.payload.targets.push(needsSync);
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
     const value = controller({
       loadStatus: vi.fn().mockResolvedValue(loaded),
@@ -9365,9 +9373,11 @@ describe('ConsoleAppV4', () => {
     expect(initial).toContain('需要同步');
     expect(initial).toContain('位置');
     expect(initial).toContain('状态');
-    expect(initial).toContain('› 同步已保存的使用位置…');
+    expect(initial).toContain('同步当前项目的使用位置…');
+    expect(initial).toContain('同步所有项目的使用位置…');
     expect(initial.split('\n').length).toBeLessThanOrEqual(18);
 
+    await focusAction(instance, `同步${scopeLabel}的使用位置…`);
     await input(instance, '\r');
     await nextTurn(3);
 
@@ -9376,9 +9386,10 @@ describe('ConsoleAppV4', () => {
       action: 'sync',
       pluginId: 'official/agent-lab',
       platform: 'codex',
-      scope: 'project',
+      scope,
     }, expect.any(AbortSignal));
     expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(instance.lastFrame()).toContain(`Codex · ${scopeLabel}`);
   });
 
   it.each([
@@ -9393,31 +9404,20 @@ describe('ConsoleAppV4', () => {
     loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
     loaded.pluginSummaries[0]!.supportedTargets = { codex: ['user', 'project'], claude: [] };
     loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    loaded.payload.targets = [{
-      pluginName: 'agent-lab',
-      pluginId: 'official/agent-lab',
-      sourceId: 'official',
-      sourceIdentity: 'identity:official',
-      version: '0.4.2',
-      platform: 'codex',
-      scope: enabledScope,
-      cwd: '/workspace',
-      desired: { enabled: true, scopes: [enabledScope], relation: 'root' },
-      actual: { state: 'ready' },
-      state: 'present',
-      components: [],
-      errors: [],
-      recovery: [],
-      sharedNative: {
-        pluginId: 'agent-lab@aw-official', state: 'present', shared: true,
-      },
-      activation: {
-        user: enabledScope === 'user',
-        project: enabledScope === 'project',
-        effective: true,
-        evidence: 'observed',
-      },
-    }];
+    const enabledTarget = target({
+      pluginName: 'agent-lab', platform: 'codex', scope: enabledScope, state: 'present',
+    }) as StatusV8CodexTarget;
+    enabledTarget.components = [{ kind: 'sharedNative', key: 'agent-lab@aw-official', state: 'usable' }];
+    updatePlacement(enabledTarget, enabledScope, { components: [
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: [enabledScope], relation: 'root',
+      } },
+      { kind: 'ownership', key: 'fixture', state: 'present' },
+      { kind: 'activation', key: enabledScope, state: 'enabled', metadata: {
+        effective: true, evidence: 'observed',
+      } },
+    ] });
+    loaded.payload.targets = [enabledTarget];
     const codexReconcilePlans = [{
       sharedNativeActions: [{
         pluginId: 'official/agent-lab',
@@ -9498,7 +9498,7 @@ describe('ConsoleAppV4', () => {
     expect(executeIntent.mock.calls[0]?.[0]).toMatchObject({ scope: addedScope });
   });
 
-  it('shows two real mixed-conflict recovery paths in detail, issue, and platform, then executes only the selected uninstall', async () => {
+  it('shows two real mixed-conflict recovery paths in issue and platform, then executes only the selected uninstall', async () => {
     const recovery = [
       {
         command: 'uninstall' as const,
@@ -9514,32 +9514,31 @@ describe('ConsoleAppV4', () => {
     const loaded = loadResult();
     loaded.pluginSummaries = [loaded.pluginSummaries[0]!];
     loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
-    const conflictTarget: StatusV7Payload['targets'][number] = {
-      pluginName: 'agent-lab', pluginId: 'official/agent-lab', sourceId: 'official',
-      sourceIdentity: 'identity:official', version: '0.4.2', platform: 'codex',
-      scope: 'user', cwd: '/workspace',
-      desired: { enabled: true, scopes: ['project', 'user'], relation: 'root' },
-      actual: { state: 'conflict' }, state: 'present', components: [],
-      errors: [{
-        code: 'codexExtensionScopeConflict',
-        message: 'codexExtensionScopeConflict: mixed scope overlap',
-        severity: 'warning',
-      }],
-      recovery,
-      sharedNative: { pluginId: 'agent-lab@aw-official', state: 'present', shared: true },
-      activation: { user: true, project: true, effective: true, evidence: 'observed' },
-      extensions: { state: 'conflict', kinds: ['instruction'] },
-    };
+    const conflictTarget = mixedScopeConflictTarget('agent-lab');
+    conflictTarget.recoveryActions = recovery;
+    for (const conflictPlacement of conflictTarget.placements) conflictPlacement.components.push({
+      kind: 'activation', key: conflictPlacement.scope, state: 'enabled',
+      metadata: { effective: true, evidence: 'observed' },
+    });
     loaded.payload.targets = [conflictTarget];
     const resolved = structuredClone(loaded);
-    resolved.payload.targets = [{
-      ...conflictTarget,
-      desired: { enabled: true, scopes: ['project'], relation: 'root' },
-      actual: { state: 'ready' },
-      errors: [], recovery: [],
-      activation: { user: false, project: true, effective: true, evidence: 'observed' },
-      extensions: { state: 'ready', kinds: ['instruction'] },
-    }];
+    const resolvedTarget = resolved.payload.targets[0] as StatusV8CodexTarget;
+    resolvedTarget.reasons = [];
+    resolvedTarget.recoveryActions = [];
+    updatePlacement(resolvedTarget, 'user', { state: 'absent', reasons: [], recoveryActions: [], components: [
+      { kind: 'intent', key: 'desired', state: 'disabled', metadata: {
+        enabled: false, scopes: ['project'], relation: 'none',
+      } },
+      { kind: 'activation', key: 'user', state: 'disabled', metadata: { effective: false, evidence: 'observed' } },
+    ] });
+    updatePlacement(resolvedTarget, 'project', { state: 'ready', reasons: [], recoveryActions: [], components: [
+      { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+        enabled: true, scopes: ['project'], relation: 'root',
+      } },
+      { kind: 'ownership', key: 'fixture', state: 'present' },
+      { kind: 'activation', key: 'project', state: 'enabled', metadata: { effective: true, evidence: 'observed' } },
+      { kind: 'extension', key: 'aw', state: 'ready', metadata: { kinds: ['instruction'] } },
+    ] });
     const loadStatus = vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(resolved);
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
     const executeIntent = vi.fn().mockResolvedValue({
@@ -9553,23 +9552,18 @@ describe('ConsoleAppV4', () => {
     await value.load();
     const issue = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
     expect(issue).toBeDefined();
-    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    value.push({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('查看处理建议');
-    await focusAction(instance, '更多操作…');
+    expect(instance.lastFrame()).toContain('安装位置冲突');
+    expect(instance.lastFrame()).toContain('› 查看位置冲突问题');
+    expect(instance.lastFrame()).not.toContain('重新安装…');
+    expect(instance.lastFrame()).not.toContain('从所有项目移除…');
+    expect(instance.lastFrame()).not.toContain('从当前项目移除…');
+
     await input(instance, '\r');
-    expect(instance.lastFrame()?.match(/处理 Codex 位置冲突…/gu)).toHaveLength(2);
-    expect(instance.lastFrame()).toContain('--scope user');
-    expect(instance.lastFrame()).toContain('--scope project');
-
-    value.replace({ name: 'platform', pluginId: 'official/agent-lab', platform: 'codex' });
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('保留当前项目，移除所有项目 root…');
-    expect(instance.lastFrame()).toContain('保留所有项目，移除当前项目 root…');
-
-    value.replace({ name: 'issueDetail', issueId: issue.issueId });
-    await nextTurn(2);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'issueDetail', issueId: issue.issueId });
     expect(instance.lastFrame()).toContain('保留当前项目');
     expect(instance.lastFrame()).toContain('保留所有项目');
     await input(instance, '\r');
@@ -9671,12 +9665,10 @@ describe('ConsoleAppV4', () => {
   });
 
   it.each([
-    ['dependencyMissing', 'installDependency', 'install', 'absent', 'D14'],
-    ['dependencyNotReady', 'reinstallDependency', 'sync', 'partial', 'D15'],
-  ] as const)('uses the contract dependency placement for a project consumer %s action', async (
+    ['dependencyMissing', 'absent', 'D14'],
+    ['dependencyNotReady', 'partial', 'D15'],
+  ] as const)('runs the complete project root plan for a desired consumer %s action', async (
     category,
-    actionId,
-    writeAction,
     dependencyState,
     expectedScreen,
   ) => {
@@ -9686,22 +9678,30 @@ describe('ConsoleAppV4', () => {
       rootErrorMessage: `${category}: official/skill-toolkit has changed state.`,
     });
     const dependencyTarget = loaded.payload.targets.find((entry) =>
-      entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex' && entry.scope === 'user')!;
-    dependencyTarget.state = dependencyState;
-    dependencyTarget.errors = dependencyState === 'partial'
-      ? [{ code: 'missingContent', message: '安全说明' }] : [];
+      entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex')!;
+    updatePlacement(dependencyTarget, 'user', {
+      state: dependencyState === 'partial' ? 'needsSync' : 'absent',
+      reasons: dependencyState === 'partial'
+        ? [{ code: 'missingContent', message: '安全说明', severity: 'warning' }] : [],
+    });
     for (const target of loaded.payload.targets.filter((entry) =>
       entry.pluginId === 'official/agent-lab'
-      && entry.platform === 'codex'
-      && entry.scope === 'project')) {
-      target.errors = [{
+      && entry.platform === 'codex')) {
+      placement(target, 'project').components.push({
+        kind: 'intent', key: 'desired', state: 'desired',
+        metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+      });
+      updatePlacement(target, 'project', { state: 'needsSync', reasons: [{
         code: category,
         message: `${category}: official/skill-toolkit has changed state.`,
+        severity: 'blocking',
         dependencyPluginId: 'official/skill-toolkit',
         dependencyPlatform: 'codex',
         dependencyScope: 'user',
         dependencyProject: null,
-      }];
+      }], recoveryActions: [{
+        command: 'sync', scope: 'project', description: '同步完整的根插件依赖计划。',
+      }] });
     }
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
@@ -9717,16 +9717,16 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('依赖目标');
     expect(instance.lastFrame()).not.toContain('› Agent Skill Toolkit');
 
-    await input(instance, ...(actionId === 'reinstallDependency' ? ['\u001B[B'] : []), '\r');
+    await input(instance, '\r');
 
     expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'pluginWrite',
-      action: writeAction,
-      pluginId: 'official/skill-toolkit',
+      action: 'sync',
+      pluginId: 'official/agent-lab',
       platform: 'codex',
-      scope: 'user',
+      scope: 'project',
       originIssue: expect.objectContaining({
-        actionId,
+        actionId: 'sync',
         consumerPluginId: 'official/agent-lab',
         consumerPlatform: 'codex',
         consumerScope: 'project',
@@ -9736,6 +9736,230 @@ describe('ConsoleAppV4', () => {
         dependencyProject: null,
       }),
     }), expect.any(AbortSignal));
+  });
+
+  it('keeps inactive shared Codex content in browse without installed or attention claims', async () => {
+    // Risk: shared payload can remain usable after its final scope is disabled.
+    const loaded = loadResult();
+    const inactive = setAllPlacementsAbsent(loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'codex')!);
+    if (inactive.platform !== 'codex') throw new Error('Expected Codex fixture.');
+    inactive.components.push({
+      kind: 'sharedNative', key: 'agent-lab@aw-official', state: 'usable', metadata: { shared: true },
+    });
+    for (const entry of inactive.placements) entry.components = [
+      { kind: 'ownership', key: 'native', state: 'partial' },
+      { kind: 'activation', key: entry.scope, state: 'disabled', metadata: { evidence: 'observed' } },
+      { kind: 'extension', key: 'aw', state: 'missing', metadata: { kinds: [] } },
+    ];
+    loaded.payload.targets = [inactive];
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.pluginSummaries = [{
+      ...loaded.pluginSummaries.find((entry) => entry.pluginId === 'official/agent-lab')!,
+      supportedTargets: { codex: ['user', 'project'], claude: [] },
+    }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'installed' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).not.toContain('Agent Lab');
+    expect(value.listUserIssues()).toEqual([]);
+    value.replace({ name: 'pluginList', mode: 'browse' });
+    await nextTurn(2);
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).toContain('未添加');
+  });
+
+  it('opens a plugin config issue from detail and enters its correction flow', async () => {
+    // Risk: config issues have no target scope and previously fell back to technical details.
+    const loaded = loadResult();
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('› 查看处理建议');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({
+      name: 'issueDetail', issueId: 'config:team-tools/review-gate:required',
+    });
+    expect(instance.lastFrame()).toContain('完成设置');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'configLayer', pluginId: 'team-tools/review-gate',
+    });
+  });
+
+  it('uses the selected merged consumer as cleanup origin', async () => {
+    // Risk: cleanup for the second consumer can otherwise verify the first consumer after success.
+    const loaded = dependencyLoadResult();
+    const rootIssueId = 'incompleteInstallation:official/skill-toolkit:codex:user';
+    const consumers = (['consumer-a', 'consumer-b'] as const).map((pluginName, index) => {
+      const value = target({
+        pluginName, platform: 'codex', scope: index === 0 ? 'user' : 'project', state: 'present',
+      });
+      if (value.platform !== 'codex') throw new Error('Expected Codex fixture.');
+      const entry = value.placements[0]!;
+      entry.state = 'orphaned';
+      entry.reasons = [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/skill-toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+        rootIssueId, rootIssueCode: 'incompleteInstallation',
+      }];
+      entry.recoveryActions = [{
+        command: 'cleanup', scope: entry.scope, description: `Clean ${pluginName}.`,
+      }];
+      value.state = 'orphaned';
+      value.reasons = entry.reasons;
+      value.recoveryActions = entry.recoveryActions;
+      return value;
+    });
+    loaded.payload.targets = aggregateCodexTargets(consumers);
+    loaded.pluginSummaries = [
+      { pluginName: 'consumer-a', pluginId: 'official/consumer-a', description: 'A' },
+      { pluginName: 'consumer-b', pluginId: 'official/consumer-b', description: 'B' },
+      { pluginName: 'skill-toolkit', pluginId: 'official/skill-toolkit', description: 'Toolkit' },
+    ];
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.issueId === rootIssueId)!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 40 }} />);
+    await nextTurn(2);
+
+    expect(issue.actions.filter((entry) => entry.id === 'cleanup').map((entry) => entry.pluginId))
+      .toEqual(['official/consumer-a', 'official/consumer-b']);
+    const secondCleanupIndex = issue.actions.findIndex((entry) =>
+      entry.id === 'cleanup' && entry.pluginId === 'official/consumer-b');
+    expect(secondCleanupIndex).toBeGreaterThan(0);
+    for (let index = 0; index < secondCleanupIndex; index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    await input(instance, '\r');
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'cleanup', pluginId: 'official/consumer-b', platform: 'codex', scope: 'project',
+      originIssue: expect.objectContaining({
+        consumerPluginId: 'official/consumer-b', consumerSourceIdentity: 'identity:official',
+        consumerPlatform: 'codex', consumerScope: 'project',
+      }),
+    }), expect.any(AbortSignal));
+  });
+
+  it('completes cleanup for the selected target while its source issue remains', async () => {
+    // Risk: the surviving source root can make a completed target cleanup look failed.
+    const loaded = loadResult();
+    const offlineTargets = (['user', 'project'] as const).map((scope) => target({
+      pluginName: `offline-${scope}`,
+      sourceId: 'team-tools',
+      platform: 'codex',
+      scope,
+      state: 'error',
+      errorCode: 'catalogSourceUnavailable',
+      recoveryActions: [{
+        command: 'cleanup', scope, description: `Clean ${scope} target.`,
+      }],
+    }));
+    loaded.payload.targets = aggregateCodexTargets(offlineTargets);
+    loaded.pluginSummaries = offlineTargets.map((entry) => ({
+      pluginName: entry.pluginName,
+      pluginId: entry.pluginId,
+      description: entry.pluginName,
+    }));
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.map((entry) =>
+      entry.id === 'team-tools'
+        ? { ...entry, error: 'unavailable', errorCode: 'catalogSourceUnavailable', freshness: undefined }
+        : entry);
+    const after = structuredClone(loaded);
+    after.payload.targets = after.payload.targets.filter((entry) =>
+      entry.pluginId !== 'team-tools/offline-project');
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(loaded).mockResolvedValue(after),
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'succeeded',
+        targetResults: [{
+          target: {
+            pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
+          },
+          action: 'cleanup',
+          state: 'completed',
+        }],
+      }),
+    });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) =>
+      entry.issueId === 'source:team-tools:unavailable')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 40 }} />);
+    await nextTurn(2);
+
+    const projectCleanupIndex = issue.actions.findIndex((entry) =>
+      entry.id === 'cleanup' && entry.pluginId === 'team-tools/offline-project');
+    expect(projectCleanupIndex).toBeGreaterThan(0);
+    for (let index = 0; index < projectCleanupIndex; index += 1) {
+      await input(instance, '\u001B[B');
+    }
+    await input(instance, '\r');
+
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'review' });
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'cleanup', pluginId: 'team-tools/offline-project', platform: 'codex', scope: 'project',
+      originIssue: expect.objectContaining({
+        issueId: issue.issueId, actionId: 'cleanup',
+        consumerPluginId: 'team-tools/offline-project',
+        consumerSourceIdentity: 'identity:team-tools',
+        consumerPlatform: 'codex', consumerScope: 'project',
+      }),
+    }), expect.any(AbortSignal));
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({ state: 'succeeded' });
+    expect(value.snapshot.result).not.toHaveProperty('code', 'issueStillPresent');
+    expect(value.listUserIssues()).toContainEqual(expect.objectContaining({
+      issueId: issue.issueId,
+      affectedTargets: [expect.objectContaining({
+        pluginId: 'team-tools/offline-user', platform: 'codex', scope: 'user',
+      })],
+    }));
+  });
+
+  it('keeps current dependency evidence visible when the exact dependency scope has no issue', async () => {
+    // Risk: project evidence must not replace a missing user dependency issue target.
+    const loaded = dependencyLoadResult({ rootState: 'error', rootErrorCode: 'dependencyNotReady' });
+    const root = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'codex')!;
+    placement(root, 'project').components.push({
+      kind: 'intent', key: 'desired', state: 'desired',
+      metadata: { enabled: true, scopes: ['project'], relation: 'root' },
+    });
+    updatePlacement(root, 'project', {
+      state: 'needsSync',
+      reasons: [{
+        code: 'dependencyNotReady', message: 'safe dependency evidence', severity: 'warning',
+        dependencyPluginId: 'official/skill-toolkit', dependencyPlatform: 'codex',
+        dependencyScope: 'user', dependencyProject: null,
+      }],
+      recoveryActions: [{ command: 'sync', scope: 'project', description: '同步完整依赖计划。' }],
+    });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) =>
+      entry.category === 'dependencyNotReady' && entry.platform === 'codex' && entry.scope === 'project')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'issueDetail', issueId: issue.issueId });
+    expect(instance.lastFrame()).toContain('dependencyNotReady');
+    expect(instance.lastFrame()).toContain('查看依赖插件问题');
   });
 
   it.each([
@@ -9804,16 +10028,16 @@ describe('ConsoleAppV4', () => {
       const loaded = dependencyLoadResult();
       const originTarget = loaded.payload.targets.find((entry) =>
         entry.pluginId === 'official/agent-lab'
-        && entry.platform === 'codex'
-        && entry.scope === 'project')!;
-      originTarget.state = 'partial';
-      originTarget.errors = [{ code: 'missingContent', message: '安全说明', severity: 'warning' }];
+        && entry.platform === 'codex')!;
+      updatePlacement(originTarget, 'project', {
+        state: 'needsSync',
+        reasons: [{ code: 'missingContent', message: '安全说明', severity: 'warning' }],
+      });
       const refreshed = structuredClone(loaded);
       const refreshedOrigin = refreshed.payload.targets.find((entry) =>
         entry.pluginId === 'official/agent-lab'
-        && entry.platform === 'codex'
-        && entry.scope === 'project')!;
-      expect(refreshedOrigin.state).toBe('partial');
+        && entry.platform === 'codex')!;
+      expect(placement(refreshedOrigin, 'project').state).toBe('needsSync');
       const plan = dependencyPlan();
       if (resultState === 'blocked') {
         plan.resolvedPluginIds = ['official/skill-toolkit', 'official/agent-lab'];
@@ -9942,8 +10166,18 @@ describe('ConsoleAppV4', () => {
     const loaded = dependencyLoadResult({ rootState: 'present' });
     for (const platform of ['codex', 'claude'] as const) {
       const target = loaded.payload.targets.find((entry) =>
-        entry.pluginId === 'official/skill-toolkit' && entry.platform === platform && entry.scope === 'user')!;
-      target.state = 'present';
+        entry.pluginId === 'official/skill-toolkit'
+        && entry.platform === platform
+        && (entry.platform === 'codex' || entry.scope === 'user'))!;
+      updatePlacement(target, 'user', {
+        state: 'ready',
+        components: [
+          { kind: 'intent', key: 'desired', state: 'desired', metadata: {
+            enabled: true, scopes: ['user'], relation: 'dependency',
+          } },
+          { kind: 'ownership', key: 'fixture', state: 'present' },
+        ],
+      });
     }
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
@@ -9963,9 +10197,11 @@ describe('ConsoleAppV4', () => {
   it('keeps a target available when refresh requires promoting a dependency to user scope', async () => {
     const permissive = dependencyLoadResult();
     const restricted = structuredClone(permissive);
-    restricted.payload.targets = restricted.payload.targets.filter((target) => !(
-      target.pluginId === 'official/skill-toolkit'
-      && target.platform === 'codex' && target.scope === 'project'));
+    const restrictedCodex = restricted.payload.targets.find((target) =>
+      target.pluginId === 'official/skill-toolkit' && target.platform === 'codex');
+    if (restrictedCodex?.platform === 'codex') {
+      restrictedCodex.placements = restrictedCodex.placements.filter((entry) => entry.scope !== 'project');
+    }
     const skillSummary = restricted.pluginSummaries.find((summary) => summary.pluginId === 'official/skill-toolkit')!;
     skillSummary.supportedTargets = { codex: ['user'], claude: [] };
     const captureEvidence = vi.fn().mockResolvedValue(evidence);
@@ -10112,12 +10348,11 @@ describe('ConsoleAppV4', () => {
     const loaded = dependencyLoadResult();
     const unsupported = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'official/agent-lab' && entry.platform === 'claude' && entry.scope === 'user')!;
-    unsupported.state = 'error';
-    unsupported.errors = [{
+    updatePlacement(unsupported, 'user', { state: 'blocked', reasons: [{
       code: 'dependencyTargetUnsupported',
       message: 'official/skill-toolkit 不支持 Claude Code',
       severity: 'blocking',
-    }];
+    }] });
     const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
     await value.load();
     const issue = value.listUserIssues().find((entry) => entry.category === 'dependencyTargetUnsupported')!;
@@ -10240,8 +10475,7 @@ describe('ConsoleAppV4', () => {
     });
     const targetWithoutSource = loaded.payload.targets.find((entry) =>
       entry.pluginId === 'official/agent-lab'
-      && entry.platform === 'codex'
-      && entry.scope === 'user');
+      && entry.platform === 'codex');
     expect(targetWithoutSource).toBeDefined();
     (targetWithoutSource as { sourceId?: string }).sourceId = undefined;
 

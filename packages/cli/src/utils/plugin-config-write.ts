@@ -3,7 +3,8 @@ import type {
   RebuildCommandRuntime,
 } from '../commands/rebuild-command.js';
 import {
-  statusCommandV7,
+  flattenStatusTargets,
+  statusCommandV8,
   statusTargetIntent,
 } from '../commands/status-v6.js';
 import { syncWriteCommand } from '../commands/write-commands.js';
@@ -253,7 +254,7 @@ async function discoverVisibleTargets(options: {
   const targets: ReceiptTargetIdentity[] = [];
   const failures: ReceiptTargetResult[] = [];
   const selector = options.plugin.pluginId ?? options.pluginName;
-  const status = await statusCommandV7({
+  const status = await statusCommandV8({
     plugins: [selector],
     cwd: options.cwd,
     env: options.env,
@@ -263,7 +264,7 @@ async function discoverVisibleTargets(options: {
       ? { catalogOperationContext: options.rebuildRuntime.catalogOperationContext }
       : {}),
   });
-  for (const statusTarget of status.payload.targets) {
+  for (const statusTarget of flattenStatusTargets(status.payload.targets)) {
     const intent = statusTargetIntent(statusTarget);
     if ((statusTarget.pluginId !== selector && statusTarget.pluginName !== options.pluginName)
       || !intent.enabled) continue;
