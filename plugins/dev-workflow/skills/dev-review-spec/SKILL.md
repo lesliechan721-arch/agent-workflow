@@ -1,44 +1,24 @@
 ---
 name: dev-review-spec
-description: 当已有 Spec、计划或设计草案，需要正式判断是否可以批准、是否仍缺材料决定、是否可实现可验证，或是否规定过度时使用。该 Skill 可以单独调用；正式结论必须来自 fresh 独立 reviewer 上下文。
+description: 当用户需要独立判断规格或设计文档是否忠实表达已确认需求、保留重要设计依据、足以实施和验证时使用。由一个 fresh reviewer 核对原始来源、当前规格和项目事实，报告具体问题与覆盖限制；默认只在对话中交付。
 ---
 
 # Dev Review Spec
 
-你是 Review 协调器。正式 Spec Review 由一个 fresh 独立 reviewer 完成。
+正式审查由一个 fresh 独立 reviewer 完成。审查结论描述文档质量，用户批准和后续执行由调用者负责。
 
 ## 审查
 
-1. 固定本次审查的 Spec 和版本标识。报告必须能说明审查的是哪一版内容。
-2. 只向 reviewer 提供目标 Spec、它明确引用的 Shape/决定与 Prototype 证据、必要仓库事实和适用规范。
-3. 创建一个 fresh reviewer，只读检查决策完整性、可实现性、可验证性和边界纪律。
-4. 初次 Review 一次报告当前证据支持的全部 blocker。每个 blocker 必须说明材料影响和可验证关闭条件；仅有 reviewer 偏好、更优方案或更简洁写法时，放入非阻塞建议。
-5. reviewer 无法创建、未完成，或审查目标在过程中变化时，返回 `incomplete`，不覆盖已有正式报告。
-6. reviewer 完成后再次确认目标没有变化，再保存结论。协调器可以统一格式，但不得改变 finding 的实质判断。
+1. 固定文档及版本，读取原始请求、有效决定、相关原型接受说明和项目契约。既检查文档引用，也检查本次任务已提供但可能遗漏的来源。
+2. 向 fresh reviewer 提供完整当前目标和必要可访问的来源。检查来源到规格的覆盖、规格内部一致性、重要实现决定、可实施性、可验证性与实现自由。
+3. 已接受原型具有明确约束时，核对版本、页面/状态、保留要求、允许偏差和演示边界。只有笼统引用且会使不同实施者形成材料性分叉时，说明具体缺失。
+4. 每个实质问题都有来源/位置、材料影响和可验证关闭条件。区分确定遗漏、冲突、不可达依据、待决定事项和非阻塞表达建议。
+5. reviewer 无法完成、必要来源缺失或审查时目标变化时，说明受限范围，仍保留已经确定的问题。结束前核对目标，保持 reviewer 的实质判断。
 
-如果已有上一份正式 Spec Review，或用户明确要求复审，先读取 [Spec 复审](references/rereview.md)。初次 Review 不读取该文件。
+已有上一份审查或明确复审时读取 [规格复审](references/rereview.md)。首次审查直接使用本页方法。
 
 ## 报告
 
-默认在回复中报告。需要持久化且未指定路径时，覆盖：
+使用 [规格审查模板](assets/spec-review-template.md)。说明哪些要求与设计已核对、有什么问题、还有什么依据或决定缺失；已有测试或实现声明不替代规格本身的依据。
 
-```text
-docs/dev/<task-slug>/spec-review.md
-```
-
-Assured 模式或用户明确要求保留历史时，额外保存到：
-
-```text
-docs/dev/<task-slug>/reviews/spec/<timestamp>.md
-```
-
-使用 [规格审查模板](assets/spec-review-template.md)。报告必须明确 `clean`、`blocked` 或 `incomplete`，因为该结论是用户批准和宏流程实际消费的门槛。
-
-## Finding 路由
-
-- `material-decision`：补充材料决定或 Shape。
-- `evidence-needed`：收集体验、实验或运行证据。
-- `spec-defect` 或 `over-specified`：修订 Spec。
-- `fact-gap` 或 `mechanical-validation`：补充事实、测试或工具证据。
-
-只有最新 Review 为 `clean`，当前 Spec 才可以进入批准。`blocked` 时报告 findings；`incomplete` 时说明缺少的审查条件。先报告，不修改被审 Spec。
+默认在对话中报告，明确要求保存时采用给定位置或确认的项目约定。保持被审文档和实现不变；报告不会自行批准规格或启动修订。

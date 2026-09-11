@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "decision_shape_positive",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "把这个复杂服务方案完整塑形，可以在访谈和原型之间切换，保留当前共享理解。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "只做一张静态原型让我看，问题已经明确。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    },
+    {
+      "id": "decision_shape_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只做一张静态原型让我看，问题已经明确。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "把这个复杂服务方案完整塑形，可以在访谈和原型之间切换，保留当前共享理解。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    }
+  ]
+}

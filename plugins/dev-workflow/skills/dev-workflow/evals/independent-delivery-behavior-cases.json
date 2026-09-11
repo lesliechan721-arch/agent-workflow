@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-workflow",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "workflow-preserves-root-across-prototype",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "继续当前开发任务，资料根为 planning/notice-audio/。原型待完善，先整理当前资料位置与下一步，不启动服务或写产品。",
+      "assertions": [
+        "理解当前根并把相关后续产物组织在它下面。",
+        "阶段按真实缺口判断，不因为用户要开发就直接实施。",
+        "不要求ask-me理解开发目录政策。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "planning/notice-audio/shape.md": "# Shape\n已确认声音设置目标；需要同一主题的界面原型。\n"
+        }
+      },
+      "expected": {
+        "output": "沿用当前根，为原型给出位于该主题下的具体位置；不退回独立prototype根或docs/dev。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "宏为同一任务提供位置，leaf独立默认不覆盖当前上下文。",
+        "minimalCounterexample": "完全独立原型且无当前位置时可用原型自己的默认目录。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "workflow-fast-question-without-files",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "使用开发流程处理一个很小的标签函数显示问题。我尚未决定空列表返回空文本还是“暂无标签”。先问清这个选择，本轮先不改文件。",
+      "assertions": [
+        "提供足够上下文并询问当前选择。",
+        "不创建流程文件、不启动实施。",
+        "没有因一个问题自动升级持久流程。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "空列表显示“暂无标签”；本轮只确认这个决定。"
+        ],
+        "workspaceFiles": {}
+      },
+      "expected": {
+        "output": "直接澄清材料选择，可保持Fast，不需要完整Spec/Shape文档。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "小澄清属于正常对齐，不自动产生文档体系。",
+        "minimalCounterexample": "涉及跨会话多项重大取舍时需要持久共识。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "workflow-spec-review-gaps-stop-before-approval",
+      "split": "validation",
+      "tags": [
+        "regression",
+        "spec-approval-boundary"
+      ],
+      "prompt": "使用 dev-workflow 继续 planning/invitation/ 的开发任务，沿用当前 Spec 和独立规格审查。我希望完成这个功能，但尚未决定过期后是直接拒绝还是自动补发邀请，也未批准当前 Spec。请依据现有材料处理下一步。",
+      "assertions": [
+        "实际读取当前 Spec、决定和 Spec Review，区分未关闭的产品选择与缺少的必要证据。",
+        "先说明缺口及影响，可以询问过期处理选择或请求缺失依据；不请求批准当前未完成的 Spec。",
+        "不进入 dev-build 或产品实施，不把已有 Review 文件或用户总体交付意图当作规格已获批准。",
+        "保留现有 Spec、审查和产品代码；没有新的决定或证据时不声称问题已关闭。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "过期处理仍未决定，所需接口约束也暂时无法提供，请先停在这里。"
+        ],
+        "workspaceFiles": {
+          "planning/invitation/decisions.md": "# 当前决定\n邀请创建 7 天后过期，用户须看到明确提示。过期请求是直接拒绝还是自动补发仍未决定。实现必须使用服务端重发接口的限制，但该契约尚未提供。\n",
+          "planning/invitation/spec.md": "# 邀请过期 Spec\n邀请 7 天后过期。过期请求的服务端处理与验收待定；重发接口限制待取得。\n",
+          "planning/invitation/spec-review.md": "# 独立 Spec Review\n范围：当前 planning/invitation/spec.md 与 decisions.md。\n实质问题：拒绝或自动补发的选择未确定，会改变用户行为和验收。关闭条件：用户作出明确选择并进入规格。\n必要证据不足：服务端重发接口的限制未提供。关闭条件：取得实际接口依据并核对规格。当前仍不具备批准条件。\n",
+          "src/accept-invitation.js": "export const acceptInvitation = invitation => ({ accepted: true, id: invitation.id });\n"
+        }
+      },
+      "expected": {
+        "output": "停在材料选择和证据缺口处，说明关闭条件；不请求批准当前 Spec，也不进入 Build。用户未给出新决定或证据后保持当前文件并结束。",
+        "workspaceUnchanged": true
+      },
+      "audit": {
+        "rationale": "Spec Review 的批准门槛从专业 reviewer 移至 workflow 后，协调者仍需依据实质问题和覆盖阻止提前批准与实施。",
+        "minimalCounterexample": "如果对应决定和接口证据已齐备，当前独立 Review 无未关闭实质问题且覆盖充分，则应请求批准；批准前仍不实施。",
+        "allowedVariance": "允许不同问题顺序、中文措辞和报告标题；检查请求批准、进入 Build 和实际写入的行为，不依赖固定状态词。"
+      }
+    }
+  ]
+}

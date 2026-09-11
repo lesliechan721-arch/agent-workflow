@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "codex-workflow",
+    "unitUnderTest": "dev-review-code",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "participants": [
+      "dev-workflow",
+      "dev-build",
+      "dev-implement",
+      "decision-shape",
+      "decision-prototype"
+    ]
+  },
+  "cases": [
+    {
+      "id": "dual-review-catches-visible-contract-drift",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "只正式审查当前已实现的页面预览层，对照 Spec 中已接受原型的可见关系与交互；真实保存适配器属于后续工作。默认不写文件，允许两个独立 reviewer 及隔离浏览器验证。",
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 通知偏好 Spec\n用户修改音量并看到即时预览，保存返回实际持久化结果。当前只保存 volume，范围 0..100。\n## 已接受设计\n采用 design/accepted.md 和 design/reference.html 的 r2 关系，覆盖桌面 1200×800 与窄屏 420×820。\n## 技术决定\n已有 savePreferences({volume}) 接口，失败应保留输入并显示可重试错误。\n## 实现自由\nDOM、CSS 和内部事件组织允许等价变化。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}.layout{display:block}.preview{margin-top:260px}@media(max-width:700px){.layout{display:flex}.preview{order:2}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        },
+        "setup": {
+          "browser": "loopback isolated fixture server; 1200x800 and 420x820",
+          "git": "initial fixture commit; no remote",
+          "isolation": "two independent reviewers; no shared author completion prompt"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "independence",
+            "description": "两个真实fresh上下文分别主责设计/需求与工程质量。",
+            "evidenceSource": "Engine child identities + role prompts + tool transcripts"
+          },
+          {
+            "id": "visual-finding",
+            "description": "发现桌面右侧与窄屏顺序两个公开关系偏离，给出实际视口和页面证据。",
+            "evidenceSource": "browser observations + independent semantic grader"
+          },
+          {
+            "id": "not-functional-only",
+            "description": "即使音量预览与保存反馈功能通过，不能给需求设计轴通过。",
+            "evidenceSource": "browser functional check + design comparison"
+          },
+          {
+            "id": "read-only",
+            "description": "源码、测试、规格与默认报告目录保持不变。",
+            "evidenceSource": "before/after workspace diff"
+          }
+        ]
+      },
+      "assertions": [
+        "两个真实fresh上下文分别主责设计/需求与工程质量。",
+        "发现桌面右侧与窄屏顺序两个公开关系偏离，给出实际视口和页面证据。",
+        "即使音量预览与保存反馈功能通过，不能给需求设计轴通过。",
+        "源码、测试、规格与默认报告目录保持不变。"
+      ],
+      "audit": {
+        "rationale": "把真实视觉偏离与功能通过分开评价。",
+        "minimalCounterexample": "equivalent.html保留同样可见关系时不应因私有DOM变化误报。",
+        "allowedVariance": "真实Engine工具与同等环境证据判定；缺能力标unavailable或unknown，不用预制trace或两段回复冒充独立Agent。"
+      }
+    },
+    {
+      "id": "dual-review-accepts-equivalent-internals",
+      "split": "validation",
+      "tags": [
+        "boundary",
+        "runtime-required"
+      ],
+      "input": {
+        "prompt": "只审当前已实现的页面预览层，核对它是否保留已接受关系与公开交互；真实保存适配器属于后续工作。允许独立双轴和真实浏览器。当前结论只覆盖该预览层。",
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 通知偏好 Spec\n用户修改音量并看到即时预览，保存返回实际持久化结果。当前只保存 volume，范围 0..100。\n## 已接受设计\n采用 design/accepted.md 和 design/reference.html 的 r2 关系，覆盖桌面 1200×800 与窄屏 420×820。\n## 技术决定\n已有 savePreferences({volume}) 接口，失败应保留输入并显示可重试错误。\n## 实现自由\nDOM、CSS 和内部事件组织允许等价变化。\n",
+          "public/index.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.grid-shell{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.grid-shell{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"grid-shell\"><article class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></article><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        },
+        "setup": {
+          "browser": "same fixture conditions",
+          "git": "isolated commit"
+        }
+      },
+      "expected": {
+        "criteria": [
+          {
+            "id": "independence",
+            "description": "真实双轴独立审查而非同agent两个标题。",
+            "evidenceSource": "Engine transcripts"
+          },
+          {
+            "id": "equivalence",
+            "description": "不将私有DOM/class变化作为材料缺陷。",
+            "evidenceSource": "browser geometry/behaviour + semantic report"
+          },
+          {
+            "id": "limits",
+            "description": "结论只覆盖隔离页面演示行为，不宣称真实服务持久化已验证。",
+            "evidenceSource": "report scope"
+          }
+        ]
+      },
+      "assertions": [
+        "真实双轴独立审查而非同agent两个标题。",
+        "不将私有DOM/class变化作为材料缺陷。",
+        "结论只覆盖隔离页面演示行为，不宣称真实服务持久化已验证。"
+      ],
+      "audit": {
+        "rationale": "避免以更严Review制造低价值误报。",
+        "minimalCounterexample": "如果公开分组或交互改变，应报告实际差异。",
+        "allowedVariance": "真实Engine工具与同等环境证据判定；缺能力标unavailable或unknown，不用预制trace或两段回复冒充独立Agent。"
+      }
+    }
+  ]
+}

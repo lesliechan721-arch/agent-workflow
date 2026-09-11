@@ -24,7 +24,7 @@
       "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
       "assertions": [
         "trace 创建一个 fresh 独立 reviewer；当前上下文不直接完成正式审查",
-        "结论为 blocked，报告包含 Target、Version、Assurance Standard 和 Result blocked",
+        "报告当前规格的实质问题、版本、来源和覆盖限制，不要求 Assurance 或固定状态词。",
         "在同一轮指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
         "每个 blocker 说明材料影响和可验证关闭条件，偏好性建议与 blocker 分开",
         "不修改被审 Spec"
@@ -36,7 +36,7 @@
         }
       },
       "expected": {
-        "output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version、Assurance Standard 和 Result blocked；一次指出文件级任务清单、模型状态流程和可观察验收缺口，并给出可验证关闭条件。",
+        "output": "由 fresh reviewer 核对当前 Spec，指出可观察验收缺口、无依据的实施步骤和状态流程，并说明材料影响与关闭条件；必要来源或独立审查能力不足时明确覆盖限制。默认对话报告，不修改文件。",
         "workspaceUnchanged": true,
         "artifacts": [
           {
@@ -63,7 +63,7 @@
         "重新检查决策完整性、可实现性、可验证性和边界纪律",
         "目标是当前完整 Spec，而不只是旧 finding",
         "上一份报告中的文件清单和 SessionStateMachine 偏好不升级为 blocker",
-        "报告比较已解决、仍存在和新发现，并交回当前 clean 结论",
+        "报告比较已解决、仍存在和新发现，分别说明当前判断和覆盖限制",
         "覆盖当前 spec-review.md，并保持 Spec 不变"
       ],
       "input": {
@@ -74,7 +74,7 @@
         }
       },
       "expected": {
-        "output": "读取复审 reference，创建新的 fresh reviewer；完整审查当前 Spec；无 blocker 时输出 clean，并记录与上一份 Review 的比较。",
+        "output": "由新的 fresh reviewer 重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/invite-expiry/spec-review.md"
@@ -82,16 +82,7 @@
         "artifacts": [
           {
             "path": "docs/dev/invite-expiry/spec-review.md",
-            "exists": true,
-            "contains": [
-              "Version",
-              "Assurance: `Standard`",
-              "Result: `clean`",
-              "与上一份 Review 比较",
-              "已解决",
-              "仍存在",
-              "新发现"
-            ]
+            "exists": true
           }
         ]
       }
@@ -119,7 +110,7 @@
         }
       },
       "expected": {
-        "output": "创建新的 fresh reviewer，重新审查当前完整 Spec；输出 clean；不会把精确文件清单、额外状态机或更简洁写法升级为 blocker。",
+        "output": "由新的 fresh reviewer 重新审查当前完整 Spec，记录旧问题的关闭证据和当前判断。无实质问题且覆盖充分时报告无阻塞；证据或独立审查能力不足时披露限制。按请求保存报告，不把文件清单、额外状态机或更简洁写法升级为 blocker。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/session-expiry/spec-review.md"
@@ -127,20 +118,14 @@
         "artifacts": [
           {
             "path": "docs/dev/session-expiry/spec-review.md",
-            "exists": true,
-            "contains": [
-              "Result: `clean`"
-            ],
-            "notContains": [
-              "Result: `blocked`"
-            ]
+            "exists": true
           }
         ]
       },
       "audit": {
         "rationale": "旧 blocker 已关闭；更详细的文件清单、额外状态机或更优写法只是 reviewer 偏好，不能成为新的批准 blocker。",
-        "allowedVariance": "可以省略偏好性建议或放入非阻塞建议；不得因此输出 blocked。",
-        "minimalCounterexample": "如果当前 Spec 仍缺少会改变用户行为、实现边界或可验证验收的材料内容，则应输出 blocked。"
+        "allowedVariance": "可以省略偏好性建议或将其单独呈现；不得仅因表达或架构偏好认定存在实质问题。结论措辞和标题不固定，必要证据或独立审查能力不足须如实说明。",
+        "minimalCounterexample": "如果当前 Spec 仍缺少会改变用户行为、实现边界或验收的材料内容，应报告对应实质问题。"
       }
     }
   ]

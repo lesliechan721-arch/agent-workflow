@@ -34,6 +34,28 @@
       "runs": 1,
       "timeoutMs": 300000,
       "requiredForRelease": true
+    },
+    {
+      "id": "independent-delivery-trigger",
+      "kind": "trigger",
+      "cases": "independent-delivery-trigger-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 180000,
+      "requiredForRelease": false
+    },
+    {
+      "id": "independent-delivery-behavior",
+      "kind": "conversation",
+      "cases": "independent-delivery-behavior-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 1,
+      "timeoutMs": 300000,
+      "requiredForRelease": false
     }
   ]
 }

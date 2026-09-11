@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "spec-review-finds-unlinked-source-omission",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只审查 spec.md。当前任务还提供 accepted.md，它是用户明确确认但作者未链接的依据。请只报告；有独立审查能力时使用，没有时说明限制。",
+      "assertions": [
+        "原始已接受资料参与审查，即使Spec没有引用它。",
+        "指出具体保留关系缺失及关闭条件。",
+        "不写默认报告目录、不修改Spec。",
+        "独立上下文不可用时如实声明。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "spec.md": "# 偏好设置\n提供声音设置和保存，布局由实施者决定。\n",
+          "accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>"
+        }
+      },
+      "expected": {
+        "output": "发现规格遗漏已确认布局关系，不能仅因Spec自洽就通过。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "来源到规格的覆盖比文档内部流畅更重要。",
+        "minimalCounterexample": "用户明确解除视觉约束时，自由布局不构成遗漏。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "spec-review-api-source-gap",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "只审 docs/contract.md 是否足够开发。不得修改。",
+      "assertions": [
+        "指出不可达来源和验收受影响。",
+        "保持只读，默认对话交付。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "docs/contract.md": "# 接口\n按../shared/schema.md的规定返回数据，并满足既有超时策略。当前目录没有该schema，超时也未给出处。\n"
+        }
+      },
+      "expected": {
+        "output": "报告无法核对的重要接口来源，并区分确定文档缺口与未知实现，不虚构新接口。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "重要契约引用缺失会造成fresh实现者分叉。",
+        "minimalCounterexample": "schema与超时来源可访问且一致时不应因此阻断。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    }
+  ]
+}

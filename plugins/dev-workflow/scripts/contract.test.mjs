@@ -165,13 +165,15 @@ test('runtime keeps all Skill roots and conditional references', async () => {
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
   await read(path.join(skillsRoot, 'dev-workflow', 'references', 'review-repair.md'));
+  await read(path.join(skillsRoot, 'dev-workflow', 'references', 'task-artifacts.md'));
   await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
   await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
-  await read(path.join(skillsRoot, 'dev-review-code', 'references', 'milestone-review.md'));
-  for (const reference of ['coordinated-build.md', 'review-repair.md', 'checkpoints.md']) {
+  await read(path.join(skillsRoot, 'dev-review-code', 'references', 'design-fidelity.md'));
+  for (const reference of ['coordinated-build.md', 'review-repair.md', 'checkpoints.md', 'review-planning.md']) {
     await read(path.join(skillsRoot, 'dev-build', 'references', reference));
   }
-  await read(path.join(skillsRoot, 'dev-breakdown', 'assets', 'work-template.md'));
+  await read(path.join(skillsRoot, 'dev-breakdown', 'assets', 'ticket-template.md'));
+  await read(path.join(skillsRoot, 'dev-build', 'assets', 'work-index-template.md'));
   await assert.rejects(
     read(path.join(skillsRoot, 'dev-implement', 'assets', 'work-template.md')),
     { code: 'ENOENT' },

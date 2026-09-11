@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "decision-prototype",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "decision_prototype_positive",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "我需要实际操作两个音量预览候选才能决定布局，请做有界原型。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "现有功能bug已明确，直接修函数并跑测试。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    },
+    {
+      "id": "decision_prototype_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "现有功能bug已明确，直接修函数并跑测试。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "我需要实际操作两个音量预览候选才能决定布局，请做有界原型。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    }
+  ]
+}

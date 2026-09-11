@@ -35,7 +35,7 @@
         }
       },
       "expected": {
-        "output": "创建一份包含结果、用户行为、材料决定、验收、风险和 Agent discretion 的 Spec；不发明新决定，也不写逐文件步骤。",
+        "output": "创建一份包含结果、用户行为、材料决定、验收、风险和 实现自由 的 Spec；不发明新决定，也不写逐文件步骤。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/specs/invitation-expiry.md"
@@ -48,7 +48,6 @@
               "7 天",
               "服务端",
               "过期提示",
-              "Agent discretion",
               "验收"
             ],
             "notContains": [
@@ -93,8 +92,7 @@
             "contains": [
               "expiresAt",
               "过期",
-              "验收",
-              "Agent discretion"
+              "验收"
             ],
             "notContains": [
               "SessionStateMachine",

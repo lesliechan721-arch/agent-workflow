@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "dev-review-spec",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "dev_review_spec_positive",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只独立审查这份规格是否忠实保留原始决定与已接受设计。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "直接把这个已确认需求实现。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    },
+    {
+      "id": "dev_review_spec_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "直接把这个已确认需求实现。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "只独立审查这份规格是否忠实保留原始决定与已接受设计。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    }
+  ]
+}

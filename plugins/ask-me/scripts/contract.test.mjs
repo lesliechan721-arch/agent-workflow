@@ -861,7 +861,9 @@ test('leaf behavior stays independent and decision-shape owns composition', asyn
     [...requiredSkills].sort(),
   );
   assert.equal(shapeRouterCorpus.suite.runtime.forbidMultipleSkillLoads, false);
-  for (const suite of shapeManifest.suites.filter((entry) => entry.kind === 'conversation')) {
+  for (const id of ['behavior', 'shared-frame', 'prototype-evidence']) {
+    const suite = shapeManifest.suites.find((entry) => entry.id === id);
+    assert.ok(suite);
     const corpus = await readJson(path.join(shapeEvalRoot, suite.cases));
     assert.deepEqual(
       [corpus.suite.unitUnderTest, ...(corpus.suite.participants ?? [])].sort(),

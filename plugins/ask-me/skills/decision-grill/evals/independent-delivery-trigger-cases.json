@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "trigger",
+    "unitUnderTest": "decision-grill",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "forbidMultipleSkillLoads": false
+    }
+  },
+  "cases": [
+    {
+      "id": "decision_grill_positive",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "围绕离线阅读的速度与索引取舍逐轮问我，先想透这个决定。",
+        "expectedLoad": true
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "只帮我翻译这段产品描述。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    },
+    {
+      "id": "decision_grill_near_miss",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "input": {
+        "query": "只帮我翻译这段产品描述。",
+        "expectedLoad": false
+      },
+      "audit": {
+        "rationale": "区分本能力的明确用户结果与相邻意图。",
+        "minimalCounterexample": "围绕离线阅读的速度与索引取舍逐轮问我，先想透这个决定。",
+        "allowedVariance": "仅观测当前能力是否加载；不推断完整任务是否执行或禁止合理后续辅助能力。"
+      }
+    }
+  ]
+}

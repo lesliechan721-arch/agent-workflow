@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-grill",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "grill-standalone-priority",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "请只围绕一个取舍逐轮访谈：离线阅读工具要先保证启动速度还是索引完整性？目前用户已确认响应速度优先，允许稍后增量补齐；先给足够上下文再问，不需要文件。",
+      "assertions": [
+        "问题有相关事实、推荐理由和关键代价。",
+        "沿用当前用户方向，未创建文件或原型。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "采用先快速打开、后台补齐；这个决定记录准确。"
+        ],
+        "workspaceFiles": {}
+      },
+      "expected": {
+        "output": "沿用已确认方向，解释当前具体选择及后果；有新冲突再确认，而非先假设另一个优先级。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "保留原访谈的上下文与推荐一致性。",
+        "minimalCounterexample": "用户明确改为离线完整性优先时，推荐可随新决定调整。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "grill-evidence-limit",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "围绕缓存压缩算法继续访谈。发布需要实测耗时证据，目前没有基准数据。可以确认我们愿意花更多CPU换存储，但不能猜测性能结果。",
+      "assertions": [
+        "不发明测量值或阈值。",
+        "说明所需测量和足以决定的条件，未自行运行生产实验或创建文件。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "同意先保留需要测量的结论，记录准确。"
+        ],
+        "workspaceFiles": {}
+      },
+      "expected": {
+        "output": "区分用户取舍和技术证据，形成需要测量的明确问题；保持只读访谈。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "事实与决定仍由正确角色承担。",
+        "minimalCounterexample": "已有可靠基准且用户确认阈值时可以形成确定结论。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "grill-confirms-batch-before-whole-record",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "请围绕离线阅读体验逐轮访谈，先决定启动策略，之后再决定无网络时的检索表现。允许在 planning/reading-mode/shape.md 保存这个主题已确认的决定；这是记录授权，不是整体方案确认。当前两项都未决定，不制作原型或改产品。",
+      "assertions": [
+        "实际围绕上游启动取舍提问，并保留已确定的共享方向。",
+        "用户明确确认这一批后，在指定记录中保存快速打开、后台补索引；未确认的检索行为仍列为开放问题。",
+        "整体访谈未完成也可完成这次已授权批次保存，但不得称整个记录已获确认。",
+        "不创建原型、Spec或修改产品文件；原有短访谈无保存授权的用例仍只读。"
+      ],
+      "input": {
+        "scriptedReplies": [
+          "确认这一批采用快速打开，后台增量补齐索引。无网络时检索该怎样表现仍没决定，整个主题还没结束；我稍后继续。"
+        ],
+        "workspaceFiles": {
+          "planning/reading-mode/shape.md": "# 当前理解\n目标：离线阅读。\n共享方向：兼顾启动体验与离线可用性，具体取舍尚未确认。\n开放问题：启动策略；无网络时的检索表现。\n",
+          "src/reader.js": "export const readerMode = \"existing\";\n"
+        }
+      },
+      "expected": {
+        "output": "保存这一批已确认内容和仍开放的检索问题，明确整体未完成确认；不要求先结束整个访谈才能记录，也不把部分记录当整体批准。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "planning/reading-mode/shape.md"
+        ],
+        "artifacts": [
+          {
+            "path": "planning/reading-mode/shape.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "F-02：局部用户确认、记录授权与最终整体确认必须可区分。",
+        "minimalCounterexample": "用户没有授权保存或只表示倾向而未确认时，不把候选写为确定决定。",
+        "allowedVariance": "接受等价中文、文件组织与实现方式；实际条件不足标 unknown/unavailable，不用预置成功报告或最后回复代替真实读取、写入和独立上下文证据。"
+      }
+    }
+  ]
+}

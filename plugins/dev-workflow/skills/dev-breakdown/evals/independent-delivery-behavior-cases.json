@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "dev-breakdown",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "breakdown-tickets-for-fresh-workers",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "把 spec.md 分成可交给独立实施者的 tickets，写在 plan/tickets/。下一批任务要含必要技术和设计上下文，远期保持适当粒度；只分解，先不运行worker或修改产品。 下一批首项任务写到 plan/tickets/T1.md，便于随后交接；其余任务文件名自行选择。",
+      "assertions": [
+        "每个近期任务有完整结果和真实依赖。",
+        "涉及界面的任务定位到r2相应页面/尺寸与接受范围。",
+        "存储或界面集成责任清楚，不能让两个worker各自发明接口。",
+        "不修改产品源码或创建commit。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "design/reference.html": "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>通知偏好预览</title><style>body{font-family:system-ui;margin:24px;color:#172132}main{max-width:980px;margin:auto}.layout{display:grid;grid-template-columns:1fr 1fr;gap:24px}.card{padding:16px;border:1px solid #cbd3df;border-radius:10px}button{margin-top:16px;padding:12px}label{display:block;margin:12px 0}@media(max-width:700px){.layout{display:flex;flex-direction:column}.preview{order:0}.controls{order:1}}</style><main><h1>通知偏好</h1><div class=\"layout\"><section class=\"controls card\"><h2>声音设置</h2><label>音量 <input id=\"volume\" aria-label=\"音量\" type=\"range\" min=\"0\" max=\"100\" value=\"40\"></label><button id=\"apply\">保存偏好</button><p id=\"saved\" role=\"status\"></p></section><aside class=\"preview card\"><h2>实时预览</h2><p id=\"sample\">音量：40</p></aside></div></main><script>const slider=document.querySelector('#volume'); const preview=document.querySelector('#sample'); slider.addEventListener('input',()=>{preview.textContent='音量：'+slider.value;});document.querySelector('#apply').addEventListener('click',()=>{document.querySelector('#saved').textContent='已保存 '+slider.value;});</script></html>",
+          "design/accepted.md": "# 已确认设计\n接受通知偏好预览 r2。桌面 1200×800 下设置位于左侧、预览位于右侧；窄屏 420×820 下预览先于设置和保存操作出现。音量变化立即更新预览，保存反馈位于操作后。接受关系和交互，未要求像素一致；私有 DOM/CSS 可调整。原型模拟保存，生产持久化由正式需求规定。\n",
+          "spec.md": "# 通知偏好 Spec\n用户修改音量并看到即时预览，保存返回实际持久化结果。当前只保存 volume，范围 0..100。\n## 已接受设计\n采用 design/accepted.md 和 design/reference.html 的 r2 关系，覆盖桌面 1200×800 与窄屏 420×820。\n## 技术决定\n已有 savePreferences({volume}) 接口，失败应保留输入并显示可重试错误。\n## 实现自由\nDOM、CSS 和内部事件组织允许等价变化。\n",
+          "src/preferences.js": "export async function savePreferences(settings){throw new Error(\"pending\");}\n"
+        }
+      },
+      "expected": {
+        "output": "创建可独立派发的任务，包含已确定接口、设计状态、真实依赖与验收；不是状态汇总。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "plan/tickets/**"
+        ],
+        "artifacts": [
+          {
+            "path": "plan/tickets/T1.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "较弱worker需要明确的实施依据和可达指针。",
+        "minimalCounterexample": "一个已有失败测试的自然函数任务不需要多个tickets。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "breakdown-simple-one-item",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "标签去空白、去空项、去重并英文排序，函数和失败测试已在仓库。请仅给出实施安排，不写文件、不编码。",
+      "assertions": [
+        "单项工作边界与测试入口明确。",
+        "没有额外work/tickets文件或编码。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "package.json": "{\"type\":\"module\",\"scripts\":{\"test\":\"node --test\"}}\n",
+          "src/group-labels.js": "export function groupLabels(values){return values;}\n",
+          "test/group-labels.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport {groupLabels} from '../src/group-labels.js';\ntest('trim, deduplicate and ordered labels',()=>assert.deepEqual(groupLabels([' z ','A','A',' ',' b']),['A','b','z']));\ntest('empty input',()=>assert.deepEqual(groupLabels([]),[]));\ntest('input remains unchanged',()=>{const xs=[' x ','x'];groupLabels(xs);assert.deepEqual(xs,[' x ','x']);});\ntest('English label order differs from default UTF-16 sort',()=>assert.deepEqual(groupLabels(['a','B']),['a','B']));\n",
+          "spec.md": "# 标签列表规范\n去除每项首尾空白，忽略空项，去重，按英文 localeCompare 排序；保持输入数组不变。输入是字符串数组，不增加其他输入类型。\n",
+          "tickets/T1.md": "# T1 标签归一\n交付 groupLabels(values)，满足 spec.md。代码入口 src/group-labels.js；验收在 test/group-labels.test.js，运行 node --test。只修改该函数，现有测试保持。不处理页面、配置或发布。\n",
+          "work.md": "# Work\n[T1](tickets/T1.md) 未实施。协调者维护全局记录。\n"
+        }
+      },
+      "expected": {
+        "output": "识别单个自然工作项，给足必要入口与验证而不强拆阶段。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "任务分解能力不应凭技能存在制造文档。",
+        "minimalCounterexample": "多个需要独立交接的结果时应采用tickets。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    }
+  ]
+}

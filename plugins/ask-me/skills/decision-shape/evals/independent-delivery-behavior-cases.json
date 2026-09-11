@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "decision-shape",
+    "policy": {
+      "optimization": "balanced",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "以公开行为、已接受设计、独立证据和真实权限为依据；区分实际缺陷与等价实现。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "shape-current-record-before-prototype",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "继续主题塑形，当前资料根是 planning/reading-mode/，只维护其中 shape.md。现在已确认“快速打开优先”；下一步较长原型构建尚未开始。先保存本轮已确认方向和当前证据缺口，不启动原型。",
+      "assertions": [
+        "写入指定shape而非另建docs/dev或默认位置。",
+        "确认答案与开放问题分别保存，不记录尚未执行的实施成功。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {
+          "planning/reading-mode/shape.md": "# Shape\n目标：离线阅读。\n开放问题：优先级尚未记录；滚动体验需要原型。\n"
+        }
+      },
+      "expected": {
+        "output": "在当前目录更新共识与仍需证据的问题，不创建开发目录或交付进度。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "planning/reading-mode/shape.md"
+        ],
+        "artifacts": [
+          {
+            "path": "planning/reading-mode/shape.md",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "持久化时机与位置影响跨上下文恢复。",
+        "minimalCounterexample": "无需恢复且用户仅需一次简短决定时可仅对话交付。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    },
+    {
+      "id": "shape-independent-topic",
+      "split": "validation",
+      "tags": [
+        "boundary"
+      ],
+      "prompt": "这是采购协作工具的Shape，和软件开发实施无关。当前共识：数据留在组织内，允许服务成本更高；尚需用户实际体验检索流程。请总结当前理解与下一种证据方法，先不生成文件。",
+      "assertions": [
+        "沿用组织数据边界。",
+        "能够独立给出当前决定与体验缺口，不创建文件。"
+      ],
+      "input": {
+        "scriptedReplies": [],
+        "workspaceFiles": {}
+      },
+      "expected": {
+        "output": "形成通用共享理解，不要求Spec、开发等级、工作目录或实现阶段。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": []
+      },
+      "audit": {
+        "rationale": "检验通用Shape不反向耦合开发工作流。",
+        "minimalCounterexample": "调用者明确提供开发资料和输出位置时可按该上下文保存。",
+        "allowedVariance": "接受等价术语、布局实现和步骤选择；以实际产物、副作用和证据判断，不强制模板标题或固定返回字段。"
+      }
+    }
+  ]
+}

@@ -9,12 +9,12 @@ aw install dev-workflow -p both
 | Skill | 用途 |
 | --- | --- |
 | dev-workflow | 从当前共识和工件选择生命周期下一步 |
-| dev-spec | 记录稳定的材料决定和验收 |
+| dev-spec | 综合当前要求、重要实现决定、已接受设计和验收 |
 | dev-review-spec | 独立审查 Spec |
 | dev-build | 协调实施、集成、最终 Review 和有界修复 |
-| dev-breakdown | 按需分解成可执行工作项 |
+| dev-breakdown | 按需分解成新上下文可独立实施的 Ticket |
 | dev-implement | 独立实现一个明确工作项并验证 |
-| dev-review-code | 独立审查阶段或最终代码结果 |
+| dev-review-code | 独立审查指定范围的需求与设计符合度、工程质量 |
 
 ## 使用路径
 
@@ -32,13 +32,13 @@ Build 小任务直接实现，大任务按需分解，并优先顺序 fresh work
 
 更多审查用于补足明确证据缺口，不等于更多修改。预算耗尽不表示允许交付；当前完整结果仍须验证充分并独立审查通过。
 
-正式审查需要可用的独立 reviewer。能力不足时说明缺口；Assured 或用户要求保留历史时，额外保存审查报告版本。
+正式 Spec Review 使用一个 fresh reviewer，Code Review 默认使用两个 fresh reviewer 分别负责需求与设计符合度、工程质量。能力不足时说明缺口。专业审查默认在对话中报告；协调者在需要持久记录时提供位置并安排历史保存。
 
-checkpoint 默认关闭；明确允许后调用现有 Git 能力。保存点不是 Review 通过证明，提交授权也不包含推送或历史重写。
+有恢复或审计价值时主动建议 checkpoint；明确允许后调用现有 Git 能力。保存点不是 Review 通过证明，提交授权也不包含推送或历史重写。
 
 ## 工件
 
-优先沿用用户路径、现有 issue 或仓库约定。没有约定而需要本地记录时，可使用 docs/dev/<task-slug>/。Shape、Spec、work 和 Review 各自只保存当前需要的信息；Fast 也可以生成源码、测试或临时原型文件。
+首次转交会保存产物的能力前确定任务位置，优先沿用用户路径、当前任务位置、现有 issue 或仓库约定。没有约定而需要本地记录时，可使用 docs/dev/<task-slug>/。Shape 保存共识，Spec 保存当前规范，Ticket 支持独立实施，Work 按需索引进度，Review 保存指定范围的判断与证据。Fast 也可以生成源码、测试或临时原型文件。
 
 ## 典型请求
 
@@ -46,5 +46,5 @@ checkpoint 默认关闭；明确允许后调用现有 Git 能力。保存点不�
 使用 dev-workflow 改进姓名空值显示，先确认显示内容，再实现和验证。
 使用 dev-breakdown 把这份已批准 Spec 拆成可交接工作项，先不要实施。
 使用 dev-build 完成已有工作项的集成和最终审查，不要提交。
-使用 dev-review-code 审查当前权限核心阶段，判断能否开展下游工作。
+使用 dev-review-code 审查当前权限核心，说明需求符合度、工程质量和覆盖限制。
 ```

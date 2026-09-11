@@ -35,8 +35,8 @@
       "prompt": "使用 dev-workflow 处理名为 approval-layout 的任务。仓库没有开发文档目录约定，我也不指定路径。先做一个可点击原型让我比较单栏和双栏；我反馈后，把稳定结论整理成轻量 Spec。不要修改 src/approval-page.ts，也不要进入生产实现。本任务需要跨会话维护当前 Shape。",
       "assertions": [
         "trace 先由 dev-workflow 进入 decision-shape，再由 Shape 内部使用 decision-prototype；用户反馈并归一 Shape 后才进入 dev-spec",
-        "Shape 和 Spec 使用 docs/dev/approval-layout/；不要求 Router 决定 Prototype 的内部路径",
-        "Spec 只投影用户确认的稳定决定，并链接完整原型作为 Evidence",
+        "首次转交前确定 docs/dev/approval-layout/ 并向 Prototype 提供本任务下的具体目标位置；原型、Shape 和 Spec 沿用该任务位置，原型内部构建方法仍由 Prototype 决定。",
+        "Spec 保留用户确认的设计关系、接受范围与允许变化，并提供可访问的原型依据和实现自由；不要求固定标题。",
         "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现"
       ],
       "input": {
@@ -57,15 +57,13 @@
         "output": "选择 Standard 保障，先由 decision-shape 取得原型反馈并归一默认任务目录中的 decisions.md，再把双栏决定投影到 spec.md；生产页面保持不变。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
-          "docs/dev/approval-layout/**",
-          "prototypes/**"
+          "docs/dev/approval-layout/**"
         ],
         "artifacts": [
           {
             "path": "docs/dev/approval-layout/decisions.md",
             "exists": true,
             "contains": [
-              "Decision frame",
               "双栏"
             ]
           },
@@ -75,9 +73,7 @@
             "contains": [
               "双栏",
               "审批历史",
-              "移动端",
-              "Agent discretion",
-              "Evidence"
+              "移动端"
             ]
           }
         ]
@@ -90,11 +86,11 @@
         "representative",
         "assured-approval-gate"
       ],
-      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 Spec 和审查记录。审查 clean 后向我请求批准，但不要在批准前修改 src/token-store.js。",
+      "prompt": "使用 dev-workflow 处理名为 token-key-rotation 的生产数据迁移。已确认决定在 docs/token-key-rotation-decisions.md。仓库没有开发文档目录约定；请在默认任务目录生成 spec.md，并将独立审查记录保存为 spec-review.md。审查覆盖充分且无未关闭实质问题后向我请求批准，但不要在批准前修改 src/token-store.js。",
       "assertions": [
         "明确选择 Assured，而不是把迁移当作 Fast 或仅列能力",
         "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
-        "完成 dev-review-spec 后请求明确批准，并在用户暂不批准时停止",
+        "独立 Spec Review 覆盖充分且无未关闭实质问题后才请求明确批准；审查能力或必要证据不足时报告缺口，用户暂不批准时停止。",
         "不加载 dev-implement，不修改 src/token-store.js"
       ],
       "input": {
@@ -113,7 +109,7 @@
         }
       },
       "expected": {
-        "output": "选择 Assured，创建包含迁移、回滚、验证和授权边界的 Spec 及 clean Review，然后停在 Spec 批准检查点。",
+        "output": "选择 Assured，创建包含迁移、回滚、验证和授权边界的 Spec，并将独立审查结果保存到明确指定的位置；覆盖充分且无未关闭实质问题后请求批准。独立审查不可用时先报告缺口，始终不在批准前修改生产代码。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/token-key-rotation/**"
@@ -132,12 +128,7 @@
           },
           {
             "path": "docs/dev/token-key-rotation/spec-review.md",
-            "exists": true,
-            "contains": [
-              "Assurance",
-              "Assured",
-              "Result: `clean`"
-            ]
+            "exists": true
           }
         ]
       }

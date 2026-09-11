@@ -7,7 +7,7 @@
       "optimization": "precision-first",
       "falseNegativeCost": "high",
       "falsePositiveCost": "high",
-      "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；固定双 reviewer、偏好性 blocker 或只确认旧 finding 会增加成本和降低可信度。"
+      "rationale": "漏掉需求偏离或工程缺陷会误判交付；两轴独立审查须依据真实证据，偏好性 blocker 或只确认旧 finding 会降低可信度。"
     },
     "runtime": {
       "isolation": "strict"
@@ -19,16 +19,17 @@
       "split": "validation",
       "tags": [
         "representative",
-        "risk-adaptive-code-review"
+        "independent-code-review"
       ],
       "prompt": "以 Standard 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。不要直接修复文件。",
       "assertions": [
-        "trace 只创建一个 fresh reviewer，并由它完整覆盖 Spec fidelity 与 Engineering quality",
-        "结论为 blocked，报告包含 Review target、Implementation version、Spec version、Assurance、Reviewer topology 和 Result",
+        "有可用独立审查能力时，两个 fresh reviewer 分别主责需求与设计符合度、工程质量；可并行或顺序执行。",
+        "分别说明两轴的实际问题、当前范围、版本、依据和覆盖限制，不要求固定报告字段或状态词。",
         "Spec fidelity 轴指出接受入口没有过期判断",
         "Engineering quality 轴指出缺少保护过期边界行为的测试",
         "每个 blocker 说明可观察影响和可验证关闭条件",
-        "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec"
+        "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec",
+        "独立上下文不可用或未完成时明确覆盖不足；不能凭回复声称已完成两份独立审查。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -40,7 +41,7 @@
         }
       },
       "expected": {
-        "output": "创建一个 fresh reviewer 覆盖 Spec fidelity 与 Engineering quality；输出 blocked；报告记录 Assurance Standard、one dual-axis reviewer 和 Result blocked，并给出 blocker 的可验证关闭条件。",
+        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由两个 fresh reviewer 完成；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
         "workspaceUnchanged": true
       }
     },
@@ -49,16 +50,17 @@
       "split": "validation",
       "tags": [
         "representative",
-        "risk-adaptive-code-review"
+        "independent-code-review"
       ],
       "prompt": "以 Assured 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。使用两个独立 reviewer，不要直接修复文件。",
       "assertions": [
-        "trace 并行创建 Spec fidelity 与 Engineering quality 两个 fresh reviewer",
-        "结论为 blocked，报告包含 Review target、Implementation version、Spec version、Assurance、Reviewer topology 和 Result",
+        "有可用独立审查能力时，两个 fresh reviewer 分别主责需求与设计符合度、工程质量；可并行或顺序执行。",
+        "分别说明两轴的实际问题、当前范围、版本、依据和覆盖限制，不要求固定报告字段或状态词。",
         "Spec fidelity 轴指出接受入口没有过期判断",
         "Engineering quality 轴指出缺少保护过期边界行为的测试",
         "每个 blocker 说明可观察影响和可验证关闭条件",
-        "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec"
+        "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec",
+        "独立上下文不可用或未完成时明确覆盖不足；不能凭回复声称已完成两份独立审查。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -70,7 +72,7 @@
         }
       },
       "expected": {
-        "output": "并行创建两个 fresh reviewer；输出 blocked；报告记录 Assurance Assured、two axis reviewers 和 Result blocked，并分轴报告实现偏离、测试缺口和关闭条件。",
+        "output": "报告过期检查和相关测试缺口，分别说明两轴证据与可验证关闭条件。有独立审查能力时由两个 fresh reviewer 完成；能力不足时披露限制，不宣称正式审查完成。默认对话交付且不修改文件。",
         "workspaceUnchanged": true
       }
     },
@@ -79,16 +81,17 @@
       "split": "validation",
       "tags": [
         "representative",
-        "risk-adaptive-code-rereview"
+        "independent-code-rereview"
       ],
       "prompt": "以 Standard 保障重新正式审查已修复并通过测试的当前实现，覆盖 docs/dev/invite-expiry/code-review.md。不要修改代码。",
       "assertions": [
-        "trace 读取 references/rereview.md 并创建一个新的 fresh reviewer",
+        "有可用独立审查能力时创建两个新的 fresh reviewer，重新检查完整指定范围，并比较旧报告。",
         "reviewer 重新覆盖 Spec fidelity 与 Engineering quality，而不是只验证旧 finding",
         "ExpiryPolicy 或其它更优抽象偏好不升级为 blocker",
-        "报告比较已解决、仍存在和新发现，并交回当前 clean 结论",
+        "报告比较已解决、仍存在和新发现，分别说明两轴当前结论和覆盖限制。",
         "覆盖当前 code-review.md，不修改代码、测试或 Spec",
-        "结论 clean 时明确可以交付"
+        "没有有效问题且覆盖充分时报告该范围无阻塞；交付采用由调用者负责。",
+        "独立上下文不可用或未完成时明确覆盖不足；不能凭回复声称已完成两份独立审查。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -101,7 +104,7 @@
         }
       },
       "expected": {
-        "output": "读取复审 reference，创建一个新的 fresh reviewer 覆盖两个轴；重新审查当前完整实现；无 blocker 时输出 clean，并记录与上一份 Review 的比较。",
+        "output": "重新审查当前完整实现，并记录旧问题关闭证据和两轴结论。两个独立 reviewer 完成且覆盖充分时可报告无阻塞；独立能力不足时报告覆盖限制。按请求覆盖指定报告，不自行决定交付。",
         "workspaceUnchanged": false,
         "allowedWorkspaceChanges": [
           "docs/dev/invite-expiry/code-review.md"
@@ -109,17 +112,7 @@
         "artifacts": [
           {
             "path": "docs/dev/invite-expiry/code-review.md",
-            "exists": true,
-            "contains": [
-              "Implementation version",
-              "Result: `clean`",
-              "Assurance: `Standard`",
-              "Reviewer topology: `one dual-axis reviewer`",
-              "与上一份 Review 比较",
-              "已解决",
-              "仍存在",
-              "新发现"
-            ]
+            "exists": true
           }
         ]
       }
@@ -133,11 +126,12 @@
       ],
       "prompt": "以 Standard 保障正式审查 skills/session-expiry/SKILL.md 是否符合 docs/specs/session-expiry.md，并检查工程质量。不要修改文件。",
       "assertions": [
-        "trace 创建一个 fresh reviewer 覆盖两个审查轴",
+        "有可用独立审查能力时创建两个 fresh reviewer，分别负责需求与设计符合度、工程质量。",
         "Engineering quality 把被否决方案、Review 过程和过程性否定指令识别为公开 Skill 的材料问题",
         "finding 给出可验证关闭条件：最终 Skill 只正面表达当前 expiresAt 行为和必要约束",
         "不建议增加通用状态框架、完整文案 snapshot 或文件 hash",
-        "不修改被审 Skill 或 Spec"
+        "不修改被审 Skill 或 Spec",
+        "独立上下文不可用或未完成时明确覆盖不足；不能凭回复声称已完成两份独立审查。"
       ],
       "input": {
         "scriptedReplies": [],
@@ -147,7 +141,7 @@
         }
       },
       "expected": {
-        "output": "创建一个 fresh reviewer；输出 blocked；Engineering quality 指出公开 Skill 泄漏被否决方案和 Review 过程，并要求改写为只表达当前 expiresAt 行为的正面合同。",
+        "output": "指出公开 Skill 泄漏被否决方案和 Review 过程的材料影响，给出表达当前 expiresAt 行为的关闭条件；不增加通用框架或全文 hash 检查。有独立审查能力时使用两个 fresh reviewer，否则披露独立覆盖缺口。",
         "workspaceUnchanged": true
       },
       "audit": {
