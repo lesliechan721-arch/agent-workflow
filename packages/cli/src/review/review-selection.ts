@@ -104,7 +104,27 @@ async function canonicalDeclaredPaths(plugin: PluginMeta, target: PluginArtifact
     const real = await fs.realpath(candidate)
     if (!result.includes(real)) result.push(real)
   }
-  return result.sort(compareText)
+  return result
+}
+
+export async function resolveReviewDynamicSkillSource(options: {
+  plugin: PluginMeta
+  target: PluginArtifactTargetDefinition
+  nativeSkillPaths?: readonly string[]
+  portableSkillPaths?: readonly string[]
+}): Promise<{
+  sourcePath: string
+  sourcePaths: string[]
+  sourceKind: ReviewSkillSourceKind
+}> {
+  const sourcePaths = await canonicalDeclaredPaths(options.plugin, options.target)
+  const sourceKind: ReviewSkillSourceKind = options.target.target === 'agent-skills.skill'
+    && sourcePaths.some((sourcePath) => options.portableSkillPaths?.includes(sourcePath))
+    ? 'portable-source-skill'
+    : sourcePaths.some((sourcePath) => options.nativeSkillPaths?.includes(sourcePath))
+      ? 'source-skill'
+      : 'artifact-source'
+  return { sourcePath: sourcePaths[0]!, sourcePaths, sourceKind }
 }
 
 async function inventoryPluginSkills(plugin: PluginMeta): Promise<ReviewSkillDeclaration[]> {
@@ -170,13 +190,12 @@ async function inventoryPluginSkills(plugin: PluginMeta): Promise<ReviewSkillDec
 
   for (const target of plugin.manifest.artifacts?.targets ?? []) {
     if (!isSkillTarget(target)) continue
-    const sourcePaths = await canonicalDeclaredPaths(plugin, target)
-    const sourceKind: ReviewSkillSourceKind = target.target === 'agent-skills.skill'
-      && portableSkills.some((skill) => sourcePaths.includes(skill.path))
-      ? 'portable-source-skill'
-      : sourcePaths.some((sourcePath) => nativeSkills.some((skill) => skill.path === sourcePath))
-        ? 'source-skill'
-        : 'artifact-source'
+    const { sourcePath, sourcePaths, sourceKind } = await resolveReviewDynamicSkillSource({
+      plugin,
+      target,
+      nativeSkillPaths: nativeSkills.map((skill) => skill.path),
+      portableSkillPaths: portableSkills.map((skill) => skill.path),
+    })
     const refreshKeys = [...target.refreshKeys].sort(compareText)
     const configScope = target.delivery?.mode === 'codex-native' ? 'user' : undefined
     const userOnlyKeys = codexNativeRefreshKeys(plugin.manifest)
@@ -186,7 +205,7 @@ async function inventoryPluginSkills(plugin: PluginMeta): Promise<ReviewSkillDec
         plugin,
         pluginName: plugin.manifest.name,
         name: target.skillKey!,
-        sourcePath: sourcePaths[0]!,
+        sourcePath,
         sourcePaths,
         sourceKind,
         targetId: target.id,

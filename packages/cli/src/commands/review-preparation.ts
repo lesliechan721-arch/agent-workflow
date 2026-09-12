@@ -24,6 +24,7 @@ import type { PluginMeta, Scope } from '../types.js'
 import { materializePortableSkills } from '../portable/materializer.js'
 import { writePluginConfigStore } from '../utils/plugin-config.js'
 import {
+  canonicalizePathThroughExistingAncestor,
   getCodexHome,
   resolveAwHome,
   resolveClaudePaths,
@@ -157,7 +158,7 @@ async function installationRoots(options: {
     resolveClaudePaths(options.cwd, 'project', options.env).configDir,
     resolveClaudePaths(options.cwd, 'user', options.env).configDir,
   ]
-  return [...new Set(roots.map((root) => path.resolve(root)))]
+  return [...new Set(await Promise.all(roots.map(canonicalizePathThroughExistingAncestor)))]
 }
 
 async function assertSafeOutput(options: {

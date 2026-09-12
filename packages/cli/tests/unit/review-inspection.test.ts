@@ -1161,4 +1161,148 @@ describe('AW Review static inspection', () => {
       issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingDrifted' })]),
     })
   })
+
+  it('uses the same declared dynamic sources in review and release without source-key collisions', async () => {
+    const root = await tempRoot()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+
+    const portableRoot = await writePlugin(root, manifest('declared-portable', {
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'portable-output',
+        distribution: 'agent-skills',
+        scopes: ['project'],
+        target: 'agent-skills.skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'shared-name',
+        sourceDirs: ['./portable-source'],
+      }] },
+    }))
+    await writeSkill(portableRoot, 'shared-name', 'portable-skills')
+    const portableSource = path.join(portableRoot, 'portable-source')
+    await fs.outputFile(path.join(portableSource, 'input.txt'), 'portable declared source\n')
+    await fs.outputFile(path.join(portableRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+
+    const surfacesRoot = await writePlugin(root, manifest('surface-sources', {
+      skills: './skills',
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [
+        {
+          id: 'shared-target',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'same-skill',
+          sourceDirs: ['./skills/same-skill/codex-source', './skills/same-skill'],
+        },
+        {
+          id: 'shared-target',
+          platform: 'claude',
+          scopes: ['project'],
+          target: 'claude.skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'same-skill',
+          sourceDirs: ['./skills/same-skill/claude-source', './skills/same-skill'],
+        },
+      ] },
+    }))
+    const surfaceSkillRoot = await writeSkill(surfacesRoot, 'same-skill')
+    const codexSource = path.join(surfaceSkillRoot, 'codex-source')
+    const claudeSource = path.join(surfaceSkillRoot, 'claude-source')
+    await fs.outputFile(path.join(codexSource, 'input.txt'), 'codex source\n')
+    await fs.outputFile(path.join(claudeSource, 'input.txt'), 'claude source\n')
+    await fs.outputFile(path.join(surfacesRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+
+    const extensionRoot = await writePlugin(root, manifest('renderer-source', {
+      skills: './skills',
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'extension-output',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'placeholder',
+      }] },
+      marketplace: {
+        category: 'test', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+    }))
+    const placeholder = await writeSkill(extensionRoot, 'placeholder')
+    const rendererSource = path.join(extensionRoot, 'scripts', 'render.mjs')
+    await fs.outputFile(rendererSource, '// actual extension source\n')
+
+    const assertMappedSource = async (options: {
+      pluginRoot: string
+      skill: string
+      platform: 'codex' | 'claude' | 'agent-skills'
+      expectedSource: string
+      targetId: string
+    }): Promise<string> => {
+      const review = await inspectReviewTargetV2({
+        cwd: root,
+        target: options.pluginRoot,
+        skills: [options.skill],
+        platform: options.platform,
+        scope: 'project',
+      })
+      expect(review.skills).toEqual([
+        expect.objectContaining({ skill: options.skill, sourcePath: options.expectedSource }),
+      ])
+      const release = await inspectReviewTargetV2({
+        cwd: root,
+        target: options.pluginRoot,
+        view: 'release',
+      })
+      const required = release.requiredFinals.find((entry) =>
+        entry.skill === options.skill
+        && entry.profile === `${options.platform}-project`
+        && entry.targetId === options.targetId)
+      expect(required).toBeDefined()
+      const source = release.subjects.find((entry) => entry.key === required!.sourceSubjectKey)
+      expect(source).toMatchObject({ path: options.expectedSource })
+      return required!.sourceSubjectKey
+    }
+
+    await assertMappedSource({
+      pluginRoot: portableRoot,
+      skill: 'shared-name',
+      platform: 'agent-skills',
+      expectedSource: portableSource,
+      targetId: 'portable-output',
+    })
+    const codexSourceKey = await assertMappedSource({
+      pluginRoot: surfacesRoot,
+      skill: 'same-skill',
+      platform: 'codex',
+      expectedSource: codexSource,
+      targetId: 'shared-target',
+    })
+    const claudeSourceKey = await assertMappedSource({
+      pluginRoot: surfacesRoot,
+      skill: 'same-skill',
+      platform: 'claude',
+      expectedSource: claudeSource,
+      targetId: 'shared-target',
+    })
+    expect(codexSourceKey).not.toBe(claudeSourceKey)
+    await assertMappedSource({
+      pluginRoot: extensionRoot,
+      skill: 'placeholder',
+      platform: 'codex',
+      expectedSource: rendererSource,
+      targetId: 'extension-output',
+    })
+    expect(rendererSource).not.toBe(placeholder)
+  })
 })

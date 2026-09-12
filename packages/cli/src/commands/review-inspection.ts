@@ -46,6 +46,7 @@ import {
   type AwSourceBindingWorkspaceValidationContext,
 } from '../review/source-binding.js'
 import {
+  resolveReviewDynamicSkillSource,
   resolveReviewSelection,
   reviewBindingMatchesSelection,
 } from '../review/review-selection.js'
@@ -355,8 +356,19 @@ function relativeWorkspacePath(workspaceRoot: string, filePath: string): string 
   return path.relative(workspaceRoot, filePath).split(path.sep).join('/') || '.'
 }
 
-function sourceKey(plugin: string, skill: string, kind: ReviewInspectionSubject['kind']): string {
-  return `source:${plugin}:${skill}:${kind}`
+function sourceKey(options: {
+  workspaceRoot: string
+  plugin: string
+  skill: string
+  kind: ReviewInspectionSubject['kind']
+  roots: readonly string[]
+}): string {
+  const sourcePaths = options.roots.map((root) => relativeWorkspacePath(options.workspaceRoot, root))
+  const sourceIdentity = encodeURIComponent(JSON.stringify({
+    primary: sourcePaths[0],
+    sources: [...sourcePaths].sort(compareText),
+  }))
+  return `source:${options.plugin}:${options.skill}:${options.kind}:${sourceIdentity}`
 }
 
 function requiredFinalKey(seed: Pick<RequiredFinalSeed, 'plugin' | 'skill' | 'profile' | 'targetId'>): string {
@@ -404,7 +416,7 @@ async function directSkillDirectories(root: string): Promise<Array<{ name: strin
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error(`Skill collection direct child must be a regular directory: ${entryPath}`)
     }
-    result.push({ name: entry.name, root: entryPath })
+    result.push({ name: entry.name, root: await fs.realpath(entryPath) })
   }
   return result
 }
@@ -499,9 +511,16 @@ async function addSourceSubject(options: {
   plugin: PluginMeta
   skill: string
   root: string
+  sourceRoots?: readonly string[]
   kind: 'source-skill' | 'portable-source-skill' | 'artifact-source'
 }): Promise<string> {
-  const key = sourceKey(options.plugin.manifest.name, options.skill, options.kind)
+  const key = sourceKey({
+    workspaceRoot: options.workspace.workspaceRoot,
+    plugin: options.plugin.manifest.name,
+    skill: options.skill,
+    kind: options.kind,
+    roots: options.sourceRoots ?? [options.root],
+  })
   if (options.subjects.some((subject) => subject.key === key)) return key
   const digest = options.kind === 'artifact-source'
     ? (await computeReviewComponentDigest({
@@ -540,8 +559,6 @@ async function inventoryPluginSource(options: {
         stripDotSlash(plugin.manifest.distributions.agentSkills.skills),
       ))
     : []
-  const nativeByName = new Map(nativeSkills.map((entry) => [entry.name, entry]))
-  const portableByName = new Map(portableSkills.map((entry) => [entry.name, entry]))
   const nativeDynamicByPlatform = new Map<'claude' | 'codex', Set<string>>([
     ['claude', new Set()],
     ['codex', new Set()],
@@ -587,7 +604,13 @@ async function inventoryPluginSource(options: {
           skill: skill.name,
           profile: `${platform}-${scope}`,
           targetId: null,
-          sourceSubjectKey: sourceKey(plugin.manifest.name, skill.name, 'source-skill'),
+          sourceSubjectKey: sourceKey({
+            workspaceRoot: workspace.workspaceRoot,
+            plugin: plugin.manifest.name,
+            skill: skill.name,
+            kind: 'source-skill',
+            roots: [skill.root],
+          }),
           dynamic: false,
         })
       }
@@ -603,7 +626,13 @@ async function inventoryPluginSource(options: {
           skill: skill.name,
           profile: `agent-skills-${scope}`,
           targetId: null,
-          sourceSubjectKey: sourceKey(plugin.manifest.name, skill.name, 'portable-source-skill'),
+          sourceSubjectKey: sourceKey({
+            workspaceRoot: workspace.workspaceRoot,
+            plugin: plugin.manifest.name,
+            skill: skill.name,
+            kind: 'portable-source-skill',
+            roots: [skill.root],
+          }),
           dynamic: false,
         })
       }
@@ -616,27 +645,22 @@ async function inventoryPluginSource(options: {
     const platform = target.target === 'agent-skills.skill'
       ? 'agent-skills'
       : target.target === 'codex.skill' ? 'codex' : 'claude'
-    const sourceEntry = target.target === 'agent-skills.skill'
-      ? portableByName.get(skill) ?? nativeByName.get(skill)
-      : nativeByName.get(skill)
-    let sourceSubjectKey = target.target === 'agent-skills.skill' && portableByName.has(skill)
-      ? sourceKey(plugin.manifest.name, skill, 'portable-source-skill')
-      : sourceKey(plugin.manifest.name, skill, 'source-skill')
-    if (!sourceEntry) {
-      const declaredSource = target.sourceDirs?.[0]
-      const sourceRoot = declaredSource
-        ? path.join(plugin.rootDir, stripDotSlash(declaredSource))
-        : path.join(plugin.rootDir, stripDotSlash(plugin.manifest.scripts?.artifacts?.render?.path ?? '.agents-plugin'))
-      sourceSubjectKey = await addSourceSubject({
-        workspace,
-        subjects,
-        plugin,
-        skill,
-        root: sourceRoot,
-        kind: 'artifact-source',
-      })
-      sourceSubjectKeys.push(sourceSubjectKey)
-    }
+    const source = await resolveReviewDynamicSkillSource({
+      plugin,
+      target,
+      nativeSkillPaths: nativeSkills.map((entry) => entry.root),
+      portableSkillPaths: portableSkills.map((entry) => entry.root),
+    })
+    const sourceSubjectKey = await addSourceSubject({
+      workspace,
+      subjects,
+      plugin,
+      skill,
+      root: source.sourcePath,
+      sourceRoots: source.sourcePaths,
+      kind: source.sourceKind,
+    })
+    sourceSubjectKeys.push(sourceSubjectKey)
     for (const scope of target.scopes) {
       seeds.push({
         plugin,

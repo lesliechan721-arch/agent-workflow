@@ -579,6 +579,48 @@ describe('Review preparation', () => {
     await expect(fs.pathExists(path.join(realParent, 'review'))).resolves.toBe(false)
   })
 
+  it.each(['AW_HOME', 'AW_CODEX_HOME', 'AW_CLAUDE_HOME', '.agents', '.codex', '.claude'])(
+    'rejects output inside the physical installation root behind %s',
+    async (installationRoot) => {
+      const fixture = await createWorkspace()
+      const buildMarker = path.join(fixture.root, 'build-ran')
+      const pluginRoot = await writePlugin(fixture.root, manifest('linked-installation', {
+        skills: './skills',
+        scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
+      }))
+      await writeNativeSkill(pluginRoot, 'linked-installation')
+      await fs.writeFile(path.join(pluginRoot, 'build.mjs'), [
+        "import fs from 'node:fs';",
+        `fs.writeFileSync(${JSON.stringify(buildMarker)}, 'build ran');`,
+      ].join('\n'))
+      const physicalRoot = path.join(fixture.root, 'physical-installation')
+      await fs.ensureDir(physicalRoot)
+      const alias = path.join(fixture.root, installationRoot)
+      await fs.symlink(physicalRoot, alias, 'junction')
+      const suffix = installationRoot === 'AW_HOME' ? 'not-created-yet' : ''
+      if (installationRoot.startsWith('AW_')) {
+        fixture.env[installationRoot] = path.join(alias, suffix)
+      }
+      const output = path.join(physicalRoot, suffix, 'review-copy')
+
+      const result = await prepareReviewTarget({
+        cwd: fixture.root,
+        target: pluginRoot,
+        platform: 'codex',
+        scope: 'project',
+        out: output,
+        env: fixture.env,
+      })
+
+      expect(result).toMatchObject({
+        exitCode: 2,
+        receipt: { ok: false, sourceBindingPath: null, skills: [], issues: [{ code: 'unsafeOutput' }] },
+      })
+      await expect(fs.pathExists(buildMarker)).resolves.toBe(false)
+      await expect(fs.readdir(physicalRoot)).resolves.toEqual([])
+    },
+  )
+
   it('reports source drift and commits no partial output or binding', async () => {
     const fixture = await createWorkspace()
     const pluginRoot = await createDynamicPlugin(fixture.root)
