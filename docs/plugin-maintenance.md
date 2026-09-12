@@ -16,7 +16,7 @@
 
 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查公开 CLI、canonical registry 和 `aw-development-toolkit`。
 
-`aw review` 是独立的不可变归档入口：只把已有的人读 `report.md`、可选 machine result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。人读 Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。该入口不得重评、封存 Eval、更新 README 或维护可变 index。
+`aw review publish` 是独立的不可变归档入口：只把已有的人读 `report.md`、可选 machine result、checks/evidence、独立 `release-check.json` 和 workflow scope 写入 `reports/reviews/<kind>/<encoded-target-id>/<review-id>/`。人读 Review 只拥有设计、复杂度和 findings；Release Check 只拥有机器 readiness；Publication 只拥有 target/digest 绑定和 archive。该入口不得重评、封存 Eval、更新 README 或维护可变 index。
 
 Eval 的机器真值由 `@lesliechan721/agent-skill-eval` 提供，固定流程是 Manifest v1 准备 `EvalSpec v1`，独立 Auditor 产生精确绑定 provider、workspace、current/optional previous target、case digest 和 selected cases 的 `EvalAudit v1`，Engine 产生带必需 `processManagement` 证据的 `EvalResult v2`。Result v1 不再兼容。`runs` 和 `timeoutMs` 改变不影响 Audit 复用；旧版字符串 `workspace` v1 Spec 必须重新 prepare 和 Audit。`author-agent-skill` 设计或修改 Eval assets，`audit-agent-skill-evals` 独立审核 cases 或结果；AW 格式和辅助 validator 由 `aw-skill-eval-runner` 拥有。插件不得复制 schema、digest、validator 或执行实现。
 
@@ -25,15 +25,15 @@ Eval 的机器真值由 `@lesliechan721/agent-skill-eval` 提供，固定流程�
 - 通过公开 `aw` CLI 安装相应插件后，`agent-content-toolkit`、`agent-skill-toolkit`、`aw-development-toolkit` 和 `aw-skill-eval-runner` 分别处理 Agent-facing 内容、Skill、AW Catalog/Plugin 与 AW Eval 运行。仓库不把插件源码投影为 `.claude/skills`。
 - `agent-content-toolkit` 提供 `agent-content`，按请求写入或只读评审 Agent-facing 内容。
 - `agent-skill-toolkit` 提供 `author-agent-skill`、`review-agent-skill`、`simplify-agent-skill`、`audit-agent-skill-evals` 与 `review-agent-architecture`，并依赖 `agent-content-toolkit`。
-- `aw-development-toolkit` 提供 `develop-aw`、只读的 `review-aw` 和仅用户显式调用的 `publish-aw-catalog`，并依赖两个通用工具插件。Publisher 使用 CLI 的 Workspace、remote 和 branch 默认解析，但仍须对完整 `planDigest` 授权。
+- `aw-development-toolkit` 提供 `develop-aw`、准备并只读审核产物的 `review-aw` 和仅用户显式调用的 `publish-aw-catalog`，并依赖两个通用工具插件。完整审核请求涵盖必要本地 prepare，先说明构建/渲染和隔离输出；静态只读限制仍优先。Publisher 使用 CLI 的 Workspace、remote 和 branch 默认解析，但仍须对完整 `planDigest` 授权。
 - 使用默认模型 Eval 执行器时还需要 `aw-skill-eval-runner`。CLI 的普通 Eval 作者入口是 `aw skill eval prepare`；它只生成输入完整的 Spec，不运行模型。实际执行使用 `aw-skill-eval run <spec.json> --audit <audit.json> [--allow-unmanaged-processes]`，且单份运行前 Audit 必须与当前 Spec 的 provider、workspace、current/optional previous target、case digest 和 selected cases 精确绑定并通过。所有真实 run 在 output 和模型前执行 permission、macOS Codex 可执行入口与 keychain，以及进程管理预检。默认 managed 模式要求 Full Access 语义和可用的进程树检查；单次提权不等于 Full Access。只有用户明确接受本次风险时，才可增加一次性的 unmanaged flag；它只尽力终止直接 child，不保证后代清理，也不能绕过 cmux Codex wrapper 或 macOS keychain 检查。完整边界见[架构说明](architecture.md)。中断后重新 prepare、Audit 和 run，不维护 checkpoint ledger。`aw skill eval doctor --json` 只用于安装或升级、用户明确请求诊断，或模型已启动后的 run 失败；`aw-skill-eval inspect-result <result.json> --spec <spec.json> --audit <audit.json>` 只用于异常结果的分组检查。普通路径不运行这两个命令，clean success 不要求 triage。
-- `develop-aw` 与 `review-aw` 只处理既有合法 Catalog Workspace 中的 canonical `<workspace-root>/plugins/<name>`。缺少 Workspace 时，只有用户明确要求初始化，`develop-aw` 才进入 Catalog 初始化分支；否则报告缺口并固定当前目标。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `develop-aw` 与 `review-aw` 处理既有合法 Catalog Workspace 中的 canonical `<workspace-root>/plugins/<name>`；Review 可选其中的源 Skill，由 CLI 按声明解析归属。缺少 Workspace 时，只有用户明确要求初始化，`develop-aw` 才进入 Catalog 初始化分支；否则报告缺口并固定当前目标。不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - `aw-development-toolkit` 是 Agent-facing Developer Assistant，不是 SDK 或规范真值。它只能编排已安装 `aw` CLI 的公开作者命令；第三方 workspace 不要求有本仓库的 `packages/cli`、`node_modules` 或 release 脚本。
 - 确定性 Plugin 作者工具统一使用公开 CLI：`aw plugin capabilities`、`aw plugin init`、`aw plugin add-skill`、`aw plugin remove`、`aw plugin validate`、`aw plugin test`、`aw plugin build`、`aw plugin status` 和独立 Skill 的 `aw skill validate`。Catalog 作者工具使用公开 `aw catalog` 命令。Agent 插件不保存第二份 manifest、Catalog 或 Skill frontmatter 实现。
 - 已安装作者 Skill 先用 `aw self check --from <skill-root> --json` 消费同层 runtime requirements receipt；不使用 CLI 版本字符串推断兼容性。每个 runtime receipt 必须来自最终 materialized Skill，不能由 source 文档手写替代。
 - Workspace v1 插件根固定为 `<workspace-root>/plugins/<plugin-name>`。所有作者命令使用 `--workspace-root`，不接受任意 `--plugin-root`。`validate`、`test` 和 `build` 仍接受 plugin directory 参数，但该目录必须是 workspace inventory 中的 canonical plugin。作者命令拒绝 workspace/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型。`status --base` 和 `remove` 要求 Git；`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
-- Reviewer 默认只在聊天中交付人读 Review。用户明确要求归档时，只有本次请求的顶层 Reviewer 使用 `aw review publish`；下层 Reviewer 只返回材料。修订已有记录时创建新 record 并使用 `--supersedes`。人读 Review 不拥有 readiness；兼容的 AW-owned Release Checker 生成的 `release-check.json` 只能作为可选附件。
+- Reviewer 默认只在聊天中交付人读 Review。用户明确要求 AW 归档时，由本次顶层 AW Reviewer 使用 `aw review publish`；通用 Reviewer 交付内容及用户指定的报告文件，不导入 AW 归档流程。修订已有记录时创建新 record 并使用 `--supersedes`。人读 Review 不拥有 readiness；兼容的 AW-owned Release Checker 生成的 `release-check.json` 只能作为可选附件。
 
 ## Catalog build-time 文件复用
 

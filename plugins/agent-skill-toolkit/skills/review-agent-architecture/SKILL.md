@@ -21,7 +21,7 @@ metadata:
 
 ## 依赖
 
-- 具体 leaf Skill 使用 `review-agent-skill`；
+- 具体 leaf Skill 使用 `review-agent-skill`；项目源码先由适配方提供运行包或明确 source-only 范围，逐项保留 profile 与来源关系；
 - 大型 Agent-facing 内容使用 `agent-content`；
 - 父 Reviewer保留跨组件 owner、blast radius 和最终 verdict。
 
@@ -46,4 +46,4 @@ metadata:
 - plugin boundaries：coherent | merge-candidate | split-candidate；
 - 必须处理、最小架构、最多 3 项高价值改进、关键 unknown 和停止条件。
 
-用户明确要求归档且本 Skill 是本次顶层 Reviewer 时，读取 `references/report-publication.md`。需要包级合同消费者线索时，可使用 `scripts/audit-output-contracts.mjs` 扫描明确范围；静态搜索结果不是自动删除结论。
+用户指定报告文件时按要求交付；项目归档由调用方处理。需要包级合同消费者线索时，可使用 `scripts/audit-output-contracts.mjs` 扫描明确范围；静态搜索结果不是自动删除结论。

@@ -1,7 +1,7 @@
 interface:
   display_name: "Review AW"
   short_description: "只读评审 AW Plugin、Catalog、workflow 或 portfolio"
-  default_prompt: "使用 $review-aw 只读评审当前 AW 目标。"
+  default_prompt: "使用 $review-aw 完整评审当前 AW 目标，复用或准备匹配的产物后只读审核。"
 
 policy:
   allow_implicit_invocation: true

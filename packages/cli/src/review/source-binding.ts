@@ -32,6 +32,9 @@ import {
   resolveEvalSourceBindingInput,
   type AwSourceBindingEvalInput,
 } from './eval-source-input.js'
+import { parseReviewProfile } from './review-profile.js'
+import { resolveReviewSelection } from './review-selection.js'
+import type { ReviewProfile } from './review-types.js'
 
 export {
   computeAwSourceBindingSelectedCasesDigest,
@@ -78,18 +81,21 @@ export interface AwSourceBindingSubject {
 export type AwSourceBindingProfile =
   | { kind: 'eval'; id: string; scope: Scope; inputDigest: string }
   | { kind: 'portable'; id: `agent-skills-${Scope}`; scope: Scope; inputDigest: string }
+  | ReviewProfile
 
 export type AwSourceBindingArtifact =
   | { kind: 'eval-target'; skill: string; path: string; digest: string }
   | { kind: 'eval-workspace'; path: string; digest: string }
   | { kind: 'eval-cases'; path: string; digest: string }
   | { kind: 'portable-skill'; plugin: string; skill: string; path: string; digest: string }
+  | { kind: 'review-skill'; plugin: string; skill: string; path: string; digest: string }
 
 export type AwSourceBindingArtifactInput =
   | { kind: 'eval-target'; skill: string; path: string }
   | { kind: 'eval-workspace'; path: string }
   | { kind: 'eval-cases'; path: string }
   | { kind: 'portable-skill'; plugin: string; skill: string; path: string }
+  | { kind: 'review-skill'; plugin: string; skill: string; path: string }
 
 export type AwSourceBindingVerifiedOutput = AwSourceBindingArtifact
 
@@ -264,6 +270,7 @@ function normalizeSubject(value: unknown): AwSourceBindingSubject {
 
 function normalizeProfile(value: unknown): AwSourceBindingProfile {
   const row = value as Record<string, unknown>
+  if (row?.kind === 'review') return parseReviewProfile(value)
   if (
     !strictRecord(row, ['kind', 'id', 'scope', 'inputDigest'])
     || !scopeValue(row.scope)
@@ -295,12 +302,12 @@ function normalizeArtifact(value: unknown): AwSourceBindingArtifact {
     }
     return { kind: row.kind, skill: row.skill, path: relativePath, digest: row.digest }
   }
-  if (row.kind === 'portable-skill') {
+  if (row.kind === 'portable-skill' || row.kind === 'review-skill') {
     if (
       !strictRecord(row, ['kind', 'plugin', 'skill', 'path', 'digest'])
       || !safeId(row.plugin)
       || !safeId(row.skill)
-    ) throw new Error('Source binding portable Skill artifact is invalid.')
+    ) throw new Error('Source binding materialized Skill artifact is invalid.')
     return {
       kind: row.kind,
       plugin: row.plugin,
@@ -354,24 +361,38 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV2 {
   if (new Set(paths).size !== paths.length || paths.includes(AW_SOURCE_BINDING_FILENAME)) {
     throw new Error('Source binding artifact paths must be unique and exclude the receipt.')
   }
-  const expectedKinds = binding.profile.kind === 'eval'
-    ? ['eval-cases', 'eval-target', 'eval-workspace']
-    : binding.artifacts.map((artifact) => artifact.kind)
-  if (
-    binding.profile.kind === 'eval'
-      ? binding.artifacts.length !== 3
-        || [...binding.artifacts.map((artifact) => artifact.kind)].sort().join(',') !== expectedKinds.sort().join(',')
-        || binding.subject.skill === undefined
-        || binding.subject.suite === undefined
-        || binding.evalInput === undefined
-        || binding.artifacts.some((artifact) => artifact.kind === 'eval-target' && artifact.skill !== binding.subject.skill)
-      : binding.subject.skill !== undefined
-        || binding.subject.suite !== undefined
-        || binding.evalInput !== undefined
-        || binding.artifacts.some((artifact) => artifact.kind !== 'portable-skill')
-        || new Set(binding.artifacts.map((artifact) => artifact.kind === 'portable-skill' ? artifact.skill : '')).size
-          !== binding.artifacts.length
-  ) throw new Error('Source binding artifacts do not match the profile kind.')
+  if (binding.profile.kind === 'eval') {
+    const expectedKinds = ['eval-cases', 'eval-target', 'eval-workspace']
+    if (
+      binding.artifacts.length !== 3
+      || [...binding.artifacts.map((artifact) => artifact.kind)].sort().join(',') !== expectedKinds.join(',')
+      || binding.subject.skill === undefined
+      || binding.subject.suite === undefined
+      || binding.evalInput === undefined
+      || binding.artifacts.some((artifact) =>
+        artifact.kind === 'eval-target' && artifact.skill !== binding.subject.skill)
+    ) throw new Error('Source binding artifacts do not match the Eval profile.')
+  } else if (binding.profile.kind === 'portable') {
+    if (
+      binding.subject.skill !== undefined
+      || binding.subject.suite !== undefined
+      || binding.evalInput !== undefined
+      || binding.artifacts.some((artifact) => artifact.kind !== 'portable-skill')
+      || new Set(binding.artifacts.map((artifact) =>
+        artifact.kind === 'portable-skill' ? artifact.skill : '')).size !== binding.artifacts.length
+    ) throw new Error('Source binding artifacts do not match the portable profile.')
+  } else {
+    const reviewArtifacts = binding.artifacts.filter((artifact) => artifact.kind === 'review-skill')
+    if (
+      binding.subject.suite !== undefined
+      || binding.evalInput !== undefined
+      || reviewArtifacts.length !== binding.artifacts.length
+      || reviewArtifacts.some((artifact) => artifact.plugin !== binding.subject.plugin)
+      || new Set(reviewArtifacts.map((artifact) => artifact.skill)).size !== reviewArtifacts.length
+      || (binding.subject.skill !== undefined
+        && (reviewArtifacts.length !== 1 || reviewArtifacts[0]!.skill !== binding.subject.skill))
+    ) throw new Error('Source binding artifacts do not match the Review profile.')
+  }
   return binding
 }
 
@@ -580,6 +601,23 @@ async function currentWorkspaceProfile(options: {
       throw new Error('The bound Eval suite or profile is not present in the current Workspace.')
     }
     return resolveEvalProfileBindingInput(profile, options.workspace.plugins).profile
+  }
+  if (options.binding.profile.kind === 'review') {
+    const skills = options.binding.artifacts.flatMap((artifact) =>
+      artifact.kind === 'review-skill' ? [artifact.skill] : [])
+    const selection = await resolveReviewSelection({
+      cwd: options.workspace.workspaceRoot,
+      workspaceRoot: options.workspace.workspaceRoot,
+      target: options.binding.subject.plugin,
+      skills,
+      platform: options.binding.profile.platform,
+      scope: options.binding.profile.scope,
+      config: options.binding.profile.config,
+      env: options.env,
+    })
+    const profile = selection.profiles[0]?.profile
+    if (!profile) throw new Error('The bound Review profile is not present in the current Workspace.')
+    return profile
   }
   const source = options.binding.source
   return resolvePortableProfileBindingInput({

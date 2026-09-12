@@ -41,7 +41,7 @@ afterEach(async () => {
 })
 
 describe('review inspect CLI entry', () => {
-  it('emits one successful incomplete JSON receipt and exit 0 for source-only finals', async () => {
+  it('emits the default review view and exit 0 for source-only finals', async () => {
     const root = await tempRoot()
     const outside = await tempRoot()
     const pluginRoot = path.join(root, 'plugins', 'fixture')
@@ -76,15 +76,83 @@ describe('review inspect CLI entry', () => {
     expect(code).toBe(0)
     expect(output.stderr()).toBe('')
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'review:inspect',
+      view: 'review',
       ok: true,
+      target: { kind: 'plugin', path: pluginRoot },
+      skills: expect.arrayContaining([
+        expect.objectContaining({
+          skill: 'fixture',
+          sourcePath: path.join(pluginRoot, 'skills', 'fixture'),
+          finalPath: null,
+          digest: null,
+          state: 'missing',
+          evidencePath: null,
+        }),
+      ]),
+      issues: expect.arrayContaining([
+        expect.objectContaining({ code: 'requiredFinalMissing' }),
+      ]),
+    })
+
+    const releaseOutput = capture()
+    expect(await runCli(['review', 'inspect', pluginRoot, '--view', 'release', '--json'], {
+      cwd: outside,
+      io: releaseOutput.io,
+    })).toBe(0)
+    expect(JSON.parse(releaseOutput.stdout())).toMatchObject({
+      schemaVersion: 2,
+      command: 'review:inspect',
+      view: 'release',
       completeness: 'incomplete',
       target: { kind: 'plugin', id: 'fixture', path: pluginRoot },
-      snapshot: { state: 'absent' },
-      issues: expect.arrayContaining([
-        expect.objectContaining({ code: 'requiredFinalMissing', blocking: false }),
-      ]),
+      subjects: expect.any(Array),
+      requiredFinals: expect.any(Array),
+      requiredEvals: expect.any(Array),
+      materializations: expect.any(Array),
+    })
+
+    const repeatedSkillOutput = capture()
+    expect(await runCli([
+      'review', 'inspect', pluginRoot,
+      '--skill', 'fixture', '--skill', 'fixture', '--json',
+    ], {
+      cwd: outside,
+      io: repeatedSkillOutput.io,
+    })).toBe(0)
+    const repeatedSkills = JSON.parse(repeatedSkillOutput.stdout()).skills as Array<{
+      skill: string
+      profile: { platform: string; scope: string }
+    }>
+    expect(repeatedSkills.length).toBeGreaterThan(0)
+    expect(new Set(repeatedSkills.map((entry) => entry.skill))).toEqual(new Set(['fixture']))
+    expect(new Set(repeatedSkills.map((entry) =>
+      `${entry.skill}:${entry.profile.platform}:${entry.profile.scope}`)).size).toBe(repeatedSkills.length)
+
+    const textOutput = capture()
+    expect(await runCli(['review', 'inspect', pluginRoot], {
+      cwd: outside,
+      io: textOutput.io,
+    })).toBe(0)
+    expect(textOutput.stderr()).toBe('')
+    expect(textOutput.stdout()).toContain('Review inspection (review): ok')
+    expect(textOutput.stdout()).toContain('fixture\t')
+
+    const narrowedReleaseOutput = capture()
+    expect(await runCli([
+      'review', 'inspect', pluginRoot,
+      '--view', 'release', '--skill', 'fixture', '--json',
+    ], {
+      cwd: outside,
+      io: narrowedReleaseOutput.io,
+    })).toBe(2)
+    expect(JSON.parse(narrowedReleaseOutput.stdout())).toMatchObject({
+      schemaVersion: 2,
+      command: 'review:inspect',
+      view: 'release',
+      ok: false,
+      issues: [expect.objectContaining({ code: 'invalidArguments' })],
     })
   })
 
@@ -93,17 +161,83 @@ describe('review inspect CLI entry', () => {
 
     const code = await runCli(['review', 'inspect', '--json'], { io: output.io })
 
-    expect(code).toBe(1)
+    expect(code).toBe(2)
     expect(JSON.parse(output.stdout())).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'review:inspect',
+      view: 'review',
       ok: false,
-      completeness: 'incomplete',
-      issues: [{ category: 'invalid', code: 'invalidArguments', blocking: true }],
+      target: null,
+      sources: [],
+      skills: [],
+      issues: [{ code: 'invalidArguments', path: null }],
     })
   })
 
-  it('passes the injected AW_HOME to source binding validation', async () => {
+  it.each([
+    ['plugin', false],
+    ['skill', true],
+  ] as const)('preserves a resolved canonical %s target when a binding is invalid', async (
+    expectedKind,
+    useSkillTarget,
+  ) => {
+    const root = await tempRoot()
+    const materializedRoot = await tempRoot()
+    const pluginRoot = path.join(root, 'plugins', 'invalid-binding')
+    const skillRoot = path.join(pluginRoot, 'skills', 'invalid-binding')
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    await fs.outputJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+      schemaVersion: 3,
+      name: 'invalid-binding',
+      version: '0.1.0',
+      description: 'Invalid binding target fixture.',
+      skills: './skills',
+      marketplace: {
+        category: 'test',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+          products: ['CODEX'],
+        },
+      },
+    })
+    await fs.outputFile(
+      path.join(skillRoot, 'SKILL.md'),
+      '---\nname: invalid-binding\ndescription: Invalid binding fixture.\n---\n\n# Fixture\n',
+    )
+    const bindingPath = path.join(materializedRoot, 'aw-source-binding.json')
+    await fs.writeJson(bindingPath, useSkillTarget
+      ? { schemaVersion: 1, kind: 'aw-source-binding' }
+      : { schemaVersion: 2, kind: 'damaged-binding' })
+    const output = capture()
+
+    const code = await runCli([
+      'review', 'inspect', useSkillTarget ? skillRoot : pluginRoot,
+      '--platform', 'codex',
+      '--scope', 'user',
+      '--materialization', bindingPath,
+      '--json',
+    ], { cwd: root, io: output.io })
+
+    expect(code).toBe(2)
+    expect(output.stderr()).toBe('')
+    expect(JSON.parse(output.stdout())).toMatchObject({
+      schemaVersion: 2,
+      command: 'review:inspect',
+      view: 'review',
+      ok: false,
+      target: {
+        kind: expectedKind,
+        path: useSkillTarget ? skillRoot : pluginRoot,
+      },
+      sources: [],
+      skills: [],
+      issues: [{ code: 'sourceBindingInvalid', path: null }],
+    })
+  })
+
+  it('does not use a binding custom config as the default request config', async () => {
     const root = await tempRoot()
     const materializedRoot = await tempRoot()
     const injectedHome = path.join(await tempRoot(), 'injected-home')
@@ -116,6 +250,18 @@ describe('review inspect CLI entry', () => {
       description: 'Portable environment fixture.',
       extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
       distributions: { agentSkills: { skills: './portable-skills' } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'portable',
+        distribution: 'agent-skills',
+        target: 'agent-skills.skill',
+        kind: 'skill',
+        scopes: ['user'],
+        states: ['present'],
+        refreshKeys: ['flavor'],
+        skillKey: 'portable',
+        sourceDirs: ['./portable-skills/portable'],
+      }] },
       config: {
         fields: {
           flavor: { type: 'string', required: true, default: 'ambient' },
@@ -133,6 +279,10 @@ describe('review inspect CLI entry', () => {
       '---\nname: portable\ndescription: Portable fixture.\n---\n\n# Portable\n',
     )
     await fs.outputFile(path.join(sourceSkill, 'README.md'), '# Portable\n')
+    await fs.outputFile(
+      path.join(pluginRoot, 'scripts', 'render.mjs'),
+      'throw new Error("Review inspection must not run the renderer.")\n',
+    )
     const injectedEnv = { ...process.env, AW_HOME: injectedHome }
     await writePluginConfigStore({
       pluginName: 'portable-env',
@@ -163,16 +313,35 @@ describe('review inspect CLI entry', () => {
     })
     const args = [
       'review', 'inspect', pluginRoot,
+      '--platform', 'agent-skills', '--scope', 'user',
       '--materialization', written.bindingPath,
       '--json',
     ]
 
     const ambientOutput = capture()
-    expect(await runCli(args, { cwd: root, io: ambientOutput.io })).toBe(1)
-    expect(JSON.parse(ambientOutput.stdout()).materializations[0].state).toBe('drifted')
+    expect(await runCli(args, { cwd: root, io: ambientOutput.io })).toBe(0)
+    expect(JSON.parse(ambientOutput.stdout())).toMatchObject({
+      view: 'review',
+      skills: [{ state: 'stale', evidencePath: written.bindingPath }],
+    })
 
     const injectedOutput = capture()
     expect(await runCli(args, { cwd: root, env: injectedEnv, io: injectedOutput.io })).toBe(0)
-    expect(JSON.parse(injectedOutput.stdout()).materializations[0].state).toBe('verified')
+    expect(JSON.parse(injectedOutput.stdout())).toMatchObject({
+      view: 'review',
+      skills: [{ state: 'missing' }],
+      issues: expect.arrayContaining([
+        expect.objectContaining({ code: 'materializationNotSelected' }),
+      ]),
+    })
+
+    const repeatedMaterializationOutput = capture()
+    expect(await runCli([
+      'review', 'inspect', pluginRoot, '--view', 'release',
+      '--materialization', written.bindingPath,
+      '--materialization', written.bindingPath,
+      '--json',
+    ], { cwd: root, env: injectedEnv, io: repeatedMaterializationOutput.io })).toBe(0)
+    expect(JSON.parse(repeatedMaterializationOutput.stdout()).materializations).toHaveLength(1)
   })
 })

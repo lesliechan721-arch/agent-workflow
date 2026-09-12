@@ -5,7 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError, Option } from 'commander';
+import { Command, CommanderError, InvalidArgumentError, Option } from 'commander';
 import { doctorEvalProviders } from '@lesliechan721/agent-skill-eval';
 
 import { initCommand } from './commands/init.js';
@@ -153,8 +153,17 @@ import {
 } from './commands/review-publication.js';
 import {
   createReviewInspectionFailure,
+  getReviewInspectionExitCode,
   inspectReviewTarget,
+  type ReviewInspectionPlatform,
+  type ReviewInspectionFailureReceipt,
+  type ReviewInspectionReceipt,
+  type ReviewInspectionView,
 } from './commands/review-inspection.js';
+import {
+  prepareReviewTarget,
+  type ReviewPreparationV1,
+} from './commands/review-preparation.js';
 import { resolveRepoRoot } from './utils/state-paths.js';
 import {
   runCatalogBuildCommand,
@@ -215,6 +224,89 @@ function createDefaultIo(): CliIo {
 
 function writeLine(write: (text: string) => void, line: string): void {
   write(`${line}\n`);
+}
+
+function strictValueOption(
+  flags: string,
+  description: string,
+  choices?: readonly string[],
+): Option {
+  let seen = false;
+  const option = new Option(flags, description);
+  return option.argParser((value: string) => {
+    if (seen) throw new InvalidArgumentError(`${option.long} can be specified only once.`);
+    if (choices && !choices.includes(value)) {
+      throw new InvalidArgumentError(`${option.long} must be one of: ${choices.join(', ')}.`);
+    }
+    seen = true;
+    return value;
+  });
+}
+
+function collectUniqueOption(value: string, previous: string[]): string[] {
+  return previous.includes(value) ? previous : [...previous, value];
+}
+
+function renderReviewSkills(
+  write: (text: string) => void,
+  skills: Array<{
+    skill: string;
+    profile: { platform: string; scope: string };
+    state: string;
+    finalPath: string | null;
+  }>,
+  issues: Array<{ code: string; message: string }>,
+): void {
+  for (const skill of skills) {
+    writeLine(
+      write,
+      `${skill.skill}\t${skill.profile.platform}/${skill.profile.scope}\t${skill.state}\t${skill.finalPath ?? '-'}`,
+    );
+  }
+  for (const issue of issues) writeLine(write, `${issue.code}: ${issue.message}`);
+}
+
+function renderReviewInspection(
+  write: (text: string) => void,
+  receipt: ReviewInspectionReceipt | ReviewInspectionFailureReceipt,
+): void {
+  writeLine(write, `Review inspection (${receipt.view}): ${receipt.ok ? 'ok' : 'failed'}`);
+  if (receipt.view === 'review') {
+    renderReviewSkills(write, receipt.skills, receipt.issues);
+    return;
+  }
+  for (const issue of receipt.issues) writeLine(write, `${issue.code}: ${issue.message}`);
+}
+
+function renderReviewPreparation(
+  write: (text: string) => void,
+  receipt: ReviewPreparationV1,
+): void {
+  writeLine(write, `Review preparation: ${receipt.ok ? 'complete' : 'failed'}`);
+  if (receipt.sourceBindingPath) writeLine(write, `Source binding: ${receipt.sourceBindingPath}`);
+  renderReviewSkills(write, receipt.skills, receipt.issues);
+}
+
+function requestedReviewView(argv: readonly string[]): ReviewInspectionView {
+  const inline = argv.find((token) => token.startsWith('--view='));
+  if (inline === '--view=release') return 'release';
+  const index = argv.indexOf('--view');
+  return index >= 0 && argv[index + 1] === 'release' ? 'release' : 'review';
+}
+
+function createReviewPreparationFailure(
+  message: string,
+  code = 'invalidArguments',
+): ReviewPreparationV1 {
+  return {
+    schemaVersion: 1,
+    command: 'review:prepare',
+    ok: false,
+    target: null,
+    sourceBindingPath: null,
+    skills: [],
+    issues: [{ code, path: null, message }],
+  };
 }
 
 function writeWarnings(
@@ -1640,18 +1732,45 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   review
     .command('inspect')
     .description('Inspect current AW Review source and materialization facts')
-    .argument('<target>', 'canonical Catalog Workspace or Plugin path')
-    .option('--workspace-root <root>', 'explicit Catalog Workspace root')
+    .argument('<target>', 'Catalog Workspace, Plugin, or source Skill path')
+    .addOption(strictValueOption('--workspace-root <root>', 'explicit Catalog Workspace root'))
+    .option(
+      '--skill <name>',
+      'select one declared Skill',
+      collectUniqueOption,
+      [],
+    )
+    .addOption(strictValueOption(
+      '--platform <platform>',
+      'select codex, claude, or agent-skills',
+      ['codex', 'claude', 'agent-skills'],
+    ))
+    .addOption(strictValueOption(
+      '--scope <scope>',
+      'select user or project scope',
+      ['user', 'project'],
+    ))
+    .addOption(strictValueOption('--config <file>', 'review config JSON file'))
     .option(
       '--materialization <receipt>',
       'validate one aw-source-binding receipt',
-      (value: string, previous: string[]) => [...previous, value],
+      collectUniqueOption,
       [],
     )
-    .requiredOption('--json', 'emit one Review inspection JSON object')
+    .addOption(strictValueOption(
+      '--view <view>',
+      'select review or release view',
+      ['review', 'release'],
+    ).default('review'))
+    .option('--json', 'emit one Review inspection JSON object', false)
     .action(async (target: string, rawOptions: {
       workspaceRoot?: string;
+      skill: string[];
+      platform?: ReviewInspectionPlatform;
+      scope?: Scope;
+      config?: string;
       materialization: string[];
+      view: ReviewInspectionView;
       json: boolean;
     }) => {
       try {
@@ -1661,15 +1780,75 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ...(rawOptions.workspaceRoot === undefined
             ? {}
             : { workspaceRoot: rawOptions.workspaceRoot }),
-          materializations: rawOptions.materialization.map((entry) => path.resolve(cwd, entry)),
+          skills: rawOptions.skill,
+          ...(rawOptions.platform === undefined ? {} : { platform: rawOptions.platform }),
+          ...(rawOptions.scope === undefined ? {} : { scope: rawOptions.scope }),
+          ...(rawOptions.config === undefined ? {} : { configFile: rawOptions.config }),
+          materializations: [...new Set(rawOptions.materialization
+            .map((entry) => path.resolve(cwd, entry)))],
+          view: rawOptions.view,
           env,
         });
-        writeJsonReceipt(io.stdout, receipt);
-        commandExitState.exitCode = receipt.ok ? 0 : 1;
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else renderReviewInspection(io.stdout, receipt);
+        commandExitState.exitCode = 0;
       } catch (error) {
-        writeJsonReceipt(io.stdout, createReviewInspectionFailure(error));
-        commandExitState.exitCode = 1;
+        const receipt = createReviewInspectionFailure(error, rawOptions.view);
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else renderReviewInspection(io.stdout, receipt);
+        commandExitState.exitCode = getReviewInspectionExitCode(error);
       }
+    });
+
+  review
+    .command('prepare')
+    .description('Prepare deterministic Skill finals for AW Review')
+    .argument('<target>', 'Plugin or source Skill path')
+    .addOption(strictValueOption('--workspace-root <root>', 'explicit Catalog Workspace root'))
+    .option(
+      '--skill <name>',
+      'select one declared Skill',
+      collectUniqueOption,
+      [],
+    )
+    .addOption(strictValueOption(
+      '--platform <platform>',
+      'select codex, claude, or agent-skills',
+      ['codex', 'claude', 'agent-skills'],
+    ).makeOptionMandatory())
+    .addOption(strictValueOption(
+      '--scope <scope>',
+      'select user or project scope',
+      ['user', 'project'],
+    ).makeOptionMandatory())
+    .addOption(strictValueOption('--config <file>', 'review config JSON file'))
+    .addOption(strictValueOption('--out <new-dir>', 'new output directory').makeOptionMandatory())
+    .option('--json', 'emit one Review preparation JSON object', false)
+    .action(async (target: string, rawOptions: {
+      workspaceRoot?: string;
+      skill: string[];
+      platform: ReviewInspectionPlatform;
+      scope: Scope;
+      config?: string;
+      out: string;
+      json: boolean;
+    }) => {
+      const result = await prepareReviewTarget({
+        cwd,
+        target,
+        ...(rawOptions.workspaceRoot === undefined
+          ? {}
+          : { workspaceRoot: rawOptions.workspaceRoot }),
+        skills: rawOptions.skill,
+        platform: rawOptions.platform,
+        scope: rawOptions.scope,
+        ...(rawOptions.config === undefined ? {} : { configFile: rawOptions.config }),
+        out: rawOptions.out,
+        env,
+      });
+      if (rawOptions.json) writeJsonReceipt(io.stdout, result.receipt);
+      else renderReviewPreparation(io.stdout, result.receipt);
+      commandExitState.exitCode = result.exitCode;
     });
 
   review
@@ -3972,11 +4151,15 @@ export async function runCli(
     ...createDefaultIo(),
     ...options.io,
   };
+  const reviewCommand = argv[0] === 'review' && ['inspect', 'prepare'].includes(argv[1] ?? '')
+    ? argv[1] as 'inspect' | 'prepare'
+    : null;
+  const jsonReviewCommand = reviewCommand !== null && argv.includes('--json');
   const jsonAuthoringCommand = argv.includes('--json')
     && (
       (argv[0] === 'catalog' && ['init', 'context', 'version', 'build', 'validate', 'status', 'publish'].includes(argv[1] ?? ''))
       || (argv[0] === 'plugin' && ['build', 'test', 'validate', 'status', 'remove'].includes(argv[1] ?? ''))
-      || (argv[0] === 'review' && argv[1] === 'inspect')
+      || reviewCommand !== null
     )
     ? `${argv[0]}:${argv[1]}`
     : null;
@@ -4111,7 +4294,7 @@ export async function runCli(
     }
     let catalogPublicationActionStarted = false;
     let configMutationActionStarted = false;
-    const programIo = jsonCatalogDevCommand || jsonWriteRequest
+    const programIo = jsonCatalogDevCommand || jsonWriteRequest || jsonReviewCommand
       ? { ...io, stderr: () => undefined }
       : jsonConfigMutation
         ? {
@@ -4154,6 +4337,20 @@ export async function runCli(
       __awCommandExitState?: { exitCode: number };
     }).__awCommandExitState?.exitCode ?? 0;
   } catch (error) {
+    if (reviewCommand && error instanceof CommanderError) {
+      if (error.exitCode === 0) return 0;
+      if (jsonReviewCommand) {
+        const receipt = reviewCommand === 'inspect'
+          ? createReviewInspectionFailure(
+              new Error(error.message),
+              requestedReviewView(argv),
+              'invalidArguments',
+            )
+          : createReviewPreparationFailure(error.message);
+        writeJsonReceipt(io.stdout, receipt);
+      }
+      return 2;
+    }
     if (jsonCatalogDevCommand) {
       const workspaceRootIndex = argv.findIndex((token) => token === '--workspace-root');
       const workspaceRootOption = argv.find((token) => token.startsWith('--workspace-root='));
@@ -4242,7 +4439,12 @@ export async function runCli(
           errors: [{ code: 'workspaceResolutionFailed', message }],
         });
       } else if (jsonAuthoringCommand === 'review:inspect') {
-        writeJsonReceipt(io.stdout, createReviewInspectionFailure(error));
+        writeJsonReceipt(io.stdout, createReviewInspectionFailure(
+          error,
+          requestedReviewView(argv),
+        ));
+      } else if (jsonAuthoringCommand === 'review:prepare') {
+        writeJsonReceipt(io.stdout, createReviewPreparationFailure(message, 'reviewPreparationFailed'));
       } else {
         writeJsonReceipt(io.stdout, {
           command: jsonAuthoringCommand,
@@ -4254,7 +4456,13 @@ export async function runCli(
     }
     if (jsonAuthoringCommand && error instanceof CommanderError) {
       writeJsonReceipt(io.stdout, jsonAuthoringCommand === 'review:inspect'
-        ? createReviewInspectionFailure(error, 'invalidArguments')
+        ? createReviewInspectionFailure(
+            new Error(error.message),
+            requestedReviewView(argv),
+            'invalidArguments',
+          )
+        : jsonAuthoringCommand === 'review:prepare'
+          ? createReviewPreparationFailure(error.message)
         : {
             command: jsonAuthoringCommand,
             ok: false,

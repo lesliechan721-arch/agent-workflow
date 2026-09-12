@@ -105,7 +105,9 @@ Build script 只向 CLI 提供的 staging root 写入，并只读取已声明输
 
 Portable Agent Skills 是插件的显式增量 distribution。其 native capability 门禁、projection 和 materialization 结构以当前 `manifest`、`build-config`、`artifacts` capability surface 和 validator 为准。Consumer 使用 `aw skill materialize` 或 `aw skill install` 时会验证完整依赖闭包；`--skill` 只过滤最终选择。
 
-`aw skill materialize` 和 `aw skill eval prepare` 返回 `sourceBindingPath`，指向被测 Skill 外的 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失或过期时重新准备产物，不手工补写 digest。
+独立审核源 Skill 时，使用 `aw review inspect <target> --json` 取得默认的精简 review 导航；已有来源凭据通过 `--materialization <path>` 传入。需要 final 时使用 `aw review prepare <plugin-or-source-skill> --platform <codex|claude|agent-skills> --scope <user|project> --out <new-dir> --json`，可加 `--skill` 和 `--config` 选择本次输入。它无需 Eval，配置仅取 manifest 默认值与合法非敏感覆盖，在隔离环境执行必要 build/renderer，不安装插件。发布检查显式选择 `--view release`，不以普通导航推断证据覆盖。
+
+`aw skill materialize`、`aw skill eval prepare` 和 `aw review prepare` 均返回 `sourceBindingPath`，指向被测 Skill 外的 schema 2 `aw-source-binding.json`。它把本次 source 或 Catalog snapshot、profile 输入和实际产物绑定，供后续 inspection 只读核验。该文件不替代 EvalSpec/Audit/Result，也不证明语义质量。缺失、过期或 v1 凭据均需通过对应入口在新目录重新准备，不原地迁移或手工补写 digest。inspection v2 与相关插件同步升级，不保留旧 inspection 输出。
 
 每个 `codex.skill` dynamic target 必须显式声明 `delivery`。AW-owned 输出使用 `{ "mode": "aw-extension" }`。Codex native 输出只使用 `{ "mode": "codex-native", "identity": "shared", "renderProfile": "user" }`。所有 `codex.skill` delivery、`claude.skill` 和 `agent-skills.skill` 的 `refreshKeys` 都不得引用 sensitive config；非 Skill target 可以读取 sensitive config。native target 使用 user 配置 profile；与其 `refreshKeys` 匹配的字段只能在 user scope 写入，project scope 的 set 会被拒绝。user 配置中与 `refreshKeys` 匹配的变更会刷新投影，空数组合法。非 `codex.skill` target 不能声明 `delivery`。native dynamic Skill 不能与静态 Codex Skill 同名。同一插件 identity 的所有 Codex native 组件必须使用完全相同的 scope 集；静态 Skill、MCP、Hook 和 App 固定为 `{project,user}`，dynamic native 使用声明 scopes，slash command 不参与该规则。
 

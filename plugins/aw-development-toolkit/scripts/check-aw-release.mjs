@@ -218,15 +218,16 @@ function addIssue(state, category, code, message, extra = {}) {
 }
 
 function validateInspection(receipt) {
-  if (!isObject(receipt) || receipt.schemaVersion !== 1 || receipt.command !== 'review:inspect') {
-    throw new UnsupportedError('aw review inspect does not support Review inspection schema 1.');
+  if (!isObject(receipt) || receipt.schemaVersion !== 2 || receipt.command !== 'review:inspect'
+    || receipt.view !== 'release') {
+    throw new UnsupportedError('aw review inspect did not return Review inspection schema 2 release view.');
   }
   if (!isObject(receipt.target) || !isObject(receipt.workspace)
     || typeof receipt.workspace.root !== 'string' || !Array.isArray(receipt.plugins)
     || !Array.isArray(receipt.subjects) || !Array.isArray(receipt.requiredFinals)
     || !Array.isArray(receipt.requiredEvals) || !Array.isArray(receipt.materializations)
     || !Array.isArray(receipt.issues)) {
-    throw new UnsupportedError('aw review inspect returned an incomplete Review inspection schema 1 receipt.');
+    throw new UnsupportedError('aw review inspect returned an incomplete Review inspection schema 2 release receipt.');
   }
   return receipt;
 }
@@ -310,7 +311,7 @@ async function validateEvidenceReferences(evidence, evidencePath) {
 }
 
 function materializationProfile(profile) {
-  if (!isObject(profile) || !['eval', 'portable'].includes(profile.kind)
+  if (!isObject(profile) || !['eval', 'portable', 'review'].includes(profile.kind)
     || typeof profile.id !== 'string' || profile.id.length === 0
     || !['user', 'project'].includes(profile.scope) || !DIGEST.test(profile.inputDigest)) {
     throw new UnsupportedError('Review inspection returned an invalid materialization profile.');
@@ -829,7 +830,7 @@ async function main() {
         digest: await fileDigest(materialization),
       });
     }
-    const inspectionArgs = ['review', 'inspect', options.target];
+    const inspectionArgs = ['review', 'inspect', options.target, '--view', 'release'];
     for (const materialization of options.materializations) {
       inspectionArgs.push('--materialization', materialization);
     }

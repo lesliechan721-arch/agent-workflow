@@ -9,7 +9,7 @@ metadata:
 
 # Author Agent Skill
 
-写正文或 reference 时使用 `agent-content`。
+写正文或 reference 时使用 `agent-content`。先确认可编辑源码与运行包的关系；项目适配提供构建约束和允许路径，标准包检查针对实际可消费的目标。
 
 局部修词、修路径直接处理；职责、调用、权限、脚本、消费者或 Eval 发生变化时，只对受影响部分补充设计依据。新建或实质重写时读取 `references/design-and-validation.md`。设计依据可留在当前上下文，不强制创建中间产物。
 

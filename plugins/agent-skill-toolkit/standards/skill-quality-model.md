@@ -16,6 +16,6 @@
 | SIMPLIFY.ACCEPT | skills/simplify-agent-skill/references/ablation-acceptance.md | 有限预算下的对照接受 |
 | ARCH.PORTFOLIO | skills/review-agent-architecture/references/public-surface-review.md | 公开入口、依赖及用户选择成本 |
 
-上述两份共享规则只维护插件根下的源码。manifest 的 `buildConfig.skillRuntimeFiles` 在 AW build 时投影到 Author 和两个 Reviewer 的本地 references；不维护派生源码，也不要求 Review 激活 Author。可选 AW 归档说明由 `aw-development-toolkit/references/report-publication.md` 拥有并通过 runtime export 投影，不形成反向安装依赖。
+上述两份共享规则只维护插件根下的源码。manifest 的 `buildConfig.skillRuntimeFiles` 在 AW build 时投影到 Author 和两个 Reviewer 的本地 references；不维护派生源码，也不要求 Review 激活 Author。通用 Reviewer 交付内容与证据；可选 AW 归档由顶层 AW 调用方使用自己的归档能力完成，不投影到通用 Reviewer。
 
 内容层的两种负担是跨文档概念；Skill 数量、手动宏、caller/leaf 与插件依赖是领域应用。AW 字段/模板/脚本属于 Runner；通用插件测试采用 AW 格式不等于它的运行规范也依赖 AW。

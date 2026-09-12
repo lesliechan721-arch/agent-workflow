@@ -112,6 +112,7 @@ import {
   collectSensitivePluginConfigValues,
   runPreApplyScript,
 } from '../utils/plugin-scripts.js';
+import { validateRuntimeSkillClosure } from '../utils/runtime-skill-closure.js';
 import { findSensitiveTokenPath } from '../utils/sensitive-content.js';
 import {
   atomicRemoveConfigFile,
@@ -1424,17 +1425,20 @@ async function resolveDynamicArtifacts(options: {
   env: NodeJS.ProcessEnv;
   event: 'install';
   previousArtifacts: readonly GeneratedArtifact[];
+  requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
 }): Promise<{
   artifacts: ValidatedArtifactPlanArtifact[];
   sourceDirs(artifact: ValidatedArtifactPlanArtifact): string[];
   sensitiveValues: string[];
 }> {
-  const requestBatches = resolveAwDeliveredArtifactRequestBatches({
-    manifest: options.plugin.manifest,
-    platform: options.platform,
-    scope: options.scope,
-  });
+  const requestBatches = options.requestedArtifactIds
+    ? [options.requestedArtifactIds]
+    : resolveAwDeliveredArtifactRequestBatches({
+        manifest: options.plugin.manifest,
+        platform: options.platform,
+        scope: options.scope,
+      });
   if (requestBatches.length === 0) {
     return { artifacts: [], sourceDirs: () => [], sensitiveValues: [] };
   }
@@ -3562,9 +3566,14 @@ async function assertNoSensitiveValuesInCodexNativePayload(options: {
 async function prepareCodexNativeRender(options: {
   plugin: PluginMeta;
   env: NodeJS.ProcessEnv;
+  requestedArtifactIds?: readonly string[];
   scriptTimeoutMs?: number;
 }): Promise<PreparedCodexNativeRender | null> {
-  const targets = codexNativeRenderTargets(options.plugin);
+  const requested = options.requestedArtifactIds
+    ? new Set(options.requestedArtifactIds)
+    : undefined;
+  const targets = codexNativeRenderTargets(options.plugin)
+    .filter((target) => !requested || requested.has(target.id));
   if (targets.length === 0) return null;
   const byScope = new Map<Scope, typeof targets>();
   for (const target of targets) {
@@ -3747,6 +3756,186 @@ async function materializeCodexNativeRender(options: {
     presentSkillKeys: options.prepared.presentSkillKeys,
     targetSkillKeys: options.prepared.targetSkillKeys,
   };
+}
+
+export interface ReviewNativeSkillSelection {
+  skill: string;
+  targetId: string | null;
+}
+
+export interface MaterializedReviewNativeSkills {
+  rootDir: string;
+  skills: Array<{ skill: string; path: string }>;
+}
+
+/**
+ * Materialize only the selected Codex or Claude Skills into an isolated review root.
+ * The caller owns outputRoot and is responsible for its cleanup.
+ */
+export async function materializeReviewNativeSkills(options: {
+  plugin: PluginMeta;
+  platform: 'codex' | 'claude';
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  outputRoot: string;
+  skills: readonly ReviewNativeSkillSelection[];
+  scriptTimeoutMs?: number;
+}): Promise<MaterializedReviewNativeSkills> {
+  if (options.skills.length === 0) {
+    throw new Error('Review materialization requires at least one selected Skill.');
+  }
+  const skillsRoot = path.join(options.outputRoot, 'skills');
+  await fs.ensureDir(skillsRoot);
+
+  const declarations = options.plugin.manifest.artifacts?.targets ?? [];
+  const dynamicSelections = options.skills.filter((skill) => skill.targetId !== null);
+  const selectedDeclarations = dynamicSelections.map((selection) => {
+    const matches = declarations.filter((target) =>
+      target.id === selection.targetId
+      && target.platform === options.platform
+      && target.scopes.includes(options.scope)
+      && target.skillKey === selection.skill
+      && target.target === `${options.platform}.skill`);
+    if (matches.length !== 1) {
+      throw new Error(
+        `Selected ${options.platform} Skill target "${selection.targetId}" is missing or ambiguous.`,
+      );
+    }
+    return matches[0]!;
+  });
+  const selectedNames = options.skills.map((skill) => skill.skill);
+  if (new Set(selectedNames).size !== selectedNames.length) {
+    throw new Error('Review materialization selected the same Skill more than once.');
+  }
+
+  for (const selection of options.skills.filter((skill) => skill.targetId === null)) {
+    const sourceRoot = path.join(options.plugin.rootDir, options.platform, 'skills', selection.skill);
+    const destination = path.join(skillsRoot, selection.skill);
+    await fs.copy(sourceRoot, destination, {
+      overwrite: false,
+      errorOnExist: true,
+      dereference: false,
+    });
+  }
+
+  const directTargetIds = selectedDeclarations
+    .filter((target) => target.delivery?.mode !== 'codex-native')
+    .map((target) => target.id);
+  if (directTargetIds.length > 0) {
+    const dynamic = await resolveDynamicArtifacts({
+      plugin: options.plugin,
+      platform: options.platform,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+      event: 'install',
+      previousArtifacts: [],
+      requestedArtifactIds: directTargetIds,
+      scriptTimeoutMs: options.scriptTimeoutMs,
+    });
+    for (const artifact of dynamic.artifacts) {
+      if (artifact.state !== 'present') {
+        throw new Error(`Selected Skill target "${artifact.id}" did not produce a present Skill.`);
+      }
+      if (artifact.target !== `${options.platform}.skill`) {
+        throw new Error(`Selected target "${artifact.id}" did not produce a ${options.platform} Skill.`);
+      }
+      let tree: DynamicSkillTree;
+      if (artifact.target === 'codex.skill') {
+        tree = await createCodexSkillExpectedTree({
+          artifact,
+          sourceDirs: dynamic.sourceDirs(artifact),
+          requireReadme: true,
+          requirementsReceipt: requirementsReceipt(options.plugin),
+          sourceRequirementsReceiptPolicy: 'allow',
+        });
+      } else if (artifact.target === 'claude.skill') {
+        tree = await createDynamicSkillExpectedTree({
+          artifact,
+          sourceDirs: dynamic.sourceDirs(artifact),
+          requireReadme: true,
+          requirementsReceipt: requirementsReceipt(options.plugin),
+          sourceRequirementsReceiptPolicy: 'allow',
+        });
+      } else {
+        throw new Error(`Selected target "${artifact.id}" is not a Skill.`);
+      }
+      assertNoSensitiveConfigInFiles(
+        withoutVerifiedRequirementsReceipt(options.plugin, tree.files),
+        dynamic.sensitiveValues,
+        'artifactRendererSensitiveConfigExposed: Final dynamic Skill contains sensitive config.',
+      );
+      await writeDynamicSkillTree(path.join(skillsRoot, tree.skillKey), tree);
+    }
+  }
+
+  const nativeTargetIds = selectedDeclarations
+    .filter((target) => target.delivery?.mode === 'codex-native')
+    .map((target) => target.id);
+  if (nativeTargetIds.length > 0) {
+    if (options.platform !== 'codex') {
+      throw new Error('Codex native Skill targets are only valid for the Codex platform.');
+    }
+    const marketplaceRoot = path.join(options.outputRoot, '.native-marketplace');
+    const payloadRoot = path.join(
+      marketplaceRoot,
+      'plugins',
+      options.plugin.manifest.name,
+    );
+    await fs.copy(options.plugin.rootDir, payloadRoot, {
+      overwrite: false,
+      errorOnExist: true,
+      dereference: false,
+    });
+    const prepared = await prepareCodexNativeRender({
+      plugin: options.plugin,
+      env: options.env,
+      requestedArtifactIds: nativeTargetIds,
+      scriptTimeoutMs: options.scriptTimeoutMs,
+    });
+    if (!prepared) {
+      throw new Error('Selected Codex native Skill targets did not produce a projection.');
+    }
+    const staged = await materializeCodexNativeRender({
+      plugin: options.plugin,
+      stagingRoot: marketplaceRoot,
+      prepared,
+      hasStaticSkills: options.plugin.manifest.skills !== undefined,
+    });
+    await assertNoSensitiveValuesInCodexNativePayload({
+      plugin: options.plugin,
+      payloadRoot,
+      allowedRoot: marketplaceRoot,
+      sensitiveValues: await resolveSensitiveUserConfigValues(options.plugin, options.env),
+      verifiedRenderReceipt: staged.receipt,
+    });
+    for (const target of selectedDeclarations.filter((entry) =>
+      entry.delivery?.mode === 'codex-native')) {
+      const sourceRoot = path.join(
+        payloadRoot,
+        ...prepared.skillsRelativeRoot.split('/'),
+        target.skillKey!,
+      );
+      await fs.copy(sourceRoot, path.join(skillsRoot, target.skillKey!), {
+        overwrite: false,
+        errorOnExist: true,
+        dereference: false,
+      });
+    }
+    await fs.remove(marketplaceRoot);
+  }
+
+  const skills: Array<{ skill: string; path: string }> = [];
+  for (const skill of selectedNames.sort((left, right) => left.localeCompare(right))) {
+    const skillRoot = path.join(skillsRoot, skill);
+    await validateSkillDirectory(skillRoot, `${options.platform}.skill`, {
+      requirementsReceiptPolicy: 'allow',
+    });
+    await validateRuntimeSkillClosure(skillRoot);
+    skills.push({ skill, path: skillRoot });
+  }
+  return { rootDir: options.outputRoot, skills };
 }
 
 async function mirrorCatalog(

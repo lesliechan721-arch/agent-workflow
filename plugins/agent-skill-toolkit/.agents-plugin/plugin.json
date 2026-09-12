@@ -67,22 +67,6 @@
         "skill": "review-agent-architecture",
         "target": "scripts/audit-output-contracts.mjs",
         "source": "./scripts/audit-output-contracts.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "target": "references/report-publication.md",
-        "import": {
-          "plugin": "aw-development-toolkit",
-          "export": "review-publication-reference"
-        }
-      },
-      {
-        "skill": "review-agent-architecture",
-        "target": "references/report-publication.md",
-        "import": {
-          "plugin": "aw-development-toolkit",
-          "export": "review-publication-reference"
-        }
       }
     ]
   },
