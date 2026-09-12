@@ -271,7 +271,7 @@ Codex project scope 不复制 static Skill、MCP、Hook、App 或其它 native p
 aw install aw-development-toolkit -p both
 ```
 
-使用 `develop-aw` 建立或维护 Workspace 和其中的 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。`review-aw` 默认只读，不 build 或 test 被审对象。远端发布只由手动调用的 `publish-aw-catalog` 执行；它使用 CLI 的 Workspace、remote 和 branch 默认解析，并且只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply 和失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
+使用 `develop-aw` 建立或维护 Workspace 和其中的 canonical Plugin Source。删除先检查 Workspace、插件名、inventory 和反向依赖，再使用公开 `aw plugin remove`；receipt 返回后检查剩余 inventory，空 inventory 不检查已删除对象。删除不会自动 publish。`review-aw` 先复用匹配的 final；完整审核需要准备时，说明 build/renderer 与隔离输出后运行 `aw review prepare`，随后只读审核。用户明确禁止执行时只做限定的源码审核。远端发布只由手动调用的 `publish-aw-catalog` 执行；它使用 CLI 的 Workspace、remote 和 branch 默认解析，并且只在用户授权完整 `planDigest` 后 apply。Workspace、聚合验证、publish plan/apply、失败恢复见[Catalog 作者指南](docs/catalog-authoring.md)；manifest、单插件命令和 Plugin Source 边界见[插件作者指南](docs/plugin-authoring.md)。
 
 当前作者合同固定为 Plugin Manifest v3、Catalog snapshot schema 7 和 Catalog Sources Config schema 2。Agent 作者入口先运行 `aw self check --from <skill-root> --json`，并以 capability receipt 判断兼容性；不使用 CLI version gate。每个 Catalog 命令自行定位 Workspace；静态 `aw catalog status --json` 不 build 或 fetch。Development source 使用 `aw catalog dev activate|status|deactivate --json` 管理；activate 会 build、validate、注册 managed Path source 并 sync。activate 影响现有引用或影响未知时使用 `--yes`；deactivate 检测到 installation、lifecycle、config 或 marketplace 引用，或 inventory 不完整时也使用 `--yes`，其 schema 4 receipt 返回脱敏的 inventory v2 `impact`。
 

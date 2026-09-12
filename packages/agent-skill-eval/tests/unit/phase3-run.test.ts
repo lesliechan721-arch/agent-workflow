@@ -110,6 +110,59 @@ function waitForClose(child: ChildProcess): Promise<{ code: number | null; signa
   })
 }
 
+async function reviewEvalFixture(): Promise<{
+  root: string
+  files: Record<string, string>
+  cli: string
+}> {
+  const repositoryRoot = path.resolve('../..')
+  const evalRoot = path.join(
+    repositoryRoot,
+    'plugins',
+    'aw-development-toolkit',
+    'skills',
+    'review-aw',
+    'evals',
+  )
+  const document = JSON.parse(await readFile(
+    path.join(evalRoot, 'materialized-review-cases.json'),
+    'utf8',
+  )) as { cases: Array<{ id: string; input: { workspaceFiles: Record<string, string> } }> }
+  const evalCase = document.cases.find((entry) => entry.id === 'reuse_current_final')
+  if (!evalCase) throw new Error('reuse_current_final fixture is missing.')
+  const root = await fs.realpath(await mkdtemp(path.join(os.tmpdir(), 'aw-review-eval-fixture-')))
+  roots.push(root)
+  for (const [relativePath, content] of Object.entries(evalCase.input.workspaceFiles)) {
+    const target = path.join(root, relativePath)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, content)
+  }
+  return {
+    root,
+    files: evalCase.input.workspaceFiles,
+    cli: path.join(evalRoot, 'review-fixtures', 'bin', 'aw.mjs'),
+  }
+}
+
+async function runReviewFixtureCli(
+  data: Awaited<ReturnType<typeof reviewEvalFixture>>,
+  args: string[],
+): Promise<{ code: number; value: Record<string, unknown> }> {
+  try {
+    const result = await execFileAsync(process.execPath, [data.cli, ...args], {
+      cwd: data.root,
+      encoding: 'utf8',
+    })
+    return { code: 0, value: JSON.parse(result.stdout) as Record<string, unknown> }
+  } catch (error) {
+    const failure = error as { code?: number; stdout?: string }
+    return {
+      code: typeof failure.code === 'number' ? failure.code : 1,
+      value: JSON.parse(failure.stdout ?? '{}') as Record<string, unknown>,
+    }
+  }
+}
+
 function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0)
@@ -1306,6 +1359,71 @@ describe('EvalSpec v1 execution', () => {
     }
     expect(conversationCount).toBeGreaterThan(0)
     expect(caseCount).toBeGreaterThan(0)
+  })
+
+  it('rejects review fixture choices outside its declared test-double profile', async () => {
+    const data = await reviewEvalFixture()
+    const source = path.join(data.root, 'project/plugins/demo-plugin/skills/demo-skill')
+    const workspace = path.join(data.root, 'project')
+    const binding = path.join(data.root, '_review-output/existing/aw-source-binding.json')
+    const config = path.join(data.root, 'config.json')
+    await writeFile(config, '{"unknown-plugin":{}}\n')
+
+    const rejected = [
+      ['review', 'inspect', path.join(data.root, 'outside'), '--json'],
+      ['review', 'inspect', source, '--skill', 'unknown-skill', '--json'],
+      ['review', 'inspect', source, '--platform', 'claude', '--json'],
+      ['review', 'inspect', source, '--scope', 'user', '--json'],
+      ['review', 'inspect', source, '--workspace-root', data.root, '--json'],
+      ['review', 'inspect', source, '--config', config, '--json'],
+      ['review', 'inspect', source, '--materialization', path.join(data.root, 'missing-binding.json'), '--json'],
+      ['review', 'prepare', source, '--platform', 'codex', '--scope', 'project', '--json'],
+      ['review', 'inspect', source, '--unknown', 'value', '--json'],
+      ['review', 'inspect', source, '--platform', '--json'],
+      ['review', 'inspect', source, '--skill', 'demo-skill', '--skill', 'unknown-skill', '--json'],
+    ]
+    for (const args of rejected) {
+      const result = await runReviewFixtureCli(data, args)
+      expect(result.code, args.join(' ')).not.toBe(0)
+      expect(result.value.ok, args.join(' ')).toBe(false)
+    }
+
+    const accepted = await runReviewFixtureCli(data, [
+      'review', 'inspect', source,
+      '--workspace-root', workspace,
+      '--skill', 'demo-skill',
+      '--platform', 'codex',
+      '--scope', 'project',
+      '--materialization', binding,
+      '--json',
+    ])
+    expect(accepted.code).toBe(0)
+    expect(accepted.value).toMatchObject({ skills: [{ state: 'ready' }] })
+  })
+
+  it('preserves review fixture source, provider, and supplied final bytes', async () => {
+    const data = await reviewEvalFixture()
+    const protectedPaths = Object.keys(data.files).filter((relativePath) =>
+      relativePath.startsWith('project/plugins/demo-plugin/')
+        || relativePath.startsWith('_review-output/existing/'))
+    const before = new Map(await Promise.all(protectedPaths.map(async (relativePath) => [
+      relativePath,
+      await readFile(path.join(data.root, relativePath)),
+    ] as const)))
+    const source = path.join(data.root, 'project/plugins/demo-plugin/skills/demo-skill')
+
+    expect((await runReviewFixtureCli(data, ['review', 'inspect', source, '--json'])).code).toBe(0)
+    expect((await runReviewFixtureCli(data, [
+      'review', 'prepare', source,
+      '--platform', 'codex',
+      '--scope', 'project',
+      '--out', path.join(data.root, '_review-output/new'),
+      '--json',
+    ])).code).not.toBe(0)
+
+    for (const [relativePath, expected] of before) {
+      expect(await readFile(path.join(data.root, relativePath)), relativePath).toEqual(expected)
+    }
   })
 
   it('exclusively claims outputRoot before provider execution and preserves existing content', async () => {

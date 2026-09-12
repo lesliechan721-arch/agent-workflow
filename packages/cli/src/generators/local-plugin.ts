@@ -149,6 +149,7 @@ readonly BuildImportProjection[]
 export interface BundleLocalPluginOptions {
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
+  commandEnv?: NodeJS.ProcessEnv;
   runtimeResolver?: CatalogRuntimeImportResolver;
   preparedRuntimeContext?: PreparedPluginRuntimeContext;
   runtimeSkillClosureValidation?: 'current' | 'historical';
@@ -246,36 +247,38 @@ async function resolveRuntimePnpmEntry(
   return stats?.isFile() ? entryPath : undefined;
 }
 
-const defaultStagingRunner: PluginStagingRunner = {
-  async installPackageRoot(packageRoot) {
-    const supportedPackageManager = await validateStagingPackageManager(packageRoot);
-    const fixedPnpmEntry = await resolveFixedPnpmEntry(supportedPackageManager, process.env)
-      ?? await resolveRuntimePnpmEntry(supportedPackageManager);
-    if (!fixedPnpmEntry) {
-      throw new Error(
-        `Cannot stage scripts.node.packageRoot: missing bundled ${supportedPackageManager} runtime dependency.`,
-      );
-    }
-    const args = [
-      fixedPnpmEntry,
-      'install',
-      '--frozen-lockfile',
-      '--ignore-scripts',
-    ];
-    await execFileAsync(process.execPath, args, {
-      cwd: packageRoot,
-      env: process.env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-  },
-  async runNodeBuild({ pluginRoot, scriptPath, args, env }) {
-    await execFileAsync(process.execPath, [path.join(pluginRoot, stripDotSlash(scriptPath)), ...args], {
-      cwd: pluginRoot,
-      env,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-  },
-};
+function createDefaultStagingRunner(commandEnv: NodeJS.ProcessEnv): PluginStagingRunner {
+  return {
+    async installPackageRoot(packageRoot) {
+      const supportedPackageManager = await validateStagingPackageManager(packageRoot);
+      const fixedPnpmEntry = await resolveFixedPnpmEntry(supportedPackageManager, commandEnv)
+        ?? await resolveRuntimePnpmEntry(supportedPackageManager);
+      if (!fixedPnpmEntry) {
+        throw new Error(
+          `Cannot stage scripts.node.packageRoot: missing bundled ${supportedPackageManager} runtime dependency.`,
+        );
+      }
+      const args = [
+        fixedPnpmEntry,
+        'install',
+        '--frozen-lockfile',
+        '--ignore-scripts',
+      ];
+      await execFileAsync(process.execPath, args, {
+        cwd: packageRoot,
+        env: commandEnv,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    },
+    async runNodeBuild({ pluginRoot, scriptPath, args, env }) {
+      await execFileAsync(process.execPath, [path.join(pluginRoot, stripDotSlash(scriptPath)), ...args], {
+        cwd: pluginRoot,
+        env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    },
+  };
+}
 
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
@@ -1492,6 +1495,7 @@ async function createStagedPlugin(
   plugin: PluginMeta,
   runner: PluginStagingRunner,
   resolver?: CatalogRuntimeImportResolver,
+  commandEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<{
   plugin: PluginMeta;
   runtimeContext: PreparedPluginRuntimeContext;
@@ -1523,7 +1527,7 @@ async function createStagedPlugin(
         `Invalid plugin "${plugin.manifest.name}": buildConfig.buildImports requires scripts.node.build.`,
       );
     }
-    const buildEnv: NodeJS.ProcessEnv = { ...process.env };
+    const buildEnv: NodeJS.ProcessEnv = { ...commandEnv };
     const buildImportProvenance: RuntimeImportProvenance[] = [];
     const buildImportProjections: BuildImportProjection[] = [];
     for (const buildImport of declaredBuildImports) {
@@ -1532,7 +1536,7 @@ async function createStagedPlugin(
           `Cannot resolve buildConfig.buildImports for plugin "${plugin.manifest.name}": catalog runtime import resolver is required.`,
         );
       }
-      if (Object.hasOwn(process.env, buildImport.env)) {
+      if (Object.hasOwn(commandEnv, buildImport.env)) {
         throw new Error(
           `Invalid buildConfig.buildImports env "${buildImport.env}": refusing to overwrite an existing environment variable.`,
         );
@@ -1610,7 +1614,7 @@ async function createStagedPlugin(
 async function resolveBuildPlugin(
   plugin: PluginMeta,
   options: Required<Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'>>
-    & Pick<BundleLocalPluginOptions, 'runtimeResolver' | 'preparedRuntimeContext'>,
+    & Pick<BundleLocalPluginOptions, 'commandEnv' | 'runtimeResolver' | 'preparedRuntimeContext'>,
 ): Promise<{
   plugin: PluginMeta;
   runtimeContext: PreparedPluginRuntimeContext;
@@ -1651,12 +1655,20 @@ async function resolveBuildPlugin(
     };
   }
 
-  return createStagedPlugin(plugin, options.stagingRunner, options.runtimeResolver);
+  return createStagedPlugin(
+    plugin,
+    options.stagingRunner,
+    options.runtimeResolver,
+    options.commandEnv,
+  );
 }
 
 export async function prepareLocalPluginBundleSource(
   plugin: PluginMeta,
-  options: Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner' | 'runtimeResolver'> = {},
+  options: Pick<
+    BundleLocalPluginOptions,
+    'buildMode' | 'stagingRunner' | 'commandEnv' | 'runtimeResolver'
+  > = {},
 ): Promise<{
   plugin: PluginMeta;
   runtimeContext: PreparedPluginRuntimeContext;
@@ -1665,7 +1677,9 @@ export async function prepareLocalPluginBundleSource(
   await assertPluginInputTree(plugin.rootDir);
   const buildOptions = {
     buildMode: options.buildMode ?? 'staging',
-    stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+    stagingRunner: options.stagingRunner
+      ?? createDefaultStagingRunner(options.commandEnv ?? process.env),
+    commandEnv: options.commandEnv,
     runtimeResolver: options.runtimeResolver,
     preparedRuntimeContext: undefined,
   };
@@ -1734,7 +1748,9 @@ export async function bundleLocalPlugin(
   const historicalComparison = options.runtimeSkillClosureValidation === 'historical';
   const buildOptions = {
     buildMode: options.buildMode ?? 'build-free',
-    stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+    stagingRunner: options.stagingRunner
+      ?? createDefaultStagingRunner(options.commandEnv ?? process.env),
+    commandEnv: options.commandEnv,
     runtimeResolver: options.runtimeResolver,
     preparedRuntimeContext: options.preparedRuntimeContext,
   };

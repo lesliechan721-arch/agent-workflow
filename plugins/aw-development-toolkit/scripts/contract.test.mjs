@@ -18,7 +18,9 @@ function runtimeSkill(platform, name) {
 test('publishes two model-callable Skills and one manual-only Publisher', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'aw-development-toolkit');
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-inspection.v1'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-preparation.v1'));
+  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-inspection.v2'));
+  assert.equal(manifest.requires.aw.capabilities.includes('aw.review-inspection.v1'), false);
   assert.ok(manifest.requires.aw.capabilities.includes('aw.review-publication.v1'));
   assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), [...invocation.keys()].sort());
 

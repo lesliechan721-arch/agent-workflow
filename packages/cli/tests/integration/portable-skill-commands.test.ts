@@ -559,7 +559,7 @@ describe('portable skill public commands', () => {
       scope: 'project',
     });
     await expect(fs.readJson(receipt.sourceBindingPath)).resolves.toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'aw-source-binding',
       source: {
         kind: 'catalog-snapshot',

@@ -1,7 +1,7 @@
 # Review AW
 
-只读评审 AW Plugin、Catalog、跨插件工作流或公开能力组合，区分源码事实、实际物化结果和语义质量。
+审核 AW 源 Skill、Plugin、Catalog、跨插件工作流或公开能力组合，区分源码事实、实际物化结果和语义质量。
 
-例如：“审核这个 Catalog 的职责和依赖，先只看现有证据。”它通过公开只读取证入口检查当前 inventory、profile、snapshot 与来源绑定，再按需使用通用 Skill 或架构 Reviewer。缺少产物时会说明范围，不自行 build 或 test。
+例如：“完整审核这个源 Skill 的 Codex/project 运行包。”它先取得精简的源码与产物清单，复用匹配 final；缺少时说明并执行必要本地 build/renderer，生成隔离副本，再交给通用 Reviewer。用户只要求源码分析或明确禁止执行时，不准备产物，并说明完整包尚未验证。
 
 默认返回人读报告。用户明确要求时，可输出报告文件或执行独立 Release Check；机器证据按每个对象分别绑定，缺项不会被全局通过结论掩盖。检查结果不授权发布。顶层报告可按请求归档，leaf 不重复归档。

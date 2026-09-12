@@ -35,7 +35,8 @@
         "aw.catalog-authoring.v1",
         "aw.catalog-dev-source.v1",
         "aw.catalog-publication.v1",
-        "aw.review-inspection.v1",
+        "aw.review-preparation.v1",
+        "aw.review-inspection.v2",
         "aw.review-publication.v1",
         "aw.skill-validation.v1"
       ]

@@ -6,11 +6,14 @@ import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
 import { createRebuildIntegration } from '../src/commands/rebuild-integration.js';
-import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../src/generators/local-plugin.js';
 import { createNoopDebugLogger } from '../src/output/debug-log.js';
 import { createNoopReporter } from '../src/output/reporter.js';
+import {
+  createIsolatedSkillEnv,
+  prepareSkillPluginBundle,
+  type PreparedSkillPluginBundle,
+} from '../src/review/skill-materialization.js';
 import type { PluginMeta } from '../src/types.js';
-import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
 export interface AwSkillEvalMaterializationProfile {
@@ -34,70 +37,6 @@ export interface MaterializeAwSkillEvalOptions {
 
 export interface AwSkillEvalMaterializedSubject {
   root: string;
-}
-
-interface PreparedEvalBundle {
-  bundleRoot: string;
-  plugin: PluginMeta;
-  cleanup(): Promise<void>;
-}
-
-async function prepareEvalBundle(
-  plugin: PluginMeta,
-  plugins: PluginMeta[],
-  workRoot: string,
-): Promise<PreparedEvalBundle> {
-  await fs.ensureDir(workRoot);
-  const tempRoot = await fs.mkdtemp(path.join(workRoot, 'bundle-'));
-  const prepared = await prepareLocalPluginBundleSource(plugin, {
-    buildMode: 'staging',
-    runtimeResolver: createCatalogRuntimeImportResolver(plugins),
-  });
-  const bundleRoot = path.join(tempRoot, 'bundle');
-  try {
-    await bundleLocalPlugin(prepared.plugin, bundleRoot, {
-      buildMode: 'prepared',
-      preparedRuntimeContext: prepared.runtimeContext,
-    });
-    return {
-      bundleRoot,
-      plugin: {
-        ...prepared.plugin,
-        rootDir: bundleRoot,
-        manifestPath: path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
-      },
-      cleanup: async () => {
-        await prepared.cleanup();
-        await fs.remove(tempRoot);
-      },
-    };
-  } catch (error) {
-    await prepared.cleanup();
-    await fs.remove(tempRoot);
-    throw error;
-  }
-}
-
-function createIsolatedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  scopeRoot: string,
-): NodeJS.ProcessEnv {
-  const home = path.join(scopeRoot, 'home');
-  const temp = path.join(scopeRoot, 'tmp');
-  return {
-    ...baseEnv,
-    HOME: home,
-    USERPROFILE: home,
-    XDG_CACHE_HOME: path.join(scopeRoot, 'xdg-cache'),
-    XDG_CONFIG_HOME: path.join(scopeRoot, 'xdg-config'),
-    XDG_STATE_HOME: path.join(scopeRoot, 'xdg-state'),
-    TMPDIR: temp,
-    TEMP: temp,
-    TMP: temp,
-    AW_HOME: path.join(scopeRoot, 'aw-home'),
-    AW_CODEX_HOME: path.join(scopeRoot, 'codex-home'),
-    NODE_PATH: '',
-  };
 }
 
 async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string): Promise<void> {
@@ -212,7 +151,7 @@ async function copyUserMaterializedArtifacts(options: {
 }
 
 async function materializeStaticCodexSkills(options: {
-  prepared: PreparedEvalBundle;
+  prepared: PreparedSkillPluginBundle;
   profile: AwSkillEvalMaterializationProfile;
   projectRoot: string;
   env: NodeJS.ProcessEnv;
@@ -226,7 +165,7 @@ async function materializeStaticCodexSkills(options: {
     : path.join(
         options.env.AW_HOME!,
         'plugins',
-        options.prepared.plugin.manifest.name,
+        options.prepared.bundlePlugin.manifest.name,
         'codex',
         'skills',
       );
@@ -234,7 +173,7 @@ async function materializeStaticCodexSkills(options: {
 }
 
 async function materializeProfile(options: {
-  preparedByName: ReadonlyMap<string, PreparedEvalBundle>;
+  preparedByName: ReadonlyMap<string, PreparedSkillPluginBundle>;
   requiredSkills: ReadonlySet<string>;
   profile: AwSkillEvalMaterializationProfile;
   outputRoot: string;
@@ -244,13 +183,7 @@ async function materializeProfile(options: {
   const scopeRoot = path.join(options.outputRoot, 'subjects', options.profile.id);
   await fs.remove(scopeRoot);
   await fs.ensureDir(scopeRoot);
-  const env = createIsolatedEnv(options.baseEnv, scopeRoot);
-  await Promise.all([
-    fs.ensureDir(env.HOME!),
-    fs.ensureDir(env.TMPDIR!),
-    fs.ensureDir(env.AW_HOME!),
-    fs.ensureDir(env.AW_CODEX_HOME!),
-  ]);
+  const env = await createIsolatedSkillEnv(options.baseEnv, scopeRoot);
   const projectRoot = path.join(scopeRoot, 'project');
   await fs.ensureDir(path.join(projectRoot, '.git'));
 
@@ -292,7 +225,7 @@ async function materializeProfile(options: {
   });
   for (const { prepared } of installations) {
     const target = await integration.buildTarget({
-      plugin: prepared.plugin,
+      plugin: prepared.bundlePlugin,
       platform: 'codex',
       scope: options.profile.scope,
       cwd: projectRoot,
@@ -354,8 +287,12 @@ export async function materializeAwSkillEvalSubject(
   }
 
   const requiredPluginNames = [...new Set(options.profile.plugins.map((plugin) => plugin.name))];
-  const preparedByName = new Map<string, PreparedEvalBundle>();
+  const preparedByName = new Map<string, PreparedSkillPluginBundle>();
   try {
+    const bundleEnv = await createIsolatedSkillEnv(
+      options.env ?? process.env,
+      path.join(options.workRoot, 'environment'),
+    );
     for (const pluginName of requiredPluginNames) {
       const plugin = sourcePlugins.get(pluginName);
       if (!plugin) {
@@ -365,7 +302,12 @@ export async function materializeAwSkillEvalSubject(
       }
       preparedByName.set(
         pluginName,
-        await prepareEvalBundle(plugin, options.plugins, path.join(options.workRoot, pluginName)),
+        await prepareSkillPluginBundle({
+          plugin,
+          plugins: options.plugins,
+          workRoot: path.join(options.workRoot, pluginName),
+          env: bundleEnv,
+        }),
       );
     }
 
@@ -378,7 +320,7 @@ export async function materializeAwSkillEvalSubject(
         : [];
       const declaredSkills = [
         ...staticSkills.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-        ...(prepared.plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+        ...(prepared.bundlePlugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
           target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
       ];
       for (const skill of new Set(declaredSkills)) {

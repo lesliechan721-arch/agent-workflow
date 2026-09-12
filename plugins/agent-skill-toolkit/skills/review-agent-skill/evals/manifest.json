@@ -38,6 +38,20 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "package-view",
+      "kind": "conversation",
+      "cases": "package-view-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }

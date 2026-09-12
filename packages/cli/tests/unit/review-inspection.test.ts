@@ -12,10 +12,14 @@ import {
   type PluginManifestSource,
 } from '@lesliechan721/aw-plugin-core'
 
-import { inspectReviewTarget } from '../../src/commands/review-inspection.js'
+import {
+  inspectReviewTarget as inspectReviewTargetV2,
+  type ReviewInspectionOptions,
+} from '../../src/commands/review-inspection.js'
 import { readAwSkillEvalManifest } from '../../src/eval/manifest-v1.js'
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js'
 import { materializePortableSkills } from '../../src/portable/materializer.js'
+import { resolveReviewSelection } from '../../src/review/review-selection.js'
 import {
   resolveEvalProfileBindingInput,
   resolveEvalSourceBindingInput,
@@ -28,6 +32,10 @@ import { CLI_RESERVED_IMPORTS } from '../../src/utils/manifest.js'
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js'
 
 const roots: string[] = []
+
+const inspectReviewTarget = (
+  options: Omit<ReviewInspectionOptions, 'view'>,
+) => inspectReviewTargetV2({ ...options, view: 'release' })
 
 async function tempRoot(label = 'aw-review-inspection-'): Promise<string> {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), label)))
@@ -159,8 +167,9 @@ describe('AW Review static inspection', () => {
     const receipt = await inspectReviewTarget({ cwd: outside, target: root })
 
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       command: 'review:inspect',
+      view: 'release',
       ok: true,
       completeness: 'complete',
       target: { kind: 'catalog', path: root },
@@ -615,8 +624,7 @@ describe('AW Review static inspection', () => {
         platform: 'codex',
         scopes: ['project', 'user'],
         target: 'codex.skill',
-        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
-        projectManagedKind: 'skill',
+        delivery: { mode: 'aw-extension' },
         states: ['present'],
         refreshKeys: [],
         skillKey: 'bound-skill',
@@ -665,13 +673,12 @@ describe('AW Review static inspection', () => {
       target: pluginRoot,
       materializations: [...bindingPaths, bindingPaths[0]!],
     })
-    expect(current.materializations).toHaveLength(3)
+    expect(current.materializations).toHaveLength(2)
     expect(current.materializations.map((entry) => ({
       state: entry.state,
       finalKeys: entry.finalKeys.length,
       issues: entry.issues,
     }))).toEqual([
-      { state: 'verified', finalKeys: 1, issues: [] },
       { state: 'verified', finalKeys: 1, issues: [] },
       { state: 'verified', finalKeys: 1, issues: [] },
     ])
@@ -733,5 +740,569 @@ describe('AW Review static inspection', () => {
       entry.state === 'drifted' && entry.finalKeys.length === 0)).toBe(true)
     expect(drifted.requiredFinals.find((entry) => entry.profile === 'codex-project')?.status)
       .toBe('missing')
+  })
+
+  it('matches a legacy portable binding against only the corresponding Skill config', async () => {
+    const root = await tempRoot()
+    const materializedRoot = await tempRoot('aw-review-portable-leaf-config-')
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const targets = [
+      ...['one', 'two'].map((skill) => ({
+        id: skill,
+        distribution: 'agent-skills' as const,
+        target: 'agent-skills.skill' as const,
+        kind: 'skill' as const,
+        scopes: ['project' as const],
+        states: ['present' as const],
+        refreshKeys: [skill],
+        skillKey: skill,
+        sourceDirs: [`./portable-skills/${skill}`],
+      })),
+      {
+        id: 'native',
+        platform: 'codex' as const,
+        target: 'codex.skill' as const,
+        kind: 'skill' as const,
+        scopes: ['project' as const, 'user' as const],
+        states: ['present' as const],
+        delivery: { mode: 'codex-native' as const, identity: 'shared', renderProfile: 'user' as const },
+        refreshKeys: ['one'],
+        skillKey: 'native',
+        sourceDirs: ['./skills/native'],
+      },
+    ]
+    const pluginRoot = await writePlugin(root, manifest('portable-leaves', {
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      config: { fields: {
+        one: { type: 'string', default: 'default-one' },
+        two: { type: 'string', default: 'default-two' },
+      } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets },
+    }))
+    const oneRoot = await writeSkill(pluginRoot, 'one', 'portable-skills')
+    await writeSkill(pluginRoot, 'two', 'portable-skills')
+    await writeSkill(pluginRoot, 'native')
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+    const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
+    await writePluginConfigStore({
+      pluginName: 'portable-leaves',
+      scope: 'project',
+      cwd: root,
+      values: { one: 'ignored-project', two: 'custom-two' },
+    })
+    await fs.copy(oneRoot, path.join(materializedRoot, 'one'))
+    const binding = await writeAwSourceBinding({
+      rootDir: materializedRoot,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'portable-leaves' },
+      profile: await resolvePortableProfileBindingInput({
+        plugins: workspace.plugins,
+        pluginName: 'portable-leaves',
+        scope: 'project',
+        cwd: root,
+      }),
+      artifacts: [{
+        kind: 'portable-skill',
+        plugin: 'portable-leaves',
+        skill: 'one',
+        path: 'one',
+      }],
+    })
+    const configFile = path.join(root, 'review-config.json')
+    await fs.outputJson(configFile, { 'portable-leaves': { two: 'custom-two' } })
+
+    const receipt = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      platform: 'agent-skills',
+      scope: 'project',
+      configFile,
+      materializations: [binding.bindingPath],
+    })
+
+    expect(receipt.skills.find((entry) => entry.skill === 'one'))
+      .toMatchObject({ state: 'ready', evidencePath: binding.bindingPath })
+    expect(receipt.skills.find((entry) => entry.skill === 'two'))
+      .toMatchObject({ state: 'missing' })
+    expect(receipt.issues).not.toContainEqual(expect.objectContaining({
+      code: 'materializationNotSelected',
+      path: binding.bindingPath,
+    }))
+
+    const incompatibleConfigFile = path.join(root, 'review-incompatible-config.json')
+    await fs.outputJson(incompatibleConfigFile, {
+      'portable-leaves': { one: 'ignored-project', two: 'custom-two' },
+    })
+    const incompatible = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      skills: ['one'],
+      platform: 'agent-skills',
+      scope: 'project',
+      configFile: incompatibleConfigFile,
+      materializations: [binding.bindingPath],
+    })
+    expect(incompatible.skills).toEqual([
+      expect.objectContaining({ skill: 'one', state: 'missing' }),
+    ])
+    expect(incompatible.issues).toContainEqual(expect.objectContaining({
+      code: 'materializationNotSelected',
+      path: binding.bindingPath,
+    }))
+  })
+
+  it('does not reinterpret an Eval project override for a native-shared key as user config', async () => {
+    const root = await tempRoot()
+    const materializedRoot = await tempRoot('aw-review-eval-shared-config-')
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const pluginRoot = await writePlugin(root, manifest('eval-shared-config', {
+      marketplace: {
+        category: 'test', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+      config: { fields: {
+        shared: { type: 'string', default: 'shared-default' },
+        projectOnly: { type: 'string', default: 'project-default' },
+      } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [
+        {
+          id: 'native',
+          platform: 'codex',
+          scopes: ['project', 'user'],
+          target: 'codex.skill',
+          delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+          states: ['present'],
+          refreshKeys: ['shared'],
+          skillKey: 'native',
+          sourceDirs: ['./skills/native'],
+        },
+        {
+          id: 'extension',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
+          states: ['present'],
+          refreshKeys: ['shared', 'projectOnly'],
+          skillKey: 'extension',
+          sourceDirs: ['./skills/extension'],
+        },
+      ] },
+    }))
+    await writeSkill(pluginRoot, 'native')
+    const extensionRoot = await writeSkill(pluginRoot, 'extension')
+    await writeEval(pluginRoot, 'extension')
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+    const evalManifestPath = path.join(extensionRoot, 'evals', 'manifest.json')
+    const evalManifest = await fs.readJson(evalManifestPath)
+    evalManifest.profiles['project-default'].plugins['eval-shared-config'] = {
+      shared: 'eval-project-shared',
+      projectOnly: 'eval-project-only',
+    }
+    await fs.writeJson(evalManifestPath, evalManifest)
+    const workspace = await readCatalogWorkspace(root, { reservedImports: CLI_RESERVED_IMPORTS })
+    const plugin = workspace.plugins.find((entry) => entry.manifest.name === 'eval-shared-config')!
+    const loaded = await readAwSkillEvalManifest({ plugin, skill: 'extension' })
+    await fs.copy(extensionRoot, path.join(materializedRoot, 'target'))
+    await fs.outputFile(path.join(materializedRoot, 'workspace', '.keep'), '')
+    const sourceInput = await conversationEvalInput({
+      workspaceRoot: root,
+      materializedRoot,
+      loaded,
+    })
+    await fs.outputJson(path.join(materializedRoot, 'cases.json'), sourceInput.selectedCases)
+    const binding = await writeAwSourceBinding({
+      rootDir: materializedRoot,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'eval-shared-config', skill: 'extension', suite: 'behavior' },
+      profile: resolveEvalProfileBindingInput(loaded.manifest.profiles[0]!, workspace.plugins).profile,
+      evalInput: sourceInput.input,
+      artifacts: [
+        { kind: 'eval-target', skill: 'extension', path: 'target' },
+        { kind: 'eval-workspace', path: 'workspace' },
+        { kind: 'eval-cases', path: 'cases.json' },
+      ],
+    })
+    const matchingConfigFile = path.join(root, 'review-matching-config.json')
+    await fs.outputJson(matchingConfigFile, {
+      'eval-shared-config': { projectOnly: 'eval-project-only' },
+    })
+
+    const matching = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      skills: ['extension'],
+      platform: 'codex',
+      scope: 'project',
+      configFile: matchingConfigFile,
+      materializations: [binding.bindingPath],
+    })
+    expect(matching.skills).toEqual([
+      expect.objectContaining({ skill: 'extension', state: 'ready', evidencePath: binding.bindingPath }),
+    ])
+
+    const incompatibleConfigFile = path.join(root, 'review-incompatible-config.json')
+    await fs.outputJson(incompatibleConfigFile, {
+      'eval-shared-config': {
+        shared: 'eval-project-shared',
+        projectOnly: 'eval-project-only',
+      },
+    })
+    const incompatible = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      skills: ['extension'],
+      platform: 'codex',
+      scope: 'project',
+      configFile: incompatibleConfigFile,
+      materializations: [binding.bindingPath],
+    })
+    expect(incompatible.skills).toEqual([
+      expect.objectContaining({ skill: 'extension', state: 'missing' }),
+    ])
+    expect(incompatible.issues).toContainEqual(expect.objectContaining({
+      code: 'materializationNotSelected',
+      path: binding.bindingPath,
+    }))
+  })
+
+  it('projects a source Skill review without release-only fields and rejects conflicting finals', async () => {
+    const root = await tempRoot()
+    const firstRoot = await tempRoot('aw-review-navigation-first-')
+    const secondRoot = await tempRoot('aw-review-navigation-second-')
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+    const pluginRoot = await writePlugin(root, manifest('navigation', {
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'navigation-native',
+        platform: 'codex',
+        scopes: ['project', 'user'],
+        target: 'codex.skill',
+        delivery: { mode: 'codex-native', identity: 'shared', renderProfile: 'user' },
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'navigation-skill',
+        sourceDirs: ['./skills/navigation-skill'],
+      }] },
+      marketplace: {
+        category: 'test', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+    }))
+    const skillRoot = await writeSkill(pluginRoot, 'navigation-skill')
+    await writeEval(pluginRoot, 'navigation-skill')
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+    const target = path.join(skillRoot, 'SKILL.md')
+    const selection = await resolveReviewSelection({
+      cwd: root,
+      target,
+      skills: ['navigation-skill', 'navigation-skill'],
+      platform: 'codex',
+      scope: 'project',
+    })
+    const workspace = selection.workspace
+
+    const evalRoot = await tempRoot('aw-review-navigation-eval-')
+    const loaded = await readAwSkillEvalManifest({
+      plugin: workspace.plugins[0]!,
+      skill: 'navigation-skill',
+    })
+    await fs.copy(skillRoot, path.join(evalRoot, 'target'))
+    await fs.outputFile(path.join(evalRoot, 'workspace', '.keep'), '')
+    const evalSourceInput = await conversationEvalInput({
+      workspaceRoot: root,
+      materializedRoot: evalRoot,
+      loaded,
+      caseIds: ['selected'],
+    })
+    await fs.outputJson(path.join(evalRoot, 'cases.json'), evalSourceInput.selectedCases)
+    const evalBinding = await writeAwSourceBinding({
+      rootDir: evalRoot,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'navigation', skill: 'navigation-skill', suite: 'behavior' },
+      profile: resolveEvalProfileBindingInput(loaded.manifest.profiles[0]!, workspace.plugins).profile,
+      evalInput: evalSourceInput.input,
+      artifacts: [
+        { kind: 'eval-target', skill: 'navigation-skill', path: 'target' },
+        { kind: 'eval-workspace', path: 'workspace' },
+        { kind: 'eval-cases', path: 'cases.json' },
+      ],
+    })
+    const evalReview = await inspectReviewTargetV2({
+      cwd: root,
+      target,
+      platform: 'codex',
+      scope: 'project',
+      materializations: [evalBinding.bindingPath],
+    })
+    expect(evalReview.skills).toEqual([expect.objectContaining({ state: 'missing' })])
+    expect(evalReview.issues).toContainEqual(expect.objectContaining({
+      code: 'materializationNotSelected',
+      path: evalBinding.bindingPath,
+    }))
+    const evalRelease = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      view: 'release',
+      materializations: [evalBinding.bindingPath],
+    })
+    expect(evalRelease.requiredFinals.find((entry) => entry.profile === 'codex-project'))
+      .toMatchObject({ status: 'missing' })
+
+    await fs.copy(skillRoot, path.join(firstRoot, 'navigation-skill'))
+    const first = await writeAwSourceBinding({
+      rootDir: firstRoot,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'navigation', skill: 'navigation-skill' },
+      profile: selection.profiles[0]!.profile,
+      artifacts: [{
+        kind: 'review-skill',
+        plugin: 'navigation',
+        skill: 'navigation-skill',
+        path: 'navigation-skill',
+      }],
+    })
+
+    const current = await inspectReviewTargetV2({
+      cwd: root,
+      target,
+      skills: ['navigation-skill'],
+      platform: 'codex',
+      scope: 'project',
+      materializations: [first.bindingPath, first.bindingPath],
+    })
+    expect(current).toMatchObject({
+      schemaVersion: 2,
+      command: 'review:inspect',
+      view: 'review',
+      ok: true,
+      target: { kind: 'skill', path: skillRoot },
+      skills: [{
+        skill: 'navigation-skill',
+        sourcePath: skillRoot,
+        state: 'ready',
+        evidencePath: first.bindingPath,
+      }],
+    })
+    expect(current).not.toHaveProperty('requiredEvals')
+    expect(current).not.toHaveProperty('subjects')
+    await expect(inspectReviewTargetV2({
+      cwd: root,
+      target,
+      view: 'release',
+    })).rejects.toMatchObject({ code: 'invalidArguments', exitCode: 2 })
+
+    const legacyRoot = await tempRoot('aw-review-navigation-v1-')
+    const legacyBinding = await fs.readJson(first.bindingPath)
+    legacyBinding.schemaVersion = 1
+    const legacyBindingPath = path.join(legacyRoot, 'aw-source-binding.json')
+    await fs.outputJson(legacyBindingPath, legacyBinding)
+    await expect(inspectReviewTargetV2({
+      cwd: root,
+      target,
+      platform: 'codex',
+      scope: 'project',
+      materializations: [legacyBindingPath],
+    })).rejects.toMatchObject({ code: 'sourceBindingInvalid', exitCode: 2 })
+
+    const release = await inspectReviewTargetV2({
+      cwd: root,
+      target: pluginRoot,
+      view: 'release',
+      materializations: [first.bindingPath],
+    })
+    expect(release.requiredFinals.find((entry) => entry.profile === 'codex-project'))
+      .toMatchObject({ status: 'resolved' })
+    expect(release.requiredEvals).toEqual([
+      expect.objectContaining({ materializedFinalKeys: [], verifiedBindingPaths: [] }),
+    ])
+
+    await fs.copy(skillRoot, path.join(secondRoot, 'navigation-skill'))
+    await fs.appendFile(path.join(secondRoot, 'navigation-skill', 'SKILL.md'), '\nDifferent final.\n')
+    const second = await writeAwSourceBinding({
+      rootDir: secondRoot,
+      source: await resolveWorkspaceBindingSource(workspace),
+      subject: { plugin: 'navigation', skill: 'navigation-skill' },
+      profile: selection.profiles[0]!.profile,
+      artifacts: [{
+        kind: 'review-skill',
+        plugin: 'navigation',
+        skill: 'navigation-skill',
+        path: 'navigation-skill',
+      }],
+    })
+    const ambiguous = await inspectReviewTargetV2({
+      cwd: root,
+      target,
+      platform: 'codex',
+      scope: 'project',
+      materializations: [second.bindingPath, first.bindingPath],
+    })
+    expect(ambiguous.skills).toEqual([
+      expect.objectContaining({ state: 'invalid', finalPath: null, digest: null, evidencePath: null }),
+    ])
+    expect(ambiguous.issues).toContainEqual(expect.objectContaining({ code: 'materializationAmbiguous' }))
+
+    await fs.appendFile(path.join(skillRoot, 'SKILL.md'), '\nSource drift.\n')
+    const stale = await inspectReviewTargetV2({
+      cwd: root,
+      target,
+      platform: 'codex',
+      scope: 'project',
+      materializations: [first.bindingPath],
+    })
+    expect(stale).toMatchObject({
+      ok: true,
+      skills: [{ state: 'stale', finalPath: path.join(firstRoot, 'navigation-skill') }],
+      issues: expect.arrayContaining([expect.objectContaining({ code: 'sourceBindingDrifted' })]),
+    })
+  })
+
+  it('uses the same declared dynamic sources in review and release without source-key collisions', async () => {
+    const root = await tempRoot()
+    await initializeCatalogWorkspace({ workspaceRoot: root })
+
+    const portableRoot = await writePlugin(root, manifest('declared-portable', {
+      extensions: { instructions: [{ name: 'native', title: 'Native', content: 'Native.' }] },
+      distributions: { agentSkills: { skills: './portable-skills' } },
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'portable-output',
+        distribution: 'agent-skills',
+        scopes: ['project'],
+        target: 'agent-skills.skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'shared-name',
+        sourceDirs: ['./portable-source'],
+      }] },
+    }))
+    await writeSkill(portableRoot, 'shared-name', 'portable-skills')
+    const portableSource = path.join(portableRoot, 'portable-source')
+    await fs.outputFile(path.join(portableSource, 'input.txt'), 'portable declared source\n')
+    await fs.outputFile(path.join(portableRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+
+    const surfacesRoot = await writePlugin(root, manifest('surface-sources', {
+      skills: './skills',
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [
+        {
+          id: 'shared-target',
+          platform: 'codex',
+          scopes: ['project'],
+          target: 'codex.skill',
+          delivery: { mode: 'aw-extension' },
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'same-skill',
+          sourceDirs: ['./skills/same-skill/codex-source', './skills/same-skill'],
+        },
+        {
+          id: 'shared-target',
+          platform: 'claude',
+          scopes: ['project'],
+          target: 'claude.skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'same-skill',
+          sourceDirs: ['./skills/same-skill/claude-source', './skills/same-skill'],
+        },
+      ] },
+    }))
+    const surfaceSkillRoot = await writeSkill(surfacesRoot, 'same-skill')
+    const codexSource = path.join(surfaceSkillRoot, 'codex-source')
+    const claudeSource = path.join(surfaceSkillRoot, 'claude-source')
+    await fs.outputFile(path.join(codexSource, 'input.txt'), 'codex source\n')
+    await fs.outputFile(path.join(claudeSource, 'input.txt'), 'claude source\n')
+    await fs.outputFile(path.join(surfacesRoot, 'scripts', 'render.mjs'), '// fixture renderer\n')
+
+    const extensionRoot = await writePlugin(root, manifest('renderer-source', {
+      skills: './skills',
+      scripts: { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } },
+      artifacts: { targets: [{
+        id: 'extension-output',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        delivery: { mode: 'aw-extension' },
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'placeholder',
+      }] },
+      marketplace: {
+        category: 'test', strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
+      },
+    }))
+    const placeholder = await writeSkill(extensionRoot, 'placeholder')
+    const rendererSource = path.join(extensionRoot, 'scripts', 'render.mjs')
+    await fs.outputFile(rendererSource, '// actual extension source\n')
+
+    const assertMappedSource = async (options: {
+      pluginRoot: string
+      skill: string
+      platform: 'codex' | 'claude' | 'agent-skills'
+      expectedSource: string
+      targetId: string
+    }): Promise<string> => {
+      const review = await inspectReviewTargetV2({
+        cwd: root,
+        target: options.pluginRoot,
+        skills: [options.skill],
+        platform: options.platform,
+        scope: 'project',
+      })
+      expect(review.skills).toEqual([
+        expect.objectContaining({ skill: options.skill, sourcePath: options.expectedSource }),
+      ])
+      const release = await inspectReviewTargetV2({
+        cwd: root,
+        target: options.pluginRoot,
+        view: 'release',
+      })
+      const required = release.requiredFinals.find((entry) =>
+        entry.skill === options.skill
+        && entry.profile === `${options.platform}-project`
+        && entry.targetId === options.targetId)
+      expect(required).toBeDefined()
+      const source = release.subjects.find((entry) => entry.key === required!.sourceSubjectKey)
+      expect(source).toMatchObject({ path: options.expectedSource })
+      return required!.sourceSubjectKey
+    }
+
+    await assertMappedSource({
+      pluginRoot: portableRoot,
+      skill: 'shared-name',
+      platform: 'agent-skills',
+      expectedSource: portableSource,
+      targetId: 'portable-output',
+    })
+    const codexSourceKey = await assertMappedSource({
+      pluginRoot: surfacesRoot,
+      skill: 'same-skill',
+      platform: 'codex',
+      expectedSource: codexSource,
+      targetId: 'shared-target',
+    })
+    const claudeSourceKey = await assertMappedSource({
+      pluginRoot: surfacesRoot,
+      skill: 'same-skill',
+      platform: 'claude',
+      expectedSource: claudeSource,
+      targetId: 'shared-target',
+    })
+    expect(codexSourceKey).not.toBe(claudeSourceKey)
+    await assertMappedSource({
+      pluginRoot: extensionRoot,
+      skill: 'placeholder',
+      platform: 'codex',
+      expectedSource: rendererSource,
+      targetId: 'extension-output',
+    })
+    expect(rendererSource).not.toBe(placeholder)
   })
 })

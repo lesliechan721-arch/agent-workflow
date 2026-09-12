@@ -234,12 +234,13 @@ async function buildCatalog(fixture) {
 }
 
 async function inspect(fixture, target = fixture.pluginRoot, materializations = []) {
-  const args = ['review', 'inspect', target];
+  const args = ['review', 'inspect', target, '--view', 'release'];
   for (const receipt of materializations) args.push('--materialization', receipt);
   args.push('--json');
   const inspected = await command('aw', args, fixture.env);
   const value = jsonOutput(inspected);
-  assert.equal(value.schemaVersion, 1);
+  assert.equal(value.schemaVersion, 2);
+  assert.equal(value.view, 'release');
   return value;
 }
 
@@ -326,12 +327,62 @@ async function runChecker(fixture, options) {
   return command(process.execPath, args, fixture.env);
 }
 
+test('requests release view and rejects old inspection views and versions', async () => {
+  const root = await tempRoot('aw-release-inspection-contract-');
+  const binRoot = path.join(root, 'bin');
+  const target = path.join(root, 'target');
+  const evidencePath = path.join(root, 'evidence.json');
+  const fakeAw = path.join(root, 'fake-aw.mjs');
+  await Promise.all([
+    mkdir(target, { recursive: true }),
+    writeJson(evidencePath, {}),
+  ]);
+  const fixture = {
+    pluginRoot: target,
+    env: {
+      ...process.env,
+      PATH: `${binRoot}${path.delimiter}${process.env.PATH ?? ''}`,
+    },
+  };
+  const expectedArgs = ['review', 'inspect', target, '--view', 'release', '--json'];
+
+  for (const receipt of [
+    { schemaVersion: 1, command: 'review:inspect', view: 'release' },
+    { schemaVersion: 2, command: 'review:inspect', view: 'review' },
+  ]) {
+    await writeFile(fakeAw, [
+      `const expected = ${JSON.stringify(expectedArgs)};`,
+      'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) process.exit(9);',
+      `process.stdout.write(${JSON.stringify(JSON.stringify(receipt))});`,
+      '',
+    ].join('\n'));
+    await writeForwarder(binRoot, 'aw', fakeAw);
+    const result = await runChecker(fixture, { evidencePath });
+    assert.equal(result.code, 2, result.stderr || result.stdout);
+    const output = jsonOutput(result);
+    assert.equal(output.status, 'unsupported');
+    assert.match(output.failures[0].message, /schema 2 release view/u);
+  }
+});
+
 async function prepareEval(fixture) {
   const output = path.join(fixture.root, '.aw', 'evals', 'prepared');
   const prepared = await command('aw', [
     'skill', 'eval', 'prepare', 'release-fixture', 'release-skill',
     '--suite', 'release-suite', '--profile', 'project-default',
     '--workspace-root', fixture.root, '--output', output, '--json',
+  ], fixture.env);
+  assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
+  return jsonOutput(prepared);
+}
+
+async function prepareReview(fixture) {
+  const outputParent = await tempRoot('aw-release-review-final-');
+  const output = path.join(outputParent, 'prepared');
+  const prepared = await command('aw', [
+    'review', 'prepare', fixture.pluginRoot,
+    '--platform', 'codex', '--scope', 'project',
+    '--out', output, '--json',
   ], fixture.env);
   assert.equal(prepared.code, 0, prepared.stderr || prepared.stdout);
   return jsonOutput(prepared);
@@ -517,6 +568,27 @@ test('uses current inspection subjects for Plugin and Catalog release states', a
     assert.equal(linkedRun.code, 2, linkedRun.stderr);
     assert.equal(jsonOutput(linkedRun).status, 'invalid');
   }
+});
+
+test('accepts review materialization profiles without satisfying required Eval evidence', async () => {
+  const fixture = await createWorkspace({ requiredEval: true });
+  await buildCatalog(fixture);
+  const prepared = await prepareReview(fixture);
+  const materializations = [prepared.sourceBindingPath];
+  const inspection = await inspect(fixture, fixture.pluginRoot, materializations);
+  assert.equal(
+    inspection.subjects.some((subject) => subject.materializationProfile?.kind === 'review'),
+    true,
+  );
+  const evidence = await writeEvidence(inspection);
+
+  const result = await runChecker(fixture, { ...evidence, materializations });
+
+  assert.equal(result.code, 3, result.stderr || result.stdout);
+  const output = jsonOutput(result);
+  assert.equal(output.status, 'incomplete');
+  assert.equal(output.failures.some((entry) => entry.code === 'requiredContractUnsupported'), false);
+  assert.equal(output.missing.some((entry) => entry.code === 'requiredEvalMissing'), true);
 });
 
 test('binds required Eval chains through official validators and current materialization facts', async () => {

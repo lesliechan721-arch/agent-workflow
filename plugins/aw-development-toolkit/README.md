@@ -11,9 +11,9 @@ aw install aw-development-toolkit -p codex
 | Skill | 适用任务 |
 | --- | --- |
 | `develop-aw` | 初始化和维护 Workspace、Plugin、组件、版本与本地产物 |
-| `review-aw` | 只读评审 Plugin、Catalog、工作流或能力组合 |
+| `review-aw` | 定位并准备匹配产物，审核源 Skill、Plugin、Catalog、工作流或能力组合 |
 | `publish-aw-catalog` | 显式宏生成发布计划，经具体摘要授权后发布 |
 
 例如：“在当前 Workspace 增加插件并完成本地验证。”或“只读评审现有 Catalog，说明证据缺口。”发布时显式调用 `$publish-aw-catalog`；目标参数可使用 CLI 默认值，确认时展示解析后的完整计划。
 
-开发可能写源码、执行目标脚本；本地激活只按请求执行。普通评审不 build、test 或发布，默认返回人读报告。独立 Release Check 仅在明确请求时检查逐对象证据和必需 Eval，结果不授权远端写入。发布计划会读取远端 refs 和构建产物，apply 才执行已授权的远端变更。
+开发可能写源码、执行目标脚本；本地激活只按请求执行。完整审核会先复用匹配产物，缺少时说明并执行必要本地 build/renderer，输出到隔离目录；源码与已有产物保持只读，明确静态读取限制仍优先。评审默认返回人读报告，不运行模型或发布。独立 Release Check 仅在明确请求时检查逐对象证据和必需 Eval，结果不授权远端写入。发布计划会读取远端 refs 和构建产物，apply 才执行已授权的远端变更。

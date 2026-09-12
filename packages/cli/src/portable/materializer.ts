@@ -13,7 +13,10 @@ import type {
   Scope,
 } from '../types.js';
 import { validateArtifactPlan } from '../utils/artifact-plan.js';
-import { runArtifactRenderer } from '../utils/artifact-renderer.js';
+import {
+  runArtifactRenderer,
+  type ResolvedArtifactRenderConfig,
+} from '../utils/artifact-renderer.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
 import {
   AW_PLUGIN_REQUIREMENTS_RECEIPT_PATH,
@@ -69,6 +72,7 @@ export interface MaterializePortableSkillsOptions {
   outputRoot?: string;
   signal?: AbortSignal;
   inputMode?: 'source' | 'bundle';
+  selectedSkills?: readonly string[];
 }
 
 export interface MaterializedPortableSkills {
@@ -251,6 +255,7 @@ async function materializePluginCandidates(options: {
   env: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   inputMode: 'source' | 'bundle';
+  selectedSkills?: ReadonlySet<string>;
   recordConfigDigest: (pluginId: string, configDigest: string) => void;
 }): Promise<CandidateTree[]> {
   options.signal?.throwIfAborted();
@@ -259,23 +264,28 @@ async function materializePluginCandidates(options: {
   const dynamicTargets = (options.plugin.manifest.artifacts?.targets ?? [])
     .filter((target) =>
       target.distribution === 'agent-skills'
-      && target.scopes.includes(options.scope));
+      && target.scopes.includes(options.scope)
+      && (!options.selectedSkills || options.selectedSkills.has(target.skillKey!)));
   const dynamicKeys = new Set((options.plugin.manifest.artifacts?.targets ?? [])
     .filter((target) => target.target === 'agent-skills.skill')
     .map((target) => target.skillKey!));
   const output: CandidateTree[] = [];
-  const profileConfig = await resolvePortablePluginProfileConfig({
-    plugin: options.plugin,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const config = profileConfig.config;
-  options.recordConfigDigest(pluginId(options.plugin), profileConfig.digest);
-  const sensitiveValues = collectSensitivePluginConfigValues(
-    options.plugin.manifest,
-    config.values,
-  );
+  let config: Pick<ResolvedArtifactRenderConfig, 'values' | 'sources' | 'issues'> | undefined;
+  let sensitiveValues: string[] = [];
+  if (!options.selectedSkills) {
+    const profileConfig = await resolvePortablePluginProfileConfig({
+      plugin: options.plugin,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+    });
+    config = profileConfig.config;
+    options.recordConfigDigest(pluginId(options.plugin), profileConfig.digest);
+    sensitiveValues = collectSensitivePluginConfigValues(
+      options.plugin.manifest,
+      config.values,
+    );
+  }
   const staticRoot = distribution.skills
     ? path.join(options.plugin.rootDir, distribution.skills.replace(/^\.\//u, ''))
     : undefined;
@@ -292,6 +302,7 @@ async function materializePluginCandidates(options: {
         throw new Error(`Portable Skills root direct child must be a regular directory: ${entry.name}.`);
       }
       if (dynamicKeys.has(entry.name)) continue;
+      if (options.selectedSkills && !options.selectedSkills.has(entry.name)) continue;
       output.push({
         plugin: options.plugin,
         relation: options.relation,
@@ -344,6 +355,11 @@ async function materializePluginCandidates(options: {
   };
 
   if (dynamicTargets.length === 0) {
+    if (options.selectedSkills) {
+      options.recordConfigDigest(pluginId(options.plugin), `sha256:${crypto.createHash('sha256')
+        .update(JSON.stringify([]))
+        .digest('hex')}`);
+    }
     return finalizeCandidates();
   }
   await assertRuntimeImports(options.plugin);
@@ -357,6 +373,19 @@ async function materializePluginCandidates(options: {
     signal: options.signal,
     requestedArtifactIds: dynamicTargets.map((target) => target.id),
   });
+  if (options.selectedSkills) {
+    config = rendered.context.config;
+    sensitiveValues = collectSensitivePluginConfigValues(
+      options.plugin.manifest,
+      config.values,
+    );
+    options.recordConfigDigest(pluginId(options.plugin), `sha256:${crypto.createHash('sha256')
+      .update(JSON.stringify({ values: config.values, sources: config.sources }))
+      .digest('hex')}`);
+  }
+  if (!config) {
+    throw new Error(`Portable config is unresolved for plugin "${options.plugin.manifest.name}".`);
+  }
   const plan = validateArtifactPlan({
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
@@ -578,8 +607,15 @@ export async function materializePortableSkills(
   try {
     const trees: CandidateTree[] = [];
     const configDigests: Array<[string, string]> = [];
+    const selectedSkills = options.selectedSkills
+      ? new Set(options.selectedSkills)
+      : undefined;
+    if (selectedSkills?.size !== options.selectedSkills?.length) {
+      throw new Error('Portable Skill selection contains duplicate names.');
+    }
     for (const plugin of closure) {
       options.signal?.throwIfAborted();
+      if (selectedSkills && plugin.manifest.name !== requested.manifest.name) continue;
       trees.push(...await materializePluginCandidates({
         plugin,
         relation: relationFor(requested, plugin),
@@ -588,8 +624,18 @@ export async function materializePortableSkills(
         env,
         signal: options.signal,
         inputMode: options.inputMode ?? 'source',
+        ...(selectedSkills ? { selectedSkills } : {}),
         recordConfigDigest: (id, configDigest) => configDigests.push([id, configDigest]),
       }));
+    }
+    if (selectedSkills) {
+      const materializedNames = new Set(trees.map((candidate) => candidate.tree.skillKey));
+      const missing = [...selectedSkills]
+        .filter((skill) => !materializedNames.has(skill))
+        .sort((left, right) => left.localeCompare(right));
+      if (missing.length > 0) {
+        throw new Error(`Selected portable Skills were not materialized: ${missing.join(', ')}.`);
+      }
     }
     const seenNames = new Set<string>();
     for (const candidate of trees) {

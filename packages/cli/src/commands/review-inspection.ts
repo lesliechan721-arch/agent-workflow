@@ -1,6 +1,7 @@
 import path from 'node:path'
 
 import {
+  canonicalJson,
   computeCaseCorpusDigest,
   computeSkillDigest,
   type SelectedCasesDocument,
@@ -33,6 +34,7 @@ import {
   computeAwSourceBindingSelectedCasesDigest,
   computeAwSourceBindingSuiteDefaultsDigest,
   readAwSourceBinding,
+  resolvePortablePluginProfileConfig,
   resolveEvalProfileBindingInput,
   selectAwSourceBindingEvalCases,
   validateAwSourceBindingForWorkspace,
@@ -43,6 +45,21 @@ import {
   type AwSourceBindingVerifiedOutput,
   type AwSourceBindingWorkspaceValidationContext,
 } from '../review/source-binding.js'
+import {
+  resolveReviewDynamicSkillSource,
+  resolveReviewSelection,
+  reviewBindingMatchesSelection,
+} from '../review/review-selection.js'
+import type {
+  ReviewResolvedProfile,
+  ReviewProfileConfig,
+  ReviewSelection,
+  ReviewSelectedSkill,
+} from '../review/review-types.js'
+import {
+  resolveEffectivePluginConfigFromStores,
+  type PluginConfigStore,
+} from '../utils/plugin-config.js'
 
 export type ReviewInspectionIssueCategory = 'missing' | 'invalid' | 'unsupported' | 'unknown'
 export type ReviewInspectionFinalProfile =
@@ -52,6 +69,90 @@ export type ReviewInspectionFinalProfile =
   | 'claude-project'
   | 'agent-skills-user'
   | 'agent-skills-project'
+
+export type ReviewInspectionView = 'review' | 'release'
+export type ReviewInspectionPlatform = 'codex' | 'claude' | 'agent-skills'
+
+export interface ReviewInspectionOptions {
+  cwd: string
+  target: string
+  workspaceRoot?: string
+  skills?: readonly string[]
+  platform?: ReviewInspectionPlatform
+  scope?: Scope
+  configFile?: string
+  materializations?: readonly string[]
+  view?: ReviewInspectionView
+  env?: NodeJS.ProcessEnv
+}
+
+export interface ReviewInspectionNavigationIssue {
+  code: string
+  path: string | null
+  message: string
+}
+
+export interface ReviewInspectionNavigationReceipt {
+  schemaVersion: 2
+  command: 'review:inspect'
+  view: 'review'
+  ok: boolean
+  target: {
+    kind: 'skill' | 'plugin' | 'catalog'
+    path: string
+  } | null
+  sources: string[]
+  snapshot?: {
+    path: string
+    state: 'absent' | 'current' | 'stale' | 'invalid'
+  }
+  skills: Array<{
+    skill: string
+    sourcePath: string
+    profile: {
+      platform: ReviewInspectionPlatform
+      scope: Scope
+      inputDigest: string | null
+    }
+    finalPath: string | null
+    digest: string | null
+    state: 'ready' | 'missing' | 'stale' | 'invalid' | 'unsupported'
+    evidencePath: string | null
+  }>
+  issues: ReviewInspectionNavigationIssue[]
+}
+
+export type ReviewInspectionReceipt =
+  | ReviewInspectionNavigationReceipt
+  | ReviewInspectionReleaseReceipt
+
+export class ReviewInspectionInputError extends Error {
+  readonly code: string
+  readonly exitCode = 2 as const
+
+  constructor(code: string, message: string) {
+    super(`${code}: ${message}`)
+    this.name = 'ReviewInspectionInputError'
+    this.code = code
+  }
+}
+
+class ReviewInspectionResolvedTargetError extends Error {
+  readonly code: string
+  readonly exitCode: 1 | 2 | 3
+  readonly reviewTarget: NonNullable<ReviewInspectionNavigationReceipt['target']>
+
+  constructor(
+    error: unknown,
+    target: NonNullable<ReviewInspectionNavigationReceipt['target']>,
+  ) {
+    super(error instanceof Error ? error.message : String(error), { cause: error })
+    this.name = 'ReviewInspectionResolvedTargetError'
+    this.code = getReviewInspectionErrorCode(error)
+    this.exitCode = getReviewInspectionExitCode(error)
+    this.reviewTarget = target
+  }
+}
 
 export interface ReviewInspectionIssue {
   category: ReviewInspectionIssueCategory
@@ -81,7 +182,7 @@ export interface ReviewInspectionSubject {
   origin: 'workspace' | 'catalog-snapshot' | 'source-binding'
   targetId?: string
   materializationProfile?: {
-    kind: 'eval' | 'portable'
+    kind: 'eval' | 'portable' | 'review'
     id: string
     scope: Scope
     inputDigest: string
@@ -177,9 +278,10 @@ export interface ReviewInspectionMaterialization {
   issues: string[]
 }
 
-export interface ReviewInspectionReceipt {
-  schemaVersion: 1
+export interface ReviewInspectionReleaseReceipt {
+  schemaVersion: 2
   command: 'review:inspect'
+  view: 'release'
   ok: boolean
   completeness: 'complete' | 'incomplete'
   target: {
@@ -226,7 +328,7 @@ interface RequiredFinalSeed {
 }
 
 interface SnapshotInspection {
-  receipt: ReviewInspectionReceipt['snapshot']
+  receipt: ReviewInspectionReleaseReceipt['snapshot']
   entries: ReadonlyMap<string, CatalogManifestV7Entry>
   root: string | null
 }
@@ -240,6 +342,7 @@ interface VerifiedBindingFinal {
   identityKey: string
   path: string
   digest: string
+  requiredKeys: string[]
 }
 
 const compareText = (left: string, right: string): number =>
@@ -253,8 +356,19 @@ function relativeWorkspacePath(workspaceRoot: string, filePath: string): string 
   return path.relative(workspaceRoot, filePath).split(path.sep).join('/') || '.'
 }
 
-function sourceKey(plugin: string, skill: string, kind: ReviewInspectionSubject['kind']): string {
-  return `source:${plugin}:${skill}:${kind}`
+function sourceKey(options: {
+  workspaceRoot: string
+  plugin: string
+  skill: string
+  kind: ReviewInspectionSubject['kind']
+  roots: readonly string[]
+}): string {
+  const sourcePaths = options.roots.map((root) => relativeWorkspacePath(options.workspaceRoot, root))
+  const sourceIdentity = encodeURIComponent(JSON.stringify({
+    primary: sourcePaths[0],
+    sources: [...sourcePaths].sort(compareText),
+  }))
+  return `source:${options.plugin}:${options.skill}:${options.kind}:${sourceIdentity}`
 }
 
 function requiredFinalKey(seed: Pick<RequiredFinalSeed, 'plugin' | 'skill' | 'profile' | 'targetId'>): string {
@@ -287,6 +401,12 @@ function scopeFromProfile(profile: ReviewInspectionFinalProfile): Scope {
   return profile.endsWith('-project') ? 'project' : 'user'
 }
 
+function finalProfileFromBinding(profile: AwSourceBindingProfile): ReviewInspectionFinalProfile {
+  if (profile.kind === 'eval') return `codex-${profile.scope}`
+  if (profile.kind === 'portable') return `agent-skills-${profile.scope}`
+  return `${profile.platform}-${profile.scope}`
+}
+
 async function directSkillDirectories(root: string): Promise<Array<{ name: string; root: string }>> {
   const entries = await fs.readdir(root, { withFileTypes: true })
   const result: Array<{ name: string; root: string }> = []
@@ -296,7 +416,7 @@ async function directSkillDirectories(root: string): Promise<Array<{ name: strin
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
       throw new Error(`Skill collection direct child must be a regular directory: ${entryPath}`)
     }
-    result.push({ name: entry.name, root: entryPath })
+    result.push({ name: entry.name, root: await fs.realpath(entryPath) })
   }
   return result
 }
@@ -391,9 +511,16 @@ async function addSourceSubject(options: {
   plugin: PluginMeta
   skill: string
   root: string
+  sourceRoots?: readonly string[]
   kind: 'source-skill' | 'portable-source-skill' | 'artifact-source'
 }): Promise<string> {
-  const key = sourceKey(options.plugin.manifest.name, options.skill, options.kind)
+  const key = sourceKey({
+    workspaceRoot: options.workspace.workspaceRoot,
+    plugin: options.plugin.manifest.name,
+    skill: options.skill,
+    kind: options.kind,
+    roots: options.sourceRoots ?? [options.root],
+  })
   if (options.subjects.some((subject) => subject.key === key)) return key
   const digest = options.kind === 'artifact-source'
     ? (await computeReviewComponentDigest({
@@ -432,8 +559,6 @@ async function inventoryPluginSource(options: {
         stripDotSlash(plugin.manifest.distributions.agentSkills.skills),
       ))
     : []
-  const nativeByName = new Map(nativeSkills.map((entry) => [entry.name, entry]))
-  const portableByName = new Map(portableSkills.map((entry) => [entry.name, entry]))
   const nativeDynamicByPlatform = new Map<'claude' | 'codex', Set<string>>([
     ['claude', new Set()],
     ['codex', new Set()],
@@ -479,7 +604,13 @@ async function inventoryPluginSource(options: {
           skill: skill.name,
           profile: `${platform}-${scope}`,
           targetId: null,
-          sourceSubjectKey: sourceKey(plugin.manifest.name, skill.name, 'source-skill'),
+          sourceSubjectKey: sourceKey({
+            workspaceRoot: workspace.workspaceRoot,
+            plugin: plugin.manifest.name,
+            skill: skill.name,
+            kind: 'source-skill',
+            roots: [skill.root],
+          }),
           dynamic: false,
         })
       }
@@ -495,7 +626,13 @@ async function inventoryPluginSource(options: {
           skill: skill.name,
           profile: `agent-skills-${scope}`,
           targetId: null,
-          sourceSubjectKey: sourceKey(plugin.manifest.name, skill.name, 'portable-source-skill'),
+          sourceSubjectKey: sourceKey({
+            workspaceRoot: workspace.workspaceRoot,
+            plugin: plugin.manifest.name,
+            skill: skill.name,
+            kind: 'portable-source-skill',
+            roots: [skill.root],
+          }),
           dynamic: false,
         })
       }
@@ -508,27 +645,22 @@ async function inventoryPluginSource(options: {
     const platform = target.target === 'agent-skills.skill'
       ? 'agent-skills'
       : target.target === 'codex.skill' ? 'codex' : 'claude'
-    const sourceEntry = target.target === 'agent-skills.skill'
-      ? portableByName.get(skill) ?? nativeByName.get(skill)
-      : nativeByName.get(skill)
-    let sourceSubjectKey = target.target === 'agent-skills.skill' && portableByName.has(skill)
-      ? sourceKey(plugin.manifest.name, skill, 'portable-source-skill')
-      : sourceKey(plugin.manifest.name, skill, 'source-skill')
-    if (!sourceEntry) {
-      const declaredSource = target.sourceDirs?.[0]
-      const sourceRoot = declaredSource
-        ? path.join(plugin.rootDir, stripDotSlash(declaredSource))
-        : path.join(plugin.rootDir, stripDotSlash(plugin.manifest.scripts?.artifacts?.render?.path ?? '.agents-plugin'))
-      sourceSubjectKey = await addSourceSubject({
-        workspace,
-        subjects,
-        plugin,
-        skill,
-        root: sourceRoot,
-        kind: 'artifact-source',
-      })
-      sourceSubjectKeys.push(sourceSubjectKey)
-    }
+    const source = await resolveReviewDynamicSkillSource({
+      plugin,
+      target,
+      nativeSkillPaths: nativeSkills.map((entry) => entry.root),
+      portableSkillPaths: portableSkills.map((entry) => entry.root),
+    })
+    const sourceSubjectKey = await addSourceSubject({
+      workspace,
+      subjects,
+      plugin,
+      skill,
+      root: source.sourcePath,
+      sourceRoots: source.sourcePaths,
+      kind: source.sourceKind,
+    })
+    sourceSubjectKeys.push(sourceSubjectKey)
     for (const scope of target.scopes) {
       seeds.push({
         plugin,
@@ -709,8 +841,14 @@ async function resolveTarget(options: {
   }
   const candidate = path.resolve(options.cwd, options.target)
   const stat = await fs.lstat(candidate).catch(() => null)
-  if (!stat?.isDirectory() || stat.isSymbolicLink()) {
-    throw new Error('Review inspection target must be a canonical Plugin or Catalog Workspace directory.')
+  if (!stat) {
+    throw new ReviewInspectionInputError('targetNotFound', `Review target was not found: ${candidate}`)
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new ReviewInspectionInputError(
+      'invalidArguments',
+      'The release view requires a canonical Plugin or Catalog Workspace directory.',
+    )
   }
   const real = await fs.realpath(candidate)
   if (real === options.workspace.workspaceRoot) {
@@ -723,7 +861,10 @@ async function resolveTarget(options: {
   }
   const plugin = options.workspace.plugins.find((entry) => entry.rootDir === real)
   if (!plugin) {
-    throw new Error('Review inspection target is not a canonical Plugin in the selected Catalog Workspace.')
+    throw new ReviewInspectionInputError(
+      'invalidArguments',
+      'The release view requires the complete Plugin or Catalog target.',
+    )
   }
   return { kind: 'plugin', id: plugin.manifest.name, path: real, plugins: [plugin] }
 }
@@ -752,7 +893,8 @@ async function inspectMaterializations(options: {
       sourceIdentity: options.workspaceSourceIdentity,
     },
   }
-  for (const bindingPath of options.paths) {
+  const bindingPaths = [...new Set(options.paths.map((entry) => path.resolve(entry)))].sort(compareText)
+  for (const bindingPath of bindingPaths) {
     let parsed: Awaited<ReturnType<typeof readAwSourceBinding>> | null = null
     try {
       parsed = await readAwSourceBinding(bindingPath)
@@ -775,32 +917,39 @@ async function inspectMaterializations(options: {
         state: validation.state,
         plugin: validation.binding?.subject.plugin ?? null,
         skill: validation.binding?.subject.skill ?? null,
-        profile: validation.binding
-          ? validation.binding.profile.kind === 'eval'
-            ? `codex-${validation.binding.profile.scope}`
-            : `agent-skills-${validation.binding.profile.scope}`
-          : null,
+        profile: validation.binding ? finalProfileFromBinding(validation.binding.profile) : null,
         finalKeys: [],
         verifiedBinding: null,
         issues: validation.issues.map((issue) => issue.message),
       })
       continue
     }
-    const profile: ReviewInspectionFinalProfile = validation.binding.profile.kind === 'eval'
-      ? `codex-${validation.binding.profile.scope}`
-      : `agent-skills-${validation.binding.profile.scope}`
+    const profile = finalProfileFromBinding(validation.binding.profile)
     const finalKeys: string[] = []
     for (const output of validation.outputs) {
-      if (output.kind !== 'eval-target' && output.kind !== 'portable-skill') continue
-      const outputPlugin = output.kind === 'portable-skill'
+      if (
+        output.kind !== 'eval-target'
+        && output.kind !== 'portable-skill'
+        && output.kind !== 'review-skill'
+      ) continue
+      const outputPlugin = output.kind === 'portable-skill' || output.kind === 'review-skill'
         ? output.plugin
         : validation.binding.subject.plugin
       if (!targetPluginNames.has(outputPlugin)) continue
-      const belongsToSelectedPlugin = options.requiredFinals.some((required) =>
+      const compatibleRequired = options.requiredFinals.filter((required) =>
         required.plugin === outputPlugin
         && required.skill === output.skill
-        && required.profile === profile)
-      if (!belongsToSelectedPlugin) {
+        && required.profile === profile
+        && (
+          validation.binding.profile.kind !== 'eval'
+          || required.targetId === null
+          || options.targetPlugins
+            .find((plugin) => plugin.manifest.name === required.plugin)
+            ?.manifest.artifacts?.targets
+            ?.find((target) => target.id === required.targetId)
+            ?.delivery?.mode !== 'codex-native'
+        ))
+      if (compatibleRequired.length === 0) {
         options.issues.push({
           category: 'unknown',
           code: 'materializedOutputOwnerUnknown',
@@ -851,6 +1000,7 @@ async function inspectMaterializations(options: {
           identityKey,
           path: output.path,
           digest: output.digest,
+          requiredKeys: compatibleRequired.map((required) => required.key).sort(compareText),
         })
       }
     }
@@ -893,17 +1043,403 @@ async function inspectMaterializations(options: {
   }
 }
 
-export async function inspectReviewTarget(options: {
+interface NavigationFinalCandidate {
+  path: string
+  digest: string
+  evidencePath: string
+  state: 'ready' | 'stale'
+}
+
+function sameResolvedConfig(
+  left: Pick<ReviewResolvedProfile['pluginConfigs'][number], 'values' | 'sources'>,
+  right: Pick<ReviewResolvedProfile['pluginConfigs'][number], 'values' | 'sources'>,
+): boolean {
+  return canonicalJson({ values: left.values, sources: left.sources })
+    === canonicalJson({ values: right.values, sources: right.sources })
+}
+
+function selectResolvedConfig(
+  config: Pick<ReviewResolvedProfile['pluginConfigs'][number], 'values' | 'sources'>,
+  keys: readonly string[],
+): Pick<ReviewResolvedProfile['pluginConfigs'][number], 'values' | 'sources'> {
+  return {
+    values: Object.fromEntries(keys.flatMap((key) =>
+      Object.hasOwn(config.values, key) ? [[key, config.values[key]!]] : [])),
+    sources: Object.fromEntries(keys.flatMap((key) =>
+      Object.hasOwn(config.sources, key) ? [[key, config.sources[key]!]] : [])),
+  }
+}
+
+function selectedSkillConfig(
+  profile: ReviewResolvedProfile,
+  skill: ReviewSelectedSkill,
+): Pick<ReviewResolvedProfile['pluginConfigs'][number], 'values' | 'sources'> | null {
+  const entries = profile.pluginConfigs.filter((entry) => entry.pluginName === skill.pluginName)
+  if (entries.length === 0) return skill.refreshKeys.length === 0 ? { values: {}, sources: {} } : null
+  const values = Object.assign({}, ...entries.map((entry) => entry.values))
+  const sources = Object.assign({}, ...entries.map((entry) => entry.sources))
+  return selectResolvedConfig({ values, sources }, skill.refreshKeys)
+}
+
+function legacyProfileStore(
+  scope: Scope,
+  values: ReviewProfileConfig[string],
+): PluginConfigStore {
+  return {
+    path: `<legacy-${scope}-profile>`,
+    exists: Object.keys(values).length > 0,
+    state: 'ready',
+    values,
+    issues: [],
+  }
+}
+
+async function legacyBindingMatchesSelection(options: {
+  selection: ReviewSelection
+  requestedProfile: ReviewResolvedProfile
+  skill: ReviewSelectedSkill
+  binding: Awaited<ReturnType<typeof readAwSourceBinding>>
+  env?: NodeJS.ProcessEnv
+}): Promise<boolean> {
+  const { binding, requestedProfile, skill } = options
+  if (binding.profile.scope !== requestedProfile.scope) return false
+  if (binding.profile.kind === 'eval') {
+    if (
+      requestedProfile.platform !== 'codex'
+      || !binding.subject.skill
+      || skill.delivery === 'codex-native'
+    ) return false
+    const plugin = options.selection.workspace.plugins.find((entry) =>
+      entry.manifest.name === binding.subject.plugin)
+    if (!plugin) return false
+    const loaded = await readAwSkillEvalManifest({ plugin, skill: binding.subject.skill })
+    const evalProfile = loaded.manifest.profiles.find((entry) => entry.id === binding.profile.id)
+    if (!evalProfile) return false
+    const config = Object.fromEntries(
+      evalProfile.plugins.map((entry) => [entry.name, entry.config]),
+    ) as ReviewProfileConfig
+    try {
+      const requested = selectedSkillConfig(requestedProfile, skill)
+      if (!requested) return false
+      const overrides = config[skill.pluginName] ?? {}
+      const userValues = binding.profile.scope === 'user' ? overrides : {}
+      const effective = await resolveEffectivePluginConfigFromStores({
+        pluginName: skill.pluginName,
+        manifest: skill.plugin.manifest,
+        targetScope: binding.profile.scope,
+        projectRoot: options.selection.workspace.workspaceRoot,
+        stores: {
+          user: legacyProfileStore('user', userValues),
+          ...(binding.profile.scope === 'project'
+            ? { project: legacyProfileStore('project', overrides) }
+            : {}),
+        },
+      })
+      return sameResolvedConfig(
+        requested,
+        selectResolvedConfig(effective, skill.refreshKeys),
+      )
+    } catch {
+      return false
+    }
+  }
+  if (binding.profile.kind !== 'portable' || requestedProfile.platform !== 'agent-skills') {
+    return false
+  }
+  try {
+    const requested = selectedSkillConfig(requestedProfile, skill)
+    if (!requested) return false
+    const current = await resolvePortablePluginProfileConfig({
+      plugin: skill.plugin,
+      scope: skill.configScope,
+      cwd: options.selection.workspace.workspaceRoot,
+      env: options.env,
+    })
+    return sameResolvedConfig(
+      requested,
+      selectResolvedConfig(current.config, skill.refreshKeys),
+    )
+  } catch {
+    return false
+  }
+}
+
+function bindingOutputIdentity(
+  binding: Awaited<ReturnType<typeof readAwSourceBinding>>,
+  artifact: Awaited<ReturnType<typeof readAwSourceBinding>>['artifacts'][number],
+): { plugin: string; skill: string } | null {
+  if (artifact.kind === 'eval-target') {
+    return { plugin: binding.subject.plugin, skill: artifact.skill }
+  }
+  if (artifact.kind === 'portable-skill' || artifact.kind === 'review-skill') {
+    return { plugin: artifact.plugin, skill: artifact.skill }
+  }
+  return null
+}
+
+async function inspectNavigationBindings(options: {
+  selection: ReviewSelection
+  materializations: readonly string[]
+  env?: NodeJS.ProcessEnv
+}): Promise<{
+  candidates: Map<string, NavigationFinalCandidate[]>
+  issues: ReviewInspectionNavigationIssue[]
+}> {
+  const candidates = new Map<string, NavigationFinalCandidate[]>()
+  const issues: ReviewInspectionNavigationIssue[] = []
+  const context: AwSourceBindingWorkspaceValidationContext = {
+    workspace: options.selection.workspace,
+    source: {
+      kind: 'workspace',
+      workspaceIdentity: options.selection.workspace.workspaceIdentity,
+      sourceIdentity: options.selection.sourceIdentity,
+    },
+  }
+  const bindingPaths = [...new Set(options.materializations.map((entry) => path.resolve(entry)))]
+    .sort(compareText)
+  for (const bindingPath of bindingPaths) {
+    let binding: Awaited<ReturnType<typeof readAwSourceBinding>>
+    try {
+      binding = await readAwSourceBinding(bindingPath)
+    } catch (error) {
+      throw new ReviewInspectionInputError(
+        'sourceBindingInvalid',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
+    const validation = await validateAwSourceBindingForWorkspace({
+      bindingPath,
+      context,
+      expectedSubject: binding.subject,
+      cwd: options.selection.workspace.workspaceRoot,
+      env: options.env,
+    })
+    if (validation.state === 'invalid' || validation.state === 'incomplete') {
+      throw new ReviewInspectionInputError(
+        'sourceBindingInvalid',
+        validation.issues.map((entry) => entry.message).join('; '),
+      )
+    }
+    let selected = false
+    for (const requestedProfile of options.selection.profiles) {
+      const profileMatches = binding.profile.kind === 'review'
+        ? binding.profile.platform === requestedProfile.platform
+          && binding.profile.scope === requestedProfile.scope
+        : binding.profile.kind === 'eval'
+          ? requestedProfile.platform === 'codex'
+          : requestedProfile.platform === 'agent-skills'
+      if (!profileMatches) continue
+      for (const artifact of binding.artifacts) {
+        const identity = bindingOutputIdentity(binding, artifact)
+        if (!identity) continue
+        const skill = requestedProfile.skills.find((entry) =>
+          entry.pluginName === identity.plugin && entry.name === identity.skill)
+        if (!skill) continue
+        if (
+          binding.profile.kind === 'review'
+          && !await reviewBindingMatchesSelection({
+            workspace: options.selection.workspace,
+            bindingProfile: binding.profile,
+            requestedProfile,
+            pluginName: identity.plugin,
+            skill: identity.skill,
+          })
+        ) continue
+        if (
+          binding.profile.kind !== 'review'
+          && !await legacyBindingMatchesSelection({
+            selection: options.selection,
+            requestedProfile,
+            skill,
+            binding,
+            env: options.env,
+          })
+        ) continue
+        selected = true
+        const key = `${identity.plugin}\0${identity.skill}\0${requestedProfile.platform}\0${requestedProfile.scope}`
+        const candidate: NavigationFinalCandidate = {
+          path: path.resolve(path.dirname(bindingPath), ...artifact.path.split('/')),
+          digest: artifact.digest,
+          evidencePath: bindingPath,
+          state: validation.state === 'verified' ? 'ready' : 'stale',
+        }
+        candidates.set(key, [...(candidates.get(key) ?? []), candidate])
+      }
+    }
+    if (!selected) {
+      issues.push({
+        code: 'materializationNotSelected',
+        path: bindingPath,
+        message: 'The source binding does not match the selected Skill, profile, and config input.',
+      })
+    } else if (validation.state === 'drifted') {
+      issues.push({
+        code: 'sourceBindingDrifted',
+        path: bindingPath,
+        message: validation.issues.map((entry) => entry.message).join('; '),
+      })
+    }
+  }
+  return { candidates, issues }
+}
+
+function navigationSkillKey(
+  skill: ReviewSelectedSkill,
+  profile: ReviewResolvedProfile,
+): string {
+  return `${skill.pluginName}\0${skill.name}\0${profile.platform}\0${profile.scope}`
+}
+
+async function inspectNavigationTarget(options: ReviewInspectionOptions): Promise<ReviewInspectionNavigationReceipt> {
+  const selection = await resolveReviewSelection({
+    cwd: options.cwd,
+    target: options.target,
+    ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
+    ...(options.skills === undefined ? {} : { skills: options.skills }),
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
+    ...(options.scope === undefined ? {} : { scope: options.scope }),
+    ...(options.configFile === undefined ? {} : { configFile: options.configFile }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+  })
+  try {
+  const snapshot = await inspectSnapshot(selection.workspace, selection.sourceIdentity)
+  const binding = await inspectNavigationBindings({
+    selection,
+    materializations: options.materializations ?? [],
+    env: options.env,
+  })
+  const skills: ReviewInspectionNavigationReceipt['skills'] = []
+  const issues = [...binding.issues]
+  if (snapshot.receipt.state === 'invalid' || snapshot.receipt.state === 'stale') {
+    issues.push({
+      code: snapshot.receipt.state === 'invalid' ? 'snapshotInvalid' : 'snapshotStale',
+      path: snapshot.receipt.path,
+      message: snapshot.receipt.state === 'invalid'
+        ? 'The existing Catalog snapshot is invalid.'
+        : 'The existing Catalog snapshot is not bound to the current Workspace source.',
+    })
+  }
+  for (const profile of selection.profiles) {
+    for (const skill of profile.skills) {
+      const key = navigationSkillKey(skill, profile)
+      const candidates = [...(binding.candidates.get(key) ?? [])]
+      if (
+        snapshot.root
+        && !skill.dynamic
+        && profile.platform !== 'agent-skills'
+      ) {
+        const finalPath = path.join(
+          snapshot.root,
+          'plugins',
+          skill.pluginName,
+          profile.platform,
+          'skills',
+          skill.name,
+        )
+        try {
+          candidates.push({
+            path: finalPath,
+            digest: await computeSkillDigest(finalPath),
+            evidencePath: snapshot.receipt.path,
+            state: 'ready',
+          })
+        } catch {
+          // Complete snapshot validation reports invalid final content through its own state.
+        }
+      }
+      const ready = candidates.filter((entry) => entry.state === 'ready')
+      const readyDigests = new Set(ready.map((entry) => entry.digest))
+      let state: ReviewInspectionNavigationReceipt['skills'][number]['state'] = 'missing'
+      let chosen: NavigationFinalCandidate | null = null
+      if (readyDigests.size > 1) {
+        state = 'invalid'
+        issues.push({
+          code: 'materializationAmbiguous',
+          path: null,
+          message: `Current materializations have different digests for ${skill.pluginName}/${skill.name}/${profile.profile.id}.`,
+        })
+      } else if (ready.length > 0) {
+        state = 'ready'
+        chosen = ready.sort((left, right) => compareText(
+          `${left.evidencePath}\0${left.path}`,
+          `${right.evidencePath}\0${right.path}`,
+        ))[0]!
+      } else {
+        const stale = candidates.filter((entry) => entry.state === 'stale')
+          .sort((left, right) => compareText(left.evidencePath, right.evidencePath))
+        if (stale.length > 0) {
+          state = 'stale'
+          chosen = stale[0]!
+        }
+      }
+      if (state === 'missing') {
+        issues.push({
+          code: 'requiredFinalMissing',
+          path: skill.sourcePath,
+          message: `No current final is available for ${skill.pluginName}/${skill.name}/${profile.profile.id}.`,
+        })
+      }
+      skills.push({
+        skill: skill.name,
+        sourcePath: skill.sourcePath,
+        profile: {
+          platform: profile.platform,
+          scope: profile.scope,
+          inputDigest: profile.profile.inputDigest,
+        },
+        finalPath: chosen?.path ?? null,
+        digest: chosen?.digest ?? null,
+        state,
+        evidencePath: chosen?.evidencePath ?? null,
+      })
+    }
+  }
+  skills.sort((left, right) => compareText(
+    `${left.skill}\0${left.profile.platform}\0${left.profile.scope}\0${left.sourcePath}`,
+    `${right.skill}\0${right.profile.platform}\0${right.profile.scope}\0${right.sourcePath}`,
+  ))
+  issues.sort((left, right) => compareText(
+    `${left.code}\0${left.path ?? ''}\0${left.message}`,
+    `${right.code}\0${right.path ?? ''}\0${right.message}`,
+  ))
+  return {
+    schemaVersion: 2,
+    command: 'review:inspect',
+    view: 'review',
+    ok: true,
+    target: { kind: selection.target.kind, path: selection.target.path },
+    sources: [...new Set(selection.sources.map((entry) => path.resolve(entry)))].sort(compareText),
+    ...(selection.target.kind === 'catalog'
+      ? { snapshot: { path: snapshot.receipt.path, state: snapshot.receipt.state } }
+      : {}),
+    skills,
+    issues,
+  }
+  } catch (error) {
+    throw new ReviewInspectionResolvedTargetError(error, {
+      kind: selection.target.kind,
+      path: selection.target.path,
+    })
+  }
+}
+
+async function inspectReleaseTarget(options: {
   cwd: string
   target: string
   workspaceRoot?: string
   materializations?: readonly string[]
   env?: NodeJS.ProcessEnv
-}): Promise<ReviewInspectionReceipt> {
+}): Promise<ReviewInspectionReleaseReceipt> {
   const targetCandidate = options.target === 'catalog' ? null : path.resolve(options.cwd, options.target)
   const targetCandidateStat = targetCandidate
     ? await fs.lstat(targetCandidate).catch(() => null)
     : null
+  if (targetCandidateStat && (!targetCandidateStat.isDirectory() || targetCandidateStat.isSymbolicLink())) {
+    throw new ReviewInspectionInputError(
+      'invalidArguments',
+      'The release view requires a canonical Plugin or Catalog Workspace directory.',
+    )
+  }
   const resolution = await resolveCatalogWorkspaceRoot({
     cwd: options.workspaceRoot === undefined && targetCandidateStat?.isDirectory()
       ? targetCandidate!
@@ -1047,7 +1583,8 @@ export async function inspectReviewTarget(options: {
     const candidates = requiredFinals.filter((required) =>
       required.plugin === final.plugin
       && required.skill === final.skill
-      && required.profile === final.profile)
+      && required.profile === final.profile
+      && final.requiredKeys.includes(required.key))
     if (candidates.length === 1) {
       const required = candidates[0]!
       bindingFinalsByRequiredKey.set(
@@ -1137,7 +1674,9 @@ export async function inspectReviewTarget(options: {
       .map((materialization) => materialization.path))]
       .sort(compareText)
     if (required.materializedFinalKeys.length === 0) {
-      const snapshotFinal = requiredByKey.get(required.requiredFinalKey)?.matchedFinalKeys ?? []
+      const snapshotFinal = (requiredByKey.get(required.requiredFinalKey)?.matchedFinalKeys ?? [])
+        .filter((key) => subjects.some((subject) =>
+          subject.key === key && subject.origin === 'catalog-snapshot'))
       required.materializedFinalKeys = [...snapshotFinal]
     }
   }
@@ -1200,8 +1739,9 @@ export async function inspectReviewTarget(options: {
   subjects.sort((left, right) => compareText(left.key, right.key))
   const ok = !issues.some((issue) => issue.blocking)
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     command: 'review:inspect',
+    view: 'release',
     ok,
     completeness: ok && requiredFinals.every((entry) => entry.status === 'resolved')
       ? 'complete' : 'incomplete',
@@ -1229,26 +1769,107 @@ export async function inspectReviewTarget(options: {
   }
 }
 
+export function inspectReviewTarget(
+  options: ReviewInspectionOptions & { view: 'release' },
+): Promise<ReviewInspectionReleaseReceipt>
+export function inspectReviewTarget(
+  options: ReviewInspectionOptions & { view?: 'review' },
+): Promise<ReviewInspectionNavigationReceipt>
+export function inspectReviewTarget(
+  options: ReviewInspectionOptions,
+): Promise<ReviewInspectionReceipt>
+export async function inspectReviewTarget(
+  options: ReviewInspectionOptions,
+): Promise<ReviewInspectionReceipt> {
+  const view = options.view ?? 'review'
+  if (view === 'release') {
+    if (
+      (options.skills !== undefined && options.skills.length > 0)
+      || options.platform !== undefined
+      || options.scope !== undefined
+      || options.configFile !== undefined
+    ) {
+      throw new ReviewInspectionInputError(
+        'invalidArguments',
+        'The release view requires the complete Plugin or Catalog target and does not accept selection options.',
+      )
+    }
+    return await inspectReleaseTarget(options)
+  }
+  return await inspectNavigationTarget(options)
+}
+
+export type ReviewInspectionFailureReceipt =
+  | Omit<ReviewInspectionNavigationReceipt, 'snapshot'>
+  | {
+      schemaVersion: 2
+      command: 'review:inspect'
+      view: 'release'
+      ok: false
+      completeness: 'incomplete'
+      issues: ReviewInspectionIssue[]
+    }
+
+export function getReviewInspectionErrorCode(
+  error: unknown,
+  fallback = 'reviewInspectionFailed',
+): string {
+  if (error && typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'string' && code !== '') return code
+  }
+  return fallback
+}
+
+export function getReviewInspectionExitCode(error: unknown): 1 | 2 | 3 {
+  if (error && typeof error === 'object' && 'exitCode' in error) {
+    const exitCode = (error as { exitCode?: unknown }).exitCode
+    if (exitCode === 2 || exitCode === 3) return exitCode
+  }
+  return 1
+}
+
+function getReviewInspectionResolvedTarget(
+  error: unknown,
+): ReviewInspectionNavigationReceipt['target'] {
+  if (!error || typeof error !== 'object' || !('reviewTarget' in error)) return null
+  const target = (error as { reviewTarget?: unknown }).reviewTarget
+  if (!target || typeof target !== 'object') return null
+  const kind = (target as { kind?: unknown }).kind
+  const targetPath = (target as { path?: unknown }).path
+  if (
+    (kind !== 'skill' && kind !== 'plugin' && kind !== 'catalog')
+    || typeof targetPath !== 'string'
+    || targetPath === ''
+  ) return null
+  return { kind, path: targetPath }
+}
+
 export function createReviewInspectionFailure(
   error: unknown,
-  code = 'reviewInspectionFailed',
-): {
-  schemaVersion: 1
-  command: 'review:inspect'
-  ok: false
-  completeness: 'incomplete'
-  issues: ReviewInspectionIssue[]
-} {
+  view: ReviewInspectionView = 'review',
+  fallbackCode = 'reviewInspectionFailed',
+): ReviewInspectionFailureReceipt {
+  const code = getReviewInspectionErrorCode(error, fallbackCode)
+  const message = error instanceof Error ? error.message : String(error)
+  if (view === 'release') {
+    return {
+      schemaVersion: 2,
+      command: 'review:inspect',
+      view,
+      ok: false,
+      completeness: 'incomplete',
+      issues: [{ category: 'invalid', code, message, blocking: true }],
+    }
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     command: 'review:inspect',
+    view,
     ok: false,
-    completeness: 'incomplete',
-    issues: [{
-      category: 'invalid',
-      code,
-      message: error instanceof Error ? error.message : String(error),
-      blocking: true,
-    }],
+    target: getReviewInspectionResolvedTarget(error),
+    sources: [],
+    skills: [],
+    issues: [{ code, path: null, message }],
   }
 }

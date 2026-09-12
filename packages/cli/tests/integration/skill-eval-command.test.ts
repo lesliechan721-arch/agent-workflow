@@ -345,6 +345,11 @@ describe('aw skill eval commands', () => {
     expect((await fs.readdir(output)).sort()).toEqual([
       'aw-source-binding.json', 'cases.json', 'spec.json', 'targets', 'workspace',
     ])
+    await expect(fs.readJson(receipt.sourceBindingPath)).resolves.toMatchObject({
+      schemaVersion: 2,
+      kind: 'aw-source-binding',
+      profile: { kind: 'eval' },
+    })
     await expect(fs.pathExists(path.join(output, 'output'))).resolves.toBe(false)
     await expect(fs.pathExists(path.join(output, 'preparation.json'))).resolves.toBe(false)
     await expect(fs.pathExists(path.join(output, 'provider'))).resolves.toBe(false)

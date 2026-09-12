@@ -1,0 +1,152 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-agent-skill",
+    "participants": [
+      "agent-content",
+      "audit-agent-skill-evals",
+      "review-agent-architecture"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "防止源视图误判、缺产物时虚假完整结论和未授权准备；保持合法的公开Skill组合。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "standalone_missing_reference",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读审核 standard/demo-skill 这个完整独立Skill包的资源完整性；没有额外构建步骤，不修改文件。",
+      "assertions": [
+        "报告实际缺少references/policy.md，结论绑定此独立包；保持目标不变。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "standard/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "报告实际缺少references/policy.md，结论绑定此独立包；保持目标不变。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "独立完整包缺文件与AW源注入区别。",
+        "minimalCounterexample": "若这是声明通过构建注入的源目录，应先确认其包视图而不是判final断链。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "source_injected_reference",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读评价project/plugins/demo-plugin/skills/demo-skill的源码设计。Plugin manifest和shared目录一并提供；当前没有物化目录，也未授权构建。",
+      "assertions": [
+        "只评价源码设计，说明运行包未核验；不能仅因源Skill目录缺policy.md判定最终包断链。",
+        "识别manifest中的注入来源；不执行构建或修改任一source文件。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "只评价源码设计，说明运行包未核验；不能仅因源Skill目录缺policy.md判定最终包断链。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "实际source与注入声明都存在，final缺失不是prompt假设。",
+        "minimalCounterexample": "若最终产物已提供且同样缺少该引用，才能评价其运行包完整性。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "standalone_complete_direct",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读审核 supplied/demo-skill 的完整包。只评价这个已提供目录，不要求追溯或修改任何项目。",
+      "assertions": [
+        "直接检查给定完整包，保留必要内容原则；无需项目构建或AW准备。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "supplied/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "supplied/demo-skill/references/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "直接检查给定完整包，保留必要内容原则；无需项目构建或AW准备。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "完整标准输入可以直接评审。",
+        "minimalCounterexample": "若请求判断这个目录是否代表某个当前AW source，需相应来源验证。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "final_missing_locate_owner",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读评审provided-final/demo-skill，核对mapping.md及source材料。报告这个给定final的问题并定位需要核查的构建责任，不宣称它代表最新部署。",
+      "assertions": [
+        "报告给定final真实缺少policy.md，并将发现位置与需要核查的source/build owner分开；不直接修改final。",
+        "缺少正式currentness时限定结论，shared源存在不自动证明生产构建成功。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "provided-final/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "mapping.md": "这是一份本次用户明确提供的源码映射：provided-final/demo-skill对应project/plugins/demo-plugin/skills/demo-skill；policy由manifest声明的shared/policy.md注入。没有正式currentness凭据，本次只审核提供的final及可能修复位置。\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": []
+      },
+      "expected": {
+        "output": "报告给定final真实缺少policy.md，并将发现位置与需要核查的source/build owner分开；不直接修改final。",
+        "workspaceUnchanged": true,
+        "allowedWorkspaceChanges": [],
+        "artifacts": []
+      },
+      "audit": {
+        "rationale": "用户提供的是映射线索而非伪造validated binding，断言只涉及可见final。",
+        "minimalCounterexample": "若final有该文件，则此缺失finding不成立；若mapping无依据，owner保持未知。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    }
+  ]
+}

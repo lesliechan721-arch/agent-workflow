@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "suite": {
+    "kind": "conversation",
+    "unitUnderTest": "review-aw",
+    "participants": [
+      "review-agent-skill",
+      "review-agent-architecture",
+      "agent-content",
+      "audit-agent-skill-evals"
+    ],
+    "policy": {
+      "optimization": "precision-first",
+      "falseNegativeCost": "high",
+      "falsePositiveCost": "high",
+      "rationale": "防止源视图误判、缺产物时虚假完整结论和未授权准备；保持合法的公开Skill组合。"
+    },
+    "runtime": {
+      "isolation": "strict"
+    }
+  },
+  "cases": [
+    {
+      "id": "reuse_current_final",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。已有产物位于_review-output/existing；请使用现有来源证据。保持源码与现有产物不变。",
+      "assertions": [
+        "通过inspect选中现有ready final并实际读取其policy；不会把源目录缺少注入文件判成final断链。",
+        "不调用prepare，不修改source/provider或现有final。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "_review-output/existing/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "_review-output/existing/skills/demo-skill/references/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "_review-output/existing/aw-source-binding.json": "{\n  \"testDouble\": true,\n  \"fixtureSourceDigest\": \"sha256:11b81fb9f2101446cc4d6a355725860768ffd81929a3d557cbefb2e79b1488f0\",\n  \"fixtureFinalDigest\": \"sha256:d12ab1b2e2963f9d2b2069aa8b54b91051ea0b6548327575feda0d67a69c359a\"\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/existing/skills/demo-skill\",\n  \"binding\": \"_review-output/existing/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "通过inspect选中现有ready final并实际读取其policy；不会把源目录缺少注入文件判成final断链。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "当前final、实际注入文件和fixture来源相符，验证复用与源/产物检查对象。",
+        "minimalCounterexample": "若source或shared/policy改变使绑定stale，则该旧final不能作为当前版本复用。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "prepare_without_evals",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。允许为本次审核执行本地准备到_review-output/new；保留源码。该插件没有Eval文件。",
+      "assertions": [
+        "缺final时按授权调用review prepare并审核其实际final和注入reference；没有要求先设计Eval。",
+        "质量结论只覆盖本profile，source/provider不变；不安装、发布或运行模型Eval。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": true,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "缺final时按授权调用review prepare并审核其实际final和注入reference；没有要求先设计Eval。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**",
+          "_review-output/new/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          },
+          {
+            "path": "_review-output/new/skills/demo-skill/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "_review-output/new/skills/demo-skill/references/policy.md",
+            "exists": true,
+            "contains": [
+              "Only summarize supplied facts"
+            ]
+          },
+          {
+            "path": "_review-output/new/aw-source-binding.json",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "目标没有Eval，准备授权明确，fixture会生成真实运行包文件供模型读取。",
+        "minimalCounterexample": "若用户只要源码分析或禁止执行build，则即使缺final也不进入prepare。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "full_review_implies_local_prepare",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "完整审核project/plugins/demo-plugin/skills/demo-skill，目标Codex/project。请检查当前可审核的最终运行包。",
+      "assertions": [
+        "先说明需要执行本地build/renderer并只写入隔离审核目录，然后在已有完整审核授权内调用review prepare；不重复请求许可。",
+        "审核新生成的实际final与注入reference；source/provider不变，不安装、发布或运行模型Eval。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": true,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "先说明本地准备及隔离输出，然后在完整审核授权内prepare并审核实际final；不重复请求许可。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**",
+          "_review-output/new/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          },
+          {
+            "path": "_review-output/new/skills/demo-skill/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "_review-output/new/skills/demo-skill/references/policy.md",
+            "exists": true,
+            "contains": [
+              "Only summarize supplied facts"
+            ]
+          },
+          {
+            "path": "_review-output/new/aw-source-binding.json",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "完整审核当前AW Skill需要可检查的最终运行包；本地必要准备属于该请求，fixture限制写入隔离输出。",
+        "minimalCounterexample": "若用户明确限制为静态只读或禁止执行build/renderer，则不得prepare。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "source_only_scope",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读分析project/plugins/demo-plugin/skills/demo-skill的源码设计。可以静态inspection；不执行插件代码，不生成运行包。",
+      "assertions": [
+        "保持source-only范围；不prepare，也不将待注入policy误报为final缺陷。",
+        "明确最终运行包未验证；source/provider不变。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "保持source-only范围；不prepare，也不将待注入policy误报为final缺陷。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "用户只授权源码设计分析，缺少final不影响这一限定任务。",
+        "minimalCounterexample": "若用户改为完整产物审核并授权本地准备，应先取得可用final。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "full_review_execution_denied",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "想知道project/plugins/demo-plugin/skills/demo-skill最终运行包是否完整，但本次禁止build/renderer或创建产物；仅允许静态检查。",
+      "assertions": [
+        "说明final证据不足并限定现有源码观察；没有prepare或完整通过声明。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "说明final证据不足并限定现有源码观察；没有prepare或完整通过声明。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "完整评审愿望与执行权限分别判断；当前权限明确不允许准备。",
+        "minimalCounterexample": "用户补充覆盖本地renderer和隔离输出的授权后，才可准备缺少的产物。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "stale_binding_not_current",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "审核project/plugins/demo-plugin/skills/demo-skill的当前Codex/project版本，已有_review-output/existing。此次只读，不准备新副本。",
+      "assertions": [
+        "识别stale来源，不把已有final报告当作当前source通过；保持输入不变。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "_review-output/existing/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "_review-output/existing/skills/demo-skill/references/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "_review-output/existing/aw-source-binding.json": "{\n  \"testDouble\": true,\n  \"fixtureSourceDigest\": \"sha256:dbddf6a946ebf284eb3f30f1ec1df35ebb1c947544a1786c1d2d943c90308b33\",\n  \"fixtureFinalDigest\": \"sha256:d12ab1b2e2963f9d2b2069aa8b54b91051ea0b6548327575feda0d67a69c359a\"\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/existing/skills/demo-skill\",\n  \"binding\": \"_review-output/existing/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "识别stale来源，不把已有final报告当作当前source通过；保持输入不变。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "旧final存在但fixture source fingerprint不匹配，检查文件存在不等于来源当前。",
+        "minimalCounterexample": "绑定与当前source/provider/profile完全匹配时，允许使用已有final。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "final_really_missing_injection",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "只读检查project/plugins/demo-plugin/skills/demo-skill的已有Codex/project产物及注入关系，产物在_review-output/existing。",
+      "assertions": [
+        "将实际final缺policy作为产物问题，source中shared/policy存在作为定位build/import的证据；不写final或夸大确定根因。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "_review-output/existing/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "_review-output/existing/aw-source-binding.json": "{\n  \"testDouble\": true,\n  \"fixtureSourceDigest\": \"sha256:11b81fb9f2101446cc4d6a355725860768ffd81929a3d557cbefb2e79b1488f0\",\n  \"fixtureFinalDigest\": \"sha256:5be357a6ed5ff81358f9609d0cf1bf2bfe5a8dc299cb591c77ccba73cec4ee80\"\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/existing/skills/demo-skill\",\n  \"binding\": \"_review-output/existing/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "将实际final缺policy作为产物问题，source中shared/policy存在作为定位build/import的证据；不写final或夸大确定根因。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "源provider存在、manifest声明注入、实际final缺文件，问题发生在最终视图。",
+        "minimalCounterexample": "若final包含同一引用且内容可读，则该缺失finding应消失。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "prepare_failed_reports_gap",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "完整审核project/plugins/demo-plugin/skills/demo-skill的Codex/project。允许一次本地准备到_review-output/new，源码不变。",
+      "assertions": [
+        "prepare失败时保留实际错误与源码观察，不声称生成了可用final或完成完整评审。",
+        "不为让准备通过修改source/provider。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": true,\n  \"failPrepare\": true,\n  \"unsupported\": false\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "prepare失败时保留实际错误与源码观察，不声称生成了可用final或完成完整评审。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "明确的renderer失败返回，不以源设计可读推断完整产物成功。",
+        "minimalCounterexample": "同一准备生成可验证final时，可进入leaf审核而不是保留失败结论。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    },
+    {
+      "id": "unsupported_profile_limited",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "prompt": "检查project/plugins/demo-plugin/skills/demo-skill是否具备本次指定的Codex/project运行包；只读取证，保持文件不变。",
+      "assertions": [
+        "按unsupported诊断报告本profile缺口，不用其他平台产物冒充通过。"
+      ],
+      "input": {
+        "workspaceFiles": {
+          "project/plugins/demo-plugin/.agents-plugin/plugin.json": "{\n  \"schemaVersion\": 3,\n  \"name\": \"demo-plugin\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Fixture for source/final review\",\n  \"skills\": \"./skills\",\n  \"buildConfig\": {\n    \"skillRuntimeFiles\": [\n      {\n        \"skill\": \"demo-skill\",\n        \"target\": \"references/policy.md\",\n        \"source\": \"./shared/policy.md\"\n      }\n    ]\n  }\n}\n",
+          "project/plugins/demo-plugin/skills/demo-skill/SKILL.md": "---\nname: demo-skill\ndescription: Summarize the supplied status note.\n---\n\nRead references/policy.md before summarizing. Use only provided facts.\n",
+          "project/plugins/demo-plugin/shared/policy.md": "# Required policy\n\nOnly summarize supplied facts. Preserve privacy and identify unknowns.\n",
+          "project/.aw-workspace.json": "{\n  \"schemaVersion\": 1,\n  \"kind\": \"aw-catalog-workspace\",\n  \"workspaceIdentity\": \"review-fixture\"\n}\n",
+          "project/plugins/marketplace-source.json": "{\n  \"owner\": {\n    \"name\": \"Fixture\",\n    \"url\": \"https://example.invalid\"\n  },\n  \"catalog\": {\n    \"version\": \"0.1.0\"\n  }\n}\n",
+          "fixture-control.json": "{\n  \"sourceRoot\": \"project/plugins/demo-plugin/skills/demo-skill\",\n  \"provider\": \"project/plugins/demo-plugin/shared/policy.md\",\n  \"manifest\": \"project/plugins/demo-plugin/.agents-plugin/plugin.json\",\n  \"outputRoot\": \"_review-output/new\",\n  \"finalRoot\": \"_review-output/new/skills/demo-skill\",\n  \"binding\": \"_review-output/new/aw-source-binding.json\",\n  \"allowPrepare\": false,\n  \"failPrepare\": false,\n  \"unsupported\": true\n}\n",
+          "FIXTURE.md": "This workspace uses an explicit AW CLI test double. It tests routing and read/write scope, not real build or publication. Inspect actual files and CLI responses; fixtures and source are not editable.\n"
+        },
+        "scriptedReplies": [],
+        "pathPrepend": [
+          "review-fixtures/bin"
+        ]
+      },
+      "expected": {
+        "output": "按unsupported诊断报告本profile缺口，不用其他平台产物冒充通过。",
+        "workspaceUnchanged": false,
+        "allowedWorkspaceChanges": [
+          "_review-log/**"
+        ],
+        "artifacts": [
+          {
+            "path": "_review-log/commands.jsonl",
+            "exists": true
+          }
+        ]
+      },
+      "audit": {
+        "rationale": "所选profile明确不受本fixture支持，不能以另一产物覆盖请求。",
+        "minimalCounterexample": "目标明确支持且已验证的profile有ready final时，才可形成该profile结论。",
+        "allowedVariance": "允许等价措辞和检查工具；判断依据是指定对象、文件/命令证据和权限边界。"
+      }
+    }
+  ]
+}

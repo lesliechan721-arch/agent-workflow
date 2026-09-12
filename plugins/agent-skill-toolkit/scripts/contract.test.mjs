@@ -20,7 +20,7 @@ function runtimeSkill(platform, name) {
 test('publishes five model-callable Skills with valid public metadata', () => {
   const manifest = JSON.parse(readFileSync(path.join(root, '.agents-plugin', 'plugin.json'), 'utf8'));
   assert.equal(manifest.name, 'agent-skill-toolkit');
-  assert.ok(manifest.requires.aw.capabilities.includes('aw.review-publication.v1'));
+  assert.ok(!(manifest.requires?.aw?.capabilities ?? []).includes('aw.review-publication.v1'));
   assert.deepEqual(readdirSync(path.join(root, 'codex', 'skills')).sort(), [...skills].sort());
 
   for (const skill of skills) {
@@ -48,11 +48,9 @@ test('materializes the shared Reviewer resource closure on both platforms', () =
     ['author-agent-skill', 'references/composition-audit.md'],
     ['review-agent-skill', 'references/skill-invocation.md'],
     ['review-agent-skill', 'references/skill-composition.md'],
-    ['review-agent-skill', 'references/report-publication.md'],
     ['review-agent-skill', 'scripts/audit-output-contracts.mjs'],
     ['review-agent-architecture', 'references/skill-invocation.md'],
     ['review-agent-architecture', 'references/skill-composition.md'],
-    ['review-agent-architecture', 'references/report-publication.md'],
     ['review-agent-architecture', 'scripts/audit-output-contracts.mjs'],
   ];
   for (const platform of ['codex', 'claude']) {

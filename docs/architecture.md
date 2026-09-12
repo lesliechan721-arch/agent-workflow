@@ -26,6 +26,7 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v4 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 Receipt v6。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
+- `review/skill-materialization.ts` 复用本地 bundle 和 runtime import resolver，提供 Skill 物化共用的构建准备与临时环境。Eval 保留自己的 subject/Git 布局；构建和 renderer 均显式使用隔离 HOME、AW homes 和临时目录。普通 bundle 调用未提供 `commandEnv` 时沿用原进程环境；这种输入隔离不是 OS sandbox。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
 - Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。`effective` 是 `declared + derived`；`detected` 只给作者提示。扫描器只检查 `SKILL.md` 中独立 shell fence 和 Manifest executable entry；不扫描 inline command、reference、任意脚本或 Node transitive closure。第三方公开 `aw catalog build` 默认只 advisory；官方 `pnpm build` 必须使用 `--strict-requirements` 语义，把不匹配变为阻断，且 `release:verify:catalog:core` 通过该 build 覆盖此门禁。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --add/--remove <capability> --json` 只修改 `requires.aw.capabilities`，并计算 declared、derived、detected 和 effective requirements。Plugin Manifest v3 要求显式 `schemaVersion: 3`。
 
@@ -391,17 +392,23 @@ Codex 性能门禁使用以下稳定上限。成功的 official native CLI 不�
 - macOS conversation provider 只使用一层 outer Seatbelt。它阻止宿主源码读取，并按 case 精确实施 workspace 只读或可写边界；turn 使用 `externalSandbox`，因为嵌套 Seatbelt 不可靠。app-server control-plane 和工具执行网络都保持可用，provider capabilities 和每次 evidence 必须公开这个限制。
 - Oracle preflight 和 result triage 属于独立 Auditor，而不是 Engine。运行前没有 passing Audit 时不得启动模型。clean success 不要求 triage；只有 execution/grade 失败、current 结果混合、相对 baseline 回归，或结果将驱动生产 Skill 修改时，才在全新上下文做 result-triage。triage 默认返回聊天结论，且不是 Release Check 的机器输入。
 
-## AW Review 只读取证与来源绑定
+## AW Review 准备、只读取证与来源绑定
 
-`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... --json` 为 Plugin 或 Catalog 的 Review 与 Release Check 提供机器事实。`aw.review-inspection.v1` 表示该能力。它读取当前 source inventory、已有 snapshot、适用 profile、Skill digest 和当前 manifest 的必需 Eval；不判断语义质量或发布 readiness。Catalog target 覆盖全部当前插件，Plugin target 只覆盖所选插件。缺少 materialized final 时保留 source 事实并报告缺口，不阻断普通源码 Review。
+`aw review inspect <target> [--workspace-root <root>] [--materialization <receipt>]... [--view review|release] [--json]` 为源 Skill、Plugin 或 Catalog 取得当前来源和产物事实，由 `aw.review-inspection.v2` 表示能力。默认 review 视图直接返回必要 source 路径及每个 Skill 的 source、profile、final、digest、证据位置和缺口；不展开内部 join 表或计算无关的 required Eval。release 视图保留完整 subjects、requiredFinals、finalMappings、requiredEvals 和 verified bindings，供 Release Checker 消费。两种视图使用相同的来源核验与产物解析；不保留 inspection v1 输出。
 
-`ok` 表示 inspection 执行及输入校验没有阻断错误，退出码据此为 0 或 1；`completeness` 单独表示所需证据是否完整。仅缺少 final 时，`requiredFinalMissing` 为非阻断缺口，返回 `ok: true`、`completeness: incomplete` 和退出码 0。无效输入、来源绑定损坏或漂移、产物歧义仍保留原有诊断和阻断。完整证据不代表语义质量或发布 readiness 通过；Release Checker 独立要求每个 required final 为 `resolved` 且具有 matched final，不依赖缺口的 `blocking` 字段。
+review 视图可用重复的 `--skill`、`--platform codex|claude|agent-skills`、`--scope user|project` 和 `--config <file>` 选择本次范围。单源 Skill 的选择不能静默扩大到 Plugin；动态源按实际 artifact/sourceDirs/renderer 映射，有歧义时明确报错。未指定的 profile 从声明枚举，不猜当前客户端。release 视图只接受完整 Plugin/Catalog 范围，拒绝这些选择参数，不能通过过滤减少 required 集合。
 
-Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验和官方 Eval parser，不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。相同内容的不同 profile 仍是独立覆盖项；相同物化身份的重复凭据可去重，产物摘要冲突时报告歧义，不按参数顺序选择。`profile` 表示平台和 scope；有 `materializationProfile` 时，消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分实际配置身份，不只按平台合并。缺失、陈旧或无法建立来源关系的 final 不能成为当前版本的通过证据。
+`ok` 表示取证是否完成，不表示质量或发布通过。review 视图完成时，缺失或陈旧 final 保留为 missing/stale，退出码为 0；损坏来源、非法参数或不支持的 profile 返回失败和退出码 2，缺少必要配置返回 3。只有当前已验证的 final 才能为 ready；产物冲突仍是 invalid 和明确问题。release 视图单独保留证据完整性，Checker 要求每个 required final 为 resolved 且有 matched final，不以 inspection 的 ok 推断发布 readiness。
 
-必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。AW prepare 当前提供 Codex 目标；Claude 和 portable 的 final 覆盖不自动产生对应平台的 Eval 要求。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
+Inspection 不运行 renderer、build、test、模型或网络命令。它复用 Core 的 Workspace/snapshot 校验，发布要求使用官方 Eval parser；不调用会执行 renderer fixture 的 `aw plugin validate`，也不通过可能 bundle 的版本或归档路径取得摘要。binding 自身有效与匹配本次选择分别检查：默认配置不被已有自定义 binding 覆盖；canonical 路径去重，同选择、同 digest 时稳定选择证据路径，不同有效 digest 时报告歧义。相同内容的不同 profile 仍是独立覆盖项。release 消费者用 `{kind}:{id}:{scope}:{inputDigest}` 区分 Eval、Portable 和 Review 的配置身份。
 
-AW Eval prepare 和 Skill materialize 在既有准备流程中生成 `aw-source-binding.json`，公开 receipt 返回其路径。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存凭据明文，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
+`aw review prepare <plugin-or-source-skill> --platform <platform> --scope <scope> --out <new-dir> [--skill <name>]... [--config <file>] [--workspace-root <root>] [--json]` 由 `aw.review-preparation.v1` 表示能力，一次准备单插件、单 profile 的所选 Skill。它不依赖 Eval，复用 bundle/runtime imports 和所选平台的真实投影；Codex native 使用声明的 shared-user 渲染语义，Portable 必须有自己的 distribution。只请求必要 Skill target，不运行无关非 Skill renderer。配置对象采用 `{plugin: {field: value}}`，只使用 manifest 默认值和已验证的非敏感覆盖，不隐式读取真实用户配置。配置逐键遵守实际 scope：任何 Codex native target 引用的 refresh key 固定为 user，即使该键也用于普通 project Skill；其它键使用所选 Skill 的配置 scope。输入摘要绑定有效值、来源和实际渲染输入。
+
+prepare 可执行本次必要的 build/renderer，在隔离环境和 staging 中生成副本；输出必须是新的安全目录，不得覆盖源码、共享输入、已有产物或真实安装位置。全部所选 final 通过布局、metadata、资源闭包和普通节点检查，且来源及配置在准备期间未变化后，才提交 out。失败只清理自有 staging，并报告实际错误和未清理的 residue；发现 sourceChanged 时不自动回滚源码。成功回执返回实际 Skill 路径、profile、digest 和 sourceBindingPath，可直接开始本次只读审核；跨请求复用或输入改变时重新 inspect。构建/最终包失败退出 1，参数/路径/不支持能力退出 2，缺必要配置或准备期间来源变化退出 3。
+
+必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。Eval prepare 当前提供 Codex 目标；Review prepare 的 Claude 和 Portable final 不自动产生对应平台的 Eval 要求，也不能替代 required Eval。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
+
+AW Eval prepare、Skill materialize 和 Review prepare 均生成 schema 2 的 `aw-source-binding.json`，公开 receipt 返回其路径。生产者和读取器统一使用 v2；旧 v1 凭据必须通过对应 prepare/materialize 入口在新目录重新生成，不原地迁移或修改版本号。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。Review profile 保存 platform、scope、inputDigest 和已验证的非敏感配置覆盖，artifact 使用 review-skill，并按同一选择算法重新核验配置及来源归属。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存敏感值，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
 
 Eval 绑定还覆盖所选 suite/default、用例与实际复制的 fixture 输入，并保存准备时的 provider 摘要。消费者通过当前绑定关联 Spec 的 target、cases、workspace 和 provider；完整源 corpus 的 canonical 摘要与准备后选集文件的字节摘要属于不同对象，不能直接比较。
 
@@ -413,11 +420,11 @@ Portable 输出的每个 Skill 保留实际来源插件；依赖 Skill 不能归
 
 这三种合同彼此独立：
 
-- **人读 Review** 默认只报告设计、复杂度、findings、未知项和最小改动；主产物是 `report.md`。它只读 source、已有 materialization 与 Eval 证据，不 build 或 test 被审对象，也不计算发布准备度。workflow Review 还定义有界的 scope。
+- **人读 Review** 默认只报告设计、复杂度、findings、未知项和最小改动。质量判断只读 source、final 与 Eval 证据，不计算发布准备度。完整审核请求涵盖必要本地 prepare，先说明 build/renderer 和隔离输出后执行；已有匹配 final 时直接复用。明确禁止执行或仅要求静态读取时保持源码审核；必要 profile/config 未确定时先补齐输入。准备不提供源码修改、模型运行、安装或发布授权。workflow Review 还定义有界的 scope。
 - **Release Check** 是可选的 AW-owned machine consumer。只有用户明确请求且环境存在兼容 checker 时，它才对单个 Plugin 或完整 Catalog 生成 `release-check.json` 并拥有 readiness 结论。它只消费 inspection、逐 subject Review 与实际 required Eval 链；没有 required Eval suite 是合法输入，不自动补做模型 Eval。缺少实现或证据时结果为 incomplete 或 unsupported，不由人读报告手工推断 ready。
 - **Review Publication** 只归档已经存在的文件，并绑定目标和 digest。只有本次请求的顶层 Reviewer 可以发布其目标；下层 Reviewer 只返回材料，除非用户明确要求多个独立归档目标。Publication 不重新评审、不运行或封存 Eval 执行结果、不更新 README，也不维护可变 index。
 
-公开只读 inspection 入口是 `aw review inspect`，由 `aw.review-inspection.v1` 表示运行时能力。归档入口是 `aw review digest|publish|verify|list|show`，由 `aw.review-publication.v1` 表示。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
+Release Checker 显式消费 inspection 的 release 视图并验证 schema/view；CLI 与相关插件需同步升级，不以旧能力名宣称兼容。归档入口仍为 `aw review digest|publish|verify|list|show`，由 `aw.review-publication.v1` 表示。`aw review digest <path>` 为 workflow scope component 提供 canonical production records v1 digest；它只接受仓库内普通文件或目录，并拒绝路径链、目标根或目录树中的符号链接及其它不安全节点。发布只在用户明确要求时执行；使用前先运行 `aw review publish --help` 确认当前参数。
 
 ### Immutable record
 
