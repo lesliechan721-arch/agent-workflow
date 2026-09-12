@@ -51,7 +51,7 @@ const ROLE_EXPECTATIONS = [
     artifactId: 'codex-subagent-advanced-role',
     roleKey: 'codex-subagent-advanced',
     profileKey: 'advancedTaskProfile',
-    model: 'gpt-5.6-sol',
+    model: 'gpt-6-astra',
     reasoningEffort: 'xhigh',
   },
 ];
@@ -103,7 +103,7 @@ function artifactsFrom(plan) {
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.skillKey, 'codex-subagent-guide');
-  assert.deepEqual(skill.refreshKeys, ['subagentMinimumInitialWaitMinutes']);
+  assert.deepEqual(skill.refreshKeys, []);
   assert.equal(skill.state, 'present');
   assert.equal('skillFile' in skill.content, false);
   assert.equal('openaiYaml' in skill.content, false);
@@ -162,7 +162,7 @@ test('renders four task roles with required metadata and safety invariants', asy
   // Static contract exception: rendered waiting instructions must prohibit active polling; behavior test is not suitable because no deterministic runner executes model tool choices.
   assert.match(
     skill.content.skillFile,
-    /不得使用 shell `sleep`、短 wait 循环、周期性查询、文件、Git、测试状态或重复进度询问进行监控/,
+    /不用短周期轮询、主动探测或工作区变化监控/,
   );
 
   assert.doesNotMatch(skill.content.skillFile, /{{[^}]+}}/);
@@ -180,22 +180,13 @@ test('renders four task roles with required metadata and safety invariants', asy
   assert.ok(Array.from(SHORT_DESCRIPTION).length <= 64);
 });
 
-test('renders a configured minimum initial wait window', async () => {
-  const plan = await renderArtifactPlan(
-    createContext({
-      exploreMinimumInitialWaitMinutes: 2,
-      subagentMinimumInitialWaitMinutes: 15,
-    }),
-  );
-  const { skill } = artifactsFrom(plan);
-  const exploreSkill = plan.artifacts.find(
-    (artifact) => artifact.id === 'codex-explore-skill',
-  );
-  assert.ok(exploreSkill, 'missing explore skill artifact');
-
-  assert.match(skill.content.skillFile, /至少 `15` 分钟的响应式窗口（`timeout_ms=900000`）/);
-  assert.match(exploreSkill.content.files['SKILL.md'], /至少 `2` 分钟的单次窗口/);
-  assert.match(exploreSkill.content.files['SKILL.md'], /即 `timeout_ms=120000`/);
+test('renders Skills independently of removed wait settings', async () => {
+  const defaults = await renderArtifactPlan(createContext());
+  const obsoleteSettings = await renderArtifactPlan(createContext({
+    exploreMinimumInitialWaitMinutes: 2,
+    subagentMinimumInitialWaitMinutes: 15,
+  }));
+  assert.deepEqual(obsoleteSettings, defaults);
 });
 
 test('renders one complete configured profile without changing the other roles', async () => {

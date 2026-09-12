@@ -7,8 +7,6 @@ const CODEX_EXPLORE_SKILL_ID = 'codex-explore-skill';
 const CODEX_EXPLORE_SKILL_KEY = 'codex-explore';
 const CODEX_SUBAGENT_GUIDE_SKILL_ID = 'codex-subagent-guide-skill';
 const CODEX_SUBAGENT_GUIDE_SKILL_KEY = 'codex-subagent-guide';
-const EXPLORE_SKILL_REFRESH_KEYS = ['exploreMinimumInitialWaitMinutes'];
-const SUBAGENT_SKILL_REFRESH_KEYS = ['subagentMinimumInitialWaitMinutes'];
 const CODEX_EXPLORE_ROLES = [
   {
     id: 'codex-explore-quick-role',
@@ -37,32 +35,28 @@ const CODEX_EXPLORE_ROLES = [
 ];
 const CODEX_SUBAGENT_ROLES = [
   {
-    label: '简单',
     id: 'codex-subagent-simple-role',
     key: 'codex-subagent-simple',
-    description: '低歧义、边界清晰、成功标准明确且可机械验证的探索、检索、检查、转换或简单代码',
+    description: '目标明确、依赖局部、方法已知，可直接或机械验证',
     profileKey: 'simpleTaskProfile',
   },
   {
-    label: '通用',
     id: 'codex-subagent-general-role',
     key: 'codex-subagent-general',
-    description: '超出简单范围的常规实现、调查、文档、写作、转换、协调，以及范围有限的计划或审核',
+    description: '需要局部判断和有限取舍，边界及验收方式清楚',
     profileKey: 'generalTaskProfile',
   },
   {
-    label: '复杂',
     id: 'codex-subagent-complex-role',
     key: 'codex-subagent-complex',
-    description: '跨模块实现、未知根因调试、并发、生命周期、性能、复杂因果或高风险修改',
+    description: '多处耦合、需要排查假设或较长因果链，需要跨边界验证',
     profileKey: 'complexTaskProfile',
   },
   {
-    label: '高难',
     id: 'codex-subagent-advanced-role',
     key: 'codex-subagent-advanced',
     description:
-      '系统级或跨领域架构、复杂安全分析、不可逆迁移、高歧义高风险决策，或要求极高完整性的实现、调试、计划和审核',
+      '全局或跨领域取舍、高歧义，关键遗漏难以排除或代价很高',
     profileKey: 'advancedTaskProfile',
   },
 ];
@@ -70,7 +64,7 @@ const CONFIGURED_ROLES = [...CODEX_EXPLORE_ROLES, ...CODEX_SUBAGENT_ROLES].filte
   (role) => role.profileKey,
 );
 const SUBAGENT_ROLE_DEVELOPER_INSTRUCTIONS =
-  '只完成父代理在初始 message 中委派的任务，遵守其中的目标、范围、约束和成功标准；不得自行扩大任务或处理未委派工作。完成或无法继续时直接返回可整合的结果；适用时附关键证据、验证结果、阻塞原因和未解决项。';
+  '只执行父代理明确委派的任务，包括后续补充或修正；遵守目标、范围、约束和成功标准，不自行扩大范围。续接前核对当前产物与已完成进度，避免重复副作用。完成或无法继续时返回可整合结果，按需附证据、验证、阻塞和未解决项。';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
@@ -108,10 +102,6 @@ async function readManifestDefaults() {
   const schema = isRecord(manifest?.config?.fields) ? manifest.config.fields : {};
 
   return {
-    exploreMinimumInitialWaitMinutes:
-      schema.exploreMinimumInitialWaitMinutes?.default ?? 10,
-    subagentMinimumInitialWaitMinutes:
-      schema.subagentMinimumInitialWaitMinutes?.default ?? 10,
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => [
         role.key,
@@ -119,14 +109,6 @@ async function readManifestDefaults() {
       ]),
     ),
   };
-}
-
-function resolvePositiveNumber(value, fallback) {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function minutesToMilliseconds(minutes) {
-  return Math.round(minutes * 60_000);
 }
 
 function resolveConfigValues(context, defaults) {
@@ -139,14 +121,6 @@ function resolveConfigValues(context, defaults) {
   const values = candidates.find(isRecord) ?? {};
 
   return {
-    exploreMinimumInitialWaitMinutes: resolvePositiveNumber(
-      values.exploreMinimumInitialWaitMinutes,
-      defaults.exploreMinimumInitialWaitMinutes,
-    ),
-    subagentMinimumInitialWaitMinutes: resolvePositiveNumber(
-      values.subagentMinimumInitialWaitMinutes,
-      defaults.subagentMinimumInitialWaitMinutes,
-    ),
     roles: Object.fromEntries(
       CONFIGURED_ROLES.map((role) => {
         const roleDefaults = defaults.roles[role.key] ?? {};
@@ -205,13 +179,6 @@ function renderRoleArtifact(role, developerInstructions, config) {
   };
 }
 
-function renderTemplate(template, replacements) {
-  return Object.entries(replacements).reduce(
-    (content, [key, value]) => content.split(`{{${key}}}`).join(value),
-    template,
-  );
-}
-
 async function readFirstExisting(paths) {
   let lastError;
   for (const candidatePath of paths) {
@@ -233,24 +200,6 @@ async function readSkillTemplate(context, skillId, skillKey) {
     ...sourceDirs.map((sourceDir) => path.join(sourceDir, 'SKILL.md')),
     path.resolve(pluginRoot, 'skills', skillKey, 'SKILL.md'),
   ]);
-}
-
-function renderSpawnParameterGuidance() {
-  const rows = CODEX_SUBAGENT_ROLES.map(({ label, description, key }) => {
-    return `| ${label} | ${description} | \`${key}\` |`;
-  });
-
-  return [
-    '对每个子任务，显式指定 `model`、`reasoning_effort` 或 `agent_type` 时按其作用域作为自定义任务；否则按歧义、范围、因果复杂度、风险和完整性要求选择 preset。高难优先于复杂，复杂优先于通用；只有低歧义、边界清晰、成功标准明确且可机械验证的任务使用简单。',
-    '',
-    '| 任务复杂度 | 适用范围 | `agent_type` |',
-    '| --- | --- | --- |',
-    ...rows,
-    '',
-    '- 只读、计划或审核都不自动决定档位；按同一复杂度轴分类。',
-    '- preset 只传表中的 `agent_type`；role 不可用时停止，不改用动态 model override。',
-    '- 自定义任务只传作用于该子任务、schema 公开且目标模型支持的显式字段；不可用或冲突时停止，不猜测、试探或降级。',
-  ].join('\n');
 }
 
 export async function readArtifactRenderContext() {
@@ -307,19 +256,10 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_EXPLORE_SKILL_KEY,
-        refreshKeys: EXPLORE_SKILL_REFRESH_KEYS,
+        refreshKeys: [],
         content: {
           files: {
-            'SKILL.md': renderTemplate(exploreSkillTemplate, {
-              quickRoleKey: CODEX_EXPLORE_ROLES[0].key,
-              standardRoleKey: CODEX_EXPLORE_ROLES[1].key,
-              deepRoleKey: CODEX_EXPLORE_ROLES[2].key,
-              customRoleKey: CODEX_EXPLORE_ROLES[3].key,
-              minimumInitialWaitMinutes: config.exploreMinimumInitialWaitMinutes,
-              minimumInitialWaitTimeoutMs: minutesToMilliseconds(
-                config.exploreMinimumInitialWaitMinutes,
-              ),
-            }),
+            'SKILL.md': exploreSkillTemplate,
           },
         },
       }] : []),
@@ -333,16 +273,10 @@ export async function renderArtifactPlan(context) {
         target: 'codex.skill',
         state: 'present',
         skillKey: CODEX_SUBAGENT_GUIDE_SKILL_KEY,
-        refreshKeys: SUBAGENT_SKILL_REFRESH_KEYS,
+        refreshKeys: [],
         content: {
           files: {
-            'SKILL.md': renderTemplate(subagentSkillTemplate, {
-              spawnParameterGuidance: renderSpawnParameterGuidance(),
-              minimumInitialWaitMinutes: config.subagentMinimumInitialWaitMinutes,
-              minimumInitialWaitTimeoutMs: minutesToMilliseconds(
-                config.subagentMinimumInitialWaitMinutes,
-              ),
-            }),
+            'SKILL.md': subagentSkillTemplate,
           },
         },
       }] : []),

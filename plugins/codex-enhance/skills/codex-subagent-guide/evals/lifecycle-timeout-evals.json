@@ -19,9 +19,9 @@
       ],
       "input": {
         "profiles": [
-          "project-timeout"
+          "project-default"
         ],
-        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。"
+        "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，让它运行 node scripts/delayed-simple.mjs，并原样报告该命令的 stdout；不要直接读取 src/simple.ts 来替代该命令。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；首次等待超时不等于失败，必须继续等待。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。 本次任务显式指定每次响应式等待窗口为 1 分钟。"
       },
       "expected": {
         "criteria": {

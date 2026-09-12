@@ -1180,6 +1180,234 @@
         "rationale": "缺少固定 role 或 schema 声明字段冲突时必须零 spawn，并返回结构化阻断原因，不能降级。",
         "minimalCounterexample": "移除 agent_type 与 model 的互斥声明后，应按全部显式字段启动一次。"
       }
+    },
+    {
+      "id": "simple_plan_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "simple_plan_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：制定计划。目标只是在 src/simple.ts 的明确位置将 retryLimit 从 3 调整为 4；唯一验收条件是该常量等于 4，没有其它依赖或行为变化。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-simple",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
+    },
+    {
+      "id": "simple_review_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "simple_review_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：审核方案。目标只是在 src/simple.ts 的明确位置将 retryLimit 从 3 调整为 4；唯一验收条件是该常量等于 4，没有其它依赖或行为变化。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-simple",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
+    },
+    {
+      "id": "simple_implementation_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "simple_implementation_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：实现变更。目标只是在 src/simple.ts 的明确位置将 retryLimit 从 3 调整为 4；唯一验收条件是该常量等于 4，没有其它依赖或行为变化。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-simple",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 simple role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
+    },
+    {
+      "id": "complex_plan_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "complex_plan_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：制定计划。目标是解决网关、队列和 worker 的取消竞态；需要核对跨模块状态转换、排除多种根因，并验证取消与完成交错时不会重复释放资源。相关入口为 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-complex",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
+    },
+    {
+      "id": "complex_review_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "complex_review_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：审核方案。目标是解决网关、队列和 worker 的取消竞态；需要核对跨模块状态转换、排除多种根因，并验证取消与完成交错时不会重复释放资源。相关入口为 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-complex",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
+    },
+    {
+      "id": "complex_implementation_by_difficulty-v2",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "sourceCaseId": "complex_implementation_by_difficulty",
+        "runtimeProfile": "v2",
+        "prompt": "$codex-subagent-guide 委派已获准。请为以下任务启动一个子代理：实现变更。目标是解决网关、队列和 worker 的取消竞态；需要核对跨模块状态转换、排除多种根因，并验证取消与完成交错时不会重复释放资源。相关入口为 src/complex/a.ts、src/complex/b.ts 和 docs/architecture.md。 使用干净上下文。",
+        "files": []
+      },
+      "expected": {
+        "criteria": {
+          "v2": {
+            "spawn_calls": {
+              "min": 1,
+              "max": 1
+            },
+            "arguments": {
+              "agent_type": "codex-subagent-complex",
+              "model": null,
+              "reasoning_effort": null,
+              "fork_context": null,
+              "fork_turns": "none"
+            },
+            "present_arguments": [
+              "message"
+            ]
+          }
+        },
+        "outcome": "根据明确的难度条件选择 complex role，不由交付名称改变档位。"
+      },
+      "audit": {
+        "rationale": "同一难度描述只改变交付名称，路由仍应按歧义、耦合和验证难度选择。",
+        "minimalCounterexample": "若增加跨模块未知因果或反过来将验收收敛为局部机械核对，允许改变档位；仅更换计划、审核、实现名称不应改变。"
+      }
     }
   ]
 }

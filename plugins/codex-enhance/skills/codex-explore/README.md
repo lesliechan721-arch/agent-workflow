@@ -18,4 +18,4 @@ Skill 会根据范围选择 quick、standard、deep 或用户指定的 custom �
 - 不把质量结论或产品决策交给探索子代理。
 - 可访问来源取决于当前会话工具、权限和联网策略。
 
-主要指令见 [`SKILL.md`](SKILL.md)，动态配置由插件 renderer 注入，评测材料见 [`evals/`](evals/)。
+主要指令见 [`SKILL.md`](SKILL.md)，角色模型配置由插件 renderer 生成，评测材料见 [`evals/`](evals/)。

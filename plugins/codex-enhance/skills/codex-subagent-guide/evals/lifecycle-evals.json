@@ -28,6 +28,96 @@
           "require_timeout": false
         }
       }
+    },
+    {
+      "id": "resume_after_partial_execution",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 委派已获准。委派一个 simple 子代理执行 scripts/recoverable.mjs 的 start 阶段；这一阶段无论成功或失败都先返回结果和已落地进度，不自行进入 finish。start 会先落地一次操作再调用临时服务；finish 可在服务失败后继续，已落地的操作不得重复。收到子代理报告后，父代理继续完成这项尚未完成的交付，保留有效进度。父代理只编排，不直接执行 helper 或修改 results/；结果完成后报告。",
+        "lifecycle_fixture": "recovery"
+      },
+      "expected": {
+        "criteria": {
+          "minimum_initial_wait_timeout_ms": 600000,
+          "require_timeout": false,
+          "spawn_count": 1,
+          "continuation": {
+            "artifact": "results/progress.json",
+            "value": {
+              "applied": 1,
+              "finished": true
+            },
+            "followup": true
+          }
+        }
+      },
+      "audit": {
+        "rationale": "第一阶段明确要求 child 在 start 后返回，使父代理续接分支可达。工具轨迹须证明 child start 非零退出、返回结果、父代理向原 child follow-up、原 child finish 成功；最终 applied=1 且 finished=true。",
+        "minimalCounterexample": "同一交付仍有有效进度且不要求独立判断时应续接；新交付或独立全面重审应重新建立干净上下文。"
+      }
+    },
+    {
+      "id": "independent_current_review",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 advanced 子代理，只审核 src/publish-v1.mjs 是否在缺少 repo 时重建已占用版本，并等待它返回。随后对当前完整版本 src/publish-v2.mjs 做一次独立全面审核；以 docs/publication-contract.md 的全部要求为验收范围，不能把上一轮问题作为完整检查清单。父代理不直接审核源码。最终用 JSON 报告当前实现是否违反三条要求，字段为 missingRepoDefect、uncertainRetryDefect、publishedTagReuseDefect，值为布尔值，并附关键源码定位。不要修改文件。",
+        "lifecycle_fixture": "review"
+      },
+      "expected": {
+        "criteria": {
+          "minimum_initial_wait_timeout_ms": 600000,
+          "require_timeout": false,
+          "spawn_count": 2,
+          "continuation": {
+            "answer": {
+              "missingRepoDefect": false,
+              "uncertainRetryDefect": true,
+              "publishedTagReuseDefect": true
+            },
+            "model": "gpt-6-astra",
+            "reasoningEffort": "xhigh",
+            "followup": false
+          }
+        }
+      },
+      "audit": {
+        "rationale": "通过真实委派、终态及当前产物检查交付连续性、独立判断和最小上下文，不仅检查代理 ID。",
+        "minimalCounterexample": "同一交付仍有有效进度且不要求独立判断时应续接；新交付或独立全面重审应重新建立干净上下文。"
+      }
+    },
+    {
+      "id": "new_delivery_minimal_context",
+      "split": "validation",
+      "tags": [
+        "regression"
+      ],
+      "input": {
+        "prompt": "$codex-subagent-guide 委派已获准。先委派一个 simple 子代理读取 src/simple.ts，确认 retryLimit，并等待这项交付完成。随后有一项新的独立交付：委派子代理读取 src/new-task.ts，报告 maxRetries。父代理不直接读取这两个文件。第二项任务只需当前文件与问题，最终用 JSON 报告 maxRetries。不要修改文件。",
+        "lifecycle_fixture": "new-delivery"
+      },
+      "expected": {
+        "criteria": {
+          "minimum_initial_wait_timeout_ms": 600000,
+          "require_timeout": false,
+          "spawn_count": 2,
+          "continuation": {
+            "answer": {
+              "maxRetries": 7
+            },
+            "followup": false
+          }
+        }
+      },
+      "audit": {
+        "rationale": "通过真实委派、终态及当前产物检查交付连续性、独立判断和最小上下文，不仅检查代理 ID。",
+        "minimalCounterexample": "同一交付仍有有效进度且不要求独立判断时应续接；新交付或独立全面重审应重新建立干净上下文。"
+      }
     }
   ]
 }

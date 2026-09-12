@@ -26,26 +26,26 @@ aw install codex-enhance -p codex
 
 ## `codex-subagent-guide`
 
-该 Skill 不决定是否应该委派，也不授予委派权限。它在授权已经明确后，根据交付物把任务分为简单、通用、复杂、计划与审核，并应用合适的 role、context
+该 Skill 不决定是否应该委派，也不授予委派权限。它在授权已经明确后，根据任务难度把任务分为简单、常规、复杂和高难，并应用合适的 role、context
 fork、响应式等待和条件清理策略。
+
+同一交付的补充、指定修复核对或中断恢复可续接原代理，并先核对有效进度。新交付或独立全面重审使用干净代理，不把旧结论当作检查范围上限。
 
 ## 配置
 
 ```bash
 aw config list codex-enhance -s user
 aw config set codex-enhance standardProfile -s user --value-json '{"model":"gpt-5.6-terra","reasoningEffort":"high"}'
-aw config set codex-enhance exploreMinimumInitialWaitMinutes -s user --value-json '15'
-aw config set codex-enhance subagentMinimumInitialWaitMinutes -s user --value-json '15'
 ```
 
 配置界面按 `codex-explore` 和 `codex-subagent-guide`
-分组。七个角色分别使用 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile`。每个 profile 必须一次提供完整的 `model` 与 `reasoningEffort`；user 或 project 层写入会完整覆盖继承的 profile，不合并单个属性。两个首次响应式等待窗口只允许在 user 层设置。
+分组。七个可配置角色分别使用 `quickProfile`、`standardProfile`、`deepProfile`、`simpleTaskProfile`、`generalTaskProfile`、`complexTaskProfile` 和 `advancedTaskProfile`。每个 profile 必须一次提供完整的 `model` 与 `reasoningEffort`；user 或 project 层写入会完整覆盖继承的 profile，不合并单个属性。两个 Skill 的首次响应式等待均为至少 10 分钟，不提供等待配置项；用户明确指定单次窗口时优先遵守，并服从当前工具范围。响应式等待可在结果或用户消息到达时提前返回。
 
-两个 Skill 的内容由个人默认生成，并共享在同一个 canonical Codex native 插件中。当前项目可以单独启用该插件，但 project profile 只改变当前项目的 Agent role，不改变共享 Skill 的内容。更改任一等待窗口并应用后，会重新生成共享 Skill，并影响所有启用该插件的项目；project 层不能修改这两个字段。
+两个 Skill 的正文固定，共享在同一个 canonical Codex native 插件中。当前项目可以单独启用该插件，但 project profile 只改变当前项目的 Agent role，不改变共享 Skill 的内容。模型和推理强度由各 role 的 profile 控制，不写入共享 Skill 正文。高难档默认使用 `gpt-6-astra / xhigh`；已有显式 profile 仍优先于默认值。
 
 已有可见安装时，只保存个人默认会让现有 native 插件保持不变，并显示为待同步。当前没有可见安装时，只保存设置，不产生 render drift。使用 `--apply --yes` 或之后运行同步，可重新生成 native 插件，同时保留已有的 user 和 project activation。
 
-旧 store 和旧配置 key 不会自动迁移或删除。升级后，按需设置新 profile 和两个等待窗口；无效配置层使用显式 config reset 恢复，旧的 AW-owned 输出可通过 cleanup 后重新安装恢复。
+旧 store 和旧配置 key 不会自动迁移或删除。升级后，按需设置 profile；已删除的等待字段会被忽略，可用 `aw config unset` 单独清理。无效配置层使用显式 config reset 恢复，旧的 AW-owned 输出可通过 cleanup 后重新安装恢复。
 
 ## 典型用法
 
