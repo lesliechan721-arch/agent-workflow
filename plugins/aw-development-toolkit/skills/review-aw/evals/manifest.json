@@ -39,6 +39,34 @@
       "releaseSplits": [
         "validation"
       ]
+    },
+    {
+      "id": "materialized-review",
+      "kind": "conversation",
+      "cases": "materialized-review-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 600000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
+    },
+    {
+      "id": "source-routing",
+      "kind": "trigger",
+      "cases": "source-routing-cases.json",
+      "profiles": [
+        "project-default"
+      ],
+      "runs": 3,
+      "timeoutMs": 180000,
+      "requiredForRelease": false,
+      "releaseSplits": [
+        "validation"
+      ]
     }
   ]
 }
