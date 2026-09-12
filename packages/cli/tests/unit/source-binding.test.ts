@@ -1,11 +1,17 @@
+import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 
 import fs from 'fs-extra'
 import { afterEach, describe, expect, it } from 'vitest'
-import { computeEvalProviderDigest, type SelectedCasesDocument } from '@lesliechan721/agent-skill-eval'
+import {
+  canonicalJson,
+  computeEvalProviderDigest,
+  type SelectedCasesDocument,
+} from '@lesliechan721/agent-skill-eval'
 
 import {
+  readAwSourceBinding,
   resolveEvalSourceBindingInput,
   validateAwSourceBindingForWorkspace,
   writeAwSourceBinding,
@@ -57,6 +63,47 @@ describe('AW source binding', () => {
       artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: '../outside' }],
     })).rejects.toThrow('safe relative POSIX path')
     await expect(fs.pathExists(path.join(root, 'aw-source-binding.json'))).resolves.toBe(false)
+  })
+
+  it('rejects a v1 receipt and tells the user to materialize it again', async () => {
+    const root = await tempRoot()
+    await fs.outputFile(
+      path.join(root, 'skills', 'fixture', 'SKILL.md'),
+      '---\nname: fixture\ndescription: fixture\n---\nBody.\n',
+    )
+    const written = await writeAwSourceBinding({
+      rootDir: root,
+      source: { kind: 'workspace', workspaceIdentity: 'fixture', sourceIdentity: digest },
+      subject: { plugin: 'fixture' },
+      profile: {
+        kind: 'portable', id: 'agent-skills-project', scope: 'project', inputDigest: digest,
+      },
+      artifacts: [{ kind: 'portable-skill', plugin: 'fixture', skill: 'fixture', path: 'skills/fixture' }],
+    })
+    const receipt = await fs.readJson(written.bindingPath)
+    expect(receipt.schemaVersion).toBe(2)
+    receipt.schemaVersion = 1
+    const unsigned = { ...receipt }
+    delete unsigned.finalDigest
+    receipt.finalDigest = `sha256:${crypto.createHash('sha256').update(canonicalJson(unsigned)).digest('hex')}`
+    await fs.writeJson(written.bindingPath, receipt)
+
+    await expect(readAwSourceBinding(written.bindingPath)).rejects.toThrow(
+      'schema version 1 is unsupported. Run "aw skill eval prepare" or "aw skill materialize" again.',
+    )
+    await expect(validateAwSourceBindingForWorkspace({
+      bindingPath: written.bindingPath,
+      context: unusedContext,
+      expectedSubject: { plugin: 'fixture' },
+    })).resolves.toMatchObject({
+      state: 'invalid',
+      binding: null,
+      issues: [{
+        code: 'sourceBindingInvalid',
+        message: 'AW source binding schema version 1 is unsupported. '
+          + 'Run "aw skill eval prepare" or "aw skill materialize" again.',
+      }],
+    })
   })
 
   it('does not accept editable approval fields in a receipt', async () => {

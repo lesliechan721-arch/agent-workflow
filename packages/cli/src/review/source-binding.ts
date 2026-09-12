@@ -48,6 +48,8 @@ export const AW_SOURCE_BINDING_FILENAME = 'aw-source-binding.json'
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/u
 const safeIdPattern = /^[a-z0-9][a-z0-9-]*$/u
+const unsupportedV1Message =
+  'AW source binding schema version 1 is unsupported. Run "aw skill eval prepare" or "aw skill materialize" again.'
 
 export interface AwWorkspaceBindingSource {
   kind: 'workspace'
@@ -91,8 +93,8 @@ export type AwSourceBindingArtifactInput =
 
 export type AwSourceBindingVerifiedOutput = AwSourceBindingArtifact
 
-export interface AwSourceBindingV1 {
-  schemaVersion: 1
+export interface AwSourceBindingV2 {
+  schemaVersion: 2
   kind: 'aw-source-binding'
   source: AwSourceBindingSource
   subject: AwSourceBindingSubject
@@ -117,13 +119,13 @@ export interface AwSourceBindingIssue {
 export type AwSourceBindingValidation =
   | {
       state: 'verified'
-      binding: AwSourceBindingV1
+      binding: AwSourceBindingV2
       outputs: AwSourceBindingVerifiedOutput[]
       issues: []
     }
   | {
       state: 'incomplete' | 'invalid' | 'drifted'
-      binding: AwSourceBindingV1 | null
+      binding: AwSourceBindingV2 | null
       outputs: []
       issues: AwSourceBindingIssue[]
     }
@@ -316,8 +318,11 @@ function normalizeArtifact(value: unknown): AwSourceBindingArtifact {
   throw new Error('Source binding artifact kind is invalid.')
 }
 
-export function parseAwSourceBinding(value: unknown): AwSourceBindingV1 {
+export function parseAwSourceBinding(value: unknown): AwSourceBindingV2 {
   const row = value as Record<string, unknown>
+  if (row?.schemaVersion === 1 && row.kind === 'aw-source-binding') {
+    throw new Error(unsupportedV1Message)
+  }
   if (
     !strictRecord(row, [
       'schemaVersion',
@@ -329,14 +334,14 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV1 {
       'artifacts',
       'finalDigest',
     ])
-    || row.schemaVersion !== 1
+    || row.schemaVersion !== 2
     || row.kind !== 'aw-source-binding'
     || !Array.isArray(row.artifacts)
     || row.artifacts.length === 0
     || !digestString(row.finalDigest)
   ) throw new Error('Source binding receipt is invalid.')
-  const binding: AwSourceBindingV1 = {
-    schemaVersion: 1,
+  const binding: AwSourceBindingV2 = {
+    schemaVersion: 2,
     kind: 'aw-source-binding',
     source: normalizeSource(row.source),
     subject: normalizeSubject(row.subject),
@@ -370,7 +375,7 @@ export function parseAwSourceBinding(value: unknown): AwSourceBindingV1 {
   return binding
 }
 
-function bindingDigest(binding: Omit<AwSourceBindingV1, 'finalDigest'>): string {
+function bindingDigest(binding: Omit<AwSourceBindingV2, 'finalDigest'>): string {
   return digestCanonical(binding)
 }
 
@@ -397,14 +402,14 @@ async function artifactDigest(
 
 export async function writeAwSourceBinding(
   options: WriteAwSourceBindingOptions,
-): Promise<{ bindingPath: string; binding: AwSourceBindingV1 }> {
+): Promise<{ bindingPath: string; binding: AwSourceBindingV2 }> {
   const rootDir = await fs.realpath(options.rootDir)
   const artifacts: AwSourceBindingArtifact[] = []
   for (const artifact of options.artifacts) {
     artifacts.push({ ...artifact, digest: await artifactDigest(rootDir, artifact) } as AwSourceBindingArtifact)
   }
   const unsigned = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     kind: 'aw-source-binding' as const,
     source: options.source,
     subject: options.subject,
@@ -560,7 +565,7 @@ function sameSubject(left: AwSourceBindingSubject, right: AwSourceBindingSubject
 
 async function currentWorkspaceProfile(options: {
   workspace: CatalogWorkspace
-  binding: AwSourceBindingV1
+  binding: AwSourceBindingV2
   cwd: string
   env?: NodeJS.ProcessEnv
 }): Promise<AwSourceBindingProfile> {
@@ -595,7 +600,7 @@ async function currentWorkspaceProfile(options: {
 
 export async function resolveCurrentWorkspaceAwSourceBinding(options: {
   context: AwSourceBindingWorkspaceValidationContext
-  binding: AwSourceBindingV1
+  binding: AwSourceBindingV2
   cwd?: string
   env?: NodeJS.ProcessEnv
 }): Promise<{ source: AwWorkspaceBindingSource; profile: AwSourceBindingProfile }> {
@@ -617,7 +622,7 @@ export async function createAwSourceBindingWorkspaceValidationContext(
   return { workspace, source: await resolveWorkspaceBindingSource(workspace) }
 }
 
-export async function readAwSourceBinding(bindingPath: string): Promise<AwSourceBindingV1> {
+export async function readAwSourceBinding(bindingPath: string): Promise<AwSourceBindingV2> {
   const resolved = path.resolve(bindingPath)
   const info = await fs.lstat(resolved)
   if (!info.isFile() || info.isSymbolicLink() || path.basename(resolved) !== AW_SOURCE_BINDING_FILENAME) {
@@ -652,7 +657,7 @@ function bindingMatchesWorkspaceSource(
 
 async function currentPortableArtifactOwners(options: {
   workspace: CatalogWorkspace
-  binding: AwSourceBindingV1
+  binding: AwSourceBindingV2
 }): Promise<Map<string, string | null>> {
   const closure = resolvePluginMetaDependencyClosure(
     options.workspace.plugins,
@@ -691,7 +696,7 @@ async function currentPortableArtifactOwners(options: {
 
 async function currentEvalInput(options: {
   workspace: CatalogWorkspace
-  binding: AwSourceBindingV1
+  binding: AwSourceBindingV2
   preparedRoot: string
 }): Promise<AwSourceBindingEvalInput> {
   const evalInput = options.binding.evalInput
@@ -759,15 +764,18 @@ export async function validateAwSourceBindingForWorkspace(options: {
       issues: [{ code: 'sourceBindingInvalid', message: 'AW source binding receipt path is invalid.' }],
     }
   }
-  let binding: AwSourceBindingV1
+  let binding: AwSourceBindingV2
   try {
     binding = await readAwSourceBinding(bindingPath)
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error && error.message === unsupportedV1Message
+      ? unsupportedV1Message
+      : 'AW source binding receipt is invalid.'
     return {
       state: 'invalid',
       binding: null,
       outputs: [],
-      issues: [{ code: 'sourceBindingInvalid', message: 'AW source binding receipt is invalid.' }],
+      issues: [{ code: 'sourceBindingInvalid', message }],
     }
   }
   const issues: AwSourceBindingIssue[] = []

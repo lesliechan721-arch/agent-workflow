@@ -26,6 +26,7 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store v4 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 Receipt v6。
 - `authoring/` 是确定性作者实现；它随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。公开作者命令统一以 `--workspace-root` 定位任意本地 workspace；基于 Git base 的 status 差异检查和安全删除依赖 Git。
+- `review/skill-materialization.ts` 复用本地 bundle 和 runtime import resolver，提供 Skill 物化共用的构建准备与临时环境。Eval 保留自己的 subject/Git 布局；构建和 renderer 均显式使用隔离 HOME、AW homes 和临时目录。普通 bundle 调用未提供 `commandEnv` 时沿用原进程环境；这种输入隔离不是 OS sandbox。
 - Core 的 `plugin-authoring-capabilities` API 是 manifest 字段、类型、必填项和 accepted values 的稳定结构 registry。CLI 只叠加 requires、conflicts、profiles 和 validator provenance 等执行/作者适配事实，并通过 `aw plugin capabilities [--surface <surface>] [--json]` 在运行时公开组合结果。
 - Core 的 AW capability registry 定义稳定 ID、集合规范化与摘要、Manifest 结构派生、受限生产源码扫描和 schema 1 runtime requirements receipt。`effective` 是 `declared + derived`；`detected` 只给作者提示。扫描器只检查 `SKILL.md` 中独立 shell fence 和 Manifest executable entry；不扫描 inline command、reference、任意脚本或 Node transitive closure。第三方公开 `aw catalog build` 默认只 advisory；官方 `pnpm build` 必须使用 `--strict-requirements` 语义，把不匹配变为阻断，且 `release:verify:catalog:core` 通过该 build 覆盖此门禁。未登记但语法合法的 ID 是可交换数据；是否支持只由当前 executable 的实现集合决定。`aw self describe --json` 公开该集合，`aw self check --json` 从最近的 receipt 或 Manifest 检查兼容性，`aw plugin requirements <plugin-directory> --add/--remove <capability> --json` 只修改 `requires.aw.capabilities`，并计算 declared、derived、detected 和 effective requirements。Plugin Manifest v3 要求显式 `schemaVersion: 3`。
 
@@ -401,7 +402,7 @@ Inspection 不运行 renderer、build、test、模型或网络命令。它复用
 
 必需 Eval 仅来自当前 manifest 的明确声明。没有 required suite 是合法情况，动态 Skill 也不自动增加模型测试要求。AW prepare 当前提供 Codex 目标；Claude 和 portable 的 final 覆盖不自动产生对应平台的 Eval 要求。已有必需 suite 无法映射到受支持目标时报告缺口，不静默忽略该要求。
 
-AW Eval prepare 和 Skill materialize 在既有准备流程中生成 `aw-source-binding.json`，公开 receipt 返回其路径。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存凭据明文，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
+AW Eval prepare 和 Skill materialize 在既有准备流程中生成 schema 2 的 `aw-source-binding.json`，公开 receipt 返回其路径。生产者和读取器统一使用 v2；旧 v1 凭据必须通过对应 prepare/materialize 入口在新目录重新生成，不原地迁移或修改版本号。该文件位于被测 Skill 内容之外，绑定实际 Workspace source 或 Catalog snapshot 身份、规范化 profile 输入和生成的 target/相关 workspace 摘要。来源身份和内容摘要使用已有机器实现；准备期间来源变化时不发布有效绑定，不重新 build 来验证绑定。文件不保存凭据明文，不改变通用 `EvalSpec`、`EvalAudit` 或 `EvalResult` 合同。
 
 Eval 绑定还覆盖所选 suite/default、用例与实际复制的 fixture 输入，并保存准备时的 provider 摘要。消费者通过当前绑定关联 Spec 的 target、cases、workspace 和 provider；完整源 corpus 的 canonical 摘要与准备后选集文件的字节摘要属于不同对象，不能直接比较。
 
