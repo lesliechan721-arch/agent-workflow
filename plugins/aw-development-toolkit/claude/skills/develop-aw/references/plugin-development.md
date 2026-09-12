@@ -10,4 +10,4 @@ requirements 的 declared/derived/detected/effective 由 CLI 计算；动态能�
 
 变更后执行当前 CLI 对应单插件 validate/test/build，按影响验证反向依赖及 Catalog 聚合；用户仅请求局部改动且不用聚合产物时，报告聚合检查未执行，不假装已完成。版本和发布元数据是 source，远端 publish 永远不是本 Skill 的默认步骤。
 
-动态/多 profile Skill 应构建后验证实际 platform×scope final；source 没有问题不等于物化结果等价。依赖、引用和调用 metadata 按实际 final 检查。缺少构建条件时保留未验证说明，不修改 generated 文件补救。
+动态/多 profile Skill 应构建后验证实际 platform×scope final，分别保留可编辑源与产物路径。需要为质量评审单独取得运行包时，使用公开 `aw review prepare --help` 指定本次目标、profile 和隔离输出；实际可用参数以帮助为准。交付返回的 final 与来源绑定，依赖、引用和调用 metadata 在该 final 检查。准备能力或所需配置不可用时，说明已完成的源码检查及未验证产物。

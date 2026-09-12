@@ -48,7 +48,7 @@ metadata:
 - Catalog branch 拥有 Workspace identity、metadata、inventory、dependency composition、Catalog version 和聚合结果。
 - Plugin branch 只拥有单个 Plugin Source 内部内容和单插件验证。
 - 删除由当前 Skill 的 Catalog 分支准入并检查反向依赖，再按公开 plugin remove 命令执行；不直接 `rm`。
-- 修改 Plugin 内 Skill 时传递目标、允许路径和验收条件给 `author-agent-skill`；返回后由本 Skill 运行 AW-specific validate/build。
+- 修改 Plugin 内 Skill 时传递源目录、构建/注入约束、允许路径和验收条件给 `author-agent-skill`；返回后由本 Skill 运行 AW-specific validate/build，运行包完整性针对对应 final 检查。
 - 结构化临时文件只用于 CLI/script 输入；同一上下文的 Skill 调用不创建 AWAuthoringContext 或通用 handoff schema。
 - 远端发布不在范围内；需要发布时结束并要求用户显式调用 manual-only `$publish-aw-catalog`。
 

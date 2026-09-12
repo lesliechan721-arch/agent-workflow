@@ -1,6 +1,6 @@
 interface:
-  display_name: "Dev Spec"
-  short_description: "把已经形成的材料决定整理成可交接、可审查的稳定开发规格"
-  default_prompt: "使用 $dev-spec 把当前已经确认的决定整理成轻量、可执行的 Spec。"
+  display_name: "开发规格"
+  short_description: "将已确认需求、重要实现决定和原型选择整理为可独立实施与验收的规格"
+  default_prompt: "使用 $dev-spec 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true

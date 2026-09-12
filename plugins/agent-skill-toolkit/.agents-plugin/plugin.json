@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "agent-skill-toolkit",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "创建、评审和简化 Agent Skill，独立审核 Skill Eval，并评审跨 Skill 工作流与公开能力架构。",
   "marketplace": {
     "category": "workflow",
@@ -32,9 +32,7 @@
       "capabilities": [
         "aw.plugin-build-config.v1",
         "aw.plugin-manifest.v3",
-        "aw.plugin-skills.v1",
-        "aw.review-publication.v1",
-        "aw.runtime-imports.v1"
+        "aw.plugin-skills.v1"
       ]
     }
   }

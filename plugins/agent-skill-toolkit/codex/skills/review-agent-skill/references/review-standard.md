@@ -16,6 +16,8 @@
 
 ## 4. Content and resources
 
+先按共享组合标准确认对象视图。源码声明由构建提供的文件，在对应产物中核验；源目录缺少该文件仅说明尚需项目证据。最终包真实断链才作为该包完整性问题，归因另查来源映射。评审所需的源 Eval 可以作为附带材料，不要求测试文件随运行包发布。
+
 使用 `agent-content` 检查读者、事实依据、pointer、active path、reference focus、control、completion、source of truth 和 co-location。把只涉及 Skill 调用、手动宏或项目 runner 的规则迁给领域 owner，而不是让通用内容层继续承载。大文件只触发语义审计，不自动要求拆分。
 
 ## 5. Output consumer

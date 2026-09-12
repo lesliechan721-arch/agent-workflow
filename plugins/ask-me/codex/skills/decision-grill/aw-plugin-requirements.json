@@ -3,7 +3,7 @@
   "kind": "aw-plugin-requirements",
   "plugin": {
     "name": "ask-me",
-    "version": "0.1.0-beta.4"
+    "version": "0.1.0-beta.5"
   },
   "requiredCapabilities": [
     "aw.plugin-manifest.v3",

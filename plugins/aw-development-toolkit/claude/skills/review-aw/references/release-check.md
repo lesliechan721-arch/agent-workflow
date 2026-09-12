@@ -12,9 +12,9 @@ node <skill-root>/scripts/check-aw-release.mjs --target <plugin-or-workspace> \
 
 ## 证据与覆盖
 
-先用 `aw review inspect <target> --json` 取得当前 inventory 和来源事实；提供现有绑定时附加 `--materialization`。Plugin 检查包含源码容器及每个适用 final leaf；Catalog 检查包含 Catalog 源码容器、全部当前插件与其 leaf。required Eval 只来自当前 manifest 的明确声明；零 required 合法。缺少当前物化产物时为证据不足，不临时运行被审代码补齐。
+使用 `aw review inspect <target> --view release --json` 为机器 checker 取得当前 inventory 和来源事实；提供现有绑定时附加 `--materialization`。Plugin 检查包含源码容器及每个适用 final leaf；Catalog 检查包含 Catalog 源码容器、全部当前插件与其 leaf。required Eval 只来自当前 manifest 的明确声明；零 required 合法。缺少当前物化产物时为证据不足；需要补齐时回到已授权的评审准备阶段，再以新绑定重新检查。
 
-按 `assets/aw-review-evidence.schema.json` 填写真实 Review 结论；`assets/aw-review-evidence.template.json` 仅为形状示例，零摘要不是证据。容器使用 inspection 的 source container digest；leaf 使用当前 final digest，并映射到 workspace-relative logical source path。snapshot profile 使用平台与 scope；Eval/portable 变体使用 `{kind}:{id}:{scope}:{inputDigest}` 表示实际配置身份。同字节的不同语境仍分别覆盖。
+按 `assets/aw-review-evidence.schema.json` 填写真实 Review 结论；`assets/aw-review-evidence.template.json` 仅为形状示例，零摘要不是证据。容器使用 inspection 的 source container digest；leaf 使用当前 final digest，并映射到 workspace-relative logical source path。snapshot profile 使用平台与 scope；Eval/portable/review 变体使用 `{kind}:{id}:{scope}:{inputDigest}` 表示实际配置身份。同字节的不同语境仍分别覆盖。
 
 每个 subject 单独填写 assessment、报告 evidenceRefs 与 blockingFindings。报告必须真实存在且文件摘要一致；不能把一个全局 pass 填成全部 leaf pass。单份报告确实覆盖多个对象时可复用内容证据。没有评审的对象使用 `not-assessed`。
 

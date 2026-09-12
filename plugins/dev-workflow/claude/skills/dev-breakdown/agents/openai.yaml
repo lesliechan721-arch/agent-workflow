@@ -1,6 +1,6 @@
 interface:
-  display_name: "工作分解"
-  short_description: "将明确需求拆分为可交接工作项，说明交付结果、真实依赖和验证方式"
-  default_prompt: "使用 $dev-breakdown 处理当前请求；按实际授权、输入和已有工件执行。"
+  display_name: "任务分解"
+  short_description: "把明确需求与设计依据整理为新上下文可独立实施、交接和验收的任务"
+  default_prompt: "使用 $dev-breakdown 处理当前请求，遵循实际范围、资料和授权。"
 policy:
   allow_implicit_invocation: true
