@@ -169,6 +169,10 @@ import {
   MANAGED_CODEX_PACKAGE_NAME,
   MANAGED_CODEX_VERSION,
 } from '../utils/codex-manager.js';
+import {
+  projectPluginContentOverview,
+  type PluginContentOverview,
+} from './plugin-content.js';
 
 function reusableCandidateEvidenceIsComplete(
   candidate: CatalogSessionReusableCandidate,
@@ -1090,6 +1094,48 @@ export function createTuiControllerDependencies(
       'operationReviewStale',
       '状态读取期间来源配置持续变化。请重试。',
     );
+  };
+
+  const loadPluginContent = async (
+    pluginId: string,
+    signal: AbortSignal,
+  ): Promise<PluginContentOverview> => {
+    signal.throwIfAborted();
+    try {
+      const packageInfo = await readCliPackageInfo();
+      const catalogOperation = sessionContextForPlugin(pluginId);
+      return await withResolvedCatalogPlugin({
+        selector: pluginId,
+        cliVersion: packageInfo.version,
+        env: context.env,
+        signal,
+        ...(catalogOperation ? { operationContext: catalogOperation } : {}),
+        consume: ({ plugin, source }) => projectPluginContentOverview({
+          pluginId,
+          catalogVersion: source.manifest.catalogVersion,
+          plugin,
+        }),
+      });
+    } catch {
+      signal.throwIfAborted();
+      const summary = sessionStatusResult?.pluginSummaries.find((entry) => entry.pluginId === pluginId);
+      let sourceId: string | undefined;
+      try {
+        sourceId = parsePluginId(pluginId).sourceId;
+      } catch {
+        // The fixed unavailable result below does not repeat an unsafe selector.
+      }
+      const catalogVersion = sessionStatusResult?.payload.catalog.sources
+        .find((source) => source.id === sourceId)?.catalogVersion;
+      return {
+        pluginId,
+        pluginVersion: summary?.version ?? '待确认',
+        catalogVersion: catalogVersion ?? '待确认',
+        evidence: 'unavailable',
+        items: [],
+        notices: ['当前无法安全读取这个插件的目录内容。请检查来源状态后重试。'],
+      };
+    }
   };
 
   const captureEvidence = async (
@@ -2724,6 +2770,7 @@ export function createTuiControllerDependencies(
       }
     },
     loadStatus,
+    loadPluginContent,
     async probeCatalogFreshness(sourceId, freshnessOptions, signal) {
       signal.throwIfAborted();
       const packageInfo = await readCliPackageInfo();

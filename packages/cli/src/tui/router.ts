@@ -7,7 +7,7 @@ export type PortableBlockerCode =
   | 'portableScopeUnavailable'
   | 'portableValidationFailed';
 
-export type PluginInstallFilter = 'all' | 'uninstalled' | 'updateAvailable';
+export type PluginInstallFilter = 'all' | 'installed' | 'uninstalled' | 'updateAvailable' | 'attention';
 export interface ConfigInvalidStoreEvidence {
   scope: Scope;
   code: 'invalidJson' | 'schemaVersionUnsupported' | 'identityMismatch' | 'invalidValues';
@@ -91,6 +91,7 @@ export type TuiRoute =
       platform: PlatformName;
     }
   | { name: 'pluginDetail'; pluginId: string }
+  | { name: 'pluginContent'; pluginId: string }
   | { name: 'pluginMore'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }
@@ -324,7 +325,7 @@ export class TuiRouter {
     if (origin.route.name !== 'pluginList') {
       throw new Error('Batch flow must start from a plugin list.');
     }
-    return this.beginFlow('batchWrite', { name: 'pluginList', mode: 'installed' }, origin.id);
+    return this.beginFlow('batchWrite', origin.route, origin.id, origin.context);
   }
 
   activeFlow(): TuiFlowScope | undefined {
@@ -512,7 +513,7 @@ export class TuiRouter {
     let route = this.#stack[index]!.route;
     if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
       || route.pluginId !== pluginId) {
-      this.replace({ name: 'pluginPreview', pluginId });
+      this.replace({ name: 'pluginDetail', pluginId });
       route = this.#stack[index]!.route;
     }
     this.beginFlow('portableInstall', route, this.#stack[index]!.id);
@@ -527,7 +528,7 @@ export class TuiRouter {
         return copyFrame(frame).route;
       }
     }
-    return { name: 'pluginPreview', pluginId };
+    return { name: 'pluginDetail', pluginId };
   }
 
   discardSourceFlow(owner: string, returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>): TuiRouterSnapshot {
@@ -560,7 +561,7 @@ export class TuiRouter {
       && origin.route.pluginId === pluginId) {
       this.finishFlow();
     } else {
-      this.replace({ name: 'pluginPreview', pluginId });
+      this.replace({ name: 'pluginDetail', pluginId });
     }
     return this.snapshot;
   }

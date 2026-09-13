@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
 import type { TuiController, TuiControllerSnapshot } from '../../src/tui/controller.js';
-import { buildDependencyGraphProjection } from '../../src/tui/dependency-graph.js';
+import {
+  buildDependencyGraphProjection,
+  buildUnifiedDependencyGraphProjection,
+} from '../../src/tui/dependency-graph.js';
 import type {
   PluginDependencyOverviewViewModel,
   PluginListItemViewModel,
@@ -195,6 +198,59 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
 }
 
 describe('dependency graph v7', () => {
+  it('projects verified users and required dependencies into separate branches with one root', () => {
+    const projection = buildUnifiedDependencyGraphProjection({
+      overviews: overviews(), rootPluginId: 'official/root',
+    });
+
+    expect(projection.rows.filter((row) => row.pluginId === 'official/root')).toEqual([
+      expect.objectContaining({ branch: 'root', depth: 0, relationship: 'root' }),
+    ]);
+    expect(projection.rows.some((row) => row.pluginId === 'official/consumer'
+      && row.branch === 'dependents')).toBe(true);
+    expect(projection.rows.some((row) => row.pluginId === 'official/left'
+      && row.branch === 'dependencies')).toBe(true);
+    expect(projection.dependents.rows.map((row) => row.pluginId)).toContain('official/consumer');
+    expect(projection.dependencies.rows.map((row) => row.pluginId)).toContain('official/left');
+  });
+
+  it('keeps unavailable and missing states without inventing unverified users', () => {
+    const values = overviews();
+    values[0]!.dependencies[0]!.aggregateStatus = 'unavailable';
+    const projection = buildUnifiedDependencyGraphProjection({
+      overviews: values, rootPluginId: 'official/root',
+    });
+
+    expect(projection.rows.find((row) => row.pluginId === 'official/left')).toMatchObject({
+      branch: 'dependencies',
+      nodeState: 'unavailable',
+      relationship: 'directAvailable',
+    });
+    expect(projection.rows.find((row) => row.pluginId === 'official/shared')).toMatchObject({
+      branch: 'dependencies',
+      nodeState: 'missing',
+      relationship: 'declared',
+    });
+    expect(projection.dependents.scopeSummary.unknownConsumerPluginIds)
+      .toEqual(['official/not-installed']);
+    expect(projection.rows.some((row) => row.pluginId === 'official/not-installed')).toBe(false);
+  });
+
+  it('reports an absent dependency overview as unknown without creating relations', () => {
+    const projection = buildUnifiedDependencyGraphProjection({
+      overviews: [], rootPluginId: 'unknown/root',
+    });
+
+    expect(projection.status).toMatchObject({ state: 'unknown' });
+    expect(projection.rows).toEqual([
+      expect.objectContaining({
+        pluginId: 'unknown/root', branch: 'root', nodeState: 'unknown', relationship: 'root',
+      }),
+    ]);
+    expect(projection.dependencies.rows).toHaveLength(1);
+    expect(projection.dependents.rows).toHaveLength(1);
+  });
+
   it('uses explicit edges, marks a shared node, and excludes an uninstalled declared consumer', () => {
     const forward = buildDependencyGraphProjection({
       overviews: overviews(), rootPluginId: 'official/root', direction: 'dependencies',
@@ -410,40 +466,30 @@ describe('dependency graph v7', () => {
         size={{ columns, rows }}
       />);
       await input(instance, '', '', '');
-      expect(instance.lastFrame()).toContain('每一层表示上面的插件需要下面的插件');
-      expect(instance.lastFrame()).toContain('共享组件');
-      expect(instance.lastFrame()).toContain('共用，见上方');
+      expect(instance.lastFrame()).toContain('A → B 表示 A 需要 B；当前插件只显示一次');
+      expect(instance.lastFrame()).toContain('↑ 使用者');
+      expect(instance.lastFrame()).toContain('↓ 所需');
       expect(instance.lastFrame()).not.toContain('必需依赖 ·');
       expect(instance.lastFrame()).not.toContain('根插件 ·');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
-      await input(instance, '\u001b[B', '\u001b[D');
-      expect(instance.lastFrame()).not.toContain('共用，见上方');
-      await input(instance, '\u001b[C');
-      expect(instance.lastFrame()).toContain('共用，见上方');
-      await input(instance, '\u001b[A');
+      await input(instance, '\u001b[B');
       await input(instance, '\r');
       expect(controller.route.name).toBe('pluginDependencyNode');
-      expect(instance.lastFrame()).toContain('用途');
-      expect(instance.lastFrame()).toContain('为何需要');
-      expect(instance.lastFrame()).toContain('影响');
-      expect(instance.lastFrame()).toContain('生成团队审查规则');
+      expect(instance.lastFrame()).toContain('当前依赖者');
+      expect(instance.lastFrame()).toContain('需要当前插件');
       expect(instance.lastFrame()).not.toContain('official/root');
       await input(instance, 'd');
-      expect(instance.lastFrame()).toContain('official/root');
+      expect(instance.lastFrame()).toContain('official/consumer');
       await input(instance, 'b');
       expect(controller.route.name).toBe('pluginDependencies');
-
-      await input(instance, ...Array.from({ length: 5 }, () => '\u001b[B'), '\r');
-      expect(controller.route).toMatchObject({ name: 'pluginDependencies', direction: 'dependents' });
-      expect(instance.lastFrame()).toContain('下面的插件在本次检查中需要上面的插件');
-      expect(instance.lastFrame()).toContain('当前依赖者');
-      expect(instance.lastFrame()).toContain('未验证声明者 · 1 个');
-      expect(instance.lastFrame()).toContain('未安装声明者');
-      expect(instance.lastFrame()).toContain('仅声明 · 未安装');
       expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(rows);
 
-      await input(instance, '\u001b[B', '\u001b[B', '\r');
+      for (let index = 0; index < 12 && !instance.lastFrame()?.includes('› 未安装声明者'); index += 1) {
+        await input(instance, '\u001b[B');
+      }
+      expect(instance.lastFrame()).toContain('› 未安装声明者');
+      await input(instance, '\r');
       expect(controller.route).toMatchObject({
         name: 'pluginDependencyNode', nodePluginId: 'official/not-installed',
       });
@@ -556,8 +602,12 @@ describe('dependency graph v7', () => {
     expect(instance.lastFrame()).toContain('未验证声明者 · 2 个');
     expect(instance.lastFrame()).not.toContain('└─ 当前依赖者');
     await input(instance, 'd');
-    expect(instance.lastFrame()).toContain('0 个当前可用依赖者');
-    await input(instance, '\u001b[B', '\r');
+    expect(instance.lastFrame()).toContain('0 个当前可用使用者');
+    for (let index = 0; index < 12 && !instance.lastFrame()?.includes('› 当前依赖者'); index += 1) {
+      await input(instance, '\u001b[B');
+    }
+    expect(instance.lastFrame()).toContain('› 当前依赖者');
+    await input(instance, '\r');
     expect(controller.route).toMatchObject({
       name: 'pluginDependencyNode', nodePluginId: 'official/consumer',
     });

@@ -61,6 +61,7 @@ import {
   type UserIssueCategory,
   type UserIssueViewModel,
 } from './model.js';
+import type { PluginContentOverview } from './plugin-content.js';
 import { safeDiagnosticCode, sanitizeDiagnosticText } from './diagnostics.js';
 import { projectExecutionDiagnostics, projectThrownOperationDiagnostic } from './diagnostic-projection.js';
 import {
@@ -712,6 +713,7 @@ export interface TuiStatusLoadResult {
   sourceDetails?: SourceDetailViewModel[];
   configuredSources?: CatalogSource[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  contentOverviews?: Record<string, PluginContentOverview>;
   portablePluginIds?: string[];
   configStoreInventory?: Array<{
     pluginId: string;
@@ -750,6 +752,7 @@ export interface TuiControllerDependencies {
     reuseValidatedGenerations?: boolean;
   }) => void;
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
+  loadPluginContent?: (pluginId: string, signal: AbortSignal) => Promise<PluginContentOverview>;
   probeCatalogFreshness?: (
     sourceId: string,
     options: { fullValidation: boolean },
@@ -1381,6 +1384,9 @@ export class TuiController {
     promise: Promise<OperationExecuteResult>;
   }>();
   readonly #pendingReads = new Set<Promise<unknown>>();
+  readonly #pluginContent = new Map<string, PluginContentOverview>();
+  readonly #pluginContentInflight = new Map<string, Promise<void>>();
+  #pluginContentEpoch = 0;
   readonly #abort = new AbortController();
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
@@ -1895,6 +1901,10 @@ export class TuiController {
       catalogFreshness: this.#catalogFreshness,
       catalogGenerations: this.#catalogGenerations,
       dependencyOverviews: this.#status.dependencyOverviews,
+      contentOverviews: {
+        ...(this.#status.contentOverviews ?? {}),
+        ...Object.fromEntries(this.#pluginContent),
+      },
       portablePluginIds: this.#status.portablePluginIds,
       configStoreInventory: this.#status.configStoreInventory,
     });
@@ -2084,6 +2094,9 @@ export class TuiController {
   }
 
   #applyStatus(status: TuiStatusLoadResult): void {
+    this.#pluginContentEpoch += 1;
+    this.#pluginContent.clear();
+    this.#pluginContentInflight.clear();
     this.#status = structuredClone(status);
     this.#statusReadAtMs = this.dependencies.now?.() ?? Date.now();
     if (status.catalogGenerations) {
@@ -2150,6 +2163,9 @@ export class TuiController {
     this.#assertAcceptingActions();
     this.dependencies.beginCatalogSession?.();
     const generation = ++this.#generation;
+    this.#pluginContentEpoch += 1;
+    this.#pluginContent.clear();
+    this.#pluginContentInflight.clear();
     this.#phase = 'loading';
     this.#publish();
     let status: TuiStatusLoadResult;
@@ -2181,7 +2197,7 @@ export class TuiController {
       && this.#router.activeFlow()?.kind !== 'sourceEdit') {
       this.#router.beginFlow('sourceEdit', this.#router.snapshot.current.route);
     }
-    this.#router.push(route, context);
+    this.#router.push(route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route, context);
     this.#publish();
   }
 
@@ -2385,7 +2401,7 @@ export class TuiController {
       this.#portableRepreparePluginId = current.pluginId;
     }
     this.#discardPortableDraftForRoute(route);
-    this.#router.replace(route, context);
+    this.#router.replace(route.name === 'pluginPreview' ? this.#normalizeRoute(route) : route, context);
     this.#publish();
   }
 
@@ -2888,19 +2904,70 @@ export class TuiController {
     installFilter?: PluginInstallFilter;
   }): PluginListItemViewModel[] {
     const query = options.query?.trim().toLocaleLowerCase('en');
-    const catalogPluginIds = new Set(this.#status?.pluginSummaries.map((plugin) => plugin.pluginId));
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
-      && (options.mode === 'browse' ? catalogPluginIds.has(plugin.pluginId)
-        : hasInstalledPlacement(plugin) || plugin.savedConfigScopes.length > 0)
+      && (options.installFilter !== 'installed'
+        || hasInstalledPlacement(plugin))
       && (options.installFilter !== 'uninstalled' || !hasInstalledPlacement(plugin))
       && (options.installFilter !== 'updateAvailable' || plugin.update?.state === 'available')
+      && (options.installFilter !== 'attention'
+        || plugin.aggregateStatus === 'needsAttention' || plugin.aggregateStatus === 'unavailable'
+        || plugin.primaryAttention !== undefined || plugin.sourceUnavailable === true
+        || plugin.capabilityUnsupported === true)
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 
   getPluginOverview(pluginId: string): PluginListItemViewModel | undefined {
     const plugin = this.#viewModel?.plugins.find((entry) => entry.pluginId === pluginId);
     return plugin ? cloneFrozen(plugin) : undefined;
+  }
+
+  getPluginContentOverview(pluginId: string): PluginContentOverview | undefined {
+    const overview = this.#viewModel?.contentOverviews[pluginId];
+    return overview ? cloneFrozen(overview) : undefined;
+  }
+
+  getPluginContentState(pluginId: string): 'idle' | 'loading' | 'ready' {
+    if (this.#viewModel?.contentOverviews[pluginId]) return 'ready';
+    return this.#pluginContentInflight.has(pluginId) ? 'loading' : 'idle';
+  }
+
+  loadPluginContent(pluginId: string): Promise<void> {
+    if (this.#viewModel?.contentOverviews[pluginId]) return Promise.resolve();
+    const current = this.#pluginContentInflight.get(pluginId);
+    if (current) return current;
+    const loader = this.dependencies.loadPluginContent;
+    if (!loader) return Promise.resolve();
+    const generation = this.#generation;
+    const contentEpoch = this.#pluginContentEpoch;
+    const promise = this.#trackRead(loader(pluginId, this.#abort.signal))
+      .then((overview) => {
+        if (this.#disposed || generation !== this.#generation
+          || contentEpoch !== this.#pluginContentEpoch) return;
+        this.#pluginContent.set(pluginId, structuredClone(overview));
+        this.#project();
+      })
+      .catch(() => {
+        if (this.#disposed || generation !== this.#generation
+          || contentEpoch !== this.#pluginContentEpoch) return;
+        this.#pluginContent.set(pluginId, {
+          pluginId,
+          pluginVersion: '待确认',
+          catalogVersion: '待确认',
+          evidence: 'unavailable',
+          items: [],
+          notices: ['当前无法安全读取这个插件的内容。'],
+        });
+        this.#project();
+      })
+      .finally(() => {
+        if (this.#pluginContentInflight.get(pluginId) !== promise) return;
+        this.#pluginContentInflight.delete(pluginId);
+        this.#publish();
+      });
+    this.#pluginContentInflight.set(pluginId, promise);
+    this.#publish();
+    return promise;
   }
 
   getPluginSourceIdentity(pluginId: string): string | undefined {

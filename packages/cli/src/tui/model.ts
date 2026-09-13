@@ -26,6 +26,7 @@ import type {
   StatusTargetRevision,
   TargetRevisionState,
 } from '../commands/status-v6.js';
+import type { PluginContentOverview } from './plugin-content.js';
 import {
   flattenStatusTargets,
   statusTargetActivation,
@@ -647,6 +648,7 @@ export interface TuiViewModel {
   issues: UserIssueViewModel[];
   home: HomeSummaryViewModel;
   dependencyOverviews: PluginDependencyOverviewViewModel[];
+  contentOverviews: Record<string, PluginContentOverview>;
 }
 
 export interface PortableSkillCandidateViewModel {
@@ -2091,6 +2093,7 @@ export function buildTuiViewModel(options: {
   catalogFreshness?: ReadonlyMap<string, CatalogSourceFreshnessViewModel>;
   catalogGenerations?: ReadonlyMap<string, CatalogSourceGenerationViewModel>;
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  contentOverviews?: Record<string, PluginContentOverview>;
   portablePluginIds?: string[];
   configStoreInventory?: Array<{
     pluginId: string;
@@ -2314,6 +2317,7 @@ export function buildTuiViewModel(options: {
     })),
     issues,
     dependencyOverviews: options.dependencyOverviews ?? [],
+    contentOverviews: options.contentOverviews ?? {},
     home: {
       availablePlugins: pluginsWithAttention.filter((plugin) => plugin.aggregateStatus === 'available').length,
       installedPlugins: new Set(pluginsWithAttention

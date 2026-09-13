@@ -86,6 +86,18 @@ export interface DependencyGraphProjectionOptions {
   breadcrumbPluginIds?: readonly string[];
 }
 
+export interface UnifiedDependencyGraphRow extends DependencyGraphRow {
+  branch: DependencyGraphDirection | 'root';
+}
+
+export interface UnifiedDependencyGraphProjection {
+  root: DependencyGraphBreadcrumb;
+  rows: UnifiedDependencyGraphRow[];
+  dependencies: DependencyGraphProjection;
+  dependents: DependencyGraphProjection;
+  status: DependencyGraphStatus;
+}
+
 interface NodeRecord {
   pluginId: string;
   displayName: string;
@@ -603,5 +615,27 @@ export function buildDependencyGraphProjection(
     ...(focusRow ? { focusRowId: focusRow.id } : {}),
     scopeSummary: scopeSummary(options.rootPluginId, overview, facts),
     status,
+  };
+}
+
+export function buildUnifiedDependencyGraphProjection(
+  options: Omit<DependencyGraphProjectionOptions, 'direction'>,
+): UnifiedDependencyGraphProjection {
+  const dependents = buildDependencyGraphProjection({ ...options, direction: 'dependents' });
+  const dependencies = buildDependencyGraphProjection({ ...options, direction: 'dependencies' });
+  const rootRow = dependencies.rows.find((row) => row.depth === 0)
+    ?? dependents.rows.find((row) => row.depth === 0);
+  return {
+    root: dependencies.root,
+    rows: [
+      ...(rootRow ? [{ ...rootRow, branch: 'root' as const }] : []),
+      ...dependents.rows.filter((row) => row.depth > 0)
+        .map((row) => ({ ...row, branch: 'dependents' as const })),
+      ...dependencies.rows.filter((row) => row.depth > 0)
+        .map((row) => ({ ...row, branch: 'dependencies' as const })),
+    ],
+    dependencies,
+    dependents,
+    status: dependencies.status.state === 'invalid' ? dependencies.status : dependents.status,
   };
 }

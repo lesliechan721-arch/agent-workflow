@@ -67,6 +67,10 @@ const plugin = <Name extends TuiRouteName>(route: NamedRoute<Name>, state: Route
       || route.name === 'pluginDependencies' || route.name === 'installPlacement'
       || route.name === 'installTargets' || route.name === 'dependencyPlacement'
       || route.name === 'dependencyPlacementEditor' ? 'browse' : 'installed' };
+const pluginDetail = (route: NamedRoute<'pluginPreview'>, state: RouteEntityState): TuiRoute =>
+  state.hasPlugin(route.pluginId)
+    ? { name: 'pluginDetail', pluginId: route.pluginId }
+    : { name: 'pluginList', mode: 'browse' };
 type SourceRoute = Extract<TuiRoute, { sourceId: string }>;
 const source = (route: SourceRoute, state: RouteEntityState): TuiRoute =>
   state.hasSource(route.sourceId) ? route : { name: 'sourceList' };
@@ -143,7 +147,11 @@ export const TUI_ROUTE_DEFINITIONS = {
   pluginList: { entity: 'source', rendererFamily: 'pluginList', keymap: 'menuOrTextInput', normalize: (route, state) =>
     route.sourceId && !state.hasSource(route.sourceId) ? { name: 'pluginList', mode: route.mode } : route,
   screenId: (route, { controller, searchMode }) => {
-    const items = controller.listPlugins({ mode: route.mode, sourceId: route.sourceId });
+    const items = controller.listPlugins({
+      mode: route.mode,
+      sourceId: route.sourceId,
+      installFilter: route.mode === 'installed' ? 'installed' : 'all',
+    });
     if (route.mode === 'installed' && items.length === 0) return 'P12';
     if (route.sourceId && controller.getSourceOverview(route.sourceId).health?.state === 'unavailable') return 'P03';
     return route.mode === 'installed' ? 'P11' : searchMode ? 'P02' : 'P01';
@@ -151,7 +159,7 @@ export const TUI_ROUTE_DEFINITIONS = {
   pluginWriteTask: { entity: 'plugin', rendererFamily: 'task', keymap: 'menu', normalize: plugin, screenId: fixed('T01') },
   batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('B01') },
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
-  pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
+  pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: pluginDetail, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },
   portableSkillSelect: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U01') },
   portableDependencies: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U02') },
@@ -183,6 +191,7 @@ export const TUI_ROUTE_DEFINITIONS = {
       ? route : { name: 'pluginList', mode: 'browse' }, screenId: fixed('D04') },
   pluginDetail: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D09' : 'P13' },
+  pluginContent: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P04') },
   pluginMore: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P22') },
   platform: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) => {
     const item = controller.getPluginOverview(route.pluginId);

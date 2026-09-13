@@ -148,6 +148,8 @@ TUI 的所有写入口在进入 Review 前先进入 `ReviewPreparing`。普通 `
 
 `ReviewPreparing` 的公共 snapshot 只包含 operation id、kind、subject、当前安全 stage、状态及安全错误字段。原始 `OperationIntent`、config updates、preset、source path 或 URL 只保存在 controller 私有、按 operation id 索引的内存中，并在成功或取消时清理。Config ViewModel 和 controller 公共 snapshot 对 sensitive 顶层字段只投影状态，不包含 value、effective value、draft、default 或 choices 原文。
 
+TUI 保留首页，插件库合并 Catalog、安装目标和仅保留设置的对象，按全部、已安装、未安装、可更新、需要处理筛选。旧预览入口归一到同一插件详情；来源、搜索和批量选择只影响返回上下文。固定操作栏与卡片列表分别持有焦点，按钮与快捷键复用动作。详情直接提供常用管理，依赖页统一展示上下游并保留关系证据差异。内容页只展示指定插件的目录版本组件清单，按需读取、会话内复用，状态重读时失效；启动不扫描全部内容，也不把目录清单视为旧安装内容。
+
 插件安装主链固定为：选择根插件 scope，使用 Enter 选择至少一个目标平台并显式确认，只在计划含可配置依赖时编辑 dependency placement，然后进入 `ReviewPreparing` 和 Review。根插件 scope 不在依赖页重复编辑。依赖草稿按 `(pluginId, platform)` 保存 project 或 user 选择，并显示默认 project、健康 user 复用和 fixed-point 提升原因；user 选择必须说明它会影响其它项目或用户环境。返回 Review 前的页面时保留适用草稿；根 scope 或平台集合变化后确定性重算，并删除不再适用的 key。键盘合同继续使用当前焦点、Enter、Esc 和显式确认，不用 Space 切换选择。
 
 TUI 初始 load 不访问网络，也不等待 freshness 检查。进入 ready 后，每个 session 只为 `autoCheck` 开启的 source 自动检查一次：primary 先开始，其它 source 最多并发两个。关闭 `autoCheck` 的来源只在用户显式检查时 probe。自动检查和“重新检查”使用轻量模式：健康 Git Active 先只解析远端 ref；ref 未变化时不 fetch，固定 commit 标记为 fixed 且不联网；ref 变化时才 fetch 并执行完整 transport validation。来源详情的“完整验证”强制完整 resolve。没有 Active、Active 损坏、repair、replaceDamaged 或 state recovery 也始终完整验证。Path source 在本地完整验证候选。检查结果只进入 session-private overlay，不修改 Status v8、Active、固定的 session Catalog 子集、插件列表或 target revision。远端失败只显示 `checkFailed`，健康 Active 仍可浏览。reload 不重复全量检查；来源详情的检查只处理目标 source。退出会取消所有 probe，session、token 和 source fingerprint 共同拒绝迟到结果。

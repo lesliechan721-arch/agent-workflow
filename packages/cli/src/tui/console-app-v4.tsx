@@ -101,6 +101,7 @@ import {
 import { resolveTuiSizePolicy } from './layout.js';
 import {
   buildDependencyGraphProjection,
+  buildUnifiedDependencyGraphProjection,
   type DependencyGraphRow,
 } from './dependency-graph.js';
 import { platformLabel, scopeLabel } from './glossary.js';
@@ -123,7 +124,6 @@ import type {
 import {
   buildPlatformActions,
   buildPluginDetailActions,
-  buildPluginPreviewActions,
   configObjectHasSensitiveChild,
   hasInstalledPlacement,
   configValuesEqual,
@@ -143,6 +143,20 @@ import {
 export const CONSOLE_V4_SCREEN_IDS = TUI_SCREEN_IDS;
 export type ConsoleV4ScreenId = TuiScreenId;
 type Overlay = 'help' | 'exit' | 'discard' | 'sessionNavigation' | undefined;
+
+const PLUGIN_FILTERS: PluginInstallFilter[] = [
+  'all', 'installed', 'uninstalled', 'updateAvailable', 'attention',
+];
+
+function pluginFilterLabel(filter: PluginInstallFilter): string {
+  return {
+    all: '全部',
+    installed: '已安装',
+    uninstalled: '未安装',
+    updateAvailable: '可更新',
+    attention: '需处理',
+  }[filter];
+}
 
 interface ActionItem {
   actionId?: string;
@@ -377,7 +391,7 @@ function helpRowsForRoute(
   if (route.name === 'pluginList') {
     rows.push(['←/→ · [ / ]', '切换来源']);
     rows.push(['/', '进入搜索']);
-    if (route.mode === 'browse') rows.push(['f', '切换全部或未安装']);
+    if (route.name === 'pluginList') rows.push(['f', '切换插件状态']);
   }
   if (route.name === 'portableSkillSelect') {
     rows.push(['Space', '切换当前 Skill']);
@@ -477,13 +491,13 @@ function dependencyGraphContextKey(
   return `${pluginId}\0${direction}`;
 }
 
-function dependencyGraphActionIds(
-  projection: ReturnType<typeof buildDependencyGraphProjection>,
+function unifiedDependencyGraphActionIds(
+  projection: ReturnType<typeof buildUnifiedDependencyGraphProjection>,
 ): string[] {
   return [
-    ...projection.rows.map((row) => `row:${row.id}`),
-    ...projection.scopeSummary.unknownConsumerPluginIds.map((pluginId) => `unverified:${pluginId}`),
-    'direction',
+    ...projection.rows.map((row) => `row:${row.branch}:${row.id}`),
+    ...projection.dependents.scopeSummary.unknownConsumerPluginIds
+      .map((pluginId) => `unverified:${pluginId}`),
     'technical',
   ];
 }
@@ -535,11 +549,11 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
   return plugin.supportedPlatforms.map((platform) => {
     const label = platformLabel(platform);
     const placement = plugin.installedPlacements.find((entry) => entry.platform === platform);
-    if (!placement || placement.state === 'notInstalled') return `${label} · 未添加`;
-    if (placement.state === 'blocked') return `${label} · 无法添加 · 输出冲突`;
-    if (placement.state === 'scopeConflict') return `${label} · 位置冲突`;
+    if (!placement || placement.state === 'notInstalled') return `[○ ${label} 未安装]`;
+    if (placement.state === 'blocked') return `[× ${label} 输出冲突]`;
+    if (placement.state === 'scopeConflict') return `[! ${label} 位置冲突]`;
     if (placement.blockingReason === 'artifactCollision') {
-      return `${label} · ${scopeLabel(placement.scope)} · 输出冲突`;
+      return `[! ${label}] ${scopeLabel(placement.scope)} · 输出冲突`;
     }
     const health = placement.actualState === 'needsSync' ? '需要同步'
       : placement.actualState === 'blocked' ? '已阻断'
@@ -548,9 +562,9 @@ function pluginPlacementSummary(plugin: PluginListItemViewModel): string {
     const desired = placement.desiredScopes?.map(scopeLabel).join('+') || '未保存';
     const actual = placement.actualScopes?.map(scopeLabel).join('+') || '未启用';
     return placement.desiredScopes?.length
-      ? `${label} · 已保存 ${desired} · 当前 ${actual} · ${health}`
-      : `${label} · 当前 ${actual} · ${health}`;
-  }).join('  |  ') || '没有可用平台';
+      ? `[${health === '可用' ? '✓' : '!'} ${label}] 已保存 ${desired} · 当前 ${actual} · ${health}`
+      : `[${health === '可用' ? '✓' : '!'} ${label}] 当前 ${actual} · ${health}`;
+  }).join('  ') || '没有可用平台';
 }
 
 function issueMatchesTarget(
@@ -1454,7 +1468,9 @@ export function ConsoleAppV4(props: {
     props.controller.snapshot.router.current.context.query ?? '',
   );
   const [installFilter, setInstallFilter] = useState<PluginInstallFilter>(
-    props.controller.snapshot.router.current.context.installFilter ?? 'all',
+    props.controller.snapshot.router.current.context.installFilter
+      ?? (props.controller.snapshot.router.current.route.name === 'pluginList'
+        && props.controller.snapshot.router.current.route.mode === 'installed' ? 'installed' : 'all'),
   );
   const [scope, setScope] = useState<Scope>('user');
   const [selectedTargets, setSelectedTargets] = useState<PlatformName[]>([]);
@@ -1506,6 +1522,7 @@ export function ConsoleAppV4(props: {
   const [pendingPresetId, setPendingPresetId] = useState<string>();
   const [pendingLayerFieldKey, setPendingLayerFieldKey] = useState<string>();
   const dynamicMenuFocus = useRef<DynamicMenuFocus | undefined>(undefined);
+  const pluginListFocusId = useRef<string | undefined>(undefined);
   const dependencyGraphContexts = useRef(new Map<string, DependencyGraphSessionContext>());
   const externalDraftRevision = useRef({ config: 0, source: 0, batch: 0 });
   const previousExternalDraftValues = useRef({
@@ -1564,6 +1581,10 @@ export function ConsoleAppV4(props: {
       if (props.ownsController) props.controller.dispose();
     };
   }, [props.controller, props.ownsController]);
+  useEffect(() => {
+    if (route.name !== 'pluginContent' || snapshot.phase !== 'ready') return;
+    void props.controller.loadPluginContent(route.pluginId);
+  }, [props.controller, snapshot.phase, route.name === 'pluginContent' ? route.pluginId : undefined]);
   useEffect(() => {
     if (!exitAfterBusy || !snapshot.result) return;
     const state = snapshot.result.state;
@@ -1958,8 +1979,7 @@ export function ConsoleAppV4(props: {
   }, [route.name, route.name === 'operationReportPreview' ? route.recordId : '']);
   useEffect(() => {
     if (route.name !== 'pluginDependencies') return;
-    const direction = route.direction ?? 'dependencies';
-    const key = dependencyGraphContextKey(route.pluginId, direction);
+    const key = dependencyGraphContextKey(route.pluginId, 'dependencies');
     const stored = dependencyGraphContexts.current.get(key);
     const overviews = props.controller.listPluginDependencyOverviews();
     const knownPluginIds = new Set(overviews.flatMap((overview) => [
@@ -1970,14 +1990,16 @@ export function ConsoleAppV4(props: {
     const expandedPluginIds = stored
       ? new Set([...stored.expandedPluginIds].filter((pluginId) => knownPluginIds.has(pluginId)))
       : undefined;
-    const projection = buildDependencyGraphProjection({
+    const projection = buildUnifiedDependencyGraphProjection({
       overviews,
       rootPluginId: route.pluginId,
-      direction,
       ...(expandedPluginIds ? { expandedPluginIds } : {}),
     });
-    const actionIds = dependencyGraphActionIds(projection);
-    const normalizedExpanded = expandedPluginIds ?? new Set(projection.defaultExpandedPluginIds);
+    const actionIds = unifiedDependencyGraphActionIds(projection);
+    const normalizedExpanded = expandedPluginIds ?? new Set([
+      ...projection.dependencies.defaultExpandedPluginIds,
+      ...projection.dependents.defaultExpandedPluginIds,
+    ]);
     const focusedIndex = stored?.focusedActionId
       ? actionIds.indexOf(stored.focusedActionId)
       : 0;
@@ -1998,7 +2020,6 @@ export function ConsoleAppV4(props: {
     props.controller,
     route.name,
     route.name === 'pluginDependencies' ? route.pluginId : '',
-    route.name === 'pluginDependencies' ? route.direction ?? 'dependencies' : '',
     snapshot.viewModel,
   ]);
   useEffect(() => {
@@ -2141,8 +2162,7 @@ export function ConsoleAppV4(props: {
     || Boolean(route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
       && snapshot.result.operationKind === 'portableInstall');
   const canOpenHelp = !tooSmall
-    && !isCharacterInputMode(route, searchFocus)
-    && !(route.name === 'installTargets' && route.view !== 'blocked');
+    && !isCharacterInputMode(route, searchFocus);
   useEffect(() => {
     props.onScreenChange?.(screenId);
   }, [props.onScreenChange, screenId]);
@@ -2158,16 +2178,13 @@ export function ConsoleAppV4(props: {
   let content: React.ReactNode;
   let actions: ActionItem[] = [];
   let referenceDetailPagination: { total: number; pageRows: number } | undefined;
-  let placementConclusionPagination: { total: number; pageRows: number } | undefined;
   let pluginRows: PluginListRowViewModel[] = [];
   let pinnedActions: ActionItem[] = [];
   let togglePluginListFilter: (() => void) | undefined;
   let movePluginListSource: ((direction: -1 | 1) => void) | undefined;
   let visibleConfigTabs: ConfigTab[] = [];
   let activeConfigTabId: string | undefined;
-  const dynamicMenu = plugin && route.name === 'pluginPreview'
-    ? buildPluginPreviewActions(plugin)
-    : plugin && route.name === 'platform'
+  const dynamicMenu = plugin && route.name === 'platform'
         ? buildPlatformActions(plugin, route.platform)
         : undefined;
   const dynamicActionIds = dynamicMenu?.map(pluginMenuActionId);
@@ -2193,6 +2210,7 @@ export function ConsoleAppV4(props: {
   const dependencyPlacementStaticRows = policy.mode === 'compact' ? 3 : 10;
   const actionViewportStaticRows = route.name === 'dependencyPlacement'
     ? dependencyPlacementStaticRows
+    : route.name === 'pluginDetail' ? policy.mode === 'compact' ? 6 : 8
     : route.name === 'operationHistory' ? 4
       : route.name === 'operationReportPreview' ? 5 : 0;
   const responsiveBudget = (compactRows: number, standardRows: number): number => {
@@ -2204,9 +2222,9 @@ export function ConsoleAppV4(props: {
     _mode: 'browse' | 'installed',
     items: PluginListItemViewModel[],
     _queryValue = query,
-    sourceUnavailable = false,
+    _sourceUnavailable = false,
   ): string[] => {
-    if (items.length === 0 || sourceUnavailable) return [];
+    if (items.length === 0) return [];
     return items.map((item) => item.pluginId);
   };
 
@@ -2227,6 +2245,9 @@ export function ConsoleAppV4(props: {
     setPinnedActionFocus(0);
     setScrollOffset(0);
     setSearchFocus(false);
+    if (next.name === 'pluginList') {
+      setInstallFilter(next.mode === 'installed' ? 'installed' : 'all');
+    }
     setShowTechnical(false);
     setActionError(undefined);
   };
@@ -2430,18 +2451,29 @@ export function ConsoleAppV4(props: {
     }).filter((plugin) => !frozenPluginIds || frozenPluginIds.has(plugin.pluginId))
       .map((plugin) => ({ pluginId: plugin.pluginId, plugin }));
   };
+  const batchTaskPluginIds = new Set(batchDraft ? [
+    ...props.controller.listPluginWriteTaskCandidates('update'),
+    ...props.controller.listPluginWriteTaskCandidates('restore'),
+  ].map((entry) => entry.target.pluginId) : []);
   const batchCandidateBlockReason = (
     draft: BatchDraft,
     candidate: BatchSelectionCandidate,
   ): string | undefined => !candidate.plugin
     ? '插件已不在当前状态中，可取消选择'
-    : draft.mode === 'browse' && candidate.plugin.configOnly
+    : draft.action === undefined
+      && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
+      && props.controller.listPluginWriteBatchTargets(
+        'uninstall', [candidate.plugin.pluginId],
+      ).length === 0
+      && !batchTaskPluginIds.has(candidate.plugin.pluginId)
+      ? '没有可用于批量处理的实际目标'
+    : draft.action === 'install' && candidate.plugin.configOnly
     ? '来源中没有可信插件定义'
-    : draft.mode === 'browse' && candidate.plugin.sourceUnavailable
+    : draft.action === 'install' && candidate.plugin.sourceUnavailable
       ? '插件来源不可用'
-      : draft.mode === 'browse' && candidate.plugin.capabilityUnsupported
+      : draft.action === 'install' && candidate.plugin.capabilityUnsupported
         ? '当前 AW CLI 不支持插件所需功能'
-        : draft.mode === 'browse' && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
+        : draft.action === 'install' && !props.controller.pluginHasInstallableTarget(candidate.plugin.pluginId)
           ? '没有可信且兼容的缺失位置'
           : undefined;
   const invalidBatchSelection = (draft: BatchDraft): string[] => {
@@ -2454,17 +2486,16 @@ export function ConsoleAppV4(props: {
       ...(byId.get(pluginId) ? { plugin: byId.get(pluginId) } : {}),
     }) !== undefined);
   };
-  const persistDependencyGraphContext = (
-    graphRoute: Extract<TuiRoute, { name: 'pluginDependencies' }>,
-    projection: ReturnType<typeof buildDependencyGraphProjection>,
+  const persistUnifiedDependencyGraphContext = (
+    pluginId: string,
+    projection: ReturnType<typeof buildUnifiedDependencyGraphProjection>,
     expandedPluginIds: ReadonlySet<string>,
     focusIndex: number,
     offset: number,
   ): void => {
-    const direction = graphRoute.direction ?? 'dependencies';
-    const actionIds = dependencyGraphActionIds(projection);
+    const actionIds = unifiedDependencyGraphActionIds(projection);
     dependencyGraphContexts.current.set(
-      dependencyGraphContextKey(graphRoute.pluginId, direction),
+      dependencyGraphContextKey(pluginId, 'dependencies'),
       {
         expandedPluginIds: new Set(expandedPluginIds),
         ...(actionIds[focusIndex] ? { focusedActionId: actionIds[focusIndex] } : {}),
@@ -3368,8 +3399,7 @@ export function ConsoleAppV4(props: {
     const home = snapshot.viewModel!.home;
     context = '当前项目';
     actions = [
-      { label: '添加插件', description: '浏览多个来源中的 Agent 能力', meta: String(home.availablePlugins), run: () => go({ name: 'pluginList', mode: 'browse' }) },
-      { label: '我的插件', description: '查看状态、设置和移除已添加插件', meta: home.pluginUpdateCount > 0 ? `${home.installedPlugins} · ${home.pluginUpdateCount} 可更新` : String(home.installedPlugins), status: home.pluginUpdateCount > 0 ? 'warning' : undefined, run: () => go({ name: 'pluginList', mode: 'installed' }) },
+      { label: '插件', description: '浏览、安装和管理所有插件', meta: `${home.installedPlugins} 已安装`, status: home.pluginUpdateCount > 0 ? 'warning' : undefined, run: () => go({ name: 'pluginList', mode: 'browse' }) },
       { label: '需要处理', description: '解决安装、来源或设置问题', meta: String(home.issueCount), status: 'warning', run: () => go({ name: 'issueList' }) },
       {
         label: '插件来源',
@@ -3404,37 +3434,30 @@ export function ConsoleAppV4(props: {
       ...(query ? { query } : {}),
       installFilter,
     });
-    const uninstalledCount = props.controller.listPlugins({
-      mode: route.mode,
-      ...(sourceId !== 'all' ? { sourceId } : {}),
-      ...(query ? { query } : {}),
-      installFilter: 'uninstalled',
-    }).length;
-    const updateCount = props.controller.listPlugins({
-      mode: route.mode,
-      ...(sourceId !== 'all' ? { sourceId } : {}),
-      ...(query ? { query } : {}),
-      installFilter: 'updateAvailable',
-    }).length;
-    breadcrumb = route.mode === 'browse' ? '添加插件' : '我的插件';
-    title = breadcrumb;
-    description = route.mode === 'browse'
-      ? '选择一个插件，或使用固定操作栏选择多个。'
-      : '先处理推荐任务，或查看一个插件。';
+    const filterCounts = Object.fromEntries(PLUGIN_FILTERS.map((filter) => [filter,
+      props.controller.listPlugins({
+        mode: route.mode,
+        ...(sourceId !== 'all' ? { sourceId } : {}),
+        ...(query ? { query } : {}),
+        installFilter: filter,
+      }).length,
+    ])) as Record<PluginInstallFilter, number>;
+    breadcrumb = '插件';
+    title = '插件';
+    description = '浏览、安装和管理所有插件。选择会跨来源、搜索和筛选保留。';
     context = `${items.length} 个插件`;
     help = focusZone === 'actions'
       ? '←→/↑↓ 操作 · Enter 执行 · Tab 插件列表 · Esc 返回'
-      : `↑↓ 插件 · Enter 查看 · Tab 操作栏 · m 多选 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ' · f 可更新'} · Esc 返回`;
+      : '↑↓ 插件 · Enter 查看 · Tab 操作栏 · m 多选 · / 搜索 · f 状态 · Esc 返回';
     const sourceError = sourceId !== 'all'
       && props.controller.getSourceOverview(sourceId).health?.state === 'unavailable';
     actions = sourceError
       ? [{ label: '查看来源问题', description: '当前不能浏览这个来源', run: () => go({ name: 'issueDetail', issueId: `source:${sourceId}:unavailable` }) }]
       : [];
     togglePluginListFilter = () => {
-      const selectedPluginId = pluginRows[focus]?.pluginId;
-      const nextFilter = installFilter === 'all'
-        ? route.mode === 'browse' ? 'uninstalled' : 'updateAvailable'
-        : 'all';
+      const selectedPluginId = pluginRows[focus]?.pluginId ?? pluginListFocusId.current;
+      const nextFilter = PLUGIN_FILTERS[(PLUGIN_FILTERS.indexOf(installFilter) + 1)
+        % PLUGIN_FILTERS.length]!;
       const nextItems = props.controller.listPlugins({
         mode: route.mode,
         ...(route.sourceId ? { sourceId: route.sourceId } : {}),
@@ -3482,21 +3505,21 @@ export function ConsoleAppV4(props: {
       .filter((candidate) => candidate.target.scope === 'project');
     const projectIntentRoots = props.controller.listCurrentProjectIntentRoots();
     const menuActions: ActionItem[] = [
-      ...(route.mode === 'installed' && recommendedUpdatePluginIds.length > 0 ? [{
+      ...(recommendedUpdatePluginIds.length > 0 ? [{
         actionId: 'plugin-list-update',
         label: `更新 ${recommendedUpdatePluginIds.length} 个`,
         description: '使用已验证版本和现有安装位置，直接查看任务确认',
         status: 'warning' as const,
         run: () => openRecommendedUpdateTask(recommendedUpdatePluginIds),
       }] : []),
-      ...(route.mode === 'installed' && projectIntentRoots.length > 0 ? [{
+      ...(projectIntentRoots.length > 0 ? [{
         actionId: 'plugin-list-project',
         label: '项目清单',
         description: `${projectIntentRoots.length} 个已保存根插件；允许补齐当前项目缺少的安装`,
         status: 'info' as const,
         run: prepareCurrentProjectPlugins,
       }] : []),
-      ...(route.mode === 'installed' && projectRestoreCandidates.length > 0 ? [{
+      ...(projectRestoreCandidates.length > 0 ? [{
         actionId: 'plugin-list-repair-project',
         label: '修复项目',
         description: '严格按已确认的现有版本修复异常，不改变插件版本',
@@ -3507,19 +3530,15 @@ export function ConsoleAppV4(props: {
       {
         actionId: 'plugin-list-multi',
         label: query ? 'm 当前结果多选' : 'm 多选',
-        description: route.mode === 'browse'
-          ? '先选择插件，再选择安装位置和平台'
-          : '先选择插件，再选择更新、恢复、移除或维护任务',
+        description: '先选择插件，再选择安装、更新、恢复、卸载或维护任务',
         status: 'info' as const,
-        run: () => openBatchSelection(route.mode === 'browse' ? 'install' : undefined),
+        run: () => openBatchSelection(),
       },
     ];
     const toolActions: ActionItem[] = [
       {
         actionId: 'plugin-list-filter',
-        label: route.mode === 'browse'
-          ? `筛选：${installFilter === 'all' ? '全部' : '未安装'}`
-          : `筛选：${installFilter === 'all' ? '全部' : '可更新'}`,
+        label: `筛选：${pluginFilterLabel(installFilter)}`,
         run: togglePluginListFilter,
       },
       { actionId: 'plugin-list-search', label: '/ 搜索', run: () => setSearchFocus(true) },
@@ -3545,7 +3564,8 @@ export function ConsoleAppV4(props: {
     ]);
     pluginRows = pluginListRowIds(route.mode, items, query, sourceError)
       .flatMap((rowId) => pluginRowsById.get(rowId) ?? []);
-    if (route.mode === 'installed' && installFilter === 'updateAvailable'
+    if (pluginRows[focus]) pluginListFocusId.current = pluginRows[focus].pluginId;
+    if (installFilter === 'updateAvailable'
       && items.length === 0 && !sourceError) {
       title = '没有可更新插件';
       description = '当前筛选范围内没有经过版本证据确认的更新。';
@@ -3581,28 +3601,25 @@ export function ConsoleAppV4(props: {
           setScrollOffset(0);
         },
       }];
-    } else if (route.mode === 'installed' && items.length === 0 && !sourceError) {
-      title = '还没有添加插件';
-      description = `从已配置的 ${props.controller.listSources().length} 个来源中浏览可用能力。`;
-      actions = [{ label: '浏览插件', description: '开始添加第一个插件', run: () => go({ name: 'pluginList', mode: 'browse' }) }];
-    } else if (route.mode === 'browse' && items.length === 0 && !sourceError) {
+    } else if (items.length === 0 && !sourceError) {
       actions = [{
-        label: installFilter === 'uninstalled' ? '查看全部插件' : '没有可显示插件',
-        description: installFilter === 'uninstalled'
-          ? '当前没有整个插件都未安装的结果；保留部分已添加插件并查看其缺失位置'
+        label: installFilter !== 'all' ? '查看全部插件' : '没有可显示插件',
+        description: installFilter !== 'all'
+          ? '当前状态筛选没有匹配插件'
           : '当前所有来源都没有可浏览的插件',
-        ...(installFilter === 'uninstalled' ? { run: () => {
+        ...(installFilter !== 'all' ? { run: () => {
           setInstallFilter('all');
           props.controller.updatePageContext({ installFilter: 'all' });
         } } : { disabled: '没有可打开的插件' }),
       }];
     }
     pinnedActions = dedupeActions([
+      ...(sourceError ? actions : []),
       ...(pluginRows.length > 0 ? menuActions : actions),
       ...toolActions,
     ]);
     const pluginListStaticRows = 4;
-    const viewport = sourceError || pluginRows.length === 0
+    const viewport = pluginRows.length === 0
       ? actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(pluginListStaticRows))
       : rowViewport({
           rowHeights: pluginRows.map((row) => row.attention ? 6 : 5),
@@ -3637,9 +3654,7 @@ export function ConsoleAppV4(props: {
         <Text color={searchFocus ? tuiTheme.colors.accent : tuiTheme.colors.muted}>搜索  / {searchFocus
           ? <InputDisplay value={query} placeholder="输入搜索内容" columns={Math.max(8, size.columns - 14)} />
           : <>{query || '搜索名称、用途或来源…'}{query ? '    / 编辑' : ''}</>}</Text>
-        {route.mode === 'browse'
-          ? <Text color={tuiTheme.colors.muted}>状态  <Text color={installFilter === 'all' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'all' ? '[全部]' : '全部'}</Text>  <Text color={installFilter === 'uninstalled' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'uninstalled' ? '[未安装]' : '未安装'} {uninstalledCount}</Text>                         f 切换</Text>
-          : <Text color={tuiTheme.colors.muted}>状态  <Text color={installFilter === 'all' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'all' ? '[全部]' : '全部'}</Text>  <Text color={installFilter === 'updateAvailable' ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{installFilter === 'updateAvailable' ? '[可更新]' : '可更新'} {updateCount}</Text>                         f 切换</Text>}
+        <Text wrap="truncate-end" color={tuiTheme.colors.muted}>状态  <Text color={tuiTheme.colors.accent}>[{pluginFilterLabel(installFilter)} {filterCounts[installFilter]}]</Text>  全部 {filterCounts.all} · 已装 {filterCounts.installed} · 未装 {filterCounts.uninstalled} · 更新 {filterCounts.updateAvailable} · 处理 {filterCounts.attention}  f 切换</Text>
         {sourceError
           ? <Callout status="error" title={`${sourceId} 暂时无法提供插件`} description="当前不能浏览这个来源。" />
           : route.mode === 'installed' && items.length === 0 && !query && sourceId === 'all'
@@ -3655,10 +3670,10 @@ export function ConsoleAppV4(props: {
       </Box>
     );
   } else if (route.name === 'batchSelection') {
-    breadcrumb = `${batchDraft?.mode === 'browse' ? '添加插件' : '我的插件'} / 选择多个`;
+    breadcrumb = '插件 / 选择多个';
     title = batchDraft?.stage === 'task' ? `为 ${batchDraft.selectedPluginIds.length} 个插件选择任务`
       : batchDraft?.stage === 'maintenance' ? '其他维护方式'
-        : batchDraft?.mode === 'browse' ? '选择要添加的插件' : '选择插件';
+        : '选择插件';
     description = batchDraft?.stage === 'select'
       ? 'Space 切换选择，Enter 查看插件。选择会跨来源、搜索和筛选保留。'
       : batchDraft?.stage === 'task'
@@ -3690,9 +3705,9 @@ export function ConsoleAppV4(props: {
           pluginId: candidate.pluginId,
           canSelectNew: blockReason === undefined,
           status: blockReason ? 'muted' : undefined,
-          run: candidate.plugin ? () => go(batchDraft.mode === 'browse'
-            ? { name: 'pluginPreview', pluginId: candidate.pluginId }
-            : { name: 'pluginDetail', pluginId: candidate.pluginId }) : undefined,
+          run: candidate.plugin
+            ? () => go({ name: 'pluginDetail', pluginId: candidate.pluginId })
+            : undefined,
         };
       });
       const selectableIds = candidates
@@ -3712,14 +3727,7 @@ export function ConsoleAppV4(props: {
           openSelectedPluginTask(batchDraft.recommendedGoal, batchDraft.selectedPluginIds);
           return;
         }
-        if (batchDraft.mode === 'browse') {
-          setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
-          props.controller.push({ name: 'batchPlacement' });
-          setFocus(0);
-          setScrollOffset(0);
-        } else {
-          moveBatchStage('task');
-        }
+        moveBatchStage('task');
       };
       const continueAction: ActionItem = {
         actionId: 'batch-selection-continue',
@@ -3776,7 +3784,7 @@ export function ConsoleAppV4(props: {
       ] : [
         selectedSetAction,
         {
-          label: '选择工具…',
+          label: '选择工具',
           description: '全选、取消当前结果或清空全部选择',
           run: () => {
             setBatchDraft((current) => current ? { ...current, showSelectionTools: true } : current);
@@ -3788,7 +3796,7 @@ export function ConsoleAppV4(props: {
       actions = [continueAction, ...candidateActions, ...utilityActions];
       const batchFocus = Math.min(focus, actions.length - 1);
       context = `已选 ${batchDraft.selectedPluginIds.length} 个 · 显示 ${candidates.length} 个${hiddenSelected > 0 ? ` · 隐藏 ${hiddenSelected} 个` : ''}`;
-      help = '↑↓ 移动 · Space 选择 · Enter 查看/操作 · c 查看确认 · ←→ 来源 · / 搜索 · Esc 放弃';
+      help = '↑↓ 移动 · Space 选择 · Enter 查看 · c 查看确认 · ←→ 来源 · / 搜索 · f 状态 · Esc 返回';
       const viewport = rowViewport({
         rowHeights: [
           ...candidateActions.map(() => 2),
@@ -3797,7 +3805,7 @@ export function ConsoleAppV4(props: {
         ],
         focus: Math.max(0, batchFocus - 1),
         requestedOffset: Math.max(0, scrollOffset - 1),
-        rowBudget: Math.max(1, pageActionBudget(4)),
+        rowBudget: Math.max(1, pageActionBudget(5)),
       });
       const candidateOffset = Math.min(viewport.offset, candidateActions.length);
       const candidateLimit = Math.max(0,
@@ -3819,6 +3827,7 @@ export function ConsoleAppV4(props: {
         <Text color={searchFocus ? tuiTheme.colors.accent : tuiTheme.colors.muted}>搜索  / {searchFocus
           ? <InputDisplay value={batchDraft.query} placeholder="输入搜索内容" columns={Math.max(8, size.columns - 14)} />
           : <>{batchDraft.query || '搜索名称、用途或来源…'}{batchDraft.query ? '    / 编辑' : ''}</>}</Text>
+        <Text color={tuiTheme.colors.muted}>状态  <Text color={tuiTheme.colors.accent}>[{pluginFilterLabel(batchDraft.installFilter)}]</Text>  f 切换</Text>
         <SemanticRows actions={[continueAction]} focus={batchFocus} kind="action" compact />
         {candidateLimit > 0 ? <SemanticRows actions={candidateActions} focus={batchFocus - 1} kind="toggle"
           compact={false} offset={candidateOffset} limit={candidateLimit} /> : null}
@@ -3861,9 +3870,9 @@ export function ConsoleAppV4(props: {
       const uninstallTargets = props.controller.listPluginWriteBatchTargets('uninstall', selectedIds);
       if (batchDraft.stage === 'maintenance') {
         actions = [
-          { label: '同步已保存使用设置…', description: `重新应用 ${syncTargets.length} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
-          { label: '重新安装…', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
-          { label: '清理遗留内容…', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个已核验位置；保留不属于插件或被共用的内容`, run: () => startExistingBatch('cleanup') },
+          { label: '同步已保存使用设置', description: `重新应用 ${syncTargets.length} 个已保存或现场目标`, run: () => startExistingBatch('sync') },
+          { label: '重新安装', description: `重新生成 ${props.controller.listPluginWriteBatchTargets('reinstall', selectedIds).length} 个已保存或现场目标`, run: () => startExistingBatch('reinstall') },
+          { label: '清理遗留内容', description: `${props.controller.listPluginWriteBatchTargets('cleanup', selectedIds).length} 个已核验位置；保留不属于插件或被共用的内容`, run: () => startExistingBatch('cleanup') },
           {
             label: '返回任务选择',
             run: () => moveBatchStage('task'),
@@ -3874,22 +3883,37 @@ export function ConsoleAppV4(props: {
         const restores = taskCandidates('restore');
         const updateRoots = new Set(updates.map((candidate) => candidate.target.pluginId)).size;
         const restoreRoots = new Set(restores.map((candidate) => candidate.target.pluginId)).size;
+        const installTargets = props.controller.listPluginInstallBatchTargets(
+          selectedIds, batchDraft.platform, batchDraft.scope,
+        );
+        const addTargetCount = installTargets.filter((target) => target.state === 'add').length;
         actions = [
           ...(updates.length > 0 ? [{
-            label: `更新所选中的 ${updateRoots} 个可更新插件…`,
+            label: `更新所选中的 ${updateRoots} 个可更新插件`,
             description: '使用已验证版本和已经添加的位置',
             status: 'warning' as const,
             run: () => openSelectedPluginTask('update', selectedIds),
           }] : []),
           ...(restores.length > 0 ? [{
-            label: `恢复所选中的 ${restoreRoots} 个插件…`,
+            label: `恢复所选中的 ${restoreRoots} 个插件`,
             description: '按当前问题检查已经添加的位置',
             status: 'warning' as const,
             run: () => openSelectedPluginTask('restore', selectedIds),
           }] : []),
-          { label: '移除所选插件…', description: `${uninstallTargets.length} 个现有位置；可在下一页删减范围；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
           {
-            label: '其他维护方式…',
+            label: '安装到缺失位置',
+            description: `${addTargetCount} 个当前工具和范围内的可安装位置`,
+            disabled: addTargetCount === 0 ? '当前选择没有可安装位置' : undefined,
+            run: () => {
+              setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
+              props.controller.push({ name: 'batchPlacement' });
+              setFocus(0);
+              setScrollOffset(0);
+            },
+          },
+          { label: '卸载所选插件', description: `${uninstallTargets.length} 个现有位置；可在下一页删减范围；保留设置`, status: 'error', run: () => startExistingBatch('uninstall') },
+          {
+            label: '其他维护方式',
             description: '同步、重新安装和普通清理',
             run: () => moveBatchStage('maintenance'),
           },
@@ -3902,7 +3926,7 @@ export function ConsoleAppV4(props: {
       content = <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
     }
   } else if (route.name === 'batchPlacement') {
-    breadcrumb = '我的插件 / 批量操作 / 位置';
+    breadcrumb = '插件 / 批量操作 / 位置';
     const maintenanceTargets = batchDraft?.maintenanceTargets ?? [];
     const maintenanceSelection = new Set(batchDraft?.selectedMaintenanceTargetKeys ?? []);
     const maintenanceMode = (batchDraft?.maintenanceGoal !== undefined
@@ -4000,7 +4024,7 @@ export function ConsoleAppV4(props: {
           actions: [
             ...(installPlacementTargets.length > 0 ? [{
               actionId: 'batch-placement-details',
-              label: '查看全部位置和受阻原因…',
+              label: '查看全部位置和受阻原因',
               description: `${addTargets.length} 个可添加 · ${existingTargets.length} 个已有 · ${blockedTargets.length} 个受阻`,
               run: () => {
                 setBatchDraft((current) => current ? { ...current, showPlacementTargets: true } : current);
@@ -4170,112 +4194,6 @@ export function ConsoleAppV4(props: {
         offset={viewport.offset}
         limit={viewport.limit}
       />;
-  } else if (route.name === 'pluginPreview' && plugin) {
-    breadcrumb = `添加插件 / ${plugin.displayName}`;
-    context = plugin.sourceLabel;
-    title = `${plugin.displayName}${plugin.version ? `  ${plugin.version}` : ''}`;
-    description = plugin.description;
-    const overview = dependencyOverview(plugin);
-    const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
-    const beginInstall = (): void => {
-      const initialScope = (['user', 'project'] as const).find((candidateScope) =>
-        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
-          .some((entry) => entry.compatible)) ?? scope;
-      const available = props.controller.listInstallTargets(plugin.pluginId, initialScope)
-        .filter((entry) => entry.compatible).map((entry) => entry.platform);
-      setScope(initialScope);
-      setSelectedTargets([]);
-      setTargetSelections({});
-      setPreferredTarget(undefined);
-      props.controller.beginInstallFlow(plugin.pluginId, initialScope);
-      if (available.length > 0) go({ name: 'installPlacement', pluginId: plugin.pluginId });
-      else go({ name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
-    };
-    const previewAction = (action: PluginMenuAction): ActionItem => {
-      if (action.id === 'add') return { label: '添加插件', description: '选择使用位置并确认变化', run: beginInstall };
-      if (action.id === 'manage') return { label: '管理插件', description: '查看已安装目标平台', run: () => go({ name: 'pluginDetail', pluginId: plugin.pluginId }) };
-      if (action.id === 'repair') return { label: '管理并修复', description: '查看需要处理的安装位置', status: 'warning', run: () => go({ name: 'pluginDetail', pluginId: plugin.pluginId }) };
-      if (action.id === 'portableSkills') return { label: '安装通用 Skills…', description: '选择 Skill 和 Agent 后交给 Skills CLI 安装', run: () => beginPortable(plugin.pluginId) };
-      if (action.id === 'dependencies') return {
-        label: (overview?.blockers.length ?? 0) > 0 ? '查看依赖问题' : '查看依赖关系',
-        description: overview?.blockers[0]?.explanation ?? '查看直接、间接依赖和当前状态',
-        ...((overview?.blockers.length ?? 0) > 0 ? { status: 'warning' as const } : {}),
-        run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
-      };
-      if (action.id === 'settings') return { label: '查看插件设置', description: `${plugin.configFieldCount} 个配置字段及当前来源`, run: () => beginConfigFlow(plugin.pluginId) };
-      if (action.id === 'upgradeAwCli') return {
-        label: '升级 AW CLI',
-        description: '升级到支持此插件的 AW CLI 版本后重试',
-        status: 'warning',
-        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
-      };
-      if (action.id === 'capabilityTechnical') return {
-        label: '查看功能支持详情',
-        description: '查看缺少的功能和安全恢复方向',
-        run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
-      };
-      if (action.id === 'sourceProblem') return { label: '查看来源问题', status: 'warning', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
-      if (action.id === 'outputCollision') {
-        const collision = props.controller.listUserIssues().find((issue) =>
-          issue.pluginId === plugin.pluginId && issue.category === 'artifactCollision');
-        return {
-          label: '查看输出冲突',
-          description: '目标位置已有不属于当前插件的内容',
-          status: 'error',
-          run: () => collision
-            ? go({ name: 'issueDetail', issueId: collision.issueId })
-            : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
-        };
-      }
-      if (action.id === 'about') return { label: '关于', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) };
-      return { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
-    };
-    const previewMenu = dynamicMenu!;
-    const advancedPreviewActions = previewMenu.map(previewAction);
-    const primaryPreviewAction = advancedPreviewActions[0] ?? {
-      label: '查看处理建议',
-      run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
-    };
-    const previewSettingsAction = previewMenu.findIndex((action) => action.id === 'settings');
-    actions = [
-      primaryPreviewAction,
-      ...(previewSettingsAction > 0 ? [advancedPreviewActions[previewSettingsAction]!] : [{
-        label: '使用说明',
-        description: '查看用途、支持平台和来源',
-        run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
-      }]),
-      {
-        label: '更多操作…',
-        description: '安装方式、依赖、通用 Skills、来源和诊断',
-        run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
-      },
-    ];
-    const previewViewport = actionViewport(actions, true, effectiveFocus, scrollOffset,
-      responsiveBudget(4, 3));
-    const dependencySummary = hasDependencies && plugin.dependencySummary
-      ? `自动使用 ${plugin.dependencySummary.totalCount} 个所需插件；${plugin.dependencySummary.readyCount} 个可复用。`
-      : '不需要其他插件。';
-    const confirmationIssue = overview?.blockers[0]?.explanation
-      ?? (plugin.capabilityUnsupported ? '当前 AW CLI 缺少此插件所需功能。'
-        : plugin.sourceUnavailable ? '插件来源当前不可用。' : undefined);
-    content = <Box flexDirection="column">
-      <SectionCard title="支持">
-        <StaticRow
-          title={plugin.supportedPlatforms.map(platformLabel).join(' · ') || '暂无可用目标平台'}
-          meta={plugin.portableSkills ? '也可安装通用 Skills' : undefined}
-          status={plugin.supportedPlatforms.length > 0 || plugin.portableSkills ? 'success' : 'warning'}
-          compact
-        />
-      </SectionCard>
-      <SectionCard title="添加内容">
-        <StaticRow title={dependencySummary} status={confirmationIssue ? 'warning' : 'info'} compact />
-        {confirmationIssue
-          ? <StaticRow title="确认的问题" description={confirmationIssue} status="warning" compact />
-          : null}
-      </SectionCard>
-      <SemanticRows actions={actions} focus={effectiveFocus} kind="action"
-        compact={policy.mode === 'compact'} offset={previewViewport.offset} limit={previewViewport.limit} />
-    </Box>;
   } else if (route.name === 'portableSkillSelect' && plugin && snapshot.portableDraft) {
     const draft = snapshot.portableDraft;
     breadcrumb = `${plugin.displayName} / 通用 Skills`;
@@ -4497,23 +4415,21 @@ export function ConsoleAppV4(props: {
       </Box>;
     } else {
       breadcrumb = `${plugin.displayName} / 依赖关系`;
-      const direction = route.direction ?? 'dependencies';
-      const projection = buildDependencyGraphProjection({
+      const unified = buildUnifiedDependencyGraphProjection({
         overviews: props.controller.listPluginDependencyOverviews(),
         rootPluginId: plugin.pluginId,
-        direction,
         ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
       });
-      const visibleRows = projection.rows;
-      context = direction === 'dependencies' ? '它需要的' : '哪些插件依赖它';
+      const visibleRows = unified.rows;
+      context = '上下游';
       title = hasInstalledPlacement(plugin) ? '依赖与当前可用关系' : '安装所需插件';
-      description = direction === 'dependencies'
-        ? '每一层表示上面的插件需要下面的插件。'
-        : '每一层表示下面的插件在本次检查中需要上面的插件。';
+      description = 'A → B 表示 A 需要 B；当前插件只显示一次。';
       const rowActions: ActionItem[] = visibleRows.map((row) => {
         const state = row.depth === 0
           ? { value: statusText(plugin), status: plugin.aggregateStatus === 'needsAttention'
-            ? 'warning' as const : plugin.aggregateStatus === 'unavailable' ? 'error' as const : 'success' as const }
+            ? 'warning' as const
+            : plugin.aggregateStatus === 'unavailable' ? 'error' as const
+              : plugin.aggregateStatus === 'available' ? 'muted' as const : 'success' as const }
           : dependencyGraphRowStatus(row);
         const branch = row.depth === 0 ? ''
           : `${row.ancestorHasNextSibling.map((next) => next ? '│ ' : '  ').join('')}${row.lastChild ? '└─' : '├─'} `;
@@ -4521,17 +4437,22 @@ export function ConsoleAppV4(props: {
         return {
           label: row.depth === 0
             ? `${row.label}（当前插件）`
-            : `${compactBranch}${row.label}${row.sharedWithRowId ? '（共用，见上方）' : ''}`,
+            : `${row.branch === 'dependents' ? '↑ 使用者 ' : '↓ 所需 '}${compactBranch}${row.label}${row.sharedWithRowId ? '（共用，见上方）' : ''}`,
           description: row.hiddenDescendantCount > 0
-            ? `另有 ${row.hiddenDescendantCount} 个${direction === 'dependencies' ? '所需插件' : '当前可用依赖者'}`
-            : row.depth === 0 ? '当前插件' : undefined,
+            ? `另有 ${row.hiddenDescendantCount} 个${row.branch === 'dependencies' ? '所需插件' : '当前可用使用者'}`
+            : row.depth === 0 ? '当前插件 ★'
+              : row.branch === 'dependencies' ? '当前插件所需' : '需要当前插件',
           meta: state.value,
           status: state.status,
           run: () => {
-            persistDependencyGraphContext(
-              route,
-              projection,
-              expandedDependencyPluginIds ?? new Set(projection.defaultExpandedPluginIds),
+            const direction = row.branch === 'dependents' ? 'dependents' : 'dependencies';
+            persistUnifiedDependencyGraphContext(
+              plugin.pluginId,
+              unified,
+              expandedDependencyPluginIds ?? new Set([
+                ...unified.dependencies.defaultExpandedPluginIds,
+                ...unified.dependents.defaultExpandedPluginIds,
+              ]),
               focus,
               scrollOffset,
             );
@@ -4545,8 +4466,8 @@ export function ConsoleAppV4(props: {
           },
         };
       });
-      const unverifiedConsumerActions: ActionItem[] = direction === 'dependents'
-        ? projection.scopeSummary.unknownConsumerPluginIds.map((pluginId) => {
+      const unverifiedConsumerActions: ActionItem[] = unified.dependents.scopeSummary.unknownConsumerPluginIds
+        .map((pluginId) => {
             const declared = overview?.dependents.find((entry) => entry.pluginId === pluginId);
             return {
               label: declared?.displayName ?? pluginId,
@@ -4554,10 +4475,13 @@ export function ConsoleAppV4(props: {
               meta: declared?.aggregateStatus === 'notInstalled' ? '仅声明 · 未安装' : '仅声明 · 未验证',
               status: 'muted' as const,
               run: () => {
-                persistDependencyGraphContext(
-                  route,
-                  projection,
-                  expandedDependencyPluginIds ?? new Set(projection.defaultExpandedPluginIds),
+                persistUnifiedDependencyGraphContext(
+                  plugin.pluginId,
+                  unified,
+                  expandedDependencyPluginIds ?? new Set([
+                    ...unified.dependencies.defaultExpandedPluginIds,
+                    ...unified.dependents.defaultExpandedPluginIds,
+                  ]),
                   focus,
                   scrollOffset,
                 );
@@ -4565,33 +4489,14 @@ export function ConsoleAppV4(props: {
                   name: 'pluginDependencyNode',
                   pluginId: plugin.pluginId,
                   nodePluginId: pluginId,
-                  direction,
+                  direction: 'dependents',
                 });
               },
             };
-          })
-        : [];
+          });
       actions = [
         ...rowActions,
         ...unverifiedConsumerActions,
-        {
-          label: direction === 'dependencies' ? '切换到“哪些插件依赖它”' : '切换到“它需要的”',
-          description: '切换关系方向',
-          run: () => {
-            persistDependencyGraphContext(
-              route,
-              projection,
-              expandedDependencyPluginIds ?? new Set(projection.defaultExpandedPluginIds),
-              focus,
-              scrollOffset,
-            );
-            props.controller.replace({
-              name: 'pluginDependencies',
-              pluginId: plugin.pluginId,
-              direction: direction === 'dependencies' ? 'dependents' : 'dependencies',
-            });
-          },
-        },
         { label: showTechnical ? '隐藏检查详情' : '查看检查详情', run: () => toggleTechnical() },
       ];
       const relationViewport = actionViewport(actions, policy.mode === 'compact', focus,
@@ -4600,8 +4505,8 @@ export function ConsoleAppV4(props: {
       help = '↑↓ 选择 · → 展开 · ← 收起 · Enter 节点详情 · Esc 返回';
       content = <Box flexDirection="column">
         <StaticRow title="检查范围" value="只检查当前项目和个人位置；其他项目未检查" status="muted" compact />
-        {projection.status.state === 'invalid'
-          ? <Callout status="error" title="依赖关系无效" description={projection.status.message} /> : null}
+        {unified.status.state === 'invalid'
+          ? <Callout status="error" title="依赖关系无效" description={unified.status.message} /> : null}
         {unverifiedConsumerActions.length > 0
           ? <StaticRow title={`未验证声明者 · ${unverifiedConsumerActions.length} 个`} description="以下声明者不计入当前可用关系" status="muted" compact />
           : null}
@@ -4610,8 +4515,8 @@ export function ConsoleAppV4(props: {
         <SemanticRows actions={actions} focus={focus} kind="action" compact
           offset={relationViewport.offset} limit={relationViewport.limit} />
         {showTechnical ? <TechnicalDetails>
-          <StaticRow title={`${dependencyCount} 个依赖 · ${projection.scopeSummary.availableConsumerPluginIds.length} 个当前可用依赖者`} meta={plugin.pluginId} compact />
-          <StaticRow title={`未验证声明者 · ${projection.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
+          <StaticRow title={`${dependencyCount} 个依赖 · ${unified.dependents.scopeSummary.availableConsumerPluginIds.length} 个当前可用使用者`} meta={plugin.pluginId} compact />
+          <StaticRow title={`未验证声明者 · ${unified.dependents.scopeSummary.unknownConsumerPluginIds.length} 个`} compact />
         </TechnicalDetails> : null}
       </Box>;
     }
@@ -5286,11 +5191,21 @@ export function ConsoleAppV4(props: {
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={taskViewport.offset} limit={taskViewport.limit} />
     </Box>;
   } else if (route.name === 'pluginDetail' && plugin) {
-    breadcrumb = `我的插件 / ${plugin.displayName}`;
+    breadcrumb = `插件 / ${plugin.displayName}`;
     context = `${plugin.sourceLabel}${plugin.version ? ` · ${plugin.version}` : ''}`;
     title = plugin.displayName;
     description = plugin.description;
     const updateDescription = pluginUpdateDescription(plugin);
+    const installedVersions = [...new Set((plugin.update?.targets ?? [])
+      .flatMap((target) => target.installedVersion ? [target.installedVersion] : []))];
+    const versionSummary = installedVersions.length > 1
+      ? `各平台版本不同：${installedVersions.join('、')}`
+      : installedVersions.length === 1
+        ? plugin.version && plugin.version !== installedVersions[0]
+          ? `${installedVersions[0]} → ${plugin.version}`
+          : `已安装 ${installedVersions[0]}`
+        : plugin.version ? `可安装版本 ${plugin.version}` : '版本待确认';
+    context = `${plugin.sourceLabel} · ${versionSummary}`;
     const updateTaskCandidates: PluginWriteTaskCandidate[] = plugin.configOnly ? []
       : props.controller.listPluginWriteTaskCandidates('update')
         .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
@@ -5299,9 +5214,9 @@ export function ConsoleAppV4(props: {
         .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
     const updateAction: ActionItem | undefined = updateTaskCandidates.length > 0 ? {
         label: updateTaskCandidates.length === 1 && updateTaskCandidates[0]?.target.expectedUpdate
-          ? `更新到 ${updateTaskCandidates[0].target.expectedUpdate.activeVersion}…`
+          ? `更新到 ${updateTaskCandidates[0].target.expectedUpdate.activeVersion}`
           : updateTaskCandidates.some((candidate) => candidate.target.expectedUpdate)
-            ? `更新 ${plugin.displayName}…` : '准备插件更新…',
+            ? `更新 ${plugin.displayName}` : '准备插件更新',
         description: updateTaskCandidates.some((candidate) => candidate.blockReason === 'catalogActivationRequired')
           ? '需要先单独确认来源目录变更' : '使用精确版本和现有安装位置',
         status: 'warning',
@@ -5313,7 +5228,7 @@ export function ConsoleAppV4(props: {
       } : undefined;
     const executableRestoreCandidates = restoreTaskCandidates.filter((candidate) => candidate.eligible);
     const restoreAction: ActionItem | undefined = executableRestoreCandidates.length > 0 ? {
-        label: '恢复正常…',
+        label: '恢复正常',
         description: `${restoreTaskCandidates.length} 个现有位置需要检查`,
         status: 'warning',
         run: () => go({
@@ -5350,7 +5265,7 @@ export function ConsoleAppV4(props: {
           status: 'warning',
           run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
         } : {
-          label: '恢复插件来源…',
+          label: '恢复插件来源',
           description: '来源恢复后再重新检查插件状态',
           status: 'warning',
           run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }),
@@ -5366,61 +5281,108 @@ export function ConsoleAppV4(props: {
               ? go({ name: 'issueList' })
               : go({ name: 'pluginTechnical', pluginId: plugin.pluginId }),
         } : undefined;
-    const aboutAction: ActionItem = {
-      actionId: 'about',
-        label: '使用说明',
-        description: '查看用途、支持平台和来源',
-        run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }),
-      };
-    const primary = exceptionalAction ?? restoreAction ?? updateAction
-      ?? settingsAction ?? aboutAction;
+    const installed = hasInstalledPlacement(plugin);
+    const hasInstallableTarget = props.controller.pluginHasInstallableTarget(plugin.pluginId);
+    const beginInstall = (): void => {
+      const initialScope = (['user', 'project'] as const).find((candidateScope) =>
+        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+          .some((entry) => entry.compatible)) ?? scope;
+      const compatible = props.controller.listInstallTargets(plugin.pluginId, initialScope)
+        .some((entry) => entry.compatible);
+      setScope(initialScope);
+      setSelectedTargets([]);
+      setTargetSelections({});
+      setPreferredTarget(undefined);
+      props.controller.beginInstallFlow(plugin.pluginId, initialScope);
+      go(compatible
+        ? { name: 'installPlacement', pluginId: plugin.pluginId }
+        : { name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
+    };
+    const installAction: ActionItem | undefined = !plugin.configOnly ? {
+      actionId: 'install',
+      label: installed ? '安装到其他位置' : '安装',
+      description: plugin.sourceUnavailable
+        ? '插件来源不可用'
+        : plugin.capabilityUnsupported
+          ? '当前 AW CLI 不支持这个插件'
+          : !hasInstallableTarget
+            ? '没有可信且兼容的缺失位置'
+          : '选择工具和使用范围',
+      ...(plugin.sourceUnavailable || plugin.capabilityUnsupported || !hasInstallableTarget
+        ? { disabled: plugin.sourceUnavailable ? '插件来源不可用'
+          : plugin.capabilityUnsupported ? '需要升级 AW CLI' : '没有可安装的缺失位置' }
+        : { run: beginInstall }),
+    } : undefined;
+    const contentOverview = props.controller.getPluginContentOverview(plugin.pluginId);
+    const contentAction: ActionItem | undefined = !plugin.configOnly ? {
+      actionId: 'content',
+      label: '内容详情',
+      description: contentOverview
+        ? `${contentOverview.items.length} 项目录内容 · 版本 ${contentOverview.pluginVersion}`
+        : '打开时读取当前目录版本的内容',
+      run: () => go({ name: 'pluginContent', pluginId: plugin.pluginId }),
+    } : undefined;
+    const dependencyOverviewForDetail = dependencyOverview(plugin);
+    const dependencyAction: ActionItem | undefined = dependencyOverviewForDetail
+      && (dependencyOverviewForDetail.dependencies.length > 0
+        || dependencyOverviewForDetail.dependents.length > 0
+        || dependencyOverviewForDetail.blockers.length > 0) ? {
+          actionId: 'dependencies',
+          label: '依赖关系',
+          description: '在同一关系图中查看使用者和所需插件',
+          run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
+        } : undefined;
+    const uninstallAction: ActionItem | undefined = installed ? {
+      actionId: 'uninstall',
+      label: '卸载',
+      description: plugin.installedPlacements.length === 1
+        ? '打开现有安装位置并确认卸载范围'
+        : '选择一个现有平台和实际安装位置',
+      status: 'error',
+      run: () => plugin.installedPlacements.length === 1
+        ? go({ name: 'platform', pluginId: plugin.pluginId, platform: plugin.installedPlacements[0]!.platform })
+        : go({ name: 'pluginMore', pluginId: plugin.pluginId }),
+    } : undefined;
     actions = dedupeActions([
-      { ...primary, actionId: primary === aboutAction ? 'about'
-        : primary === settingsAction ? 'settings'
-          : primary === updateAction ? 'update'
-            : primary === restoreAction ? 'restore' : 'exceptional' },
-      ...(settingsAction && primary !== settingsAction
-        ? [{ ...settingsAction, actionId: 'settings' }] : [aboutAction]),
+      ...(exceptionalAction ? [{ ...exceptionalAction, actionId: 'exceptional' }] : []),
+      ...(restoreAction ? [{ ...restoreAction, actionId: 'restore' }] : []),
+      ...(updateAction ? [{ ...updateAction, actionId: 'update' }] : []),
+      ...(installAction ? [installAction] : []),
+      ...(settingsAction ? [{ ...settingsAction, actionId: 'settings' }] : []),
+      ...(contentAction ? [contentAction] : []),
+      ...(dependencyAction ? [dependencyAction] : []),
+      ...(uninstallAction ? [uninstallAction] : []),
       {
         actionId: 'more',
-        label: '更多操作…',
-        description: settingsAction && primary !== settingsAction
-          ? '平台维护、依赖、使用说明、通用 Skills、来源和诊断'
-          : '平台维护、依赖、通用 Skills、来源和诊断',
+        label: '更多操作',
+        description: '平台维护、通用 Skills、来源和诊断',
         run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
       },
     ]);
-    const dependencyOverviewForDetail = dependencyOverview(plugin);
     const dependencyDetailText = dependencyOverviewForDetail
       && dependencyOverviewForDetail.summary.totalCount > 0
       ? `需要 ${dependencyOverviewForDetail.summary.totalCount} 个插件；当前可用关系按当前范围检查，未显示的关系尚未检查通过。`
       : undefined;
-    const placementConclusions = plugin.installedPlacements.flatMap((placement) =>
-      pluginPlacementConclusions(placement).map((conclusion, index) => ({
+    const placementConclusions = plugin.installedPlacements.map((placement) => {
+      const conclusions = pluginPlacementConclusions(placement);
+      const status = conclusions.some((conclusion) => conclusion.status === 'error') ? 'error' as const
+        : conclusions.some((conclusion) => conclusion.status === 'warning') ? 'warning' as const
+          : conclusions.some((conclusion) => conclusion.status === 'success') ? 'success' as const
+            : 'muted' as const;
+      return {
         platform: placement.platform,
-        key: `${placement.platform}:${index}`,
-        ...conclusion,
-      })));
+        key: placement.platform,
+        text: conclusions.map((conclusion) => conclusion.text).join(' · '),
+        status,
+      };
+    });
     const hasUnavailablePlacement = placementConclusions.some((placement) => placement.status === 'error');
     const hasUncertainPlacement = placementConclusions.some((placement) => placement.status === 'warning');
     const confirmedAvailablePlacements = placementConclusions.filter((placement) =>
       placement.status === 'success');
-    const placementPageRows = Math.min(2, placementConclusions.length);
-    const placementOffset = Math.min(batchTargetOffset,
-      Math.max(0, placementConclusions.length - placementPageRows));
-    const visiblePlacementConclusions = placementConclusions.slice(
-      placementOffset, placementOffset + placementPageRows);
-    placementConclusionPagination = placementConclusions.length > placementPageRows
-      ? { total: placementConclusions.length, pageRows: placementPageRows } : undefined;
-    if (placementConclusionPagination) {
-      help = 'PgUp/PgDn 查看全部使用位置 · ↑↓ 移动 · Enter 选择 · Esc 返回';
-    }
-    const detailStaticRows = 3 + visiblePlacementConclusions.length
-      + (updateDescription ? policy.mode === 'compact' ? 1 : 4 : 0)
-      + (dependencyDetailText ? 1 : 0)
-      + 3;
-    const detailViewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset,
-      pageActionBudget(detailStaticRows));
+    const visiblePlacementConclusions = placementConclusions;
+    const detailViewport = actionViewport(actions, true, focus, scrollOffset,
+      pageActionBudget(actionViewportStaticRows));
     content = <Box flexDirection="column">
       <StatusCard
         status={hasUnavailablePlacement ? 'error'
@@ -5429,9 +5391,6 @@ export function ConsoleAppV4(props: {
         title={hasUnavailablePlacement ? '部分使用位置暂时不可用'
           : hasUncertainPlacement ? '部分使用位置需要处理'
             : confirmedAvailablePlacements.length > 0 ? '已确认的使用位置可用' : '尚未确认使用位置'}
-        meta={placementConclusionPagination
-          ? `${placementOffset + 1}–${placementOffset + visiblePlacementConclusions.length}/${placementConclusions.length}`
-          : undefined}
       >
         {visiblePlacementConclusions.map((placement) => <StaticRow
           key={placement.key}
@@ -5442,19 +5401,19 @@ export function ConsoleAppV4(props: {
         />)}
       </StatusCard>
       {updateDescription
-        ? policy.mode === 'compact'
-          ? <StaticRow title="有可用更新" meta={updateDescription} status="warning" compact />
-          : <Callout status="warning" title="有可用更新" description={updateDescription} />
+        ? <StaticRow title="有可用更新" meta={updateDescription} status="warning" compact />
         : null}
       {dependencyDetailText ? <StaticRow
         title={dependencyDetailText}
         status="muted"
         compact
       /> : null}
-      <SectionCard title="插件操作"><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>
+      {policy.mode === 'compact'
+        ? <SemanticRows actions={actions} focus={focus} kind="action" compact offset={detailViewport.offset} limit={detailViewport.limit} />
+        : <SectionCard title="插件操作"><SemanticRows actions={actions} focus={focus} kind="action" compact offset={detailViewport.offset} limit={detailViewport.limit} /></SectionCard>}
     </Box>;
   } else if (route.name === 'pluginMore' && plugin) {
-    breadcrumb = `我的插件 / ${plugin.displayName} / 更多操作`;
+    breadcrumb = `插件 / ${plugin.displayName} / 更多操作`;
     context = plugin.sourceLabel;
     title = '更多操作';
     description = '选择平台可使用同步、重新安装、移除和受限清理。';
@@ -5466,7 +5425,7 @@ export function ConsoleAppV4(props: {
       .filter((candidate) => candidate.target.pluginId === plugin.pluginId);
     actions = [
       ...(updateTaskCandidates.length > 0 ? [{
-        label: '更新插件…',
+        label: '更新插件',
         description: '使用精确版本和现有安装位置',
         status: 'warning' as const,
         run: () => go({
@@ -5476,7 +5435,7 @@ export function ConsoleAppV4(props: {
         }),
       }] : []),
       ...(restoreTaskCandidates.length > 0 ? [{
-        label: '恢复正常…',
+        label: '恢复正常',
         description: `${restoreTaskCandidates.length} 个现有位置需要检查`,
         status: 'warning' as const,
         run: () => go({
@@ -5500,7 +5459,7 @@ export function ConsoleAppV4(props: {
             };
           }
           if (action.id === 'resolveScopeConflict') return {
-            label: `处理 ${platformLabel(action.platform)} 位置冲突…`,
+            label: `处理 ${platformLabel(action.platform)} 位置冲突`,
             description: action.description,
             status: 'error',
             run: () => beginScopeConflictRecovery(action),
@@ -5523,7 +5482,7 @@ export function ConsoleAppV4(props: {
               : beginConfigFlow(plugin.pluginId),
           };
           if (action.id === 'sourceProblem') return {
-            label: '恢复插件来源…', status: 'warning',
+            label: '恢复插件来源', status: 'warning',
             run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }),
           };
           if (action.id === 'upgradeAwCli' || action.id === 'capabilityTechnical') return {
@@ -5541,7 +5500,7 @@ export function ConsoleAppV4(props: {
         description: '查看必需依赖、声明者和当前可用关系；当前没有声明的必需依赖',
         run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
       }] : []),
-      { label: '使用说明', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) },
+      { label: '插件定义信息', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) },
       { label: '查看插件来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) },
       { label: '诊断与受管内容', description: '查看组件状态和安全错误代码', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
     ];
@@ -5582,7 +5541,7 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'sourceProblem') return { label: '查看来源问题', description: `${plugin.sourceId} 当前不可用`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) };
       if (action.id === 'refreshSource') return { label: '获取或修复来源', description: '在 TUI 中验证候选并启用', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) };
-      if (action.id === 'add') return { label: `添加到 ${platformLabel(route.platform)}…`, description: '选择使用位置', run: () => {
+      if (action.id === 'add') return { label: `添加到 ${platformLabel(route.platform)}`, description: '选择使用位置', run: () => {
         const initialScope = placement?.state === 'notInstalled'
           ? placement.supportedScopes[0] ?? scope
           : scope;
@@ -5594,7 +5553,7 @@ export function ConsoleAppV4(props: {
         go({ name: 'installPlacement', pluginId: plugin.pluginId });
       } };
       if (action.id === 'addScope') return {
-        label: `在${scopeLabel(action.scope)}中启用…`,
+        label: `在${scopeLabel(action.scope)}中启用`,
         description: '增加这个使用位置；已被其它项目共用的内容保持不变',
         run: () => beginSecondScope(plugin, action.platform, action.scope),
       };
@@ -5610,13 +5569,13 @@ export function ConsoleAppV4(props: {
       };
       if (action.id === 'scopeConflict') return { label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) };
       if (action.id === 'resolveScopeConflict') return {
-        label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root…`,
+        label: `保留${scopeLabel(action.keepScope)}，移除${scopeLabel(action.scope)} root`,
         description: action.description,
         status: 'error',
         run: () => beginScopeConflictRecovery(action),
       };
       if (action.id === 'refreshAndSync') return {
-        label: `更新到 ${action.availableVersion}…`,
+        label: `更新到 ${action.availableVersion}`,
         description: '使用当前启用目录中的已确认版本',
         run: () => beginReview({
           kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId,
@@ -8526,6 +8485,68 @@ export function ConsoleAppV4(props: {
       </>}
       <SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} />
     </Box> : <Box flexDirection="column"><ResultCard status={resultStatus} title={blockedDependencyFailure ? '依赖安装没有完成' : blocked ? result.writeMayHaveCompleted ? '结果未确认' : '操作未完成' : sourceOperation ? '来源配置写入已完成' : dependencyTargets ? partial ? '依赖安装没有全部完成' : '操作已完成' : resultSummary?.message ?? '状态已变化，请重新确认'}>{resetDispositionText ? <StaticRow title={resetDispositionText} status="success" compact /> : null}{resultTargetOffset > 0 ? <StaticRow title={`↑ 前面还有 ${resultTargetOffset} 个目标`} status="muted" compact /> : null}{visibleResultTargets.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <ResultRow key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} title={resultTargetName(target)} description={relation} meta={state.label} status={state.status ?? 'muted'} compact={policy.mode === 'compact'} />; })}{hiddenResultTargets > 0 ? <StaticRow title="↓ 后面还有" meta={`${hiddenResultTargets} 个目标`} status="muted" compact /> : null}{partial && hasPreservedTarget && resultTargets.some((target) => target.state === 'skipped') ? <StaticRow title="未执行的目标没有写入；已完成或已保留的目标保持可用。" status="muted" compact /> : null}{configOperation && partial && !invalidConfigResult ? <Callout status="warning" title="恢复指引" description="如需清理残留，请返回插件详情选择清理；然后选择重新安装或同步。系统不会自动删除现有内容。" /> : null}{resultSummary?.elapsedMs !== undefined ? <StaticRow title="已用时" meta={`${Math.floor(resultSummary.elapsedMs / 1_000)}s`} /> : null}{visibleMessages.map((message, index) => <StaticRow key={`${index}:${message}`} title={productResultMessage(message)} status="muted" compact />)}</ResultCard><SemanticRows actions={actions} focus={focus} kind="action" compact offset={resultActionViewport.offset} limit={resultActionViewport.limit} /></Box>;
+  } else if (route.name === 'pluginContent' && plugin) {
+    const overview = props.controller.getPluginContentOverview(plugin.pluginId);
+    const contentState = props.controller.getPluginContentState(plugin.pluginId);
+    const contentAvailable = overview?.evidence === 'catalogBundle';
+    breadcrumb = `${plugin.displayName} / 内容详情`;
+    context = contentState === 'loading' ? '正在读取'
+      : contentAvailable ? `目录版本 ${overview.pluginVersion}` : '内容不可用';
+    title = '内容详情';
+    description = contentState === 'loading'
+      ? '正在读取这个插件当前目录版本的内容。'
+      : contentAvailable
+      ? '这里显示已验证目录包声明的组成，不读取或展示完整操作指令。'
+      : '当前没有可安全读取的目录内容。';
+    actions = [
+      { label: '返回插件详情', run: back },
+      { label: '查看技术详情', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
+    ];
+    const contentTypeLabels = {
+      skill: 'Skill', agent: 'Agent', role: '角色', instruction: '指令', permission: '权限',
+      hook: 'Hook', command: '命令', mcpServer: 'MCP Server', app: 'App',
+    } as const;
+    const installedVersions = [...new Set((plugin.update?.targets ?? [])
+      .flatMap((target) => target.installedVersion ? [target.installedVersion] : []))];
+    const versionDiffers = contentAvailable
+      && installedVersions.some((version) => version !== overview.pluginVersion);
+    const items = overview?.items ?? [];
+    const pageRows = policy.mode === 'compact' ? 3 : 6;
+    const contentOffset = Math.min(batchTargetOffset, Math.max(0, items.length - 1));
+    const visibleItems = items.slice(contentOffset, contentOffset + pageRows);
+    if (items.length > pageRows) {
+      referenceDetailPagination = { total: items.length, pageRows };
+      help = 'PgUp/PgDn 查看全部内容 · ↑↓ 移动 · Enter 选择 · Esc 返回';
+    }
+    const contentViewport = actionViewport(actions, true, focus, scrollOffset,
+      pageActionBudget(Math.min(items.length, pageRows) + 3));
+    content = <Box flexDirection="column">
+      {contentAvailable ? <SectionCard title="版本证据" meta={`插件 ${overview.pluginVersion} · 目录 ${overview.catalogVersion}`} compact>
+        <StaticRow
+          title={installedVersions.length > 0
+            ? `已安装 ${installedVersions.join('、')}`
+            : '当前没有已确认的安装版本'}
+          description={versionDiffers
+            ? '以下是目录版本内容，不代表旧安装版本的内容。'
+            : '内容来自当前已验证的目录包。'}
+          status={versionDiffers ? 'warning' : 'info'}
+          compact
+        />
+      </SectionCard> : contentState === 'loading'
+        ? <Callout status="info" title="正在读取内容" description="完成后将在当前页面显示。" />
+        : <Callout status="warning" title="内容暂不可用" description="可以查看技术详情或恢复插件来源后重试。" />}
+      {contentOffset > 0 ? <StaticRow title={`↑ 前面还有 ${contentOffset} 项`} status="muted" compact /> : null}
+      {visibleItems.map((item) => <SectionCard key={item.id} title={item.name}
+        meta={`${contentTypeLabels[item.type]} · ${item.tools.join('、') || '适用工具待确认'}`} compact>
+        <StaticRow title={item.description ?? '目录没有提供简短描述'} status={item.description ? 'muted' : 'warning'} compact />
+      </SectionCard>)}
+      {items.length > contentOffset + visibleItems.length
+        ? <StaticRow title={`↓ 后面还有 ${items.length - contentOffset - visibleItems.length} 项`} status="muted" compact />
+        : null}
+      {overview?.notices.map((notice, index) => <StaticRow key={`${index}:${notice}`} title={notice} status="warning" compact />)}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact
+        offset={contentViewport.offset} limit={contentViewport.limit} />
+    </Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -8577,7 +8598,7 @@ export function ConsoleAppV4(props: {
     switch (route.name) {
       case 'pluginPreview': case 'pluginDependencies': case 'pluginDependencyNode': case 'installPlacement':
       case 'installTargets': case 'dependencyPlacement': case 'dependencyPlacementEditor':
-      case 'pluginWriteTask': case 'pluginDetail': case 'pluginMore': case 'platform': case 'pluginAbout': case 'pluginTechnical':
+      case 'pluginWriteTask': case 'pluginDetail': case 'pluginContent': case 'pluginMore': case 'platform': case 'pluginAbout': case 'pluginTechnical':
       case 'configLayer':
         unavailable = missingPlugin ? 'plugin' : 'flow';
         break;
@@ -9018,17 +9039,9 @@ export function ConsoleAppV4(props: {
       setReportSaveError(undefined);
       return;
     }
-    if ((key.pageUp || key.pageDown) && route.name === 'pluginDetail'
-      && placementConclusionPagination) {
-      const { total, pageRows } = placementConclusionPagination;
-      setBatchTargetOffset((value) => Math.min(
-        Math.max(0, total - pageRows),
-        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
-      ));
-      return;
-    }
     if ((key.pageUp || key.pageDown)
-      && (route.name === 'pluginDependencyNode'
+      && (route.name === 'pluginContent'
+        || route.name === 'pluginDependencyNode'
           && (route.view === 'references' || route.view === 'details')
         || route.name === 'configSave' && route.view === 'changes'
         || route.name === 'sourceSave' && route.view === 'changes')
@@ -9395,9 +9408,7 @@ export function ConsoleAppV4(props: {
         if (route.name === 'pluginList') {
           const row = pluginRows[focus];
           if (row?.menuAction) row.menuAction();
-          else if (row) go(route.mode === 'browse'
-              ? { name: 'pluginPreview', pluginId: row.pluginId }
-              : { name: 'pluginDetail', pluginId: row.pluginId });
+          else if (row) go({ name: 'pluginDetail', pluginId: row.pluginId });
         }
         return;
       }
@@ -9465,7 +9476,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (route.name === 'pluginList' && input.toLowerCase() === 'm') {
-      openBatchSelection(route.mode === 'browse' ? 'install' : undefined);
+      openBatchSelection();
       return;
     }
     if (route.name === 'pluginList' && input === '/') {
@@ -9491,29 +9502,30 @@ export function ConsoleAppV4(props: {
     }
     if (route.name === 'pluginDependencies' && route.view !== 'removeBlocked'
       && (key.leftArrow || key.rightArrow)) {
-      const projection = buildDependencyGraphProjection({
+      const unified = buildUnifiedDependencyGraphProjection({
         overviews: props.controller.listPluginDependencyOverviews(),
         rootPluginId: route.pluginId,
-        direction: route.direction ?? 'dependencies',
         ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
       });
-      const row = projection.rows[focus];
+      const row = unified.rows[focus];
       if (!row) return;
-      const next = new Set(expandedDependencyPluginIds ?? projection.defaultExpandedPluginIds);
+      const next = new Set(expandedDependencyPluginIds ?? [
+        ...unified.dependencies.defaultExpandedPluginIds,
+        ...unified.dependents.defaultExpandedPluginIds,
+      ]);
       if (key.rightArrow && row.canExpand) next.add(row.pluginId);
       if (key.leftArrow && row.canExpand) next.delete(row.pluginId);
-      const nextProjection = buildDependencyGraphProjection({
+      const nextUnified = buildUnifiedDependencyGraphProjection({
         overviews: props.controller.listPluginDependencyOverviews(),
         rootPluginId: route.pluginId,
-        direction: route.direction ?? 'dependencies',
         expandedPluginIds: next,
       });
-      const nextFocus = Math.max(0, nextProjection.rows.findIndex((candidate) => candidate.id === row.id));
+      const nextFocus = Math.max(0, nextUnified.rows.findIndex((candidate) =>
+        candidate.id === row.id && candidate.branch === row.branch));
       const nextScroll = Math.min(scrollOffset, nextFocus);
       setExpandedDependencyPluginIds(next);
       setFocus(nextFocus);
       setScrollOffset(nextScroll);
-      persistDependencyGraphContext(route, nextProjection, next, nextFocus, nextScroll);
       return;
     }
     const sessionNavigation = resolveTuiSessionNavigationKey(
@@ -9581,6 +9593,17 @@ export function ConsoleAppV4(props: {
       } else back();
     } else if (route.name === 'pluginList' && input.toLowerCase() === 'f') {
       togglePluginListFilter?.();
+    } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select'
+      && input.toLowerCase() === 'f') {
+      const nextFilter = PLUGIN_FILTERS[(PLUGIN_FILTERS.indexOf(batchDraft.installFilter) + 1)
+        % PLUGIN_FILTERS.length]!;
+      setBatchDraft((current) => current ? {
+        ...current,
+        installFilter: nextFilter,
+        showSelected: false,
+      } : current);
+      setFocus(1);
+      setScrollOffset(0);
     } else if (route.name === 'pluginList' && route.mode === 'installed' && input.toLowerCase() === 'a') {
       prepareCurrentProjectPlugins();
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'a') {
@@ -9685,22 +9708,24 @@ export function ConsoleAppV4(props: {
             )
           : actionViewport(
               actions,
-              policy.mode === 'compact',
+              route.name === 'pluginDetail' || policy.mode === 'compact',
               next,
               scrollOffset,
               pageActionBudget(actionViewportStaticRows),
             );
         if (route.name === 'pluginDependencies' && route.view !== 'removeBlocked') {
-          const projection = buildDependencyGraphProjection({
+          const projection = buildUnifiedDependencyGraphProjection({
             overviews: props.controller.listPluginDependencyOverviews(),
             rootPluginId: route.pluginId,
-            direction: route.direction ?? 'dependencies',
             ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
           });
-          persistDependencyGraphContext(
-            route,
+          persistUnifiedDependencyGraphContext(
+            route.pluginId,
             projection,
-            expandedDependencyPluginIds ?? new Set(projection.defaultExpandedPluginIds),
+            expandedDependencyPluginIds ?? new Set([
+              ...projection.dependencies.defaultExpandedPluginIds,
+              ...projection.dependents.defaultExpandedPluginIds,
+            ]),
             next,
             viewport.offset,
           );
@@ -9747,22 +9772,24 @@ export function ConsoleAppV4(props: {
             )
           : actionViewport(
               actions,
-              policy.mode === 'compact',
+              route.name === 'pluginDetail' || policy.mode === 'compact',
               next,
               scrollOffset,
               pageActionBudget(actionViewportStaticRows),
             );
         if (route.name === 'pluginDependencies' && route.view !== 'removeBlocked') {
-          const projection = buildDependencyGraphProjection({
+          const projection = buildUnifiedDependencyGraphProjection({
             overviews: props.controller.listPluginDependencyOverviews(),
             rootPluginId: route.pluginId,
-            direction: route.direction ?? 'dependencies',
             ...(expandedDependencyPluginIds ? { expandedPluginIds: expandedDependencyPluginIds } : {}),
           });
-          persistDependencyGraphContext(
-            route,
+          persistUnifiedDependencyGraphContext(
+            route.pluginId,
             projection,
-            expandedDependencyPluginIds ?? new Set(projection.defaultExpandedPluginIds),
+            expandedDependencyPluginIds ?? new Set([
+              ...projection.dependencies.defaultExpandedPluginIds,
+              ...projection.dependents.defaultExpandedPluginIds,
+            ]),
             next,
             viewport.offset,
           );
@@ -9775,9 +9802,7 @@ export function ConsoleAppV4(props: {
     } else if (key.return && route.name === 'pluginList' && focusZone === 'content' && pluginRows[focus]) {
       const row = pluginRows[focus]!;
       if (row.menuAction) row.menuAction();
-      else go(route.mode === 'browse'
-        ? { name: 'pluginPreview', pluginId: row.pluginId }
-        : { name: 'pluginDetail', pluginId: row.pluginId });
+      else go({ name: 'pluginDetail', pluginId: row.pluginId });
     } else if (key.return) {
       runAction(actions[normalizedEffectiveFocus]);
     }

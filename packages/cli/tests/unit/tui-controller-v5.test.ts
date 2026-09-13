@@ -455,11 +455,11 @@ describe('TUI plugin write batches', () => {
     router.push({ name: 'batchSelection' });
     router.push({ name: 'batchPlacement' });
     expect(flow).toMatchObject({
-      kind: 'batchWrite', returnTarget: { name: 'pluginList', mode: 'installed' },
+      kind: 'batchWrite', returnTarget: { name: 'pluginList', mode: 'browse' },
     });
     router.finishFlow(undefined, { name: 'result', operationId: 'batch-1' });
     router.back();
-    expect(router.snapshot.current.route).toEqual({ name: 'pluginList', mode: 'installed' });
+    expect(router.snapshot.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
   });
 
   it('keeps one history record without offering an imprecise group retry', async () => {
@@ -861,6 +861,84 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('normalizes the legacy plugin preview route to the unified detail', async () => {
+    const controller = new TuiController(dependencies());
+    await controller.load();
+
+    controller.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+
+    expect(controller.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+  });
+
+  it('keeps catalog content evidence keyed by canonical plugin identity', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        contentOverviews: {
+          'official/demo': {
+            pluginId: 'official/demo',
+            pluginVersion: '2.0.0',
+            catalogVersion: '3.0.0',
+            evidence: 'catalogBundle',
+            items: [{
+              id: 'skill:review', name: 'review', type: 'skill',
+              description: 'Review changes', tools: ['Codex'],
+            }],
+            notices: [],
+          },
+        },
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.getPluginContentOverview('official/demo')).toMatchObject({
+      pluginId: 'official/demo', pluginVersion: '2.0.0',
+      items: [{ name: 'review', tools: ['Codex'] }],
+    });
+    expect(controller.getPluginContentOverview('other/demo')).toBeUndefined();
+  });
+
+  it('loads one plugin content overview on demand and shares the in-flight read', async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<TuiControllerDependencies['loadPluginContent']>>>>();
+    const loadPluginContent = vi.fn(() => pending.promise);
+    const controller = new TuiController(dependencies({ loadPluginContent }));
+    await controller.load();
+
+    const first = controller.loadPluginContent('official/demo');
+    const second = controller.loadPluginContent('official/demo');
+
+    expect(loadPluginContent).toHaveBeenCalledTimes(1);
+    expect(controller.getPluginContentState('official/demo')).toBe('loading');
+    pending.resolve({
+      pluginId: 'official/demo', pluginVersion: '2.0.0', catalogVersion: '3.0.0',
+      evidence: 'catalogBundle', items: [], notices: [],
+    });
+    await Promise.all([first, second]);
+    expect(controller.getPluginContentState('official/demo')).toBe('ready');
+    expect(controller.getPluginContentOverview('official/demo')).toMatchObject({
+      pluginId: 'official/demo', evidence: 'catalogBundle',
+    });
+  });
+
+  it('invalidates loaded plugin content when status is reloaded', async () => {
+    const loadPluginContent = vi.fn().mockResolvedValue({
+      pluginId: 'official/demo', pluginVersion: '2.0.0', catalogVersion: '3.0.0',
+      evidence: 'catalogBundle', items: [], notices: [],
+    });
+    const controller = new TuiController(dependencies({ loadPluginContent }));
+    await controller.load();
+    await controller.loadPluginContent('official/demo');
+    expect(controller.getPluginContentState('official/demo')).toBe('ready');
+
+    await controller.load();
+
+    expect(controller.getPluginContentState('official/demo')).toBe('idle');
+    expect(controller.getPluginContentOverview('official/demo')).toBeUndefined();
+  });
+
   it('includes recognizable saved settings without claiming the plugin is installable', () => {
     const view = buildTuiViewModel({
       status: status(),
@@ -887,7 +965,10 @@ describe('TUI v4 router and ViewModel', () => {
     }));
     return controller.load().then(() => {
       expect(controller.listPlugins({ mode: 'installed' })).toHaveLength(1);
-      expect(controller.listPlugins({ mode: 'browse' })).toEqual([]);
+      expect(controller.listPlugins({ mode: 'browse' })).toHaveLength(1);
+      expect(controller.listPlugins({ mode: 'browse', installFilter: 'installed' })).toEqual([]);
+      expect(controller.listPlugins({ mode: 'browse', installFilter: 'attention' }))
+        .toHaveLength(1);
       expect(controller.listInstallTargets('removed/demo', 'user')).toEqual([]);
       expect(buildPluginDetailActions(controller.getPluginOverview('removed/demo')!)
         .map((action) => action.id)).toEqual(['settings', 'sourceProblem', 'about']);
