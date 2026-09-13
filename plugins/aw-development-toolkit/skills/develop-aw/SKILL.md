@@ -14,7 +14,6 @@ metadata:
 
 ## 依赖
 
-- Plugin 内 Skill 创建或常规变更使用 `author-agent-skill`；简化使用 `simplify-agent-skill`，本 Skill 提供 AW 源码与构建适配。
 - Agent-facing README、prompt、reference 或 role 内容使用 `agent-content`。
 - Eval case 设计由 `author-agent-skill` 的 Eval branch 完成；本 Skill 不审核或运行 Eval。
 
@@ -28,7 +27,7 @@ metadata:
 
    命令缺失或 receipt `ok=false` 时停止并报告 `missingCapabilities`；能力要求由 manifest 和 receipt 拥有，不在正文另维护枚举。
 2. 根据用户明确 Workspace root、canonical `<root>/plugins/<name>`、上游 handoff 或公开命令安全自动发现固定 `<workspace-root>`。歧义时停止并询问。
-3. 判断当前请求属于 Catalog、Plugin、Skill 简化、删除、验证/materialization 或 development-source branch；一个请求可按依赖顺序进入多个 branch，但 publication 永远范围外。
+3. 按下表选择分支；组合请求按依赖顺序处理。
 
 ## Branch 路由
 
