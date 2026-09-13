@@ -226,6 +226,36 @@ export function projectExecutionDiagnostics(
       targetEffects,
     };
   }
+  if (operationKind === 'catalogStorePrune') {
+    const errors = Array.isArray(raw.errors) ? raw.errors : [];
+    for (const [index, candidate] of errors.entries()) {
+      const error = candidate && typeof candidate === 'object'
+        ? candidate as Record<string, unknown> : {};
+      diagnostics.push({
+        id: `${idPrefix}:catalog-store:${index}`,
+        code: safeDiagnosticCode(error.code, 'catalogStoreDeleteFailed'),
+        stage: 'catalogStorePrune',
+        safeMessage: typeof error.message === 'string'
+          ? sanitizeDiagnosticText(error.message, [], sensitiveValues)
+          : 'The Catalog store item was retained because deletion was not safe.',
+        causes: [],
+        detailLines: [],
+      });
+    }
+    const deleted = Array.isArray(raw.deleted) ? raw.deleted : [];
+    return {
+      diagnostics,
+      effects: {
+        configCommit: 'notApplicable',
+        awWrite: deleted.length > 0
+          ? errors.length > 0 ? 'partial' : 'completed'
+          : errors.length > 0 ? 'failed' : 'notStarted',
+        preApplyExternalEffect: 'notApplicable',
+        finalVerification: raw.overallState === 'partial' ? 'failed' : 'completed',
+      },
+      targetEffects,
+    };
+  }
   if (operationKind === 'catalogGeneration') {
     const partialReason = raw.partialReason === 'primary' ? 'primary'
       : raw.partialReason === 'activation' ? 'activation' : undefined;

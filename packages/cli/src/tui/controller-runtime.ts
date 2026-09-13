@@ -179,6 +179,11 @@ import {
   projectPluginContentOverview,
   type PluginContentOverview,
 } from './plugin-content.js';
+import {
+  executeCatalogStoreTask,
+  inspectCatalogStoreTask,
+  prepareCatalogStoreTask,
+} from './catalog-store-task.js';
 
 function reusableCandidateEvidenceIsComplete(
   candidate: CatalogSessionReusableCandidate,
@@ -1215,6 +1220,16 @@ export function createTuiControllerDependencies(
     frozenBatchEvidence?: PluginWriteBatchEvidence,
   ): Promise<OperationEvidence> => {
     reviewedScriptTimeoutMs(intent);
+    if (intent.kind === 'catalogStorePrune') {
+      signal?.throwIfAborted();
+      const config = await readCatalogSourcesConfigSnapshot(context.env);
+      const catalogStore = await prepareCatalogStoreTask({ env: context.env });
+      signal?.throwIfAborted();
+      return {
+        catalog: { configDigest: config.digest, compositeDigest: config.digest },
+        catalogStore,
+      };
+    }
     if (intent.kind === 'configSaveBatch') {
       assertConfigSaveBatchIntent(intent);
       const groupEvidence: Array<{
@@ -3056,6 +3071,10 @@ export function createTuiControllerDependencies(
       }
     },
     captureEvidence,
+    inspectCatalogStore(signal) {
+      signal.throwIfAborted();
+      return inspectCatalogStoreTask({ env: context.env });
+    },
     recheckPortableInstall(receipt, signal) {
       return recheckPortableInstall({
         receipt,
@@ -3261,6 +3280,16 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence, signal) {
+      if (intent.kind === 'catalogStorePrune') {
+        signal?.throwIfAborted();
+        if (!expectedEvidence.catalogStore) {
+          throw new TuiOperationBlockedError('catalogStoreReviewStale', '确认信息缺少精确清理目标。');
+        }
+        return executeCatalogStoreTask({
+          env: context.env,
+          authorizedItems: expectedEvidence.catalogStore.authorizedItems,
+        });
+      }
       if (intent.kind === 'catalogSourcesRecovery') {
         signal?.throwIfAborted();
         return recoverInvalidCatalogSourcesConfig({ env: context.env });

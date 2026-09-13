@@ -1,5 +1,6 @@
 import { Box, Text, useWindowSize } from 'ink';
 import type { ReactNode } from 'react';
+import stringWidth from 'string-width';
 
 import {
   safeDiagnosticCode,
@@ -132,6 +133,10 @@ export function ScreenFrame(props: {
   if (policy.mode === 'too-small') {
     return <SizeHint policy={policy} />;
   }
+  const headerWidth = policy.columns - 2;
+  const contextWidth = props.context
+    ? Math.min(stringWidth(props.context), headerWidth - 13)
+    : 0;
 
   return (
     <Box
@@ -151,11 +156,15 @@ export function ScreenFrame(props: {
         borderRight={false}
         paddingX={1}
       >
-        <Text bold color={tuiTheme.colors.accent} wrap="truncate-end">
-          AW{props.breadcrumb ? ` / ${props.breadcrumb}` : ''}
-        </Text>
+        <Box width={headerWidth - (contextWidth ? contextWidth + 1 : 0)} flexShrink={0}>
+          <Text bold color={tuiTheme.colors.accent} wrap="truncate-end">
+            AW{props.breadcrumb ? ` / ${props.breadcrumb}` : ''}
+          </Text>
+        </Box>
         {props.context
-          ? <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.context}</Text>
+          ? <Box width={contextWidth} flexShrink={0}>
+              <Text color={tuiTheme.colors.muted} wrap="truncate-end">{props.context}</Text>
+            </Box>
           : null}
       </Box>
       <Box flexDirection="column" flexGrow={1} overflow="hidden" paddingX={1}>

@@ -230,6 +230,15 @@ function operationLabels(intent: OperationIntent, evidence?: OperationEvidence):
   primaryLabel: string;
   destructive: boolean;
 } {
+  if (intent.kind === 'catalogStorePrune') {
+    const count = evidence?.catalogStore?.authorizedItems.length ?? 0;
+    return {
+      title: '确认清理 Catalog 本地存储',
+      description: `只删除本次预览确认的 ${count} 个可回收项。`,
+      primaryLabel: `清理 ${count} 个项目`,
+      destructive: true,
+    };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return {
       title: '恢复插件目录来源配置',
@@ -415,6 +424,22 @@ function reviewChanges(
   evidence?: OperationEvidence,
   dependencyOverview?: PluginDependencyOverviewViewModel,
 ): OperationReviewChange[] {
+  if (intent.kind === 'catalogStorePrune') {
+    const store = evidence?.catalogStore;
+    if (!store) throw plannerError('catalogStorePrepareFailed', '缺少 Catalog 本地存储预览证据。');
+    const bytes = store.reclaimableBytes === null
+      ? '大小未知'
+      : `${store.reclaimableBytes} bytes`;
+    return [
+      {
+        kind: 'remove',
+        title: `删除 ${store.authorizedItems.length} 个已确认的可回收项`,
+        description: bytes,
+      },
+      { kind: 'keep', title: '保留 Active Catalog、foreign 内容和无法证明安全的项目' },
+      { kind: 'keep', title: '保留预览以后出现的新项目' },
+    ];
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     return [
       { kind: 'add', title: '备份损坏的 catalog-sources.json' },
@@ -1127,6 +1152,10 @@ function technicalDetails(evidence: OperationEvidence): string[] {
     details.push(`候选 commit：${short(generation.candidate.resolvedCommit)}`);
     details.push(`候选 digest：${short(generation.candidate.snapshotDigest)}`);
   }
+  if (evidence.catalogStore) {
+    details.push(`已授权清理：${evidence.catalogStore.authorizedItems.length} 项`);
+    details.push(`检查结果：${evidence.catalogStore.entries.length} 项`);
+  }
   if (evidence.portable) {
     details.push(`Portable 候选：${evidence.portable.selected.length} 个`);
     details.push(`Materialization：${short(evidence.portable.materializationDigest)}`);
@@ -1184,6 +1213,7 @@ export function buildOperationReviewProjection(options: {
         (group.config.sharedNativeRenderTargets?.length ?? 0) > 0
         && group.config.affectedTargets.some((target) => target.platform === 'codex')) ?? false));
   const requiresConfirmation = sharedNativeConfigApply
+    || intent.kind === 'catalogStorePrune'
     || Boolean(batchEvidence?.groups.some((group) =>
       (group.preview.codexReconcilePlans ?? []).some((plan) => plan.review.requiresConfirmation)))
     || Boolean(taskEvidence?.taskPlan.sources.some((source) =>

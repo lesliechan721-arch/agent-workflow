@@ -421,7 +421,7 @@ export interface SourceDetailViewModel {
   refPolicy?: 'cliChannel' | 'explicit';
   explicitRef?: string;
   subdir?: string;
-  pluginCount: number;
+  pluginCount?: number;
   sourceIdentity: string;
   requestedRef: string;
   resolvedCommit?: string;
@@ -2243,18 +2243,24 @@ export function buildTuiViewModel(options: {
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
     || compareText(left.sourceId, right.sourceId));
-  const sourceTabs = options.status.catalog.sources.map((source) => ({
-    id: source.id,
-    label: source.id,
-    count: plugins.filter((plugin) => plugin.sourceId === source.id).length,
-    primary: source.primary,
-    state: projectCatalogSourceState(
-      source,
-      options.sourceHealth?.get(source.id),
-      options.catalogFreshness?.get(source.id),
-      options.catalogGenerations?.get(source.id),
-    ),
-  }));
+  const sourceTabs = options.status.catalog.sources.map((source) => {
+    const generation = options.catalogGenerations?.get(source.id);
+    const countKnown = generation
+      ? generation.state === 'ready' || generation.state === undefined && generation.active !== undefined
+      : source.error === undefined;
+    return {
+      id: source.id,
+      label: source.id,
+      ...(countKnown ? { count: plugins.filter((plugin) => plugin.sourceId === source.id).length } : {}),
+      primary: source.primary,
+      state: projectCatalogSourceState(
+        source,
+        options.sourceHealth?.get(source.id),
+        options.catalogFreshness?.get(source.id),
+        generation,
+      ),
+    };
+  });
   const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
     .filter((health) => health.state === 'unavailable')
     .map((health) => health.sourceId));
@@ -2309,10 +2315,10 @@ export function buildTuiViewModel(options: {
   return {
     plugins: pluginsWithAttention,
     sourceTabs,
-    sourceDetails: (options.sourceDetails ?? []).map((detail) => ({
-      ...detail,
-      pluginCount: pluginsWithAttention.filter((plugin) => plugin.sourceId === detail.id).length,
-    })),
+    sourceDetails: (options.sourceDetails ?? []).map((detail) => {
+      const count = sourceTabs.find((source) => source.id === detail.id)?.count;
+      return { ...detail, ...(count === undefined ? {} : { pluginCount: count }) };
+    }),
     issues,
     dependencyOverviews: options.dependencyOverviews ?? [],
     contentOverviews: options.contentOverviews ?? {},

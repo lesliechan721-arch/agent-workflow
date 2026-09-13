@@ -91,6 +91,8 @@ import {
 } from './catalog-generation.js';
 import type { CatalogSourceFreshnessViewModel } from './catalog-freshness.js';
 import type { CatalogSessionReusableCandidate } from './catalog-sources/types.js';
+import type { CatalogStorePruneResult, CatalogStoreStatusResult } from '../commands/catalog-store.js';
+import type { CatalogStoreTaskEvidence } from './catalog-store-task.js';
 import { CatalogSourcesSession } from './catalog-sources/session.js';
 import {
   catalogSourceAutoCheckOnlyValue,
@@ -402,7 +404,8 @@ export type OperationIntent =
     }
   | {
       kind: 'catalogSourcesRecovery';
-    };
+    }
+  | { kind: 'catalogStorePrune' };
 
 export interface ConfigOperationEvidence {
   scope: Scope;
@@ -494,6 +497,7 @@ export interface OperationEvidence {
     setPrimaryAfterActivation?: boolean;
   };
   portable?: PortableReview;
+  catalogStore?: CatalogStoreTaskEvidence;
 }
 
 export interface OperationReviewChange {
@@ -809,6 +813,7 @@ export interface TuiControllerDependencies {
     signal: AbortSignal,
   ) => Promise<CatalogGenerationFreshnessResult>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
+  inspectCatalogStore?: (signal: AbortSignal) => Promise<CatalogStoreStatusResult>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
   recheckPortableInstall?: (
     receipt: PortableInstallReceipt,
@@ -1264,6 +1269,14 @@ function cloneFrozen<T>(value: T): T {
 }
 
 export function operationEvidenceFingerprint(evidence: OperationEvidence): string {
+  if (evidence.catalogStore) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(stableValue({
+        catalog: evidence.catalog,
+        authorizedItems: evidence.catalogStore.authorizedItems,
+      })))
+      .digest('hex');
+  }
   if ('taskPlan' in evidence) {
     const task = (evidence as PluginWriteTaskEvidence).taskPlan;
     return crypto.createHash('sha256')
@@ -2067,6 +2080,11 @@ export class TuiController {
       this.#router.beginPortableFlow(intent.pluginId);
       return;
     }
+    if (intent.kind === 'catalogStorePrune') {
+      if (active?.kind === 'catalogStore') return;
+      this.#router.beginFlow('catalogStore', { name: 'catalogStoreOverview' });
+      return;
+    }
     if (intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset') {
       if (active?.kind === 'configEdit') return;
       const route = this.#router.snapshot.current.route;
@@ -2114,6 +2132,7 @@ export class TuiController {
     if (intent.kind === 'portableInstall' && result.state === 'succeeded') {
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
+    if (intent.kind === 'catalogStorePrune') return { name: 'catalogStoreOverview' };
     if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
     if (active && (intent.kind === 'portableInstall'
       || intent.kind === 'configSave' || intent.kind === 'configSaveBatch' || intent.kind === 'configReset')) {
@@ -3623,6 +3642,16 @@ export class TuiController {
     ));
   }
 
+  async inspectCatalogStore(): Promise<CatalogStoreStatusResult> {
+    this.#assertAcceptingActions();
+    if (!this.dependencies.inspectCatalogStore) {
+      throw new TuiOperationBlockedError('catalogStoreUnavailable', 'Catalog 本地存储检查不可用。');
+    }
+    return cloneFrozen(await this.#trackRead(
+      this.dependencies.inspectCatalogStore(this.#abort.signal),
+    ));
+  }
+
   async getConfigGroups(
     pluginId: string,
     layer: { scope: Scope },
@@ -3837,6 +3866,7 @@ export class TuiController {
 
   #reviewPreparationLabel(intent: OperationIntent): string {
     if (intent.kind === 'catalogSourcesRecovery') return 'Catalog 来源配置';
+    if (intent.kind === 'catalogStorePrune') return 'Catalog 本地存储';
     if (intent.kind === 'pluginWriteTask') return `${intent.targets.length} 个安装位置`;
     if (intent.kind === 'pluginWriteBatch') {
       return intent.selection.kind === 'selected'
@@ -4207,7 +4237,8 @@ export class TuiController {
           : ticket.intent.kind === 'pluginWriteTask'
             ? `${(ticket.evidence as PluginWriteTaskEvidence).taskPlan.executableTargets.length} 个安装位置`
           : 'pluginId' in ticket.intent ? ticket.intent.pluginId
-          : 'sourceId' in ticket.intent ? ticket.intent.sourceId ?? 'Catalog 管理' : 'Catalog 来源配置',
+          : 'sourceId' in ticket.intent ? ticket.intent.sourceId ?? 'Catalog 管理'
+            : ticket.intent.kind === 'catalogStorePrune' ? 'Catalog 本地存储' : 'Catalog 来源配置',
         phase: '验证当前状态',
       },
     };
@@ -4853,6 +4884,20 @@ export class TuiController {
 }
 
 function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  if (intent.kind === 'catalogStorePrune') {
+    const result = execution as CatalogStorePruneResult;
+    return {
+      code: result.overallState === 'succeeded' ? 'operationSucceeded' : 'operationPartial',
+      message: result.overallState === 'succeeded'
+        ? `Catalog 本地存储清理完成；删除 ${result.deleted.length} 项。`
+        : `Catalog 本地存储部分清理完成；删除 ${result.deleted.length} 项。`,
+      messages: [
+        result.deletedBytes === null ? '已删除大小未知。' : `已删除 ${result.deletedBytes} bytes。`,
+        `保留 ${result.retained.length} 项。`,
+        ...(result.errors.length > 0 ? [`${result.errors.length} 项未能安全删除。`] : []),
+      ],
+    };
+  }
   if (intent.kind === 'catalogSourcesRecovery') {
     const result = execution as { backupPath: string };
     return {

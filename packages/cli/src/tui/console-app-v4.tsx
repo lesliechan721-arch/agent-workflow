@@ -31,6 +31,7 @@ import {
 import {
   selectLifecycleRetryAction,
 } from '../commands/operation-planner.js';
+import type { CatalogStoreStatusResult } from '../commands/catalog-store.js';
 import {
   parseScriptTimeoutMs,
   SCRIPT_TIMEOUT_DEFAULT_MS,
@@ -424,7 +425,7 @@ function helpRowsForRoute(
     rows.push(['u', '恢复当前字段继承']);
   }
   if (route.name === 'sourceList' || route.name === 'sourceDetail' || route.name === 'sourceMore') {
-    rows.push(['r', '重新检查来源']);
+    rows.push(['r', '检查来源']);
   }
   if (supportsTechnicalDetails) {
     rows.push(['d', route.name === 'progress' ? '打开技术进度' : '打开技术详情']);
@@ -818,6 +819,18 @@ function privatePathInput(value: string): string {
   if (!value) return '';
   const basename = value.split(/[\\/]/u).filter(Boolean).at(-1) ?? '已选择';
   return `已选择 / … / ${basename}`;
+}
+
+function sourceLocationSummary(type: 'git' | 'path', value: string | undefined): string {
+  if (!value) return '不可用';
+  if (type === 'path') return value;
+  try {
+    const url = new URL(value);
+    const repository = url.pathname.split('/').filter(Boolean).at(-1);
+    return repository ? `${url.hostname} / ${repository}` : url.hostname;
+  } catch {
+    return value.startsWith('ssh://') || value.includes('@') ? 'SSH 远程来源' : '远程来源';
+  }
 }
 
 function portableBlockerDiagnostic(
@@ -1526,6 +1539,9 @@ export function ConsoleAppV4(props: {
   const [scriptTimeoutInput, setScriptTimeoutInput] = useState(String(SCRIPT_TIMEOUT_DEFAULT_MS));
   const [scriptTimeoutError, setScriptTimeoutError] = useState<string>();
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
+  const [catalogStoreStatus, setCatalogStoreStatus] = useState<CatalogStoreStatusResult>();
+  const [catalogStoreError, setCatalogStoreError] = useState(false);
+  const [catalogStoreRefresh, setCatalogStoreRefresh] = useState(0);
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
   const [portableSelectionView, setPortableSelectionView] = useState<'all' | 'selected'>('all');
@@ -1928,7 +1944,7 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     let count: number | undefined;
-    if (route.name === 'sourceList') count = props.controller.listSources().length + 2;
+    if (route.name === 'sourceList') count = props.controller.listSources().length;
     else if (route.name === 'issueList') {
       const issueCount = props.controller.listUserIssues().length;
       count = issueCount || 2;
@@ -2017,6 +2033,18 @@ export function ConsoleAppV4(props: {
     if (route.name !== 'operationReportPreview') return;
     setScrollOffset(0);
   }, [route.name, route.name === 'operationReportPreview' ? route.recordId : '']);
+  useEffect(() => {
+    if (route.name !== 'catalogStoreOverview') return;
+    let current = true;
+    setCatalogStoreStatus(undefined);
+    setCatalogStoreError(false);
+    void props.controller.inspectCatalogStore().then((result) => {
+      if (current) setCatalogStoreStatus(result);
+    }).catch(() => {
+      if (current) setCatalogStoreError(true);
+    });
+    return () => { current = false; };
+  }, [props.controller, route.name, snapshot.result, catalogStoreRefresh]);
   useEffect(() => {
     if (route.name !== 'pluginDependencies') return;
     const key = dependencyGraphContextKey(route.pluginId, 'dependencies');
@@ -6549,11 +6577,11 @@ export function ConsoleAppV4(props: {
     description = '单个来源失败不会阻止其他来源继续工作。';
     context = `${props.controller.listSources().length} 个来源`;
     help = '↑↓ 移动 · Enter 打开 · Esc 返回';
-    actions = [
-      ...props.controller.listSources().map((source) => {
+    actions = props.controller.listSources().map((source) => {
         const overview = props.controller.getSourceOverview(source.id);
         const generation = props.controller.getCatalogGeneration(source.id);
         const freshness = props.controller.getCatalogFreshness(source.id);
+        const configured = props.controller.getConfiguredSource(source.id);
         const health = generation?.state !== undefined && generation.state !== 'ready'
           ? 'unavailable' as const
           : overview.health?.state ?? source.state;
@@ -6563,24 +6591,99 @@ export function ConsoleAppV4(props: {
           health,
           primary: source.primary,
         });
+        const transport = overview.detail?.type === 'path' ? '本地'
+          : configured?.type === 'git'
+            && (configured.url.startsWith('git@') || configured.url.startsWith('ssh://'))
+            ? 'SSH' : 'HTTPS';
+        const version = `${generation?.active?.catalogVersion ?? '未启用'}${freshness?.candidate?.catalogVersion
+          ? `→${freshness.candidate.catalogVersion}` : ''}`;
         return {
-          label: `${source.id}${source.primary ? '  主来源' : ''}`,
-          description: `${overview.detail?.type === 'path' ? '本地目录' : 'Git 仓库'} · ${source.count ?? 0} 个插件`,
+          label: `${source.id}${source.primary ? '  主来源' : ''} · ${transport} · ${version} · ${source.count === undefined ? '插件数未知' : `${source.count} 个插件`}`,
+          description: sourceLocationSummary(overview.detail?.type ?? 'git', overview.detail?.locationSummary),
           meta: presentation.label,
           status: presentation.status,
           run: () => go({ name: 'sourceDetail', sourceId: source.id }),
         };
-      }),
+      });
+    pinnedActions = [
       { label: '＋ 添加来源', description: 'Git 仓库或本地目录', run: beginAddSource },
       {
         label: '检查全部来源',
-        description: '并行检查各来源；结果不会自动启用待检查版本',
+        description: '并行检查各来源；必要时完整验证；结果不会自动启用待检查版本',
         run: () => props.controller.recheckAllCatalogSources(),
       },
+      { label: 'Catalog 本地存储', description: '检查占用和预览安全清理', run: () => go({ name: 'catalogStoreOverview' }) },
     ];
-    const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(8, 12));
-    const sourceCount = Math.max(0, actions.length - 2);
-    content = <Box flexDirection="column"><SemanticRows actions={actions} focus={focus} kind={focus < sourceCount ? 'section' : 'action'} compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} /></Box>;
+    help = focusZone === 'actions'
+      ? '←→ 移动固定操作 · Enter 选择 · Tab 返回来源卡片 · Esc 返回'
+      : '↑↓ 移动 · Enter 打开 · Tab 固定操作 · r/c 检查全部 · Esc 返回';
+    const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, responsiveBudget(6, 10));
+    content = <Box flexDirection="column">
+      <PinnedActionBar
+        actions={pinnedActions.map((action, index) => ({
+          id: action.actionId ?? `${action.label}:${index}`,
+          label: action.label,
+          disabled: Boolean(action.disabled),
+        }))}
+        active={focusZone === 'actions'}
+        focus={pinnedActionFocus}
+        visibleCount={policy.mode === 'compact' ? 2 : 3}
+      />
+      <ContentViewport>
+        <SemanticRows actions={actions} focus={focusZone === 'content' ? focus : -1} kind="section"
+          compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />
+      </ContentViewport>
+    </Box>;
+  } else if (route.name === 'catalogStoreOverview') {
+    breadcrumb = '插件来源 / 本地存储';
+    title = 'Catalog 本地存储';
+    description = '检查可重建的本地目录版本，并只清理已确认的安全项目。';
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回';
+    const totals = catalogStoreStatus?.totals;
+    const sizeText = totals?.reclaimableBytes === null
+      ? '大小未知'
+      : totals ? `${totals.reclaimableBytes} bytes` : '正在检查';
+    actions = [
+      {
+        label: '预览安全清理',
+        description: totals ? `${totals.reclaimableEntries} 个可回收项 · ${sizeText}` : '先读取当前存储状态',
+        ...(totals && totals.reclaimableEntries > 0
+          ? { run: () => beginReview({ kind: 'catalogStorePrune' }) }
+          : { disabled: catalogStoreError ? '当前无法读取本地存储' : totals ? '没有可回收项' : '正在检查' }),
+      },
+      { label: '查看保留规则', description: '了解 Active、foreign 和未知项目为什么保留', run: () => go({ name: 'catalogStoreRules' }) },
+      { label: '重新检查', description: '重新读取当前本地存储', run: () => setCatalogStoreRefresh((value) => value + 1) },
+      { label: '返回来源列表', run: back },
+    ];
+    content = <Box flexDirection="column">
+      {catalogStoreError
+        ? <Callout status="warning" title="本地存储检查失败" description="未执行删除。请检查 Catalog 配置和本地存储后重试。" />
+        : totals
+          ? <StatusCard title="存储概览" status={catalogStoreStatus?.ok ? 'success' : 'warning'}>
+              <StaticRow title="全部项目" meta={`${totals.entries}`} compact />
+              <StaticRow title="可回收项目" meta={`${totals.reclaimableEntries}`} compact />
+              <StaticRow title="预计可回收大小" meta={sizeText} compact />
+            </StatusCard>
+          : <StatusCard title="正在检查本地存储" status="info"><StaticRow title="读取当前项目和保留原因" compact /></StatusCard>}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box>;
+  } else if (route.name === 'catalogStoreRules') {
+    breadcrumb = '插件来源 / 本地存储 / 保留规则';
+    title = '安全清理规则';
+    description = '实际清理会在现有 AW_HOME 写锁内重新检查每个已确认项目。';
+    actions = [{ label: '返回存储概览', run: back }];
+    content = <Box flexDirection="column">
+      <SectionCard title="始终保留">
+        <StaticRow title="当前 Active Catalog" status="success" compact />
+        <StaticRow title="foreign、符号链接、unsafe、损坏或未知项目" status="muted" compact />
+      </SectionCard>
+      <SectionCard title="满足时间和完整验证后可回收">
+        <StaticRow title="非 Active 正式目录版本：30 天" compact />
+        <StaticRow title="staging、replacement 和 delete claim：24 小时" compact />
+        <StaticRow title="quarantine：24 小时，并且对应正式目录版本完整健康" compact />
+      </SectionCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box>;
   } else if (route.name === 'sourceDetail') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
@@ -6677,8 +6780,8 @@ export function ConsoleAppV4(props: {
                 run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }),
               }]
             : [{
-                label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
-                description: '轻量检查这个来源；提交发生变化时才完整验证',
+                label: freshness?.state === 'checking' ? '正在检查' : '检查来源',
+                description: '检查这个来源；检测到变化或异常时完整验证',
                 disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
                 run: () => props.controller.recheckCatalogSource(route.sourceId),
               }];
@@ -6701,7 +6804,7 @@ export function ConsoleAppV4(props: {
               setPrimaryAfterActivation: true,
             }),
       }]),
-      { label: '移除来源…', description: '移除来源配置', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
+      { label: '移除来源', description: '移除来源配置', status: 'error', disabled: props.controller.listSources().length <= 1 ? '至少保留一个来源' : detail?.primary ? '主来源不能直接移除' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
       { label: '技术详情', description: '查看脱敏错误代码和当前版本证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
       ...(generationState !== 'ready'
         || freshness?.state === 'updateAvailable'
@@ -6709,8 +6812,8 @@ export function ConsoleAppV4(props: {
         || freshness?.state === 'versionConflict'
         || freshness?.state === 'rollbackDetected'
         || freshness?.state === 'incompatible' ? [{
-        label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
-        description: '轻量检查这个来源；提交发生变化时才完整验证',
+        label: freshness?.state === 'checking' ? '正在检查' : '检查来源',
+        description: '检查这个来源；检测到变化或异常时完整验证',
         disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
         run: () => props.controller.recheckCatalogSource(route.sourceId),
       }] : []),
@@ -6734,12 +6837,35 @@ export function ConsoleAppV4(props: {
           }
         : {}),
     }];
+    const configuredSource = props.controller.getConfiguredSource(route.sourceId);
+    const transport = detail?.type === 'path' ? '本地目录'
+      : configuredSource?.type === 'git'
+        && (configuredSource.url.startsWith('git@') || configuredSource.url.startsWith('ssh://'))
+        ? 'SSH' : 'HTTPS';
+    const versionPolicy = detail?.type === 'path' ? '当前本地内容'
+      : detail?.refPolicy === 'cliChannel' ? '跟随 AW CLI channel'
+        : detail?.explicitRef ?? detail?.requestedRef ?? '固定 Git ref';
+    const sourceCount = snapshot.viewModel?.sourceTabs.find((source) => source.id === route.sourceId)?.count;
+    const checkAction: ActionItem = {
+      label: freshness?.state === 'checking' ? '正在检查' : '检查来源',
+      description: '检查这个来源；检测到变化或异常时完整验证；不会自动启用更新',
+      disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
+      run: () => props.controller.recheckCatalogSource(route.sourceId),
+    };
     actions = [
       ...sourcePrimaryAction,
-      managementActions[0]!,
+      ...(sourcePrimaryAction.some((action) => action.label === '检查来源' || action.label === '正在检查')
+        ? [] : [checkAction]),
       {
-        label: '更多操作…',
-        description: '替换候选、主来源、移除、检查和技术详情',
+        label: '查看此来源插件',
+        description: sourceCount === undefined ? '插件数未知' : `${sourceCount} 个插件`,
+        run: () => go({ name: 'pluginList', mode: 'browse', sourceId: route.sourceId }),
+      },
+      managementActions[0]!,
+      managementActions.find((action) => action.label === '移除来源')!,
+      {
+        label: '更多操作',
+        description: '替换候选、主来源和技术详情',
         run: () => go({ name: 'sourceMore', sourceId: route.sourceId }),
       },
     ];
@@ -6759,6 +6885,11 @@ export function ConsoleAppV4(props: {
           : generationState === 'incompatible' ? 'error' : 'warning'}
         description={activeVersion ? `当前版本 ${activeVersion}` : '当前没有可用目录版本'}
       >
+        <StaticRow title="地址" meta={sourceLocationSummary(detail?.type ?? 'git', detail?.locationSummary)} compact />
+        <StaticRow title="连接方式" meta={transport} compact />
+        <StaticRow title="版本策略" meta={versionPolicy} compact />
+        <StaticRow title="插件" meta={sourceCount === undefined ? '插件数未知' : `${sourceCount} 个`} compact />
+        <StaticRow title="最近检查" meta={freshness?.checkedAt ?? '本次会话尚未检查'} compact />
         <StaticRow title="影响" meta={generationState === 'ready'
           ? freshness?.state === 'checkFailed' ? '更新检查失败；当前版本继续可用'
             : freshness?.state === 'updateAvailable' ? `可选择更新到 ${candidateVersion ?? '待检查版本'}`
@@ -6836,17 +6967,15 @@ export function ConsoleAppV4(props: {
               setPrimaryAfterActivation: true,
             }),
       },
-      { label: '移除来源…', description: '检查当前、历史和未知引用后再确认', status: 'error',
-        disabled: detail?.primary ? '主来源不能直接移除' : undefined,
+      { label: '移除来源', description: '检查当前、历史和未知引用后再确认', status: 'error',
+        disabled: props.controller.listSources().length <= 1 ? '至少保留一个来源'
+          : detail?.primary ? '主来源不能直接移除' : undefined,
         run: () => beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId,
           changes: [{ title: `移除来源 ${route.sourceId}` }] }) },
-      { label: freshness?.state === 'checking' ? '正在检查…' : '重新检查',
-        description: '轻量检查这个来源；不会自动启用更新',
+      { label: freshness?.state === 'checking' ? '正在检查' : '检查来源',
+        description: '检查这个来源；检测到变化或异常时完整验证；不会自动启用更新',
         disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
         run: () => props.controller.recheckCatalogSource(route.sourceId) },
-      { label: '完整验证', description: '强制重新取得并完整验证这个来源',
-        disabled: freshness?.state === 'checking' ? '检查正在进行' : undefined,
-        run: () => props.controller.fullValidateCatalogSource(route.sourceId) },
       { label: '技术详情', description: '查看脱敏错误代码和版本证据',
         run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
     ];
@@ -6877,12 +7006,20 @@ export function ConsoleAppV4(props: {
       },
     };
     breadcrumb = `插件来源 / ${route.sourceId} / 技术详情`;
-    context = '只读';
+    context = 'p 上一页 · n 下一页';
     title = '来源技术诊断';
     description = '';
-    help = 'PgUp/PgDn 查看全部技术详情 · Enter 返回 · Esc 返回';
-    actions = [{ label: '返回来源详情', run: back }];
-    content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical compact={policy.mode === 'compact'} offset={batchTargetOffset} limit={responsiveBudget(5, 10)} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
+    help = 'p/n 或 PgUp/PgDn 查看全部技术详情 · Enter 选择 · Esc 返回';
+    const sourceTechnicalRows = policy.mode === 'compact'
+      ? 1 : Math.max(1, responsiveBudget(5, 10) - 1);
+    const sourceTechnicalLastOffset = Math.max(0,
+      diagnosticDetailRowCount(diagnostic) - sourceTechnicalRows);
+    actions = [
+      { label: 'p 上一页', run: () => setBatchTargetOffset((value) => Math.max(0, value - sourceTechnicalRows)) },
+      { label: 'n 下一页', run: () => setBatchTargetOffset((value) => Math.min(sourceTechnicalLastOffset, value + sourceTechnicalRows)) },
+      { label: '返回来源详情', run: back },
+    ];
+    content = <Box flexDirection="column"><DiagnosticSummary diagnostic={diagnostic} technical compact={policy.mode === 'compact'} offset={batchTargetOffset} limit={sourceTechnicalRows} /><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
   } else if (route.name === 'sourceAdd' && sourceDraft?.owner === route.owner) {
     breadcrumb = sourceDraft.mode === 'add' ? '插件来源 / 添加' : `插件来源 / ${sourceDraft.sourceId} / 编辑`;
     const stepLabel = { type: '第 1 步，共 6 步', id: '第 2 步，共 6 步', location: '第 3 步，共 6 步', refPolicy: '第 4 步，共 6 步', ref: '第 5 步，共 6 步', subdir: '可选高级步骤' }[route.step];
@@ -7008,7 +7145,8 @@ export function ConsoleAppV4(props: {
     const changes = sourceDraftChanges(sourceDraft);
     if (route.view === 'changes') {
       const lines = changeDetailLines(changes, size.columns - 4);
-      const pageRows = responsiveBudget(5, 10);
+      const pageRows = policy.mode === 'compact'
+        ? 1 : Math.max(1, responsiveBudget(5, 10) - 1);
       const detailOffset = Math.min(batchTargetOffset, Math.max(0, lines.length - 1));
       const visibleLines = lines.slice(detailOffset, detailOffset + pageRows);
       referenceDetailPagination = { total: lines.length, pageRows };
@@ -7333,27 +7471,34 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'operationDiagnostic') {
     const detail = props.controller.getOperationDiagnostic(route.recordId);
     breadcrumb = '操作记录 / 技术详情';
-    context = '只读 · 已脱敏';
+    context = 'p 上一页 · n 下一页';
     title = detail ? '安全技术详情' : '操作记录已不可用';
     description = detail
       ? '可滚动查看所有目标、阶段、代码和已保留的安全原因。'
       : '这项会话记录已经不再可用。';
     const preview = detail ? props.controller.previewOperationReport(route.recordId) : undefined;
+    const detailLineLimit = 2;
+    const detailLines = detail ? operationDiagnosticLineCount(detail) : 0;
+    const lastDetailOffset = Math.max(0, detailLines - detailLineLimit);
     actions = detail ? [
       preview
         ? { label: '预览安全报告', description: '确认内容后选择本地保存位置', run: () => go({ name: 'operationReportPreview', recordId: route.recordId }) }
         : { label: '报告当前不可用', disabled: '无法生成这项记录的报告' },
+      { label: 'p 上一页', run: () => setScrollOffset((value) => Math.max(0, value - detailLineLimit)) },
+      { label: 'n 下一页', run: () => setScrollOffset((value) => Math.min(lastDetailOffset, value + detailLineLimit)) },
       { label: '返回操作记录', run: back },
     ] : [{ label: '返回操作记录', run: back }];
-    const detailLineLimit = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
+    const diagnosticActionViewport = actionViewport(actions, policy.mode === 'compact', focus, 0,
+      policy.mode === 'compact' ? 2 : 3);
     content = detail ? <Box flexDirection="column">
-      <OperationDiagnosticScreen
+      <ContentViewport><OperationDiagnosticScreen
         detail={detail}
         compact={policy.mode === 'compact'}
         offset={scrollOffset}
         limit={detailLineLimit}
-      />
-      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+      /></ContentViewport>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
+        offset={diagnosticActionViewport.offset} limit={diagnosticActionViewport.limit} />
     </Box> : <Box flexDirection="column">
       <Callout status="warning" title="记录已不可用" description="返回操作记录后可查看仍在本次会话中的结果。" />
       <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
@@ -7361,7 +7506,7 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'operationReportPreview') {
     const preview = props.controller.previewOperationReport(route.recordId);
     breadcrumb = '操作记录 / 报告预览';
-    context = '只读预览';
+    context = 'p 上一页 · n 下一页';
     title = reportSaveMode ? '选择报告保存位置' : preview ? '安全报告预览' : '报告已不可用';
     description = reportSaveMode
       ? '输入一个新的本地文件路径，然后按 Enter 保存。'
@@ -7382,6 +7527,9 @@ export function ConsoleAppV4(props: {
         <StaticRow title="仅保存当前预览中的安全内容。" status="muted" compact />
       </Box>;
     } else if (preview) {
+      const reportLineLimit = 2;
+      const reportLines = operationReportLineCount(preview);
+      const lastReportOffset = Math.max(0, reportLines - reportLineLimit);
       actions = [
         { label: '选择本地保存位置…', description: '保存前输入明确的文件路径', run: () => {
           setReportSaveMode(true);
@@ -7396,26 +7544,22 @@ export function ConsoleAppV4(props: {
             setReportSaveError('报告未保存。请检查保存位置后重试。');
           });
         } },
+        { label: 'p 上一页', run: () => setScrollOffset((value) => Math.max(0, value - reportLineLimit)) },
+        { label: 'n 下一页', run: () => setScrollOffset((value) => Math.min(lastReportOffset, value + reportLineLimit)) },
         { label: '返回技术详情', run: back },
       ];
-      const reportLineLimit = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
-      const reportActionViewport = actionViewport(
-        actions,
-        policy.mode === 'compact',
-        focus,
-        scrollOffset,
-        pageActionBudget(5),
-      );
       content = <Box flexDirection="column">
-        <OperationReportPreviewScreen
+        <ContentViewport><OperationReportPreviewScreen
           preview={preview}
           compact={policy.mode === 'compact'}
           offset={scrollOffset}
           limit={reportLineLimit}
-        />
+        /></ContentViewport>
         {reportSaveResult ? <Callout status="success" title="报告已保存" description={reportSaveResult} compact={policy.mode === 'compact'} /> : null}
         {reportSaveError ? <Callout status="error" title="报告未保存" description={reportSaveError} compact={policy.mode === 'compact'} /> : null}
-        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={reportActionViewport.offset} limit={reportActionViewport.limit} />
+        <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'}
+          offset={Math.min(Math.max(0, focus - (policy.mode === 'compact' ? 1 : 2)), Math.max(0, actions.length - (policy.mode === 'compact' ? 2 : 3)))}
+          limit={policy.mode === 'compact' ? 2 : 3} />
       </Box>;
     } else {
       actions = [{ label: '返回技术详情', run: back }];
@@ -7703,7 +7847,7 @@ export function ConsoleAppV4(props: {
             key={`${change.title}:${index}`}
             title={`${category}${reviewSymbol(change)} ${change.title}${description ? ` · ${description}` : ''}`}
             meta={count}
-            status={changeStatus(change)}
+      status={changeStatus(change)}
             compact
           />;
         })}
@@ -7725,7 +7869,7 @@ export function ConsoleAppV4(props: {
             key={`${change.batchGroupId ?? ''}:${change.pluginId ?? change.title}:${index}`}
             title={`${change.sourceId ? `${change.sourceId} · ` : ''}${change.relation === 'requested' ? '根插件' : change.relation === 'direct' ? '直接依赖' : change.relation === 'transitive' ? '间接依赖' : ''} ${reviewSymbol(change)} ${change.title}`}
             meta={change.description}
-            status={changeStatus(change)}
+      status={changeStatus(change)}
             compact
           />)}
           {Math.max(0, userReviewChanges.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length) > 0 ? <StaticRow title={`↓ 后面还有 ${Math.max(0, userReviewChanges.length - batchTargetOffset - (batchReview ? batchChanges : pagedReviewChanges).length)} 项`} status="muted" compact /> : null}
@@ -7761,7 +7905,7 @@ export function ConsoleAppV4(props: {
         title={`${category ? `${category} · ` : ''}${reviewSymbol(change)} ${change.title}${change.description ? ` · ${change.description}` : ''}`}
         meta={index === visibleTechnicalChanges.length - 1 && hiddenTechnicalChanges > 0
           ? `另有 ${hiddenTechnicalChanges} 项` : undefined}
-        status={changeStatus(change)}
+      status={changeStatus(change)}
         compact
       />;
     });
@@ -7785,7 +7929,7 @@ export function ConsoleAppV4(props: {
       title={`需要 ${installDependencyPluginIds.size} 个额外插件；${reusedDependencyPluginIds.size} 个复用、${newDependencyCount} 个新增`}
       status="info" compact /><StaticRow
       title={widenedDependencyCount > 0 ? `${widenedDependencyCount} 个依赖会扩大到所有项目` : '没有依赖会扩大到所有项目'}
-      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title="! 需要确认会影响其他项目的内容" meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
+      status={widenedDependencyCount > 0 ? 'warning' : 'success'} compact /></> : null}{review.requiresConfirmation ? <StaticRow title={review.operationKind === 'catalogStorePrune' ? '! 需要确认删除本次预览的可回收项目' : '! 需要确认会影响其他项目的内容'} meta={review.sharedImpact.pluginIds.length > 0 ? `${review.sharedImpact.pluginIds.length} 个插件` : undefined} description={review.sharedImpact.warning} status="warning" compact /> : null}{showTechnical ? technicalChanges : changeGroups}<SemanticRows actions={actions} focus={operationConfirmation ? -1 : focus} kind="action" compact />{compressedReview || showTechnical ? null : <StaticRow title="技术详情（d）" status="muted" />}{showTechnical ? <TechnicalDetails>{visibleTechnicalDetails.map((detail, index) => <StaticRow key={detail} title={detail} meta={index === visibleTechnicalDetails.length - 1 && hiddenTechnicalDetails > 0 ? `另有 ${hiddenTechnicalDetails} 项` : undefined} compact />)}</TechnicalDetails> : null}</ReviewCard></Box>;
   } else if (route.name === 'progress') {
     const taskOperation = snapshot.activeReview?.operationKind === 'pluginWriteTask';
     const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
@@ -7795,8 +7939,9 @@ export function ConsoleAppV4(props: {
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation'
       || snapshot.activeReview?.operationKind === 'catalogGeneration'
       || snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
+    const storeOperation = snapshot.activeReview?.operationKind === 'catalogStorePrune';
     const issueOperation = snapshot.activeReview?.originIssue;
-    breadcrumb = taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    breadcrumb = taskOperation ? '插件任务 / 进度' : portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : storeOperation ? '本地存储 / 清理' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
     const configApply = (snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configSaveBatch')
       && snapshot.activeReview.changes.some((change) => change.group === 'configImpact' && change.kind === 'change');
@@ -7812,12 +7957,14 @@ export function ConsoleAppV4(props: {
     const catalogGenerationOperation = snapshot.activeReview?.operationKind === 'catalogGeneration';
     const catalogSourcesRecovery = snapshot.activeReview?.operationKind === 'catalogSourcesRecovery';
     title = taskOperation ? `正在${progressAction}插件` : portableOperation ? '正在安装通用 Skills' : issueOperation ? `正在${progressAction}插件`
+      : storeOperation ? '正在清理 Catalog 本地存储'
       : catalogGenerationOperation ? '正在验证并启用目录版本'
         : catalogSourcesRecovery ? '正在恢复插件来源配置'
         : sourceOperation ? '正在保存来源配置'
           : configOperation ? configApply ? '正在保存并应用设置' : '正在保存设置'
             : `正在${progressAction}插件`;
     description = issueOperation ? '完成后会重新读取状态并检查问题。'
+      : storeOperation ? '只处理确认页冻结的精确项目，并在删除前重新检查。'
       : catalogGenerationOperation ? '正在验证并应用已确认的目录版本操作。'
         : catalogSourcesRecovery ? '正在备份损坏配置并恢复官方默认来源。'
         : sourceOperation ? '只原子保存来源配置，不访问网络。'
@@ -7937,8 +8084,8 @@ export function ConsoleAppV4(props: {
         <ProgressRow title={`${progressAction}所选插件和所需插件`} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={closureStep} compact={policy.mode === 'compact'} />
         <ProgressRow title="验证完整结果" state={verificationStep} />
       </> : <>
-        <ProgressRow title={sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : '检查兼容性'} state={!currentPhase ? 'pending' : preflightActive ? 'active' : 'complete'} />
-        <ProgressRow title={progress.current?.phase || (sourceOperation ? '保存来源配置' : configOperation ? '保存设置层并重新应用' : '连接到所选目标平台')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
+        <ProgressRow title={storeOperation ? '复核精确清理目标' : sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : '检查兼容性'} state={!currentPhase ? 'pending' : preflightActive ? 'active' : 'complete'} />
+        <ProgressRow title={progress.current?.phase || (storeOperation ? '安全删除已确认项目' : sourceOperation ? '保存来源配置' : configOperation ? '保存设置层并重新应用' : '连接到所选目标平台')} description={progress.current?.target ? `当前：${progress.current.target}` : undefined} meta={`${elapsedSeconds}s`} state={failedProgress ? 'error' : executionActive ? 'active' : validationActive ? 'complete' : 'pending'} compact={policy.mode === 'compact'} />
         <ProgressRow title="验证结果" state={failedProgress ? 'error' : validationActive ? 'active' : 'pending'} />
       </>}
       {dependencyProgress ? <SectionCard title="执行目标" meta={`${snapshot.progressTargets.length} 个目标`}>{progressTargetOffset > 0 ? <StaticRow title={`↑ 前面还有 ${progressTargetOffset} 个目标`} status="muted" compact /> : null}{visibleProgressTargets.map((entry) => {
@@ -7965,6 +8112,8 @@ export function ConsoleAppV4(props: {
       : result.state === 'blocked' ? result.summary : undefined;
     const action = resultSummary?.action;
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
+    const storeOperation = operationKind === 'catalogStorePrune';
+    if (storeOperation) breadcrumb = '本地存储 / 结果';
     const taskOperation = operationKind === 'pluginWriteTask';
     const taskSummary = resultSummary?.task;
     const taskBlockedCount = taskSummary?.blockedTargets.length ?? 0;
@@ -8038,6 +8187,9 @@ export function ConsoleAppV4(props: {
       : portableOperation
       ? blocked ? '× 通用 Skills 安装被阻止'
         : partial ? '! 通用 Skills 结果未完全完成' : '✓ 通用 Skills 已安装'
+      : storeOperation
+      ? blocked ? '× Catalog 本地存储清理未完成'
+        : partial ? '! Catalog 本地存储只完成部分清理' : '✓ Catalog 本地存储清理完成'
       : blocked && result.writeMayHaveCompleted
       ? '× 写入结果未确认'
       : issueOperation
@@ -8166,6 +8318,7 @@ export function ConsoleAppV4(props: {
       ? selectLifecycleRetryAction({
           operationKind: operationKind === 'catalogSourcesRecovery' || operationKind === 'pluginWriteBatch'
             || operationKind === 'pluginWriteTask' || operationKind === 'configSaveBatch'
+            || operationKind === 'catalogStorePrune'
             ? undefined : operationKind,
           originalAction: action,
           target: {
@@ -8186,7 +8339,13 @@ export function ConsoleAppV4(props: {
         && (candidate.platform ?? failedIssue.platform) === failedTarget?.platform
         && (candidate.scope ?? failedIssue.scope) === failedTarget?.scope)
       : undefined;
-    actions = taskOperation
+    actions = storeOperation
+      ? [
+          { label: '返回存储概览', run: () => leaveResult({ name: 'catalogStoreOverview' }) },
+          { label: '查看本次记录', run: () => result.operationRecordId
+            && go({ name: 'operationDiagnostic', recordId: result.operationRecordId }) },
+        ]
+      : taskOperation
       ? [
           ...(nestedTaskReturn && taskReturnRoute ? [{
             label: '返回剩余恢复任务',
@@ -9273,7 +9432,8 @@ export function ConsoleAppV4(props: {
       ));
       return;
     }
-    if ((key.pageUp || key.pageDown) && route.name === 'sourceTechnical') {
+    if ((key.pageUp || key.pageDown || input.toLowerCase() === 'p' || input.toLowerCase() === 'n')
+      && route.name === 'sourceTechnical') {
       const overview = props.controller.getSourceOverview(route.sourceId);
       const diagnostic = sourceDiagnostic(
         route.sourceId,
@@ -9286,7 +9446,7 @@ export function ConsoleAppV4(props: {
       const pageRows = responsiveBudget(5, 10);
       setBatchTargetOffset((value) => Math.min(
         Math.max(0, total - pageRows),
-        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
+        Math.max(0, value + (key.pageUp || input.toLowerCase() === 'p' ? -pageRows : pageRows)),
       ));
       return;
     }
@@ -9316,17 +9476,20 @@ export function ConsoleAppV4(props: {
       return;
     }
     if ((route.name === 'operationDiagnostic' || route.name === 'operationReportPreview')
-      && (key.pageUp || key.pageDown)) {
+      && (key.pageUp || key.pageDown || input.toLowerCase() === 'p' || input.toLowerCase() === 'n')) {
       const detail = route.name === 'operationDiagnostic'
         ? props.controller.getOperationDiagnostic(route.recordId) : undefined;
       const preview = route.name === 'operationReportPreview'
         ? props.controller.previewOperationReport(route.recordId) : undefined;
       const total = detail ? operationDiagnosticLineCount(detail)
         : preview ? operationReportLineCount(preview) : 0;
-      const pageRows = policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5));
+      const visibleRows = 2;
+      const pageRows = key.pageUp || key.pageDown
+        ? policy.mode === 'compact' ? 2 : Math.max(1, pageActionBudget(5))
+        : visibleRows;
       setScrollOffset((value) => Math.min(
         Math.max(0, total - pageRows),
-        Math.max(0, value + (key.pageUp ? -pageRows : pageRows)),
+        Math.max(0, value + (key.pageUp || input.toLowerCase() === 'p' ? -pageRows : pageRows)),
       ));
       return;
     }
@@ -9620,7 +9783,7 @@ export function ConsoleAppV4(props: {
       setScrollOffset(0);
       return;
     }
-    if (route.name === 'pluginList' && key.tab) {
+    if ((route.name === 'pluginList' || route.name === 'sourceList') && key.tab) {
       setFocusZone((current) => current === 'content' ? 'actions' : 'content');
       return;
     }
@@ -9645,6 +9808,16 @@ export function ConsoleAppV4(props: {
     if (route.name === 'pluginList' && focusZone === 'actions' && key.return) {
       const actionIndex = Math.min(pinnedActionFocus, Math.max(0, pinnedActions.length - 1));
       runAction(pinnedActions[actionIndex]);
+      return;
+    }
+    if (route.name === 'sourceList' && focusZone === 'actions'
+      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)) {
+      setPinnedActionFocus((value) => moveFocus(pinnedActions, value,
+        key.upArrow || key.leftArrow ? -1 : 1));
+      return;
+    }
+    if (route.name === 'sourceList' && focusZone === 'actions' && key.return) {
+      runAction(pinnedActions[pinnedActionFocus]);
       return;
     }
     if (route.name === 'configFields' && focusZone === 'actions'
@@ -9834,9 +10007,11 @@ export function ConsoleAppV4(props: {
       props.controller.updatePageContext({ configGroupId: next.id, focusIndex: 0, scrollOffset: 0 });
       setFocus(0);
       setScrollOffset(0);
-    } else if (input.toLowerCase() === 'r' && route.name === 'sourceDetail') {
+    } else if ((input.toLowerCase() === 'r' || input.toLowerCase() === 'c')
+      && (route.name === 'sourceDetail' || route.name === 'sourceMore')) {
       void props.controller.recheckCatalogSource(route.sourceId);
-    } else if (input.toLowerCase() === 'r' && route.name === 'sourceList') {
+    } else if ((input.toLowerCase() === 'r' || input.toLowerCase() === 'c')
+      && route.name === 'sourceList') {
       void props.controller.recheckAllCatalogSources();
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
       const direction = key.leftArrow || input === '[' ? -1 : 1;

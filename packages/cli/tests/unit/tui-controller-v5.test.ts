@@ -3501,6 +3501,29 @@ describe('TUI Catalog freshness session overlay', () => {
     controller.dispose();
   });
 
+  it('coalesces repeated ordinary checks for the same source', async () => {
+    const pending = deferred<{ sourceId: string; state: 'current' }>();
+    const probeCatalogFreshness = vi.fn(() => pending.promise);
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'demo']),
+        sourceDetails: [sourceDetail('official', { autoCheck: false })],
+      }),
+      probeCatalogFreshness,
+    }));
+
+    await controller.load();
+    const first = controller.recheckCatalogSource('official');
+    const second = controller.recheckCatalogSource('official');
+    await nextTurn();
+
+    expect(probeCatalogFreshness).toHaveBeenCalledTimes(1);
+    pending.resolve({ sourceId: 'official', state: 'current' });
+    await Promise.all([first, second]);
+    controller.dispose();
+  });
+
   it('aborts and invalidates a running automatic check when autoCheck is disabled', async () => {
     const pending = deferred<{ sourceId: string; state: 'updateAvailable' }>();
     let aborted = false;

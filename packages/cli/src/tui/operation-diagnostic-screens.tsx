@@ -142,7 +142,8 @@ export function OperationDiagnosticScreen(props: {
   const hiddenAfter = Math.max(0, lines.length - offset - visible.length);
   return (
     <Box flexDirection="column">
-      <ResultCard status={state.status} title={props.detail.summary.message} meta={state.label} compact={props.compact} />
+      {props.compact ? null
+        : <ResultCard status={state.status} title={props.detail.summary.message} meta={state.label} compact={false} />}
       <TechnicalDetails label="安全技术详情" compact={props.compact}>
         {hiddenBefore > 0 ? <StaticRow title={`↑ 还有 ${hiddenBefore} 行`} status="muted" compact /> : null}
         {visible.map((line, index) => <StaticRow
@@ -180,13 +181,13 @@ export function OperationReportPreviewScreen(props: {
   const hiddenAfter = Math.max(0, lines.length - offset - visible.length);
   return (
     <Box flexDirection="column">
-      <ResultCard
+      {props.compact ? null : <ResultCard
         status={props.preview.omitted ? 'warning' : 'info'}
         title="报告预览"
         description={props.preview.omitted ? '报告只包含已保留的安全内容。' : '报告只包含本页安全内容。'}
         meta={props.preview.fileName}
         compact={props.compact}
-      />
+      />}
       <TechnicalDetails label="报告内容" compact={props.compact}>
         {hiddenBefore > 0 ? <StaticRow title={`↑ 还有 ${hiddenBefore} 行`} status="muted" compact /> : null}
         {visible.map((line, index) => <StaticRow

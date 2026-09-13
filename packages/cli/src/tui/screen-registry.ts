@@ -20,6 +20,7 @@ export const TUI_SCREEN_IDS = [
   'K02',
   'B01', 'B02',
   'T01', 'T02', 'T03', 'T04', 'T05',
+  'L01', 'L02', 'L03', 'L04', 'L05', 'L06',
 ] as const;
 
 export type TuiScreenId = typeof TUI_SCREEN_IDS[number];
@@ -88,6 +89,7 @@ const fixed = <Name extends TuiRouteName>(id: TuiScreenId) =>
 
 function reviewScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'catalogStorePrune') return 'L03';
   if (review?.operationKind === 'pluginWriteTask') return 'T02';
   if (review?.originIssue) return 'I10';
   const dependencyOperation = review?.operationKind === 'pluginWrite'
@@ -111,6 +113,7 @@ function reviewScreen(context: RouteScreenContext): TuiScreenId {
 
 function progressScreen(context: RouteScreenContext): TuiScreenId {
   const review = context.snapshot.activeReview;
+  if (review?.operationKind === 'catalogStorePrune') return 'L05';
   if (review?.operationKind === 'pluginWriteTask') return 'T03';
   if (context.snapshot.progressTargets.length > 0) return 'D06';
   if (review?.originIssue) return 'I11';
@@ -123,6 +126,9 @@ function progressScreen(context: RouteScreenContext): TuiScreenId {
 
 function resultScreen(context: RouteScreenContext): TuiScreenId {
   const result = context.snapshot.result;
+  if (result?.operationKind === 'catalogStorePrune') {
+    return result.state === 'succeeded' ? 'L05' : 'L06';
+  }
   if (result?.operationKind === 'pluginWriteTask') {
     return result.state === 'succeeded' ? 'T04' : 'T05';
   }
@@ -230,6 +236,8 @@ export const TUI_ROUTE_DEFINITIONS = {
     route.view === 'changes' ? 'C10' : 'C09' },
   scriptTimeout: { entity: 'none', rendererFamily: 'operation', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('P07') },
   sourceRemoveBlocked: { entity: 'source', rendererFamily: 'source', keymap: 'menu', normalize: source, screenId: fixed('S17') },
+  catalogStoreOverview: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('L01') },
+  catalogStoreRules: { entity: 'none', rendererFamily: 'source', keymap: 'menu', normalize: keep, screenId: fixed('L02') },
   issueList: { entity: 'none', rendererFamily: 'issue', keymap: 'menu', normalize: keep, screenId: (_route, { controller }) => {
     const issues = controller.listUserIssues();
     return issues.length === 0 ? 'I02' : issues.some((entry) => entry.category.startsWith('dependency')) ? 'D13' : 'I01';

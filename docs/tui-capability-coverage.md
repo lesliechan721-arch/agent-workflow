@@ -44,7 +44,8 @@
 | 任意目录的 Skill materialize、validate 和 Eval | 它们属于作者工具，不是向 Agent 安装插件的消费流程。 |
 | `review inspect`、`review prepare` 和 Review 报告归档 | 它们属于作者审核工具，由 CLI 和 Review Skill 编排；不复用 TUI 安装操作的准备、确认或进度流程。 |
 | 插件 init、add-skill、validate、test、build、requirements | 不建设单插件作者工作区；开发技能调用 CLI。 |
-| Catalog Workspace、Store、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 这些是作者和发布流程，继续由开发技能和 CLI 承担；TUI 不提供这些入口。 |
+| Catalog Store | TUI 提供只读概览、保留规则、精确预览和显式确认清理。实际删除复用 CLI 的安全清理服务、AW_HOME 写锁和逐项复核。 |
+| Catalog Workspace、开发来源、Catalog 发布、单插件作者流程和 CLI npm 发布 | 这些是作者和发布流程，继续由开发技能和 CLI 承担；TUI 不提供这些入口。 |
 | 自描述和任意文件维护 | TUI 不复制机器输出或任意文件操作接口。 |
 
 ## 实现验证索引

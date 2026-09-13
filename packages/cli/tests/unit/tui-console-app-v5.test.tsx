@@ -1064,6 +1064,19 @@ async function focusAction(
   throw new Error(`Action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
 }
 
+async function focusPinnedAction(
+  instance: ReturnType<typeof render>,
+  label: string,
+  limit = 8,
+): Promise<void> {
+  await input(instance, '\t');
+  for (let index = 0; index < limit; index += 1) {
+    if ((instance.lastFrame() ?? '').includes(`› [${label}]`)) return;
+    await input(instance, '\u001B[C');
+  }
+  throw new Error(`Pinned action was not reachable: ${label}\n${instance.lastFrame() ?? ''}`);
+}
+
 async function confirmReview(
   instance: ReturnType<typeof render>,
   value: TuiController,
@@ -1126,8 +1139,8 @@ async function chooseSourceSave(
 
 describe('ConsoleAppV4', () => {
   it('keeps the complete reachable screen map free of duplicate identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(120);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 120);
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(126);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 126);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -1146,6 +1159,7 @@ describe('ConsoleAppV4', () => {
       'K02',
       'B01', 'B02',
       'T01', 'T02', 'T03', 'T04', 'T05',
+      'L01', 'L02', 'L03', 'L04', 'L05', 'L06',
     ]);
   });
 
@@ -3104,7 +3118,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('目录管理');
 
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await focusPinnedAction(instance, '检查全部来源');
+    await input(instance, '\r');
     expect(checkAll).toHaveBeenCalledTimes(1);
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceList' });
     instance.unmount();
@@ -3934,7 +3949,7 @@ describe('ConsoleAppV4', () => {
     const value = controller();
     await value.load();
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
-    const recheck = vi.spyOn(value, 'fullValidateCatalogSource').mockRejectedValueOnce(
+    const recheck = vi.spyOn(value, 'recheckCatalogSource').mockRejectedValueOnce(
       attachSafeOperationError(new Error(`raw ${secret}`), {
         code: 'catalogGitAuthorizationFailed',
         stage: 'catalog.fetch',
@@ -3946,8 +3961,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    await input(instance, '\u001B[B', '\u001B[B', '\r',
-      '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await focusAction(instance, '检查来源');
+    await input(instance, '\r');
     await nextTurn(3);
     expect(value.snapshot.router.current.route.name).toBe('operationDiagnostic');
     const detail = value.getOperationDiagnostic(
@@ -3964,17 +3979,18 @@ describe('ConsoleAppV4', () => {
     value.replace({ name: 'sourceDetail', sourceId: 'team-tools' });
     recheck.mockRejectedValueOnce(new DOMException('cancelled', 'AbortError'));
     await nextTurn(2);
-    await input(instance, '\u001B[B', '\u001B[B', '\r',
-      '\u001B[B', '\u001B[B', '\u001B[B', '\r');
-    await nextTurn(2);
-    expect(value.listOperationHistory()).toHaveLength(recordCount);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
-
-    recheck.mockImplementationOnce(() => { throw new DOMException('cancelled', 'AbortError'); });
+    await focusAction(instance, '检查来源');
     await input(instance, '\r');
     await nextTurn(2);
     expect(value.listOperationHistory()).toHaveLength(recordCount);
-    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
+
+    recheck.mockImplementationOnce(() => { throw new DOMException('cancelled', 'AbortError'); });
+    await focusAction(instance, '检查来源');
+    await input(instance, '\r');
+    await nextTurn(2);
+    expect(value.listOperationHistory()).toHaveLength(recordCount);
+    expect(value.snapshot.router.current.route).toEqual({ name: 'sourceDetail', sourceId: 'team-tools' });
     instance.unmount();
   });
 
@@ -4741,20 +4757,23 @@ describe('ConsoleAppV4', () => {
     expect(visibleCounts[2]).toBe(12);
   });
 
-  it('keeps the last source action visible with HelpBar at 60x18', async () => {
+  it('keeps the last direct source actions visible with HelpBar at 60x18', async () => {
     const value = controller();
     await value.load();
     value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
     await nextTurn(2);
-    await input(instance, '\u001B[B', '\u001B[B', '\r',
-      '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B');
-    expect(instance.lastFrame()).toContain('› 技术详情');
-    expect(instance.lastFrame()).toContain('↑↓ 移动');
-    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    for (const label of ['移除来源', '更多操作']) {
+      await focusAction(instance, label);
+      const frame = instance.lastFrame() ?? '';
+      expect(frame).toContain(`› ${label}`);
+      expect(frame).toContain('↑↓ 移动');
+      expect(frame.match(/›/gu)).toHaveLength(1);
+      expect(frame.split('\n').length).toBeLessThanOrEqual(18);
+    }
   });
 
-  it('uses the light source check for r and keeps full validation separate', async () => {
+  it('uses the light source check for r without opening a second check action', async () => {
     const value = controller();
     await value.load();
     const recheck = vi.spyOn(value, 'recheckCatalogSource').mockResolvedValue(undefined);
@@ -4764,8 +4783,7 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
 
-    expect(instance.lastFrame()).toContain('重新检查');
-    expect(instance.lastFrame()).toContain('完整验证');
+    expect(instance.lastFrame()).toContain('检查来源');
     await input(instance, 'r');
 
     expect(recheck).toHaveBeenCalledWith('team-tools');
@@ -4784,8 +4802,8 @@ describe('ConsoleAppV4', () => {
     await nextTurn(2);
     expect(instance.lastFrame()).not.toContain('远端 Catalog 检查失败');
 
-    for (const [index, label] of ['重新检查', '来源设置', '更多操作'].entries()) {
-      if (index > 0) await input(instance, '\u001B[B');
+    for (const label of ['检查来源', '查看此来源插件', '来源设置', '移除来源', '更多操作']) {
+      await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
       expect(frame).toContain('↑↓ 移动');
@@ -4795,13 +4813,14 @@ describe('ConsoleAppV4', () => {
 
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'team-tools' });
-    for (const [index, label] of ['设为主来源…', '移除来源…', '重新检查', '完整验证', '技术详情'].entries()) {
-      if (index > 0) await input(instance, '\u001B[B');
+    for (const label of ['设为主来源…', '检查来源', '技术详情']) {
+      await focusAction(instance, label);
       const frame = instance.lastFrame() ?? '';
       expect(frame).toContain(`› ${label}`);
       expect(frame.match(/›/gu)).toHaveLength(1);
       expect(frame.split('\n').length).toBeLessThanOrEqual(rows);
     }
+    await focusAction(instance, '技术详情');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'team-tools' });
   });
@@ -4842,8 +4861,10 @@ describe('ConsoleAppV4', () => {
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root']) {
       expect(unavailableDefault).not.toContain(privateText);
     }
-    await input(unavailableInstance, '\u001B[B', '\u001B[B', '\r',
-      ...Array.from({ length: 5 }, () => '\u001B[B'), '\r');
+    await focusAction(unavailableInstance, '更多操作');
+    await input(unavailableInstance, '\r');
+    await focusAction(unavailableInstance, '技术详情');
+    await input(unavailableInstance, '\r');
     expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceTechnical', sourceId: 'research' });
     const unavailableTechnical = unavailableInstance.lastFrame() ?? '';
     expect(unavailableTechnical).toContain('catalogGenerationUnavailable');
@@ -4855,6 +4876,7 @@ describe('ConsoleAppV4', () => {
       '/Users/private-user', '/workspace/private', '/tmp/private', '/private/source/root', 'commit-secret']) {
       expect(unavailableTechnical).not.toContain(privateText);
     }
+    await focusAction(unavailableInstance, '返回来源详情');
     await input(unavailableInstance, '\r');
     expect(unavailable.snapshot.router.current.route).toEqual({ name: 'sourceMore', sourceId: 'research' });
   });
@@ -5914,7 +5936,8 @@ describe('ConsoleAppV4', () => {
     value.push({ name: 'sourceList' });
     const source = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(2);
-    await input(source, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r', ...'private-source'.split(''), '\r');
+    await focusPinnedAction(source, '＋ 添加来源');
+    await input(source, '\r', '\u001B[B', '\r', ...'private-source'.split(''), '\r');
     const privateSourcePath = '/Users/alice/private/catalog';
     await input(source, ...privateSourcePath.split(''));
     expect(source.lastFrame()).toContain('已选择 / … / catalog');
@@ -7658,7 +7681,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'type' });
     const sourceRoute = value.snapshot.router.current.route;
     expect(value.externalDrafts).toEqual([
@@ -8521,7 +8545,8 @@ describe('ConsoleAppV4', () => {
     await input(instance, '\u001B[B', '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('单个来源失败不会阻止其他来源继续工作');
     expect(screens).toContain('S01');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r', '\r');
     expect(screens).toContain('S05');
     await input(instance, 'team-b2', '\r');
     expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'location' });
@@ -8532,7 +8557,8 @@ describe('ConsoleAppV4', () => {
     await input(instance, 'catalog/stable', '\r', 'catalog', '\r');
     await nextTurn(3);
     expect(screens).toContain('S14');
-    await input(instance, ...Array.from({ length: 4 }, () => '\u001B[B'), '\r');
+    await focusAction(instance, '查看修改汇总');
+    await input(instance, '\r');
     expect(screens).toContain('S15');
     await input(instance, '\r');
     await nextTurn(3);
@@ -8580,7 +8606,8 @@ describe('ConsoleAppV4', () => {
     />);
     await nextTurn(4);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r', '\r');
     await input(instance, 'hHqb');
 
     expect(instance.lastFrame()).toContain('hHqb');
@@ -8593,7 +8620,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(4);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r', '\r');
     await input(instance, 'discard-me', '\r', 'https://example.test/catalog.git', '\r');
     expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S07');
 
@@ -8614,7 +8642,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(4);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r', '\r');
     await input(instance, 'review-draft', '\r', 'https://example.test/catalog.git', '\r', '\r', '\r');
     await nextTurn(3);
     expect(resolveConsoleV4ScreenId(value.snapshot, value)).toBe('S14');
@@ -8897,7 +8926,8 @@ describe('ConsoleAppV4', () => {
       if (!frame.includes('↓ 后面还有')) break;
       await input(instance, '\u001B[6~');
     }
-    expect(detailPages.join('\n').replace(/\s/gu, '')).toContain('来源修改前唯一结尾');
+    expect(detailPages.some((page) => page.includes('来源修改前唯一结'))).toBe(true);
+    expect(detailPages.some((page) => /^\s*尾\s*$/mu.test(page))).toBe(true);
     expect(detailPages.join('\n')).toContain('仓库根目录');
     await input(instance, 'b');
     expect(instance.lastFrame()).toContain('› 阅读完整来源变化');
@@ -9031,10 +9061,8 @@ describe('ConsoleAppV4', () => {
     expect(detail).toContain('当前 AW 缺少 2 项待检查版本所需功能');
     expect(detail).toContain('当前目录版本 2.4.0 仍可浏览和使用');
     expect(detail).not.toContain('更新到候选版本');
-    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\u001B[B');
-    expect(instance.lastFrame()).toContain('› 重新检查');
-    await input(instance, '\u001B[B');
-    expect(instance.lastFrame()).toContain('› 完整验证');
+    await focusAction(instance, '检查来源');
+    expect(instance.lastFrame()).toContain('› 检查来源');
 
     value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
     await nextTurn(2);
@@ -9082,15 +9110,14 @@ describe('ConsoleAppV4', () => {
     expect(detail).toContain('当前 AW 缺少 2 项待检查版本所需功能');
     expect(detail).toContain('这个来源没有可用目录版本');
     expect(detail).toContain('来源设置');
-    expect(detail).toContain('更多操作');
     expect(detail).not.toContain('获取并启用');
     expect(detail).not.toContain('启用并设为主来源');
     expect(detail).not.toContain('当前 Active Catalog 保持不变');
 
     await focusAction(instance, '更多操作');
+    expect(instance.lastFrame()).toContain('› 更多操作');
     await input(instance, '\r');
-    expect(instance.lastFrame()).toContain('重新检查');
-    expect(instance.lastFrame()).toContain('完整验证');
+    expect(instance.lastFrame()).toContain('检查来源');
 
     value.push({ name: 'sourceTechnical', sourceId: 'team-tools' });
     await nextTurn(2);
@@ -9107,7 +9134,8 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(5);
     await input(instance, '\u001B[B', '\u001B[B', '\r');
-    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusPinnedAction(instance, '＋ 添加来源');
+    await input(instance, '\r', '\r');
     await input(instance, 'safe-input', '\r');
     await input(instance, 'https://user:secret@example.test/catalog.git?token=private#fragment');
 
@@ -9173,7 +9201,8 @@ describe('ConsoleAppV4', () => {
     const screens = new Set<ConsoleV4ScreenId>();
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
     await nextTurn(5);
-    await input(instance, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
+    await focusAction(instance, '移除来源');
+    await input(instance, '\r');
     await nextTurn(3);
     expect(screens).toContain('S18');
     expect(value.snapshot.activeReview?.sourceAction).toBe('remove');
@@ -9376,7 +9405,10 @@ describe('ConsoleAppV4', () => {
     const primaryScreens = new Set<ConsoleV4ScreenId>();
     const primaryView = render(<ConsoleAppV4 controller={primary} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => primaryScreens.add(screen)} />);
     await nextTurn(5);
-    await input(primaryView, '\u001B[B', '\u001B[B', '\r', '\r');
+    await focusAction(primaryView, '更多操作');
+    await input(primaryView, '\r');
+    await focusAction(primaryView, '设为主来源…');
+    await input(primaryView, '\r');
     await nextTurn(3);
     expect(primaryScreens).toContain('S16');
     cleanup();
@@ -9386,7 +9418,8 @@ describe('ConsoleAppV4', () => {
     const removalScreens = new Set<ConsoleV4ScreenId>();
     const removalView = render(<ConsoleAppV4 controller={removal} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => removalScreens.add(screen)} />);
     await nextTurn(5);
-    await input(removalView, '\u001B[B', '\u001B[B', '\r', '\u001B[B', '\r');
+    await focusAction(removalView, '移除来源');
+    await input(removalView, '\r');
     await nextTurn(3);
     expect(removalScreens).toContain('S18');
   });

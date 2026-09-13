@@ -203,6 +203,24 @@ describe('TUI foundation', () => {
     }
   });
 
+  it.each([{ columns: 80, rows: 24 }, { columns: 60, rows: 18 }])(
+    'separates long breadcrumbs from header context at $columns x $rows', async (size) => {
+      const instance = render(<ScreenFrame
+        title="选择平台"
+        breadcrumb={`插件 / ${'Long plugin name '.repeat(8)} / 目标平台`}
+        context="fixture · 第 1 步，共 2 步"
+        help="Enter 选择"
+        size={size}
+      ><Text>确定所选平台</Text></ScreenFrame>);
+      await nextTurn();
+      const header = (instance.lastFrame() ?? '').split('\n')[0] ?? '';
+      expect(header).toContain('AW / 插件');
+      expect(header).toMatch(/…\s+fixture/);
+      expect(header).toContain('第 1 步，共 2 步');
+      instance.unmount();
+    },
+  );
+
   it('applies the standard, compact, and minimum-size policies', () => {
     expect(resolveTuiSizePolicy(120, 30).mode).toBe('single-column');
     expect(resolveTuiSizePolicy(80, 24).mode).toBe('single-column');
