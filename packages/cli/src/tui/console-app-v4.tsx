@@ -1593,7 +1593,12 @@ export function ConsoleAppV4(props: {
       setSourceDraft(undefined);
       setDirty(Object.keys(draftUpdates).length + draftRemoves.length + changedObjectDraftKeys.length > 0);
     }
-  }, [route.name, snapshot.result]);
+  }, [
+    route.name,
+    snapshot.result?.operationId,
+    snapshot.result?.state,
+    snapshot.result?.operationKind,
+  ]);
   useEffect(() => {
     if (route.name !== 'result' || snapshot.result?.operationKind !== 'pluginWriteBatch') return;
     setBatchDraft(undefined);

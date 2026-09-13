@@ -8124,6 +8124,38 @@ describe('ConsoleAppV4', () => {
     expect(frame.split('\n').length).toBeLessThanOrEqual(18);
   });
 
+  it('settles config result cleanup without repeated snapshot publications', async () => {
+    const value = controller({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        apply: { state: 'skipped', reason: 'notRequested', targetResults: [] },
+      }),
+    });
+    const review = await value.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team-tools/review-gate',
+      scope: 'user',
+      projectLayer: 'shared',
+      apply: false,
+      updates: { mode: 'safe' },
+    });
+    await value.executeOperation(review.reviewToken);
+    let publicationCount = 0;
+    const unsubscribe = value.subscribe(() => {
+      publicationCount += 1;
+    });
+    render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(8);
+    const settledPublicationCount = publicationCount;
+
+    await nextTurn(12);
+
+    expect(value.snapshot.router.current.route.name).toBe('result');
+    expect(publicationCount).toBe(settledPublicationCount);
+    unsubscribe();
+  });
+
   it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {
     const executeIntent = vi.fn().mockResolvedValue({
       configWrite: 'succeeded',
