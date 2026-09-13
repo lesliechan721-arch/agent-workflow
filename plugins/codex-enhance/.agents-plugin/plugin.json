@@ -1,7 +1,7 @@
 {
   "schemaVersion": 3,
   "name": "codex-enhance",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "description": "通过只读证据探索和通用子代理编排增强 Codex harness。",
   "marketplace": {
     "category": "workflow",
@@ -220,7 +220,7 @@
       "simpleTaskProfile": {
         "type": "object",
         "title": "简单任务配置",
-        "description": "简单任务 agent type 使用的模型与推理强度，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。",
+        "description": "简单任务 role 使用的模型与推理强度。",
         "default": {
           "model": "gpt-5.6-luna",
           "reasoningEffort": "max"
@@ -273,8 +273,8 @@
       },
       "generalTaskProfile": {
         "type": "object",
-        "title": "通用任务配置",
-        "description": "通用任务 agent type 使用的模型与推理强度，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。",
+        "title": "常规任务配置",
+        "description": "常规任务 role 使用的模型与推理强度。",
         "default": {
           "model": "gpt-5.6-terra",
           "reasoningEffort": "xhigh"
@@ -328,7 +328,7 @@
       "complexTaskProfile": {
         "type": "object",
         "title": "复杂任务配置",
-        "description": "复杂任务 agent type 使用的模型与推理强度，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。",
+        "description": "复杂任务 role 使用的模型与推理强度。",
         "default": {
           "model": "gpt-5.6-sol",
           "reasoningEffort": "medium"
@@ -382,9 +382,9 @@
       "advancedTaskProfile": {
         "type": "object",
         "title": "高难任务配置",
-        "description": "高难任务 agent type 使用的模型与推理强度，适用于系统级、高歧义、高风险或要求极高完整性的任务。",
+        "description": "高难任务 role 使用的模型与推理强度。",
         "default": {
-          "model": "gpt-5.6-sol",
+          "model": "gpt-6-astra",
           "reasoningEffort": "xhigh"
         },
         "required": true,
@@ -432,28 +432,6 @@
           }
         },
         "additionalProperties": false
-      },
-      "exploreMinimumInitialWaitMinutes": {
-        "type": "number",
-        "title": "探索首次响应式等待窗口（分钟）",
-        "description": "codex-explore 在没有更具体规则时使用的最小首次响应式等待窗口。",
-        "default": 10,
-        "validation": {
-          "integer": true,
-          "minimum": 1,
-          "maximum": 60
-        }
-      },
-      "subagentMinimumInitialWaitMinutes": {
-        "type": "number",
-        "title": "子代理首次响应式等待窗口（分钟）",
-        "description": "codex-subagent-guide 在没有更具体规则时使用的最小首次响应式等待窗口。",
-        "default": 10,
-        "validation": {
-          "integer": true,
-          "minimum": 1,
-          "maximum": 60
-        }
       }
     },
     "presentation": {
@@ -464,8 +442,7 @@
           "fields": [
             "quickProfile",
             "standardProfile",
-            "deepProfile",
-            "exploreMinimumInitialWaitMinutes"
+            "deepProfile"
           ]
         },
         {
@@ -475,8 +452,7 @@
             "simpleTaskProfile",
             "generalTaskProfile",
             "complexTaskProfile",
-            "advancedTaskProfile",
-            "subagentMinimumInitialWaitMinutes"
+            "advancedTaskProfile"
           ]
         }
       ]
@@ -497,9 +473,7 @@
         "states": [
           "present"
         ],
-        "refreshKeys": [
-          "exploreMinimumInitialWaitMinutes"
-        ],
+        "refreshKeys": [],
         "delivery": {
           "mode": "codex-native",
           "identity": "shared",
@@ -597,9 +571,7 @@
         "states": [
           "present"
         ],
-        "refreshKeys": [
-          "subagentMinimumInitialWaitMinutes"
-        ],
+        "refreshKeys": [],
         "delivery": {
           "mode": "codex-native",
           "identity": "shared",
