@@ -11,7 +11,7 @@ import type {
   PlatformName,
   Scope,
 } from '../types.js';
-import type { PortableReview, PortableInstallReceipt } from '../portable/commands.js';
+import type { PortableReview, PortableInstallReceipt, PortableRetryReview } from '../portable/commands.js';
 import type { CatalogSourceUpdate } from '../utils/catalog-sources.js';
 import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { readSafeOperationError } from '../utils/safe-operation-diagnostic.js';
@@ -319,6 +319,10 @@ export type OperationIntent =
       scope: Scope;
       selectedSkills: string[];
       requestedAgents?: string[];
+      retry?: {
+        receipt: PortableInstallReceipt;
+        review?: PortableRetryReview;
+      };
     }
   | {
       kind: 'configSave';
@@ -651,7 +655,9 @@ export interface OperationResultSummary {
     scope: Scope;
     materializationDigest: string;
     skillsCliVersion: string;
+    verified: Array<{ name: string; scope?: string; agents: string[] }>;
     missing: Array<{ skill: string; agent?: string }>;
+    unknown: Array<{ skill: string; agent?: string }>;
     verificationUnknown: boolean;
     recovery?: string;
     failureCode?: string;
@@ -760,6 +766,10 @@ export interface TuiControllerDependencies {
   ) => Promise<CatalogGenerationFreshnessResult>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
+  recheckPortableInstall?: (
+    receipt: PortableInstallReceipt,
+    signal: AbortSignal,
+  ) => Promise<PortableInstallReceipt>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
   prepareReviewEvidence?: (
     intent: OperationIntent,
@@ -844,6 +854,12 @@ export interface TuiControllerSnapshot {
     scope: Scope;
   };
   installPlacementDraft?: InstallPlacementDraftViewModel;
+  completionNotice?: {
+    pluginId: string;
+    title: string;
+    description: string;
+    operationRecordId?: string;
+  };
 }
 
 interface InstallPlacementDraftState extends InstallPlacementDraftViewModel {
@@ -1352,6 +1368,27 @@ function issueCode(error: unknown): string {
   return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'operationBlocked';
 }
 
+function isPortableInstallReceipt(value: unknown): value is PortableInstallReceipt {
+  return typeof value === 'object' && value !== null
+    && (value as { receiptSchemaVersion?: unknown }).receiptSchemaVersion === 5
+    && (value as { command?: unknown }).command === 'skill:install';
+}
+
+function completedSinglePluginId(
+  intent: OperationIntent,
+  result: OperationExecuteResult,
+): string | undefined {
+  if (result.state !== 'succeeded' || result.summary.warnings?.length) return undefined;
+  if (intent.kind === 'pluginWrite') return intent.originIssue ? undefined : intent.pluginId;
+  const pluginIds = intent.kind === 'pluginWriteBatch'
+    ? result.summary.batch?.requestedPluginIds ?? []
+    : intent.kind === 'pluginWriteTask'
+      ? intent.targets.map((target) => target.pluginId)
+      : [];
+  const unique = [...new Set(pluginIds)];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
 export function extractPortableError(error: unknown): {
   code: PortableBlockerCode;
   diagnosticCode: string;
@@ -1406,6 +1443,9 @@ export class TuiController {
   #result?: OperationExecuteResult;
   #resultAnchor?: TuiRoute;
   #portableResultSkills?: string[];
+  #portableResultReceipt?: PortableInstallReceipt;
+  #portableResultIntent?: Extract<OperationIntent, { kind: 'portableInstall' }>;
+  #completionNotice?: TuiControllerSnapshot['completionNotice'];
   #loadError?: { code: string; message: string };
   #portableDraft?: TuiControllerSnapshot['portableDraft'];
   #recoverablePortableDraft?: TuiControllerSnapshot['portableDraft'];
@@ -1525,6 +1565,7 @@ export class TuiController {
               : {}),
           } }
         : {}),
+      ...(this.#completionNotice ? { completionNotice: this.#completionNotice } : {}),
     });
   }
 
@@ -1672,6 +1713,7 @@ export class TuiController {
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
+    this.#completionNotice = undefined;
     this.#progress = { messages: [] };
     this.#progressTargets = [];
     this.#router.resetToRoot();
@@ -1995,6 +2037,10 @@ export class TuiController {
 
   #stableResultRoute(intent: OperationIntent, result: OperationExecuteResult): TuiRoute {
     const active = this.#router.activeFlow();
+    const completedPluginId = completedSinglePluginId(intent, result);
+    if (completedPluginId) {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: completedPluginId });
+    }
     if (intent.kind === 'pluginWriteTask'
       && result.state === 'succeeded'
       && 'returnRoute' in result
@@ -2002,6 +2048,9 @@ export class TuiController {
       && result.returnRoute.goal === result.summary.task?.goal
       && result.returnRoute.batchOrigin?.owner === 'batch-write') {
       return { name: 'pluginList', mode: 'installed' };
+    }
+    if (intent.kind === 'portableInstall' && result.state === 'succeeded') {
+      return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
     }
     if (active?.parentFlowId) return this.#normalizeRoute(active.returnTarget);
     if (active && (intent.kind === 'portableInstall'
@@ -2011,6 +2060,12 @@ export class TuiController {
     if (intent.kind === 'pluginWrite') {
       if (intent.originIssue && result.state === 'succeeded') return { name: 'issueList' };
       return this.#normalizeRoute({ name: 'pluginDetail', pluginId: intent.pluginId });
+    }
+    if (intent.kind === 'pluginWriteBatch' && intent.selection.kind === 'targets') {
+      const pluginIds = [...new Set(intent.selection.targets.map((target) => target.pluginId))];
+      if (pluginIds.length === 1) {
+        return this.#normalizeRoute({ name: 'pluginDetail', pluginId: pluginIds[0]! });
+      }
     }
     if (intent.kind === 'pluginWriteBatch') return { name: 'pluginList', mode: 'installed' };
     if (intent.kind === 'pluginWriteTask') return { name: 'pluginList', mode: 'installed' };
@@ -2087,8 +2142,36 @@ export class TuiController {
       && result.returnRoute.batchOrigin?.owner === 'batch-write'
       ? result.returnRoute.batchOrigin.flowId
       : undefined;
+    const completedPluginId = completedSinglePluginId(intent, result);
+    if (completedPluginId && target.name === 'pluginDetail') {
+      this.#recordTerminalResult();
+      const action = intent.kind === 'pluginWrite' || intent.kind === 'pluginWriteBatch'
+        ? intent.action : 'sync';
+      this.#completionNotice = {
+        pluginId: completedPluginId,
+        title: intent.kind === 'pluginWriteTask'
+          ? intent.goal === 'update' ? '插件更新完成' : '插件恢复完成'
+          : action === 'uninstall' ? '插件卸载完成'
+          : action === 'install' ? '插件安装完成'
+            : action === 'reinstall' ? '插件重新安装完成'
+              : action === 'refreshAndSync' ? '插件更新完成'
+                : action === 'cleanup' ? '插件清理完成' : '插件同步完成',
+        description: action === 'uninstall'
+          ? '所选实际位置已处理。插件设置保持不变。'
+          : '状态已重新检查。下方详情显示当前实际位置。',
+        ...(result.operationRecordId ? { operationRecordId: result.operationRecordId } : {}),
+      };
+      const finished = this.#router.finishFlow(target);
+      if (!finished) this.#router.replace(target);
+      return;
+    }
+    const portableParentFlowId = result.state === 'succeeded'
+      && intent.kind === 'portableInstall'
+      && this.#router.activeFlow()?.parentFlowId;
     const finished = batchFlowId
       ? this.#router.finishFlowById(batchFlowId, 'batchWrite', target, terminal)
+      : portableParentFlowId
+        ? this.#router.finishFlowById(portableParentFlowId, 'pluginInstall', target, terminal)
       : this.#router.finishFlow(target, terminal);
     if (!finished) this.#router.replace(terminal);
   }
@@ -2329,6 +2412,14 @@ export class TuiController {
     this.#publish();
   }
 
+  clearPortableSkills(): void {
+    if (!this.#portableDraft) return;
+    this.#portableDraft.candidates = this.#portableDraft.candidates.map((candidate) => ({ ...candidate, selected: false }));
+    this.#portableDraft.selectedCount = 0;
+    this.#portableDraft.canContinue = false;
+    this.#publish();
+  }
+
   setPortableAgentMode(mode: 'automatic' | 'explicit', requestedAgents: string[] = []): void {
     if (!this.#portableDraft) return;
     this.#portableDraft.agentMode = mode;
@@ -2383,6 +2474,68 @@ export class TuiController {
   startPortableInstallReviewPreparation(): ReviewPreparationSnapshot {
     const intent = this.#portableInstallIntent();
     return this.startReviewPreparation(intent, this.#router.portableOrigin(intent.pluginId));
+  }
+
+  async recheckPortableResult(): Promise<PortableInstallReceipt> {
+    this.#assertAcceptingActions();
+    if (this.#router.snapshot.current.route.name !== 'result'
+      || this.#result?.operationKind !== 'portableInstall'
+      || !this.#portableResultReceipt
+      || !this.#portableResultIntent
+      || !this.dependencies.recheckPortableInstall) {
+      throw new TuiOperationBlockedError('portableRecheckUnavailable', '当前结果不能执行只读复查。');
+    }
+    const checked = await this.#trackRead(this.dependencies.recheckPortableInstall(
+      structuredClone(this.#portableResultReceipt),
+      this.#abort.signal,
+    ));
+    this.#portableResultReceipt = structuredClone(checked);
+    const summary = operationResultSummary(this.#portableResultIntent, checked);
+    const previous = this.#result;
+    this.#result = {
+      state: checked.status === 'succeeded' ? 'succeeded' : 'partial',
+      operationId: previous.operationId,
+      summary: {
+        ...summary,
+        elapsedMs: 'summary' in previous && previous.summary?.elapsedMs !== undefined
+          ? previous.summary.elapsedMs : summary.elapsedMs,
+      },
+      operationKind: 'portableInstall',
+      pluginId: this.#portableResultIntent.pluginId,
+      returnRoute: 'returnRoute' in previous && previous.returnRoute
+        ? structuredClone(previous.returnRoute)
+        : { name: 'pluginDetail', pluginId: this.#portableResultIntent.pluginId },
+    };
+    this.#publish();
+    return cloneFrozen(checked);
+  }
+
+  startPortableRetryReviewPreparation(): ReviewPreparationSnapshot {
+    this.#assertAcceptingActions();
+    const receipt = this.#portableResultReceipt;
+    const original = this.#portableResultIntent;
+    if (this.#router.snapshot.current.route.name !== 'result' || !receipt || !original) {
+      throw new TuiOperationBlockedError('portableRetryUnavailable', '当前结果不能准备精确重试。');
+    }
+    if ((receipt.verification.unknown?.length ?? 0) > 0) {
+      throw new TuiOperationBlockedError('portableRetryNotExact', '结果仍有未知目标。请先只读复查。');
+    }
+    const retryPairs = receipt.verification.missing;
+    if (retryPairs.length === 0 || retryPairs.some((target) => !target.agent)) {
+      throw new TuiOperationBlockedError('portableRetryNotExact', '没有可绑定到 Skill 与 Agent 的精确失败目标。');
+    }
+    const intent: Extract<OperationIntent, { kind: 'portableInstall' }> = {
+      kind: 'portableInstall',
+      pluginId: original.pluginId,
+      scope: original.scope,
+      selectedSkills: [...new Set(retryPairs.map((target) => target.skill))],
+      requestedAgents: [...new Set(retryPairs.flatMap((target) => target.agent ? [target.agent] : []))],
+      retry: { receipt: structuredClone(receipt) },
+    };
+    return this.startReviewPreparation(intent, {
+      name: 'pluginDetail',
+      pluginId: original.pluginId,
+    });
   }
 
   discardPortableDraft(): void {
@@ -2578,6 +2731,7 @@ export class TuiController {
       this.#result = undefined;
       this.#resultAnchor = undefined;
       this.#portableResultSkills = undefined;
+      this.#completionNotice = undefined;
       this.#publish();
       return;
     }
@@ -2603,6 +2757,7 @@ export class TuiController {
     this.#result = undefined;
     this.#resultAnchor = undefined;
     this.#portableResultSkills = undefined;
+    this.#completionNotice = undefined;
     this.#recoverableInstallPlacementDraft = undefined;
     this.#recoverablePortableDraft = undefined;
     this.#publish();
@@ -2644,6 +2799,7 @@ export class TuiController {
       || route.name === 'operationReportPreview';
     if (readOnlyHistoryRoute && this.#router.activeFlow()?.kind === 'portableInstall') return;
     const portableRoute = route.name === 'portableSkillSelect'
+      || route.name === 'portableSkillSummary'
       || route.name === 'portableDependencies'
       || route.name === 'portableAgentMode'
       || route.name === 'portableAgentInput'
@@ -3505,6 +3661,7 @@ export class TuiController {
 
   startReviewPreparation(intent: OperationIntent, returnRoute?: TuiRoute): ReviewPreparationSnapshot {
     this.#assertAcceptingActions();
+    this.#completionNotice = undefined;
     intent = normalizeOperationIntent(intent);
     if (intent.kind === 'catalogGeneration' && !intent.sourceMutation) {
       const blockReason = this.catalogSourceRecoveryBlockReason(intent);
@@ -4049,6 +4206,10 @@ export class TuiController {
             structuredClone(ticket.intent),
             structuredClone(ticket.evidence),
           );
+      if (ticket.intent.kind === 'portableInstall' && isPortableInstallReceipt(execution)) {
+        this.#portableResultReceipt = structuredClone(execution);
+        this.#portableResultIntent = structuredClone(ticket.intent);
+      }
       const executionProjection = projectExecutionDiagnostics(
         execution,
         `${this.#sessionEpoch}:${operationId}`,
@@ -4666,10 +4827,11 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
   }
   if (intent.kind === 'portableInstall') {
     const receipt = execution as PortableInstallReceipt;
-    const verificationUnknown = receipt.failures.some((failure) =>
-      failure.code === 'portableSkillsCliVerificationFailed'
-      && receipt.verification.records.length === 0
-      && receipt.verification.missing.length === 0);
+    const verificationUnknown = (receipt.verification.unknown?.length ?? 0) > 0
+      || receipt.failures.some((failure) =>
+        failure.code === 'portableSkillsCliVerificationFailed'
+        && receipt.verification.records.length === 0
+        && receipt.verification.missing.length === 0);
     return {
       code: receipt.status === 'succeeded' ? 'operationSucceeded'
         : receipt.status === 'partial' ? 'operationPartial' : 'operationFailed',
@@ -4688,7 +4850,9 @@ function operationResultSummaryUnsafe(intent: OperationIntent, execution: unknow
         scope: receipt.scope,
         materializationDigest: receipt.materializationDigest,
         skillsCliVersion: receipt.skillsCliVersion,
+        verified: receipt.verification.records,
         missing: receipt.verification.missing,
+        unknown: receipt.verification.unknown ?? [],
         verificationUnknown,
         ...(receipt.failures[0]?.recovery ? { recovery: receipt.failures[0].recovery } : {}),
         ...(receipt.failures[0]?.code ? { failureCode: receipt.failures[0].code } : {}),

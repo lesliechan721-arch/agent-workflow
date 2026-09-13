@@ -999,10 +999,10 @@ describe('TUI v4 router and ViewModel', () => {
       },
     });
     expect(buildPluginPreviewActions(capable).map((action) => action.id)).toEqual([
-      'add', 'portableSkills', 'dependencies', 'settings', 'source',
+      'add', 'dependencies', 'settings', 'source',
     ]);
     expect(buildPluginDetailActions(capable).map((action) => action.id)).toEqual([
-      'platform', 'dependencies', 'portableSkills', 'settings', 'about',
+      'platform', 'dependencies', 'settings', 'about',
     ]);
   });
 
@@ -2288,6 +2288,35 @@ describe('TUI v4 router and ViewModel', () => {
         focusedEntityId: 'official/demo',
       },
     });
+  });
+
+  it('returns a nested Portable flow to target platforms and can close the full install flow', () => {
+    const router = new TuiRouter();
+    router.push({ name: 'pluginPreview', pluginId: 'official/demo' });
+    const installFlow = router.beginPluginFlow('pluginInstall', 'official/demo');
+    router.push({ name: 'installTargets', pluginId: 'official/demo' });
+    router.beginPortableFlow('official/demo');
+    router.push({ name: 'portableSkillSelect', pluginId: 'official/demo' });
+
+    router.resetPortableFlow('official/demo');
+    expect(router.snapshot.current.route).toEqual({
+      name: 'installTargets', pluginId: 'official/demo',
+    });
+    expect(router.activeFlow()).toMatchObject({ id: installFlow.id, kind: 'pluginInstall' });
+
+    router.beginPortableFlow('official/demo');
+    router.push({ name: 'result', operationId: 'portable-1' });
+    router.finishFlowById(
+      installFlow.id,
+      'pluginInstall',
+      { name: 'pluginDetail', pluginId: 'official/demo' },
+      { name: 'result', operationId: 'portable-1' },
+    );
+    router.back();
+    expect(router.snapshot.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/demo',
+    });
+    expect(router.activeFlow()).toBeUndefined();
   });
 
   it('returns dependency overview evidence loaded by the runtime without recomputing a client closure', async () => {
@@ -4795,6 +4824,19 @@ describe('TUI v4 Review safety', () => {
     const depthAtReview = controller.snapshot.router.depth;
 
     await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({ state });
+    if (state === 'succeeded') {
+      expect(controller.snapshot.router).toMatchObject({
+        depth: depthAtReview - 1,
+        current: { route: { name: 'pluginDetail', pluginId: 'official/demo' } },
+      });
+      expect(controller.snapshot.completionNotice).toMatchObject({
+        pluginId: 'official/demo',
+        title: '插件更新完成',
+      });
+      controller.back();
+      expect(controller.snapshot.router).toMatchObject({ depth: 1, current: { route: { name: 'home' } } });
+      return;
+    }
     expect(controller.snapshot.router).toMatchObject({
       depth: depthAtReview,
       current: { route: { name: 'result', operationId: review.operationId } },
@@ -4822,12 +4864,15 @@ describe('TUI v4 Review safety', () => {
 
     await controller.executeOperation(review.reviewToken);
 
-    expect(controller.snapshot.router.current.route.name).toBe('result');
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/demo' });
+    expect(controller.snapshot.completionNotice).toMatchObject({
+      pluginId: 'official/demo',
+      title: '插件安装完成',
+    });
     expect(controller.snapshot.installPlacementDraft).toBeUndefined();
     expect(controller.snapshot.progress).toEqual({ messages: [] });
     expect(controller.snapshot.progressTargets).toEqual([]);
 
-    controller.leaveResult();
     controller.beginInstallFlow('official/demo', 'project');
     controller.push({ name: 'installPlacement', pluginId: 'official/demo' });
     expect(controller.snapshot.installPlacementDraft).toBeDefined();
@@ -4905,7 +4950,14 @@ describe('TUI v4 Review safety', () => {
     ['home', { name: 'home' as const }],
     ['failed target', { name: 'platform' as const, pluginId: 'official/demo', platform: 'codex' as const }],
   ])('leaves Result through one terminal API for the %s action and removes transient history', async (_label, targetRoute) => {
-    const controller = new TuiController(dependencies());
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        targetResults: [
+          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+        ],
+      }),
+    }));
     await controller.load();
     controller.push({ name: 'pluginDetail', pluginId: 'official/demo' });
     const review = await controller.buildOperationReview({
@@ -4923,7 +4975,14 @@ describe('TUI v4 Review safety', () => {
   });
 
   it('normalizes an explicit Result destination before replacing its terminal frame', async () => {
-    const controller = new TuiController(dependencies());
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        targetResults: [
+          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+        ],
+      }),
+    }));
     await controller.load();
     const review = await controller.buildOperationReview({
       kind: 'pluginWrite', action: 'refreshAndSync', pluginId: 'official/demo', platform: 'codex', scope: 'user',

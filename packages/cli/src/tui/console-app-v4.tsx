@@ -24,7 +24,10 @@ import {
 } from '../constants.js';
 import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
 import { canonicalizeCatalogGitUrl } from '../utils/catalog-source-identity.js';
-import { normalizePortableAgents } from '../portable/commands.js';
+import {
+  normalizePortableAgents,
+  SKILLS_CLI_SUPPORTED_VERSION_LABEL,
+} from '../portable/commands.js';
 import {
   selectLifecycleRetryAction,
 } from '../commands/operation-planner.js';
@@ -844,7 +847,7 @@ function portableBlockerDiagnostic(
       stage: cliUnavailable ? 'check-skills-cli' : 'prepare-portable',
       ...(cliUnavailable ? { context: [{
         key: 'compatibility' as const,
-        value: 'Skills CLI >=1.5.23 <2.0.0',
+        value: `Skills CLI ${SKILLS_CLI_SUPPORTED_VERSION_LABEL}`,
       }] } : {}),
       checks: cliUnavailable
         ? ['检查 PATH 中的 Skills CLI 版本。', '安装兼容版本后运行“重新检查”。']
@@ -1474,8 +1477,8 @@ export function ConsoleAppV4(props: {
   );
   const [scope, setScope] = useState<Scope>('user');
   const [selectedTargets, setSelectedTargets] = useState<PlatformName[]>([]);
-  const [targetSelections, setTargetSelections] = useState<Partial<Record<Scope, PlatformName[]>>>({});
-  const [preferredTarget, setPreferredTarget] = useState<PlatformName>();
+  const [installPlatformScopes, setInstallPlatformScopes] = useState<Partial<Record<PlatformName, Scope>>>({});
+  const [uninstallTargetKeys, setUninstallTargetKeys] = useState<string[]>([]);
   const [technicalRouteKey, setTechnicalRouteKey] = useState<string>();
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
   const [exitAfterPreparation, setExitAfterPreparation] = useState(false);
@@ -1514,6 +1517,7 @@ export function ConsoleAppV4(props: {
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [portableAgentInput, setPortableAgentInput] = useState('');
+  const [portableSelectionView, setPortableSelectionView] = useState<'all' | 'selected'>('all');
   const [reportSaveMode, setReportSaveMode] = useState(false);
   const [reportSavePath, setReportSavePath] = useState('');
   const [reportSaveResult, setReportSaveResult] = useState<string>();
@@ -2146,6 +2150,11 @@ export function ConsoleAppV4(props: {
   const portableVariantCandidates = route.name === 'portableSkillSelect' && snapshot.portableDraft
     ? snapshot.portableDraft.candidates.filter(portableScopeVariantsDiffer)
     : [];
+  const portableVisibleCandidates = route.name === 'portableSkillSelect' && snapshot.portableDraft
+    ? portableSelectionView === 'selected'
+      ? snapshot.portableDraft.candidates.filter((candidate) => candidate.selected)
+      : snapshot.portableDraft.candidates
+    : [];
   const supportsTechnicalDetails = snapshot.phase === 'error'
     || Boolean(route.name === 'reviewPreparing' && snapshot.reviewPreparation?.code)
     || Boolean(route.name === 'progress' && snapshot.progress.messages.length > 0)
@@ -2623,17 +2632,6 @@ export function ConsoleAppV4(props: {
     setScrollOffset(0);
     setSearchFocus(false);
   };
-  const continueInstallAfterTargets = async (
-    candidate: PluginListItemViewModel,
-    targets: PlatformName[],
-  ): Promise<void> => {
-    if (props.controller.snapshot.installPlacementDraft?.pluginId !== candidate.pluginId) {
-      props.controller.beginInstallFlow(candidate.pluginId, scope);
-    }
-    props.controller.setInstallPlatforms(targets);
-    await props.controller.prepareInstallDependencyPlacement();
-    beginReview(props.controller.installPlacementIntent());
-  };
   const beginPortable = async (pluginId: string): Promise<void> => {
     try {
       await props.controller.preparePortableInstall(
@@ -2641,6 +2639,7 @@ export function ConsoleAppV4(props: {
         route.name === 'portableBlocker' ? 'replace' : 'push',
       );
       setFocus(0);
+      setPortableSelectionView('all');
       setScrollOffset(0);
       setActionError(undefined);
     } catch (error) {
@@ -2706,11 +2705,10 @@ export function ConsoleAppV4(props: {
     selectedScope: Scope,
   ): void => {
     setScope(selectedScope);
-    setSelectedTargets([]);
-    setTargetSelections({});
-    setPreferredTarget(platform);
+    setSelectedTargets([platform]);
     props.controller.beginInstallFlow(candidate.pluginId, selectedScope);
-    go({ name: 'installPlacement', pluginId: candidate.pluginId });
+    props.controller.setInstallPlatforms([platform]);
+    go({ name: 'installTargets', pluginId: candidate.pluginId });
   };
   const beginScopeConflictRecovery = (
     action: Extract<PluginMenuAction, { id: 'resolveScopeConflict' }>,
@@ -4200,32 +4198,49 @@ export function ConsoleAppV4(props: {
     context = `${draft.selectedCount} / ${draft.totalCount} 已选择`;
     title = '选择要安装的 Skills';
     description = '已根据插件依赖和当前设置准备候选；默认全部选择。';
-    const candidateActions: ActionItem[] = draft.candidates.map((candidate) => ({
+    const visibleCandidates = portableSelectionView === 'selected'
+      ? draft.candidates.filter((candidate) => candidate.selected)
+      : draft.candidates;
+    const continuePortableSelection = (): void => {
+      if (draft.canContinue) go({ name: 'portableAgentMode', pluginId: plugin.pluginId });
+    };
+    const candidateActions: ActionItem[] = visibleCandidates.map((candidate) => ({
       label: candidate.name,
       selected: candidate.selected,
       description: `${candidate.description}${candidate.dynamic ? ' · 按设置生成' : ''}`,
-      run: () => props.controller.togglePortableSkill(candidate.name),
+      run: () => go({
+        name: 'portableSkillSummary',
+        pluginId: plugin.pluginId,
+        skillName: candidate.name,
+      }),
     }));
     actions = [
       ...candidateActions,
-      { label: '继续', meta: draft.canContinue ? undefined : '至少选择一个 Skill', disabled: draft.canContinue ? undefined : '至少选择一个 Skill', run: () => go({ name: 'portableAgentMode', pluginId: plugin.pluginId }) },
+      { actionId: 'portable-selection-continue', label: '继续', meta: draft.canContinue ? undefined : '至少选择一个 Skill', disabled: draft.canContinue ? undefined : '至少选择一个 Skill', run: continuePortableSelection },
+      { label: '全选全部候选', run: () => props.controller.selectAllPortableSkills() },
+      { label: portableSelectionView === 'selected' ? '查看全部候选' : `只看已选（${draft.selectedCount}）`, run: () => {
+        setPortableSelectionView((current) => current === 'all' ? 'selected' : 'all');
+        setFocus(0);
+        setScrollOffset(0);
+      } },
+      { label: '清空选择', disabled: draft.selectedCount === 0 ? '当前没有已选 Skill' : undefined, run: () => props.controller.clearPortableSkills() },
       ...(plugin.dependencySummary?.totalCount ? [{ label: '查看依赖关系', run: () => go({ name: 'portableDependencies', pluginId: plugin.pluginId }) }] : []),
     ];
     const candidateViewport = portableSkillCandidateViewport(
       candidateActions,
-      draft.candidates,
+      visibleCandidates,
       policy.mode === 'compact',
       focus,
       scrollOffset,
       pageActionBudget(
-        actions.length - draft.candidates.length
+        actions.length - visibleCandidates.length
         + (portableVariantCandidates.length > 0 ? 3 : 0),
       ),
     );
     const viewport = showTechnical
-      ? { offset: focus < draft.candidates.length ? focus : candidateViewport.offset, limit: 1 }
+      ? { offset: focus < visibleCandidates.length ? focus : candidateViewport.offset, limit: 1 }
       : candidateViewport;
-    const visibleCandidateEntries = draft.candidates
+    const visibleCandidateEntries = visibleCandidates
       .map((candidate, index) => ({ candidate, action: candidateActions[index]!, index }))
       .slice(viewport.offset, viewport.offset + viewport.limit);
     const providerGroups = [...new Map(visibleCandidateEntries.map((entry) => [
@@ -4233,10 +4248,10 @@ export function ConsoleAppV4(props: {
       visibleCandidateEntries.filter((candidate) => candidate.candidate.providerPluginId === entry.candidate.providerPluginId),
     ])).values()];
     const variantCandidates = portableVariantCandidates;
-    const focusedVariant = variantCandidates.find((candidate) => candidate.name === draft.candidates[focus]?.name);
+    const focusedVariant = variantCandidates.find((candidate) => candidate.name === visibleCandidates[focus]?.name);
     const visibleVariant = visibleCandidateEntries.find((entry) => portableScopeVariantsDiffer(entry.candidate))?.candidate;
     const technicalVariant = focusedVariant ?? visibleVariant ?? variantCandidates[0];
-    help = '↑↓ 移动 · Space 切换 · a 全选 · Enter 继续 · Esc 返回';
+    help = '↑↓ 移动 · Space 切换 · a 全选 · Enter 查看摘要 · c 继续 · Esc 返回';
     content = <Box flexDirection="column">
       {showTechnical ? visibleCandidateEntries.map(({ action, index }) => <ToggleRow
         key={String(action.label)}
@@ -4264,13 +4279,35 @@ export function ConsoleAppV4(props: {
           ? <StaticRow title={`! ${variantCandidates.length} 个 Skill 存在范围变体`} status="warning" compact />
           : <Callout status="warning" title={`! ${variantCandidates.length} 个 Skill 在不同安装范围会生成不同内容。选择范围后会重新确认最终内容。`} />
         : null}
-      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={draft.candidates.length} />
+      {visibleCandidates.length === 0
+        ? <StaticRow title="没有已选 Skill" description="选择“查看全部候选”后可继续勾选" status="muted" compact />
+        : null}
+      <SemanticRows actions={actions} focus={focus} kind="action" compact offset={visibleCandidates.length} />
       {showTechnical && technicalVariant ? <TechnicalDetails title="范围变体">
         <StaticRow key={`${technicalVariant.name}:project`} title={`${technicalVariant.name} · ${portableScopeVariantLabel('project', technicalVariant.scopeDetails.project)}`} compact />
         <StaticRow key={`${technicalVariant.name}:user`} title={`${technicalVariant.name} · ${portableScopeVariantLabel('user', technicalVariant.scopeDetails.user)}`} compact />
         {variantCandidates.length > 1 ? <StaticRow title={`另有 ${variantCandidates.length - 1} 个 Skill 的范围变体已折叠`} status="muted" compact /> : null}
       </TechnicalDetails> : null}
     </Box>;
+  } else if (route.name === 'portableSkillSummary' && plugin && snapshot.portableDraft) {
+    const candidate = snapshot.portableDraft.candidates.find((entry) => entry.name === route.skillName);
+    breadcrumb = `${plugin.displayName} / 通用 Skills / 内容摘要`;
+    context = candidate?.providerDisplayName ?? plugin.displayName;
+    title = candidate?.name ?? 'Skill 不再可用';
+    description = candidate?.description ?? '候选已经变化。请返回重新选择。';
+    actions = [
+      { label: '返回 Skill 选择', run: back },
+      { label: '继续选择 Agent', disabled: snapshot.portableDraft.canContinue ? undefined : '至少选择一个 Skill', run: () => go({ name: 'portableAgentMode', pluginId: plugin.pluginId }) },
+    ];
+    content = <Box flexDirection="column">
+      <SectionCard title="内容摘要">
+        <StaticRow title="所属插件" meta={candidate?.providerDisplayName ?? '未知'} compact />
+        <StaticRow title="生成方式" meta={candidate?.dynamic ? '按当前插件设置生成' : '目录中的静态 Skill'} compact />
+        <StaticRow title="可用范围" meta={candidate?.availableScopes.map(scopeLabel).join('、') ?? '未确认'} compact />
+      </SectionCard>
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} />
+    </Box>;
+    help = '↑↓ 移动 · Enter 选择 · Esc 返回';
   } else if (route.name === 'portableDependencies' && plugin && snapshot.portableDraft) {
     const overview = dependencyOverview(plugin);
     breadcrumb = `${plugin.displayName} / 通用 Skills / 依赖`;
@@ -4303,7 +4340,7 @@ export function ConsoleAppV4(props: {
     description = '可以自动选择检测到的 Agent，也可以限制到指定 Agent。';
     actions = [
       { label: '使用 Skills CLI 默认选择', description: '继续 Skills CLI 默认选择', meta: '默认', selected: snapshot.portableDraft.agentMode === 'automatic', run: () => { props.controller.setPortableAgentMode('automatic'); go({ name: 'portableScope', pluginId: plugin.pluginId }); } },
-      { label: '指定 Agent…', description: '输入一个或多个 Agent ID', selected: snapshot.portableDraft.agentMode === 'explicit', run: () => go({ name: 'portableAgentInput', pluginId: plugin.pluginId }) },
+      { label: '指定 Agent', description: '输入一个或多个 Agent ID', selected: snapshot.portableDraft.agentMode === 'explicit', run: () => go({ name: 'portableAgentInput', pluginId: plugin.pluginId }) },
     ];
     content = <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />;
   } else if (route.name === 'portableAgentInput' && plugin) {
@@ -4347,7 +4384,7 @@ export function ConsoleAppV4(props: {
         setScrollOffset(0);
       } }] : []),
       { label: '重新检查', run: () => beginPortable(plugin.pluginId) },
-      { label: '返回插件预览', run: () => props.controller.resetPortableFlowToPreview(plugin.pluginId) },
+      { label: snapshot.installPlacementDraft?.pluginId === plugin.pluginId ? '返回目标平台' : '返回插件详情', run: () => props.controller.resetPortableFlowToPreview(plugin.pluginId) },
       ...(route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible'
         ? []
         : [{ label: showTechnical ? '返回问题摘要' : '技术详情', run: () => toggleTechnical() }]),
@@ -4703,73 +4740,49 @@ export function ConsoleAppV4(props: {
         </TechnicalDetails> : null}
       </Box>;
     }
-  } else if (route.name === 'installPlacement' && plugin) {
-    breadcrumb = `${plugin.displayName} / 添加`;
-    context = '第 1 步，共 2 步';
-    title = `你希望在哪里使用 ${plugin.displayName}？`;
-    const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
-    description = hasDependencies
-      ? '这里只选择根插件的安装位置。依赖会自动安排合适位置，并在操作汇总中显示。'
-      : '选择位置后，再选择一个或多个目标平台。';
-    const availableScopes = (['user', 'project'] as const).filter((candidateScope) =>
-      props.controller.listInstallTargets(plugin.pluginId, candidateScope)
-        .some((entry) => entry.compatible));
-    actions = [
-      ...availableScopes.map((candidateScope) => ({
-        label: scopeLabel(candidateScope),
-        selected: candidateScope === scope,
-        description: candidateScope === 'user'
-          ? hasDependencies ? '根插件在任意项目中可用；依赖位置自动计算' : '在任意项目中可使用，适合个人常用能力'
-          : hasDependencies ? '根插件只在当前项目使用；操作汇总会说明依赖是否需要用于更多项目' : '仅在当前项目中使用，适合团队共享',
-        meta: candidateScope === 'user' ? '推荐' : undefined,
-        run: () => {
-          const choices = props.controller.listInstallTargets(plugin.pluginId, candidateScope);
-          const compatible = choices.filter((entry) => entry.compatible).map((entry) => entry.platform);
-          const previous = targetSelections[candidateScope];
-          const next = previous
-            ? previous.filter((platform) => compatible.includes(platform))
-            : preferredTarget && compatible.includes(preferredTarget)
-              ? [preferredTarget]
-              : compatible.length === 1 ? compatible : [];
-          setScope(candidateScope);
-          setSelectedTargets(next);
-          setTargetSelections((current) => ({ ...current, [candidateScope]: next }));
-          props.controller.setInstallRootScope(candidateScope);
-          go({
-            name: 'installTargets',
-            pluginId: plugin.pluginId,
-            ...(compatible.length === 0 ? { view: 'blocked' as const } : {}),
-          });
-        },
-      })),
-    ];
-    content = <Box flexDirection="column">
-      <SemanticRows actions={actions} focus={focus} kind="choice" compact={policy.mode === 'compact'} />
-      {hasDependencies ? <SectionCard title="依赖位置"><StaticRow title={`${plugin.dependencySummary?.totalCount ?? 0} 个依赖将自动安排合适位置`} description="可在操作汇总中查看或调整" status="info" /></SectionCard> : null}
-    </Box>;
   } else if (route.name === 'installTargets' && plugin) {
     breadcrumb = `${plugin.displayName} / 添加 / 目标平台`;
-    context = '第 2 步，共 2 步';
+    context = '第 1 步，共 2 步';
     title = '选择目标平台';
-    const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
-    description = hasDependencies
-      ? '根插件必须支持所选位置；确认后会自动安排依赖并显示操作汇总。'
-      : '目标平台按所选位置验证；只含由平台共用内容的插件可同时启用两个位置。';
-    const choices = props.controller.listInstallTargets(plugin.pluginId, scope);
-    const validSelectedTargets = selectedTargets.filter((platform) =>
+    description = 'Codex 与 Claude Code 可以同时选择。通用 Agent Skills 使用独立安装流程。';
+    const choices = (['codex', 'claude'] as const).map((platform) => {
+      const scopes = (['project', 'user'] as const).filter((candidateScope) =>
+        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+          .some((entry) => entry.platform === platform && entry.compatible));
+      const evidence = (['project', 'user'] as const).flatMap((candidateScope) =>
+        props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+          .filter((entry) => entry.platform === platform));
+      return {
+        platform,
+        compatible: scopes.length > 0,
+        scopes,
+        disabled: scopes.length > 0 ? undefined
+          : evidence.find((entry) => entry.disabled)?.disabled ?? '没有可信且兼容的缺失位置',
+      };
+    });
+    const selectedNativeTargets = snapshot.installPlacementDraft?.pluginId === plugin.pluginId
+      ? snapshot.installPlacementDraft.platforms
+      : selectedTargets;
+    const validSelectedTargets = selectedNativeTargets.filter((platform) =>
       choices.some((choice) => choice.platform === platform && choice.compatible));
-    const allUnavailable = choices.length > 0 && choices.every((choice) => !choice.compatible);
+    const allUnavailable = choices.every((choice) => !choice.compatible) && !plugin.portableSkills;
     if (route.view === 'blocked' || allUnavailable) {
       context = '依赖限制';
       title = '无法添加到所选目标平台';
       description = '根插件或必需依赖不支持当前目标平台组合，因此不会进入确认页。';
       actions = [
         { label: '查看依赖关系', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) },
-        { label: '返回调整位置', run: back },
+        { label: '返回插件详情', run: back },
       ];
       content = <Box flexDirection="column"><StatusCard status="warning" title="所选目标平台不可用">{choices.map((choice) => <StaticRow key={choice.platform} title={platformLabel(choice.platform)} description={choice.disabled ? `不可选 · ${choice.disabled}` : '不可选'} status="muted" compact={policy.mode === 'compact'} />)}</StatusCard><SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} /></Box>;
     } else {
-      const targetActions = choices.map((choice) => ({
+      const confirmNativePlatforms = (): void => {
+        setDirty(false);
+        props.controller.setInstallPlatforms(validSelectedTargets);
+        go({ name: 'installPlacement', pluginId: plugin.pluginId });
+      };
+      const targetActions: ActionItem[] = [
+        ...choices.map((choice) => ({
         label: platformLabel(choice.platform),
         selected: validSelectedTargets.includes(choice.platform),
         description: choice.disabled ?? '当前未安装，支持所选位置',
@@ -4781,34 +4794,33 @@ export function ConsoleAppV4(props: {
             const next = current.includes(choice.platform)
               ? current.filter((platform) => platform !== choice.platform)
               : [...current, choice.platform];
-            setTargetSelections((selections) => ({ ...selections, [scope]: next }));
             props.controller.setInstallPlatforms(next);
             return next;
           });
         },
-      }));
+      })),
+        {
+          actionId: 'portable-agent-skills',
+          label: '通用 Agent Skills',
+          description: plugin.portableSkills
+            ? '通过外部 Skills CLI 安装到支持的 Agent'
+            : '这个插件不提供通用 Agent Skills',
+          disabled: plugin.portableSkills ? undefined : '这个插件不提供通用 Agent Skills',
+          run: () => beginPortable(plugin.pluginId),
+        },
+      ];
       actions = [
         ...targetActions,
         {
-          label: '确认目标平台',
+          actionId: 'confirm-install-platforms',
+          label: '确定所选平台',
           description: validSelectedTargets.length > 0 ? `已选择 ${validSelectedTargets.length} 个平台` : undefined,
           disabled: validSelectedTargets.length === 0 ? '至少选择一个目标平台' : undefined,
-          run: () => {
-            setDirty(false);
-            if (!hasDependencies) {
-              if (props.controller.snapshot.installPlacementDraft?.pluginId !== plugin.pluginId) {
-                props.controller.beginInstallFlow(plugin.pluginId, scope);
-              }
-              props.controller.setInstallPlatforms(validSelectedTargets);
-              beginReview(props.controller.installPlacementIntent());
-              return;
-            }
-            return continueInstallAfterTargets(plugin, validSelectedTargets);
-          },
+          run: confirmNativePlatforms,
         },
-        { label: '返回选择位置', run: back },
+        { label: '返回插件详情', run: back },
       ];
-      help = '↑↓ 移动 · Enter 选择/确认 · Esc 返回';
+      help = '↑↓ 移动 · Enter 选择/确定 · c 确定 · Esc 返回';
       content = <Box flexDirection="column">
         <SemanticRows
           actions={actions}
@@ -4817,7 +4829,6 @@ export function ConsoleAppV4(props: {
           compact={policy.mode === 'compact'}
           limit={targetActions.length}
         />
-        {hasDependencies ? <Callout title="目标平台兼容性" description="不兼容的目标平台不能选择；请查看依赖关系了解原因。" /> : null}
         <SemanticRows
           actions={actions}
           focus={focus}
@@ -4827,6 +4838,138 @@ export function ConsoleAppV4(props: {
         />
       </Box>;
     }
+  } else if (route.name === 'installPlacement' && plugin) {
+    breadcrumb = `${plugin.displayName} / 添加 / 使用范围`;
+    context = '第 2 步，共 2 步';
+    title = `你希望在哪里使用 ${plugin.displayName}？`;
+    const hasDependencies = (plugin.dependencySummary?.totalCount ?? 0) > 0;
+    const selectedPlatforms = snapshot.installPlacementDraft?.platforms ?? selectedTargets;
+    const legalScopes = (platform: PlatformName): Scope[] => (['project', 'user'] as const).filter((candidateScope) =>
+      props.controller.listInstallTargets(plugin.pluginId, candidateScope)
+        .some((entry) => entry.platform === platform && entry.compatible));
+    const commonScopes = (['project', 'user'] as const).filter((candidateScope) =>
+      selectedPlatforms.every((platform) => legalScopes(platform).includes(candidateScope)));
+    const continueCommonScope = async (candidateScope: Scope): Promise<void> => {
+      setScope(candidateScope);
+      props.controller.setInstallRootScope(candidateScope);
+      props.controller.setInstallPlatforms(selectedPlatforms);
+      if (hasDependencies) {
+        const configurable = await props.controller.prepareInstallDependencyPlacement();
+        if (configurable) {
+          go({ name: 'dependencyPlacement', pluginId: plugin.pluginId });
+          return;
+        }
+      }
+      beginReview(props.controller.installPlacementIntent());
+    };
+    if (commonScopes.length > 0) {
+      description = '所选平台使用同一个范围。操作汇总会显示实际目标和依赖计划。';
+      actions = commonScopes.map((candidateScope) => ({
+        label: scopeLabel(candidateScope),
+        description: candidateScope === 'user'
+          ? '在任意项目中可用，会改变你的用户环境'
+          : '仅供当前项目使用，适合随项目共享',
+        meta: candidateScope === 'project' ? '推荐' : undefined,
+        run: () => continueCommonScope(candidateScope),
+      }));
+    } else {
+      description = '所选平台没有共同范围。请分别确定每个平台的合法位置。';
+      const pairActions = selectedPlatforms.flatMap((platform) => legalScopes(platform).map((candidateScope) => ({
+        label: `${platformLabel(platform)} · ${scopeLabel(candidateScope)}`,
+        selected: installPlatformScopes[platform] === candidateScope,
+        run: () => setInstallPlatformScopes((current) => ({ ...current, [platform]: candidateScope })),
+      })));
+      const exactTargets = selectedPlatforms.flatMap((platform) => installPlatformScopes[platform]
+        ? [{ pluginId: plugin.pluginId, platform, scope: installPlatformScopes[platform]! }] : []);
+      actions = [
+        ...pairActions,
+        {
+          label: '继续到操作汇总',
+          description: '只安装上方明确选择的实际目标',
+          disabled: exactTargets.length !== selectedPlatforms.length ? '请为每个平台选择一个位置' : undefined,
+          run: () => beginReview({
+            kind: 'pluginWriteBatch',
+            action: 'install',
+            selection: { kind: 'targets', targets: exactTargets },
+            platform: new Set(exactTargets.map((target) => target.platform)).size > 1
+              ? 'both' : exactTargets[0]!.platform,
+            scope: exactTargets[0]!.scope,
+          }),
+        },
+        { label: '返回目标平台', run: back },
+      ];
+    }
+    const scopeChoiceCount = commonScopes.length > 0 ? actions.length : Math.max(0, actions.length - 2);
+    content = <Box flexDirection="column">
+      <SemanticRows actions={actions} focus={focus} kind={commonScopes.length > 0 ? 'choice' : 'toggle'} compact={policy.mode === 'compact'} limit={scopeChoiceCount} />
+      {commonScopes.length === 0
+        ? <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={scopeChoiceCount} />
+        : null}
+      {hasDependencies ? <Callout title="依赖计划" description="确认前会复用现有 planner 计算必需依赖。" /> : null}
+    </Box>;
+    help = '↑↓ 移动 · Enter 选择/继续 · Esc 返回';
+  } else if (route.name === 'uninstallTargets' && plugin) {
+    breadcrumb = `${plugin.displayName} / 卸载`;
+    context = '实际安装位置';
+    title = '选择要卸载的位置';
+    description = '只处理本页列出的实际安装位置。插件设置默认保留。';
+    const targets = props.controller.listPluginWriteBatchTargets('uninstall', [plugin.pluginId]);
+    const keyFor = (target: PluginWriteBatchTarget): string =>
+      [target.pluginId, target.platform, target.scope].join('\0');
+    const selected = targets.filter((target) => uninstallTargetKeys.includes(keyFor(target)));
+    const blocked = selected.filter((target) =>
+      props.controller.getBlockingDependents(target.pluginId, target.platform, target.scope).length > 0);
+    const targetActions: ActionItem[] = targets.map((target) => ({
+      label: `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`,
+      selected: uninstallTargetKeys.includes(keyFor(target)),
+      description: props.controller.getBlockingDependents(target.pluginId, target.platform, target.scope).length > 0
+        ? '仍有已确认的依赖者使用这个位置'
+        : '实际安装位置；配置保持不变',
+      status: props.controller.getBlockingDependents(target.pluginId, target.platform, target.scope).length > 0
+        ? 'warning' : undefined,
+      run: () => setUninstallTargetKeys((current) => current.includes(keyFor(target))
+        ? current.filter((key) => key !== keyFor(target))
+        : [...current, keyFor(target)]),
+    }));
+    actions = [
+      ...targetActions,
+      {
+        actionId: 'uninstall-all-targets',
+        label: '全部已安装位置',
+        selected: selected.length === targets.length,
+        run: () => setUninstallTargetKeys(
+          selected.length === targets.length ? [] : targets.map(keyFor),
+        ),
+      },
+      {
+        label: '继续到卸载确认',
+        description: selected.length > 0 ? `${selected.length} 个精确目标；保留插件设置` : undefined,
+        disabled: selected.length === 0 ? '请至少选择一个位置'
+          : blocked.length > 0 ? '所选位置仍有依赖者' : undefined,
+        status: 'error',
+        run: () => {
+          if (selected.length === 1) {
+            const target = selected[0]!;
+            beginPluginRemoval(plugin, target.platform, target.scope);
+            return;
+          }
+          beginReview({
+            kind: 'pluginWriteBatch',
+            action: 'uninstall',
+            selection: { kind: 'targets', targets: selected },
+            platform: new Set(selected.map((target) => target.platform)).size > 1
+              ? 'both' : selected[0]!.platform,
+            scope: selected[0]!.scope,
+          });
+        },
+      },
+      { label: '返回插件详情', run: back },
+    ];
+    content = <Box flexDirection="column">
+      <SemanticRows actions={actions} focus={focus} kind="toggle" compact={policy.mode === 'compact'} limit={targetActions.length + 1} />
+      <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={targetActions.length + 1} />
+    </Box>;
+    help = '↑↓ 移动 · Enter 选择/继续 · Esc 返回';
   } else if (route.name === 'dependencyPlacement' && plugin) {
     const draft = snapshot.installPlacementDraft?.pluginId === plugin.pluginId
       ? snapshot.installPlacementDraft : undefined;
@@ -5283,6 +5426,7 @@ export function ConsoleAppV4(props: {
         } : undefined;
     const installed = hasInstalledPlacement(plugin);
     const hasInstallableTarget = props.controller.pluginHasInstallableTarget(plugin.pluginId);
+    const hasInstallationOption = hasInstallableTarget || plugin.portableSkills;
     const beginInstall = (): void => {
       const initialScope = (['user', 'project'] as const).find((candidateScope) =>
         props.controller.listInstallTargets(plugin.pluginId, candidateScope)
@@ -5291,11 +5435,10 @@ export function ConsoleAppV4(props: {
         .some((entry) => entry.compatible);
       setScope(initialScope);
       setSelectedTargets([]);
-      setTargetSelections({});
-      setPreferredTarget(undefined);
+      setInstallPlatformScopes({});
       props.controller.beginInstallFlow(plugin.pluginId, initialScope);
-      go(compatible
-        ? { name: 'installPlacement', pluginId: plugin.pluginId }
+      go(compatible || plugin.portableSkills
+        ? { name: 'installTargets', pluginId: plugin.pluginId }
         : { name: 'installTargets', pluginId: plugin.pluginId, view: 'blocked' });
     };
     const installAction: ActionItem | undefined = !plugin.configOnly ? {
@@ -5305,12 +5448,12 @@ export function ConsoleAppV4(props: {
         ? '插件来源不可用'
         : plugin.capabilityUnsupported
           ? '当前 AW CLI 不支持这个插件'
-          : !hasInstallableTarget
-            ? '没有可信且兼容的缺失位置'
+          : !hasInstallationOption
+            ? '没有可信且兼容的安装方式'
           : '选择工具和使用范围',
-      ...(plugin.sourceUnavailable || plugin.capabilityUnsupported || !hasInstallableTarget
+      ...(plugin.sourceUnavailable || plugin.capabilityUnsupported || !hasInstallationOption
         ? { disabled: plugin.sourceUnavailable ? '插件来源不可用'
-          : plugin.capabilityUnsupported ? '需要升级 AW CLI' : '没有可安装的缺失位置' }
+          : plugin.capabilityUnsupported ? '需要升级 AW CLI' : '没有可用的安装方式' }
         : { run: beginInstall }),
     } : undefined;
     const contentOverview = props.controller.getPluginContentOverview(plugin.pluginId);
@@ -5339,9 +5482,16 @@ export function ConsoleAppV4(props: {
         ? '打开现有安装位置并确认卸载范围'
         : '选择一个现有平台和实际安装位置',
       status: 'error',
-      run: () => plugin.installedPlacements.length === 1
-        ? go({ name: 'platform', pluginId: plugin.pluginId, platform: plugin.installedPlacements[0]!.platform })
-        : go({ name: 'pluginMore', pluginId: plugin.pluginId }),
+      run: () => {
+        const targets = props.controller.listPluginWriteBatchTargets('uninstall', [plugin.pluginId]);
+        if (targets.length === 1) {
+          const target = targets[0]!;
+          beginPluginRemoval(plugin, target.platform, target.scope);
+          return;
+        }
+        setUninstallTargetKeys(targets.map((target) => [target.pluginId, target.platform, target.scope].join('\0')));
+        go({ name: 'uninstallTargets', pluginId: plugin.pluginId });
+      },
     } : undefined;
     actions = dedupeActions([
       ...(exceptionalAction ? [{ ...exceptionalAction, actionId: 'exceptional' }] : []),
@@ -5355,7 +5505,7 @@ export function ConsoleAppV4(props: {
       {
         actionId: 'more',
         label: '更多操作',
-        description: '平台维护、通用 Skills、来源和诊断',
+        description: '平台维护、来源和诊断',
         run: () => go({ name: 'pluginMore', pluginId: plugin.pluginId }),
       },
     ]);
@@ -5384,6 +5534,10 @@ export function ConsoleAppV4(props: {
     const detailViewport = actionViewport(actions, true, focus, scrollOffset,
       pageActionBudget(actionViewportStaticRows));
     content = <Box flexDirection="column">
+      {snapshot.completionNotice?.pluginId === plugin.pluginId
+        ? <Callout status="success" title={snapshot.completionNotice.title}
+            description={snapshot.completionNotice.description} />
+        : null}
       <StatusCard
         status={hasUnavailablePlacement ? 'error'
           : hasUncertainPlacement ? 'warning'
@@ -5470,11 +5624,6 @@ export function ConsoleAppV4(props: {
             meta: dependencySummary ? dependencySummaryText(dependencySummary) : undefined,
             run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
           };
-          if (action.id === 'portableSkills') return {
-            label: '在其他 Agent 使用',
-            description: '通过 Skills CLI 选择和安装通用 Skills',
-            run: () => beginPortable(plugin.pluginId),
-          };
           if (action.id === 'settings') return {
             label: plugin.configOnly ? '查看已保存设置' : '插件设置',
             run: () => plugin.configOnly
@@ -5546,11 +5695,10 @@ export function ConsoleAppV4(props: {
           ? placement.supportedScopes[0] ?? scope
           : scope;
         setScope(initialScope);
-        setSelectedTargets([]);
-        setTargetSelections({});
-        setPreferredTarget(route.platform);
+        setSelectedTargets([route.platform]);
         props.controller.beginInstallFlow(plugin.pluginId, initialScope);
-        go({ name: 'installPlacement', pluginId: plugin.pluginId });
+        props.controller.setInstallPlatforms([route.platform]);
+        go({ name: 'installTargets', pluginId: plugin.pluginId });
       } };
       if (action.id === 'addScope') return {
         label: `在${scopeLabel(action.scope)}中启用`,
@@ -5589,7 +5737,7 @@ export function ConsoleAppV4(props: {
         }),
       };
       if (action.id === 'sync') return {
-        label: `同步${scopeLabel(action.scope)}的使用位置…`,
+        label: `同步${scopeLabel(action.scope)}的使用位置`,
         description: placement?.state === 'installed'
           ? (placement.scopedPlacements?.find((entry) => entry.scope === action.scope)?.recovery
             ?? placement.recovery)?.find((entry) => entry.command === 'sync')?.description
@@ -5599,9 +5747,9 @@ export function ConsoleAppV4(props: {
           ? beginReview({ kind: 'pluginWrite', action: 'sync', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope })
           : undefined,
       };
-      if (action.id === 'reinstall') return { label: `重新安装${scopeLabel(action.scope)}位置…`, description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
-      if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除…`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
-      if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容…`, description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'reinstall') return { label: `重新安装${scopeLabel(action.scope)}位置`, description: '保留现有设置并重新生成受管内容', run: () => beginReview({ kind: 'pluginWrite', action: 'reinstall', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
+      if (action.id === 'remove') return { label: `从${scopeLabel(action.scope)}移除`, description: '保留插件设置', status: 'error', run: () => beginPluginRemoval(plugin, action.platform, action.scope) };
+      if (action.id === 'cleanup') return { label: `清理${scopeLabel(action.scope)}中的遗留内容`, description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容', status: 'error', run: () => beginReview({ kind: 'pluginWrite', action: 'cleanup', pluginId: plugin.pluginId, platform: action.platform, scope: action.scope }) };
       if (action.id === 'technical') return typedIssue
         ? { label: '查看对应问题', description: typedIssue.explanation, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }
         : { label: placement?.state === 'installed' && placement.health === 'error' ? '查看安全技术详情' : placement?.state === 'installed' && placement.health === 'incomplete' ? '查看影响' : '查看安装详情', description: '组件与诊断信息', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) };
@@ -5616,7 +5764,7 @@ export function ConsoleAppV4(props: {
       && !platformMenu.some((action) => action.id === 'cleanup')
       && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
       ? {
-          label: `清理${scopeLabel(placement.scope)}中的遗留内容…`,
+          label: `清理${scopeLabel(placement.scope)}中的遗留内容`,
           description: '先核验，再取消此位置的使用设置，并尽力清理可验证的 AW 内容；恢复需单独确认重新安装。',
           status: 'error' as const,
           run: () => {
@@ -5630,7 +5778,7 @@ export function ConsoleAppV4(props: {
       && (placement.actualState === 'orphaned' || placement.actualState === 'blocked')
       && !platformMenu.some((action) => action.id === 'resolveScopeConflict')
       ? {
-          label: '检查受限清理…',
+          label: '检查受限清理',
           description: '只在当前单一位置能确认内容只属于此插件时提供；先核验，再取消使用设置并尽力清理；被共用或不属于插件的内容保留。',
           status: 'warning' as const,
           run: () => beginRestrictedForceCleanup(
@@ -7168,7 +7316,6 @@ export function ConsoleAppV4(props: {
         ...compatible.map((entry) => ({ label: `只添加到 ${platformLabel(entry.platform)}`, description: '返回目标平台页并使用完整依赖检查', run: () => {
           setScope(issueScope);
           setSelectedTargets([entry.platform]);
-          setTargetSelections((current) => ({ ...current, [issueScope]: [entry.platform] }));
           props.controller.beginInstallFlow(issuePlugin.pluginId, issueScope);
           props.controller.setInstallPlatforms([entry.platform]);
           go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
@@ -7176,7 +7323,6 @@ export function ConsoleAppV4(props: {
         { label: '返回调整目标平台', run: () => {
           setScope(issueScope);
           setSelectedTargets([]);
-          setTargetSelections((current) => ({ ...current, [issueScope]: [] }));
           props.controller.beginInstallFlow(issuePlugin.pluginId, issueScope);
           go({ name: 'installTargets', pluginId: issuePlugin.pluginId });
         } },
@@ -7923,6 +8069,10 @@ export function ConsoleAppV4(props: {
     const portableInstallFailed = portableReceipt?.failureCode === 'portableSkillsCliInstallFailed';
     const portableOriginIsDetail = 'returnRoute' in result
       && result.returnRoute?.name === 'pluginDetail';
+    const portableOriginIsPlatform = 'returnRoute' in result
+      && result.returnRoute?.name === 'installTargets';
+    const portableReturnLabel = portableOriginIsPlatform ? '返回目标平台'
+      : portableOriginIsDetail ? '返回插件详情' : '返回插件列表';
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
     const invalidConfigResult = resultSummary?.configApplySkippedReason === 'invalidConfig';
@@ -8143,13 +8293,25 @@ export function ConsoleAppV4(props: {
         ]
       : portableOperation
       ? blocked || partial ? [
-          { label: blocked || partial ? '返回修改' : portableOriginIsDetail ? '返回插件详情' : '返回插件预览', run: async () => {
+          ...(portableReceipt?.verificationUnknown ? [{
+            label: '重新检查结果',
+            description: '只读取 Skills CLI 当前状态，不执行安装',
+            status: 'warning' as const,
+            run: async () => {
+              await props.controller.recheckPortableResult();
+              setFocus(0);
+              setScrollOffset(0);
+            },
+          }] : []),
+          ...(!portableReceipt?.verificationUnknown
+            && (portableReceipt?.missing.length ?? 0) > 0
+            && portableReceipt?.missing.every((target) => target.agent) ? [{
+              label: '仅重试确认缺失的目标',
+              description: '重新准备精确 Skill 与 Agent 组合，并进入新的确认页',
+              run: () => { props.controller.startPortableRetryReviewPreparation(); },
+            }] : []),
+          { label: '返回修改', run: async () => {
             if (!pluginId) {
-              leaveResult();
-              return;
-            }
-            if (!blocked && !partial) {
-              props.controller.discardPortableDraft();
               leaveResult();
               return;
             }
@@ -8168,27 +8330,13 @@ export function ConsoleAppV4(props: {
               true,
             );
           } },
-          { label: blocked || partial ? '重试' : '再安装其他 Skills…', run: async () => {
-            if (!pluginId) return;
-            if (blocked || partial) {
-              props.controller.resetPortableFlowToPreview(
-                pluginId,
-                { name: 'portableSkillSelect', pluginId },
-                true,
-              );
-              await beginPortableReview(pluginId, snapshot.portableDraft?.scope ?? 'project');
-              return;
-            }
-            props.controller.resetPortableFlowToPreview(pluginId);
-            await beginPortable(pluginId);
-          } },
-          { label: portableOriginIsDetail ? '返回插件详情' : '返回插件预览', run: () => { if (pluginId) props.controller.resetPortableFlowToPreview(pluginId); } },
+          { label: portableReturnLabel, run: () => { if (pluginId) props.controller.resetPortableFlowToPreview(pluginId); } },
         ] : [
-          { label: portableOriginIsDetail ? '返回插件详情' : '返回插件预览', run: () => {
+          { label: portableReturnLabel, run: () => {
             props.controller.discardPortableDraft();
             leaveResult();
           } },
-          { label: '再安装其他 Skills…', run: async () => {
+          { label: '再安装其他 Skills', run: async () => {
             if (!pluginId) return;
             props.controller.resetPortableFlowToPreview(pluginId);
             await beginPortable(pluginId);
@@ -8307,30 +8455,67 @@ export function ConsoleAppV4(props: {
       0,
       resultTargets.length - resultTargetOffset - visibleResultTargets.length,
     );
-    const portableMissingSkills = new Set(portableReceipt?.missing.map((entry) => entry.skill) ?? []);
     const portableSelectedSkills = portableReceipt?.selectedSkills
       ?? snapshot.portableResultSkills
       ?? [];
-    const prioritizedPortableSkills = [...portableSelectedSkills].sort((left, right) =>
-      Number(portableMissingSkills.has(right)) - Number(portableMissingSkills.has(left)));
+    type PortableResultPair = {
+      skill: string;
+      agent?: string;
+      state: 'verified' | 'missing' | 'unknown';
+    };
+    const portablePairKey = (pair: Pick<PortableResultPair, 'skill' | 'agent'>): string =>
+      `${pair.skill}\0${pair.agent ?? ''}`;
+    const portablePairs = new Map<string, PortableResultPair>();
+    const addPortablePair = (pair: PortableResultPair): void => {
+      const key = portablePairKey(pair);
+      const previous = portablePairs.get(key);
+      const priority = { verified: 0, missing: 1, unknown: 2 } as const;
+      if (!previous || priority[pair.state] >= priority[previous.state]) portablePairs.set(key, pair);
+    };
+    for (const record of portableReceipt?.verified ?? []) {
+      if (record.agents.length === 0) addPortablePair({ skill: record.name, state: 'verified' });
+      else for (const agent of record.agents) addPortablePair({ skill: record.name, agent, state: 'verified' });
+    }
+    for (const target of portableReceipt?.missing ?? []) {
+      addPortablePair({ skill: target.skill, ...(target.agent ? { agent: target.agent } : {}), state: 'missing' });
+    }
+    for (const target of portableReceipt?.unknown ?? []) {
+      addPortablePair({ skill: target.skill, ...(target.agent ? { agent: target.agent } : {}), state: 'unknown' });
+    }
+    for (const skill of portableSelectedSkills) {
+      const represented = [...portablePairs.values()].some((pair) => pair.skill === skill);
+      if (!represented) addPortablePair({ skill, state: 'unknown' });
+    }
+    const prioritizedPortablePairs = [...portablePairs.values()].sort((left, right) => {
+      const priority = { unknown: 0, missing: 1, verified: 2 } as const;
+      return priority[left.state] - priority[right.state]
+        || left.skill.localeCompare(right.skill, 'en')
+        || (left.agent ?? '').localeCompare(right.agent ?? '', 'en');
+    });
     const portableTechnicalSummary = showTechnical && (partial || blocked);
     const portableSkillLimit = showTechnical ? 1 : responsiveBudget(2, 6);
     const portableSkillOffset = Math.min(batchTargetOffset,
-      Math.max(0, prioritizedPortableSkills.length - 1));
-    const visiblePortableSkills = prioritizedPortableSkills.slice(
+      Math.max(0, prioritizedPortablePairs.length - 1));
+    const visiblePortablePairs = prioritizedPortablePairs.slice(
       portableSkillOffset,
       portableSkillOffset + portableSkillLimit,
     );
     const hiddenPortableSkills = Math.max(0,
-      prioritizedPortableSkills.length - portableSkillOffset - visiblePortableSkills.length);
-    const portableRows = visiblePortableSkills.map((skill) => {
-      const missing = portableMissingSkills.has(skill);
-      const status = blocked || portableReceipt?.verificationUnknown ? 'warning' as const
-        : missing ? 'warning' as const : 'success' as const;
-      const meta = blocked ? result.writeMayHaveCompleted ? '结果未知' : '未执行'
-        : portableReceipt?.verificationUnknown ? '结果未知'
-        : missing ? '未完成 · 缺少目标' : '已安装';
-      return <ResultRow key={skill} title={skill} meta={meta} status={status} compact />;
+      prioritizedPortablePairs.length - portableSkillOffset - visiblePortablePairs.length);
+    const portableRows = visiblePortablePairs.map((pair) => {
+      const status = blocked || pair.state !== 'verified' ? 'warning' as const : 'success' as const;
+      const stateLabel = blocked ? result.writeMayHaveCompleted ? '结果未知' : '未执行'
+        : pair.state === 'unknown' ? '结果未知'
+        : pair.state === 'missing' ? '确认缺失'
+          : '已验证';
+      const meta = `Agent：${pair.agent ?? '无法确认'} · ${stateLabel}`;
+      return <ResultRow
+        key={portablePairKey(pair)}
+        title={pair.skill}
+        meta={meta}
+        status={status}
+        compact
+      />;
     });
     const compactTechnicalRows = portableReceipt ? [
       portableReceipt.failureCode
@@ -8439,7 +8624,7 @@ export function ConsoleAppV4(props: {
     const taskResultOffset = Math.min(batchTargetOffset, Math.max(0, rootResultRows.length - 1));
     const visibleTaskResultRows = rootResultRows.slice(taskResultOffset, taskResultOffset + taskResultLimit);
     if (taskOperation || batchOperation || resultTargets.length > resultTargetLimit
-      || prioritizedPortableSkills.length > portableSkillLimit) {
+      || prioritizedPortablePairs.length > portableSkillLimit) {
       help = 'PgUp/PgDn 查看全部项目 · ↑↓ 移动 · Enter 选择 · Esc 返回';
     }
     content = taskOperation || batchOperation ? <Box flexDirection="column">
@@ -8597,12 +8782,12 @@ export function ConsoleAppV4(props: {
     let unavailable: 'plugin' | 'issue' | 'config' | 'flow' | undefined;
     switch (route.name) {
       case 'pluginPreview': case 'pluginDependencies': case 'pluginDependencyNode': case 'installPlacement':
-      case 'installTargets': case 'dependencyPlacement': case 'dependencyPlacementEditor':
+      case 'installTargets': case 'uninstallTargets': case 'dependencyPlacement': case 'dependencyPlacementEditor':
       case 'pluginWriteTask': case 'pluginDetail': case 'pluginContent': case 'pluginMore': case 'platform': case 'pluginAbout': case 'pluginTechnical':
       case 'configLayer':
         unavailable = missingPlugin ? 'plugin' : 'flow';
         break;
-      case 'portableSkillSelect': case 'portableDependencies': case 'portableAgentMode':
+      case 'portableSkillSelect': case 'portableSkillSummary': case 'portableDependencies': case 'portableAgentMode':
       case 'portableAgentInput': case 'portableScope': case 'portableBlocker':
         unavailable = missingPlugin ? 'plugin' : 'flow';
         break;
@@ -8663,6 +8848,8 @@ export function ConsoleAppV4(props: {
     && batchDraft?.stage === 'select'
     ? actions.map((action) => action.pluginId ?? action.label).join('\0')
     : '';
+  const portableSelectionActionSignature = route.name === 'portableSkillSelect'
+    ? actions.map((action) => action.actionId ?? action.label).join('\0') : '';
 
   useEffect(() => {
     if (!batchSelectionActionSignature) return;
@@ -8674,6 +8861,12 @@ export function ConsoleAppV4(props: {
     }
     if (scrollOffset > lastActionIndex) setScrollOffset(focus);
   }, [batchSelectionActionSignature, focus, scrollOffset]);
+
+  useEffect(() => {
+    if (!portableSelectionActionSignature || focus < actions.length) return;
+    setFocus(Math.max(0, actions.length - 1));
+    setScrollOffset(0);
+  }, [portableSelectionActionSignature, focus, actions.length]);
 
   useEffect(() => {
     if (!pendingActionFocus.current) return;
@@ -9616,6 +9809,9 @@ export function ConsoleAppV4(props: {
           ...candidates.map((candidate) => candidate.pluginId),
         ])],
       } : current);
+    } else if (route.name === 'installTargets' && route.view !== 'blocked'
+      && input.toLowerCase() === 'c') {
+      runAction(actions.find((action) => action.actionId === 'confirm-install-platforms'));
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'c') {
       runAction(actions.find((action) => action.actionId === 'batch-selection-continue'));
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input === ' ') {
@@ -9666,10 +9862,12 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
       const direction = key.leftArrow || input === '[' ? -1 : 1;
       movePluginListSource?.(direction);
+    } else if (input.toLowerCase() === 'c' && route.name === 'portableSkillSelect') {
+      runAction(actions.find((action) => action.actionId === 'portable-selection-continue'));
     } else if (input.toLowerCase() === 'a' && route.name === 'portableSkillSelect') {
       props.controller.selectAllPortableSkills();
     } else if (input === ' ' && route.name === 'portableSkillSelect') {
-      const candidate = snapshot.portableDraft?.candidates[focus];
+      const candidate = portableVisibleCandidates[focus];
       if (candidate) props.controller.togglePortableSkill(candidate.name);
     } else if (key.upArrow || input.toLowerCase() === 'k') {
       if (route.name === 'pluginDependencyNode' && route.view === 'references') {
@@ -9696,13 +9894,13 @@ export function ConsoleAppV4(props: {
             )
           : route.name === 'portableSkillSelect' && snapshot.portableDraft
           ? portableSkillCandidateViewport(
-              actions.slice(0, snapshot.portableDraft.candidates.length),
-              snapshot.portableDraft.candidates,
+              actions.slice(0, portableVisibleCandidates.length),
+              portableVisibleCandidates,
               policy.mode === 'compact',
               next,
               scrollOffset,
               pageActionBudget(
-                actions.length - snapshot.portableDraft.candidates.length
+                actions.length - portableVisibleCandidates.length
                 + (portableVariantCandidates.length > 0 ? 3 : 0),
               ),
             )
@@ -9760,13 +9958,13 @@ export function ConsoleAppV4(props: {
             )
           : route.name === 'portableSkillSelect' && snapshot.portableDraft
           ? portableSkillCandidateViewport(
-              actions.slice(0, snapshot.portableDraft.candidates.length),
-              snapshot.portableDraft.candidates,
+              actions.slice(0, portableVisibleCandidates.length),
+              portableVisibleCandidates,
               policy.mode === 'compact',
               next,
               scrollOffset,
               pageActionBudget(
-                actions.length - snapshot.portableDraft.candidates.length
+                actions.length - portableVisibleCandidates.length
                 + (portableVariantCandidates.length > 0 ? 3 : 0),
               ),
             )

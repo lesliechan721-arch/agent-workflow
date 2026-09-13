@@ -56,6 +56,7 @@ export type TuiRoute =
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
   | { name: 'portableSkillSelect'; pluginId: string }
+  | { name: 'portableSkillSummary'; pluginId: string; skillName: string }
   | { name: 'portableDependencies'; pluginId: string }
   | { name: 'portableAgentMode'; pluginId: string }
   | { name: 'portableAgentInput'; pluginId: string }
@@ -83,6 +84,7 @@ export type TuiRoute =
       pluginId: string;
       view?: 'selection' | 'blocked';
     }
+  | { name: 'uninstallTargets'; pluginId: string }
   | { name: 'dependencyPlacement'; pluginId: string }
   | {
       name: 'dependencyPlacementEditor';
@@ -486,7 +488,8 @@ export class TuiRouter {
 
   beginPortableFlow(pluginId: string): TuiRoute {
     const currentFrame = this.#stack.at(-1)!;
-    if ((currentFrame.route.name === 'pluginPreview' || currentFrame.route.name === 'pluginDetail')
+    if ((currentFrame.route.name === 'pluginPreview' || currentFrame.route.name === 'pluginDetail'
+      || currentFrame.route.name === 'installTargets')
       && currentFrame.route.pluginId === pluginId) {
       const active = this.activeFlow();
       if (active?.kind !== 'portableInstall') this.beginFlow('portableInstall', currentFrame.route);
@@ -495,7 +498,8 @@ export class TuiRouter {
     const active = this.activeFlow();
     if (active?.kind === 'portableInstall') {
       const frame = this.#stack.find((candidate) => candidate.id === active.originFrameId);
-      if (frame && (frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+      if (frame && (frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail'
+        || frame.route.name === 'installTargets')
         && frame.route.pluginId === pluginId) {
         return copyFrame(frame).route;
       }
@@ -503,7 +507,8 @@ export class TuiRouter {
     let existingOrigin = -1;
     for (let candidate = this.#stack.length - 1; candidate >= 0; candidate -= 1) {
       const frame = this.#stack[candidate]!;
-      if ((frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail')
+      if ((frame.route.name === 'pluginPreview' || frame.route.name === 'pluginDetail'
+        || frame.route.name === 'installTargets')
         && frame.route.pluginId === pluginId) {
         existingOrigin = candidate;
         break;
@@ -511,7 +516,7 @@ export class TuiRouter {
     }
     const index = existingOrigin >= 0 ? existingOrigin : this.#stack.length - 1;
     let route = this.#stack[index]!.route;
-    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail')
+    if ((route.name !== 'pluginPreview' && route.name !== 'pluginDetail' && route.name !== 'installTargets')
       || route.pluginId !== pluginId) {
       this.replace({ name: 'pluginDetail', pluginId });
       route = this.#stack[index]!.route;
@@ -557,7 +562,8 @@ export class TuiRouter {
     const origin = flow?.kind === 'portableInstall'
       ? this.#stack.find((frame) => frame.id === flow.originFrameId)
       : undefined;
-    if (origin && (origin.route.name === 'pluginPreview' || origin.route.name === 'pluginDetail')
+    if (origin && (origin.route.name === 'pluginPreview' || origin.route.name === 'pluginDetail'
+      || origin.route.name === 'installTargets')
       && origin.route.pluginId === pluginId) {
       this.finishFlow();
     } else {

@@ -1019,7 +1019,6 @@ function allSupportedPlatformsBlocked(plugin: PluginListItemViewModel): boolean 
 
 function capabilityActions(plugin: PluginListItemViewModel): PluginMenuAction[] {
   return [
-    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
     ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
     ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
   ];
@@ -1103,7 +1102,6 @@ export function buildPluginDetailActions(plugin: PluginListItemViewModel): Plugi
         : { id: 'platform', platform: placement.platform },
     ]),
     ...((plugin.dependencySummary?.totalCount ?? 0) > 0 ? [{ id: 'dependencies' as const }] : []),
-    ...(plugin.portableSkills ? [{ id: 'portableSkills' as const }] : []),
     ...(plugin.configFieldCount > 0 ? [{ id: 'settings' as const }] : []),
     { id: 'about' },
   ];

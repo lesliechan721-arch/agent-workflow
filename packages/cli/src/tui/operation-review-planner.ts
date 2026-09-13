@@ -1,4 +1,5 @@
 import { requestedIntentAction } from '../output/command-receipt.js';
+import type { PortableRetryReview } from '../portable/commands.js';
 import type { PlatformName } from '../types.js';
 import type {
   OperationEvidence,
@@ -419,6 +420,7 @@ function reviewChanges(
   if (intent.kind === 'portableInstall') {
     const review = evidence?.portable;
     if (!review) throw plannerError('portablePrepareFailed', '缺少通用 Skills Review 证据。');
+    const retry = 'targetGroups' in review ? review as PortableRetryReview : undefined;
     return [
       ...review.selected.map((skill): OperationReviewChange => ({
         kind: 'add',
@@ -428,9 +430,14 @@ function reviewChanges(
         title: skill.name,
         description: `${skill.description} · ${skill.providerDisplayName}${skill.dynamic ? ' · 按设置生成' : ''}`,
       })),
-      { kind: 'change', group: 'portableTarget', title: 'Agent', description: review.agentMode === 'automatic'
-        ? '自动选择检测到的 Agent；未检测到时可能选择全部 Agent'
-        : review.requestedAgents.join('、') },
+      ...(retry ? retry.targetGroups.map((group): OperationReviewChange => ({
+        kind: 'change',
+        group: 'portableTarget',
+        title: `精确重试 · ${group.agent}`,
+        description: group.skills.join('、'),
+      })) : [{ kind: 'change' as const, group: 'portableTarget' as const, title: 'Agent', description: review.agentMode === 'automatic'
+        ? '自动选择检测到的 Agent；实际目标由 Skills CLI 决定，不表示安装到所有 Agent'
+        : review.requestedAgents.join('、') }]),
       { kind: 'change', group: 'portableTarget', title: '范围', description: review.scope === 'project' ? '当前项目' : '所有项目' },
       { kind: review.dependencies.length > 0 ? 'keep' : 'change', group: 'portableInputs', title: '插件依赖', description: review.dependencies.length > 0
         ? `${review.dependencies.length} 个依赖用于生成，不能取消` : '无需插件依赖' },

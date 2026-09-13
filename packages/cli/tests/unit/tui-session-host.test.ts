@@ -40,6 +40,7 @@ function fakeController(options: {
   wait?: Promise<void>;
 } = {}): TuiController & {
   emitResult(value: OperationExecuteResult): void;
+  emitDetailResult(value: OperationExecuteResult, pluginId: string): void;
   emitLateResult(value: OperationExecuteResult): void;
   setWrite(value: boolean): void;
   setDraft(value: boolean): void;
@@ -96,6 +97,23 @@ function fakeController(options: {
           currentFrameId: 'frame-2', depth: 1,
         },
         result: value,
+      };
+      listener?.(latestSnapshot);
+    },
+    emitDetailResult(value: OperationExecuteResult, pluginId: string) {
+      latestSnapshot = {
+        ...base,
+        router: {
+          current: { route: { name: 'pluginDetail', pluginId }, context: {} },
+          currentFrameId: 'frame-2', depth: 2,
+        },
+        result: value,
+        completionNotice: {
+          pluginId,
+          title: '插件安装完成',
+          description: '状态已重新检查。',
+          operationRecordId: value.operationRecordId,
+        },
       };
       listener?.(latestSnapshot);
     },
@@ -163,6 +181,17 @@ describe('TUI session host', () => {
 
     expect(history.latestResult).toMatchObject({ epoch: 1, result: { state: 'succeeded' } });
     expect(host.snapshot.epoch).toBe(2);
+  });
+
+  it('consumes pending home after a single-plugin success returns to detail', async () => {
+    const first = fakeController({ write: true });
+    const host = new SessionHost({ createSession: () => session(first) });
+    await expect(host.requestNavigation('home')).resolves.toBe('pending');
+    first.setWrite(false);
+    first.emitDetailResult({ ...result('succeeded'), operationRecordId: '1:operation-1' }, 'official/demo');
+
+    expect(first.goHome).toHaveBeenCalledOnce();
+    expect(host.snapshot.pendingNavigation).toBeUndefined();
   });
 
   it.each(['partial', 'stale', 'blocked'] as const)(

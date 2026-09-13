@@ -168,7 +168,11 @@ export class SessionHost {
     this.#controllerUnsubscribe = controller.subscribe((snapshot) => {
       if (this.#disposed || epoch !== this.#epoch || controller !== this.#controller) return;
       const pending = this.#pendingNavigation;
-      if (!pending || snapshot.router.current.route.name !== 'result' || !snapshot.result) return;
+      const completedAtDetail = snapshot.router.current.route.name === 'pluginDetail'
+        && snapshot.completionNotice?.pluginId === snapshot.router.current.route.pluginId
+        && snapshot.completionNotice.operationRecordId === snapshot.result?.operationRecordId;
+      if (!pending || (snapshot.router.current.route.name !== 'result' && !completedAtDetail)
+        || !snapshot.result) return;
       if (controller.hasActiveWrite) return;
       if (snapshot.result.state !== 'succeeded') {
         this.#pendingNavigation = undefined;

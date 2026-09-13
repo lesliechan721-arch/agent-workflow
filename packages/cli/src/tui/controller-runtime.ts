@@ -161,9 +161,13 @@ import { CatalogGenerationError } from '../utils/catalog-generation-error.js';
 import { CatalogProviderCompatibilityError } from '../utils/catalog-public-error.js';
 import { loadCatalogGenerationViewModels } from './catalog-generation.js';
 import {
+  executePortableRetry,
   installPortableSkills,
   preparePortableInstall,
+  preparePortableRetry,
   PortableCommandError,
+  recheckPortableInstall,
+  type PortableRetryReview,
 } from '../portable/commands.js';
 import {
   MANAGED_CODEX_PACKAGE_NAME,
@@ -2302,23 +2306,39 @@ export function createTuiControllerDependencies(
     }
     if (intent.kind === 'portableInstall') {
       await preparation?.reporter.emit('portable');
+      if (intent.retry
+        && (intent.retry.receipt.plugin.id !== intent.pluginId
+          || intent.retry.receipt.scope !== intent.scope)) {
+        throw operationReviewStale('Portable 重试结果与当前插件或范围不匹配。');
+      }
       const portableSourceId = parsePluginId(intent.pluginId).sourceId!;
       const portableCatalogOperation = sessionCatalogOperationContext
         ? selectCatalogOperationContext(sessionCatalogOperationContext, [portableSourceId])
         : undefined;
-      const portable = await preparePortableInstall({
-        selector: intent.pluginId,
-        scope: intent.scope,
-        ...(intent.selectedSkills.length > 0 ? { requestedSkills: intent.selectedSkills } : {}),
-        ...(intent.requestedAgents ? { requestedAgents: intent.requestedAgents } : {}),
-        cwd: context.cwd,
-        env: context.env,
-        cliVersion: packageInfo.version,
-        signal,
-        ...(portableCatalogOperation
-          ? { catalogOperationContext: portableCatalogOperation }
-          : {}),
-      });
+      const portable = intent.retry
+        ? await preparePortableRetry({
+            receipt: intent.retry.receipt,
+            cwd: context.cwd,
+            env: context.env,
+            cliVersion: packageInfo.version,
+            signal,
+            ...(portableCatalogOperation
+              ? { catalogOperationContext: portableCatalogOperation }
+              : {}),
+          })
+        : await preparePortableInstall({
+            selector: intent.pluginId,
+            scope: intent.scope,
+            ...(intent.selectedSkills.length > 0 ? { requestedSkills: intent.selectedSkills } : {}),
+            ...(intent.requestedAgents ? { requestedAgents: intent.requestedAgents } : {}),
+            cwd: context.cwd,
+            env: context.env,
+            cliVersion: packageInfo.version,
+            signal,
+            ...(portableCatalogOperation
+              ? { catalogOperationContext: portableCatalogOperation }
+              : {}),
+          });
       signal?.throwIfAborted();
       await preparation?.reporter.emit('evidence');
       signal?.throwIfAborted();
@@ -2919,6 +2939,14 @@ export function createTuiControllerDependencies(
       }
     },
     captureEvidence,
+    recheckPortableInstall(receipt, signal) {
+      return recheckPortableInstall({
+        receipt,
+        cwd: context.cwd,
+        env: context.env,
+        signal,
+      });
+    },
     logError(_error, code, logContext) {
       return context.debugLogger.log({
         type: 'tui:controller-error',
@@ -3283,6 +3311,25 @@ export function createTuiControllerDependencies(
         }
         const packageInfo = await readCliPackageInfo();
         try {
+          if (intent.retry) {
+            if (!('retryPairs' in expectedEvidence.portable)) {
+              throw operationReviewStale('确认信息缺少 Portable 重试目标。');
+            }
+            return await executePortableRetry({
+              receipt: intent.retry.receipt,
+              review: expectedEvidence.portable as PortableRetryReview,
+              expectedEvidenceDigest: expectedEvidence.portable.evidenceDigest,
+              cwd: context.cwd,
+              env: context.env,
+              cliVersion: packageInfo.version,
+              signal,
+              onProgress(stage) {
+                const phase = stage === 'prepare' ? '重新检查失败目标'
+                  : stage === 'add' ? '重试缺失的 Skills' : '验证重试结果';
+                progressFeed?.setCurrent({ target: 'Skills CLI', phase }, `Portable Skills：${phase}`);
+              },
+            });
+          }
           return await installPortableSkills({
             selector: intent.pluginId,
             scope: intent.scope,

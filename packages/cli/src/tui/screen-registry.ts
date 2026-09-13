@@ -66,6 +66,7 @@ const plugin = <Name extends TuiRouteName>(route: NamedRoute<Name>, state: Route
     : { name: 'pluginList', mode: route.name === 'pluginPreview'
       || route.name === 'pluginDependencies' || route.name === 'installPlacement'
       || route.name === 'installTargets' || route.name === 'dependencyPlacement'
+      || route.name === 'uninstallTargets'
       || route.name === 'dependencyPlacementEditor' ? 'browse' : 'installed' };
 const pluginDetail = (route: NamedRoute<'pluginPreview'>, state: RouteEntityState): TuiRoute =>
   state.hasPlugin(route.pluginId)
@@ -162,6 +163,7 @@ export const TUI_ROUTE_DEFINITIONS = {
   pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: pluginDetail, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },
   portableSkillSelect: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U01') },
+  portableSkillSummary: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U07') },
   portableDependencies: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U02') },
   portableAgentMode: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menu', normalize: plugin, screenId: fixed('U03') },
   portableAgentInput: { entity: 'plugin', rendererFamily: 'portable', keymap: 'menuOrTextInput', normalize: plugin, screenId: fixed('U04') },
@@ -185,6 +187,7 @@ export const TUI_ROUTE_DEFINITIONS = {
   installTargets: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: (route, { controller }) =>
     route.view === 'blocked' ? 'D16'
       : controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D04' : 'P06' },
+  uninstallTargets: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: plugin, screenId: fixed('P19') },
   dependencyPlacement: { entity: 'plugin', rendererFamily: 'dependency', keymap: 'menu', normalize: plugin, screenId: fixed('D03') },
   dependencyPlacementEditor: { entity: 'plugin', rendererFamily: 'dependency', keymap: 'menu', normalize: (route, state) =>
     state.hasPlugin(route.pluginId) && state.hasPlugin(route.dependencyPluginId)
