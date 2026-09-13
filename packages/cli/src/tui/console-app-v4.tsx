@@ -39,10 +39,12 @@ import {
   ActionRow,
   Callout,
   ChoiceRow,
+  ContentViewport,
   diagnosticDetailRowCount,
   DiagnosticSummary,
   InputCard,
   PluginListRow,
+  PinnedActionBar,
   ProgressRow,
   ResultCard,
   ResultRow,
@@ -1096,6 +1098,7 @@ function PluginRows(props: {
   rows: PluginListRowViewModel[];
   focus: number;
   viewport: RowViewport;
+  active: boolean;
 }): React.JSX.Element {
   return (
     <Box flexDirection="column">
@@ -1107,7 +1110,7 @@ function PluginRows(props: {
             description={row.description}
             meta={row.statusLabel}
             status={row.status}
-            focused={props.viewport.offset + visibleIndex === props.focus}
+            focused={props.active && props.viewport.offset + visibleIndex === props.focus}
             compact
           />
         ) : (
@@ -1120,7 +1123,8 @@ function PluginRows(props: {
             placementSummary={row.placementSummary}
             statusLabel={row.statusLabel}
             status={row.status}
-            focused={props.viewport.offset + visibleIndex === props.focus}
+            focused={props.active && props.viewport.offset + visibleIndex === props.focus}
+            anchored={!props.active && props.viewport.offset + visibleIndex === props.focus}
           />
         ))}
     </Box>
@@ -1442,6 +1446,8 @@ export function ConsoleAppV4(props: {
   const [discardForSessionNavigation, setDiscardForSessionNavigation] = useState<SessionNavigation>();
   const [discardDraftConfirmation, setDiscardDraftConfirmation] = useState<ExternalDraftState[]>();
   const [focus, setFocus] = useState(0);
+  const [focusZone, setFocusZone] = useState<'content' | 'actions'>('content');
+  const [pinnedActionFocus, setPinnedActionFocus] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [searchFocus, setSearchFocus] = useState(false);
   const [query, setQuery] = useState(
@@ -2005,14 +2011,7 @@ export function ConsoleAppV4(props: {
       installFilter,
     });
     if (items.length === 0) return;
-    const listed = new Set(items.map((item) => item.pluginId));
-    const menuCount = query ? 0 : 1
-      + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('update')
-        .some((candidate) => candidate.eligible && listed.has(candidate.target.pluginId)))
-      + Number(route.mode === 'installed' && props.controller.listCurrentProjectIntentRoots().length > 0)
-      + Number(route.mode === 'installed' && props.controller.listPluginWriteTaskCandidates('restore')
-        .some((candidate) => candidate.target.scope === 'project'));
-    setFocus(menuCount);
+    setFocus(0);
   }, [props.controller, route.name, route.name === 'pluginList' ? route.mode : '',
     route.name === 'pluginList' ? route.sourceId : '', snapshot.phase]);
   useEffect(() => {
@@ -2161,6 +2160,9 @@ export function ConsoleAppV4(props: {
   let referenceDetailPagination: { total: number; pageRows: number } | undefined;
   let placementConclusionPagination: { total: number; pageRows: number } | undefined;
   let pluginRows: PluginListRowViewModel[] = [];
+  let pinnedActions: ActionItem[] = [];
+  let togglePluginListFilter: (() => void) | undefined;
+  let movePluginListSource: ((direction: -1 | 1) => void) | undefined;
   let visibleConfigTabs: ConfigTab[] = [];
   let activeConfigTabId: string | undefined;
   const dynamicMenu = plugin && route.name === 'pluginPreview'
@@ -2199,29 +2201,13 @@ export function ConsoleAppV4(props: {
     return base + Math.max(0, size.rows - baseline);
   };
   const pluginListRowIds = (
-    mode: 'browse' | 'installed',
+    _mode: 'browse' | 'installed',
     items: PluginListItemViewModel[],
-    queryValue = query,
+    _queryValue = query,
     sourceUnavailable = false,
   ): string[] => {
     if (items.length === 0 || sourceUnavailable) return [];
-    if (queryValue) return [...items.map((item) => item.pluginId), '@menu:batch'];
-    const listed = new Set(items.map((item) => item.pluginId));
-    return [
-      ...(!queryValue && mode === 'installed'
-        && props.controller.listPluginWriteTaskCandidates('update')
-          .some((candidate) => candidate.eligible && listed.has(candidate.target.pluginId))
-        ? ['@menu:update'] : []),
-      ...(!queryValue && mode === 'installed'
-        && props.controller.listCurrentProjectIntentRoots().length > 0
-        ? ['@menu:restore-project'] : []),
-      ...(!queryValue && mode === 'installed'
-        && props.controller.listPluginWriteTaskCandidates('restore')
-          .some((candidate) => candidate.target.scope === 'project')
-        ? ['@menu:repair-project'] : []),
-      '@menu:batch',
-      ...items.map((item) => item.pluginId),
-    ];
+    return items.map((item) => item.pluginId);
   };
 
   const go = (next: TuiRoute): void => {
@@ -2237,6 +2223,8 @@ export function ConsoleAppV4(props: {
     });
     props.controller.push(next);
     setFocus(0);
+    setFocusZone('content');
+    setPinnedActionFocus(0);
     setScrollOffset(0);
     setSearchFocus(false);
     setShowTechnical(false);
@@ -2326,6 +2314,8 @@ export function ConsoleAppV4(props: {
     if (route.name === 'result') props.controller.leaveResult();
     else props.controller.back();
     restorePageContext();
+    setFocusZone('content');
+    setPinnedActionFocus(0);
     setActionError(undefined);
   };
   const acceptSourceFieldAndBack = (): void => {
@@ -3429,15 +3419,60 @@ export function ConsoleAppV4(props: {
     breadcrumb = route.mode === 'browse' ? '添加插件' : '我的插件';
     title = breadcrumb;
     description = route.mode === 'browse'
-      ? '选择一个插件，或从列表前部选择多个。'
+      ? '选择一个插件，或使用固定操作栏选择多个。'
       : '先处理推荐任务，或查看一个插件。';
     context = `${items.length} 个插件`;
-    help = `↑↓ 移动 · Enter 查看 · m 批量${route.mode === 'installed' ? ' · a 按项目清单准备 · f 可更新' : ''} · ←→ 来源 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ''} · Esc 返回`;
+    help = focusZone === 'actions'
+      ? '←→/↑↓ 操作 · Enter 执行 · Tab 插件列表 · Esc 返回'
+      : `↑↓ 插件 · Enter 查看 · Tab 操作栏 · m 多选 · / 搜索${route.mode === 'browse' ? ' · f 未安装' : ' · f 可更新'} · Esc 返回`;
     const sourceError = sourceId !== 'all'
       && props.controller.getSourceOverview(sourceId).health?.state === 'unavailable';
     actions = sourceError
       ? [{ label: '查看来源问题', description: '当前不能浏览这个来源', run: () => go({ name: 'issueDetail', issueId: `source:${sourceId}:unavailable` }) }]
       : [];
+    togglePluginListFilter = () => {
+      const selectedPluginId = pluginRows[focus]?.pluginId;
+      const nextFilter = installFilter === 'all'
+        ? route.mode === 'browse' ? 'uninstalled' : 'updateAvailable'
+        : 'all';
+      const nextItems = props.controller.listPlugins({
+        mode: route.mode,
+        ...(route.sourceId ? { sourceId: route.sourceId } : {}),
+        ...(query ? { query } : {}),
+        installFilter: nextFilter,
+      });
+      const nextRowIds = pluginListRowIds(route.mode, nextItems, query);
+      const retained = selectedPluginId ? nextRowIds.indexOf(selectedPluginId) : -1;
+      setInstallFilter(nextFilter);
+      props.controller.updatePageContext({ installFilter: nextFilter });
+      setFocus(retained >= 0 ? retained : 0);
+      setScrollOffset(0);
+    };
+    movePluginListSource = (direction) => {
+      const tabs = ['all', ...props.controller.listSources().map((source) => source.id)];
+      const selectedPluginId = pluginRows[focus]?.pluginId;
+      const index = tabs.indexOf(sourceId);
+      const next = tabs[(index + direction + tabs.length) % tabs.length]!;
+      const nextItems = props.controller.listPlugins({
+        mode: route.mode,
+        ...(next !== 'all' ? { sourceId: next } : {}),
+        ...(query ? { query } : {}),
+        installFilter,
+      });
+      const nextSourceUnavailable = next !== 'all'
+        && props.controller.getSourceOverview(next).health?.state === 'unavailable';
+      const nextRowIds = pluginListRowIds(route.mode, nextItems, query, nextSourceUnavailable);
+      const retained = selectedPluginId ? nextRowIds.indexOf(selectedPluginId) : -1;
+      props.controller.replace(
+        { name: 'pluginList', mode: route.mode, ...(next !== 'all' ? { sourceId: next } : {}) },
+        { ...snapshot.router.current.context, query, installFilter, sourceTabId: next },
+      );
+      const retainedFocus = retained >= 0
+        ? retained
+        : nextItems[0] ? nextRowIds.indexOf(nextItems[0].pluginId) : 0;
+      setFocus(retainedFocus);
+      setScrollOffset(retainedFocus >= 4 ? retainedFocus - 3 : 0);
+    };
     const listedPluginIds = new Set(items.map((item) => item.pluginId));
     const recommendedUpdateCandidates = props.controller.listPluginWriteTaskCandidates('update')
       .filter((candidate) => candidate.eligible && listedPluginIds.has(candidate.target.pluginId));
@@ -3446,55 +3481,55 @@ export function ConsoleAppV4(props: {
     const projectRestoreCandidates = props.controller.listPluginWriteTaskCandidates('restore')
       .filter((candidate) => candidate.target.scope === 'project');
     const projectIntentRoots = props.controller.listCurrentProjectIntentRoots();
-    const menuRows: PluginListRowViewModel[] = [
+    const menuActions: ActionItem[] = [
       ...(route.mode === 'installed' && recommendedUpdatePluginIds.length > 0 ? [{
-        pluginId: '@menu:update',
-        name: `更新 ${recommendedUpdatePluginIds.length} 个插件…`,
-        sourceLabel: '',
+        actionId: 'plugin-list-update',
+        label: `更新 ${recommendedUpdatePluginIds.length} 个`,
         description: '使用已验证版本和现有安装位置，直接查看任务确认',
-        placementSummary: '',
-        statusLabel: '推荐',
         status: 'warning' as const,
-        menuAction: () => openRecommendedUpdateTask(recommendedUpdatePluginIds),
+        run: () => openRecommendedUpdateTask(recommendedUpdatePluginIds),
       }] : []),
       ...(route.mode === 'installed' && projectIntentRoots.length > 0 ? [{
-        pluginId: '@menu:restore-project',
-        name: '按项目清单准备…',
-        sourceLabel: '',
+        actionId: 'plugin-list-project',
+        label: '项目清单',
         description: `${projectIntentRoots.length} 个已保存根插件；允许补齐当前项目缺少的安装`,
-        placementSummary: '',
-        statusLabel: '项目',
         status: 'info' as const,
-        menuAction: prepareCurrentProjectPlugins,
+        run: prepareCurrentProjectPlugins,
       }] : []),
       ...(route.mode === 'installed' && projectRestoreCandidates.length > 0 ? [{
-        pluginId: '@menu:repair-project',
-        name: '修复本项目异常…',
-        sourceLabel: '',
+        actionId: 'plugin-list-repair-project',
+        label: '修复项目',
         description: '严格按已确认的现有版本修复异常，不改变插件版本',
-        placementSummary: '',
-        statusLabel: '推荐',
         status: 'warning' as const,
-        menuAction: () => openSelectedPluginTask('restore', [...new Set(projectRestoreCandidates
+        run: () => openSelectedPluginTask('restore', [...new Set(projectRestoreCandidates
           .map((candidate) => candidate.target.pluginId))], 'project'),
       }] : []),
       {
-        pluginId: '@menu:batch',
-        name: query
-          ? '选择多个当前结果…'
-          : route.mode === 'browse' ? '选择多个插件添加…' : '选择多个…',
-        sourceLabel: '',
+        actionId: 'plugin-list-multi',
+        label: query ? 'm 当前结果多选' : 'm 多选',
         description: route.mode === 'browse'
           ? '先选择插件，再选择安装位置和平台'
           : '先选择插件，再选择更新、恢复、移除或维护任务',
-        placementSummary: '',
-        statusLabel: '菜单',
         status: 'info' as const,
-        menuAction: () => openBatchSelection(route.mode === 'browse' ? 'install' : undefined),
+        run: () => openBatchSelection(route.mode === 'browse' ? 'install' : undefined),
+      },
+    ];
+    const toolActions: ActionItem[] = [
+      {
+        actionId: 'plugin-list-filter',
+        label: route.mode === 'browse'
+          ? `筛选：${installFilter === 'all' ? '全部' : '未安装'}`
+          : `筛选：${installFilter === 'all' ? '全部' : '可更新'}`,
+        run: togglePluginListFilter,
+      },
+      { actionId: 'plugin-list-search', label: '/ 搜索', run: () => setSearchFocus(true) },
+      {
+        actionId: 'plugin-list-source',
+        label: `来源：${sourceId === 'all' ? '全部' : sourceId}`,
+        run: () => movePluginListSource?.(1),
       },
     ];
     const pluginRowsById = new Map<string, PluginListRowViewModel>([
-      ...menuRows.map((row): [string, PluginListRowViewModel] => [row.pluginId, row]),
       ...items.map((item): [string, PluginListRowViewModel] => [item.pluginId, {
       pluginId: item.pluginId,
       name: item.displayName,
@@ -3562,13 +3597,15 @@ export function ConsoleAppV4(props: {
         } } : { disabled: '没有可打开的插件' }),
       }];
     }
-    const pluginListStaticRows = 3;
+    pinnedActions = dedupeActions([
+      ...(pluginRows.length > 0 ? menuActions : actions),
+      ...toolActions,
+    ]);
+    const pluginListStaticRows = 4;
     const viewport = sourceError || pluginRows.length === 0
       ? actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(pluginListStaticRows))
       : rowViewport({
-          rowHeights: pluginRows.map((row) => row.menuAction
-            ? 1
-            : row.attention ? 4 : 3),
+          rowHeights: pluginRows.map((row) => row.attention ? 6 : 5),
           focus,
           requestedOffset: scrollOffset,
           rowBudget: pageActionBudget(pluginListStaticRows),
@@ -3578,6 +3615,16 @@ export function ConsoleAppV4(props: {
     }
     content = (
       <Box flexDirection="column">
+        <PinnedActionBar
+          actions={pinnedActions.map((action, index) => ({
+            id: action.actionId ?? `${action.label}:${index}`,
+            label: action.label,
+            disabled: Boolean(action.disabled),
+          }))}
+          active={focusZone === 'actions'}
+          focus={pinnedActionFocus}
+          visibleCount={policy.mode === 'compact' ? 2 : 3}
+        />
         <SourceTabs
           controller={props.controller}
           current={sourceId}
@@ -3600,9 +3647,11 @@ export function ConsoleAppV4(props: {
               ? <Callout title="没有可更新插件" description="当前筛选范围内没有经过版本证据确认的更新。" />
               : <Callout title="开始添加第一个插件" description="插件可以安装到 Codex、Claude Code 或两者。" />
             : null}
-        {pluginRows.length > 0
-          ? <PluginRows rows={pluginRows} focus={focus} viewport={viewport} />
-          : <SemanticRows actions={actions} focus={focus} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />}
+        <ContentViewport>
+          {pluginRows.length > 0
+            ? <PluginRows rows={pluginRows} focus={focus} viewport={viewport} active={focusZone === 'content'} />
+            : <SemanticRows actions={actions} focus={focusZone === 'content' ? focus : -1} kind="action" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />}
+        </ContentViewport>
       </Box>
     );
   } else if (route.name === 'batchSelection') {
@@ -9411,6 +9460,29 @@ export function ConsoleAppV4(props: {
       setScrollOffset(0);
       return;
     }
+    if (route.name === 'pluginList' && key.tab) {
+      setFocusZone((current) => current === 'content' ? 'actions' : 'content');
+      return;
+    }
+    if (route.name === 'pluginList' && input.toLowerCase() === 'm') {
+      openBatchSelection(route.mode === 'browse' ? 'install' : undefined);
+      return;
+    }
+    if (route.name === 'pluginList' && input === '/') {
+      setSearchFocus(true);
+      return;
+    }
+    if (route.name === 'pluginList' && focusZone === 'actions'
+      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)) {
+      const direction = key.upArrow || key.leftArrow ? -1 : 1;
+      setPinnedActionFocus((value) => moveFocus(pinnedActions, value, direction));
+      return;
+    }
+    if (route.name === 'pluginList' && focusZone === 'actions' && key.return) {
+      const actionIndex = Math.min(pinnedActionFocus, Math.max(0, pinnedActions.length - 1));
+      runAction(pinnedActions[actionIndex]);
+      return;
+    }
     if (key.tab && (route.name === 'configLayer'
       || route.name === 'configFields'
       || route.name === 'configFieldEditor'
@@ -9507,27 +9579,8 @@ export function ConsoleAppV4(props: {
         setDiscardForExit(false);
         setOverlay('discard');
       } else back();
-    } else if (route.name === 'pluginList' && input === '/') {
-      setSearchFocus(true);
     } else if (route.name === 'pluginList' && input.toLowerCase() === 'f') {
-      const selectedPluginId = pluginRows[focus]?.pluginId;
-      const nextFilter = installFilter === 'all'
-        ? route.mode === 'browse' ? 'uninstalled' : 'updateAvailable'
-        : 'all';
-      const nextItems = props.controller.listPlugins({
-        mode: route.mode,
-        ...(route.sourceId ? { sourceId: route.sourceId } : {}),
-        ...(query ? { query } : {}),
-        installFilter: nextFilter,
-      });
-      const nextRowIds = pluginListRowIds(route.mode, nextItems, query);
-      const retained = selectedPluginId ? nextRowIds.indexOf(selectedPluginId) : -1;
-      setInstallFilter(nextFilter);
-      props.controller.updatePageContext({ installFilter: nextFilter });
-      setFocus(retained >= 0 ? retained : 0);
-      setScrollOffset(0);
-    } else if (route.name === 'pluginList' && input.toLowerCase() === 'm') {
-      openBatchSelection(route.mode === 'browse' ? 'install' : undefined);
+      togglePluginListFilter?.();
     } else if (route.name === 'pluginList' && route.mode === 'installed' && input.toLowerCase() === 'a') {
       prepareCurrentProjectPlugins();
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'a') {
@@ -9588,27 +9641,8 @@ export function ConsoleAppV4(props: {
     } else if (input.toLowerCase() === 'r' && route.name === 'sourceList') {
       void props.controller.recheckAllCatalogSources();
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
-      const tabs = ['all', ...props.controller.listSources().map((source) => source.id)];
-      const current = route.sourceId ?? 'all';
-      const selectedPluginId = pluginRows[focus]?.pluginId.startsWith('@menu:')
-        ? undefined : pluginRows[focus]?.pluginId;
       const direction = key.leftArrow || input === '[' ? -1 : 1;
-      const index = tabs.indexOf(current);
-      const next = tabs[(index + direction + tabs.length) % tabs.length]!;
-      const nextItems = props.controller.listPlugins({ mode: route.mode, ...(next !== 'all' ? { sourceId: next } : {}), ...(query ? { query } : {}), installFilter });
-      const nextSourceUnavailable = next !== 'all'
-        && props.controller.getSourceOverview(next).health?.state === 'unavailable';
-      const nextRowIds = pluginListRowIds(route.mode, nextItems, query, nextSourceUnavailable);
-      const retained = selectedPluginId ? nextRowIds.indexOf(selectedPluginId) : -1;
-      props.controller.replace(
-        { name: 'pluginList', mode: route.mode, ...(next !== 'all' ? { sourceId: next } : {}) },
-        { ...snapshot.router.current.context, query, installFilter, sourceTabId: next },
-      );
-      const retainedFocus = retained >= 0
-        ? retained
-        : nextItems[0] ? nextRowIds.indexOf(nextItems[0].pluginId) : 0;
-      setFocus(retainedFocus);
-      setScrollOffset(retainedFocus >= 4 ? retainedFocus - 3 : 0);
+      movePluginListSource?.(direction);
     } else if (input.toLowerCase() === 'a' && route.name === 'portableSkillSelect') {
       props.controller.selectAllPortableSkills();
     } else if (input === ' ' && route.name === 'portableSkillSelect') {
@@ -9738,7 +9772,7 @@ export function ConsoleAppV4(props: {
           : viewport.offset);
         return next;
       });
-    } else if (key.return && route.name === 'pluginList' && pluginRows[focus]) {
+    } else if (key.return && route.name === 'pluginList' && focusZone === 'content' && pluginRows[focus]) {
       const row = pluginRows[focus]!;
       if (row.menuAction) row.menuAction();
       else go(route.mode === 'browse'

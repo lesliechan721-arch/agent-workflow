@@ -2411,7 +2411,7 @@ describe('ConsoleAppV4', () => {
       value.push({ name: 'pluginList', mode: 'installed' });
       const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
       await nextTurn(2);
-      expect(instance.lastFrame()).toContain('选择多个…');
+      expect(instance.lastFrame()).toContain('[m 多选]');
       await input(instance, 'm');
       let frame = instance.lastFrame() ?? '';
       expect(frame).toContain('查看确认（0）');
@@ -2608,6 +2608,58 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('› ◆ official/review-gate');
     await input(instance, ' ');
     expect(instance.lastFrame()).toContain('查看确认（0）');
+  });
+
+  it('moves from the 200th real plugin card to the pinned action bar with one Tab', async () => {
+    const loaded = loadResult();
+    loaded.pluginSummaries = Array.from({ length: 205 }, (_, index): StatusV8PluginSummary => ({
+      pluginName: `plugin-${String(index).padStart(3, '0')}`,
+      pluginId: `official/plugin-${String(index).padStart(3, '0')}`,
+      displayName: `Plugin ${String(index + 1).padStart(3, '0')}`,
+      description: `用途说明 ${index}`,
+      version: `1.0.${index}`,
+      supportedTargets: { codex: ['project'], claude: [] },
+      configFieldCount: 0,
+    }));
+    loaded.payload.targets = loaded.pluginSummaries.map((summary) => target({
+      pluginName: summary.pluginName,
+      platform: 'codex',
+      scope: 'project',
+      state: 'absent',
+    }));
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
+
+    await input(instance, ...Array.from({ length: 199 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› Plugin 200');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
+
+    await input(instance, '\t');
+    const toolbarFrame = instance.lastFrame() ?? '';
+    expect(toolbarFrame).toContain('› [m 多选]');
+    expect(toolbarFrame).toContain('· Plugin 200');
+    expect(toolbarFrame.match(/›/gu)).toHaveLength(1);
+
+    await input(instance, '\u001B[C');
+    expect(instance.lastFrame()).toContain('› [筛选：全部]');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('› [筛选：未安装]');
+    expect(instance.lastFrame()).toContain('· Plugin 200');
+    await input(instance, 'f');
+    expect(instance.lastFrame()).toContain('› [筛选：全部]');
+    expect(instance.lastFrame()).toContain('· Plugin 200');
+    await input(instance, '\u001B[B');
+    expect(instance.lastFrame()).toContain('› [/ 搜索]');
+    await input(instance, '\u001B[D', '\u001B[A');
+    expect(instance.lastFrame()).toContain('› [m 多选]');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'batchSelection' });
+    instance.unmount();
   });
 
   it('keeps Continue and every visible plugin purpose and version visible for 50 candidates at 60x18', async () => {
@@ -5425,19 +5477,58 @@ describe('ConsoleAppV4', () => {
     expect(updateScreen.lastFrame()).toContain('没有可更新插件');
   });
 
+  it('keeps empty-query content and pinned actions aligned across Tab and Enter', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse' }, { query: 'no-such-plugin' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('› 清除搜索');
+    expect(instance.lastFrame()).toContain('[清除搜索]');
+    await input(instance, '\t');
+    expect(instance.lastFrame()).toContain('› [清除搜索]');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    await input(instance, '\r');
+
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(value.snapshot.router.current.context.query).toBe('');
+    instance.unmount();
+  });
+
+  it('keeps a source-error recovery action visible and executes its focused zone', async () => {
+    const value = controller();
+    await value.load();
+    value.push({ name: 'pluginList', mode: 'browse', sourceId: 'research' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+
+    expect(instance.lastFrame()).toContain('› 查看来源问题');
+    expect(instance.lastFrame()).toContain('[查看来源问题]');
+    await input(instance, '\t');
+    expect(instance.lastFrame()).toContain('› [查看来源问题]');
+    expect(instance.lastFrame()?.match(/›/gu)).toHaveLength(1);
+    await input(instance, '\r');
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'issueDetail', issueId: 'source:research:unavailable',
+    });
+    instance.unmount();
+  });
+
   it('treats search shortcut letters as query text and keeps the query after Esc', async () => {
     const value = controller();
     value.push({ name: 'pluginList', mode: 'browse' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
 
-    await input(instance, '/', 'fjkbq');
-    expect(instance.lastFrame()).toContain('fjkbq▌');
+    await input(instance, '/', 'mcsrhHq[]');
+    expect(instance.lastFrame()).toContain('mcsrhHq[]▌');
     expect(value.snapshot.router.current.route).toEqual({ name: 'pluginList', mode: 'browse' });
     instance.stdin.write('\u001B');
     await new Promise((resolve) => setTimeout(resolve, 100));
     await nextTurn(2);
-    expect(instance.lastFrame()).toContain('fjkbq');
+    expect(instance.lastFrame()).toContain('mcsrhHq[]');
     expect(instance.lastFrame()).toContain('/ 编辑');
     expect(instance.lastFrame()).not.toContain('退出控制台？');
   });

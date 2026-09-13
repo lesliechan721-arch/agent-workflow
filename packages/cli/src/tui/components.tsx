@@ -38,6 +38,65 @@ export function HelpBar(props: {
   );
 }
 
+export interface PinnedActionItem {
+  id: string;
+  label: ReactNode;
+  disabled?: boolean;
+}
+
+export function PinnedActionBar(props: {
+  actions: PinnedActionItem[];
+  active: boolean;
+  focus: number;
+  visibleCount?: number;
+}): React.JSX.Element {
+  const focus = Math.min(Math.max(0, props.focus), Math.max(0, props.actions.length - 1));
+  const visibleCount = Math.max(1, props.visibleCount ?? props.actions.length);
+  const offset = Math.min(
+    Math.max(0, props.actions.length - visibleCount),
+    Math.max(0, focus - visibleCount + 1),
+  );
+  const visibleActions = props.actions.slice(offset, offset + visibleCount);
+  return (
+    <Box
+      flexShrink={0}
+      backgroundColor={tuiTheme.colors.panelBackground}
+      paddingX={1}
+      overflow="hidden"
+    >
+      {offset > 0 ? <Text color={tuiTheme.colors.muted}>‹ </Text> : null}
+      {visibleActions.map((action, visibleIndex) => {
+        const index = offset + visibleIndex;
+        const focused = props.active && index === focus && !action.disabled;
+        return (
+          <Box
+            key={action.id}
+            marginRight={1}
+            backgroundColor={focused ? tuiTheme.colors.selectionBackground : undefined}
+          >
+            <Text
+              bold={focused}
+              color={action.disabled ? tuiTheme.colors.muted : focused ? tuiTheme.colors.accent : tuiTheme.colors.text}
+              wrap="truncate-end"
+            >
+              {focused ? '› ' : ''}[{action.label}]
+            </Text>
+          </Box>
+        );
+      })}
+      {offset + visibleActions.length < props.actions.length
+        ? <Text color={tuiTheme.colors.muted}>»</Text>
+        : null}
+    </Box>
+  );
+}
+
+export function ContentViewport(props: {
+  children: ReactNode;
+}): React.JSX.Element {
+  return <Box flexDirection="column" flexGrow={1} overflow="hidden">{props.children}</Box>;
+}
+
 function SizeHint(props: { policy: TuiSizePolicy }): React.JSX.Element {
   return (
     <Box
@@ -445,6 +504,7 @@ export interface PluginListRowProps {
   statusLabel: ReactNode;
   status: TuiStatus;
   focused?: boolean;
+  anchored?: boolean;
 }
 
 export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
@@ -452,13 +512,15 @@ export function PluginListRow(props: PluginListRowProps): React.JSX.Element {
   return (
     <Box
       flexDirection="column"
+      borderStyle="round"
+      borderColor={props.focused ? tuiTheme.colors.accent : color}
       backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
       paddingX={1}
     >
       <Box>
         <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
           <Text bold={props.focused} wrap="truncate-end">
-            {props.focused ? '›' : ' '} {props.name}
+            {props.focused ? '›' : props.anchored ? '·' : ' '} {props.name}
           </Text>
         </Box>
         <Box flexShrink={0} marginLeft={1}>
