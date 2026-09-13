@@ -58,8 +58,8 @@
 | B03 | 选择多个 / 零选择反馈 | P9 | 双尺寸：0/1 选择及显式确认；待补 catalog fixture 记录。 |
 | B04 | 批量任务选择 | P10 | 行为：精确目标及可执行子集选择；待补双尺寸。 |
 | B05 | 批量升级确认 | P11 | 行为：两根的精确升级目标和确认；待补双尺寸。 |
-| B06 | 批量原生安装 / 先平台 | P10 | 行为：只添加缺失精确目标（80×24）；另有 60×18 大量位置可达测试，待补“先平台”页面顺序。 |
-| B07 | 批量原生安装 / 再目标 | B13 | 双尺寸：placement actions 的视觉顺序和可达；待补“先平台后目标”的两页顺序。 |
+| B06 | 批量原生安装 / 先平台 | `tui-console-app-v5.test.tsx` | 双尺寸：平台页→目标页，Enter/c/固定栏三路径共 6 项；方向键确认菜单保留。 |
+| B07 | 批量原生安装 / 再目标 | `tui-console-app-v5.test.tsx` | 双尺寸：目标页→精确目标 Review；Esc 返回保留草稿；固定按钮和 c 共用准备动作。 |
 | B08 | 批量部分失败 | P12 | 行为：部分完成后保留草稿并只处理剩余项；待补双尺寸。 |
 
 ## 阶段 3：安装、维护与 Portable（43）
@@ -85,7 +85,7 @@
 | N13 | 升级 / 精确目标汇总 | P11 | 行为：精确升级目标的 Review；待补双尺寸。 |
 | N14 | 卸载 / 选择实际位置 | N7 | 行为：按实际安装位置建立卸载 Review；待补双尺寸。 |
 | N15 | 卸载确认 / 保留设置 | N7 | 行为：卸载 Review 保留设置；待补双尺寸。 |
-| N16 | 卸载失败 / 再提供清理 | N9 | 行为：dependent blocker 不暴露 force cleanup（60×18）；待补“卸载失败后再提供清理”链路。 |
+| N16 | 卸载失败 / 再提供清理 | `tui-console-app-v5.test.tsx` | 双尺寸：单插件卸载全失败→精确 cleanup Review；混合 partial 逐位置排除 dependencyStillRequired，不提供 force。 |
 | U01 | 工具缺失 | U2 | 行为：typed missing blocker 显示“查看安装说明”（60×18）；待补 80×24。 |
 | U02 | 工具不兼容 | U2 | 行为：typed incompatible blocker 显示“查看安装说明”（60×18）；待补 80×24。 |
 | U03 | 工具准备要求 | U2 | 行为：工具 blocker 有安装说明入口（60×18）；待补说明正文和 80×24。 |
@@ -100,8 +100,8 @@
 | U12 | 只读准备 / 不执行安装 | U1 | 行为：manifest 能力和候选选择在 Review 前完成；待补明确“未执行安装”断言和双尺寸。 |
 | U13 | 自动依赖说明 | U5 | 双尺寸：进度显示依赖和候选来源；待补设计 fixture。 |
 | U14 | 同名 Skill 冲突 | U10 | 行为：integration 覆盖 collision receipt；待补 TUI 呈现和双尺寸。 |
-| U15 | 敏感配置风险阻断 | — | 待补验：未定位敏感配置阻断的直接 Portable TUI 测试。 |
-| U16 | 未声明引用阻断 | — | 待补验：未定位未声明引用阻断的直接 Portable TUI 测试。 |
+| U15 | 敏感配置风险阻断 | `tui-portable-skills-v1.test.tsx` | 双尺寸：portableSensitiveOutput 明示敏感值或未解析模板，保留阻断与真实 code。 |
+| U16 | 未声明引用阻断 | `tui-portable-skills-v1.test.tsx` | 双尺寸：引用缺失、未解析或无效均阻断；仅按现有 portableRuntimeImportMissing 证据说明，不假称已证明未声明。 |
 | U17 | 仅 Skills 安装确认 | U1 | 行为：候选进入 reviewed subset；待补确认文案和双尺寸。 |
 | U18 | 所有项目 / 风险确认 | U4 | 行为：所有项目范围进入 Review（60×18）；待补风险确认和 80×24。 |
 | U19 | 独立工具执行进度 | U5 | 双尺寸：Portable 的证据化进度与技术详情。 |

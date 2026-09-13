@@ -53,6 +53,8 @@ export type TuiRoute =
       batchOrigin?: { flowId: string; owner: 'batch-write' };
     }
   | { name: 'batchSelection' }
+  | { name: 'batchInstallPlatforms' }
+  | { name: 'batchInstallScope' }
   | { name: 'batchPlacement' }
   | { name: 'pluginPreview'; pluginId: string }
   | { name: 'portableSkillSelect'; pluginId: string }

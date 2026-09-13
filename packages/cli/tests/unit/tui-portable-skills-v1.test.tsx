@@ -883,6 +883,32 @@ describe('Portable Skills TUI V1', () => {
     }
   });
 
+  it.each([
+    { diagnosticCode: 'portableSensitiveOutput', risk: '生成的 Skill 内容包含敏感配置值或未解析模板。', columns: 60, rows: 18 },
+    { diagnosticCode: 'portableSensitiveOutput', risk: '生成的 Skill 内容包含敏感配置值或未解析模板。', columns: 80, rows: 24 },
+    { diagnosticCode: 'portableRuntimeImportMissing', risk: '所需运行时引用未解析、缺失或无效。', columns: 60, rows: 18 },
+    { diagnosticCode: 'portableRuntimeImportMissing', risk: '所需运行时引用未解析、缺失或无效。', columns: 80, rows: 24 },
+  ] as const)('renders Portable risk $diagnosticCode at $columns x $rows without an install action', async ({ diagnosticCode, risk, columns, rows }) => {
+    const { value } = portableController();
+    await value.load();
+    value.push({
+      name: 'portableBlocker',
+      pluginId: 'official/toolkit',
+      code: 'portableValidationFailed',
+      diagnosticCode,
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns, rows }} />);
+    await tick();
+
+    expect(instance.lastFrame()).toContain(risk);
+    expect(instance.lastFrame()).toContain('没有开始写入，也没有调用 Skills CLI。');
+    expect(instance.lastFrame()).not.toContain('继续安装');
+
+    await send(instance, 'd');
+    expect(instance.lastFrame()).toContain(diagnosticCode);
+    expect(instance.lastFrame()).toContain('prepare-portable');
+  });
+
   it('discards the transient draft on non-portable navigation but preserves explicit modification paths', async () => {
     const { value } = portableController();
     await value.load();
@@ -1030,7 +1056,7 @@ describe('Portable Skills TUI V1', () => {
       name: 'portableBlocker', pluginId: 'official/toolkit', code: 'requiredConfigMissing',
       diagnosticCode: 'requiredConfigMissing',
     });
-    value.replace({ name: 'configLayer', pluginId: 'official/toolkit' });
+    value.replace({ name: 'configFields', pluginId: 'official/toolkit', layer: { scope: 'effective' } });
     const operation = await value.buildOperationReview({
       kind: 'configSave', pluginId: 'official/toolkit', scope: 'user', projectLayer: 'shared', apply: true,
       updates: { token: 'private' }, privateKeys: ['token'],

@@ -18,7 +18,7 @@ export const TUI_SCREEN_IDS = [
   'D18', 'D19', 'D20',
   'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
   'K02',
-  'B01', 'B02',
+  'B01', 'B02', 'B06', 'B07',
   'T01', 'T02', 'T03', 'T04', 'T05',
   'L01', 'L02', 'L03', 'L04', 'L05', 'L06',
 ] as const;
@@ -171,6 +171,8 @@ export const TUI_ROUTE_DEFINITIONS = {
   } },
   pluginWriteTask: { entity: 'plugin', rendererFamily: 'task', keymap: 'menu', normalize: plugin, screenId: fixed('T01') },
   batchSelection: { entity: 'none', rendererFamily: 'batch', keymap: 'menuOrTextInput', normalize: keep, screenId: fixed('B01') },
+  batchInstallPlatforms: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B06') },
+  batchInstallScope: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B07') },
   batchPlacement: { entity: 'none', rendererFamily: 'batch', keymap: 'menu', normalize: keep, screenId: fixed('B02') },
   pluginPreview: { entity: 'plugin', rendererFamily: 'plugin', keymap: 'menu', normalize: pluginDetail, screenId: (route, { controller }) =>
     controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04' },

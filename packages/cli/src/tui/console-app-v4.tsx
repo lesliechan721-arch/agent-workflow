@@ -838,12 +838,18 @@ function portableBlockerDiagnostic(
 ): DiagnosticSummaryViewModel {
   const cliUnavailable = route.code === 'portableSkillsCliMissing'
     || route.code === 'portableSkillsCliIncompatible';
+  const sensitiveOutput = route.diagnosticCode === 'portableSensitiveOutput';
+  const invalidRuntimeImport = route.diagnosticCode === 'portableRuntimeImportMissing';
   const userMessage = route.code === 'requiredConfigMissing'
     ? '插件缺少生成内容所需的设置。'
     : route.code === 'portableScopeUnavailable'
       ? '至少一个所选 Skill 不适用于这个范围。'
       : cliUnavailable
         ? '没有找到兼容的 Skills CLI。'
+        : sensitiveOutput
+          ? '生成的 Skill 内容包含敏感配置值或未解析模板。'
+          : invalidRuntimeImport
+            ? '所需运行时引用未解析、缺失或无效。'
         : '候选 Skill 没有通过 Portable 安全校验。';
   const blocked = route.code === 'requiredConfigMissing'
     ? '缺少生成 Skill 所需的设置；没有调用 Skills CLI。'
@@ -851,6 +857,8 @@ function portableBlockerDiagnostic(
       ? '当前不能开始安装；没有调用 Skills CLI。'
       : route.code === 'portableScopeUnavailable'
         ? '所选内容不能在这个范围完整生成；没有开始写入。'
+        : sensitiveOutput || invalidRuntimeImport
+          ? '没有开始写入，也没有调用 Skills CLI。'
         : '候选内容没有通过安全校验；没有开始写入。';
   const nextStep = route.code === 'requiredConfigMissing'
     ? '完成插件设置，然后重新准备。'
@@ -1701,7 +1709,10 @@ export function ConsoleAppV4(props: {
     setDirty(false);
   }, [batchDraft?.flowId, route.name, snapshot.result]);
   useEffect(() => {
-    if (!batchDraft || (route.name !== 'batchSelection' && route.name !== 'batchPlacement')) return;
+    if (!batchDraft || (route.name !== 'batchSelection'
+      && route.name !== 'batchInstallPlatforms'
+      && route.name !== 'batchInstallScope'
+      && route.name !== 'batchPlacement')) return;
     setDirty(true);
   }, [batchDraft, route.name]);
   useEffect(() => {
@@ -3910,10 +3921,9 @@ export function ConsoleAppV4(props: {
         const restores = taskCandidates('restore');
         const updateRoots = new Set(updates.map((candidate) => candidate.target.pluginId)).size;
         const restoreRoots = new Set(restores.map((candidate) => candidate.target.pluginId)).size;
-        const installTargets = props.controller.listPluginInstallBatchTargets(
-          selectedIds, batchDraft.platform, batchDraft.scope,
-        );
-        const addTargetCount = installTargets.filter((target) => target.state === 'add').length;
+        const addTargetCount = (['project', 'user'] as const).flatMap((scope) =>
+          props.controller.listPluginInstallBatchTargets(selectedIds, 'both', scope))
+          .filter((target) => target.state === 'add').length;
         actions = [
           ...(updates.length > 0 ? [{
             label: `更新所选中的 ${updateRoots} 个可更新插件`,
@@ -3933,7 +3943,7 @@ export function ConsoleAppV4(props: {
             disabled: addTargetCount === 0 ? '当前选择没有可安装位置' : undefined,
             run: () => {
               setBatchDraft((current) => current ? { ...current, action: 'install' } : current);
-              props.controller.push({ name: 'batchPlacement' });
+              props.controller.push({ name: 'batchInstallPlatforms' });
               setFocus(0);
               setScrollOffset(0);
             },
@@ -3952,8 +3962,73 @@ export function ConsoleAppV4(props: {
       const viewport = actionViewport(actions, policy.mode === 'compact', focus, scrollOffset, pageActionBudget(1));
       content = <SemanticRows actions={actions} focus={focus} kind="task" compact={policy.mode === 'compact'} offset={viewport.offset} limit={viewport.limit} />;
     }
-  } else if (route.name === 'batchPlacement') {
-    breadcrumb = '插件 / 批量操作 / 位置';
+  } else if (route.name === 'batchInstallPlatforms' && batchDraft?.action === 'install') {
+    breadcrumb = '插件 / 批量安装 / 平台';
+    context = `第 1 步，共 3 步 · ${batchDraft.selectedPluginIds.length} 个插件`;
+    title = '选择安装平台';
+    description = '先选择原生平台。下一步再选择使用范围和检查精确目标。';
+    const selectedPlatforms = batchDraft.platform === 'both'
+      ? new Set<PlatformName>(['codex', 'claude'])
+      : new Set<PlatformName>([batchDraft.platform]);
+    const togglePlatform = (platform: PlatformName): void => {
+      setBatchDraft((current) => {
+        if (!current) return current;
+        const next = current.platform === 'both'
+          ? new Set<PlatformName>(['codex', 'claude'])
+          : new Set<PlatformName>([current.platform]);
+        if (next.has(platform)) {
+          if (next.size === 1) {
+            setActionError('至少选择一个目标平台。');
+            return current;
+          }
+          next.delete(platform);
+        } else next.add(platform);
+        setActionError(undefined);
+        return { ...current, platform: next.size === 2 ? 'both' : [...next][0]! };
+      });
+    };
+    const confirmPlatforms: ActionItem = {
+      actionId: 'batch-install-platforms-confirm',
+      label: '确定所选平台',
+      description: `${[...selectedPlatforms].map(platformLabel).join('、')} · 继续选择目标`,
+      run: () => {
+        props.controller.push({ name: 'batchInstallScope' });
+        setFocus(0);
+        setScrollOffset(0);
+      },
+    };
+    actions = [
+      {
+        actionId: 'batch-install-platform-codex',
+        label: 'Codex',
+        description: '添加到 Codex 的合法缺失位置',
+        selected: selectedPlatforms.has('codex'),
+        run: () => togglePlatform('codex'),
+      },
+      {
+        actionId: 'batch-install-platform-claude',
+        label: 'Claude Code',
+        description: '添加到 Claude Code 的合法缺失位置',
+        selected: selectedPlatforms.has('claude'),
+        run: () => togglePlatform('claude'),
+      },
+      confirmPlatforms,
+    ];
+    pinnedActions = [confirmPlatforms];
+    help = '↑↓ 移动 · Enter 选择/确定 · c 确定所选平台 · Esc 返回任务选择';
+    content = <Box flexDirection="column">
+      <PinnedActionBar actions={[{ id: confirmPlatforms.actionId!, label: confirmPlatforms.label }]}
+        active={focusZone === 'actions'} focus={pinnedActionFocus} />
+      <ContentViewport>
+        <SemanticRows actions={actions.slice(0, 2)} focus={focusZone === 'content' ? focus : -1}
+          kind="choice" compact={policy.mode === 'compact'} />
+        <SemanticRows actions={actions} focus={focusZone === 'content' ? focus : -1}
+          kind="action" compact offset={2} />
+      </ContentViewport>
+    </Box>;
+  } else if (route.name === 'batchInstallScope' || route.name === 'batchPlacement') {
+    breadcrumb = route.name === 'batchInstallScope'
+      ? '插件 / 批量安装 / 目标' : '插件 / 批量操作 / 位置';
     const maintenanceTargets = batchDraft?.maintenanceTargets ?? [];
     const maintenanceSelection = new Set(batchDraft?.selectedMaintenanceTargetKeys ?? []);
     const maintenanceMode = (batchDraft?.maintenanceGoal !== undefined
@@ -3962,11 +4037,14 @@ export function ConsoleAppV4(props: {
     const maintenanceLabel = batchDraft?.maintenanceGoal === 'update' ? '更新'
       : batchDraft?.maintenanceGoal === 'restore' ? '恢复'
         : batchDraft?.action ? batchActionLabel(batchDraft.action) : '处理';
-    title = maintenanceMode ? `确认批量${maintenanceLabel}范围`
+    title = route.name === 'batchInstallScope' ? '选择安装目标'
+      : maintenanceMode ? `确认批量${maintenanceLabel}范围`
       : batchDraft?.selection === 'currentProjectIntentRoots'
       ? '同步当前项目全部保存目标'
       : `设置批量${batchDraft?.action ? batchActionLabel(batchDraft.action) : ''}位置`;
-    description = maintenanceMode
+    description = route.name === 'batchInstallScope'
+      ? '选择范围后检查可添加、已有和受阻的精确位置。操作汇总之后才执行。'
+      : maintenanceMode
       ? '默认沿用进入此页时的现有位置。可以取消位置，也可以恢复本次集合中的位置。'
       : '分别选择使用范围和工具。操作汇总会重新读取状态；本次安装位置变化时需要重新确认。';
     let installPlacementTargets: ReturnType<TuiController['listPluginInstallBatchTargets']> = [];
@@ -4047,6 +4125,23 @@ export function ConsoleAppV4(props: {
       const existingTargets = installPlacementTargets.filter((target) => target.state === 'existing');
       installPlacementGroups = [
         {
+          title: '在哪里使用',
+          kind: 'choice',
+          actions: [
+            {
+              actionId: 'batch-placement-scope-project',
+              label: '当前项目', selected: batchDraft.scope === 'project',
+              run: () => setBatchDraft((current) => current ? { ...current, scope: 'project' } : current),
+            },
+            {
+              actionId: 'batch-placement-scope-user',
+              label: '所有项目', selected: batchDraft.scope === 'user',
+              disabled: projectIntent ? '项目全部同步固定使用当前项目' : undefined,
+              run: () => setBatchDraft((current) => current ? { ...current, scope: 'user' } : current),
+            },
+          ],
+        },
+        {
           kind: 'action',
           actions: [
             ...(installPlacementTargets.length > 0 ? [{
@@ -4102,35 +4197,13 @@ export function ConsoleAppV4(props: {
             },
           ],
         },
-        {
-          title: '在哪里使用',
-          kind: 'choice',
-          actions: [
-            {
-              actionId: 'batch-placement-scope-project',
-              label: '当前项目', selected: batchDraft.scope === 'project',
-              run: () => setBatchDraft((current) => current ? { ...current, scope: 'project' } : current),
-            },
-            {
-              actionId: 'batch-placement-scope-user',
-              label: '所有项目', selected: batchDraft.scope === 'user',
-              disabled: projectIntent ? '项目全部同步固定使用当前项目' : undefined,
-              run: () => setBatchDraft((current) => current ? { ...current, scope: 'user' } : current),
-            },
-          ],
-        },
-        {
-          title: '用于哪个工具',
-          kind: 'choice',
-          actions: (['codex', 'claude', 'both'] as const).map((platform) => ({
-            actionId: `batch-placement-platform-${platform}`,
-            label: platform === 'both' ? 'Codex 和 Claude Code' : platformLabel(platform),
-            selected: batchDraft.platform === platform,
-            run: () => setBatchDraft((current) => current ? { ...current, platform } : current),
-          })),
-        },
       ];
       installPlacementActions = installPlacementGroups.flatMap((group) => group.actions);
+      if (route.name === 'batchInstallScope') {
+        const confirmPlacement = installPlacementActions.find((action) =>
+          action.actionId === 'batch-placement-confirm');
+        if (confirmPlacement) pinnedActions = [confirmPlacement];
+      }
       if (batchDraft.showPlacementTargets) {
         actions = [
           ...installPlacementTargets.map((target) => ({
@@ -4196,6 +4269,13 @@ export function ConsoleAppV4(props: {
       </Box>;
     } else if (!placementDetail && batchDraft?.action === 'install') {
       content = <Box flexDirection="column">
+        {route.name === 'batchInstallScope' && pinnedActions[0]
+          ? <PinnedActionBar actions={[{
+              id: pinnedActions[0].actionId!, label: pinnedActions[0].label,
+              disabled: Boolean(pinnedActions[0].disabled),
+            }]} active={focusZone === 'actions'} focus={pinnedActionFocus} />
+          : null}
+        <ContentViewport>
         {installPlacementGroups.map((group) => {
           const groupOffset = installPlacementActions.findIndex((action) =>
             action.actionId === group.actions[0]?.actionId);
@@ -4207,11 +4287,13 @@ export function ConsoleAppV4(props: {
           if (localLimit === 0) return null;
           return <Box key={group.title ?? 'actions'} flexDirection="column">
             {group.title ? <Text color={tuiTheme.colors.muted}>{group.title}</Text> : null}
-            <SemanticRows actions={group.actions} focus={focus - groupOffset} kind={group.kind}
+            <SemanticRows actions={group.actions}
+              focus={focusZone === 'content' ? focus - groupOffset : -1} kind={group.kind}
               compact={group.kind === 'choice' || policy.mode === 'compact'}
               offset={localOffset} limit={localLimit} />
           </Box>;
         })}
+        </ContentViewport>
       </Box>;
     } else content = <SemanticRows
         actions={actions}
@@ -8339,6 +8421,22 @@ export function ConsoleAppV4(props: {
         && (candidate.platform ?? failedIssue.platform) === failedTarget?.platform
         && (candidate.scope ?? failedIssue.scope) === failedTarget?.scope)
       : undefined;
+    const failedUninstallTargets = action === 'uninstall' && (partial || blocked)
+      ? (resultSummary?.targets ?? []).flatMap((target) =>
+          target.state === 'failed'
+            && target.errorCode !== 'dependencyStillRequired'
+            && (target.pluginId ?? pluginId)
+            ? [{ pluginId: (target.pluginId ?? pluginId)!, platform: target.platform, scope: target.scope }]
+            : [])
+      : [];
+    const safeCleanupKeys = new Set(
+      props.controller.listPluginWriteBatchTargets(
+        'cleanup',
+        [...new Set(failedUninstallTargets.map((target) => target.pluginId))],
+      ).map(batchTargetKey),
+    );
+    const failedCleanupTargets = failedUninstallTargets.filter((target) =>
+      safeCleanupKeys.has(batchTargetKey(target)));
     actions = storeOperation
       ? [
           { label: '返回存储概览', run: () => leaveResult({ name: 'catalogStoreOverview' }) },
@@ -8526,6 +8624,24 @@ export function ConsoleAppV4(props: {
         });
       },
     }] : []), { label: '返回首页', run: () => requestSessionNavigation('home') }];
+    if (failedCleanupTargets.length > 0) {
+      actions.unshift({
+        label: '查看清理建议',
+        description: `仅处理 ${failedCleanupTargets.length} 个有安全归属证据的失败位置；不使用强制清理`,
+        status: 'warning',
+        run: () => beginReview(failedCleanupTargets.length === 1 ? {
+          kind: 'pluginWrite',
+          action: 'cleanup',
+          ...failedCleanupTargets[0]!,
+        } : {
+          kind: 'pluginWriteBatch',
+          action: 'cleanup',
+          selection: { kind: 'targets', targets: failedCleanupTargets },
+          platform: failedCleanupTargets[0]!.platform,
+          scope: failedCleanupTargets[0]!.scope,
+        }),
+      });
+    }
     const visibleMessages = resultSummary?.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
     const visibleChanges = resultSummary?.changes?.slice(0, policy.mode === 'compact' ? 2 : 4) ?? [];
     const resultTargetName = (target: NonNullable<OperationResultSummary['targets']>[number]): string =>
@@ -8914,6 +9030,7 @@ export function ConsoleAppV4(props: {
         unavailable = missingIssue ? 'issue' : 'flow';
         break;
       case 'sourceAdd': case 'sourceSave': case 'scriptTimeout':
+      case 'batchInstallPlatforms':
       case 'reviewPreparing': case 'review': case 'result':
         unavailable = 'flow';
         break;
@@ -9783,7 +9900,8 @@ export function ConsoleAppV4(props: {
       setScrollOffset(0);
       return;
     }
-    if ((route.name === 'pluginList' || route.name === 'sourceList') && key.tab) {
+    if ((route.name === 'pluginList' || route.name === 'sourceList'
+      || route.name === 'batchInstallPlatforms' || route.name === 'batchInstallScope') && key.tab) {
       setFocusZone((current) => current === 'content' ? 'actions' : 'content');
       return;
     }
@@ -9817,6 +9935,18 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (route.name === 'sourceList' && focusZone === 'actions' && key.return) {
+      runAction(pinnedActions[pinnedActionFocus]);
+      return;
+    }
+    if ((route.name === 'batchInstallPlatforms' || route.name === 'batchInstallScope')
+      && focusZone === 'actions'
+      && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)) {
+      setPinnedActionFocus((value) => moveFocus(pinnedActions, value,
+        key.upArrow || key.leftArrow ? -1 : 1));
+      return;
+    }
+    if ((route.name === 'batchInstallPlatforms' || route.name === 'batchInstallScope')
+      && focusZone === 'actions' && key.return) {
       runAction(pinnedActions[pinnedActionFocus]);
       return;
     }
@@ -9907,7 +10037,8 @@ export function ConsoleAppV4(props: {
         setChangedObjectDraftKeys((current) => current.filter((key) => key !== activeObjectKey));
       }
       back();
-    } else if (globalAction === 'back' && route.name === 'batchPlacement') {
+    } else if (globalAction === 'back'
+      && (route.name === 'batchInstallScope' || route.name === 'batchPlacement')) {
       if (batchDraft?.showPlacementTargets) {
         setBatchDraft((current) => current ? { ...current, showPlacementTargets: false } : current);
         restoreActionFocus('batch-placement-details');
@@ -9964,6 +10095,10 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'installTargets' && route.view !== 'blocked'
       && input.toLowerCase() === 'c') {
       runAction(actions.find((action) => action.actionId === 'confirm-install-platforms'));
+    } else if (route.name === 'batchInstallPlatforms' && input.toLowerCase() === 'c') {
+      runAction(actions.find((action) => action.actionId === 'batch-install-platforms-confirm'));
+    } else if (route.name === 'batchInstallScope' && input.toLowerCase() === 'c') {
+      runAction(actions.find((action) => action.actionId === 'batch-placement-confirm'));
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input.toLowerCase() === 'c') {
       runAction(actions.find((action) => action.actionId === 'batch-selection-continue'));
     } else if (route.name === 'batchSelection' && batchDraft?.stage === 'select' && input === ' ') {

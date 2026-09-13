@@ -3499,7 +3499,9 @@ export class TuiController {
   }
 
   startPluginWriteBatchReview(intent: PluginWriteBatchIntent): ReviewPreparationSnapshot {
-    return this.startReviewPreparation(intent, { name: 'batchPlacement' });
+    return this.startReviewPreparation(intent, intent.action === 'install'
+      ? { name: 'batchInstallScope' }
+      : { name: 'batchPlacement' });
   }
 
   startPluginWriteTaskReview(
@@ -4485,6 +4487,7 @@ export class TuiController {
           navigation: 'result',
           returnRoute: ticket.returnRoute,
           ...(ticket.intent.kind === 'pluginWriteBatch' || ticket.intent.kind === 'pluginWriteTask'
+            || ticket.intent.kind === 'pluginWrite' && ticket.intent.action === 'uninstall'
             || dependencyFailure || dependencyStillRequired
             ? { summary: pluginSummary } : {}),
           ...(ticket.intent.kind !== 'pluginWriteBatch' && ticket.intent.kind !== 'pluginWriteTask'

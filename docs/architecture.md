@@ -97,6 +97,8 @@ Portable materializer 使用调用方提供的同 source Catalog plugin set，�
 
 TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显示 Portable 能力，不提前运行 renderer 或声明精确候选数和安装 ownership。用户进入安装流后分别物化 project 和 user 的完整依赖闭包，以两者的稳定候选并集选择 Skill 和 Agent，再选择 scope；选择 scope 后按该 scope 重新物化，所选 Skill 在该 scope 不可用时阻止进入 Review。Review 只显示所选 scope 的实际候选、依赖贡献和冲突。执行复用 `aw skill install` 的锁内证据重采集，证据变化时必须回到 Review 重新确认。
 
+TUI 批量原生安装先选择 Codex、Claude Code 或两者，再选择 scope，并只把当前状态确认缺失且合法的精确目标送入 Review；已有、受阻或未知目标不会重复安装。
+
 ## Catalog Sources
 
 Catalog snapshot 的 logical identity 只来自 `.aw-generated.json.workspaceIdentity`。source ID、Git URL、SSH/HTTPS 文本和本地 path 不是 logical identity。
