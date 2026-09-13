@@ -11810,6 +11810,100 @@ describe('ConsoleAppV4', () => {
     });
   });
 
+  it.each(['restore', 'update'] as const)(
+    'returns a successful single-plugin %s task to stable detail with a notice',
+    async (goal) => {
+      const captureEvidence = vi.fn(async (candidate: OperationIntent) =>
+        pluginWriteTaskEvidence(candidate as Extract<OperationIntent, { kind: 'pluginWriteTask' }>));
+      const executeIntent = vi.fn(async (_candidate: OperationIntent, operationEvidence: OperationEvidence) =>
+        pluginWriteTaskExecution(operationEvidence as PluginWriteTaskEvidence));
+      const value = controller({
+        loadStatus: vi.fn().mockResolvedValue(goal === 'update'
+          ? platformLoadResult('upgradeAvailable') : loadResult()),
+        captureEvidence,
+        executeIntent,
+      });
+      await value.load();
+      const targets = goal === 'update'
+        ? [value.listPluginWriteTaskCandidates('update').find((candidate) =>
+            candidate.target.pluginId === 'official/review-gate')!.target]
+        : [{
+            pluginId: 'official/agent-lab', platform: 'codex' as const, scope: 'user' as const,
+          }];
+      const intent = {
+        kind: 'pluginWriteTask' as const,
+        goal,
+        executionPolicy: 'all' as const,
+        targets,
+      };
+      const pluginId = targets[0]!.pluginId;
+      value.push({ name: 'pluginDetail', pluginId });
+      const review = await value.buildOperationReview(intent);
+      await value.executeOperation(review.reviewToken);
+
+      expect(value.snapshot.router.current.route).toEqual({
+        name: 'pluginDetail', pluginId,
+      });
+      expect(value.snapshot.completionNotice).toMatchObject({
+        pluginId,
+        title: goal === 'restore' ? '插件恢复完成' : '插件更新完成',
+      });
+    },
+  );
+
+  it('returns a successful one-plugin multi-location uninstall batch to stable detail', async () => {
+    const intent = {
+      kind: 'pluginWriteBatch' as const,
+      action: 'uninstall' as const,
+      selection: {
+        kind: 'targets' as const,
+        targets: [
+          { pluginId: 'official/agent-lab', platform: 'codex' as const, scope: 'project' as const },
+          { pluginId: 'official/agent-lab', platform: 'claude' as const, scope: 'user' as const },
+        ],
+      },
+      platform: 'both' as const,
+      scope: 'project' as const,
+    };
+    const batchEvidence = batchEvidenceForIntent(intent);
+    const groupResults = batchEvidence.groups.map((group) => ({
+      groupId: group.groupId,
+      sourceId: group.sourceId,
+      platform: group.platform,
+      scope: group.scope,
+      requestedPluginIds: group.requestedPluginIds,
+      result: {
+        ...group.preview,
+        targetResults: intent.selection.targets
+          .filter((target) => target.platform === group.platform && target.scope === group.scope)
+          .map((target) => ({
+            target: { ...target, pluginName: 'agent-lab', sourceId: 'official' },
+            action: 'uninstall', state: 'completed' as const, requiredBy: [],
+          })),
+      },
+    }));
+    const execution = {
+      platforms: ['codex', 'claude'], plugins: ['official/agent-lab'], warnings: [],
+      rebuildResults: [], receiptTargets: [], targetResults: groupResults.flatMap((group) => group.result.targetResults),
+      overallState: 'succeeded', requestedPluginIds: ['official/agent-lab'], groupResults,
+    } as PluginWriteBatchExecutionResult;
+    const value = controller({
+      captureEvidence: vi.fn().mockResolvedValue(batchEvidence),
+      executeIntent: vi.fn().mockResolvedValue(execution),
+    });
+    await value.load();
+    value.push({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    const review = await value.buildOperationReview(intent);
+    await value.executeOperation(review.reviewToken);
+
+    expect(value.snapshot.router.current.route).toEqual({
+      name: 'pluginDetail', pluginId: 'official/agent-lab',
+    });
+    expect(value.snapshot.completionNotice).toMatchObject({
+      pluginId: 'official/agent-lab', title: '插件卸载完成',
+    });
+  });
+
   it('returns a removed config field route to its surviving layer', async () => {
     const value = controller({
       getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
