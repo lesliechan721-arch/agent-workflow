@@ -31,16 +31,7 @@
           "deepProfile": {
             "model": "eval-deep-model",
             "reasoningEffort": "max"
-          },
-          "exploreMinimumInitialWaitMinutes": 2
-        }
-      }
-    },
-    "project-short-wait": {
-      "scope": "project",
-      "plugins": {
-        "codex-enhance": {
-          "exploreMinimumInitialWaitMinutes": 1
+          }
         }
       }
     },
@@ -59,8 +50,7 @@
           "deepProfile": {
             "model": "eval-deep-model",
             "reasoningEffort": "max"
-          },
-          "exploreMinimumInitialWaitMinutes": 2
+          }
         }
       }
     }
@@ -149,7 +139,7 @@
       "kind": "codex-workflow",
       "cases": "liveness-evals.json",
       "profiles": [
-        "project-short-wait"
+        "project-default"
       ],
       "runs": 3,
       "timeoutMs": 300000,

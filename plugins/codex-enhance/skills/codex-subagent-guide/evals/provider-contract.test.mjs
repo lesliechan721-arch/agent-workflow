@@ -11,11 +11,13 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const evalRoot = path.dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
 const pluginContext = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
   : null;
@@ -231,6 +233,34 @@ test('routing and lifecycle grade normalized evidence and fail closed', async ()
     assert.equal(JSON.parse(lifecycleGrade.stdout).passed, true);
     await writeFile(lifecycleInput.paths.evidence, JSON.stringify({ version: 1 }));
     assert.notEqual((await invoke('run-lifecycle-evals.mjs', lifecycleInput)).code, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('recovery preparation supplies a helper with observable partial progress and duplicate execution', async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'subagent-recovery-')));
+  try {
+    await Promise.all([
+      writeWorkspace(path.join(root, 'workspace', 'subject')),
+      mkdir(path.join(root, 'workspace', 'eval'), { recursive: true }),
+      mkdir(path.join(root, 'output')),
+    ]);
+    const corpus = JSON.parse(await readFile(path.join(sourceEvalRoot, 'lifecycle-evals.json'), 'utf8'));
+    const selected = corpus.cases.find((entry) => entry.id === 'resume_after_partial_execution');
+    const input = adapterInput('prepare', selected, root);
+    const prepared = await invoke('run-lifecycle-evals.mjs', input);
+    assert.equal(prepared.code, 0, prepared.stderr);
+    assert.equal(JSON.parse(prepared.stdout).sandbox, 'workspace-write');
+    const helper = path.join(input.paths.workspace, 'scripts/recoverable.mjs');
+    const progress = path.join(input.paths.workspace, 'results/progress.json');
+    await assert.rejects(execFileAsync(process.execPath, [helper, 'start']), { code: 1 });
+    assert.deepEqual(JSON.parse(await readFile(progress, 'utf8')), { applied: 1, finished: false });
+    await execFileAsync(process.execPath, [helper, 'finish']);
+    assert.deepEqual(JSON.parse(await readFile(progress, 'utf8')), { applied: 1, finished: true });
+    await assert.rejects(execFileAsync(process.execPath, [helper, 'start']), { code: 1 });
+    await assert.rejects(execFileAsync(process.execPath, [helper, 'finish']), { code: 1 });
+    assert.equal(JSON.parse(await readFile(progress, 'utf8')).applied, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

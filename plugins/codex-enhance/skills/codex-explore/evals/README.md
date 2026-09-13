@@ -83,7 +83,7 @@ role 输出合同不在 Skill target digest 中。因此不得把 `--previous-ve
 
 ## 存活协议消融
 
-`liveness-evals.json` 使用 project-short-wait 最终制品，在 V1/V2 中运行一分钟以上的只读核验，并覆盖正常推进和缺少决定性来源。
+`liveness-evals.json` 使用 project-default 最终制品，由用例显式指定 1 分钟等待窗口，在 V1/V2 中运行一分钟以上的只读核验，并覆盖正常推进和缺少决定性来源。
 
 该 suite 用于诊断协议差异：
 
@@ -91,7 +91,7 @@ role 输出合同不在 Skill target digest 中。因此不得把 `--previous-ve
 - 结果可为设计讨论提供诊断证据，但不得单独驱动生产 Skill 修改；重新改变等待协议前，仍需有效 case admission、同族回归和当前 runtime 证据。
 
 ```bash
-aw skill eval prepare codex-enhance codex-explore --suite liveness --profile project-short-wait --runs 3 --output /tmp/aw-eval-specs/codex-explore-liveness --json
+aw skill eval prepare codex-enhance codex-explore --suite liveness --profile project-default --runs 3 --output /tmp/aw-eval-specs/codex-explore-liveness --json
 ```
 
 Engine evidence 按用例保留 probe、`progress` / `blocked`、duration、termination、token usage、thread lineage 和 cleanup 确认。叶子工具证据只接受 normalized child calls 与父 thread 的直接关联；child evidence 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。

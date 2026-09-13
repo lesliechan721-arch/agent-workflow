@@ -10,14 +10,6 @@
         "codex-enhance": {}
       }
     },
-    "project-timeout": {
-      "scope": "project",
-      "plugins": {
-        "codex-enhance": {
-          "subagentMinimumInitialWaitMinutes": 1
-        }
-      }
-    },
     "user-default": {
       "scope": "user",
       "plugins": {
@@ -43,8 +35,7 @@
           "advancedTaskProfile": {
             "model": "eval-advanced-model",
             "reasoningEffort": "high"
-          },
-          "subagentMinimumInitialWaitMinutes": 2
+          }
         }
       }
     },
@@ -67,8 +58,7 @@
           "advancedTaskProfile": {
             "model": "eval-advanced-model",
             "reasoningEffort": "high"
-          },
-          "subagentMinimumInitialWaitMinutes": 2
+          }
         }
       }
     }
@@ -147,7 +137,7 @@
       "kind": "codex-workflow",
       "cases": "lifecycle-timeout-evals.json",
       "profiles": [
-        "project-timeout"
+        "project-default"
       ],
       "runs": 1,
       "timeoutMs": 900000,

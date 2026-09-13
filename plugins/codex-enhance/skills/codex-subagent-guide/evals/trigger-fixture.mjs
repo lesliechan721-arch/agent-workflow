@@ -19,6 +19,59 @@ const FIXTURE_FILES = {
   'changes/review.diff': 'diff --git a/src/simple.ts b/src/simple.ts\n-export const retryLimit = 3;\n+export const retryLimit = -1;\n',
 };
 
+const LIFECYCLE_FILES = {
+  recovery: {
+    'scripts/recoverable.mjs': [
+      "import { mkdir, readFile, writeFile } from 'node:fs/promises';",
+      "const file = new URL('../results/progress.json', import.meta.url);",
+      "await mkdir(new URL('../results/', import.meta.url), { recursive: true });",
+      "const state = await readFile(file, 'utf8').then(JSON.parse).catch((error) => {",
+      "  if (error.code !== 'ENOENT') throw error;",
+      '  return { applied: 0, finished: false };',
+      '});',
+      "if (process.argv[2] === 'start') {",
+      '  state.applied += 1;',
+      '  await writeFile(file, JSON.stringify(state));',
+      "  throw new Error('Temporary service failure after the operation was saved; continue with finish.');",
+      '}',
+      "if (process.argv[2] !== 'finish' || state.applied !== 1) throw new Error('Invalid progress');",
+      'state.finished = true;',
+      'await writeFile(file, JSON.stringify(state));',
+      'console.log(JSON.stringify(state));',
+    ].join('\n'),
+  },
+  review: {
+    'docs/publication-contract.md': [
+      '# Publication contract',
+      'A prepared or uncertain version owns its immutable version number.',
+      'If its saved isolated repo is missing, stop and require a new version; do not rebuild it.',
+      'An uncertain CLI attempt requires a new version; ordinary retry cannot repeat the candidate.',
+      'A remote immutable tag occupies the version even when the local published journal is missing.',
+    ].join('\n'),
+    'src/publish-v1.mjs': [
+      'export async function publish(version, state, io) {',
+      '  if (!state.repoExists) await io.rebuildRepo(version);',
+      '  if (state.status === "uncertain") throw new Error("Use a new version");',
+      '  if (await io.remoteTagExists(version)) throw new Error("Version occupied");',
+      '  return io.publish(version);',
+      '}',
+    ].join('\n'),
+    'src/publish-v2.mjs': [
+      'export async function publish(version, state, io) {',
+      '  if (!state.repoExists) throw new Error("Use a new version");',
+      '  if (state.status === "uncertain") return io.publish(version);',
+      '  if (state.journalExists && await io.remoteTagExists(version)) {',
+      '    throw new Error("Version occupied");',
+      '  }',
+      '  return io.publish(version);',
+      '}',
+    ].join('\n'),
+  },
+  'new-delivery': {
+    'src/new-task.ts': 'export const maxRetries = 7;\n',
+  },
+};
+
 export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'default',
   'project_authorization',
@@ -105,7 +158,11 @@ export async function setupTriggerWorkspace({ workspaceRoot, evalCase }) {
   if (!TRIGGER_WORKSPACE_FIXTURES.has(fixture)) {
     throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);
   }
-  await Promise.all(Object.entries(FIXTURE_FILES).map(async ([relativePath, content]) => {
+  const lifecycle = evalCase.lifecycle_fixture;
+  if (lifecycle && !Object.hasOwn(LIFECYCLE_FILES, lifecycle)) {
+    throw new Error(`Unsupported lifecycle fixture: ${lifecycle}`);
+  }
+  await Promise.all(Object.entries({ ...FIXTURE_FILES, ...LIFECYCLE_FILES[lifecycle] }).map(async ([relativePath, content]) => {
     const target = path.join(workspaceRoot, relativePath);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content, 'utf8');

@@ -14778,20 +14778,6 @@ describe('five namespaced write commands', () => {
     expect(projectOnlyConfig.snapshot.plugins['codex-enhance@aw']?.enabled).toBe(true);
     expect(projectOnlyUserConfig.snapshot.plugins['codex-enhance@aw']?.enabled).not.toBe(true);
 
-    expect(await runPublic([
-      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
-      '--scope', 'project', '--value-json', '15',
-    ])).toMatchObject({
-      exitCode: 1,
-      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigUserScopeRequired' })] },
-    });
-    const projectStoreAfterReject = await readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, logicalIdentity,
-      pluginName: 'codex-enhance', scope: 'project',
-      cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    });
-    expect(projectStoreAfterReject.values).not.toHaveProperty('exploreMinimumInitialWaitMinutes');
-
     const userInstall = await runPublic([
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'user',
     ]);
@@ -14809,62 +14795,6 @@ describe('five namespaced write commands', () => {
       'install', 'team/codex-enhance', '--platform', 'codex', '--scope', 'project',
     ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
 
-    const receiptBeforeWaitSave = await fs.readJson(
-      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
-    );
-    const skillsBeforeWaitSave = await Promise.all(
-      skillPaths.map((skillPath) => fs.readFile(skillPath)),
-    );
-    expect(await runPublic([
-      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
-      '--scope', 'user', '--value-json', '15',
-    ])).toMatchObject({
-      exitCode: 0,
-      payload: { apply: { state: 'skipped', reason: 'notRequested', targetResults: [] } },
-    });
-    await expect(fs.readJson(path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH)))
-      .resolves.toEqual(receiptBeforeWaitSave);
-    for (const [index, skillPath] of skillPaths.entries()) {
-      await expect(fs.readFile(skillPath)).resolves.toEqual(skillsBeforeWaitSave[index]);
-    }
-    const statusBinRoot = await writeStatusSystemCodexPackage(
-      path.join(isolation.layout.fixtureCwd, 'codex-enhance-status-prefix'),
-      '0.200.0',
-    );
-    setNativeCliRunnerOverrideForTests(runtime.nativeCliRunner);
-    const status = await statusCommandV8({
-      plugins: ['team/codex-enhance'], platform: 'codex', scope: 'project',
-      cwd: isolation.layout.fixtureCwd, env: { ...isolation.env, PATH: statusBinRoot },
-      cliVersion: '1.0.0', json: true,
-    }).finally(() => setNativeCliRunnerOverrideForTests(null));
-    expect(status.payload.targets[0], JSON.stringify(status.payload.targets[0], null, 2))
-      .toMatchObject({ state: 'needsSync' });
-    expect(statusTargetSharedNative(status.payload.targets[0]!))
-      .toMatchObject({ state: 'replaceable', reason: 'renderDrift' });
-    expect(await runPublic([
-      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
-      '--scope', 'user', '--value-json', '20', '--apply',
-    ])).toMatchObject({
-      exitCode: 1,
-      payload: { errors: [expect.objectContaining({ code: 'sharedNativeConfigApplyConfirmationRequired' })] },
-    });
-    const storeAfterReject = await readPluginConfigStore({
-      sourceId: 'team', sourceIdentity, pluginName: 'codex-enhance', scope: 'user',
-      cwd: isolation.layout.fixtureCwd, env: isolation.env,
-    });
-    expect(storeAfterReject.values.exploreMinimumInitialWaitMinutes).toBe(15);
-
-    expect(await runPublic([
-      'config', 'set', 'team/codex-enhance', 'exploreMinimumInitialWaitMinutes',
-      '--scope', 'user', '--value-json', '20', '--apply', '--yes',
-    ])).toMatchObject({ exitCode: 0, payload: { overallState: 'succeeded' } });
-    const replacedReceipt = await fs.readJson(
-      path.join(cacheRoot, CODEX_NATIVE_RENDER_RECEIPT_PATH),
-    ) as CodexNativeRenderReceipt;
-    expect(replacedReceipt.configDigest).not.toBe(initialReceipt.configDigest);
-    await expect(fs.readFile(path.join(
-      marketplaceRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md',
-    ), 'utf8')).resolves.toContain('至少 `20` 分钟');
     const [userConfig, projectConfig] = await Promise.all([
       readCodexConfigFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml')),
       readCodexConfigFile(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml')),

@@ -60,7 +60,6 @@ const exploreConfigKeys = [
   'quickProfile',
   'standardProfile',
   'deepProfile',
-  'exploreMinimumInitialWaitMinutes',
 ];
 
 function createContext(overrides = {}) {
@@ -96,9 +95,7 @@ function createContext(overrides = {}) {
     config: {
       mode: 'artifact-render',
       targetScope: 'user',
-      values: {
-        exploreMinimumInitialWaitMinutes: 12,
-      },
+      values: {},
     },
     ...overrides,
   };
@@ -193,7 +190,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.state, 'present');
   assert.equal(skill.skillKey, 'codex-explore');
-  assert.deepEqual(skill.refreshKeys, ['exploreMinimumInitialWaitMinutes']);
+  assert.deepEqual(skill.refreshKeys, []);
 
   for (const role of expectedRoles) {
     assertRoleArtifact(plan, role);
@@ -220,9 +217,10 @@ async function testRenderedArtifactsAndSkillContract() {
     assert.match(text, new RegExp(heading));
   }
   // Static contract exception: Skill artifact 缺少权限边界、参数不可表达时 fail-closed 或敏感数据保护规则会允许不安全降级; behavior test is not suitable because 这些规则是模型消费的最终 artifact 安全合同，确定性 runner 无法证明模型行为.
-  assert.match(text, /父 turn 可写时只能提供行为只读，不得描述为权限隔离/);
-  assert.match(text, /任一字段无法原样传递时立即停止/);
-  assert.match(text, /不得删除字段或改用预设 role/);
+  assert.match(text, /只读默认为行为约束/);
+  assert.match(text, /确认父 turn 的有效权限边界对子代理生效时，才承诺权限隔离/);
+  assert.match(text, /全部显式字段及其值受当前 schema 支持且可原样传递/);
+  assert.match(text, /不省略、替换或降级/);
   assert.match(text, /不发送密钥、个人数据、私有代码或用户材料原文/);
   for (const toolName of [
     'close_agent',
@@ -245,7 +243,6 @@ async function testConfigSourcesAndManifestDefaults() {
       config: undefined,
       renderConfig: {
         values: {
-          exploreMinimumInitialWaitMinutes: 20,
           standardProfile: {
             model: 'configured-standard',
             reasoningEffort: 'max',
@@ -257,8 +254,6 @@ async function testConfigSourcesAndManifestDefaults() {
   const configuredSkill = findArtifact(configured, 'codex-explore-skill');
   const configuredStandard = findArtifact(configured, 'codex-explore-standard-role');
   const configuredQuick = findArtifact(configured, 'codex-explore-quick-role');
-  assert.match(configuredSkill.content.files['SKILL.md'], /至少 `20` 分钟的单次窗口/);
-  assert.match(configuredSkill.content.files['SKILL.md'], /即 `timeout_ms=1200000`/);
   assert.equal(configuredStandard.content.roleFile.model, 'configured-standard');
   assert.equal(configuredStandard.content.roleFile.model_reasoning_effort, 'max');
   assert.equal(configuredQuick.content.roleFile.model, 'gpt-5.6-luna');
@@ -275,8 +270,7 @@ async function testConfigSourcesAndManifestDefaults() {
   );
   const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
   const defaultStandard = findArtifact(defaults, 'codex-explore-standard-role');
-  assert.match(defaultSkill.content.files['SKILL.md'], /至少 `10` 分钟的单次窗口/);
-  assert.match(defaultSkill.content.files['SKILL.md'], /即 `timeout_ms=600000`/);
+  assert.equal(configuredSkill.content.files['SKILL.md'], defaultSkill.content.files['SKILL.md']);
   assert.equal(defaultStandard.content.roleFile.model, 'gpt-5.6-luna');
   assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
 }
@@ -342,19 +336,8 @@ async function testStaticManifestContract() {
     );
     assert.equal(Object.hasOwn(profile, 'choices'), false);
   }
-  assert.equal(manifest.config.fields.exploreMinimumInitialWaitMinutes.default, 10);
-  assert.equal(manifest.config.fields.subagentMinimumInitialWaitMinutes.default, 10);
-  assert.deepEqual(manifest.config.fields.exploreMinimumInitialWaitMinutes.validation, {
-    integer: true,
-    minimum: 1,
-    maximum: 60,
-  });
-  assert.deepEqual(manifest.config.fields.subagentMinimumInitialWaitMinutes.validation, {
-    integer: true,
-    minimum: 1,
-    maximum: 60,
-  });
-  assert.equal(Object.hasOwn(manifest.config.fields, 'minimumInitialWaitMinutes'), false);
+  assert.equal(Object.hasOwn(manifest.config.fields, 'exploreMinimumInitialWaitMinutes'), false);
+  assert.equal(Object.hasOwn(manifest.config.fields, 'subagentMinimumInitialWaitMinutes'), false);
   for (const profileKey of [
     'simpleTaskProfile',
     'generalTaskProfile',
@@ -385,7 +368,6 @@ async function testStaticManifestContract() {
           'generalTaskProfile',
           'complexTaskProfile',
           'advancedTaskProfile',
-          'subagentMinimumInitialWaitMinutes',
         ],
       },
     ],
@@ -419,7 +401,7 @@ async function testStaticManifestContract() {
       {
         id: 'codex-explore-skill',
         target: 'codex.skill',
-        refreshKeys: ['exploreMinimumInitialWaitMinutes'],
+        refreshKeys: [],
         key: 'codex-explore',
       },
       ...expectedRoles.map((role) => ({
